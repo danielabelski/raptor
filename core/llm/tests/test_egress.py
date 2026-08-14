@@ -25,7 +25,6 @@ except IndexError:                                      # pragma: no cover
 from core.llm import egress
 from core.llm.config import LLMConfig, ModelConfig
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -57,7 +56,7 @@ def stub_proxy(monkeypatch):
 
 
 def _model(provider: str = "anthropic", model_name: str = "x",
-           api_base: str = None) -> ModelConfig:
+           api_base: str | None = None) -> ModelConfig:
     return ModelConfig(
         provider=provider,
         model_name=model_name,

@@ -1,8 +1,9 @@
 """Tests for core.config.RaptorConfig."""
 
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 # Pre-fix this file did:
 #
@@ -49,9 +50,9 @@ class TestEffectiveVersion:
 
     def test_uses_git_describe_and_strips_leading_v(self):
         """In a checkout, derive from describe (leading 'v' stripped)."""
+        import subprocess
         from pathlib import Path
         from types import SimpleNamespace
-        import subprocess
 
         repo = Path(__file__).resolve().parents[3]
         if not (repo / ".git").exists():
@@ -204,9 +205,9 @@ class TestGetOutDir:
         the path-component boundary specifically to allow
         ``/usr-local-foo`` while still catching ``/usr/x``.
         """
-        with patch.dict(os.environ, {"RAPTOR_OUT_DIR": system_path}):
-            with pytest.raises(ValueError, match="resolves under system path"):
-                RaptorConfig.get_out_dir()
+        with patch.dict(os.environ, {"RAPTOR_OUT_DIR": system_path}), \
+                pytest.raises(ValueError, match="resolves under system path"):
+            RaptorConfig.get_out_dir()
 
     def test_accepts_usr_local_lookalike(self):
         """`/usr-local-foo` must NOT match the `/usr` rule.

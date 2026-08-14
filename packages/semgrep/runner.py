@@ -19,7 +19,6 @@ import subprocess
 import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Dict, List, Optional, Tuple
 
 from .models import SemgrepResult, parse_json_output, parse_sarif
 
@@ -33,7 +32,7 @@ def is_available() -> bool:
     return shutil.which(_SEMGREP_BIN) is not None
 
 
-def version() -> Optional[str]:
+def version() -> str | None:
     """Return the semgrep version string, or None if unavailable."""
     if not is_available():
         return None
@@ -41,6 +40,7 @@ def version() -> Optional[str]:
         proc = subprocess.run(
             [_SEMGREP_BIN, "--version"],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
         out = (proc.stdout or proc.stderr or "").strip()
         return out.splitlines()[0] if out else None
@@ -52,11 +52,11 @@ def build_cmd(
     target: Path,
     config: str,
     *,
-    json_output_path: Optional[Path] = None,
+    json_output_path: Path | None = None,
     rule_timeout: int = _DEFAULT_RULE_TIMEOUT,
-    semgrep_bin: Optional[str] = None,
-    extra_args: Optional[List[str]] = None,
-) -> List[str]:
+    semgrep_bin: str | None = None,
+    extra_args: list[str] | None = None,
+) -> list[str]:
     """Build the semgrep command argv.
 
     Pure: no subprocess invocation. Callers can wrap this with their own
@@ -76,7 +76,7 @@ def build_cmd(
         argv list ready for subprocess.run.
     """
     bin_path = semgrep_bin or shutil.which(_SEMGREP_BIN) or _SEMGREP_BIN
-    cmd: List[str] = [
+    cmd: list[str] = [
         bin_path,
         "scan",
         "--config", config,
@@ -102,10 +102,10 @@ def run_rule(
     name: str = "",
     timeout: int = _DEFAULT_TIMEOUT,
     rule_timeout: int = _DEFAULT_RULE_TIMEOUT,
-    env: Optional[Dict[str, str]] = None,
-    json_output_path: Optional[Path] = None,
-    semgrep_bin: Optional[str] = None,
-    extra_args: Optional[List[str]] = None,
+    env: dict[str, str] | None = None,
+    json_output_path: Path | None = None,
+    semgrep_bin: str | None = None,
+    extra_args: list[str] | None = None,
     subprocess_runner=None,
 ) -> SemgrepResult:
     """Run semgrep with one config against a target.
@@ -146,9 +146,9 @@ def run_rule(
     cleanup_json = False
     json_path = json_output_path
     if json_path is None:
-        tmp = NamedTemporaryFile(prefix="semgrep_", suffix=".json", delete=False)
-        tmp.close()
-        json_path = Path(tmp.name)
+        with NamedTemporaryFile(prefix="semgrep_", suffix=".json",
+                                delete=False) as tmp:
+            json_path = Path(tmp.name)
         cleanup_json = True
 
     # Wrap the entire subprocess + parse path in try/finally so an
@@ -235,15 +235,15 @@ def run_rule(
 
 def run_rules(
     target: Path,
-    configs: List[Tuple[str, str]],
+    configs: list[tuple[str, str]],
     *,
     timeout: int = _DEFAULT_TIMEOUT,
     rule_timeout: int = _DEFAULT_RULE_TIMEOUT,
-    env: Optional[Dict[str, str]] = None,
-    semgrep_bin: Optional[str] = None,
-    extra_args: Optional[List[str]] = None,
+    env: dict[str, str] | None = None,
+    semgrep_bin: str | None = None,
+    extra_args: list[str] | None = None,
     subprocess_runner=None,
-) -> List[SemgrepResult]:
+) -> list[SemgrepResult]:
     """Run multiple semgrep configurations sequentially.
 
     Args:
@@ -273,7 +273,7 @@ def run_rules(
             for name, config in configs
         ]
 
-    results: List[SemgrepResult] = []
+    results: list[SemgrepResult] = []
     for name, config in configs:
         result = run_rule(
             target, config,

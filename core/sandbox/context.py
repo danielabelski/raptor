@@ -15,20 +15,22 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Optional
 
 from . import landlock as _landlock
 from . import probes as _probes
 from . import seccomp as _seccomp
 from . import state
+
 # mount.py retained for its standalone tests; no longer imported from
 # context — mount-ns goes through core.sandbox._spawn / mount_ns.
 from .observe import (
     _CMD_DISPLAY_MAX_ARGS,
-    _check_blocked, _interpret_result,
+    _check_blocked,
+    _interpret_result,
 )
 from .preexec import _DEFAULT_LIMITS, _load_user_limits, _make_preexec_fn
-from .profiles import DEFAULT_PROFILE, PROFILES, _SANDBOX_KWARGS
+from .profiles import _SANDBOX_KWARGS, DEFAULT_PROFILE, PROFILES
+
 
 # Attribute indirection so tests can patch these at the submodule level.
 # `patch.object(core.sandbox.landlock, "check_landlock_available", ...)`
@@ -89,11 +91,11 @@ def _audit_degrade_reason(b_fallback_reason, b_fallback_instr,
         # sandbox-exec being missing or smoke-test-failing.
         if not check_seatbelt_available():
             return (
-                "macOS sandbox-exec is unavailable (smoke test "
-                "failed or /usr/bin/sandbox-exec missing)",
-                "verify `sandbox-exec -p '(version 1)(allow default)' "
+                ("macOS sandbox-exec is unavailable (smoke test "
+                "failed or /usr/bin/sandbox-exec missing)"),
+                ("verify `sandbox-exec -p '(version 1)(allow default)' "
                 "/usr/bin/true` succeeds on this host; reinstall "
-                "Command Line Tools if missing.",
+                "Command Line Tools if missing."),
             )
     elif not check_mount_available():
         # Pre-fix this branch hardcoded the AppArmor diagnostic — but
@@ -110,33 +112,33 @@ def _audit_degrade_reason(b_fallback_reason, b_fallback_instr,
     if kwargs.get("pass_fds"):
         return (
             "call uses pass_fds= which spawn doesn't plumb through",
-            "rework the caller to avoid pass_fds or accept that this "
-            "call won't audit",
+            ("rework the caller to avoid pass_fds or accept that this "
+            "call won't audit"),
         )
     if kwargs.get("input") is not None:
         return (
             "call uses input= which spawn doesn't plumb through",
-            "pipe via stdin= instead of input=, or accept that this "
-            "call won't audit",
+            ("pipe via stdin= instead of input=, or accept that this "
+            "call won't audit"),
         )
     if not (target or output):
         # Common case: callers that pass audit_run_dir= alone for
         # audit-signal routing but no target/output for filesystem
         # isolation (codeql analyze, helper subprocesses).
         return (
-            "call has no target= or output= — mount-ns has nothing "
-            "to bind-mount, so the tracer can't attach",
-            "pass target=<repo_path> and/or output=<run_dir> for "
+            ("call has no target= or output= — mount-ns has nothing "
+            "to bind-mount, so the tracer can't attach"),
+            ("pass target=<repo_path> and/or output=<run_dir> for "
             "full mount-ns isolation + audit, or accept that this "
-            "call runs at Landlock-only.",
+            "call runs at Landlock-only."),
         )
     # Reachable only if a future change adds a spawn-eligibility gate
     # without updating this helper. Better than lying with a specific
     # message; the docstring above tells the reader to update both.
     return (
         "spawn-path unavailable for this call (unknown reason)",
-        "inspect core/sandbox/context.py spawn_eligible determination "
-        "and update _audit_degrade_reason with the new branch.",
+        ("inspect core/sandbox/context.py spawn_eligible determination "
+        "and update _audit_degrade_reason with the new branch."),
     )
 
 
@@ -328,24 +330,24 @@ _UNSET = object()
 
 
 @contextmanager
-def sandbox(block_network=_UNSET, target: str = None, output: str = None,
-            map_root: bool = False, limits: dict = None,
-            allowed_tcp_ports: list = None, profile: str = None,
+def sandbox(block_network=_UNSET, target: str | None = None, output: str | None = None,
+            map_root: bool = False, limits: dict | None = None,
+            allowed_tcp_ports: list | None = None, profile: str | None = None,
             disabled: bool = False,
-            use_egress_proxy: bool = False, proxy_hosts: list = None,
-            restrict_reads: bool = False, readable_paths: list = None,
-            caller_label: str = None,
+            use_egress_proxy: bool = False, proxy_hosts: list | None = None,
+            restrict_reads: bool = False, readable_paths: list | None = None,
+            caller_label: str | None = None,
             fake_home: bool = False,
-            tool_paths: list = None,
+            tool_paths: list | None = None,
             audit: bool = False, audit_verbose: bool = False,
-            audit_run_dir: Optional[str] = None,
+            audit_run_dir: str | None = None,
             observe: bool = False,
-            writable_paths: Optional[list] = None,
+            writable_paths: list | None = None,
             exclude_tmp_baseline: bool = False,
             sanitise_host_fingerprint: bool = False,
-            cpu_count: Optional[int] = None,
+            cpu_count: int | None = None,
             require_sanitisation: bool = False,
-            etc_overlay: Optional[dict] = None):
+            etc_overlay: dict | None = None):
     """Context manager for sandboxed subprocess execution.
 
     Each run() call inside the context runs the target command with the
@@ -622,8 +624,8 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             except OSError:
                 pass
     _use_proxy_netns = False
-    _proxy_unix_path: Optional[str] = None
-    _proxy_forwarder_port: Optional[int] = None
+    _proxy_unix_path: str | None = None
+    _proxy_forwarder_port: int | None = None
     if use_egress_proxy:
         if not proxy_hosts:
             raise ValueError(
@@ -666,7 +668,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                 )
             try:
                 proxy_instance.bind_unix(_proxy_unix_path)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Sandbox: proxy unix socket bind failed (%s); "
                     "falling back to TCP-only (ABI %d < 4, TCP "
@@ -821,7 +823,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             logger.warning(
                 "Sandbox unavailable — subprocesses run without namespace isolation"
             )
-    elif sys.platform != "darwin" and use_sandbox and not use_mount and (target or output):
+    elif sys.platform != "darwin" and use_sandbox and not use_mount and (target or output):  # noqa: SIM102
         # Linux Landlock-only mode: sandbox engaged but mount-ns
         # didn't (typically because unprivileged user namespaces are
         # disabled — Ubuntu 24.04+ ships with
@@ -909,7 +911,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
     # sandbox regardless of what Landlock's allow-rule permits. Callers
     # mixing the two usually intend "block all network except 443" — that
     # intent requires `block_network=False` + allowed_tcp_ports=[443].
-    if block_network and allowed_tcp_ports and not effectively_disabled:
+    if block_network and allowed_tcp_ports and not effectively_disabled:  # noqa: SIM102
         if state.warn_once("_net_and_tcp_allowlist_warned"):
             logger.warning(
                 f"Sandbox: block_network=True makes allowed_tcp_ports="
@@ -1000,7 +1002,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
     # derived from untrusted input should use run_untrusted() which
     # forces block_network=True → PID namespace → host PIDs invisible
     # inside /proc.
-    effective_read_paths: Optional[list] = None
+    effective_read_paths: list | None = None
     if restrict_reads:
         effective_read_paths = [
             "/usr", "/lib", "/lib64", "/bin", "/sbin",
@@ -1066,8 +1068,8 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
     _persona = None
     _persona_tmpdir = None
     if sanitise_host_fingerprint:
-        from .fingerprint import build_persona, is_supported
         from ._spawn import mount_ns_available
+        from .fingerprint import build_persona, is_supported
         _fp_unsupported_reason = None
         if not is_supported():
             _fp_unsupported_reason = (
@@ -1127,7 +1129,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
     # this is the unified view exposed as `run.events`.
     _sandbox_events: list = []
 
-    def run(cmd: List[str], **kwargs) -> subprocess.CompletedProcess:
+    def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
         """Run a command inside the sandbox namespace defined by the enclosing
         `with sandbox(...)` block.
 
@@ -1433,7 +1435,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                     f"(unshare {' '.join(_engage_flags)}): {_engage_reason}",
                     ENGAGE_FAIL_INSTRUCTIONS,
                 )
-            if _engages is None:
+            if _engages is None:  # noqa: SIM102
                 # Probe couldn't RUN (transient load) — NOT a verdict. Do
                 # NOT abort a possibly-working scan; proceed and let a real
                 # engagement failure surface at spawn (exec-status pipe).
@@ -1743,6 +1745,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
             _marker_dir = audit_run_dir or output
             if _marker_dir:
                 from pathlib import Path as _Path
+
                 from . import summary as _summary_mod
                 _summary_mod.record_audit_degraded(
                     _Path(_marker_dir),
@@ -2054,6 +2057,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                             _retry_marker_dir = audit_run_dir or output
                             if nonlocal_audit_mode and _retry_marker_dir:
                                 from pathlib import Path as _Path
+
                                 from . import summary as _summary_mod
                                 _summary_mod.record_audit_degraded(
                                     _Path(_retry_marker_dir),
@@ -2110,17 +2114,19 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                 _audit_landlock_engaged = False
                 if nonlocal_audit_mode:
                     try:
+                        from . import _landlock_audit as _la
+                        from .landlock import (
+                            _make_landlock_preexec as _la_make_landlock,
+                        )
                         from .ptrace_probe import (
                             check_ptrace_available as _la_ptrace_check,
                         )
                         from .seccomp import (
-                            check_seccomp_available as _la_seccomp_check,
                             _make_seccomp_preexec as _la_make_seccomp,
                         )
-                        from .landlock import (
-                            _make_landlock_preexec as _la_make_landlock,
+                        from .seccomp import (
+                            check_seccomp_available as _la_seccomp_check,
                         )
-                        from . import _landlock_audit as _la
                         if (_la_seccomp_check()
                                 and _la_ptrace_check()):
                             # Build the rlimit-only preexec (no
@@ -2232,7 +2238,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                             _denv["_RAPTOR_DEATH_FD"] = str(_death_r)
                             _dk["env"] = _denv
                             try:
-                                result = subprocess.run(full_cmd, **_dk)
+                                result = subprocess.run(full_cmd, **_dk, check=False)
                             except OSError as _ebadf:
                                 if _ebadf.errno != errno.EBADF:
                                     raise
@@ -2251,6 +2257,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
                                 full_cmd,
                                 start_new_session=_start_new_session,
                                 **kwargs,
+                                check=False,
                             )
                         except OSError as _ebadf:
                             if _ebadf.errno != errno.EBADF:
@@ -2436,7 +2443,7 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
     # minimal (pinned by ``test_acquire_happens_immediately_
     # before_yield``); if ``register_sandbox`` raises, the audit
     # acquire never runs so there's no ref-count leak.
-    _block_token: Optional[int] = None
+    _block_token: int | None = None
     if (use_egress_proxy and _will_engage_audit and output
             and proxy_instance is not None):
         _block_token = proxy_instance.register_sandbox(
@@ -2525,24 +2532,24 @@ def sandbox(block_network=_UNSET, target: str = None, output: str = None,
 
 
 # Convenience: standalone run function for one-off sandboxed commands
-def run(cmd: List[str], block_network: bool = True, target: str = None,
-        output: str = None, allowed_tcp_ports: list = None,
-        profile: str = None, disabled: bool = False, limits: dict = None,
+def run(cmd: list[str], block_network: bool = True, target: str | None = None,
+        output: str | None = None, allowed_tcp_ports: list | None = None,
+        profile: str | None = None, disabled: bool = False, limits: dict | None = None,
         map_root: bool = False,
-        use_egress_proxy: bool = False, proxy_hosts: list = None,
-        restrict_reads: bool = False, readable_paths: list = None,
-        caller_label: str = None,
+        use_egress_proxy: bool = False, proxy_hosts: list | None = None,
+        restrict_reads: bool = False, readable_paths: list | None = None,
+        caller_label: str | None = None,
         fake_home: bool = False,
-        tool_paths: list = None,
+        tool_paths: list | None = None,
         audit: bool = False, audit_verbose: bool = False,
-        audit_run_dir: Optional[str] = None,
+        audit_run_dir: str | None = None,
         observe: bool = False,
-        writable_paths: Optional[list] = None,
+        writable_paths: list | None = None,
         exclude_tmp_baseline: bool = False,
         sanitise_host_fingerprint: bool = False,
-        cpu_count: Optional[int] = None,
+        cpu_count: int | None = None,
         require_sanitisation: bool = False,
-        etc_overlay: Optional[dict] = None,
+        etc_overlay: dict | None = None,
         **kwargs) -> subprocess.CompletedProcess:
     """Run a single command in a sandbox. Convenience wrapper.
 
@@ -2575,7 +2582,7 @@ def run(cmd: List[str], block_network: bool = True, target: str = None,
         return _run(cmd, **kwargs)
 
 
-def run_trusted(cmd: List[str], **kwargs) -> subprocess.CompletedProcess:
+def run_trusted(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a command whose input was chosen by RAPTOR itself (not the target).
 
     Example uses: readelf/nm/strings on a RAPTOR-picked binary path,
@@ -2601,11 +2608,11 @@ def run_trusted(cmd: List[str], **kwargs) -> subprocess.CompletedProcess:
     return run(cmd, profile="none", **kwargs)
 
 
-def run_untrusted(cmd: List[str], *, target: str = None, output: str = None,
-                  limits: dict = None,
+def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | None = None,
+                  limits: dict | None = None,
                   restrict_reads: bool = True,
-                  readable_paths: list = None,
-                  writable_paths: list = None,
+                  readable_paths: list | None = None,
+                  writable_paths: list | None = None,
                   fake_home: bool = True,
                   **kwargs) -> subprocess.CompletedProcess:
     """Run a command whose input is attacker-derived or otherwise untrusted.
@@ -2718,15 +2725,15 @@ def run_untrusted(cmd: List[str], *, target: str = None, output: str = None,
 
 
 def run_untrusted_networked(
-    cmd: List[str],
+    cmd: list[str],
     *,
-    target: str = None,
-    output: str = None,
+    target: str | None = None,
+    output: str | None = None,
     proxy_hosts: list,
-    limits: dict = None,
+    limits: dict | None = None,
     restrict_reads: bool = True,
-    readable_paths: list = None,
-    writable_paths: list = None,
+    readable_paths: list | None = None,
+    writable_paths: list | None = None,
     fake_home: bool = False,
     **kwargs,
 ) -> subprocess.CompletedProcess:

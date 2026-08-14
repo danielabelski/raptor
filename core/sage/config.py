@@ -3,7 +3,6 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ class SageConfig:
     url: str = field(
         default_factory=lambda: os.getenv("SAGE_URL", "http://localhost:8090")
     )
-    identity_path: Optional[str] = field(
+    identity_path: str | None = field(
         default_factory=lambda: os.getenv("SAGE_IDENTITY_PATH")
     )
     timeout: float = field(default_factory=_read_timeout)

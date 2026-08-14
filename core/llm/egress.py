@@ -81,7 +81,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Set
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -124,10 +124,10 @@ _PROXY_VAR_NAMES = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
 )
-_original_proxy_env: "dict[str, str] | None" = None
+_original_proxy_env: dict[str, str] | None = None
 
 
-def operator_proxy_env() -> "dict[str, str]":
+def operator_proxy_env() -> dict[str, str]:
     """Proxy vars as the operator set them at launch.
 
     Returns the pre-``enable_llm_egress`` snapshot when this process
@@ -142,7 +142,7 @@ def operator_proxy_env() -> "dict[str, str]":
     }
 
 
-def derive_allowlist(config: "LLMConfig") -> Set[str]:
+def derive_allowlist(config: LLMConfig) -> set[str]:
     """Walk ``config`` and extract the set of hostnames the in-process
     proxy must allow.
 
@@ -165,7 +165,7 @@ def derive_allowlist(config: "LLMConfig") -> Set[str]:
     if config.specialized_models:
         candidates.extend(config.specialized_models.values())
 
-    hosts: Set[str] = set()
+    hosts: set[str] = set()
     for model in candidates:
         if model is None:
             continue
@@ -230,7 +230,7 @@ def loopback_safe_get(url: str, timeout: float):
     return requests.get(url, timeout=timeout)
 
 
-def _max_model_timeout(config: "LLMConfig") -> float:
+def _max_model_timeout(config: LLMConfig) -> float:
     """Return the longest per-model timeout across all configured models."""
     candidates = []
     if config.primary_model is not None:
@@ -259,7 +259,7 @@ def _augment_no_proxy(existing: str) -> str:
     return ",".join(parts)
 
 
-def enable_llm_egress(config: "LLMConfig") -> None:
+def enable_llm_egress(config: LLMConfig) -> None:
     """Wire LLM SDK calls through the in-process proxy.
 
     Idempotent: safe to call once per ``LLMClient`` instantiation; the

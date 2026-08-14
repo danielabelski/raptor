@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import ClassVar
 
 # Add parent directory to path for imports
 # packages/codeql/query_runner.py -> repo root
@@ -26,7 +26,7 @@ from packages.codeql.tunables import CodeQLTunables
 logger = get_logger()
 
 
-import re  # noqa: E402
+import re
 
 # Tightened from `[\w/.-]+\S*` which accepted any path-like
 # blob (path-traversal `../../etc/passwd`, multi-segment
@@ -72,7 +72,7 @@ def _iris_pack_deps_already_resolved(pack_dir: Path) -> bool:
         return False
     try:
         data = yaml.safe_load(lock.read_text(encoding="utf-8")) or {}
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     deps = (data.get("dependencies") or {})
     if not deps:
@@ -130,10 +130,10 @@ class QueryResult:
     success: bool
     language: str
     database_path: Path
-    sarif_path: Optional[Path]
+    sarif_path: Path | None
     findings_count: int
     duration_seconds: float
-    errors: List[str]
+    errors: list[str]
     suite_name: str
     queries_executed: int = 0
 
@@ -150,7 +150,7 @@ class QueryRunner:
     """
 
     # Official CodeQL security suites (from GitHub)
-    SECURITY_SUITES = {
+    SECURITY_SUITES: ClassVar[dict] = {
         "java": "codeql/java-queries:codeql-suites/java-security-and-quality.qls",
         "python": "codeql/python-queries:codeql-suites/python-security-and-quality.qls",
         "javascript": "codeql/javascript-queries:codeql-suites/javascript-security-and-quality.qls",
@@ -165,7 +165,7 @@ class QueryRunner:
     }
 
     # Alternative: security-extended suites (more comprehensive)
-    SECURITY_EXTENDED_SUITES = {
+    SECURITY_EXTENDED_SUITES: ClassVar[dict] = {
         "java": "codeql/java-queries:codeql-suites/java-security-extended.qls",
         "python": "codeql/python-queries:codeql-suites/python-security-extended.qls",
         "javascript": "codeql/javascript-queries:codeql-suites/javascript-security-extended.qls",
@@ -179,7 +179,7 @@ class QueryRunner:
         "rust": "codeql/rust-queries:codeql-suites/rust-security-extended.qls",
     }
 
-    def __init__(self, codeql_cli: Optional[str] = None):
+    def __init__(self, codeql_cli: str | None = None):
         """
         Initialize query runner.
 
@@ -212,7 +212,7 @@ class QueryRunner:
         database_path: Path,
         language: str,
         out_dir: Path,
-        suite: Optional[str] = None,
+        suite: str | None = None,
         use_extended: bool = False
     ) -> QueryResult:
         """
@@ -511,8 +511,8 @@ class QueryRunner:
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
 
-        except Exception as e:
-            error = f"Unexpected error: {str(e)}"
+        except Exception as e:  # noqa: BLE001
+            error = f"Unexpected error: {e!s}"
             errors.append(error)
             logger.error("✗ Analysis failed with exception: %s", e)
 
@@ -607,7 +607,7 @@ class QueryRunner:
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("✗ Custom query execution failed: %s", e)
             return QueryResult(
                 success=False,
@@ -622,11 +622,11 @@ class QueryRunner:
 
     def analyze_all_databases(
         self,
-        databases: Dict[str, Path],
+        databases: dict[str, Path],
         out_dir: Path,
         use_extended: bool = False,
-        max_workers: Optional[int] = None
-    ) -> Dict[str, QueryResult]:
+        max_workers: int | None = None
+    ) -> dict[str, QueryResult]:
         """
         Analyze multiple databases in parallel.
 
@@ -672,7 +672,7 @@ class QueryRunner:
                         )
                     else:
                         logger.error("✗ %s analysis failed", lang)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error("✗ %s analysis raised exception: %s", lang, e)
                     results[lang] = QueryResult(
                         success=False,
@@ -689,10 +689,10 @@ class QueryRunner:
 
     def analyze_iris_packs(
         self,
-        databases: Dict[str, Path],
+        databases: dict[str, Path],
         out_dir: Path,
-        max_workers: Optional[int] = None,
-    ) -> Dict[str, "QueryResult"]:
+        max_workers: int | None = None,
+    ) -> dict[str, "QueryResult"]:
         """Run RAPTOR's in-repo IRIS LocalFlowSource packs against each
         database. Same DBs the standard suite uses; complementary
         queries that catch CLI / env / stdin source flows the stdlib
@@ -738,7 +738,7 @@ class QueryRunner:
             return {}
 
         # Filter to languages that actually have an in-repo pack.
-        analyzable: Dict[str, Tuple[Path, Path]] = {}
+        analyzable: dict[str, tuple[Path, Path]] = {}
         for lang, db in databases.items():
             pack_dir = pack_root / f"{lang}-queries"
             if pack_dir.is_dir():
@@ -747,7 +747,7 @@ class QueryRunner:
             return {}
 
         max_workers = max_workers or RaptorConfig.MAX_CODEQL_WORKERS
-        results: Dict[str, "QueryResult"] = {}
+        results: dict[str, QueryResult] = {}
 
         def _run_one(lang: str, db: Path, pack_dir: Path) -> "QueryResult":
             return self._run_iris_pack(lang, db, pack_dir, out_dir)
@@ -761,7 +761,7 @@ class QueryRunner:
                 lang = future_to_lang[future]
                 try:
                     results[lang] = future.result()
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.warning("IRIS LocalFlowSource (%s) raised: %s", lang, e)
                     db, _ = analyzable[lang]
                     results[lang] = QueryResult(
@@ -835,7 +835,7 @@ class QueryRunner:
                         install_proc.returncode,
                         install_err
                     )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("IRIS pack install (%s) raised: %s", lang, e)
 
         sarif_path = out_dir / f"codeql_{lang}_iris.sarif"
@@ -858,7 +858,7 @@ class QueryRunner:
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("IRIS LocalFlowSource (%s) analyze raised: %s", lang, e)
             return QueryResult(
                 success=False, language=lang,
@@ -897,7 +897,7 @@ class QueryRunner:
         return sum(len(run.get("results", [])) for run in sarif_data.get("runs", []))
 
     def get_sarif_summary(self, sarif_path: Path,
-                          *, sarif_data: Optional[Dict] = None) -> Dict:
+                          *, sarif_data: dict | None = None) -> dict:
         """
         Extract summary information from SARIF file.
 
@@ -976,7 +976,7 @@ class QueryRunner:
 
             return summary
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Failed to generate SARIF summary: %s", e)
             return {}
 

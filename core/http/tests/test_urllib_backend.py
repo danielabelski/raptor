@@ -5,7 +5,6 @@ from __future__ import annotations
 import gzip
 import sys
 from pathlib import Path
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,7 +40,7 @@ def _reset_default_breaker():
 def _stub_response(body: bytes, *, status: int = 200,
                    content_encoding: str = "",
                    reason: str = "OK",
-                   extra_headers: Optional[dict] = None,
+                   extra_headers: dict | None = None,
                    final_url: str = "") -> MagicMock:
     """Build a stub urllib3 HTTPResponse: stream() yields body in one chunk."""
     resp = MagicMock()
@@ -99,7 +98,7 @@ class TestSuccess:
         assert call.kwargs["headers"]["Content-Type"] == "application/json"
 
     def test_get_bytes(self):
-        client, pool = _client_with_mock_pool(_stub_response(b"\x01\x02\xff"))
+        client, _pool = _client_with_mock_pool(_stub_response(b"\x01\x02\xff"))
         out = client.get_bytes("https://example.com/binary")
         assert out == b"\x01\x02\xff"
 
@@ -240,7 +239,7 @@ class TestTotalTimeout:
         # the second iteration.
         ticks = iter([0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000])
         mock_monotonic.side_effect = lambda: next(ticks)
-        client, pool = _client_with_mock_pool([
+        client, _pool = _client_with_mock_pool([
             _stub_response(b"", status=503),
             _stub_response(b"", status=503),
         ])

@@ -46,6 +46,7 @@ Examples:
 """
 
 import argparse
+import contextlib
 import logging
 import os
 import subprocess
@@ -58,9 +59,9 @@ from pathlib import Path
 # happens to land on the repo root because we live here, but explicit
 # is safer than implicit.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import core.startup.process_init  # noqa: E402,F401
-from core.run.output import get_output_dir, resolve_default_target, TargetMismatchError
-from core.run.metadata import start_run, complete_run, fail_run
+import core.startup.process_init  # noqa: F401
+from core.run.metadata import complete_run, fail_run, start_run
+from core.run.output import TargetMismatchError, get_output_dir, resolve_default_target
 from core.run.safe_io import safe_run_mkdir
 
 
@@ -151,9 +152,9 @@ def _preflight_cost_gate(
     the runtime cap still enforces during execution.
     """
     try:
-        from core.run.target_types import load
-        from core.run.estimator import estimate_from_scorecard, format_estimate
         from core.llm.model_data import PROVIDER_DEFAULT_MODELS
+        from core.run.estimator import estimate_from_scorecard, format_estimate
+        from core.run.target_types import load
     except ImportError:
         return False
     try:
@@ -178,10 +179,8 @@ def _preflight_cost_gate(
             f"Raise the cap or re-run without --max-cost-usd.",
             file=sys.stderr, flush=True,
         )
-        try:
+        with contextlib.suppress(Exception):
             fail_run(out_dir, "pre-flight cost gate exceeded")
-        except Exception:  # noqa: BLE001
-            pass
         return True
     return False
 
@@ -232,7 +231,7 @@ def _rewrite_target_arg(args: list, old: str, new: str) -> list:
 # same archive). Re-exported here under the old private name
 # for backward compatibility with anything in this module that
 # still references _safe_cache_name.
-from core.archive import safe_cache_name as _safe_cache_name  # noqa: E402
+from core.archive import safe_cache_name as _safe_cache_name
 
 
 def _unpack_archive_target(target: str, args: list, out_dir: Path):
@@ -277,7 +276,7 @@ def _unpack_archive_target(target: str, args: list, out_dir: Path):
         tmp = Path(tempfile.mkdtemp(dir=sources_root, prefix=".extract-"))
         try:
             stats = extract_to_dir(target, tmp)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # Broad on purpose: extraction runs on attacker-controlled input,
             # so ANY failure (ArchiveError, an unforeseen OSError/ValueError, or
             # a MemoryError from an oversized archive) must fail the run
@@ -427,7 +426,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
             )
             if _summary:
                 print(_summary, flush=True)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # License detection is non-essential; never fail the
             # lifecycle on a detector bug.
             print(f"  (license-detect skipped: {e})",
@@ -436,13 +435,11 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # Target shape summary — operator sees what RAPTOR detected
     # before any LLM cost incurs.
     if target:
-        try:
+        with contextlib.suppress(Exception):
             from packages.describe.start_line import format_start_line
             _start_line = format_start_line(Path(target))
             if _start_line:
                 print(_start_line, flush=True)
-        except Exception:  # noqa: BLE001
-            pass
 
     # Pre-flight cost gate (scorecard-derived). When the operator
     # declared --max-cost-usd, compare the scorecard estimate
@@ -450,7 +447,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # cap. Refuses to start when the estimate clearly exceeds the
     # budget. When no scorecard data exists the gate does not fire
     # — the runtime cap still enforces during execution.
-    if max_cost_usd is not None:
+    if max_cost_usd is not None:  # noqa: SIM102
         if _preflight_cost_gate(target, max_cost_usd, out_dir):
             return 1
 
@@ -480,7 +477,9 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # Write coverage records from tool outputs (before lifecycle complete)
     try:
         from core.coverage.record import (
-            build_from_semgrep, build_from_codeql, write_record,
+            build_from_codeql,
+            build_from_semgrep,
+            write_record,
         )
         if not (out_dir / "coverage-semgrep.json").exists():
             for json_path in out_dir.glob("semgrep_*.json"):
@@ -499,7 +498,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
                 if record:
                     write_record(out_dir, record, tool_name="codeql")
                     break
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logging.getLogger(__name__).debug("SARIF record write failed: %s", e)
 
 
@@ -517,7 +516,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
                 summary = render_run_coverage(out_dir)
                 if summary:
                     print("\n" + summary)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logging.getLogger(__name__).debug("coverage summary skipped: %s", e)
     else:
         fail_run(out_dir, error=f"exit code {rc}")
@@ -544,10 +543,11 @@ def _get_or_start_dispatcher():
     if _active_dispatcher is not None:
         return _active_dispatcher
     try:
+        import atexit
+        import uuid
+
         from core.llm.dispatcher.auth import CredentialStore, seed_from_config
         from core.llm.dispatcher.server import LLMDispatcher
-        import uuid
-        import atexit
         # CredentialStore.__init__ reads env vars. Operators who keep
         # keys in ~/.config/raptor/models.json (the documented UX the
         # startup banner advertises) need the explicit seed pass —
@@ -573,7 +573,7 @@ def _get_or_start_dispatcher():
         )
         atexit.register(_active_dispatcher.shutdown)
         return _active_dispatcher
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # Failure to start the dispatcher must not break the run —
         # fall through to the env-direct path. The credential leak
         # channel stays open in this case but is no worse than today.
@@ -621,6 +621,7 @@ def _run_script(script_path: Path, args: list) -> int:
         try:
             return subprocess.run(
                 cmd, env=RaptorConfig.get_safe_env(), timeout=15,
+                check=False,
             ).returncode
         except subprocess.TimeoutExpired:
             print(f"✗ Help rendering for {script_path.name} timed out",
@@ -646,6 +647,7 @@ def _run_script(script_path: Path, args: list) -> int:
         result = subprocess.run(
             cmd,
             env=RaptorConfig.get_llm_env(include_python_user_base=True),
+            check=False,
         )
         return result.returncode
     except KeyboardInterrupt:
@@ -659,18 +661,16 @@ def _run_script(script_path: Path, args: list) -> int:
         # active"). cancel_run flips status to "cancelled"
         # and clears the active-run pointer; subsequent
         # invocations get a clean slate.
-        try:
-            from core.sandbox.summary import get_active_run_dir
+            # Best-effort. Don't mask the original Ctrl-C
+            # by raising secondary errors during cleanup.
+        with contextlib.suppress(Exception):
             from core.run.metadata import cancel_run
+            from core.sandbox.summary import get_active_run_dir
             active = get_active_run_dir()
             if active:
                 cancel_run(active)
-        except Exception:
-            # Best-effort. Don't mask the original Ctrl-C
-            # by raising secondary errors during cleanup.
-            pass
         return 130
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         # Pre-fix the blanket `return 1` collapsed every internal
         # exception (FileNotFoundError, ValueError, RuntimeError,
         # OSError, etc.) into the same exit code as a child process
@@ -774,12 +774,12 @@ def mode_sca(args: list) -> int:
         # the child's env, so the operator's proxy must survive.
         env = RaptorConfig.get_safe_env(preserve_proxy=True)
         env["_RAPTOR_TRUSTED"] = "1"
-        result = subprocess.run(cmd, env=env)
+        result = subprocess.run(cmd, env=env, check=False)
         return result.returncode
     except KeyboardInterrupt:
         print("\n\nInterrupted by user", file=sys.stderr)
         return 130
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"\n✗ Error running raptor-sca: {e}", file=sys.stderr)
         return 1
 
@@ -818,7 +818,7 @@ def mode_binary(args: list) -> int:
     except KeyboardInterrupt:
         print("\n\nInterrupted by user", file=sys.stderr)
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         print(f"\n✗ Error running raptor-binary: {exc}", file=sys.stderr)
         return 1
 
@@ -1088,6 +1088,7 @@ def show_mode_help(mode: str, preamble: bool = True) -> None:
             [sys.executable, str(script_path), "--help"],
             env=RaptorConfig.get_safe_env(),
             timeout=10,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         print(f"✗ Help rendering for {mode} timed out after 10s", file=sys.stderr)
@@ -1299,7 +1300,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\nInterrupted by user", file=sys.stderr)
         sys.exit(130)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"\n✗ Fatal error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)

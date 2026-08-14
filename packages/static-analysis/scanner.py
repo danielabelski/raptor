@@ -18,23 +18,23 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
 
 # Add parent directory to path for imports
 # packages/static-analysis/scanner.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
-from core.json import save_json
 from core.config import RaptorConfig
-from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
+from core.git import clone_repository
+from core.hash import sha256_bytes, sha256_tree
+from core.json import save_json
+from core.logging import get_logger
 from core.run.output import unique_run_suffix
 from core.run.safe_io import safe_run_mkdir
-from core.logging import get_logger
-from core.git import clone_repository
+from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
 from core.sarif.parser import generate_scan_metrics, merge_sarif, validate_sarif
-from core.hash import sha256_bytes, sha256_tree
 from packages import semgrep as semgrep_pkg
 
 logger = get_logger()
@@ -51,8 +51,8 @@ def _sarif_result_uri(result: dict) -> str:
 
 
 def filter_sarif_by_exclude_globs(
-    sarif: dict, exclude_globs: Optional[List[str]],
-) -> Tuple[dict, int]:
+    sarif: dict, exclude_globs: list[str] | None,
+) -> tuple[dict, int]:
     """Return ``(filtered_sarif, dropped_count)`` — a copy of ``sarif``
     with every result whose file URI matches any of ``exclude_globs``
     removed from ``runs[*].results``. Order-preserving. No-op when
@@ -86,7 +86,7 @@ def filter_sarif_by_exclude_globs(
     return out, dropped
 
 
-def _pack_tuple_for_id(pack_id: str) -> Tuple[str, str]:
+def _pack_tuple_for_id(pack_id: str) -> tuple[str, str]:
     """Resolve a pack-id-suffix (``"security-audit"``,
     ``"command-injection"``) to the full
     ``(display_name, full_pack_id)`` tuple ``BASELINE_SEMGREP_PACKS``
@@ -119,8 +119,8 @@ def _pack_tuple_for_id(pack_id: str) -> Tuple[str, str]:
 
 
 def _drop_unreachable_registry_packs(
-    configs: List[Tuple[str, str]],
-) -> List[Tuple[str, str]]:
+    configs: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
     """Drop uncached registry packs when semgrep.dev is unreachable.
 
     A 3-second TCP probe distinguishes "airgapped" from "slow link".
@@ -167,7 +167,7 @@ def _drop_unreachable_registry_packs(
     try:
         sock.connect((probe_host, probe_port))
         return configs
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         dropped = [n for n, _ in needs_network]
         logger.warning(
             "semgrep.dev unreachable (3 s probe failed) — "
@@ -181,8 +181,8 @@ def _drop_unreachable_registry_packs(
 
 
 def _resolve_baseline_packs(
-    repo_path: Optional[Path],
-) -> List[Tuple[str, str]]:
+    repo_path: Path | None,
+) -> list[tuple[str, str]]:
     """Resolve the baseline semgrep pack set for ``repo_path``.
 
     When the target-type catalog matches and ships
@@ -216,7 +216,7 @@ def _resolve_baseline_packs(
 # (operator sees an empty applicability count rather than a wrong
 # one). Lowercased keys; matches the lowercased extensions
 # catalog YAMLs ship.
-_EXT_TO_SEMGREP_LANG: Dict[str, str] = {
+_EXT_TO_SEMGREP_LANG: dict[str, str] = {
     ".c": "c", ".h": "c",
     ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
     ".hpp": "cpp", ".hh": "cpp",
@@ -249,7 +249,7 @@ _EXT_TO_SEMGREP_LANG: Dict[str, str] = {
 # before intersecting against each rule's ``languages`` field.
 # Symmetric: every key/value is rewritten the same direction
 # in both classes (operator's catalog might declare either form).
-_SEMGREP_LANG_ALIASES: Dict[str, set] = {
+_SEMGREP_LANG_ALIASES: dict[str, set] = {
     "typescript": {"typescript", "ts"},
     "ts": {"typescript", "ts"},
     "kotlin": {"kotlin", "kt"},
@@ -269,14 +269,15 @@ _SEMGREP_LANG_ALIASES: Dict[str, set] = {
 # renderer share the single source of truth. Re-exported with
 # underscore prefix here for back-compat with internal callers
 # (e.g. tests) that imported from this module.
-from core.inventory.languages import (  # noqa: E402, F401
-    LANG_DISPLAY as _LANG_DISPLAY,        # tests reference via _scanner._LANG_DISPLAY
-    display_lang as _display_lang,        # tests reference via _scanner._display_lang
-    display_langs as _display_langs,      # used by call sites below
+from core.inventory.languages import (  # noqa: F401
+    LANG_DISPLAY as _LANG_DISPLAY,  # tests reference via _scanner._LANG_DISPLAY
+)
+from core.inventory.languages import (
+    display_langs as _display_langs,  # used by call sites below
 )
 
 
-def _expand_language_aliases(langs: List[str]) -> set:
+def _expand_language_aliases(langs: list[str]) -> set:
     """Expand ``langs`` to include semgrep's alias names so the
     intersection check below catches rules registered under
     either form."""
@@ -287,7 +288,7 @@ def _expand_language_aliases(langs: List[str]) -> set:
     return out
 
 
-def _target_semgrep_languages(repo_path: Optional[Path]) -> List[str]:
+def _target_semgrep_languages(repo_path: Path | None) -> list[str]:
     """Best-effort set of semgrep language ids for ``repo_path``.
 
     Sourced from the matched target-type catalog entry's
@@ -315,8 +316,8 @@ def _target_semgrep_languages(repo_path: Optional[Path]) -> List[str]:
 
 
 def _pack_rules_applicable_count(
-    pack_id: str, target_langs: List[str],
-) -> Optional[Tuple[int, int]]:
+    pack_id: str, target_langs: list[str],
+) -> tuple[int, int] | None:
     """Read the cached pack JSON for ``pack_id`` and return
     ``(applicable_rule_count, total_rule_count)`` for rules
     whose ``languages`` list intersects the alias-expanded
@@ -359,8 +360,8 @@ def _pack_rules_applicable_count(
 
 
 def _pack_applicable_rule_ids(
-    pack_id: str, target_langs: List[str],
-) -> Optional[set]:
+    pack_id: str, target_langs: list[str],
+) -> set | None:
     """Return the SET of rule ids in ``pack_id`` whose
     ``languages`` field intersects the alias-expanded
     ``target_langs``. Used by ``_is_coverage_thin`` to dedupe
@@ -439,8 +440,8 @@ def _thin_coverage_threshold() -> int:
 
 
 def _is_coverage_thin(
-    resolved_baseline: List[Tuple[str, str]],
-    target_langs: List[str],
+    resolved_baseline: list[tuple[str, str]],
+    target_langs: list[str],
 ) -> bool:
     """True iff the count of UNIQUE applicable rule ids across
     all baseline packs falls below the configured threshold
@@ -484,7 +485,7 @@ def _llm_configured() -> bool:
 
 
 def _format_thin_coverage_hint(
-    target_langs: List[str],
+    target_langs: list[str],
     codeql_already_running: bool,
     llm_configured: bool = True,
 ) -> str:
@@ -495,7 +496,7 @@ def _format_thin_coverage_hint(
     hollow guidance).
     """
     lang_label = _display_langs(target_langs)
-    options: List[str] = []
+    options: list[str] = []
     if not codeql_already_running:
         options.append("rerun with --codeql for richer queries")
     if llm_configured:
@@ -511,9 +512,9 @@ def _format_thin_coverage_hint(
 
 
 def _format_pack_applicability(
-    resolved_baseline: List[Tuple[str, str]],
-    target_langs: List[str],
-) -> Optional[str]:
+    resolved_baseline: list[tuple[str, str]],
+    target_langs: list[str],
+) -> str | None:
     """Render the operator-facing visibility line, or None when
     no useful signal (no target langs, no cached pack data).
 
@@ -528,7 +529,7 @@ def _format_pack_applicability(
     """
     if not target_langs:
         return None
-    parts: List[str] = []
+    parts: list[str] = []
     for _, pack_id in resolved_baseline:
         counts = _pack_rules_applicable_count(pack_id, target_langs)
         if counts is None:
@@ -537,7 +538,7 @@ def _format_pack_applicability(
         # Strip the ``p/`` prefix for readability — the operator
         # cares about the pack name, not the registry path
         # convention.
-        short = pack_id[2:] if pack_id.startswith("p/") else pack_id
+        short = pack_id.removeprefix("p/")
         parts.append(f"{short} {applicable}/{total}")
     if not parts:
         return None
@@ -548,10 +549,10 @@ def _format_pack_applicability(
 
 
 def _resolve_rules_applied(
-    groups: List[str],
-    resolved_baseline: List[Tuple[str, str]],
-    rules_dirs: List[str],
-) -> List[str]:
+    groups: list[str],
+    resolved_baseline: list[tuple[str, str]],
+    rules_dirs: list[str],
+) -> list[str]:
     """Compute the ``rules_applied`` list stored on the semgrep
     coverage record.
 
@@ -832,9 +833,9 @@ def run_single_semgrep(
     repo_path: Path,
     out_dir: Path,
     timeout: int,
-    progress_callback: Optional[Callable] = None,
-    extra_config_readable_paths: Optional[List[str]] = None,
-) -> Tuple[str, bool]:
+    progress_callback: Callable | None = None,
+    extra_config_readable_paths: list[str] | None = None,
+) -> tuple[str, bool]:
     """
     Run a single Semgrep scan.
 
@@ -1010,7 +1011,7 @@ def run_single_semgrep(
         # (`--sandbox network-only`). Every pack would hit the same host
         # condition, so failing on the first is correct.
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error("Semgrep scan '%s' failed: %s", name, e)
         # Write empty SARIF on error. Same encoding posture as the
         # success path above — explicit UTF-8 so the downstream
@@ -1024,13 +1025,13 @@ def run_single_semgrep(
 
 def semgrep_scan_parallel(
     repo_path: Path,
-    rules_dirs: List[str],
+    rules_dirs: list[str],
     out_dir: Path,
     timeout: int = RaptorConfig.SEMGREP_TIMEOUT,
-    progress_callback: Optional[Callable] = None,
-    baseline_packs: Optional[List[Tuple[str, str]]] = None,
-    extra_configs: Optional[List[str]] = None,
-) -> Tuple[List[str], List[str]]:
+    progress_callback: Callable | None = None,
+    baseline_packs: list[tuple[str, str]] | None = None,
+    extra_configs: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
     """
     Run Semgrep scans in parallel for improved performance.
 
@@ -1064,7 +1065,7 @@ def semgrep_scan_parallel(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Build config list with BOTH local rules AND standard packs for each category
-    configs: List[Tuple[str, str]] = []
+    configs: list[tuple[str, str]] = []
     added_packs = set()  # Track which standard packs we've added to avoid duplicates
 
     # Add local rules + corresponding standard packs for each specified category
@@ -1139,8 +1140,8 @@ def semgrep_scan_parallel(
     )
 
     # Run scans in parallel
-    sarif_paths: List[str] = []
-    failed_scans: List[str] = []
+    sarif_paths: list[str] = []
+    failed_scans: list[str] = []
 
     with ThreadPoolExecutor(max_workers=RaptorConfig.MAX_SEMGREP_WORKERS) as executor:
         future_to_config = {
@@ -1157,12 +1158,11 @@ def semgrep_scan_parallel(
             for name, config in configs
         }
 
-        completed = 0
         total = len(future_to_config)
 
-        for future in as_completed(future_to_config):
-            name, config = future_to_config[future]
-            completed += 1
+        for completed, future in enumerate(
+                as_completed(future_to_config), start=1):
+            name, _config = future_to_config[future]
 
             try:
                 sarif_path, success = future.result()
@@ -1180,7 +1180,7 @@ def semgrep_scan_parallel(
                 # (which would still emit a "scanned, found nothing" run).
                 # Propagate so the whole scan fails loud.
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error("Semgrep scan '%s' raised exception: %s", name, exc)
                 failed_scans.append(name)
 
@@ -1197,7 +1197,7 @@ def semgrep_scan_parallel(
     for name in submitted_names:
         suffix = _sanitize_pack_name(name)
         sarif_expected = out_dir / f"semgrep_{suffix}.sarif"
-        if not sarif_expected.is_file():
+        if not sarif_expected.is_file():  # noqa: SIM102
             if name not in failed_scans:
                 silently_dropped.append(name)
                 failed_scans.append(name)
@@ -1215,12 +1215,12 @@ def semgrep_scan_parallel(
 
 def semgrep_scan_sequential(
     repo_path: Path,
-    rules_dirs: List[str],
+    rules_dirs: list[str],
     out_dir: Path,
     timeout: int = RaptorConfig.SEMGREP_TIMEOUT,
-    baseline_packs: Optional[List[Tuple[str, str]]] = None,
-    extra_configs: Optional[List[str]] = None,
-) -> Tuple[List[str], List[str]]:
+    baseline_packs: list[tuple[str, str]] | None = None,
+    extra_configs: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
     """Sequential scanning fallback for debugging.
 
     Returns ``(sarif_paths, failed_pack_names)`` — same contract as
@@ -1237,11 +1237,11 @@ def semgrep_scan_sequential(
     if baseline_packs is None:
         baseline_packs = list(RaptorConfig.BASELINE_SEMGREP_PACKS)
     out_dir.mkdir(parents=True, exist_ok=True)
-    sarif_paths: List[str] = []
-    failed_scans: List[str] = []
+    sarif_paths: list[str] = []
+    failed_scans: list[str] = []
 
     # Build config list with BOTH local rules AND standard packs for each category
-    configs: List[Tuple[str, str]] = []
+    configs: list[tuple[str, str]] = []
     added_packs = set()  # Track which standard packs we've added to avoid duplicates
 
     # Add local rules + corresponding standard packs for each specified category
@@ -1306,7 +1306,7 @@ def semgrep_scan_sequential(
     for name in submitted_names:
         suffix = _sanitize_pack_name(name)
         sarif_expected = out_dir / f"semgrep_{suffix}.sarif"
-        if not sarif_expected.is_file():
+        if not sarif_expected.is_file():  # noqa: SIM102
             if name not in failed_scans:
                 silently_dropped.append(name)
                 failed_scans.append(name)
@@ -1321,9 +1321,9 @@ def semgrep_scan_sequential(
 def run_codeql(
     repo_path: Path,
     out_dir: Path,
-    languages: Optional[List[str]] = None,
-    build_command: Optional[str] = None,
-) -> List[str]:
+    languages: list[str] | None = None,
+    build_command: str | None = None,
+) -> list[str]:
     """Delegate CodeQL analysis to packages/codeql/agent.py.
 
     Pre-unification this module shipped its own ~80-LOC WIP CodeQL
@@ -1483,7 +1483,7 @@ def _repo_has_c_cpp_source(repo_path: Path,
     return False
 
 
-def _shipped_cocci_rules_dir() -> Optional[Path]:
+def _shipped_cocci_rules_dir() -> Path | None:
     """Return the in-tree shipped-rules directory or None if it
     isn't present (minimal install / stripped tarball). The rules
     live at ``engine/coccinelle/rules/`` — distributed with RAPTOR,
@@ -1499,9 +1499,9 @@ def _shipped_cocci_rules_dir() -> Optional[Path]:
 def run_cocci(
     repo_path: Path,
     out_dir: Path,
-    rules_dir: Optional[Path] = None,
+    rules_dir: Path | None = None,
     timeout: int = 300,
-) -> List[str]:
+) -> list[str]:
     """Run Coccinelle's shipped rule set against ``repo_path`` and
     emit SARIF.
 
@@ -1524,6 +1524,8 @@ def run_cocci(
     """
     from packages.coccinelle.runner import (
         is_available as spatch_available,
+    )
+    from packages.coccinelle.runner import (
         run_rules as spatch_run_rules,
     )
     from packages.coccinelle.sarif import results_to_sarif
@@ -1562,8 +1564,8 @@ def run_cocci(
     # write must never fail the scan. Previously cocci's examined-set was
     # recorded nowhere, in any context.
     try:
-        from packages.coccinelle.runner import version as _spatch_version
         from core.coverage.record import build_from_cocci, write_record
+        from packages.coccinelle.runner import version as _spatch_version
         cov = build_from_cocci(results, spatch_version=_spatch_version())
         if cov:
             write_record(out_dir, cov, tool_name="coccinelle")
@@ -1590,7 +1592,7 @@ def _sarif_has_findings(sarif_path: Path) -> bool:
     """
     try:
         data = json.loads(sarif_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     for run_obj in data.get("runs", []) or []:
         if run_obj.get("results"):
@@ -1638,10 +1640,10 @@ def cleanup_per_pack_artifacts(out_dir: Path) -> int:
         stderr_file = out_dir / f"semgrep_{suffix}.stderr.log"
 
         # Read exit code BEFORE any deletion.
-        exit_code: Optional[int]
+        exit_code: int | None
         try:
             exit_code = int(exit_file.read_text(encoding="utf-8").strip())
-        except Exception:
+        except Exception:  # noqa: BLE001
             exit_code = None
 
         success = exit_code in (0, 1)
@@ -1683,7 +1685,7 @@ def cleanup_per_pack_artifacts(out_dir: Path) -> int:
         else:
             # Failed pack: keep .exit. Keep .sarif only if it has findings;
             # otherwise it is redundant noise (an empty {"runs":[]} stub).
-            if sarif_file.is_file() and not sarif_file.is_symlink():
+            if sarif_file.is_file() and not sarif_file.is_symlink():  # noqa: SIM102
                 if not _sarif_has_findings(sarif_file):
                     try:
                         os.unlink(sarif_file)
@@ -1742,18 +1744,15 @@ def _pack_provenance_from_sarif(sarif_path: Path, out_dir: Path) -> dict:
     # large SARIF would otherwise OOM the post-scan analysis.
     _SARIF_MAX_BYTES = 128 * 1024 * 1024
     try:
-        try:
-            if p.stat().st_size > _SARIF_MAX_BYTES:
-                # Treat oversize SARIF as unreadable — caller's
-                # existing OSError branch handles the messaging.
-                raise OSError(f"SARIF exceeds {_SARIF_MAX_BYTES}-byte cap")
-        except OSError:
-            raise
+        if p.stat().st_size > _SARIF_MAX_BYTES:
+            # Treat oversize SARIF as unreadable — the enclosing
+            # OSError branch handles the messaging.
+            raise OSError(f"SARIF exceeds {_SARIF_MAX_BYTES}-byte cap")
         raw = p.read_bytes()
         sarif_sha256 = sha256_bytes(raw)
         try:
             data = json.loads(raw.decode("utf-8", errors="replace"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             data = None
         findings = _count_sarif_results(data) if data is not None else 0
     except OSError:
@@ -2184,7 +2183,7 @@ def main():
                 )
                 save_json(merged, merged_data)
                 logger.info("Merged SARIF created: %s", merged)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("SARIF merge failed, using individual files: %s", e)
                 (out_dir / "sarif_merge.stderr.log").write_text(str(e), encoding="utf-8")
 
@@ -2210,7 +2209,10 @@ def main():
         # Write coverage records and derive total_files_scanned from them
         try:
             from core.coverage.record import (
-                build_from_semgrep, build_from_codeql, write_record, load_records,
+                build_from_codeql,
+                build_from_semgrep,
+                load_records,
+                write_record,
             )
             # Semgrep coverage — find JSON outputs alongside SARIFs.
             # See ``_resolve_rules_applied`` for why this isn't just
@@ -2245,7 +2247,7 @@ def main():
             if all_covered:
                 metrics["total_files_scanned"] = len(all_covered)
                 save_json(out_dir / "scan_metrics.json", metrics)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Coverage record write failed (non-fatal): %s", e)
 
         if nosemgrep_count:
@@ -2269,7 +2271,7 @@ def main():
             verification = _compose_verification_manifest(
                 sarif_inputs, merged, out_dir,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("verification manifest compose failed (non-fatal): %s", e)
             verification = {
                 "schema_version": 1,
@@ -2284,7 +2286,7 @@ def main():
         # packs (exit code + non-empty stderr + sarif-with-findings).
         try:
             cleanup_per_pack_artifacts(out_dir)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Per-pack cleanup failed (non-fatal): %s", e)
 
         save_json(out_dir / "verification.json", verification)
@@ -2306,7 +2308,7 @@ def main():
             if tool_cov:
                 print()
                 print(tool_cov)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Tool-coverage render failed (non-fatal): %s", e)
 
         # Print coverage summary (unified store-backed report; file-level tier

@@ -232,7 +232,7 @@ def check_llm() -> tuple[list, list]:
                         provider = futures[future]
                         try:
                             key_status[provider] = future.result(timeout=5)
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             key_status[provider] = False
 
             # Build output lines (same format as before). Dedupe
@@ -274,7 +274,7 @@ def check_llm() -> tuple[list, list]:
         if shutil.which("claude"):
             lines.append("        claude code ✓")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         lines.append("   llm: detection error")
         warnings.append(f"LLM detection: {e}")
 
@@ -298,7 +298,7 @@ def _validator_available() -> bool:
         return False
 
 
-def _test_key(provider: str, api_key: str, api_base: str = None) -> bool:
+def _test_key(provider: str, api_key: str, api_base: str | None = None) -> bool:
     """Lightweight API key smoke test — no SDK imports."""
     import requests
 
@@ -364,7 +364,7 @@ def _test_key(provider: str, api_key: str, api_base: str = None) -> bool:
         return False
 
 
-def _key_source(provider: str, model_entry: dict = None) -> str:
+def _key_source(provider: str, model_entry: dict | None = None) -> str:
     if provider == "ollama":
         return "local"
     env_keys = {
@@ -405,16 +405,7 @@ def check_env(unavailable_features: set) -> tuple[list, list]:
     # "wrong Python" instead of a deep import trace.
     import platform
     py_version_str = platform.python_version()
-    if sys.version_info < (3, 10):
-        parts.append(f"Python {py_version_str} ✗")
-        warnings.append(
-            f"Python {py_version_str} at {sys.executable} — RAPTOR "
-            f"requires Python 3.10+. PEP 604 union syntax used in "
-            f"packages/exploitability_validation/schemas.py fails "
-            f"to import on older versions."
-        )
-    else:
-        parts.append(f"Python {py_version_str} ✓")
+    parts.append(f"Python {py_version_str} ✓")
 
     # RAPTOR_DIR — defensive check for the "operator bypassed the
     # wrapper" path. ``bin/raptor`` / ``libexec/*`` scripts set this
@@ -515,8 +506,10 @@ def check_env(unavailable_features: set) -> tuple[list, list]:
                 )
         else:
             from core.sandbox import (
-                check_net_available, check_mount_available,
-                check_landlock_available, check_seccomp_available,
+                check_landlock_available,
+                check_mount_available,
+                check_net_available,
+                check_seccomp_available,
             )
             net_ok = check_net_available()
             mount_ok = check_mount_available() if net_ok else False
@@ -575,7 +568,7 @@ def check_lang() -> str | None:
             return f"  lang: tree-sitter ✓ ({', '.join(ts_langs)})"
         else:
             return "  lang: tree-sitter ✗"
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -610,7 +603,7 @@ def check_active_project() -> str | None:
             except OSError:
                 pass
         return f"Project: {name} ({proj_target}) — `/project none` to clear"
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -656,7 +649,7 @@ def main():
             llm_lines, llm_warnings, env_parts, env_warnings,
             project_line, lang_line,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         output = f"{logo}\n\nraptor:~$ {quote}"
 
     OUTPUT_FILE.write_text(output, encoding="utf-8")

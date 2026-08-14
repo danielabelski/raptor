@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Secure HTTP Client for Web Testing
 
@@ -14,10 +13,12 @@ import contextlib
 import ipaddress
 import socket
 import time
-from typing import Dict, Optional, Any
-from urllib.parse import urlparse, urljoin
+from types import TracebackType
+from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import requests
+from typing_extensions import Self
 
 from core.logging import get_logger
 from core.security.redaction import redact_secrets
@@ -84,7 +85,7 @@ class WebClient:
         # accumulated full request/response dicts (hundreds of MB on
         # large targets) until process exit.
         from collections import deque
-        self.request_history: "deque[Dict[str, Any]]" = deque(
+        self.request_history: deque[dict[str, Any]] = deque(
             maxlen=_MAX_REQUEST_HISTORY,
         )
 
@@ -159,7 +160,7 @@ class WebClient:
         if pinned is None:
             yield
             return
-        hostname, port, addrs = pinned
+        hostname, _port, addrs = pinned
         _original = socket.getaddrinfo
 
         def _patched(host, p, *args, **kwargs):
@@ -180,7 +181,7 @@ class WebClient:
             raise ValueError(f"URL outside configured target scope: {url}")
         return url
 
-    def _resolve_redirect(self, current_url: str, response: requests.Response) -> Optional[str]:
+    def _resolve_redirect(self, current_url: str, response: requests.Response) -> str | None:
         """Resolve and scope-check a redirect Location header."""
         location = response.headers.get('Location')
         if not location:
@@ -265,10 +266,8 @@ class WebClient:
             # consumed) `.content` / `.text` remain accessible
             # via the object — caller can still inspect
             # `response.history[i].headers` etc. without issue.
-            try:
+            with contextlib.suppress(Exception):
                 response.close()
-            except Exception:
-                pass
 
             history.append(response)
             current_url = next_url
@@ -319,10 +318,8 @@ class WebClient:
                         _MAX_RESPONSE_BYTES,
                         self._redact_for_logging(response.url or "<unknown>"),
                     )
-                    try:
+                    with contextlib.suppress(Exception):
                         response.close()
-                    except Exception:  # noqa: BLE001
-                        pass
                     break
             response._content = b"".join(chunks)
         except requests.exceptions.RequestException:
@@ -330,8 +327,8 @@ class WebClient:
             # from the cap-enforcer.
             response._content = b"".join(chunks) if chunks else b""
 
-    def get(self, path: str, params: Optional[Dict] = None,
-            headers: Optional[Dict] = None) -> requests.Response:
+    def get(self, path: str, params: dict | None = None,
+            headers: dict | None = None) -> requests.Response:
         """Send GET request."""
         self._rate_limit_wait()
 
@@ -358,9 +355,9 @@ class WebClient:
             logger.error("Request failed: %s", self._redact_for_logging(e))
             raise
 
-    def post(self, path: str, data: Optional[Dict] = None,
-             json_data: Optional[Dict] = None,
-             headers: Optional[Dict] = None) -> requests.Response:
+    def post(self, path: str, data: dict | None = None,
+             json_data: dict | None = None,
+             headers: dict | None = None) -> requests.Response:
         """Send POST request."""
         self._rate_limit_wait()
 
@@ -395,15 +392,15 @@ class WebClient:
         self.session.headers['Authorization'] = f'Bearer {token}'
         logger.info("Bearer token authentication configured")
 
-    def get_cookies(self) -> Dict[str, str]:
+    def get_cookies(self) -> dict[str, str]:
         """Get current session cookies."""
         return dict(self.session.cookies)
 
-    def set_cookies(self, cookies: Dict[str, str]) -> None:
+    def set_cookies(self, cookies: dict[str, str]) -> None:
         """Set session cookies."""
         self.session.cookies.update(cookies)
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get request statistics."""
         if not self.request_history:
             return {}
@@ -431,13 +428,16 @@ class WebClient:
         ``WebClient`` per target accumulate one urllib3 connection
         pool (sockets + SSL contexts) per scan until process exit.
         """
-        try:
+        with contextlib.suppress(Exception):
             self.session.close()
-        except Exception:  # noqa: BLE001 — close() must not raise
-            pass
 
-    def __enter__(self) -> "WebClient":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()

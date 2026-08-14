@@ -40,6 +40,7 @@ allowlisted egress, use :class:`core.http.egress_backend.EgressClient`.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import io
 import json
@@ -47,17 +48,24 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from collections.abc import Iterator
+from typing import Any
 from urllib import parse as _urlparse
 
 import urllib3
 from urllib3.exceptions import (
     HTTPError as _U3HTTPError,
+)
+from urllib3.exceptions import (
     LocationValueError as _U3LocationValueError,
+)
+from urllib3.exceptions import (
     MaxRetryError,
-    ProxyError as _U3ProxyError,
     ReadTimeoutError,
     SSLError,
+)
+from urllib3.exceptions import (
+    ProxyError as _U3ProxyError,
 )
 
 from core.http import (
@@ -297,15 +305,15 @@ class _HostCircuitBreaker:
         self._threshold = threshold
         self._window = window
         self._cooldown = cooldown
-        self._failures: Dict[Tuple[str, int], List[float]] = {}
-        self._open_until: Dict[Tuple[str, int], float] = {}
+        self._failures: dict[tuple[str, int], list[float]] = {}
+        self._open_until: dict[tuple[str, int], float] = {}
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(host: str, port: int) -> Tuple[str, int]:
+    def _key(host: str, port: int) -> tuple[str, int]:
         return (host.lower(), port)
 
-    def is_open(self, host: str, port: int) -> Tuple[bool, float]:
+    def is_open(self, host: str, port: int) -> tuple[bool, float]:
         """Return ``(is_open, seconds_remaining)``. When ``is_open``
         is True the caller should raise without making the request."""
         key = self._key(host, port)
@@ -353,11 +361,11 @@ class _HostCircuitBreaker:
 # when nobody constructs a default client. Tests that need state
 # isolation pass a fresh ``_HostCircuitBreaker()`` via the
 # ``circuit_breaker`` kwarg.
-_DEFAULT_CIRCUIT_BREAKER: Optional["_HostCircuitBreaker"] = None
+_DEFAULT_CIRCUIT_BREAKER: _HostCircuitBreaker | None = None
 _DEFAULT_CIRCUIT_BREAKER_LOCK = threading.Lock()
 
 
-def _default_circuit_breaker() -> "_HostCircuitBreaker":
+def _default_circuit_breaker() -> _HostCircuitBreaker:
     global _DEFAULT_CIRCUIT_BREAKER
     if _DEFAULT_CIRCUIT_BREAKER is None:
         with _DEFAULT_CIRCUIT_BREAKER_LOCK:
@@ -394,9 +402,9 @@ class UrllibClient:
     def __init__(
         self,
         user_agent: str = DEFAULT_USER_AGENT,
-        _http: Optional[urllib3.PoolManager] = None,
+        _http: urllib3.PoolManager | None = None,
         *,
-        circuit_breaker: Optional[_HostCircuitBreaker] = None,
+        circuit_breaker: _HostCircuitBreaker | None = None,
     ) -> None:
         self._ua = user_agent
         # Subclass / test hook. An injected pool manager (EgressClient's
@@ -529,8 +537,8 @@ class UrllibClient:
         method: str,
         url: str,
         *,
-        body: Optional[bytes] = None,
-        headers: Optional[Dict[str, str]] = None,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
         timeout: int = DEFAULT_TIMEOUT,
         max_bytes: int = DEFAULT_MAX_BYTES,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
@@ -585,14 +593,14 @@ class UrllibClient:
     def post_json(
         self,
         url: str,
-        body: Dict[str, Any],
+        body: dict[str, Any],
         timeout: int = DEFAULT_TIMEOUT,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """POST ``body`` as JSON, return decoded JSON response.
 
         NOTE on retry idempotency: ``post_json`` retries on transient
@@ -623,12 +631,12 @@ class UrllibClient:
         url: str,
         timeout: int = DEFAULT_TIMEOUT,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
         max_bytes: int = DEFAULT_MAX_BYTES,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         self._validate_url(url)
         merged = {"Accept": "application/json", "User-Agent": self._ua}
         if headers:
@@ -645,7 +653,7 @@ class UrllibClient:
         timeout: int = DEFAULT_TIMEOUT,
         max_bytes: int = DEFAULT_MAX_BYTES,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
@@ -666,7 +674,7 @@ class UrllibClient:
         *,
         timeout: int = DEFAULT_TIMEOUT,
         max_bytes: int = DEFAULT_MAX_BYTES,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = 0,
     ) -> Iterator[bytes]:
@@ -734,10 +742,10 @@ class UrllibClient:
     def _stream(
         self,
         url: str,
-        headers: Dict[str, str],
+        headers: dict[str, str],
         timeout: int,
         max_bytes: int,
-        wallclock_cap: int = None,
+        wallclock_cap: int | None = None,
     ) -> Iterator[bytes]:
         resp = self._pool_for(url).request(
             "GET", url,
@@ -802,11 +810,9 @@ class UrllibClient:
             # picks up the connection sees the leftover bytes
             # prepended to its OWN response. Drain (urllib3 caps
             # internally at ~64KB), then release.
-            try:
+            with contextlib.suppress(Exception):
                 if hasattr(resp, "drain_conn"):
                     resp.drain_conn()
-            except Exception:
-                pass
             # Released whether the generator was fully consumed,
             # garbage-collected mid-stream, or .close()-d explicitly.
             resp.release_conn()
@@ -819,8 +825,8 @@ class UrllibClient:
         method: str,
         timeout: int,
         max_bytes: int,
-        body: Optional[bytes],
-        headers: Dict[str, str],
+        body: bytes | None,
+        headers: dict[str, str],
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
@@ -861,7 +867,7 @@ class UrllibClient:
                 circuit_break=True,
             )
 
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt, delay in enumerate(schedule):
             # Deadline gate. Pre-fix the check was unconditional and
             # used `>=`, which fired BEFORE the first attempt when
@@ -1044,8 +1050,8 @@ class UrllibClient:
         method: str,
         timeout: int,
         max_bytes: int,
-        body: Optional[bytes],
-        headers: Dict[str, str],
+        body: bytes | None,
+        headers: dict[str, str],
         follow_redirects: bool = True,
         raise_on_status: bool = True,
     ) -> Response:
@@ -1238,7 +1244,7 @@ class UrllibClient:
                 # turning every successful querybatch call into an
                 # empty-result error. Resolve relative paths against
                 # the original request URL before validating.
-                from urllib.parse import urlparse, urljoin
+                from urllib.parse import urljoin, urlparse
                 if not urlparse(final_url).scheme:
                     final_url = urljoin(url, final_url)
                 try:
@@ -1264,7 +1270,7 @@ class UrllibClient:
             # single-value headers still come back as the bare
             # string. urllib3's HTTPHeaderDict.getlist returns the
             # full list preserving order and casing-insensitive.
-            collapsed_headers: Dict[str, str] = {}
+            collapsed_headers: dict[str, str] = {}
             for key in resp.headers:
                 values = resp.headers.getlist(key) if hasattr(resp.headers, "getlist") else [resp.headers[key]]
                 # Already lower-cased after collection — last lowercase wins
@@ -1303,15 +1309,13 @@ class UrllibClient:
             # to the pool. If drain itself fails we fall through
             # to release — better to leak a single connection
             # than to crash the cleanup path.
-            try:
+            with contextlib.suppress(Exception):
                 if hasattr(resp, "drain_conn"):
                     resp.drain_conn()
-            except Exception:
-                pass
             resp.release_conn()
 
     @staticmethod
-    def _parse_retry_after(value: Optional[str]) -> Optional[int]:
+    def _parse_retry_after(value: str | None) -> int | None:
         """Parse Retry-After header. Both delta-seconds and HTTP-date forms.
 
         RFC 7231 §7.1.3 defines two grammars: a non-negative integer
@@ -1341,8 +1345,8 @@ class UrllibClient:
         # / obs-date subset of RFC 5322. Use email.utils.parsedate_to_datetime
         # which handles all three IMF/RFC 850/asctime variants.
         try:
-            from email.utils import parsedate_to_datetime
             from datetime import datetime, timezone
+            from email.utils import parsedate_to_datetime
             target = parsedate_to_datetime(s)
             if target is None:
                 return None

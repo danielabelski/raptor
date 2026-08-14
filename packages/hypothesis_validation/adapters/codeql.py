@@ -17,13 +17,13 @@ the hypothesis. IRIS achieved 2x CodeQL's recall (55 vs 27 CVEs) using
 this pattern.
 """
 
+import contextlib
 import json
 import logging
 import shutil
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Dict, List, Optional, Set
 
 from packages.codeql.tunables import CodeQLTunables
 
@@ -35,10 +35,10 @@ logger = logging.getLogger(__name__)
 # Process-scoped cache of pack dirs we've already attempted to install.
 # Pack-install is idempotent and fast on subsequent calls (just reads the
 # lockfile), but skipping the subprocess entirely is cheaper.
-_INSTALLED_PACK_DIRS: Set[Path] = set()
+_INSTALLED_PACK_DIRS: set[Path] = set()
 
 
-def _find_pack_dir(query_path: Path) -> Optional[Path]:
+def _find_pack_dir(query_path: Path) -> Path | None:
     """Walk up from a .ql file looking for the containing pack's qlpack.yml.
 
     Bounds the walk to a few levels — pack layouts are
@@ -55,7 +55,7 @@ def _ensure_pack_installed(
     query_path: Path,
     codeql_bin: str,
     runner,
-    env: Dict[str, str],
+    env: dict[str, str],
 ) -> None:
     """Run `codeql pack install` on the query's containing pack if needed.
 
@@ -137,8 +137,8 @@ class CodeQLAdapter(ToolAdapter):
 
     def __init__(
         self,
-        database_path: Optional[Path] = None,
-        codeql_bin: Optional[str] = None,
+        database_path: Path | None = None,
+        codeql_bin: str | None = None,
         *,
         sandbox: bool = True,
     ):
@@ -160,9 +160,7 @@ class CodeQLAdapter(ToolAdapter):
             return False
         if not self._database_path:
             return False
-        if not self._database_path.exists():
-            return False
-        return True
+        return self._database_path.exists()
 
     def describe(self) -> ToolCapability:
         return ToolCapability(
@@ -190,7 +188,7 @@ class CodeQLAdapter(ToolAdapter):
         target: Path,
         *,
         timeout: int = 300,
-        env: Optional[Dict[str, str]] = None,
+        env: dict[str, str] | None = None,
     ) -> ToolEvidence:
         """Invoke an existing pack-resident .ql file directly.
 
@@ -325,11 +323,11 @@ class CodeQLAdapter(ToolAdapter):
 
     def run_prebuilt_queries_batch(
         self,
-        query_paths: List[Path],
+        query_paths: list[Path],
         *,
         timeout: int = 600,
-        env: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, ToolEvidence]:
+        env: dict[str, str] | None = None,
+    ) -> dict[str, ToolEvidence]:
         """Run multiple prebuilt queries in a single JVM invocation.
 
         Returns a dict keyed by str(query_path) → ToolEvidence.
@@ -426,7 +424,7 @@ class CodeQLAdapter(ToolAdapter):
         # and the bare stem as a fallback.  Using setdefault for stems
         # avoids misattribution when query-pack subdirs contain queries
         # with colliding filenames.
-        rule_to_qp: Dict[str, str] = {}
+        rule_to_qp: dict[str, str] = {}
         for qp in unique_paths:
             rule_to_qp.setdefault(Path(qp).stem, qp)
             try:
@@ -441,7 +439,7 @@ class CodeQLAdapter(ToolAdapter):
             except OSError:
                 pass
 
-        matches_by_qp: Dict[str, List[Dict]] = {qp: [] for qp in unique_paths}
+        matches_by_qp: dict[str, list[dict]] = {qp: [] for qp in unique_paths}
         for m in all_matches:
             rid = m.get("rule", "")
             target = rule_to_qp.get(rid)
@@ -451,7 +449,7 @@ class CodeQLAdapter(ToolAdapter):
             if target is not None:
                 matches_by_qp[target].append(m)
 
-        results: Dict[str, ToolEvidence] = {}
+        results: dict[str, ToolEvidence] = {}
         for qp in unique_paths:
             qp_matches = matches_by_qp[qp]
             n = len(qp_matches)
@@ -476,7 +474,7 @@ class CodeQLAdapter(ToolAdapter):
         target: Path,
         *,
         timeout: int = 300,
-        env: Optional[Dict[str, str]] = None,
+        env: dict[str, str] | None = None,
     ) -> ToolEvidence:
         """Run an LLM-generated .ql query against the configured database.
 
@@ -550,16 +548,14 @@ class CodeQLAdapter(ToolAdapter):
                 # Cached after first run so subsequent invocations are
                 # fast. Failure here doesn't abort — the query may not
                 # need any external imports.
-                try:
+                    # Pack install is best-effort. If the query has no
+                    # external imports it will still compile.
+                with contextlib.suppress(Exception):
                     runner(
                         [self._codeql_bin, "pack", "install", str(pack_dir)],
                         capture_output=True, text=True,
                         timeout=120, env=env,
                     )
-                except Exception:
-                    # Pack install is best-effort. If the query has no
-                    # external imports it will still compile.
-                    pass
 
                 sarif_path = Path(tmp) / "result.sarif"
                 cmd = [
@@ -646,13 +642,13 @@ def _qlpack_yaml(rule: str) -> str:
     )
 
 
-def _parse_sarif(sarif_path: Path) -> List[Dict]:
+def _parse_sarif(sarif_path: Path) -> list[dict]:
     """Extract matches from a CodeQL SARIF file."""
     try:
         data = json.loads(sarif_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
-    matches: List[Dict] = []
+    matches: list[dict] = []
     for run in data.get("runs", []) or []:
         for result in run.get("results", []) or []:
             msg = result.get("message", {})

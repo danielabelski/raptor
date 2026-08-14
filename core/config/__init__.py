@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 RAPTOR Centralized Configuration Module
 
@@ -8,10 +7,10 @@ including paths, timeouts, limits, and baseline settings.
 
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import ClassVar
 
 
-class classproperty:  # noqa: N801
+class classproperty:
     """Descriptor that works like @property but on the class itself."""
 
     def __init__(self, func):
@@ -80,6 +79,7 @@ class RaptorConfig:
                 ["git", "-C", str(repo), "describe",
                  "--tags", "--dirty=-local", "--always"],
                 capture_output=True, text=True, timeout=2,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return cls.VERSION
@@ -91,7 +91,7 @@ class RaptorConfig:
     # Tool dependencies for startup checks
     # severity: "required" = feature unavailable, "degrades" = feature limited
     # group: tools in same group need at least one present
-    TOOL_DEPS = {
+    TOOL_DEPS: ClassVar[dict] = {
         "afl++":        {"binary": "afl-fuzz",  "severity": "required", "affects": "/fuzz"},
         "codeql":       {"binary": "codeql",    "group": "scanner",     "affects": "/codeql, /agentic"},
         # Coccinelle (spatch) is required for source_intel's verdict-
@@ -120,7 +120,7 @@ class RaptorConfig:
         "z3":           {"module": "z3", "pip": "z3-solver", "severity": "degrades", "affects": "/audit, /codeql, /exploit (SMT feasibility)"},
     }
 
-    TOOL_GROUPS = {
+    TOOL_GROUPS: ClassVar[dict] = {
         "scanner": {"min_required": 1, "affects": "/scan, /agentic"},
     }
 
@@ -155,7 +155,7 @@ class RaptorConfig:
     # LocalFlowSource-based queries (covering CLI sources like sys.argv
     # that the stdlib RemoteFlowSource model excludes) are picked up
     # without operator configuration.
-    EXTRA_CODEQL_PACK_ROOTS: List[Path] = [
+    EXTRA_CODEQL_PACK_ROOTS: ClassVar[list[Path]] = [
         REPO_ROOT / "packages" / "llm_analysis" / "codeql_packs",
     ]
 
@@ -251,7 +251,7 @@ class RaptorConfig:
     CODEQL_DB_AUTO_CLEANUP = True    # Automatically cleanup old databases
 
     # Baseline Semgrep Packs (always included)
-    BASELINE_SEMGREP_PACKS: List[Tuple[str, str]] = [
+    BASELINE_SEMGREP_PACKS: ClassVar[list[tuple[str, str]]] = [
         ("semgrep_security_audit", "p/security-audit"),
         ("semgrep_owasp_top_10", "p/owasp-top-ten"),
         ("semgrep_secrets", "p/secrets"),
@@ -259,7 +259,7 @@ class RaptorConfig:
 
     # Mapping of policy groups to their corresponding semgrep registry packs
     # Format: {local_dir_name: (pack_name, pack_identifier)}
-    POLICY_GROUP_TO_SEMGREP_PACK: Dict[str, Tuple[str, str]] = {
+    POLICY_GROUP_TO_SEMGREP_PACK: ClassVar[dict[str, tuple[str, str]]] = {
         # Only packs that exist on semgrep.dev and are cached in registry-cache/
         # deserialisation, filesystem, logging: no registry pack exists, local rules only
         # crypto: p/crypto and category/crypto both 404 — local rules only
@@ -307,7 +307,7 @@ class RaptorConfig:
     # — no env var (binary_oracle hasn't yet shown a need to cross
     # subprocess boundaries; revisit if /validate or another helper grows
     # one).
-    BINARY_ORACLE_PATHS: Tuple[str, ...] = ()
+    BINARY_ORACLE_PATHS: tuple[str, ...] = ()
 
     # Inc 2b Tier 1: when True, extract direct call edges from each
     # binary in BINARY_ORACLE_PATHS (via r2) and annotate inventory
@@ -347,7 +347,7 @@ class RaptorConfig:
     OLLAMA_HOST = _OllamaHostDescriptor()
 
     # Proxy variables to strip for security
-    PROXY_ENV_VARS = [
+    PROXY_ENV_VARS: ClassVar[list] = [
         "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
         "http_proxy", "https_proxy", "no_proxy", "all_proxy",
     ]
@@ -661,7 +661,7 @@ class RaptorConfig:
     # the user's *default* config is read from $HOME, which we don't strip.
     # GIT_CONFIG_NOSYSTEM=1 belt-and-braces in case /dev/null isn't honoured
     # on the platform (e.g. some Windows builds).
-    GIT_ENV_VARS = {
+    GIT_ENV_VARS: ClassVar[dict] = {
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_ASKPASS": "true",
         "GIT_CONFIG_GLOBAL": "/dev/null",

@@ -16,7 +16,7 @@ from its in-memory secret store.
 from __future__ import annotations
 
 import subprocess
-from typing import Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
 
 from .server import LLMDispatcher
 
@@ -26,7 +26,7 @@ def spawn_worker(
     cmd: Sequence[str],
     *,
     label: str,
-    env: Optional[Mapping[str, str]] = None,
+    env: Mapping[str, str] | None = None,
     pass_fds: Sequence[int] = (),
     **popen_kwargs,
 ) -> subprocess.Popen:
@@ -74,7 +74,7 @@ def spawn_worker(
     proc = subprocess.Popen(
         list(cmd),
         env=base_env,
-        pass_fds=tuple(set([token_fd, *pass_fds])),
+        pass_fds=tuple({token_fd, *pass_fds}),
         **popen_kwargs,
     )
     # Once Popen has handed the FD to the child, the parent's copy

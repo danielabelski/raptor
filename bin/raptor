@@ -367,6 +367,21 @@ fi
 # of claude are wrapper scripts that exec node with the right
 # args), these are the vars that influence its startup before
 # `--noprofile --norc` would help.
+# Subagent model bridge: Claude Code's internal subagents (Agent/Task
+# tool) don't automatically follow the session's model — with
+# CLAUDE_CODE_SUBAGENT_MODEL unset they fall back to a default (or an
+# agent definition's pinned model) that alternate backends may not
+# serve. Observed: on a Bedrock role authorised only for the session
+# model, a subagent defaulting to another model got a 403 on its first
+# call. When the operator pinned the session model via ANTHROPIC_MODEL
+# and made no explicit subagent choice, make subagents follow the
+# session. Operators who want a different (e.g. cheaper) subagent
+# model just export CLAUDE_CODE_SUBAGENT_MODEL themselves — we never
+# override an explicit choice.
+if [[ -n "${ANTHROPIC_MODEL:-}" && -z "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]]; then
+    export CLAUDE_CODE_SUBAGENT_MODEL="$ANTHROPIC_MODEL"
+fi
+
 if [[ -n "$INITIAL_PROMPT" ]]; then
     exec env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS \
         claude "${PLUGIN_ARGS[@]}" "${CLAUDE_ARGS[@]}" "$INITIAL_PROMPT"

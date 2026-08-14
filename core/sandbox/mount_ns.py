@@ -34,7 +34,8 @@ skipped — the per-ns mount already serves them.
 
 import ctypes
 import os
-from typing import TYPE_CHECKING, Iterable, Optional
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Optional
 
 from ._fork_safe_warn import warn_post_fork
 from .exit_codes import SANDBOX_EXIT_MOUNT_NS_BIND_FAIL
@@ -57,6 +58,9 @@ MS_RDONLY      = 0x1
 MS_REMOUNT     = 0x20
 MS_BIND        = 0x1000
 MS_REC         = 0x4000
+# Captured as a module constant (not `import errno` in the post-fork
+# path) — same fork-safety convention as the other constants here.
+_EINVAL        = 22
 MS_UNBINDABLE  = 0x20000  # 1<<17
 MS_PRIVATE     = 0x40000  # 1<<18
 MS_SLAVE       = 0x80000  # 1<<19
@@ -122,13 +126,14 @@ _SHADOW_PATHS = frozenset((
 # a missing soname). find_library returns None on failure, which CDLL
 # also rejects — but it rejects consistently with "no libc at all",
 # not "wrong libc name on this distro".
-import ctypes.util as _ctypes_util  # noqa: E402
+import ctypes.util as _ctypes_util
+
 _libc = ctypes.CDLL(_ctypes_util.find_library("c"), use_errno=True)
 
 
-def _mount(source: Optional[str], target: str,
-           fs_type: Optional[str], flags: int = 0,
-           data: Optional[str] = None) -> None:
+def _mount(source: str | None, target: str,
+           fs_type: str | None, flags: int = 0,
+           data: str | None = None) -> None:
     """Thin wrapper around mount(2). Raises OSError on failure."""
     src = source.encode() if source else None
     tgt = target.encode()
@@ -204,30 +209,36 @@ def _copy_dir_shallow(src: str, dst: str) -> None:
                 except OSError:
                     pass
                 # Byte copy via sendfile.
-                with open(src_file, "rb") as sf:
-                    with open(dst_file, "wb") as df:
-                        while True:
-                            chunk = sf.read(65536)
-                            if not chunk:
-                                break
-                            df.write(chunk)
+                with open(src_file, "rb") as sf, open(dst_file, "wb") as df:
+                    while True:
+                        chunk = sf.read(65536)
+                        if not chunk:
+                            break
+                        df.write(chunk)
                 os.chmod(dst_file, 0o644)
             except OSError:
                 pass  # skip unreadable entries (shadow, etc.)
 
 
-def setup_mount_ns(target: Optional[str], output: Optional[str],
-                   extra_ro_paths: Optional[Iterable[str]] = None,
-                   root_path: Optional[str] = None,
+def setup_mount_ns(target: str | None, output: str | None,
+                   extra_ro_paths: Iterable[str] | None = None,
+                   root_path: str | None = None,
                    persona: Optional["Persona"] = None,
-                   etc_overlay: Optional[dict] = None,
-                   stage_files: Optional[dict] = None) -> None:
+                   etc_overlay: dict | None = None,
+                   stage_files: dict | None = None,
+                   rw_submounts_ok: bool = False) -> None:
     """Establish pivot_root'd tmpfs sandbox root.
 
     Must be called AFTER the child has entered the new user-ns and acquired
     CAP_SYS_ADMIN (via the parent's newuidmap setup), and BEFORE
     landlock_restrict_self() — Landlock blocks mount operations on kernel
     6.15+.
+
+    `rw_submounts_ok`: parent-computed "Landlock is active as the
+    write-enforcement backstop" signal. Permits the recursive-bind
+    fallback for extra_ro_paths trees containing locked submounts
+    (Docker overlays etc.); see the EINVAL comment at the bind site.
+    Defaults False = original fail-closed behaviour.
 
     `persona` (Optional[Persona]): when provided, after pivot_root completes
     every persona.files[target] is bind-mounted over its target path
@@ -473,7 +484,39 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                     )
                     os.close(fd)
                 _step = b"bind"
-                _mount(path, inside, None, MS_BIND)
+                try:
+                    _mount(path, inside, None, MS_BIND)
+                except OSError as bind_exc:
+                    # EINVAL: a NON-recursive bind of a tree containing
+                    # locked submounts (mounts created by a more-
+                    # privileged namespace — e.g. Docker's overlays
+                    # under /var/lib/docker) is refused by the kernel
+                    # in a user namespace, because it would expose the
+                    # paths hidden underneath them. A RECURSIVE bind
+                    # carries the submounts along instead — legal, and
+                    # it never reveals anything the host didn't already
+                    # show. But the remount-ro below covers the top
+                    # mount only, so the carried submounts stay rw at
+                    # the mount layer; that is acceptable ONLY when
+                    # Landlock is active as the write-enforcement
+                    # backstop (its write mask is unconditional and
+                    # covers these paths). Without Landlock, keep the
+                    # original fail-closed behaviour — a degraded
+                    # sandbox masquerading as the requested one is
+                    # worse than a loud setup failure.
+                    if bind_exc.errno != _EINVAL or not rw_submounts_ok:
+                        raise
+                    _mount(path, inside, None, MS_BIND | MS_REC)
+                    try:
+                        _path_b = path.encode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        _path_b = b"<unencodable>"
+                    warn_post_fork(
+                        b"mount_ns: extra_ro_paths recursive bind for "
+                        + _path_b
+                        + b" (locked submounts); submount ro relies on"
+                        b" Landlock\n"
+                    )
                 try:
                     _mount(path, inside, None, MS_REMOUNT | MS_BIND | MS_RDONLY)
                 except OSError as exc:
@@ -482,7 +525,7 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                     # if encoding ever fails. errno also encoded as integer.
                     try:
                         _path_b = path.encode("utf-8", errors="replace")
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         _path_b = b"<unencodable>"
                     warn_post_fork(
                         b"mount_ns: extra_ro_paths remount-ro failed for "
@@ -506,7 +549,7 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
                 # DiD warn-only sites).
                 try:
                     _path_b = path.encode("utf-8", errors="replace")
-                except Exception:
+                except Exception:  # noqa: BLE001
                     _path_b = b"<unencodable>"
                 try:
                     os.write(
@@ -623,7 +666,7 @@ def setup_mount_ns(target: Optional[str], output: Optional[str],
             except OSError as exc:
                 try:
                     _target_b = stage_target.encode("utf-8", errors="replace")
-                except Exception:
+                except Exception:  # noqa: BLE001
                     _target_b = b"<unencodable>"
                 warn_post_fork(
                     b"RAPTOR: mount_ns: stage_files failed for "

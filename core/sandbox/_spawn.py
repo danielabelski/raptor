@@ -46,6 +46,7 @@ Graceful degrade:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import platform
@@ -55,8 +56,9 @@ import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Optional, Sequence
+from typing import TYPE_CHECKING
 
 from . import state
 from ._fork_safe_warn import warn_post_fork
@@ -103,11 +105,9 @@ def _write_setup_status(fd: int, category: bytes, reason: str = "") -> None:
     child after fork — must not raise and must not touch the Python logger
     (not fork-safe), so swallow everything.
     """
-    try:
+    with contextlib.suppress(BaseException):
         payload = category + b":" + reason.encode("utf-8", "replace")[:512]
         os.write(fd, payload)
-    except BaseException:
-        pass
 
 
 def _parse_setup_status(raw: bytes):
@@ -225,6 +225,7 @@ def mount_ns_available() -> bool:
             return False
         try:
             import subprocess as _sp
+
             # `env=` to a stripped environment so the probe doesn't
             # inherit the parent's full env. Same rationale as the
             # adjacent sandbox probes: LD_PRELOAD / LD_LIBRARY_PATH
@@ -236,11 +237,11 @@ def mount_ns_available() -> bool:
             from core.config import RaptorConfig
             r = _sp.run(
                 [newuidmap, "--help"],
-                capture_output=True, timeout=2,
+                capture_output=True, timeout=2, check=False,
                 env=RaptorConfig.get_safe_env(),
             )
             _ = r.returncode  # binary is callable
-        except Exception:
+        except Exception:  # noqa: BLE001
             state._mount_ns_available_cache = False
             return False
         state._mount_ns_available_cache = True
@@ -261,7 +262,7 @@ def _run_newuidmap(child_pid: int, binary: str, mapping_lines: Sequence[str]) ->
     # belt-and-braces the env hygiene anyway.
     from core.config import RaptorConfig
     r = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=5,
+        cmd, capture_output=True, text=True, timeout=5, check=False,
         env=RaptorConfig.get_safe_env(),
     )
     if r.returncode != 0:
@@ -280,6 +281,7 @@ def _set_rlimits(limits: dict) -> None:
     operators can spot when a documented cap silently became a no-op.
     """
     import resource
+
     from .preexec import _DEFAULT_LIMITS
     mem = limits.get("memory_mb", _DEFAULT_LIMITS["memory_mb"])
     file_mb = limits.get("max_file_mb", _DEFAULT_LIMITS["max_file_mb"])
@@ -506,37 +508,37 @@ def _cleanup_stub(root_dir: str) -> None:
 def run_sandboxed(
     cmd: Sequence[str],
     *,
-    target: Optional[str],
-    output: Optional[str],
+    target: str | None,
+    output: str | None,
     block_network: bool,
     nproc_limit: int,
     limits: dict,
     writable_paths: Iterable[str],
-    readable_paths: Optional[Iterable[str]],
-    allowed_tcp_ports: Optional[Iterable[int]],
-    seccomp_profile: Optional[str],
+    readable_paths: Iterable[str] | None,
+    allowed_tcp_ports: Iterable[int] | None,
+    seccomp_profile: str | None,
     seccomp_block_udp: bool,
-    env: Optional[dict],
-    cwd: Optional[str],
-    timeout: Optional[float],
+    env: dict | None,
+    cwd: str | None,
+    timeout: float | None,
     capture_output: bool = True,
     text: bool = True,
     stdin=None,
     start_new_session: bool = True,
     audit_mode: bool = False,
-    audit_run_dir: Optional[str] = None,
+    audit_run_dir: str | None = None,
     audit_verbose: bool = False,
     observe_mode: bool = False,
-    observe_nonce: Optional[str] = None,
+    observe_nonce: str | None = None,
     restrict_reads: bool = False,
     strict_env: bool = False,
-    persona: Optional["Persona"] = None,
+    persona: Persona | None = None,
     inherit_netns: bool = False,
-    etc_overlay: Optional[dict] = None,
+    etc_overlay: dict | None = None,
     skip_pid_ns: bool = False,
     skip_mount_ns: bool = False,
-    proxy_unix_socket: Optional[str] = None,
-    proxy_forwarder_port: Optional[int] = None,
+    proxy_unix_socket: str | None = None,
+    proxy_forwarder_port: int | None = None,
 ) -> subprocess.CompletedProcess:
     """Run `cmd` inside a fully-isolated sandbox.
 
@@ -581,7 +583,7 @@ def run_sandboxed(
     # target on its first traced syscall. The probe + warning is
     # idempotent (cached + warn-once).
     _audit_engaged = False
-    _audit_config_path: Optional[str] = None
+    _audit_config_path: str | None = None
     if audit_mode:
         if audit_run_dir is None:
             # Clean up the just-created mkdtemp stub before raising.
@@ -604,9 +606,9 @@ def run_sandboxed(
         # All three log at debug; the spawn-side warn-once for case 2
         # / 3 surfaces them at warn level once per process for
         # operator visibility.
+        from . import summary as _summary_mod
         from .ptrace_probe import check_ptrace_available
         from .seccomp import check_seccomp_available
-        from . import summary as _summary_mod
         if not seccomp_profile:
             logger.debug(
                 "audit_mode=True but no seccomp filter active; "
@@ -701,8 +703,7 @@ def run_sandboxed(
             _read_allow = list(_writable)
             for p in (readable_paths or ()):
                 _read_allow.append(_osp.abspath(p))
-            for p in _system_ro:
-                _read_allow.append(p)
+            _read_allow.extend(_system_ro)
             if target:
                 _read_allow.append(_osp.abspath(target))
             # Under restrict_reads=False, Landlock allows ALL reads.
@@ -757,8 +758,8 @@ def run_sandboxed(
             # write failure HERE, unlink the partial file, raise so
             # the operator sees an error AT spawn-time rather than
             # an ambiguous "tracer attach failed" minutes later.
-            import tempfile as _tf
             import json as _json
+            import tempfile as _tf
             _cfd, _audit_config_path = _tf.mkstemp(
                 prefix="raptor-audit-cfg-", suffix=".json",
             )
@@ -904,6 +905,16 @@ def run_sandboxed(
         # Precompute Landlock / seccomp preexec callables in parent so
         # import errors surface before fork. Each returns a callable we
         # can invoke in the child.
+        # rw_submounts_ok: mount_ns may recursively bind an
+        # extra_ro_paths tree whose locked submounts stay rw at the
+        # mount layer — permitted only when Landlock's unconditional
+        # write mask is there to enforce read-only anyway. Probe in
+        # the parent (fork-safe: the child only closes over a bool).
+        from .landlock import check_landlock_available as _ll_avail
+        _rw_submounts_ok = bool(
+            (writable_paths or allowed_tcp_ports or readable_paths)
+            and _ll_avail()
+        )
         landlock_fn = None
         if writable_paths or allowed_tcp_ports:
             effective_paths = list(writable_paths) if writable_paths else []
@@ -945,6 +956,8 @@ def run_sandboxed(
         if proxy_unix_socket and proxy_forwarder_port:
             from core.sandbox._proxy_bridge import (
                 _bring_up_loopback as _proxy_loopback_fn,
+            )
+            from core.sandbox._proxy_bridge import (
                 _run_forwarder as _proxy_forwarder_fn,
             )
 
@@ -1103,7 +1116,9 @@ def run_sandboxed(
             # before newuidmap — PR_SET_PTRACER doesn't require any
             # capability; it just declares permission to be traced.
             if _audit_engaged or seccomp_profile == "debug":
-                try:
+                # prctl failure isn't fatal — Yama may already be
+                # permissive. Tracer's SEIZE is the actual gate.
+                with contextlib.suppress(Exception):
                     import ctypes as _c
                     import ctypes.util as _cu
                     _c_libc = _c.CDLL(_cu.find_library("c"),
@@ -1119,10 +1134,6 @@ def run_sandboxed(
                     _c_libc.prctl(_PR_SET_PTRACER,
                                   _c.c_ulong(-1),
                                   0, 0, 0)
-                except Exception:
-                    # prctl failure isn't fatal — Yama may already be
-                    # permissive. Tracer's SEIZE is the actual gate.
-                    pass
 
             # Step 5: tell parent we're ready for newuidmap.
             os.write(p_ready_w, b"R")
@@ -1184,7 +1195,8 @@ def run_sandboxed(
                                extra_ro_paths=readable_paths,
                                root_path=_root_dir,
                                persona=persona,
-                               etc_overlay=etc_overlay)
+                               etc_overlay=etc_overlay,
+                               rw_submounts_ok=_rw_submounts_ok)
 
             # Step 9.5 (fingerprint sanitisation): pin sched_setaffinity
             # to a mask of size persona.cpu_count. The persona's
@@ -1265,14 +1277,12 @@ def run_sandboxed(
                         # p_ready_w was closed at step 5 — do NOT close
                         # here; the fd number may have been reused by
                         # the death pipe allocated above.
-                        try:
+                        with contextlib.suppress(BaseException):
                             _proxy_forwarder_fn(
                                 proxy_forwarder_port,
                                 proxy_unix_socket,
                                 _fwd_death_r,
                             )
-                        except BaseException:
-                            pass
                         os._exit(0)
                     os.close(_fwd_death_r)
 
@@ -1477,7 +1487,7 @@ def run_sandboxed(
                     os.kill(os.getpid(), sig)
                     os._exit(128 + sig)
                 os._exit(255)
-        except BaseException:
+        except BaseException:  # noqa: BLE001
             # Setup failed before exec. Signal WHICH step (status_w) so the
             # parent can degrade (mount) or fail loud (Landlock/seccomp/
             # unshare) deterministically — unspoofably, regardless of exit
@@ -1487,16 +1497,14 @@ def run_sandboxed(
                 status_w, _status_step,
                 _tb.splitlines()[-1] if _tb else "",
             )
-            try:
+            with contextlib.suppress(Exception):
                 os.write(2, f"RAPTOR sandbox child failure:\n{traceback.format_exc()}\n".encode())
-            except Exception:
-                pass
             os._exit(126)
 
     # ================ PARENT ================
     # Initialised before the try so the outer finally can reference it
     # regardless of where in the parent flow we exit.
-    tracer_pid: Optional[int] = None
+    tracer_pid: int | None = None
     try:
         # Close the ends the child owns — parent doesn't write to them.
         os.close(p_ready_w)
@@ -1678,7 +1686,7 @@ def run_sandboxed(
                     # sys.executable not executable. Distinct code
                     # 126 (matches subprocess convention).
                     os._exit(126)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     # Unknown execvpe failure (rare). 125 distinct
                     # from the documented codes so it's not
                     # confused with a successful run.
@@ -1704,7 +1712,7 @@ def run_sandboxed(
                 # Tracer failed to attach. Reap it (capture exit code
                 # for diagnostics), kill the target child (still
                 # blocked on go-pipe), abort.
-                tracer_status: Optional[int] = None
+                tracer_status: int | None = None
                 try:
                     _, tracer_status = os.waitpid(tracer_pid, 0)
                 except (ChildProcessError, OSError):

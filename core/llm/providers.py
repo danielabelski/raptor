@@ -3269,6 +3269,22 @@ class ClaudeCodeLLMProvider(LLMProvider):
             return None
         return self.config.model_name
 
+    def _effective_timeout_s(
+        self, override: Optional[int],
+    ) -> Optional[int]:
+        """Resolve the timeout for one call.
+
+        ``override`` is the per-call ``timeout_s`` kwarg — callers
+        whose call class is known to outlive the provider default
+        (e.g. checker synthesis: huge system prompt + JSON-schema
+        output, measured >600s on Bedrock-backed CLIs) pass their
+        own ceiling. Same ``<= 0`` = "no timeout" sentinel as
+        ``__init__``; ``None`` means "not overridden".
+        """
+        if override is None:
+            return self._timeout_s
+        return None if override <= 0 else override
+
     def generate(
         self,
         prompt: str,
@@ -3285,6 +3301,8 @@ class ClaudeCodeLLMProvider(LLMProvider):
         import subprocess
         import time as _time
 
+        call_timeout = self._effective_timeout_s(kwargs.pop("timeout_s", None))
+
         # Pass the user prompt as-is and route the system prompt
         # through CC's `--system-prompt` flag (see CCDispatchConfig.system_prompt
         # comment for the prompt-injection rationale).
@@ -3296,7 +3314,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             # us via _tool_use_fallback's JSON-protocol synthesis.
             tools="",
             budget_usd=self._budget_usd,
-            timeout_s=self._timeout_s,
+            timeout_s=call_timeout,
             capture_json_envelope=False,
             stream_json=True,
             system_prompt=system_prompt,
@@ -3319,10 +3337,10 @@ class ClaudeCodeLLMProvider(LLMProvider):
         start = _time.monotonic()
         try:
             sr = run_cc_streaming(
-                cmd, prompt, env=_cc_env, timeout_s=self._timeout_s,
+                cmd, prompt, env=_cc_env, timeout_s=call_timeout,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"claude -p timed out after {self._timeout_s}s") from e
+            raise RuntimeError(f"claude -p timed out after {call_timeout}s") from e
         duration = _time.monotonic() - start
 
         if sr.error:
@@ -3402,11 +3420,13 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # the user content; system_prompt routes through
         # CCDispatchConfig.system_prompt (which build_cc_command
         # converts into a `--system-prompt` flag).
+        call_timeout = self._effective_timeout_s(kwargs.pop("timeout_s", None))
+
         cc_config = CCDispatchConfig(
             claude_bin=self._claude_bin,
             tools="",                                # see generate() comment
             budget_usd=self._budget_usd,
-            timeout_s=self._timeout_s,
+            timeout_s=call_timeout,
             json_schema=schema,
             capture_json_envelope=False,
             stream_json=True,
@@ -3428,10 +3448,10 @@ class ClaudeCodeLLMProvider(LLMProvider):
         start = _time.monotonic()
         try:
             sr = run_cc_streaming(
-                cmd, prompt, env=_cc_env, timeout_s=self._timeout_s,
+                cmd, prompt, env=_cc_env, timeout_s=call_timeout,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"claude -p timed out after {self._timeout_s}s") from e
+            raise RuntimeError(f"claude -p timed out after {call_timeout}s") from e
         duration = _time.monotonic() - start
 
         if sr.error:

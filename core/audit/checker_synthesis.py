@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 MAX_SYNTHESIS_PER_RUN = 5
 MAX_SWEEP_HITS_PER_RULE = 50
 
+# Per-call timeout for synthesis LLM calls. Synthesis is the heaviest
+# structured call class in /audit — a grammar-reference system prompt
+# (full SmPL subset) plus --json-schema output — and reliably exceeds
+# the claudecode provider's 600s default on Bedrock-backed CLIs
+# (observed: two consecutive 600s timeout kills on a 52-SLOC target).
+# Non-claudecode providers ignore the kwarg (SDK-timeout governed).
+SYNTHESIS_TIMEOUT_S = 1800
+
 
 @dataclass
 class SynthesisResult:
@@ -64,6 +72,9 @@ def _build_llm_callable(config: Any):
                 schema=schema,
                 system_prompt=system_prompt,
                 task_type=TaskType.AUDIT,
+                # See SYNTHESIS_TIMEOUT_S — the provider default kills
+                # this call class before it completes.
+                timeout_s=SYNTHESIS_TIMEOUT_S,
             )
             return data
         except Exception as exc:

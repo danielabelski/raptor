@@ -144,6 +144,29 @@ class TestBuildLLMCallable:
             fn, client = result
             assert callable(fn)
 
+    def test_call_passes_synthesis_timeout(self):
+        """Synthesis is the heaviest structured call class — the
+        callable must pass its own per-call timeout so the claudecode
+        provider's 600s default doesn't kill it mid-generation."""
+        from core.audit.checker_synthesis import SYNTHESIS_TIMEOUT_S
+
+        class _CapturingClient:
+            total_cost = 0.0
+            captured = None
+
+            def generate_structured(self, **kw):
+                _CapturingClient.captured = kw
+                return {"result": True}, {}
+
+        with patch("core.llm.client.LLMClient",
+                   return_value=_CapturingClient()):
+            fn, _client = _build_llm_callable(_StubConfig())
+            out = fn("prompt", {"type": "object"}, "system")
+            assert out == {"result": True}
+            assert (_CapturingClient.captured["timeout_s"]
+                    == SYNTHESIS_TIMEOUT_S)
+            assert SYNTHESIS_TIMEOUT_S > 600
+
 
 # ---------------------------------------------------------------------------
 # synthesize_and_sweep — delegation to packages.checker_synthesis

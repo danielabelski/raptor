@@ -706,6 +706,62 @@ def test_custom_timeout(monkeypatch) -> None:
     assert captured["timeout_s"] == 99
 
 
+def test_per_call_timeout_overrides_provider_default(monkeypatch) -> None:
+    """A ``timeout_s`` kwarg on one call wins over the provider-level
+    timeout for that call only — heavy call classes (checker
+    synthesis) outlive the provider default without the caller
+    having to rebuild the (cached) provider instance."""
+    import core.llm.cc_adapter as _cc_adapter
+    captured: dict[str, Any] = {}
+
+    def fake_stream(cmd, prompt, *, env, timeout_s):
+        captured["timeout_s"] = timeout_s
+        return _stream_freeform()
+
+    monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
+    p = ClaudeCodeLLMProvider(_config(), timeout_s=99)
+
+    p.generate("hi", timeout_s=1800)
+    assert captured["timeout_s"] == 1800
+
+    # Next call without the kwarg reverts to the provider default.
+    p.generate("hi")
+    assert captured["timeout_s"] == 99
+
+
+def test_per_call_timeout_zero_means_no_timeout(monkeypatch) -> None:
+    """``timeout_s=0`` per call honours the documented no-timeout
+    sentinel, same as the constructor kwarg."""
+    import core.llm.cc_adapter as _cc_adapter
+    captured: dict[str, Any] = {}
+
+    def fake_stream(cmd, prompt, *, env, timeout_s):
+        captured["timeout_s"] = timeout_s
+        return _stream_freeform()
+
+    monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
+    p = ClaudeCodeLLMProvider(_config(), timeout_s=99)
+    p.generate("hi", timeout_s=0)
+    assert captured["timeout_s"] is None
+
+
+def test_per_call_timeout_on_generate_structured(monkeypatch) -> None:
+    import core.llm.cc_adapter as _cc_adapter
+    captured: dict[str, Any] = {}
+
+    def fake_stream(cmd, prompt, *, env, timeout_s):
+        captured["timeout_s"] = timeout_s
+        return _stream_result({"ok": True})
+
+    monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
+    p = ClaudeCodeLLMProvider(_config(), timeout_s=99)
+    result, _raw = p.generate_structured(
+        "hi", {"type": "object"}, timeout_s=1800,
+    )
+    assert result == {"ok": True}
+    assert captured["timeout_s"] == 1800
+
+
 # ---------------------------------------------------------------------------
 # Resumable session support
 # ---------------------------------------------------------------------------

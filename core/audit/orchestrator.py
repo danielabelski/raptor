@@ -6318,19 +6318,34 @@ def _study_consumer_loop(
                 else None
             )
             study_client = LLMClient(pinned_model=study_model)
-            if throttle is not None:
-                with throttle.acquire_sync():
+            try:
+                if throttle is not None:
+                    with throttle.acquire_sync():
+                        run_study(
+                            study_list_path,
+                            config.out_dir,
+                            study_client,
+                        )
+                else:
                     run_study(
                         study_list_path,
                         config.out_dir,
                         study_client,
                     )
-            else:
-                run_study(
-                    study_list_path,
-                    config.out_dir,
-                    study_client,
-                )
+            finally:
+                # The study client's spend previously vanished: the
+                # report's Cost line AND the --max-cost gate read
+                # result.total_cost_usd, so a run under-reported (and
+                # under-enforced) by every Phase 2/3 study call —
+                # observed $2.87 reported vs $6.16 scorecard actual.
+                # finally: partial spend from a failed run still counts.
+                spent = getattr(study_client, "total_cost", 0.0) or 0.0
+                if spent:
+                    with result._lock:
+                        result.total_cost_usd += spent
+                    result.cost_tracker.record_call(
+                        "study", cost_usd=spent,
+                    )
         except Exception:
             logger.warning(
                 "study-consumer: study-run failed", exc_info=True,

@@ -1366,6 +1366,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 f"these FDs are inherited by the sandboxed child."
             )
 
+        # Strip caller-supplied check= — both subprocess.run call sites
+        # below pass check=False explicitly (PLW1510), so a duplicate from
+        # **kwargs would raise TypeError.
+        kwargs.pop("check", None)
+
         # Always set resource limits via preexec_fn
         existing_preexec = kwargs.pop("preexec_fn", None)
         if existing_preexec:

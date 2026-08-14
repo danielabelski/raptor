@@ -405,7 +405,16 @@ def check_env(unavailable_features: set) -> tuple[list, list]:
     # "wrong Python" instead of a deep import trace.
     import platform
     py_version_str = platform.python_version()
-    parts.append(f"Python {py_version_str} ✓")
+    if sys.version_info < (3, 10):
+        parts.append(f"Python {py_version_str} ✗")
+        warnings.append(
+            f"Python {py_version_str} at {sys.executable} — RAPTOR "
+            f"requires Python 3.10+. PEP 604 union syntax used in "
+            f"packages/exploitability_validation/schemas.py fails "
+            f"to import on older versions."
+        )
+    else:
+        parts.append(f"Python {py_version_str} ✓")
 
     # RAPTOR_DIR — defensive check for the "operator bypassed the
     # wrapper" path. ``bin/raptor`` / ``libexec/*`` scripts set this

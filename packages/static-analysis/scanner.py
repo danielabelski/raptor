@@ -271,8 +271,7 @@ _SEMGREP_LANG_ALIASES: dict[str, set] = {
 # (e.g. tests) that imported from this module.
 from core.inventory.languages import (  # noqa: F401
     LANG_DISPLAY as _LANG_DISPLAY,  # tests reference via _scanner._LANG_DISPLAY
-)
-from core.inventory.languages import (
+    display_lang as _display_lang,  # tests reference via _scanner._display_lang
     display_langs as _display_langs,  # used by call sites below
 )
 

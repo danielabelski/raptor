@@ -895,8 +895,24 @@ class RaptorConfig:
         ``python raptor.py <mode>`` invocations. Mirrors the existing
         ``include_python_user_base`` opt-in on ``get_safe_env`` —
         same default-False, opt-in pattern as ``preserve_proxy``.
+
+        Proxy vars are ALWAYS preserved here (``preserve_proxy=True``
+        on the underlying ``get_safe_env``). Rationale: this env is
+        exclusively for RAPTOR's own analysis scripts — trusted code
+        that hosts the sandbox egress proxy, spawns ``claude`` CLI
+        children, and makes provider SDK calls, all of which resolve
+        their upstream route from the process environment at runtime
+        (``core/sandbox/proxy.py`` autodetect,
+        ``egress.operator_proxy_env()``,
+        ``get_safe_env(preserve_proxy=True)``). Stripping the
+        operator's launch-time proxy here starves every one of those
+        mechanisms one level down and breaks all outbound HTTP on
+        mandatory-egress-proxy hosts. The hostile-repo threat that
+        motivates the default strip does not apply: these children
+        never execute target-repo code with this env.
         """
         env = RaptorConfig.get_safe_env(
+            preserve_proxy=True,
             include_python_user_base=include_python_user_base,
         )
         for var in RaptorConfig.LLM_API_KEY_VARS:

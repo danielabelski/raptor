@@ -466,7 +466,13 @@ def run_command_streaming(
     # reach the LLM after Phase C drops API keys from the env. Same
     # token value, fresh inheritable FD — see
     # ``core.llm.dispatcher.client.relay_for_grandchild``.
-    child_env = RaptorConfig.get_safe_env()
+    # preserve_proxy: these children are RAPTOR's own analysis
+    # scripts; they host egress proxies and spawn `claude` CLI
+    # grandchildren, all of which resolve the upstream route from
+    # their own process env. Without this, the operator's mandatory
+    # proxy is gone one level down and every outbound call dials
+    # direct (and gets blocked).
+    child_env = RaptorConfig.get_safe_env(preserve_proxy=True)
     child_pass_fds: list[int] = []
     if os.environ.get("RAPTOR_LLM_SOCKET"):
         try:
@@ -2056,7 +2062,12 @@ Examples:
             # PYTHONUSERBASE remains stripped by default (it is a real
             # RCE vector via .pth files); the opt-in restores it only
             # for this scanner spawn.
-            env=RaptorConfig.get_safe_env(include_python_user_base=True),
+            # preserve_proxy: the scanner fetches registry packs via
+            # its own egress proxy, whose upstream autodetect reads
+            # this child's env.
+            env=RaptorConfig.get_safe_env(
+                preserve_proxy=True, include_python_user_base=True,
+            ),
             start_new_session=True,  # See main-Popen comment.
         )
 
@@ -2107,10 +2118,12 @@ Examples:
         # DANGEROUS_ENV_VARS (LD_PRELOAD / DYLD_* / GCONV_PATH
         # etc.) per the env-allowlist convention. Semgrep's rule
         # can't infer that the helper is safety-strip-aware.
+        # preserve_proxy: pack downloads inside the CodeQL agent
+        # chain through an egress proxy fed from this child's env.
         codeql_proc = subprocess.Popen(
             codeql_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             bufsize=1,  # Line-buffered, see main-Popen comment.
-            env=RaptorConfig.get_safe_env(),
+            env=RaptorConfig.get_safe_env(preserve_proxy=True),
             start_new_session=True,  # See main-Popen comment.
         )
 

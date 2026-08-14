@@ -769,7 +769,10 @@ def mode_sca(args: list) -> int:
         # allowlist (in this branch) doesn't include the markers, so we
         # set the trust marker explicitly here. ``raptor.py`` is itself
         # a trusted entry point.
-        env = RaptorConfig.get_safe_env()
+        # preserve_proxy: the SCA child hosts the egress proxy for
+        # OSV / registry / KEV traffic; its upstream autodetect reads
+        # the child's env, so the operator's proxy must survive.
+        env = RaptorConfig.get_safe_env(preserve_proxy=True)
         env["_RAPTOR_TRUSTED"] = "1"
         result = subprocess.run(cmd, env=env)
         return result.returncode
@@ -806,7 +809,9 @@ def mode_binary(args: list) -> int:
     if not wrapper.exists():
         print(f"✗ Binary wrapper not found: {wrapper}", file=sys.stderr)
         return 1
-    env = RaptorConfig.get_safe_env()
+    # preserve_proxy: the binary surface dispatches `claude` CLI
+    # children whose route home is the operator's launch-time proxy.
+    env = RaptorConfig.get_safe_env(preserve_proxy=True)
     env["_RAPTOR_TRUSTED"] = "1"
     try:
         return subprocess.call([str(wrapper), *args], env=env)
@@ -998,7 +1003,9 @@ def mode_frida(args: list) -> int:
     if not wrapper.exists():
         print(f"✗ Frida wrapper not found: {wrapper}", file=sys.stderr)
         return 1
-    env = RaptorConfig.get_safe_env()
+    # preserve_proxy: remote frida-server targets and any LLM-backed
+    # follow-on need the operator's launch-time proxy in the child.
+    env = RaptorConfig.get_safe_env(preserve_proxy=True)
     env.setdefault("_RAPTOR_TRUSTED", "1")
     return subprocess.call([str(wrapper), *args], env=env)
 

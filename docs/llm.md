@@ -21,6 +21,24 @@ and uses the first one found:
 
 See [dependencies](dependencies.md) for SDK installation.
 
+### Claude Code transport
+
+When no other provider is configured but the `claude` CLI is on PATH,
+RAPTOR dispatches LLM calls through `claude -p` subprocesses. The
+transport never passes `--model`: children inherit the CLI session's
+own default (settings.json, `ANTHROPIC_MODEL`, or the backend's
+mapping), so it works unchanged on Bedrock/Vertex-backed installs.
+
+Before committing to this transport, `raptor-resolve-mode` runs a
+pre-flight probe — one cheap `claude -p` call that confirms the CLI
+can actually complete a request and reads the backend-resolved model
+from the result envelope. The result is cached for 24 h in
+`~/.raptor/cache/cc-probe.json`, keyed on the backend-selection
+environment (provider/model/credential/proxy variables and the CLI
+binary), so a configuration change forces a fresh probe. On probe
+failure RAPTOR falls back to in-session mode rather than dispatching
+into a transport whose calls would hang.
+
 ## Quick Start
 
 ```bash

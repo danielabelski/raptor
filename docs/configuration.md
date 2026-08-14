@@ -27,7 +27,7 @@ based on system hardware.
 | `codeql_threads` | `"auto"` | CPUs for CodeQL; auto = all available |
 | `codeql_max_disk_cache_mb` | `0` | CodeQL DB cache cap; 0 = unbounded |
 | `joern_enabled` | `true` | Master toggle for Joern CPG |
-| `joern_heap_mb` | `"auto"` | JVM heap for Joern; auto = 25% system RAM, clamped 1024–4096 |
+| `joern_heap_mb` | `"auto"` | JVM heap for Joern; auto = 25% system RAM, min 1024, no upper clamp |
 | `joern_cpg_timeout_s` | `300` | CPG generation timeout |
 | `joern_query_timeout_s` | `300` | Per-query timeout |
 | `max_semgrep_workers` | `4` | Parallel Semgrep scans |

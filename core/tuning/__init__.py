@@ -64,7 +64,7 @@ _KEY_COMMENTS = {
     "codeql_threads": "CPUs for CodeQL (-j; 0 = all available)",
     "codeql_max_disk_cache_mb": "MB cap on codeql DB build cache (--max-disk-cache; 0 = codeql's unbounded default)",
     "joern_enabled": "set false to disable Joern CPG analysis across all runs",
-    "joern_heap_mb": "MB of JVM heap for Joern (auto = 25% system RAM, clamped 1024-4096)",
+    "joern_heap_mb": "MB of JVM heap for Joern (auto = 25% system RAM, min 1024)",
     "joern_cpg_timeout_s": "seconds before CPG generation is killed",
     "joern_query_timeout_s": "seconds before a single Joern query is killed",
     "max_semgrep_workers": "parallel Semgrep scans (auto = half available CPUs)",
@@ -141,9 +141,16 @@ def _detect_fuzz_parallel() -> int:
 
 
 def _detect_joern_heap_mb() -> int:
-    """25% of system RAM, clamped to [1024, 4096] MB."""
+    """25% of system RAM, floor 1024 MB, no upper clamp.
+
+    -Xmx is a ceiling, not a reservation — the JVM commits only what
+    it uses — and RAPTOR runs a single Joern server per run, so a
+    proportional ceiling is safe. The former 4096 MB cap starved
+    CPG queries on large targets when the host had RAM to spare
+    (a 500 GB box was clamped to a laptop-sized heap).
+    """
     total_mb = _detect_total_ram_mb()
-    return max(1024, min(total_mb // 4, 4096))
+    return max(1024, total_mb // 4)
 
 
 def _detect_inventory_workers() -> int:

@@ -59,6 +59,27 @@ class WebClient:
             'User-Agent': 'RAPTOR Security Scanner (Authorized Testing)',
         })
 
+        # Loopback / private-IP scan targets are on the local segment
+        # by definition — routing them through a corporate proxy
+        # (requests honours proxy env; host NO_PROXY rarely covers
+        # loopback) breaks every request. Disable proxy-env pickup
+        # for those targets; internet targets keep trust_env so
+        # mandatory-proxy hosts can reach them.
+        _host = (urlparse(self.base_url).hostname or '').lower()
+        _local = _host in ('localhost',)
+        if not _local:
+            try:
+                _ip = ipaddress.ip_address(_host)
+                _local = _ip.is_loopback or _ip.is_private
+            except ValueError:
+                pass
+        if _local:
+            self.session.trust_env = False
+            logger.info(
+                "Web client: %s is a loopback/private target — "
+                "proxy env bypassed for this session", _host,
+            )
+
         # Request history — bounded ring buffer. Pre-cap, long scans
         # accumulated full request/response dicts (hundreds of MB on
         # large targets) until process exit.

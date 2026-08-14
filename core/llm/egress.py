@@ -100,8 +100,11 @@ _KNOWN_DEFAULTS = {
 
 # Local-loop hosts that must NOT route through the chokepoint — Ollama
 # / vLLM / LiteLLM-on-localhost loop back through the proxy and break
-# its allowlist semantics for non-loopback callers.
-_LOCAL_BYPASS = ("localhost", "127.0.0.1")
+# its allowlist semantics for non-loopback callers. ::1 and 0.0.0.0
+# included: operators point clients at "0.0.0.0:11434" surprisingly
+# often (copy-pasted from the server's bind address), and it resolves
+# to loopback on connect.
+_LOCAL_BYPASS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
 # Idempotency: once enabled in this process, repeated calls are no-ops
@@ -196,7 +199,35 @@ def _hostname_of(url: str) -> str:
 
 
 def _is_loopback(host: str) -> bool:
-    return host.lower() in _LOCAL_BYPASS
+    h = host.lower()
+    return h in _LOCAL_BYPASS or h.startswith("127.")
+
+
+def url_is_loopback(url: str) -> bool:
+    """True when ``url``'s host is a loopback / local-bind address."""
+    from urllib.parse import urlsplit
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    return _is_loopback(host)
+
+
+def loopback_safe_get(url: str, timeout: float):
+    """``requests.get`` that bypasses proxy env for loopback targets.
+
+    On mandatory-proxy hosts whose NO_PROXY doesn't cover loopback
+    (common: only the cloud metadata IP is listed), a plain
+    ``requests.get("http://localhost:11434/...")`` routes through the
+    corporate proxy and fails — Ollama then looks "not running" even
+    though it's up. Non-loopback URLs keep full proxy-env behaviour.
+    """
+    import requests
+    if url_is_loopback(url):
+        with requests.Session() as s:
+            s.trust_env = False
+            return s.get(url, timeout=timeout)
+    return requests.get(url, timeout=timeout)
 
 
 def _max_model_timeout(config: "LLMConfig") -> float:
@@ -256,7 +287,30 @@ def enable_llm_egress(config: "LLMConfig") -> None:
 
     if not remote_hosts:
         # Nothing to chokepoint — Ollama-only, autodetect-empty, or
-        # CC-only setups. Skip silently.
+        # CC-only setups. No proxy bring-up, no HTTPS_PROXY mutation.
+        #
+        # But the Ollama-only case is exactly the one that breaks on
+        # mandatory-proxy hosts without NO_PROXY hygiene: the SDK's
+        # httpx (trust_env=True) routes localhost:11434 through the
+        # corporate proxy and every call fails. Pre-fix this early
+        # return skipped the augmentation below for precisely the
+        # config that needed it. Augment NO_PROXY (and ONLY NO_PROXY)
+        # when the config references a loopback host and the operator
+        # has a proxy set; truly-empty configs stay mutation-free.
+        if allowlist and any(_is_loopback(h) for h in allowlist) and any(
+            os.environ.get(v) for v in
+            ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+        ):
+            existing = (os.environ.get("NO_PROXY")
+                        or os.environ.get("no_proxy") or "")
+            new_no_proxy = _augment_no_proxy(existing)
+            os.environ["NO_PROXY"] = new_no_proxy
+            os.environ["no_proxy"] = new_no_proxy
+            logger.debug(
+                "LLM egress: loopback-only config on proxied host — "
+                "NO_PROXY augmented to %r (no chokepoint brought up)",
+                new_no_proxy,
+            )
         return
 
     # Step 1: bring up / extend the in-process proxy. MUST happen
@@ -320,5 +374,7 @@ def _reset_for_tests() -> None:
 __all__ = [
     "derive_allowlist",
     "enable_llm_egress",
+    "loopback_safe_get",
     "operator_proxy_env",
+    "url_is_loopback",
 ]

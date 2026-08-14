@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-import requests
-
 from core.config import RaptorConfig
 from core.logging import get_logger
 
@@ -141,7 +139,12 @@ def _get_available_ollama_models() -> List[str]:
     try:
         # ``ollama_url`` is validated via ``_validate_ollama_url``
         # (line 82); operator-config-supplied + scheme-locked.
-        response = requests.get(f"{ollama_url}/api/tags", timeout=2)  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
+        # loopback_safe_get: bypasses proxy env for loopback URLs —
+        # on mandatory-proxy hosts a plain requests.get routed
+        # localhost:11434 through the corporate proxy and Ollama was
+        # misdetected as absent.
+        from core.llm.egress import loopback_safe_get
+        response = loopback_safe_get(f"{ollama_url}/api/tags", timeout=2)  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
         if response.status_code == 200:
             data = response.json()
             _cached_ollama_models = [

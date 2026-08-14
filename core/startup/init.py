@@ -350,7 +350,13 @@ def _test_key(provider: str, api_key: str, api_base: str = None) -> bool:
             return r.status_code == 200
         elif provider == "ollama":
             base = (api_base or "http://localhost:11434").rstrip("/")
-            r = requests.get(f"{base}/api/tags", timeout=timeout)  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
+            # loopback_safe_get: bypasses proxy env for loopback URLs
+            # — a plain requests.get routed localhost through the
+            # corporate proxy on mandatory-proxy hosts and the probe
+            # always failed. Remote Ollama bases keep proxy-env
+            # behaviour.
+            from core.llm.egress import loopback_safe_get
+            r = loopback_safe_get(f"{base}/api/tags", timeout=timeout)  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
             return r.status_code == 200
         else:
             return True  # Unknown provider — can't test, assume OK

@@ -1157,10 +1157,24 @@ class OpenAICompatibleProvider(LLMProvider):
             self.client = make_openai_client(timeout=config.timeout)
             logger.debug("OpenAICompatibleProvider: routing via credential-isolation dispatcher")
         else:
+            _client_kwargs = {}
+            # Loopback gateways (Ollama, vLLM, LM Studio): the SDK's
+            # default httpx client honours proxy env (trust_env), so
+            # on mandatory-proxy hosts whose NO_PROXY lacks loopback,
+            # every localhost call detours through the corporate
+            # proxy and fails. Pin a trust_env=False transport for
+            # loopback bases; remote bases keep proxy-env behaviour.
+            from core.llm.egress import url_is_loopback
+            if config.api_base and url_is_loopback(config.api_base):
+                import httpx as _httpx
+                _client_kwargs["http_client"] = _httpx.Client(
+                    timeout=config.timeout, trust_env=False,
+                )
             self.client = OpenAI(
                 api_key=config.api_key or "unused",
                 base_url=config.api_base,
                 timeout=config.timeout,
+                **_client_kwargs,
             )
             logger.debug(
                 f"OpenAICompatibleProvider: direct SDK (no dispatcher) provider={config.provider}"

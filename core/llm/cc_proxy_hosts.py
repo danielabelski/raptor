@@ -434,6 +434,29 @@ _DEFAULT_ANTHROPIC_HOSTS: tuple[str, ...] = (
 )
 
 
+def _binary_readable_paths(claude_bin: Optional[str] = None) -> list[str]:
+    """Paths needed to *exec* the Claude Code binary itself.
+
+    Landlock blocks execve on files outside the readable set, and
+    the launcher in ``~/.local/bin`` is typically a symlink into a
+    versioned install dir — both the link's directory and the
+    resolved target's directory must be readable or the sandboxed
+    child dies with exit 126 before producing any stderr.
+    """
+    bin_path = claude_bin or shutil.which("claude")
+    if not bin_path:
+        return []
+    link = Path(bin_path)
+    paths = [str(link.parent)]
+    try:
+        real = link.resolve()
+    except OSError:
+        return paths
+    if real.parent != link.parent:
+        paths.append(str(real.parent))
+    return paths
+
+
 def readable_paths_for_cc_dispatch(
     claude_bin: Optional[str] = None,
 ) -> list[str]:
@@ -445,16 +468,21 @@ def readable_paths_for_cc_dispatch(
             ``proxy_hosts_for_cc_dispatch``. Calibration runs against
             this exact binary; static fallback engages on miss.
 
-    Priority: calibrated profile > default install layout. Every
-    path-using cc_dispatch site (cc_dispatch.invoke_cc_simple +
-    agentic_passes' /understand prepass + /validate postpass)
-    routes through this so per-binary calibration takes effect
-    everywhere the policy matters.
+    The result is the union of the static floor (default install
+    layout + the binary's own exec paths) and the calibrated
+    profile. The calibrated layer EXTENDS the floor rather than
+    replacing it: calibration observes ``open()``/``stat()``
+    syscalls, so it structurally cannot record the ``execve`` of
+    the binary itself — a calibrated-only policy can't even exec
+    the CLI (observed as `/validate` post-pass exit 126 with empty
+    stderr). Every path-using cc_dispatch site
+    (cc_dispatch.invoke_cc_simple + agentic_passes' /understand
+    prepass + /validate postpass) routes through this so per-binary
+    calibration takes effect everywhere the policy matters.
     """
-    calibrated = _calibrated_readable_paths(claude_bin)
-    if calibrated is not None:
-        return calibrated
-    return _default_readable_paths()
+    floor = _default_readable_paths() + _binary_readable_paths(claude_bin)
+    calibrated = _calibrated_readable_paths(claude_bin) or []
+    return list(dict.fromkeys(floor + calibrated))
 
 
 def _reset_calibrate_cache_for_tests() -> None:

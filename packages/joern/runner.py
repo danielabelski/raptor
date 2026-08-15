@@ -185,11 +185,14 @@ def build_cpg(
     timeout: int = 600,
     subprocess_runner=None,
     on_progress: Optional[Callable] = None,
+    heap_mb: Optional[int] = None,
 ) -> JoernCPG:
     """Parse target directory into a Code Property Graph.
 
     Returns a JoernCPG handle. The CPG is written to output_dir
-    (default: tempdir) as a binary file.
+    (default: tempdir) as a binary file. ``heap_mb`` sets the JVM
+    ``-Xms``/``-Xmx`` via the launcher's ``-J`` passthrough, matching
+    JoernServer's heap flags; ``None`` keeps the JVM default.
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -202,7 +205,10 @@ def build_cpg(
     cpg_path = output_dir / "cpg.bin"
 
     joern_parse = _joern_parse_path() or _JOERN_PARSE_BIN
-    cmd = [joern_parse, "--output", str(cpg_path), str(target)]
+    heap_flags: list = []
+    if heap_mb is not None:
+        heap_flags = [f"-J-Xms{heap_mb}m", f"-J-Xmx{heap_mb}m"]
+    cmd = [joern_parse, *heap_flags, "--output", str(cpg_path), str(target)]
 
     if languages:
         cmd.extend(["--language", ",".join(sorted(languages))])
@@ -698,6 +704,7 @@ def build_cpg_cached(
     timeout: int = 600,
     subprocess_runner=None,
     on_progress: Optional[Callable] = None,
+    heap_mb: Optional[int] = None,
 ) -> JoernCPG:
     """Build or reuse a cached CPG for the target.
 
@@ -716,6 +723,7 @@ def build_cpg_cached(
         timeout=timeout,
         subprocess_runner=subprocess_runner,
         on_progress=on_progress,
+        heap_mb=heap_mb,
     )
 
     if cpg.exists():

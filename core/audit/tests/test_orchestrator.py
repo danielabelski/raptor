@@ -14,11 +14,11 @@ from core.audit.orchestrator import (
     OrchestratorConfig,
     OrchestratorResult,
     ReviewOutcome,
-    _ContentFilterError,
     _check_finding_gates,
+    _ContentFilterError,
+    _hypothesis_to_tool_chain,
     _joern_live_query,
     _multi_pass_review,
-    _hypothesis_to_tool_chain,
     _promote_hypothesis_inconsistent,
     _resolve_gate_demoted,
     _run_tool_chain,
@@ -2437,6 +2437,7 @@ class TestJoernLiveQuery:
 
     def test_live_query_returns_flows(self):
         from unittest.mock import MagicMock
+
         from packages.joern.models import TaintFlow
 
         server = MagicMock()
@@ -2455,6 +2456,7 @@ class TestJoernLiveQuery:
 
     def test_live_query_short_circuits_on_first_hit(self):
         from unittest.mock import MagicMock
+
         from packages.joern.models import TaintFlow
 
         server = MagicMock()
@@ -2508,6 +2510,7 @@ class TestJoernLiveQuery:
     def test_tool_chain_joern_live_fallback(self, tmp_path: Path):
         """When pre-sweep has no hit and server is available, fires live query."""
         from unittest.mock import MagicMock
+
         from packages.joern.models import TaintFlow
 
         server = MagicMock()
@@ -2530,6 +2533,7 @@ class TestJoernLiveQuery:
     def test_tool_chain_joern_presweep_hit_skips_live(self, tmp_path: Path):
         """When pre-sweep index has a hit, live query is not fired."""
         from unittest.mock import MagicMock
+
         from core.evidence import EvidenceRecord
 
         server = MagicMock()
@@ -3277,8 +3281,8 @@ class TestEnrichSummariesFromJoern:
         assert len(fs.returns) == 1
 
     def test_does_not_overwrite_existing_cpg_summary(self):
+        from core.analysis.summaries import EvidenceTier, FunctionSummary
         from core.audit.orchestrator import _enrich_summaries_from_joern
-        from core.analysis.summaries import FunctionSummary, EvidenceTier
         from packages.joern.models import JoernMethodSummary
 
         class FakeServer:
@@ -3347,8 +3351,8 @@ class TestCommitOutcomeJournal:
     """
 
     def test_commit_outcome_writes_journal_entry(self, tmp_path: Path):
-        from core.audit.orchestrator import _commit_outcome
         from core.audit.journal import latest_entries
+        from core.audit.orchestrator import _commit_outcome
 
         target, out = _setup_target(tmp_path)
         config = OrchestratorConfig(
@@ -3768,9 +3772,13 @@ class TestSageCombinedPathway:
             batch_sloc_threshold=0,
         )
 
-        with _patch("core.sage.hooks.store_audit_hypothesis_verdict", side_effect=capture_hyp):
-            with _patch("core.sage.hooks.store_audit_observation", side_effect=capture_obs):
-                run_orchestrator(config, review_fn)
+        with (
+            _patch("core.sage.hooks.store_audit_hypothesis_verdict",
+                   side_effect=capture_hyp),
+            _patch("core.sage.hooks.store_audit_observation",
+                   side_effect=capture_obs),
+        ):
+            run_orchestrator(config, review_fn)
 
         assert len(hypothesis_calls) >= 1
         # Gate enforcement may demote to suspicious, but hypothesis

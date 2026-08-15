@@ -781,23 +781,34 @@ class TestPromoteCleanRefuted:
         assert result.outcomes[0].status == "finding"
         assert len(calls) == 1
 
-    @pytest.mark.parametrize("mechanism,verb", [
-        ("integer overflow in size calc", "check-overflow"),
-        ("buffer overflow in memcpy", "check-oob"),
-        ("integer overflow leading to heap", "check-overflow-to-oob"),
+    @pytest.mark.parametrize("mechanism,verb,chain_runs", [
+        # Verification-role vacuous verbs now REACH the tool chain —
+        # the vacuity policy lives in the sweep layer, which returns
+        # inconclusive (never confirmed) without guard premises, so
+        # the chain reports no confirmation and clean stands.
+        ("integer overflow in size calc", "check-overflow", True),
+        ("buffer overflow in memcpy", "check-oob", True),
+        # Detection-role verbs are still skipped before the chain.
+        ("integer overflow leading to heap", "check-overflow-to-oob", False),
     ])
-    def test_vacuous_verbs_skipped(self, tmp_path, monkeypatch, mechanism, verb):
-        """Overflow/OOB verbs are vacuous without guards — must not override LLM clean."""
+    def test_vacuous_verbs_cannot_promote(
+        self, tmp_path, monkeypatch, mechanism, verb, chain_runs,
+    ):
+        """Guardless overflow/OOB SAT must not override LLM clean."""
         from core.audit.orchestrator import _promote_clean_refuted
         outcome = self._outcome("a.c", "f", hypotheses=[
             {"mechanism": mechanism, "confidence": "refuted"},
         ])
         result = self._result([outcome])
         calls = []
-        monkeypatch.setattr(
-            "core.audit.orchestrator._run_tool_chain",
-            lambda *a, **kw: (calls.append(1), [f"smt:{verb}"])[1],
-        )
+
+        def chain(*a, **kw):
+            calls.append(kw.get("hypothesis", ""))
+            # Sweep-layer vacuity policy: SAT without premises comes
+            # back "inconclusive" → no confirmations from the chain.
+            return []
+
+        monkeypatch.setattr("core.audit.orchestrator._run_tool_chain", chain)
         monkeypatch.setattr(
             "core.audit.orchestrator._read_raw_source",
             lambda *a, **kw: "int f(int x) { return x + 1; }",
@@ -805,7 +816,7 @@ class TestPromoteCleanRefuted:
         _promote_clean_refuted(result, self._config(tmp_path))
         assert result.outcomes[0].status == "clean"
         assert result.sweep_promoted == 0
-        assert len(calls) == 0
+        assert len(calls) == (1 if chain_runs else 0)
 
 
 class TestSweepValidateDetectionFilter:
@@ -882,3 +893,276 @@ class TestSweepValidateDetectionFilter:
 
         result = _sweep_validate(outcome, config)
         assert "smt:check-overflow" in (result.evidence_tool or "")
+
+
+# ── Vacuity policy for unconstrained-arithmetic SMT verbs ───────────────
+
+
+def _z3_installed() -> bool:
+    try:
+        from core.smt_solver import z3_available
+        return z3_available()
+    except Exception:  # noqa: BLE001 — availability probe, never raise
+        return False
+
+
+needs_z3 = pytest.mark.skipif(not _z3_installed(), reason="z3 not installed")
+
+
+class TestComparisonPremiseExtraction:
+    def test_extracts_guard_mentioning_operand(self):
+        from core.audit.sweep import _extract_comparison_premises
+        src = "if (count < max_len) { total = count * size; }"
+        premises = _extract_comparison_premises(["count", "size"], src)
+        assert "count < max_len" in premises
+
+    def test_ignores_comparisons_of_other_identifiers(self):
+        from core.audit.sweep import _extract_comparison_premises
+        src = "if (other < limit) { total = count * size; }"
+        premises = _extract_comparison_premises(["count", "size"], src)
+        assert premises == []
+
+    def test_comments_and_strings_stripped(self):
+        from core.audit.sweep import _extract_comparison_premises
+        src = '// count < max\nchar *s = "count < max";\nreturn count;\n'
+        assert _extract_comparison_premises(["count"], src) == []
+
+    def test_shift_operators_not_comparisons(self):
+        from core.audit.sweep import _extract_comparison_premises
+        src = "x = count << 2; y = count >> 3;"
+        assert _extract_comparison_premises(["count"], src) == []
+
+    def test_deduplicates_and_caps(self):
+        from core.audit.sweep import _MAX_PREMISES, _extract_comparison_premises
+        lines = ["if (count < 10) {}"] * 3
+        lines += [f"if (count < {i}) {{}}" for i in range(20)]
+        premises = _extract_comparison_premises(["count"], "\n".join(lines))
+        assert premises.count("count < 10") == 1
+        assert len(premises) <= _MAX_PREMISES
+
+    def test_literal_operands_do_not_anchor(self):
+        from core.audit.sweep import _extract_comparison_premises
+        # "4" is a literal operand — it must not anchor extraction.
+        src = "if (x < 4) {}"
+        assert _extract_comparison_premises(["4"], src) == []
+
+
+class TestArithOperatorExtraction:
+    def test_backtick_expression_wins(self):
+        from core.audit.sweep import _extract_arith_operator
+        assert _extract_arith_operator(
+            "integer overflow in `count * size` calculation",
+        ) == "*"
+
+    def test_prose_spaced_operator(self):
+        from core.audit.sweep import _extract_arith_operator
+        assert _extract_arith_operator(
+            "integer overflow when count * size exceeds uint32",
+        ) == "*"
+
+    def test_keyword_multiplication(self):
+        from core.audit.sweep import _extract_arith_operator
+        assert _extract_arith_operator(
+            "multiplication of count and size can wrap",
+        ) == "*"
+
+    def test_keyword_underflow_is_subtraction(self):
+        from core.audit.sweep import _extract_arith_operator
+        assert _extract_arith_operator(
+            "underflow when len is subtracted from offset",
+        ) == "-"
+
+    def test_default_is_addition(self):
+        from core.audit.sweep import _extract_arith_operator
+        assert _extract_arith_operator("integer overflow in size calc") == "+"
+
+    def test_spaced_hyphen_is_punctuation(self):
+        from core.audit.sweep import _extract_arith_operator
+        assert _extract_arith_operator(
+            "integer overflow in size calc - see report",
+        ) == "+"
+
+
+class TestPremiseGate:
+    def test_no_premises_is_vacuous(self):
+        from core.audit.sweep import _premise_gate
+        reason = _premise_gate([], "uint32")
+        assert reason is not None
+        assert "no source-level guard premises" in reason
+
+    @needs_z3
+    def test_satisfiable_premises_pass(self):
+        from core.audit.sweep import _premise_gate
+        assert _premise_gate(["count < 100"], "uint32") is None
+
+    @needs_z3
+    def test_contradictory_premises_are_vacuous(self):
+        from core.audit.sweep import _premise_gate
+        reason = _premise_gate(["count > 10", "count < 5"], "uint32")
+        assert reason == "vacuous premises"
+
+    @needs_z3
+    def test_unencodable_premises_inconclusive(self):
+        from core.audit.sweep import _premise_gate
+        reason = _premise_gate(["p->len < q->cap"], "uint32")
+        assert reason is not None
+        assert "unencodable" in reason or "vacuous" in reason
+
+
+@needs_z3
+class TestVacuousVerbPolicyDirect:
+    """SAT on check-overflow / check-oob / check-overflow-to-oob can
+    only mean something when source-level guard premises are encoded
+    as Z3 constraints.  Exercises ``_run_smt_verb_inner`` in-process."""
+
+    def _run(self, verb, source, hypothesis, file_path="a.c"):
+        from core.audit.sweep import _run_smt_verb_inner
+        return _run_smt_verb_inner(
+            file_path=file_path,
+            function_name="f",
+            verb=verb,
+            source=source,
+            hypothesis=hypothesis,
+        )
+
+    def test_overflow_guardless_source_is_inconclusive(self):
+        result = self._run(
+            "check-overflow",
+            "int f(int count, int size) { return count * size; }",
+            "integer overflow in `count` * `size`",
+        )
+        assert result.outcome == "inconclusive"
+        assert "no source-level guard premises" in (
+            (result.details or {}).get("summary", "")
+        )
+
+    def test_overflow_with_open_guard_confirms(self):
+        # Guard exists but doesn't bound the product: max_len is a
+        # free variable, so a wrap inside the guarded space exists.
+        result = self._run(
+            "check-overflow",
+            "int f(unsigned count, unsigned size) {\n"
+            "    if (count < max_len) { return count * size; }\n"
+            "    return 0;\n"
+            "}\n",
+            "integer overflow in `count` * `size`",
+        )
+        assert result.outcome == "confirmed"
+
+    def test_overflow_with_tight_guards_refutes(self):
+        # a <= 10 and b <= 10 → a + b <= 20, cannot wrap uint32.
+        result = self._run(
+            "check-overflow",
+            "int f(unsigned a, unsigned b) {\n"
+            "    if (a <= 10 && b <= 10) { return a + b; }\n"
+            "    return 0;\n"
+            "}\n",
+            "integer overflow in `a` + `b`",
+        )
+        assert result.outcome == "refuted"
+
+    def test_operator_from_hypothesis_is_honoured(self):
+        # Bounds 65536 × 65536 = 2^32 wraps under '*' but the sum
+        # 131072 cannot wrap under '+'.  A hardcoded '+' would refute;
+        # honouring the hypothesis's '*' confirms.
+        src = (
+            "int f(unsigned a, unsigned b) {\n"
+            "    if (a <= 65536 && b <= 65536) { return a * b; }\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        mul = self._run("check-overflow", src, "integer overflow in `a` * `b`")
+        assert mul.outcome == "confirmed"
+        add_src = src.replace("a * b", "a + b")
+        add = self._run(
+            "check-overflow", add_src, "integer overflow in `a` + `b`",
+        )
+        assert add.outcome == "refuted"
+
+    def test_contradictory_premises_never_refute(self):
+        # Premises a > 10 AND a < 5 are jointly UNSAT — the full query
+        # would be UNSAT too, but that must read as "vacuous premises"
+        # (inconclusive), not as an authoritative refutation.
+        result = self._run(
+            "check-overflow",
+            "int f(unsigned a, unsigned b) {\n"
+            "    if (a > 10 && a < 5) { return a + b; }\n"
+            "    return 0;\n"
+            "}\n",
+            "integer overflow in `a` + `b`",
+        )
+        assert result.outcome == "inconclusive"
+        assert (result.details or {}).get("summary") == "vacuous premises"
+
+    def test_oob_guardless_source_is_inconclusive(self):
+        result = self._run(
+            "check-oob",
+            "int f(unsigned idx) { return arr[idx]; }",
+            "`idx` is used as an array index into buffer of size `buflen`",
+        )
+        assert result.outcome == "inconclusive"
+
+    def test_overflow_to_oob_guardless_is_inconclusive(self):
+        result = self._run(
+            "check-overflow-to-oob",
+            "void f(unsigned count, unsigned index) {\n"
+            "    p = malloc(count * 4);\n"
+            "    p[index] = 1;\n"
+            "}\n",
+            "overflow of `count` * `elem_size` leads to OOB at `index`",
+        )
+        assert result.outcome == "inconclusive"
+
+
+class TestRunSmtSweepVacuityPolicy:
+    """The shim (subprocess) path applies the same centralised policy:
+    sat on a vacuous verb without ``--guard`` args is inconclusive."""
+
+    def _patch_shim(self, monkeypatch, payload):
+        import core.audit.sweep as sweep_mod
+
+        class _Proc:
+            returncode = 0
+            stdout = payload
+            stderr = ""
+
+        monkeypatch.setattr(
+            sweep_mod.subprocess, "run", lambda *a, **kw: _Proc(),
+        )
+
+    def test_sat_without_guards_is_inconclusive(self, monkeypatch):
+        self._patch_shim(monkeypatch, '{"result": "sat"}')
+        result = run_smt_sweep(
+            file_path="a.c", function_name="f",
+            verb="check-overflow",
+            smt_args={"op": "*", "operand": ["count", "size"]},
+        )
+        assert result.outcome == "inconclusive"
+
+    def test_sat_with_guards_confirms(self, monkeypatch):
+        self._patch_shim(monkeypatch, '{"result": "sat"}')
+        result = run_smt_sweep(
+            file_path="a.c", function_name="f",
+            verb="check-overflow",
+            smt_args={"op": "*", "operand": ["count", "size"],
+                      "guard": ["count < max_len"]},
+        )
+        assert result.outcome == "confirmed"
+
+    def test_unsat_stays_refuted_without_guards(self, monkeypatch):
+        self._patch_shim(monkeypatch, '{"result": "unsat"}')
+        result = run_smt_sweep(
+            file_path="a.c", function_name="f",
+            verb="check-overflow",
+            smt_args={"op": "+", "operand": ["a", "b"]},
+        )
+        assert result.outcome == "refuted"
+
+    def test_non_vacuous_verb_sat_still_confirms(self, monkeypatch):
+        self._patch_shim(monkeypatch, '{"result": "sat"}')
+        result = run_smt_sweep(
+            file_path="a.c", function_name="f",
+            verb="check-null-deref",
+            smt_args={"ptr": "p"},
+        )
+        assert result.outcome == "confirmed"

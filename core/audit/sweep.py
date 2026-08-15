@@ -486,6 +486,34 @@ def get_smt_verb_role(verb: str) -> str:
     return _SMT_VERB_ROLES.get(bare, "detection")
 
 
+# SMT verbs whose intrinsic predicate is satisfiable for almost any
+# unconstrained operand assignment: "can these bitvectors wrap / index
+# past a free-variable bound?" — yes, always, unless a guard forbids
+# it.  The vacuity policy is centralised HERE (the sweep/SMT layer) so
+# every caller inherits it — no per-callsite guard lists:
+#
+#   * SAT without encoded source-level guard premises is VACUOUS →
+#     outcome "inconclusive", never "confirmed".
+#   * SAT becomes meaningful only when comparison expressions
+#     mentioning the operands are extracted from the source and added
+#     as Z3 constraints (premises) — and those premises are themselves
+#     jointly satisfiable.
+#   * Premises that are jointly UNSAT are vacuous premises → outcome
+#     "inconclusive" (never "refuted" — an UNSAT caused by
+#     contradictory premises says nothing about the code).
+#   * UNSAT of the full query (premises SAT on their own) stays
+#     "refuted" — guards proving infeasibility is real information.
+VACUOUS_SMT_VERBS = frozenset({
+    "check-overflow", "check-oob", "check-overflow-to-oob",
+})
+
+
+def is_vacuous_smt_verb(verb: str) -> bool:
+    """True when *verb* (bare or ``smt:``-prefixed) is in the vacuous set."""
+    bare = verb.split(":")[-1] if verb.startswith("smt:") else verb
+    return bare.split(":")[0] in VACUOUS_SMT_VERBS
+
+
 def run_smt_sweep(
     *,
     file_path: str,
@@ -597,6 +625,22 @@ def run_smt_sweep(
         else:
             outcome = "inconclusive"
 
+        # Centralised vacuity policy (see VACUOUS_SMT_VERBS): for the
+        # unconstrained-arithmetic verbs, SAT is near-certain when no
+        # guards constrain the model, so it must not read as
+        # confirmation.  Guards supplied by the caller (``--guard``
+        # flags in smt_args) make SAT meaningful again.
+        if outcome == "confirmed" and is_vacuous_smt_verb(verb) \
+                and not _smt_args_have_guards(smt_args):
+            outcome = "inconclusive"
+            if isinstance(result_data, dict):
+                result_data.setdefault(
+                    "vacuity_note",
+                    "sat without guard constraints is vacuous for "
+                    f"{verb}; pass --guard premises to make SAT "
+                    "meaningful",
+                )
+
         return SweepResult(
             tool="smt",
             file_path=file_path,
@@ -624,6 +668,18 @@ def run_smt_sweep(
             errors=[str(exc)],
             rule_id=f"smt:{verb}",
         )
+
+
+def _smt_args_have_guards(smt_args: dict[str, Any]) -> bool:
+    """True when the shim CLI args carry at least one non-empty guard."""
+    for key in ("guard", "guards"):
+        value = smt_args.get(key)
+        if isinstance(value, (list, tuple)):
+            if any(str(item).strip() for item in value):
+                return True
+        elif isinstance(value, str) and value.strip():
+            return True
+    return False
 
 
 def run_smt_verb_direct(
@@ -757,20 +813,24 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            result = check_overflow(operands, "+", profile="uint32")
-            if result.get("feasible") and not any(
-                _re.search(
-                    r"\b" + _re.escape(op) + r"\b.*[<>!=]=?",
-                    source,
-                )
-                for op in operands
-            ):
+            # Vacuity policy: SAT on unconstrained bitvectors is
+            # near-certain and meaningless.  Extract comparison lines
+            # mentioning the operands and add them as Z3 PREMISES —
+            # only then may SAT mean "the guards do not rule out the
+            # wrap".  No premises / vacuous premises → inconclusive.
+            premises = _extract_comparison_premises(operands, source)
+            gate = _premise_gate(premises, "uint32")
+            if gate is not None:
                 return SweepResult(
                     tool="smt", file_path=file_path,
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
-                    details={"summary": "overflow feasible but no source-level guards on operands"},
+                    details={"summary": gate},
                 )
+            op = _extract_arith_operator(hypothesis)
+            result = check_overflow(
+                operands, op, profile="uint32", guards=premises,
+            )
         elif verb == "check-oob":
             if _lang_has_overflow_safety(file_path):
                 return SweepResult(
@@ -786,7 +846,16 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            result = check_oob(size, index, profile="uint64")
+            premises = _extract_comparison_premises([index, size], source)
+            gate = _premise_gate(premises, "uint64")
+            if gate is not None:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                    details={"summary": gate},
+                )
+            result = check_oob(size, index, profile="uint64", guards=premises)
         elif verb == "check-overflow-to-oob":
             from packages.exploit_feasibility.smt_verbs import check_overflow_to_oob
             count, elem_size, index = _extract_overflow_to_oob_operands(
@@ -798,7 +867,20 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            result = check_overflow_to_oob(count, elem_size, index, profile="uint32")
+            premises = _extract_comparison_premises(
+                [count, elem_size, index], source,
+            )
+            gate = _premise_gate(premises, "uint32")
+            if gate is not None:
+                return SweepResult(
+                    tool="smt", file_path=file_path,
+                    function_name=function_name, outcome="inconclusive",
+                    rule_id=f"smt:{verb}",
+                    details={"summary": gate},
+                )
+            result = check_overflow_to_oob(
+                count, elem_size, index, profile="uint32", guards=premises,
+            )
         elif verb == "check-auth-bypass":
             from core.audit.condition_smt import check_auth_bypass
             if not source:
@@ -1062,15 +1144,143 @@ def _lang_has_overflow_safety(file_path: str) -> bool:
     return Path(file_path).suffix in _OVERFLOW_SAFE_EXTS
 
 
-def _operand_in_source_arithmetic(operand: str, source: str) -> bool:
-    """Check if *operand* appears adjacent to an arithmetic operator in source."""
+def _strip_comments_and_strings(source: str) -> str:
+    """Blank out comments and string literals so lexical scans don't
+    match prose that merely mentions code."""
     import re
-    cleaned = re.sub(
+    return re.sub(
         r'//[^\n]*|/\*.*?\*/|"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'',
         " ", source, flags=re.DOTALL,
     )
+
+
+def _operand_in_source_arithmetic(operand: str, source: str) -> bool:
+    """Check if *operand* appears adjacent to an arithmetic operator in source."""
+    import re
+    cleaned = _strip_comments_and_strings(source)
     pat = rf"(?:\b{re.escape(operand)}\b\s*[+\-*/%]|[+\-*/%]\s*\b{re.escape(operand)}\b)"
     return bool(re.search(pat, cleaned))
+
+
+# Simple relational expression with atomic sides: ``ident OP ident``
+# or ``ident OP literal`` (either order).  Lookarounds exclude shift
+# operators (``<<`` / ``>>``) and compound assignment fragments so
+# ``a << 2`` and ``a <<= b`` never read as comparisons.  Deliberately
+# only matches forms the path-condition parser can encode — compound
+# expressions would land in the parser's ``unknown`` bucket anyway.
+_COMPARISON_PREMISE_RE = _re.compile(
+    r"\b([A-Za-z_]\w*|0[xX][0-9a-fA-F]+|\d+)\s*"
+    r"(==|!=|<=|>=|(?<![<>])<(?![<=])|(?<![<>])>(?![>=]))\s*"
+    r"([A-Za-z_]\w*|0[xX][0-9a-fA-F]+|\d+)\b"
+)
+
+# Bound on premises fed to the solver per check — keeps solve time
+# and unsat-core noise bounded on comparison-heavy functions.
+_MAX_PREMISES = 8
+
+
+def _extract_comparison_premises(
+    operands: list[str], source: str,
+) -> list[str]:
+    """Extract comparison expressions mentioning *operands* from *source*.
+
+    These become Z3 premises (``guards=``) for the vacuous SMT verbs
+    (see ``VACUOUS_SMT_VERBS``): the presence of a source-level guard
+    is what makes a SAT verdict on "can this arithmetic wrap?" carry
+    information — Z3 must find a wrap *within* the guarded value
+    space, not over unconstrained bitvectors.
+
+    Only comparisons with atomic sides are extracted (the same forms
+    the path-condition parser accepts).  Comments and string literals
+    are stripped first.  Returns a de-duplicated, order-preserving
+    list capped at ``_MAX_PREMISES``.
+    """
+    idents = {op for op in operands if op and _IDENT_RE.fullmatch(op)}
+    if not idents or not source:
+        return []
+    cleaned = _strip_comments_and_strings(source)
+    premises: list[str] = []
+    seen: set = set()
+    for m in _COMPARISON_PREMISE_RE.finditer(cleaned):
+        lhs, cmp_op, rhs = m.group(1), m.group(2), m.group(3)
+        if lhs not in idents and rhs not in idents:
+            continue
+        text = f"{lhs} {cmp_op} {rhs}"
+        if text in seen:
+            continue
+        seen.add(text)
+        premises.append(text)
+        if len(premises) >= _MAX_PREMISES:
+            break
+    return premises
+
+
+def _premise_gate(premises: list[str], profile: str) -> str | None:
+    """Vet extracted premises before a vacuous-verb SMT call.
+
+    Returns ``None`` when the premises are usable (at least one
+    extracted, encodable, and jointly satisfiable), otherwise the
+    inconclusive-reason string.  The premise-vacuity check matters
+    because contradictory premises would drive the *full* query UNSAT
+    and masquerade as an authoritative "refuted".
+    """
+    if not premises:
+        return (
+            "no source-level guard premises extracted; "
+            "unconstrained SAT is vacuous"
+        )
+    try:
+        from packages.exploit_feasibility.smt_path import validate_path
+        premise_check = validate_path(premises, profile=profile)
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash the sweep
+        return f"premise encoding failed: {exc}"
+    feasible = premise_check.get("feasible")
+    if feasible is False:
+        return "vacuous premises"
+    if feasible is None:
+        # Z3 missing or every premise unparseable — without encoded
+        # premises the main query degenerates to the unconstrained
+        # (vacuous) form.
+        return (
+            "premises unencodable; unconstrained SAT is vacuous"
+        )
+    return None
+
+
+_ARITH_OP_KEYWORDS = (
+    ("*", ("multipl", "product", "times", "mul ")),
+    ("-", ("subtract", "minus", "underflow", "decrement")),
+    ("+", ("add", "sum", "plus", "increment")),
+)
+
+
+def _extract_arith_operator(hypothesis: str) -> str:
+    """Determine the arithmetic operator a CWE-190 hypothesis is about.
+
+    Order of preference: an explicit operator inside a backticked
+    expression (`` `a * b` ``), then an explicit spaced operator in
+    the prose, then operation keywords.  Defaults to ``"+"`` — the
+    historical behaviour — when nothing is recognisable.
+    """
+    import re
+    for expr in re.findall(r"`([^`]+)`", hypothesis):
+        m = re.search(r"\w\s*([+*-])\s*\w", expr)
+        if m:
+            return m.group(1)
+    # Spaced operator in prose ("count * size overflows"); require
+    # whitespace on both sides.  Backticks are stripped first so
+    # "`count` * `size`" (operands quoted individually) also matches.
+    # ``-`` is excluded here — a spaced hyphen in prose is usually
+    # punctuation, so subtraction is only recognised via backticks or
+    # keywords.
+    m = re.search(r"\w\s+([+*])\s+\w", hypothesis.replace("`", ""))
+    if m:
+        return m.group(1)
+    hyp = hypothesis.lower()
+    for op, keywords in _ARITH_OP_KEYWORDS:
+        if any(kw in hyp for kw in keywords):
+            return op
+    return "+"
 
 
 def _extract_ptr_operand(hypothesis: str) -> Optional[str]:

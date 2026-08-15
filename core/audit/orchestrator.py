@@ -7762,6 +7762,16 @@ def _run_tool_chain(
                     )
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "smt", "errors")
+                elif smt_result.outcome == "inconclusive":
+                    # Inconclusive (e.g. vacuous SAT on an
+                    # unconstrained-arithmetic verb, missing operands,
+                    # Z3 unavailable) is NOT a refutation — it must
+                    # neither confirm nor clear prior SMT
+                    # confirmations from other verbs.
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "smt", "inconclusive",
+                        )
                 else:
                     smt_confirmations = [c for c in confirmed if c.startswith("smt:")]
                     if smt_confirmations:
@@ -8350,8 +8360,17 @@ def _proactive_validate(
                 confirmed_tools.append(f"smt:{smt_verb}")
                 if tier_counters:
                     _increment_tier_dict(tier_counters, "smt", "confirmed")
+            elif smt_result.outcome == "refuted":
+                if tier_counters:
+                    _increment_tier_dict(tier_counters, "smt", "refuted")
             elif tier_counters:
-                _increment_tier_dict(tier_counters, "smt", "refuted")
+                # inconclusive / error — count separately so the
+                # diagnostics don't overstate SMT's refutation power.
+                _increment_tier_dict(
+                    tier_counters, "smt",
+                    "errors" if smt_result.outcome == "error"
+                    else "inconclusive",
+                )
         except Exception:
             logger.debug("proactive SMT failed for %s", cwe, exc_info=True)
             if tier_counters:
@@ -10144,17 +10163,13 @@ def _promote_clean_refuted(
                 )
                 continue
 
-            _VACUOUS_VERBS = (
-                "check-overflow", "check-oob", "check-overflow-to-oob",
-            )
-            if smt_verb in _VACUOUS_VERBS:
-                logger.debug(
-                    "clean-refuted skipped %s:%s — %s is vacuous without "
-                    "source-level guards",
-                    outcome.file, outcome.function, smt_verb,
-                )
-                continue
-
+            # No per-callsite vacuous-verb list here: the vacuity
+            # policy for check-overflow / check-oob /
+            # check-overflow-to-oob lives in the sweep layer
+            # (core.audit.sweep.VACUOUS_SMT_VERBS).  SAT without
+            # source-level guard premises comes back "inconclusive",
+            # so _run_tool_chain reports no confirmation and the
+            # promotion below never fires on a vacuous result.
             chain = [{"type": "smt", "config": {"verb": smt_verb}}]
             confirmed = _run_tool_chain(
                 chain,

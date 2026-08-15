@@ -305,6 +305,7 @@ def _make_tier_counters() -> Dict[str, TierCounters]:
         "codeql": TierCounters(),
         "coccinelle": TierCounters(),
         "smt": TierCounters(),
+        "compiler": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
     }
@@ -7660,6 +7661,16 @@ def _cwe_fallback_chain(cwe: str) -> List[Dict[str, Any]]:
     except ImportError:
         return chain
 
+    try:
+        from .compiler_sweep import compiler_applicable
+    except ImportError:
+        pass
+    else:
+        # Compiler static analyzer before SMT: cheap, deterministic,
+        # verification-role for its mapped families.
+        if compiler_applicable(cwe):
+            chain.append({"type": "compiler", "config": {"cwe": cwe}})
+
     smt_verb = smt_verb_for_cwe(cwe)
     if smt_verb:
         chain.append({"type": "smt", "config": {"verb": smt_verb}})
@@ -7997,6 +8008,38 @@ def _run_tool_chain(
                         _increment_tier_dict(tier_counters, "codeql", "errors")
                 elif tier_counters:
                     _increment_tier_dict(tier_counters, "codeql", "refuted")
+
+            elif tool_type == "compiler":
+                from .compiler_sweep import run_compiler_analyzer_sweep
+
+                comp_result = run_compiler_analyzer_sweep(
+                    target_path=effective_target,
+                    file_path=file_path,
+                    function_name=function_name,
+                    hypothesis=hypothesis,
+                    cwe=tool_cfg.get("cwe", ""),
+                    line_start=line_start,
+                    line_end=line_start + 50 if line_start else 0,
+                    out_dir=config.out_dir,
+                )
+                if comp_result.outcome == "confirmed":
+                    confirmed.append(comp_result.rule_id or "compiler:analyzer")
+                    if tier_counters:
+                        _increment_tier_dict(tier_counters, "compiler", "confirmed")
+                elif comp_result.outcome == "error":
+                    logger.debug(
+                        "tool_chain compiler error %s:%s: %s",
+                        file_path,
+                        function_name,
+                        comp_result.errors,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(tier_counters, "compiler", "errors")
+                elif comp_result.outcome == "refuted":
+                    if tier_counters:
+                        _increment_tier_dict(tier_counters, "compiler", "refuted")
+                elif tier_counters:
+                    _increment_tier_dict(tier_counters, "compiler", "inconclusive")
 
         except Exception as exc:
             logger.debug(

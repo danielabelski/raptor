@@ -43,6 +43,7 @@ class EvidenceSource(str, enum.Enum):
     DYNAMIC_CRASH = "dynamic:crash"
     DARK_VERIFY = "mechanical:dark_verify"
     COMPILATION = "mechanical:compilation"
+    COMPILER_ANALYZER = "mechanical:compiler_analyzer"
 
 
 class Confidence(str, enum.Enum):
@@ -74,10 +75,12 @@ _SOURCE_CONFIDENCE: Dict[EvidenceSource, Confidence] = {
     EvidenceSource.DYNAMIC_CRASH: Confidence.MEDIUM,
     EvidenceSource.DARK_VERIFY: Confidence.HIGH,
     EvidenceSource.COMPILATION: Confidence.MEDIUM,
+    EvidenceSource.COMPILER_ANALYZER: Confidence.HIGH,
 }
 
 VALID_EVIDENCE_TOOLS: frozenset = frozenset({
     "semgrep", "coccinelle", "codeql", "smt", "joern",
+    "compiler",
     "compilation", "dynamic:sanitizer", "dynamic:crash", "frida:runtime",
     "dark_verify:confirmed", "dark_verify:refuted",
 })
@@ -146,6 +149,7 @@ _RECEIPT_MAP: Dict[str, tuple] = {
     "dark_verify:refuted": (EvidenceSource.DARK_VERIFY, "refuted by executed dark witness"),
     "dark_verify": (EvidenceSource.DARK_VERIFY, "dark verification witness"),
     "compilation": (EvidenceSource.COMPILATION, "confirmed by compilation and execution"),
+    "compiler": (EvidenceSource.COMPILER_ANALYZER, "confirmed by compiler static-analyzer diagnostic"),
     "critique": (EvidenceSource.PREFILTER, "confirmed by critique prefilter"),
     "sarif_cache": (EvidenceSource.SEMGREP, "matched prior SARIF result"),
 }

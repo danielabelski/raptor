@@ -2868,6 +2868,19 @@ class GeminiProvider(LLMProvider):
             f"Initialized GeminiProvider: {config.model_name}"
         )
 
+        # Pre-build safety settings once.  RAPTOR is a security research
+        # tool — Gemini's default safety filter for "dangerous content"
+        # blocks exploit code, ASan crash reports, and vulnerability
+        # analysis prompts.  Disable that single category so the model
+        # can reason about the same material a human analyst would read.
+        from google.genai.types import SafetySetting
+        self._safety_settings = [
+            SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold="BLOCK_NONE",
+            ),
+        ]
+
     @property
     def client(self):
         """Per-thread client -- google-genai is not thread-safe."""
@@ -2923,6 +2936,7 @@ class GeminiProvider(LLMProvider):
         }
 
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        config_kwargs["safetySettings"] = self._safety_settings
         generate_kwargs = {
             "model": self.config.model_name,
             "contents": contents,
@@ -2937,7 +2951,17 @@ class GeminiProvider(LLMProvider):
             duration = time.monotonic() - t_start
 
             if not response.text and not response.candidates:
-                raise RuntimeError("Gemini returned empty response")
+                # Surface prompt_feedback when available — it explains
+                # why Gemini returned nothing (safety block, etc.).
+                pf = getattr(response, 'prompt_feedback', None)
+                pf_reason = ""
+                if pf:
+                    br = getattr(pf, 'block_reason', None)
+                    if br:
+                        pf_reason = f" (blocked: {br})"
+                raise RuntimeError(
+                    f"Gemini returned empty response{pf_reason}"
+                )
 
             content = response.text or ""
             finish_reason = "complete"
@@ -3026,6 +3050,7 @@ class GeminiProvider(LLMProvider):
                 pass
 
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        config_kwargs["safetySettings"] = self._safety_settings
         generate_kwargs = {
             "model": self.config.model_name,
             "contents": contents,

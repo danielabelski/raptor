@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from core.security.redaction import redact_secrets
@@ -135,6 +135,52 @@ class CCDispatchConfig:
     session_id: str | None = None
     persist_session: bool = False
     stream_json: bool = False
+    # Move per-machine system-prompt sections (cwd, env info, git
+    # status) into the first user message so the system prefix is
+    # byte-stable across processes and machines — the server-side
+    # prompt cache then hits across separate ``claude -p`` children
+    # (measured: 19k cache-read tokens and ~13x cost drop on the
+    # second identical-prefix call). The CLI ignores the flag when a
+    # custom ``--system-prompt`` is passed, so it is safe to emit
+    # unconditionally.
+    exclude_dynamic_sections: bool = True
+    # Operator knobs, resolved from env by default (field factories)
+    # so every dispatch site inherits them without call-site churn:
+    #   RAPTOR_CC_EFFORT          → ``--effort`` (low|medium|high|
+    #                               xhigh|max); invalid values warn
+    #                               and are dropped.
+    #   RAPTOR_CC_FALLBACK_MODEL  → ``--fallback-model``: the CLI
+    #                               retries on its own fallback when
+    #                               the default model is overloaded —
+    #                               backend-native resilience the
+    #                               transport can't replicate.
+    effort: str | None = field(default_factory=lambda: _env_cc_effort())
+    fallback_model: str | None = field(
+        default_factory=lambda: _env_cc_fallback_model(),
+    )
+
+
+_CC_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def _env_cc_effort() -> str | None:
+    import os
+    raw = os.environ.get("RAPTOR_CC_EFFORT", "").strip().lower()
+    if not raw:
+        return None
+    if raw not in _CC_EFFORT_LEVELS:
+        logger.warning(
+            "RAPTOR_CC_EFFORT=%r not in %s — ignoring",
+            raw, sorted(_CC_EFFORT_LEVELS),
+        )
+        return None
+    return raw
+
+
+def _env_cc_fallback_model() -> str | None:
+    import os
+    raw = os.environ.get("RAPTOR_CC_FALLBACK_MODEL", "").strip()
+    return raw or None
 
 
 def build_cc_command(config: CCDispatchConfig) -> list[str]:
@@ -152,6 +198,12 @@ def build_cc_command(config: CCDispatchConfig) -> list[str]:
     cmd.extend(["--max-budget-usd", config.budget_usd])
     if config.model:
         cmd.extend(["--model", config.model])
+    if config.fallback_model:
+        cmd.extend(["--fallback-model", config.fallback_model])
+    if config.effort:
+        cmd.extend(["--effort", config.effort])
+    if config.exclude_dynamic_sections:
+        cmd.append("--exclude-dynamic-system-prompt-sections")
     if config.system_prompt is not None and config.system_prompt.strip():
         # `--system-prompt` keeps the system prompt in its own
         # role-channel rather than concatenated to the user

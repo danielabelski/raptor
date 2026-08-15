@@ -144,3 +144,66 @@ class TestClaudecodeWorkerCap:
             lambda: 12,
         )
         assert derive_max_workers("anthropic.claude-mythos-5") == 12
+
+
+class TestDispatchKnobs:
+    def _cmd(self):
+        from core.llm.cc_adapter import CCDispatchConfig, build_cc_command
+        return build_cc_command(CCDispatchConfig(claude_bin="claude"))
+
+    def test_exclude_dynamic_sections_default_on(self):
+        assert "--exclude-dynamic-system-prompt-sections" in self._cmd()
+
+    def test_exclude_dynamic_sections_can_be_disabled(self):
+        from core.llm.cc_adapter import CCDispatchConfig, build_cc_command
+        cmd = build_cc_command(CCDispatchConfig(
+            claude_bin="claude", exclude_dynamic_sections=False,
+        ))
+        assert "--exclude-dynamic-system-prompt-sections" not in cmd
+
+    def test_effort_env_knob(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_CC_EFFORT", "low")
+        cmd = self._cmd()
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "low"
+
+    def test_invalid_effort_dropped(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_CC_EFFORT", "turbo")
+        assert "--effort" not in self._cmd()
+
+    def test_fallback_model_env_knob(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_CC_FALLBACK_MODEL", "backup-model")
+        cmd = self._cmd()
+        idx = cmd.index("--fallback-model")
+        assert cmd[idx + 1] == "backup-model"
+
+    def test_knobs_absent_by_default(self):
+        cmd = self._cmd()
+        assert "--effort" not in cmd
+        assert "--fallback-model" not in cmd
+
+
+class TestSurfacedCauseRetryClassification:
+    """The stream-json abort causes surfaced on nonzero exit classify
+    correctly: budget aborts never retry (same cost every time),
+    transient transport failures do."""
+
+    def test_budget_abort_not_retryable(self):
+        from core.llm.client import _is_retryable_error
+
+        err = RuntimeError("claude -p exited 1: error_max_budget_usd")
+        assert _is_retryable_error(err) is False
+
+    def test_timeout_retryable(self):
+        from core.llm.client import _is_retryable_error
+
+        err = RuntimeError("claude -p timed out after 600s")
+        assert _is_retryable_error(err) is True
+
+    def test_connection_failure_retryable(self):
+        from core.llm.client import _is_retryable_error
+
+        err = RuntimeError(
+            "claude -p exited 1: connection refused by upstream",
+        )
+        assert _is_retryable_error(err) is True

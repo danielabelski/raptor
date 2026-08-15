@@ -47,6 +47,64 @@ checker synthesis) can hit this. Set `RAPTOR_CC_BUDGET_USD` to raise
 or lower the ceiling; total run spend is still governed by the
 orchestrator-level `--max-cost`.
 
+#### Model pinning
+
+The transport pins children to the backend-resolved model identity
+from the pre-flight probe cache, passing it as `--model` explicitly.
+This makes the transport deterministic (a mid-run `settings.json`
+edit can no longer switch models silently), gives the scorecard and
+cost tracking a real model name, and lets worker derivation resolve
+actual capacity limits — the old `session-default` sentinel resolved
+to 0 RPM and serialised every review loop to one worker. Pinning is
+backend-safe because the id comes from the backend's own result
+envelope. Resolution order: `RAPTOR_CC_MODEL` (explicit operator
+pin) → cached probe result → sentinel (probe cache cold, `--model`
+omitted). `RAPTOR_CC_PIN_MODEL=0` disables probe pinning.
+
+#### Concurrency
+
+`derive_max_workers` clamps to a subprocess-aware ceiling (default 4,
+`RAPTOR_CC_MAX_WORKERS` to change) when the primary model is served
+by this transport: each worker is a full CLI process, and N parallel
+first calls with an identical prompt prefix race the server-side
+prompt cache — each pays the full cache write instead of one writing
+and N−1 reading. `tuning.json`'s `max_llm_workers` still beats both.
+
+#### Prompt caching
+
+Server-side prompt caching works ACROSS separate `claude -p`
+children: measured on a Bedrock-backed install, the second call with
+an identical prefix read all ~19k boot-prompt tokens from cache
+(~13x cheaper; a same-system-prompt call with a different user
+prompt measured ~4x cheaper). Dispatches pass
+`--exclude-dynamic-system-prompt-sections` so the CLI's default
+system prompt is byte-stable across working directories and
+machines, maximising those hits. Practical implication: batches of
+similar calls (audit review loops) should share one system prompt
+verbatim and run temporally clustered (the cache TTL is minutes).
+
+#### Operator knobs (env)
+
+| Variable | Effect |
+|---|---|
+| `RAPTOR_CC_MODEL` | Pin children to this model (`--model`) |
+| `RAPTOR_CC_PIN_MODEL=0` | Disable probe-based model pinning |
+| `RAPTOR_CC_BUDGET_USD` | Per-call abort ceiling (default 5.00) |
+| `RAPTOR_CC_MAX_WORKERS` | Subprocess concurrency cap (default 4) |
+| `RAPTOR_CC_EFFORT` | `--effort` for children (low/medium/high/xhigh/max) |
+| `RAPTOR_CC_FALLBACK_MODEL` | `--fallback-model`: CLI-native retry on overload |
+
+#### Security posture
+
+Pure-LLM children run with all internal tools disabled
+(`--allowed-tools ""`), zero MCP servers (`--strict-mcp-config` with
+an empty config), no session persistence, a sanitised environment
+(safe-env baseline + backend auth families only), and a private
+mode-0700 neutral working directory — which also means no project
+CLAUDE.md, settings, or hooks are loaded. User-level settings still
+load (some installs carry backend selection there); restricting
+`--setting-sources` further is deliberately NOT done for that reason.
+
 ## Quick Start
 
 ```bash

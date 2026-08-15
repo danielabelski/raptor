@@ -347,7 +347,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             sanitise_host_fingerprint: bool = False,
             cpu_count: int | None = None,
             require_sanitisation: bool = False,
-            etc_overlay: dict | None = None):
+            etc_overlay: dict | None = None,
+            degraded_net_deny: bool = True):
     """Context manager for sandboxed subprocess execution.
 
     Each run() call inside the context runs the target command with the
@@ -438,6 +439,20 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  should pre-populate `{output}/.home/` before invoking.
                  Requires `output=` to be set. Defaults to True on
                  `run_untrusted()`, False on direct `sandbox()` use.
+        degraded_net_deny: (default True) When `block_network=True` was
+                 requested but no namespace backend is available on this
+                 host (Landlock-only degradation — Ubuntu 24.04+ AppArmor
+                 userns default, SELinux, nested containers), fall back
+                 to Landlock's TCP-connect deny (ABI v4+): every outbound
+                 TCP connect fails with EACCES instead of silently running
+                 with full host network. Loopback connects are denied too
+                 (Landlock net rules are port-scoped, not address-scoped),
+                 which breaks daemon-IPC tools; known offenders are nudged
+                 to no-daemon mode via env (GRADLE_OPTS, NX_DAEMON). bind/
+                 listen and UDP are untouched. Pass False to opt out when
+                 a workload genuinely needs loopback TCP on a degraded
+                 host and the operator accepts open egress. No effect
+                 when a namespace backend is available or on macOS.
 
     Landlock activation: engaged when any of `target`, `output`, or
     `allowed_tcp_ports` is set. Default filesystem policy is read-
@@ -804,6 +819,46 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         use_mount = use_sandbox and bool(target or output) and check_mount_available()
         use_seatbelt = False
 
+    # Degraded-mode network fallback. block_network=True is normally
+    # enforced by the network namespace; when no namespace backend is
+    # available (use_sandbox False — AppArmor userns sysctl, SELinux,
+    # nested containers), the block previously evaporated to a one-shot
+    # warning and the child ran with full host network. Landlock ABI v4+
+    # can express "deny every TCP connect" with a handled-but-empty net
+    # ruleset, restoring most of the intent: no TCP egress (EACCES), UDP
+    # and bind/listen untouched (see the BIND_TCP design rationale).
+    # Deliberately NOT engaged when the caller supplied their own
+    # allowed_tcp_ports — that allowlist is already the network policy.
+    # Loopback caveat: Landlock net rules are port-scoped, so the deny
+    # hits self-loopback IPC too (gradle daemon et al.) — mitigated by
+    # the env nudge in run() and the degraded_net_deny=False opt-out.
+    _degraded_tcp_deny = False
+    if (sys.platform != "darwin"
+            and not effectively_disabled
+            and degraded_net_deny
+            and block_network
+            and not use_sandbox
+            and not allowed_tcp_ports):
+        if check_landlock_available() and _get_landlock_abi() >= 4:
+            _degraded_tcp_deny = True
+            if state.warn_once("_degraded_tcp_deny_warned"):
+                logger.warning(
+                    "Sandbox: block_network requested but no namespace "
+                    "backend is available — falling back to Landlock "
+                    "TCP-connect deny (all TCP connects fail with "
+                    "EACCES, including loopback; bind/listen and UDP "
+                    "are unaffected). Daemon-IPC tools are nudged to "
+                    "no-daemon mode via env. Pass "
+                    "degraded_net_deny=False to opt out for workloads "
+                    "that need loopback TCP."
+                )
+        elif state.warn_once("_degraded_tcp_deny_unavailable_warned"):
+            logger.warning(
+                "Sandbox: block_network requested but no namespace "
+                "backend is available AND Landlock ABI v4+ is missing — "
+                "network access is NOT restricted for this call."
+            )
+
     if strict_required:
         if not use_sandbox:
             raise RuntimeError(
@@ -1044,7 +1099,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                allowed_tcp_ports=allowed_tcp_ports,
                                seccomp_profile=seccomp_profile,
                                seccomp_block_udp=seccomp_block_udp,
-                               readable_paths=_preexec_readable)
+                               readable_paths=_preexec_readable,
+                               deny_all_tcp_connect=_degraded_tcp_deny)
 
     # Host-fingerprint persona — opt-in. Built once per sandbox() context
     # and reused across every run() call inside it. Cleanup happens in
@@ -1295,6 +1351,24 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         if fake_home_env:
             kwargs["env"] = {**kwargs["env"], **fake_home_env}
 
+        # Degraded-mode daemon nudge. The Landlock TCP-connect deny hits
+        # loopback too, and several build tools default to a client/
+        # daemon model over loopback TCP. Steer known offenders to their
+        # no-daemon mode through their own documented config — the same
+        # trusted-injection pattern as the JAVA_TOOL_OPTIONS proxy
+        # sysprops. Policy is unchanged: a tool that ignores the nudge
+        # (explicit --daemon, Bazel's client/server) still fails CLOSED,
+        # and _check_blocked names the opt-out.
+        if _degraded_tcp_deny:
+            kwargs["env"] = dict(kwargs["env"])
+            _daemon_off = "-Dorg.gradle.daemon=false"
+            _gopts = kwargs["env"].get("GRADLE_OPTS", "")
+            if _daemon_off not in _gopts:
+                kwargs["env"]["GRADLE_OPTS"] = (
+                    f"{_gopts} {_daemon_off}".strip()
+                )
+            kwargs["env"].setdefault("NX_DAEMON", "false")
+
         # The pid1 shim requires _RAPTOR_TRUSTED to run.  Only inject on
         # the unshare path (where the shim is used); the shim strips it
         # before exec'ing the target so it never leaks.
@@ -1465,6 +1539,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             layers.append("landlock")
         if allowed_tcp_ports and landlock_available:
             layers.append(f"tcp:{','.join(str(p) for p in allowed_tcp_ports)}")
+        elif _degraded_tcp_deny and landlock_available:
+            layers.append("tcp:deny-all")
         if seccomp_profile and check_seccomp_available():
             layers.append(f"seccomp:{seccomp_profile}")
         # NPROC enforcement via prlimit wrapper, only meaningful when
@@ -2300,6 +2376,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # the bind tree + Landlock, skip_mount_ns and Landlock-only via
         # the Landlock read allowlist alone.
         result.sandbox_info["restrict_reads"] = bool(restrict_reads)
+        if _degraded_tcp_deny:
+            result.sandbox_info["degraded_net_deny"] = True
         if _use_proxy_netns:
             result.sandbox_info["proxy_enforcement"] = "netns"
         elif use_egress_proxy:
@@ -2403,6 +2481,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         network_engaged = bool(
             (need_unshare and block_network)
             or (use_seatbelt and (block_network or use_egress_proxy))
+            or (_degraded_tcp_deny and landlock_available)
         )
         landlock_engaged = bool(
             ((writable_paths or allowed_tcp_ports) and landlock_available)
@@ -2419,7 +2498,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                           landlock_engaged=landlock_engaged,
                           writable_paths=writable_paths,
                           seccomp_engaged=seccomp_engaged,
-                          seccomp_profile=seccomp_profile)
+                          seccomp_profile=seccomp_profile,
+                          degraded_net_deny=_degraded_tcp_deny)
 
         return result
 
@@ -2564,6 +2644,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         cpu_count: int | None = None,
         require_sanitisation: bool = False,
         etc_overlay: dict | None = None,
+        degraded_net_deny: bool = True,
         **kwargs) -> subprocess.CompletedProcess:
     """Run a single command in a sandbox. Convenience wrapper.
 
@@ -2592,7 +2673,8 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
                  sanitise_host_fingerprint=sanitise_host_fingerprint,
                  cpu_count=cpu_count,
                  require_sanitisation=require_sanitisation,
-                 etc_overlay=etc_overlay) as _run:
+                 etc_overlay=etc_overlay,
+                 degraded_net_deny=degraded_net_deny) as _run:
         return _run(cmd, **kwargs)
 
 

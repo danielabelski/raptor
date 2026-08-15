@@ -83,6 +83,10 @@ _SANDBOX_KWARGS = frozenset({
     "profile", "disabled", "limits", "map_root",
     "use_egress_proxy", "proxy_hosts",
     "restrict_reads", "readable_paths",
+    # degraded_net_deny is context-level (the Landlock TCP-connect deny
+    # is compiled into the preexec at sandbox() setup); a per-call
+    # override would silently no-op.
+    "degraded_net_deny",
     "caller_label",
     "fake_home",
     # tool_paths is sandbox()-level (extra dirs to bind-mount in

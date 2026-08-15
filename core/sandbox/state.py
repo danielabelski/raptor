@@ -114,6 +114,10 @@ _sandbox_unavailable_warned = False
 # the public sandbox() path that names the practical posture and remediation.
 _sandbox_landlock_only_warned = False
 _net_and_tcp_allowlist_warned = False
+# Degraded-mode Landlock TCP-connect deny (block_network without a
+# namespace backend): engaged / cannot-engage one-shot warnings.
+_degraded_tcp_deny_warned = False
+_degraded_tcp_deny_unavailable_warned = False
 _seccomp_arch_missing_warned = False
 _mount_unavailable_warned = False
 _ptrace_unavailable_warned = False

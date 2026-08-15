@@ -2559,5 +2559,133 @@ class TestE2ELandlockSignalScope(unittest.TestCase):
             self.assertIn("cross_errno=1", result.stdout)
 
 
+class TestDegradedModeTcpDeny(unittest.TestCase):
+    """Landlock TCP-connect deny when block_network has no namespace.
+
+    Emulates a degraded host (Ubuntu 24.04 AppArmor-userns default,
+    SELinux, nested containers) by patching check_net_available to
+    False. block_network=True must then fall back to a handled-but-
+    empty Landlock net ruleset: every TCP connect fails with EACCES
+    (loopback included), bind/listen stays permitted, and known
+    daemon-IPC tools get env-nudged to no-daemon mode.
+    """
+
+    def setUp(self):
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+        from core.sandbox.landlock import _get_landlock_abi
+        if _get_landlock_abi() < 4:
+            self.skipTest("Landlock ABI < 4 (no TCP rules)")
+
+    @staticmethod
+    def _listener():
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        return s
+
+    @staticmethod
+    def _connect_cmd(port):
+        return ["python3", "-c",
+                (f"import socket; s = socket.socket(); s.settimeout(5); "
+                 f"s.connect(('127.0.0.1', {port})); print('connected')")]
+
+    def test_deny_blocks_tcp_connect(self):
+        """Loopback connect denied — with and without an fs ruleset."""
+        from unittest.mock import patch
+        srv = self._listener()
+        port = srv.getsockname()[1]
+        try:
+            with patch("core.sandbox.context.check_net_available",
+                       return_value=False):
+                # Net-only ruleset (no target/output → no fs handling).
+                r = sandbox_run(
+                    self._connect_cmd(port), block_network=True,
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertNotEqual(r.returncode, 0,
+                                    "TCP connect should be denied")
+                self.assertIn("PermissionError", r.stderr)
+                self.assertTrue(r.sandbox_info.get("degraded_net_deny"))
+                # Combined ruleset (output engages the fs mask too).
+                with TemporaryDirectory() as d:
+                    r2 = sandbox_run(
+                        self._connect_cmd(port), block_network=True,
+                        output=d,
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    self.assertNotEqual(r2.returncode, 0)
+                    self.assertIn("PermissionError", r2.stderr)
+        finally:
+            srv.close()
+
+    def test_optout_allows_connect_and_bind_still_works(self):
+        """degraded_net_deny=False restores pre-fix behaviour; bind is
+        never restricted under the deny either."""
+        from unittest.mock import patch
+        srv = self._listener()
+        port = srv.getsockname()[1]
+        try:
+            with patch("core.sandbox.context.check_net_available",
+                       return_value=False):
+                r = sandbox_run(
+                    self._connect_cmd(port), block_network=True,
+                    degraded_net_deny=False,
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(
+                    r.returncode, 0,
+                    f"opt-out should allow connect; stderr={r.stderr!r}")
+                self.assertNotIn("degraded_net_deny", r.sandbox_info)
+                # bind/listen under the deny (design constraint: tools
+                # may bind even when unreachable).
+                r2 = sandbox_run(
+                    ["python3", "-c",
+                     ("import socket; b = socket.socket(); "
+                      "b.bind(('127.0.0.1', 0)); b.listen(1); print('bound')")],
+                    block_network=True,
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(r2.returncode, 0,
+                                 f"bind must stay permitted; stderr={r2.stderr!r}")
+        finally:
+            srv.close()
+
+    def test_daemon_env_nudge(self):
+        """GRADLE_OPTS / NX_DAEMON nudges injected only under the deny."""
+        from unittest.mock import patch
+        with patch("core.sandbox.context.check_net_available",
+                   return_value=False):
+            r = sandbox_run(["env"], block_network=True,
+                            capture_output=True, text=True, timeout=15)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("-Dorg.gradle.daemon=false", r.stdout)
+        self.assertIn("NX_DAEMON=false", r.stdout)
+        # Healthy path: no nudge.
+        if check_net_available():
+            r2 = sandbox_run(["env"], block_network=True,
+                             capture_output=True, text=True, timeout=15)
+            self.assertNotIn("org.gradle.daemon", r2.stdout)
+
+    def test_caller_allowlist_wins_over_deny(self):
+        """allowed_tcp_ports is already the network policy — the
+        degraded deny must not override it."""
+        from unittest.mock import patch
+        with patch("core.sandbox.context.check_net_available",
+                   return_value=False), TemporaryDirectory() as d:
+            r = sandbox_run(["true"], block_network=False,
+                            allowed_tcp_ports=[443], output=d,
+                            capture_output=True, text=True, timeout=15)
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("degraded_net_deny", r.sandbox_info)
+
+    def test_per_call_override_rejected(self):
+        """degraded_net_deny is context-level; per-call must TypeError."""
+        with sandbox(block_network=True) as run_fn, \
+                self.assertRaises(TypeError):
+            run_fn(["true"], degraded_net_deny=False)
+
+
 if __name__ == "__main__":
     unittest.main()

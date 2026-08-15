@@ -41,6 +41,11 @@ _BLOCKED_PATTERNS = [
     ("network", "fatal: unable to access"),
     ("network", "ConnectionError"),
     ("network", "urlopen error"),
+    # Daemon-IPC casualty of the degraded-mode Landlock TCP-connect deny:
+    # the daemon binds fine (bind is never restricted) but the client's
+    # loopback connect gets EACCES. Precise tool string, not a generic
+    # "could not connect", to keep the pre-filter noise-free.
+    ("network", "Could not connect to the Gradle daemon"),
     # Landlock filesystem restriction — each pattern is a pre-filter; the
     # real gating happens via landlock_engaged + path-within-writable checks
     # in _check_blocked. Landlock returns EACCES ("Permission denied"), not
@@ -252,12 +257,13 @@ def _path_within(path: str, allowed: list) -> bool:
 
 
 def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
-                   sandbox_info: dict = None,
+                   sandbox_info: dict | None = None,
                    network_engaged: bool = False,
                    landlock_engaged: bool = False,
-                   writable_paths: list = None,
+                   writable_paths: list | None = None,
                    seccomp_engaged: bool = False,
-                   seccomp_profile: str = None) -> None:
+                   seccomp_profile: str | None = None,
+                   degraded_net_deny: bool = False) -> None:
     """Enrich sandbox_info when stderr shows evidence of sandbox enforcement.
 
     Only fires for an enforcement layer that is actually engaged this call:
@@ -285,16 +291,15 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
                 continue
             if not landlock_engaged:
                 continue
-        if category == "seccomp":
-            # Seccomp returns EPERM ("Operation not permitted"). The pattern
-            # is inherently noisy — EPERM also comes from legitimate
-            # capability checks (ptrace on protected process, mount without
-            # privs, etc.). Fire only when seccomp is engaged AND the
-            # process actually failed (rc != 0) AND the text looks like a
-            # syscall-level message (not a higher-level "Not permitted" from
-            # a CLI tool's own error).
-            if not seccomp_engaged or returncode == 0:
-                continue
+        # Seccomp returns EPERM ("Operation not permitted"). The pattern
+        # is inherently noisy — EPERM also comes from legitimate
+        # capability checks (ptrace on protected process, mount without
+        # privs, etc.). Fire only when seccomp is engaged AND the
+        # process actually failed (rc != 0) AND the text looks like a
+        # syscall-level message (not a higher-level "Not permitted" from
+        # a CLI tool's own error).
+        if category == "seccomp" and (not seccomp_engaged or returncode == 0):
+            continue
 
         # For write blocks, try to isolate the offending path. If it falls
         # inside writable_paths it cannot be Landlock — skip.
@@ -321,10 +326,27 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
         # post-run aggregate of what the sandbox blocked, with suggested
         # fixes, instead of forcing them to grep log lines.
         if category == "network":
-            logger.info(
-                f"Sandbox: outbound network blocked during: {cmd_display} "
-                f"(rc={returncode})"
-            )
+            if degraded_net_deny:
+                # Degraded-mode Landlock TCP-connect deny is stricter
+                # than the netns it substitutes for: loopback connects
+                # are denied too, so daemon-IPC tools (gradle daemon,
+                # language servers, self-spawned test servers) fail to
+                # reach their own listener. Name the exact knob.
+                logger.info(
+                    f"Sandbox: TCP connect denied during: {cmd_display} "
+                    f"(rc={returncode}) — degraded-mode Landlock deny is "
+                    f"active (no namespace backend on this host) and it "
+                    f"covers loopback as well. Daemon-IPC tools are "
+                    f"auto-nudged to no-daemon mode where possible; if "
+                    f"this workload genuinely needs loopback TCP, pass "
+                    f"degraded_net_deny=False (accepts open egress on "
+                    f"this host)."
+                )
+            else:
+                logger.info(
+                    f"Sandbox: outbound network blocked during: {cmd_display} "
+                    f"(rc={returncode})"
+                )
             blocked_evidence.append("Attempted outbound network connection (blocked by sandbox)")
             record_denial(cmd_display, returncode, "network")
         elif category == "write":

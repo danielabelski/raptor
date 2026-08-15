@@ -43,6 +43,8 @@ def _sandbox_state_guard():
         "_landlock_warned_abi_v3", "_landlock_warned_abi_v2",
         "_sandbox_unavailable_warned", "_sandbox_landlock_only_warned",
         "_net_and_tcp_allowlist_warned",
+        "_degraded_tcp_deny_warned",
+        "_degraded_tcp_deny_unavailable_warned",
         "_seccomp_arch_missing_warned", "_mount_unavailable_warned",
         "_ptrace_unavailable_warned", "_audit_warned_no_spawn",
         "_engage_probe_indeterminate_warned",

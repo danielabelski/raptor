@@ -78,7 +78,7 @@ def check_landlock_available() -> bool:
                 logger.debug("Sandbox: Landlock not available (errno=%d)", ctypes.get_errno())
                 return False
             abi = int(result)
-        except Exception:
+        except Exception:  # noqa: BLE001 — any probe failure (missing libc, ctypes quirk) means Landlock is unusable; fail closed to unavailable
             state._landlock_cache = -1
             return False
 
@@ -161,8 +161,7 @@ def _landlock_functional_self_test() -> bool:
     os.close(w)
     try:
         data = os.read(r, 1)
-        _, status = os.waitpid(pid, 0)
-        # status 0 and data == b"\x01" means success
+        os.waitpid(pid, 0)  # reap; verdict is carried by the pipe byte
         return data == b"\x01"
     except OSError:
         return False
@@ -218,7 +217,7 @@ def _run_selftest_in_child(write_fd: int) -> int:
 
     try:
         libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-    except Exception:
+    except Exception:  # noqa: BLE001 — self-test child: any libc-load failure means the test cannot run; report broken (0)
         _cleanup(test_path)
         return 0
 
@@ -287,8 +286,9 @@ def _get_landlock_abi() -> int:
     return max(state._landlock_cache or 0, 0)
 
 
-def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list = None,
-                           readable_paths: list = None):
+def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None = None,
+                           readable_paths: list | None = None,
+                           deny_all_tcp_connect: bool = False):
     """Create a preexec_fn that applies Landlock restrictions.
 
     Filesystem:
@@ -303,7 +303,15 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list = None,
         tool-compatibility cost.
 
     Network (ABI v4+): if allowed_tcp_ports is set, restricts TCP connect
-    to those ports only.
+    to those ports only. If `deny_all_tcp_connect` is set (and no port
+    allowlist is), CONNECT_TCP is handled with ZERO allow rules — every
+    TCP connect (loopback included; Landlock net rules are port-scoped,
+    not address-scoped) fails with EACCES. bind/listen and UDP are
+    deliberately untouched (see the degraded-mode rationale in
+    context.py). When only the connect-deny is requested (no writable
+    paths, no read restriction, no port allowlist), the ruleset handles
+    ONLY the net access — filesystem semantics stay exactly as without
+    Landlock, so a net-only deny never sneaks in fs restrictions.
 
     Device ioctl (ABI v5+): blanket-denied on all device files.
 
@@ -418,8 +426,17 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list = None,
     # handled_access_fs is the SET of accesses the ruleset governs —
     # any access bit NOT set here is allowed unrestricted. We add read
     # bits only when restrict_reads is on; otherwise reads stay wide.
-    _handled_fs = _write_access | _read_access
-    _net_access = LANDLOCK_ACCESS_NET_CONNECT_TCP if (ports is not None and _abi >= 4) else 0
+    # Net-only deny (no writable paths, no reads restriction, no port
+    # allowlist): handle NO fs accesses at all, so the ruleset governs
+    # only TCP connect and filesystem behaviour is untouched.
+    _net_only = (deny_all_tcp_connect and not paths
+                 and not restrict_reads and ports is None)
+    _handled_fs = 0 if _net_only else (_write_access | _read_access)
+    _net_access = (
+        LANDLOCK_ACCESS_NET_CONNECT_TCP
+        if ((ports is not None or deny_all_tcp_connect) and _abi >= 4)
+        else 0
+    )
     _scoped = 0
     if _abi >= 6:
         _scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL
@@ -524,7 +541,12 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list = None,
                 # when _read_access==0.
                 dev_access |= _read_access & READ_FILE
 
-                for dev_path in ("/dev/null", "/dev/tty"):
+                # Net-only ruleset (_handled_fs == 0): no fs accesses are
+                # handled, so writes to /dev/null work without a rule —
+                # and adding one whose bits aren't in the handled mask
+                # would EINVAL. Skip the device rules entirely.
+                for dev_path in (("/dev/null", "/dev/tty")
+                                 if _handled_fs else ()):
                     try:
                         dev_fd = _os_open(dev_path, _O_PATH)
                         try:
@@ -646,7 +668,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list = None,
                 # os._exit skips finally, so this only runs on the
                 # success path. Kernel reclaims the fd on _exit.
                 _os_close(fd)
-        except Exception:
+        except Exception:  # noqa: BLE001 — fail-closed by design: ANY exception here means the isolation guarantee is broken
             # Any unexpected exception during Landlock installation
             # means the caller's isolation guarantee is broken; abort
             # rather than run without Landlock.

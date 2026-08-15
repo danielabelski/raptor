@@ -370,8 +370,12 @@ pre-build a cached CPG so that later `/audit` and `/agentic` runs can
 query callers/callees without the cold-start penalty:
 
 ```bash
-libexec/raptor-build-cpg-cache "$RESOLVED_TARGET" "$WORKDIR"
+libexec/raptor-build-cpg-cache "$WORKDIR"
 ```
+
+The script takes only the understand dir — it reads the target path
+from `$WORKDIR/checklist.json` and resolves the cache directory itself,
+so run it after MAP-0 has built the inventory.
 
 Opt-in — skipped when Joern is not installed or the target has no
 supported source files. Writes `cpg-cache-manifest.json` to `$WORKDIR`.

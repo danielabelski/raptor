@@ -465,12 +465,6 @@ def main():
         p_notes.add_argument("--edit", action="store_true", help="Open in $EDITOR")
     p_notes.add_argument("--file", default=None, metavar="<path>", help="Read notes from file")
 
-    # description
-    p_desc = sub.add_parser("description", help="View or update project description",
-                            usage="raptor project description <name> [<text>]", **_F)
-    p_desc.add_argument("name", help="Project name")
-    p_desc.add_argument("text", nargs="?", help="New description text")
-
     # add
     p_add = sub.add_parser("add", help="Add existing runs to a project",
                            usage="raptor project add <name> <directory> [--target <path>] [--output-dir <dir>]", **_F)
@@ -969,17 +963,6 @@ def main():
                 p = mgr.load(args.name)
                 if p:
                     print(p.notes or "(no notes)")
-                else:
-                    print(f"Project '{args.name}' not found.")
-
-        elif args.subcommand == "description":
-            if args.text:
-                mgr.update_description(args.name, args.text)
-                print("Description updated.")
-            else:
-                p = mgr.load(args.name)
-                if p:
-                    print(p.description or "(no description)")
                 else:
                     print(f"Project '{args.name}' not found.")
 

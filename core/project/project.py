@@ -774,16 +774,6 @@ class ProjectManager:
         save_json(self.projects_dir / f"{name}.json", project.to_dict())
         return project
 
-    def update_description(self, name: str, description: str) -> Project:
-        """Update project description."""
-        project = self.load(name)
-        if not project:
-            raise ValueError(f"Project '{name}' not found")
-
-        project.description = description
-        save_json(self.projects_dir / f"{name}.json", project.to_dict())
-        return project
-
     def add_directory(self, name: str, directory: str, target: str | None = None,
                       output_dir: str | None = None) -> int:
         """Add existing run directory (or directory of runs) to a project.

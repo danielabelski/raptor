@@ -357,11 +357,6 @@ class TestProjectManager(unittest.TestCase):
         p2 = self.mgr.load("myapp")
         self.assertEqual(p2.notes, "new notes")
 
-    def test_update_description(self):
-        self.mgr.create("myapp", self.target_code)
-        p = self.mgr.update_description("myapp", "new desc")
-        self.assertEqual(p.description, "new desc")
-
     def test_find_project_for_target(self):
         self.mgr.create("myapp", self.target_code)
         found = self.mgr.find_project_for_target(self.target_code)

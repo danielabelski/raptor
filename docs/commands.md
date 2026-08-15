@@ -707,7 +707,6 @@ Named workspaces that corral analysis runs into a shared directory.
 /project delete <name> [--purge] [--yes]
 /project rename <old> <new>
 /project notes <name> [<text>] [--file <path>]
-/project description <name> [<text>]
 /project add <name> <dir> [--target <path>]
 /project remove <name> <run> --to <path>
 /project report [<name>]
@@ -744,7 +743,6 @@ Named workspaces that corral analysis runs into a shared directory.
 | `delete` | Delete a project (`--purge` removes output directory, `--yes` skips confirmation) |
 | `rename` | Rename a project |
 | `notes` | View or set project notes (inline text or `--file`) |
-| `description` | View or set project description |
 | `add` | Add a run directory to the project |
 | `remove` | Remove a run, moving it to `--to <path>` |
 | `report` | Generate a merged report across all runs |

@@ -207,6 +207,9 @@ class OrchestratorConfig:
     dynamic_validation: bool = False
     caps: Optional[Any] = None
     max_workers: int = 0  # 0 = auto (derive from model RPM), 1 = serial
+    # Additional item kinds to review beyond functions/methods
+    # (e.g. {"top_level", "macro", "global"}). None = default set.
+    include_kinds: Optional[set] = None
     functions: Optional[List[str]] = None
     joern_server: Optional[Any] = None  # pre-started server; caller owns lifecycle
     study_root: Optional[Path] = None  # full source root for study loop (when target_path is an excerpt)
@@ -2097,6 +2100,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         fuzz_coverage=fuzz_coverage,
         out_dir=None if config.force else config.out_dir,
         project_dir=None if config.force else _project_dir,
+        include_kinds=getattr(config, "include_kinds", None),
     )
 
     _joern_last_activity = [time.monotonic()]
@@ -3611,8 +3615,16 @@ def _run_audit_body(
                         outcome, f"[{rv.gate}: {rv.reason}]",
                     )
                     result.outcomes[i].status = rv.demote_to
+                    # Counters must follow demote_to. The old
+                    # unconditional suspicious-=1/clean+=1 drifted the
+                    # tallies whenever the gate demoted TO suspicious
+                    # (the outcome stayed suspicious while the counters
+                    # recorded a clean).
                     result.suspicious -= 1
-                    result.clean += 1
+                    if rv.demote_to == "suspicious":
+                        result.suspicious += 1
+                    else:
+                        result.clean += 1
         except Exception:
             logger.debug(
                 "refutation gate (post-promote) error",
@@ -5637,9 +5649,15 @@ def _multi_pass_review(
                     refute_ctx = dict(ctx)
                     refute_ctx["adversarial_target"] = finding
                     outcome = review_fn(refute_ctx, config)
+                    # AdversarialReviewer keys on "refuted" — the old
+                    # {status, body, hypothesis} shape meant the
+                    # downgrade could NEVER fire (silent no-op since
+                    # the flag was introduced). A refutation is the
+                    # adversarial pass concluding the code is clean.
                     return {
+                        "refuted": outcome.status == "clean",
+                        "reason": outcome.body,
                         "status": outcome.status,
-                        "body": outcome.body,
                         "hypothesis": outcome.hypothesis,
                     }
 
@@ -7647,6 +7665,38 @@ def _cwe_fallback_chain(cwe: str) -> List[Dict[str, Any]]:
     return chain
 
 
+_line_end_cache: Dict[Tuple[str, str], int] = {}
+
+
+def _checklist_line_end(
+    config: OrchestratorConfig, file_path: str, function_name: str,
+) -> int:
+    """Resolve a function's ``line_end`` from the inventory checklist.
+
+    The sweep windows previously used ``line_start + 50``: matches from
+    the NEXT function confirmed short functions, and matches past line
+    50 of a long function were dropped. The checklist carries real
+    bounds — use them. Returns 0 when unresolvable (callers keep their
+    +50 fallback).
+    """
+    key = (file_path, function_name)
+    cached = _line_end_cache.get(key)
+    if cached is not None:
+        return cached
+    result = 0
+    inv = getattr(config, "inventory", None) or {}
+    for frec in inv.get("files", []):
+        if frec.get("path") != file_path:
+            continue
+        for item in frec.get("items", []):
+            if item.get("name") == function_name:
+                result = item.get("line_end") or 0
+                break
+        break
+    _line_end_cache[key] = result
+    return result
+
+
 def _run_tool_chain(
     chain: List[Dict[str, Any]],
     *,
@@ -7696,7 +7746,8 @@ def _run_tool_chain(
                     cached = sarif_cache.lookup(
                         file_path,
                         line_start,
-                        line_start + 50 if line_start else 0,
+                        _checklist_line_end(config, file_path, function_name)
+                        or (line_start + 50 if line_start else 0),
                     )
                     if cached is not None:
                         if cached:
@@ -7717,7 +7768,9 @@ def _run_tool_chain(
                         function_name=function_name,
                         rule_config=rule_path,
                         line_start=line_start,
-                        line_end=line_start + 50 if line_start else 0,
+                        line_end=_checklist_line_end(
+                            config, file_path, function_name)
+                        or (line_start + 50 if line_start else 0),
                     )
                 finally:
                     if rule_path and os.path.basename(rule_path).startswith("audit_sweep_"):
@@ -7870,7 +7923,9 @@ def _run_tool_chain(
                     query_path=tool_cfg["query"],
                     database_path=config.codeql_db_path,
                     line_start=line_start,
-                    line_end=line_start + 50 if line_start else 0,
+                    line_end=_checklist_line_end(
+                        config, file_path, function_name)
+                    or (line_start + 50 if line_start else 0),
                 )
                 if codeql_result.outcome == "confirmed":
                     confirmed.append(f"codeql:{Path(tool_cfg['query']).stem}")
@@ -8029,9 +8084,14 @@ def _sweep_validate(
     review = outcome.review_result or {}
     hypothesis = _resolve_hypothesis(outcome)
     raw_et = review.get("evidence_tool") or outcome.evidence_tool or ""
-    if _is_tool_confirmed(raw_et):
-        return outcome
+    # Sanitize BEFORE the skip check. review["evidence_tool"] is the raw
+    # LLM string — the schema invites values like "semgrep", and a
+    # hallucinated tool name must trigger mechanical validation, not
+    # bypass it (the honest "llm" answer was being validated while the
+    # confident fabrication skipped the very sweep that would test it).
     evidence_tool = _sanitize_llm_et(raw_et)
+    if _is_tool_confirmed(evidence_tool):
+        return outcome
 
     if not hypothesis:
         logger.info(
@@ -8333,9 +8393,14 @@ def _proactive_validate(
     dispatched = dispatched_tools or set()
 
     raw_et = review.get("evidence_tool") or outcome.evidence_tool or ""
-    if _is_tool_confirmed(raw_et):
-        return outcome
+    # Sanitize BEFORE the skip check. review["evidence_tool"] is the raw
+    # LLM string — the schema invites values like "semgrep", and a
+    # hallucinated tool name must trigger mechanical validation, not
+    # bypass it (the honest "llm" answer was being validated while the
+    # confident fabrication skipped the very sweep that would test it).
     evidence_tool = _sanitize_llm_et(raw_et)
+    if _is_tool_confirmed(evidence_tool):
+        return outcome
 
     confirmed_tools = []
 
@@ -8733,7 +8798,28 @@ def _run_critique(
             joern_server=joern_server,
         )
         if confirmed:
-            tool = "+".join(confirmed)
+            # Same promotion discipline as _promote_suspicious: only
+            # verification-role evidence may lift suspicious→finding,
+            # and a fully-guarded sink blocks it. Critique previously
+            # promoted on ANY confirmation, letting detection-role
+            # heuristics (e.g. smt:check-overflow-to-oob) mint findings
+            # through the critique door that the front door refused.
+            high_prec = [t for t in confirmed if not _is_detection_only(t)]
+            if not high_prec:
+                logger.info(
+                    "critique promotion blocked %s:%s — only "
+                    "detection-role rules (%s)",
+                    outcome.file, outcome.function, "+".join(confirmed),
+                )
+                continue
+            if _check_sink_guarded_cached(
+                    outcome.function, joern_server) == "guarded":
+                logger.info(
+                    "critique promotion blocked %s:%s — all sink calls "
+                    "guarded", outcome.file, outcome.function,
+                )
+                continue
+            tool = "+".join(high_prec)
             idx = result.outcomes.index(outcome)
             result.outcomes[idx] = _promote_outcome(outcome, f"critique:{tool}")
             result.sweep_promoted += 1
@@ -10480,7 +10566,7 @@ def _promote_smt_clean(
             if abr.bypass_found:
                 tool_hit = "smt:check-auth-bypass"
                 if abr.witness:
-                    tool_hit += ":witness"
+                    tool_hit += ":model"  # Z3 model, not an executed witness
         except Exception:
             logger.debug(
                 "auth_bypass_smt failed for %s:%s",
@@ -10493,7 +10579,7 @@ def _promote_smt_clean(
                 if ldr.violation_found:
                     tool_hit = "smt:check-lock-discipline"
                     if ldr.witness:
-                        tool_hit += ":witness"
+                        tool_hit += ":model"  # Z3 model, not an executed witness
             except Exception:
                 logger.debug(
                     "lock_discipline_smt failed for %s:%s",
@@ -10506,7 +10592,7 @@ def _promote_smt_clean(
                 if rlr.leak_found:
                     tool_hit = "smt:check-resource-leak"
                     if rlr.witness:
-                        tool_hit += ":witness"
+                        tool_hit += ":model"  # Z3 model, not an executed witness
             except Exception:
                 logger.debug(
                     "resource_leak_smt failed for %s:%s",
@@ -10530,7 +10616,7 @@ def _promote_smt_clean(
                 if inr.narrowing_found:
                     tool_hit = "smt:check-integer-narrowing"
                     if inr.witness:
-                        tool_hit += ":witness"
+                        tool_hit += ":model"  # Z3 model, not an executed witness
             except Exception:
                 logger.debug(
                     "integer_narrowing_smt failed for %s:%s",
@@ -10572,12 +10658,22 @@ def _promote_smt_clean(
                 )
 
         if tool_hit:
-            result.outcomes[i] = _promote_outcome(outcome, tool_hit)
+            # The LLM reviewed this function and said clean; these
+            # checkers are heuristic/detection-grade. Overriding clean
+            # straight to finding contradicted the documented invariant
+            # that detection rules can't promote without LLM agreement
+            # — surface as suspicious so the re-review/validate leg
+            # adjudicates instead.
+            promoted = _promote_outcome(outcome, tool_hit)
+            promoted.status = "suspicious"
+            promoted.body = promoted.body.replace(
+                "[sweep promoted via", "[smt-clean escalated via", 1)
+            result.outcomes[i] = promoted
             result.sweep_promoted += 1
             result.clean -= 1
-            result.findings += 1
+            result.suspicious += 1
             logger.info(
-                "smt-clean promoted %s:%s via %s",
+                "smt-clean escalated %s:%s to suspicious via %s",
                 outcome.file, outcome.function, tool_hit,
             )
 
@@ -10892,10 +10988,13 @@ def _demote_self_contradictions(result: OrchestratorResult) -> None:
     contradictory.  Verified safe: all corpus TPs with no evidence
     have at least one unrefuted hypothesis.
     """
+    from .evidence_grade import is_tool_evidence
     for i, outcome in enumerate(result.outcomes):
         if outcome.status != "suspicious":
             continue
-        if outcome.evidence_tool:
+        # Truthiness let "llm-claimed:X" (the LLM's own assertion)
+        # shield the outcome from its own self-contradiction check.
+        if is_tool_evidence(outcome.evidence_tool or ""):
             continue
 
         hypotheses = outcome.hypotheses or []

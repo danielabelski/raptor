@@ -908,7 +908,15 @@ def _check_c_use_after_free(
                 ))
 
         for var in list(freed_vars):
-            if re.search(rf'\b{re.escape(var)}\s*(?<!=)=(?!=)\s*', stripped):
+            # Reassignment only: `var = ...`. The old lookbehind
+            # inspected the char before `=`, which for `var != x`,
+            # `var <= x`, `var += x` is `!`/`<`/`+` — comparisons and
+            # compound ops cleared the freed set and hid the
+            # use-after-free / double-free that followed.
+            if re.search(
+                rf'\b{re.escape(var)}\s*(?<![!<>+\-*/&|^%=])=(?!=)\s*',
+                stripped,
+            ):
                 if not re.search(r'\bfree\s*\(', stripped):
                     del freed_vars[var]
 

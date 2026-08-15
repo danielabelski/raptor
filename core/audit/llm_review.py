@@ -48,7 +48,12 @@ def _rationale_consistency_should_demote(
     """Return True if the rationale-consistency gate should demote to clean."""
     if status not in ("suspicious", "finding"):
         return False
-    if evidence_tool.strip():
+    # Only REAL tool evidence blocks the demotion. The raw value here
+    # can be the LLM's own claim ("llm-claimed:semgrep" after
+    # sanitization, or an unsanitized tool name) — an LLM that names a
+    # tool must not exempt itself from its own consistency gate.
+    from core.audit.evidence_grade import is_tool_evidence
+    if is_tool_evidence(evidence_tool.strip()):
         return False
 
     rationale = body.lower()

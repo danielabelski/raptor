@@ -59,6 +59,7 @@ def compute_gaps(
     fuzz_coverage: Optional[Dict[str, Any]] = None,
     out_dir: Optional[Path] = None,
     project_dir: Optional[Path] = None,
+    include_kinds: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """Compute the list of unreviewed functions.
 
@@ -125,11 +126,20 @@ def compute_gaps(
                 scope_list = None
 
     gaps: List[Dict[str, Any]] = []
+    reviewable_kinds = _REVIEWABLE_KINDS | (include_kinds or set())
+    consumed_covered: Dict[str, int] = {}
 
     for file_info in checklist.get("files", []):
         file_path = file_info.get("path", "")
 
-        if scope_list and not any(file_path.startswith(s) for s in scope_list):
+        if scope_list and not any(
+            file_path == sc.rstrip("/")
+            or file_path.startswith(sc.rstrip("/") + "/")
+            or file_path.startswith(sc.rstrip("/") + ".")
+            for sc in scope_list
+        ):
+            # Separator-aware: scope "ipc" matches ipc/... and the
+            # file ipc.c itself, but never the sibling dir ipcz/.
             continue
         items = file_info.get("items", file_info.get("functions", []))
 
@@ -139,12 +149,17 @@ def compute_gaps(
             name = item.get("name", "")
             item_kind = item.get("kind", "")
 
-            if item_kind not in _REVIEWABLE_KINDS:
+            # Functions/methods by default; operators opt additional
+            # kinds in (top_level module code, macro bodies, globals)
+            # via --include-kinds — the extractor built those as
+            # reviewable units, but the audit silently dropped them.
+            if item_kind not in reviewable_kinds:
                 continue
 
             func_key = f"{file_path}:{name}"
 
-            if func_key in covered_functions:
+            if _consume_covered_key(
+                    covered_functions, consumed_covered, func_key):
                 continue
 
             # ``checked_by`` on the checklist item was removed under
@@ -552,7 +567,12 @@ def gap_for_site(
         items = [
             it for it in raw_items
             if isinstance(it, dict)
-            and it.get("kind", "") in _REVIEWABLE_KINDS
+            # A mechanical sweep HIT landing in top-level code, a
+            # macro body, or a global initializer is evidence in hand
+            # — dropping the site because of its kind silently
+            # discarded confirmed signal.
+            and it.get("kind", "") in (
+                _REVIEWABLE_KINDS | {"top_level", "macro", "global"})
             and it.get("name")
             and isinstance(it.get("line_start"), int)
             and not isinstance(it.get("line_start"), bool)
@@ -668,13 +688,37 @@ def write_gaps(gaps: List[Dict[str, Any]], out_dir: Path) -> Path:
 def _build_covered_set(
     records: List[Dict[str, Any]],
 ) -> set:
-    """Build set of file:function keys that have coverage."""
+    """Build set of file:function keys that have coverage.
+
+    Keys are ``file:name`` — name collisions (C++ overloads,
+    same-named methods of different classes in one file) are
+    disambiguated at CONSUMPTION time via _consume_covered_key, which
+    suppresses only one same-named item per covered key instead of
+    all of them.
+    """
     covered = set()
     for record in records:
         for file_path, file_data in record.get("files", {}).items():
             for func_name in file_data.get("functions", {}):
                 covered.add(f"{file_path}:{func_name}")
     return covered
+
+
+def _consume_covered_key(covered: set, consumed: dict, func_key: str) -> bool:
+    """True when ``func_key`` should be suppressed as already covered.
+
+    One journal/coverage record used to suppress EVERY same-named
+    function in the file (overloads / per-class methods share the
+    ``file:name`` key). Records don't carry enough to say WHICH one
+    was reviewed, so suppress exactly one occurrence per covered key
+    and let the rest surface as gaps — over-reviewing an overload
+    beats never reviewing it.
+    """
+    if func_key not in covered:
+        return False
+    seen = consumed.get(func_key, 0)
+    consumed[func_key] = seen + 1
+    return seen == 0
 
 
 def _fold_journal_into_covered(

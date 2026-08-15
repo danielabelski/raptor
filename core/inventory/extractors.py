@@ -2837,14 +2837,22 @@ def _extract_macros_regex(content: str) -> List[CodeItem]:
     # the inventory under a homoglyph that matches a real ASCII
     # identifier — confusing greps + downstream cross-references.
     _DEFINE_RE = re.compile(r'^\s*#\s*define\s+(\w+)', re.ASCII)
-    for i, line in enumerate(content.splitlines(), 1):
+    lines = content.splitlines()
+    for i, line in enumerate(lines, 1):
         m = _DEFINE_RE.match(line)
         if m:
+            # Multi-line macros continue while lines end with a
+            # backslash. With line_end pinned to the #define line the
+            # body lines were covered by NO item — they fell to
+            # interstitial and out of every reviewer's sight.
+            end = i
+            while end <= len(lines) and lines[end - 1].rstrip().endswith("\\"):
+                end += 1
             macros.append(CodeItem(
                 name=m.group(1),
                 kind=KIND_MACRO,
                 line_start=i,
-                line_end=i,
+                line_end=end,
             ))
     return macros
 

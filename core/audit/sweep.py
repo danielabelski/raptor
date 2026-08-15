@@ -185,10 +185,17 @@ def _sarif_result_in_range(
 def _match_in_range(
     match: Dict[str, Any], line_start: int, line_end: int,
 ) -> bool:
-    """Return True if a match dict falls within the function line range."""
+    """Return True if a match dict falls within the function line range.
+
+    A match with no line information (coccinelle sometimes reports
+    line 0) cannot be placed inside the function: counting it as
+    in-range confirmed hypotheses from matches anywhere in the file,
+    while the semgrep path dropped the same shape. One policy for
+    both: unplaceable matches are NOT in range.
+    """
     match_line = match.get("line", 0)
     if not match_line:
-        return True
+        return False
     return line_start <= match_line <= line_end
 
 
@@ -302,7 +309,17 @@ def run_semgrep_sweep(
             else:
                 in_function.append(finding)
 
-        outcome = "confirmed" if in_function else "refuted"
+        if in_function:
+            outcome = "confirmed"
+        elif result.errors:
+            # A rule that failed to parse/run produced no findings for
+            # a reason that says NOTHING about the code. Reporting
+            # "refuted" here recorded tool failures as refutations —
+            # feeding tier counters and demotion logic a
+            # disconfirmation the tool never made.
+            outcome = "error"
+        else:
+            outcome = "refuted"
         serialized = []
         for f in in_function:
             if hasattr(f, "to_dict"):

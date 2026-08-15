@@ -278,10 +278,14 @@ def build_inventory(
             str((target / s).resolve()) for s in scope
         )
         before = len(file_list)
-        file_list = [
-            f for f in file_list
-            if str(f.resolve()).startswith(scope_prefixes)
-        ]
+        # separator-aware: scope "src/a" must not match "src/abc".
+        def _in_scope(f):
+            fp = str(f.resolve())
+            return any(
+                fp == pre.rstrip("/") or fp.startswith(pre.rstrip("/") + "/")
+                for pre in scope_prefixes
+            )
+        file_list = [f for f in file_list if _in_scope(f)]
         logger.info(
             "scope filter: %d → %d files (%d excluded)",
             before, len(file_list), before - len(file_list),
@@ -743,6 +747,17 @@ def _process_single_file(
     # Detect language
     language = detect_language(str(filepath))
     if not language:
+        # Source-like files we don't parse (assembly, Objective-C,
+        # include fragments, parser grammars) were previously dropped
+        # with only a counter — invisible in the artifact. Record them
+        # as exclusions so the recall loss is operator-visible; plain
+        # non-source files (docs, data) stay silent.
+        if filepath.suffix.lower() in {
+            ".s", ".asm", ".m", ".mm", ".inc", ".inl", ".y", ".l",
+        }:
+            return {"path": rel_path, "_excluded": True,
+                    "_reason": "unsupported_source_extension",
+                    "_pattern": filepath.suffix.lower()}
         return None
 
     # Skip binary files

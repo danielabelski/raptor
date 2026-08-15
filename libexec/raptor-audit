@@ -213,6 +213,28 @@ def cmd_record(args: argparse.Namespace) -> int:
     func_key = f"{args.file}:{args.function}"
     related_to = args.related_to
 
+    if args.status == "finding":
+        base_tool = (args.evidence_tool or "").split(":", 1)[0].strip().lower()
+        has_receipt = any(
+            e.get("action") == "sweep"
+            and e.get("key") == func_key
+            and (e.get("tool") or "").split(":", 1)[0].strip().lower()
+                == base_tool
+            and e.get("outcome") == "confirmed"
+            and e.get("rule_source") != "manual-attestation"
+            for e in audit_log
+        )
+        if not has_receipt:
+            print(
+                "error [G2 TOOL-GROUNDED]: no executed confirmed "
+                f"'{base_tool}' sweep receipt found for {func_key}.\n"
+                "  Run the sweep first (raptor-audit sweep --tool "
+                f"{base_tool} ...) — operator-attested outcomes "
+                "(manual --outcome logging) do not satisfy G2.",
+                file=sys.stderr,
+            )
+            return 1
+
     has_own_context = any(
         e.get("action") == "context" and e.get("key") == func_key
         for e in audit_log
@@ -252,15 +274,28 @@ def cmd_record(args: argparse.Namespace) -> int:
             )
         return 1
 
-    # G2: TOOL-GROUNDED — findings require evidence-tool + vuln-type
+    # G2: TOOL-GROUNDED — findings require evidence-tool + vuln-type.
+    # The tool name must be a real one AND backed by an EXECUTED
+    # confirmed sweep receipt for this same function. Previously any
+    # non-empty string satisfied the gate — in-session agents could
+    # type "--evidence-tool semgrep" without ever running a sweep.
     if args.status == "finding":
+        from core.audit.evidence_grade import VALID_EVIDENCE_TOOLS
+        tools = "|".join(sorted(VALID_EVIDENCE_TOOLS))
+        base_tool = (args.evidence_tool or "").split(":", 1)[0].strip().lower()
         if not args.evidence_tool:
-            from core.audit.evidence_grade import VALID_EVIDENCE_TOOLS
-            tools = "|".join(sorted(VALID_EVIDENCE_TOOLS))
             print(
                 "error [G2 TOOL-GROUNDED]: --status finding requires "
                 f"--evidence-tool ({tools}).\n"
                 "  If no tool confirms the hypothesis, use --status suspicious.",
+                file=sys.stderr,
+            )
+            return 1
+        if base_tool not in VALID_EVIDENCE_TOOLS:
+            print(
+                f"error [G2 TOOL-GROUNDED]: --evidence-tool "
+                f"{args.evidence_tool!r} is not a recognised tool "
+                f"({tools}).",
                 file=sys.stderr,
             )
             return 1
@@ -697,6 +732,11 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
     if args.outcome:
         entry["outcome"] = args.outcome
+        # Manual mode did not execute anything — the outcome is the
+        # operator's/agent's assertion. Tag it so the G2 receipt check
+        # (and any downstream consumer) can distinguish attested
+        # results from executed ones.
+        entry["rule_source"] = "manual-attestation"
 
     append_audit_log(out_dir, entry)
     print(f"sweep: {func_key} with {tool} → {args.outcome or 'logged'}")
@@ -1205,6 +1245,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         strategy_filter=args.strategy,
         review_passes=args.review_passes,
         batch_sloc_threshold=args.batch_sloc_threshold,
+        include_kinds=(
+            {k.strip() for k in args.include_kinds.split(",") if k.strip()}
+            if args.include_kinds else None
+        ),
         adversarial=args.adversarial,
         max_propagation_depth=args.max_propagation_depth,
         subsystem_depth=args.subsystem_depth,
@@ -1519,6 +1563,10 @@ def main() -> int:
                        help="Number of independent review passes per function (self-consistency)")
     p_run.add_argument("--subsystem-depth", type=int, default=0,
                        help="Directory grouping depth for subsystem-ordered review")
+    p_run.add_argument("--include-kinds", default=None,
+                       help="Comma-separated extra item kinds to review "
+                            "beyond functions/methods: top_level, macro, "
+                            "global (default: none)")
     p_run.add_argument("--batch-sloc-threshold", type=int, default=None,
                        help="Batch functions at or under this SLOC per file "
                             "into combined reviews (default: 15; 0 disables "

@@ -3,7 +3,6 @@
 import fnmatch
 import os
 from pathlib import Path
-from typing import List
 
 # Default exclude patterns — comprehensive list for clean inventory
 DEFAULT_EXCLUDES = [
@@ -58,6 +57,17 @@ DEFAULT_EXCLUDES = [
 ROOT_ANCHORED_EXCLUDE_DIRS = frozenset({
     'examples', 'example', 'samples', 'sample', 'demo',
     'docs', 'doc', 'documentation',
+    # Build-output NAMES that also occur as first-party package
+    # segments deep in real trees: a first-party ``env/`` config
+    # package, tool trees with ``bin/`` source dirs, ``out/`` and
+    # ``obj/`` in generators. At the scan root these are
+    # overwhelmingly artifacts; pruning them at ANY depth silently
+    # dropped first-party source. NOT anchored: ``build/``,
+    # ``target/``, ``dist/`` — nested occurrences are the NORM for
+    # Gradle/Maven/Rust/JS build outputs, and admitting them buys
+    # noise, not recall. venv/node_modules and friends also stay
+    # any-depth (unambiguous).
+    'env', 'bin', 'out', 'output', 'obj',
 })
 
 # Markers that indicate a file is auto-generated (check first few lines)
@@ -105,7 +115,7 @@ def is_binary_file(filepath: Path, sample_size: int = 8192) -> bool:
                 if b'\x00' in tail:
                     return True
             return False
-    except (IOError, OSError):
+    except OSError:
         return True  # Treat unreadable as binary
 
 
@@ -159,7 +169,7 @@ def is_generated_file(content: str, check_lines: int = 10) -> bool:
     return False
 
 
-def should_exclude(filepath: str, exclude_patterns: List[str]) -> bool:
+def should_exclude(filepath: str, exclude_patterns: list[str]) -> bool:
     """Check if file should be excluded based on patterns.
 
     Returns True if the file matches any exclusion pattern.
@@ -202,7 +212,7 @@ def should_exclude(filepath: str, exclude_patterns: List[str]) -> bool:
     return False
 
 
-def match_exclusion_reason(filepath: str, exclude_patterns: List[str]) -> tuple:
+def match_exclusion_reason(filepath: str, exclude_patterns: list[str]) -> tuple:
     """Like should_exclude but returns (excluded: bool, reason, pattern_matched).
 
     Used for exclusion recording in the inventory.

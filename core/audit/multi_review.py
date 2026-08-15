@@ -226,7 +226,15 @@ class AdversarialReviewer:
 
             annotated = {**item, "adversarial_review": refutation}
             if refutation.get("refuted"):
-                annotated["status"] = "clean"
+                # An LLM refutation may not erase tool-confirmed
+                # evidence: with mechanical evidence present, downgrade
+                # one level to suspicious (queued for re-review /
+                # validate) instead of clean.
+                from core.audit.evidence_grade import is_tool_evidence
+                if is_tool_evidence(item.get("evidence_tool", "")):
+                    annotated["status"] = "suspicious"
+                else:
+                    annotated["status"] = "clean"
                 annotated["adversarial_downgrade"] = True
             results.append(annotated)
         return results

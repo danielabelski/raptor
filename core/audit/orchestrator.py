@@ -5443,6 +5443,30 @@ def _commit_outcome(
         entry["strategies"] = strategies
     if batch:
         entry["batch"] = True
+
+    # Git-history corroboration for findings: prior security-fix
+    # commits touching this file, attached as CONTEXT.  Never a
+    # verdict — the oracle has no outcome and its stamp is not tool
+    # evidence (see core.audit.git_oracle).  Best-effort and cached
+    # per file inside the module.
+    if outcome.status in ("finding", "suspicious"):
+        try:
+            from .git_oracle import corroboration_for_journal
+
+            corroboration = corroboration_for_journal(
+                target_path=config.target_path,
+                file_path=outcome.file,
+                line_start=gap.get("line_start", 0) or 0,
+                line_end=gap.get("line_end", 0) or 0,
+                out_dir=config.out_dir,
+            )
+            if corroboration:
+                entry["git_corroboration"] = corroboration
+        except ImportError:
+            pass
+        except Exception:
+            logger.debug("git corroboration failed", exc_info=True)
+
     append_audit_log(config.out_dir, entry)
 
     # ── SAGE: store hypothesis verdict ───────────────────────────────

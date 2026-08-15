@@ -1637,6 +1637,25 @@ class LLMClient:
             logger.error(error_msg)
             raise RuntimeError(error_msg)
 
+    def supports_prompt_caching_for(
+        self, model_config: ModelConfig | None = None,
+    ) -> bool:
+        """True when the provider serving ``model_config`` (default:
+        the primary model) supports prompt caching. Callers use this
+        to decide cache-aligned prompt composition — e.g. placing
+        run-stable material in the system prompt where Anthropic-
+        family providers bill it at the cached-input rate."""
+        cfg = model_config or self.config.primary_model
+        if cfg is None:
+            return False
+        try:
+            return self._get_provider(cfg).supports_prompt_caching()
+        except Exception:
+            logger.debug(
+                "supports_prompt_caching_for probe failed", exc_info=True,
+            )
+            return False
+
     def generate_structured(self, prompt: str, schema: dict[str, Any],
                            system_prompt: str | None = None,
                            task_type: str | None = None, **kwargs):

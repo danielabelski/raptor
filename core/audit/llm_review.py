@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .context import format_context_for_prompt
+from .context import format_context_for_prompt, render_pattern_library
 from .orchestrator import OrchestratorConfig, ReviewOutcome, _ContentFilterError
 from .pipeline import ReviewMode
 
@@ -1025,6 +1025,25 @@ def make_review_fn(
         system_prompt if system_prompt is not None
         else _system_prompt_for_mode(mode, out_dir=out_dir)
     )
+
+    # Cache-aligned composition: when the provider supports prompt
+    # caching, the run-stable pattern library (static primers,
+    # exemplars, fixed language pattern blocks) moves out of every
+    # per-function user prompt and into the system prompt, which the
+    # provider marks cache_control=ephemeral — after the first call
+    # it bills at the cached-input rate instead of full price per
+    # function. Providers without caching (e.g. the claude CLI
+    # transport) keep the old per-prompt placement: for them a bigger
+    # system prompt is pure extra cost.
+    patterns_in_system = False
+    try:
+        patterns_in_system = llm_client.supports_prompt_caching_for()
+    except AttributeError:
+        pass  # older client without the helper
+    if patterns_in_system:
+        effective_system_prompt = (
+            effective_system_prompt + render_pattern_library()
+        )
     deepen_schema = schema or _schema_for_mode(mode)
     first_pass_schema = blind_schema or deepen_schema
 
@@ -1062,7 +1081,10 @@ def make_review_fn(
         config: OrchestratorConfig,
     ) -> ReviewOutcome:
         budget = _prompt_budget(ctx, effective_system_prompt)
-        prompt = format_context_for_prompt(ctx, budget_limit=budget)
+        prompt = format_context_for_prompt(
+            ctx, budget_limit=budget,
+            patterns_in_system=patterns_in_system,
+        )
         t0 = time.monotonic()
 
         kwargs: dict[str, Any] = {}

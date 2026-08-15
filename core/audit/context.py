@@ -246,6 +246,10 @@ def assemble_context(
             )
             if dynamic:
                 ctx["strategy_primers"].extend(dynamic)
+                # Kept separately too: when the static pattern library
+                # lives in the (cached) system prompt, the per-call
+                # prompt must still carry ONLY these dynamic primers.
+                ctx["dynamic_primers"] = list(dynamic)
                 _has_domain_primers = True
         except Exception:
             logger.debug("domain model primer extraction failed", exc_info=True)
@@ -306,16 +310,201 @@ _KERNEL_PATH_HINTS = (
 )
 
 
-def _is_kernel_c(ctx: dict[str, Any]) -> bool:
+def _is_kernel_c(ctx: Dict[str, Any]) -> bool:
     fp = ctx.get("file", "")
     if not fp.endswith((".c", ".h")):
         return False
     return any(fp.startswith(h) or f"/{h}" in fp for h in _KERNEL_PATH_HINTS)
 
 
+# Run-stable pattern texts shared by the per-prompt sections
+# below and render_pattern_library() (the cached-system-prompt
+# form). One source of truth — edit here, both paths follow.
+_STATIC_PATTERN_TEXT: dict[str, str] = {
+    "kernel_exemplars": (
+    "\n### Kernel-internal patterns (NOT bugs)\n"
+                "This is Linux kernel C code. The following patterns are "
+                "correct by construction and must NOT be flagged:\n"
+                "- **RCU read-side**: `rcu_read_lock(); p = rcu_dereference(x); "
+                "use(p); rcu_read_unlock();` — the dereference is safe within "
+                "the read-side critical section.\n"
+                "- **Spinlock delegation**: a function that only calls "
+                "`spin_lock()`/`spin_unlock()` around a single operation is a "
+                "helper, not a lock-discipline violation.\n"
+                "- **Refcount helpers**: `kref_get()`/`kref_put()` with a "
+                "release callback is the standard lifecycle pattern.\n"
+                "- **Bitwise flag helpers**: functions that OR/AND bitmask "
+                "constants into a flags field are not integer overflows.\n"
+                "- **Completion variables**: `wait_for_completion()` / "
+                "`complete()` pairs across functions are correct.\n"
+                "Only flag these patterns if you can identify a SPECIFIC "
+                "violation (e.g., use after rcu_read_unlock, missing "
+                "rcu_read_lock, double kref_put)."
+    ),
+    "kernel_bug_patterns": (
+    "\n### Kernel bug patterns to CHECK\n"
+                "These patterns appear in real kernel bugs. They are also "
+                "extremely common in CORRECT code — most instances are safe. "
+                "Only flag a pattern below when you can demonstrate a "
+                "CONCRETE triggering scenario: name the specific caller, "
+                "the specific input value, and the specific incorrect "
+                "outcome. If the code handles the case correctly (guards, "
+                "locks, ordering), classify as clean.\n"
+                "- **Lifecycle double-free/use-after-free**: a resource "
+                "(socket, device, inode, work item) is freed on one path "
+                "but can be reached again on another — check that teardown "
+                "functions clear pointers or set flags that prevent re-entry. "
+                "Watch for `list_del` without `list_del_init` (the dangling "
+                "list entry is visible to concurrent walkers).\n"
+                "- **Integer truncation in `min_t`/`max_t`**: the kernel's "
+                "`min_t(int, a, b)` casts both operands to `int` — if `a` "
+                "or `b` is `size_t` or `unsigned long`, high bits are "
+                "silently dropped. This can produce zero or negative results "
+                "from large-but-valid inputs.\n"
+                "- **Credential check ordering**: `ptrace_may_access`, "
+                "`security_task_*`, or `ns_capable` checked BEFORE acquiring "
+                "the lock that protects the state being authorised — another "
+                "thread can change the state between the check and use.\n"
+                "- **Refcount imbalance on error paths**: a `get`/`hold`/"
+                "`grab` increments a refcount but the error path returns "
+                "without a matching `put`/`release`/`drop`, leaking the "
+                "reference."
+    ),
+    "go_exemplars": (
+    "\n### Go patterns (NOT bugs)\n"
+                "- **Mutex guard**: `mu.Lock(); defer mu.Unlock()` is the "
+                "standard pattern. Only flag if the lock is NOT deferred or "
+                "if a return path skips unlock.\n"
+                "- **Error-and-return**: `if err != nil { return ..., err }` "
+                "is correct error propagation, not a missing check.\n"
+                "- **Type assertion with ok**: `v, ok := x.(T)` is safe; "
+                "only `v := x.(T)` (without ok) panics on mismatch.\n"
+                "- **Goroutine + channel**: a goroutine writing to a channel "
+                "read by the caller is the standard concurrency pattern, not "
+                "a race condition.\n"
+                "Only flag these patterns if you can identify a SPECIFIC "
+                "violation (e.g., lock without unlock on an error path, "
+                "unchecked type assertion, channel never read)."
+    ),
+    "go_bug_patterns": (
+    "\n### Go bug patterns to CHECK\n"
+                "These patterns appear in real Go bugs. They are also "
+                "extremely common in CORRECT code — most instances are safe. "
+                "Only flag a pattern below when you can demonstrate a "
+                "CONCRETE triggering scenario: name the specific goroutine, "
+                "the specific interleaving, and the specific incorrect "
+                "outcome. If the code handles the case correctly (locks, "
+                "channels, atomic ops), classify as clean.\n"
+                "- **RLock early release**: `mu.RLock()` released before the "
+                "read values are fully consumed — a concurrent writer can "
+                "invalidate the data between RUnlock and use. Watch for "
+                "`defer mu.RUnlock()` at the top followed by a return that "
+                "captures a slice header but the backing array can be "
+                "reallocated by a concurrent call.\n"
+                "- **Error-write interleaving**: `io.Writer.Write` is called "
+                "without holding a lock, so concurrent writes from different "
+                "goroutines can interleave output mid-message. This is a "
+                "real data-corruption bug, not a hypothetical.\n"
+                "- **Integer truncation in type conversions**: `int(uint64Val)` "
+                "silently truncates on 32-bit platforms. `int32(int64Val)` "
+                "always truncates. Check arithmetic on lengths and offsets."
+    ),
+    "python_exemplars": (
+    "\n### Python patterns (NOT bugs)\n"
+                "- **Flask/Django decorator auth**: `@login_required` or "
+                "`@requires_auth` applied to a view function delegates "
+                "authentication to the framework. The function itself does "
+                "not need to re-check credentials.\n"
+                "- **Context manager**: `with open(f) as fh:` ensures cleanup. "
+                "Not a resource leak.\n"
+                "- **Property accessor**: `@property` methods that return "
+                "a stored attribute are trivially safe.\n"
+                "Only flag auth issues if the decorator is MISSING, not if "
+                "the function trusts it."
+    ),
+    "crypto_exemplars": (
+    "\n### Crypto helper patterns (NOT bugs)\n"
+                    "- **Alignment helpers**: functions that use PTR_ALIGN "
+                    "or manual alignment arithmetic on a caller-provided "
+                    "buffer are correct IF the caller allocated enough space. "
+                    "The helper itself cannot overflow.\n"
+                    "- **Size calculation**: functions that compute allocation "
+                    "sizes from algorithm parameters (block size, IV length, "
+                    "key length) using standard kernel/library macros are "
+                    "not integer overflows unless the parameters themselves "
+                    "are attacker-controlled.\n"
+                    "- **Transformation chains**: encrypt-then-MAC or similar "
+                    "multi-step pipelines where each step processes the output "
+                    "of the previous step are correct by construction if the "
+                    "buffer was allocated for the full chain.\n"
+                    "Only flag if you can show the caller violates the "
+                    "allocation contract, not if the helper trusts it."
+    ),
+}
+
+
+def render_pattern_library() -> str:
+    """Render the run-stable pattern material as one text block.
+
+    Placed at the END of the system prompt by the review layer when
+    the active provider supports prompt caching — the whole system
+    prompt (template + this library) then bills at the cached-input
+    rate after the first call instead of being re-sent per function
+    inside the user prompt. Content: static strategy primers, strategy
+    exemplars, and the fixed language/kernel/crypto pattern blocks.
+    Deliberately EXCLUDES dynamic domain-model primers (they grow
+    mid-run and would churn the cache) and language_patterns tier
+    promotion (source-keyword-sensitive, so per-function by design).
+
+    Deterministic ordering — the text must be byte-identical across
+    calls within a run for the cache to hit.
+    """
+    parts: list[str] = [
+        "\n\n# Pattern library",
+        ("The sections below apply when the reviewed function matches "
+        "their language/context; ignore sections for other languages."),
+    ]
+
+    try:
+        from .strategy import ALL_STRATEGIES, primers_for_strategies
+        primers = primers_for_strategies(frozenset(ALL_STRATEGIES))
+        if primers:
+            parts.append("\n## Vulnerability pattern primers")
+            parts.extend(primers)
+    except Exception:
+        logger.debug("pattern library: primer load failed", exc_info=True)
+
+    exemplar_lines: list[str] = []
+    for strategy in sorted(_STRATEGY_EXEMPLARS):
+        for ex in _STRATEGY_EXEMPLARS[strategy]:
+            exemplar_lines.append(
+                f"\n**{ex['cve']}** ({strategy}): {ex['title']}")
+            exemplar_lines.append(ex["reasoning"])
+    if exemplar_lines:
+        parts.append("\n## Strategy exemplars")
+        parts.extend(exemplar_lines)
+
+    applicability = {
+        "kernel_exemplars": "Linux kernel C code only",
+        "kernel_bug_patterns": "Linux kernel C code only",
+        "go_exemplars": "Go code only",
+        "go_bug_patterns": "Go code only",
+        "python_exemplars": "Python code only",
+        "crypto_exemplars": "C/C++ crypto-adjacent files only",
+    }
+    for name in ("kernel_exemplars", "kernel_bug_patterns", "go_exemplars",
+                 "go_bug_patterns", "python_exemplars", "crypto_exemplars"):
+        parts.append(f"\n## [{applicability[name]}]")
+        parts.append(_STATIC_PATTERN_TEXT[name])
+
+    return "\n".join(parts)
+
+
+
 def format_context_for_prompt(
     ctx: dict[str, Any],
     budget_limit: int = 0,
+    patterns_in_system: bool = False,
 ) -> str:
     """Format a context slice as text for the LLM prompt.
 
@@ -325,6 +514,16 @@ def format_context_for_prompt(
 
     When ``triage_bucket`` is ``"glance"``, returns a minimal prompt
     with just source and a one-line triage question.
+
+    ``patterns_in_system=True`` drops the RUN-STABLE pattern material
+    (static strategy primers, strategy exemplars, and the fixed
+    kernel/Go/Python/crypto pattern blocks) from this prompt — the
+    caller has placed :func:`render_pattern_library` in the system
+    prompt instead, where providers with prompt caching serve it at
+    the cached-input rate rather than re-billing it per function.
+    Dynamic primers (mid-run domain-model discoveries) always stay
+    here: they change as the run learns and must not churn the cached
+    prefix.
     """
     if ctx.get("triage_bucket") == "glance":
         return _format_glance_prompt(ctx)
@@ -557,107 +756,23 @@ def format_context_for_prompt(
             "you can identify a specific access that escapes all lock "
             "scopes and does not use atomic/RCU/per-CPU accessors.", 1))
 
-    if _is_kernel_c(ctx):
+    if _is_kernel_c(ctx) and not patterns_in_system:
         sections.append(PromptSection("kernel_exemplars",
-            "\n### Kernel-internal patterns (NOT bugs)\n"
-            "This is Linux kernel C code. The following patterns are "
-            "correct by construction and must NOT be flagged:\n"
-            "- **RCU read-side**: `rcu_read_lock(); p = rcu_dereference(x); "
-            "use(p); rcu_read_unlock();` — the dereference is safe within "
-            "the read-side critical section.\n"
-            "- **Spinlock delegation**: a function that only calls "
-            "`spin_lock()`/`spin_unlock()` around a single operation is a "
-            "helper, not a lock-discipline violation.\n"
-            "- **Refcount helpers**: `kref_get()`/`kref_put()` with a "
-            "release callback is the standard lifecycle pattern.\n"
-            "- **Bitwise flag helpers**: functions that OR/AND bitmask "
-            "constants into a flags field are not integer overflows.\n"
-            "- **Completion variables**: `wait_for_completion()` / "
-            "`complete()` pairs across functions are correct.\n"
-            "Only flag these patterns if you can identify a SPECIFIC "
-            "violation (e.g., use after rcu_read_unlock, missing "
-            "rcu_read_lock, double kref_put).", 1))
+            _STATIC_PATTERN_TEXT["kernel_exemplars"], 1))
         sections.append(PromptSection("kernel_bug_patterns",
-            "\n### Kernel bug patterns to CHECK\n"
-            "These patterns appear in real kernel bugs. They are also "
-            "extremely common in CORRECT code — most instances are safe. "
-            "Only flag a pattern below when you can demonstrate a "
-            "CONCRETE triggering scenario: name the specific caller, "
-            "the specific input value, and the specific incorrect "
-            "outcome. If the code handles the case correctly (guards, "
-            "locks, ordering), classify as clean.\n"
-            "- **Lifecycle double-free/use-after-free**: a resource "
-            "(socket, device, inode, work item) is freed on one path "
-            "but can be reached again on another — check that teardown "
-            "functions clear pointers or set flags that prevent re-entry. "
-            "Watch for `list_del` without `list_del_init` (the dangling "
-            "list entry is visible to concurrent walkers).\n"
-            "- **Integer truncation in `min_t`/`max_t`**: the kernel's "
-            "`min_t(int, a, b)` casts both operands to `int` — if `a` "
-            "or `b` is `size_t` or `unsigned long`, high bits are "
-            "silently dropped. This can produce zero or negative results "
-            "from large-but-valid inputs.\n"
-            "- **Credential check ordering**: `ptrace_may_access`, "
-            "`security_task_*`, or `ns_capable` checked BEFORE acquiring "
-            "the lock that protects the state being authorised — another "
-            "thread can change the state between the check and use.\n"
-            "- **Refcount imbalance on error paths**: a `get`/`hold`/"
-            "`grab` increments a refcount but the error path returns "
-            "without a matching `put`/`release`/`drop`, leaking the "
-            "reference.", 1))
+            _STATIC_PATTERN_TEXT["kernel_bug_patterns"], 1))
 
     lang = ctx.get("language", "")
+    if patterns_in_system:
+        lang = ""  # language pattern blocks live in the system prompt
     if lang == "go":
         sections.append(PromptSection("go_exemplars",
-            "\n### Go patterns (NOT bugs)\n"
-            "- **Mutex guard**: `mu.Lock(); defer mu.Unlock()` is the "
-            "standard pattern. Only flag if the lock is NOT deferred or "
-            "if a return path skips unlock.\n"
-            "- **Error-and-return**: `if err != nil { return ..., err }` "
-            "is correct error propagation, not a missing check.\n"
-            "- **Type assertion with ok**: `v, ok := x.(T)` is safe; "
-            "only `v := x.(T)` (without ok) panics on mismatch.\n"
-            "- **Goroutine + channel**: a goroutine writing to a channel "
-            "read by the caller is the standard concurrency pattern, not "
-            "a race condition.\n"
-            "Only flag these patterns if you can identify a SPECIFIC "
-            "violation (e.g., lock without unlock on an error path, "
-            "unchecked type assertion, channel never read).", 2))
+            _STATIC_PATTERN_TEXT["go_exemplars"], 2))
         sections.append(PromptSection("go_bug_patterns",
-            "\n### Go bug patterns to CHECK\n"
-            "These patterns appear in real Go bugs. They are also "
-            "extremely common in CORRECT code — most instances are safe. "
-            "Only flag a pattern below when you can demonstrate a "
-            "CONCRETE triggering scenario: name the specific goroutine, "
-            "the specific interleaving, and the specific incorrect "
-            "outcome. If the code handles the case correctly (locks, "
-            "channels, atomic ops), classify as clean.\n"
-            "- **RLock early release**: `mu.RLock()` released before the "
-            "read values are fully consumed — a concurrent writer can "
-            "invalidate the data between RUnlock and use. Watch for "
-            "`defer mu.RUnlock()` at the top followed by a return that "
-            "captures a slice header but the backing array can be "
-            "reallocated by a concurrent call.\n"
-            "- **Error-write interleaving**: `io.Writer.Write` is called "
-            "without holding a lock, so concurrent writes from different "
-            "goroutines can interleave output mid-message. This is a "
-            "real data-corruption bug, not a hypothetical.\n"
-            "- **Integer truncation in type conversions**: `int(uint64Val)` "
-            "silently truncates on 32-bit platforms. `int32(int64Val)` "
-            "always truncates. Check arithmetic on lengths and offsets.", 2))
+            _STATIC_PATTERN_TEXT["go_bug_patterns"], 2))
     elif lang == "python":
         sections.append(PromptSection("python_exemplars",
-            "\n### Python patterns (NOT bugs)\n"
-            "- **Flask/Django decorator auth**: `@login_required` or "
-            "`@requires_auth` applied to a view function delegates "
-            "authentication to the framework. The function itself does "
-            "not need to re-check credentials.\n"
-            "- **Context manager**: `with open(f) as fh:` ensures cleanup. "
-            "Not a resource leak.\n"
-            "- **Property accessor**: `@property` methods that return "
-            "a stored attribute are trivially safe.\n"
-            "Only flag auth issues if the decorator is MISSING, not if "
-            "the function trusts it.", 2))
+            _STATIC_PATTERN_TEXT["python_exemplars"], 2))
     elif lang in ("c", "cpp") and not _is_kernel_c(ctx):
         fp = ctx.get("file", "")
         if any(kw in fp.lower() for kw in (
@@ -665,22 +780,7 @@ def format_context_for_prompt(
             "esp", "ipsec", "encrypt", "decrypt",
         )):
             sections.append(PromptSection("crypto_exemplars",
-                "\n### Crypto helper patterns (NOT bugs)\n"
-                "- **Alignment helpers**: functions that use PTR_ALIGN "
-                "or manual alignment arithmetic on a caller-provided "
-                "buffer are correct IF the caller allocated enough space. "
-                "The helper itself cannot overflow.\n"
-                "- **Size calculation**: functions that compute allocation "
-                "sizes from algorithm parameters (block size, IV length, "
-                "key length) using standard kernel/library macros are "
-                "not integer overflows unless the parameters themselves "
-                "are attacker-controlled.\n"
-                "- **Transformation chains**: encrypt-then-MAC or similar "
-                "multi-step pipelines where each step processes the output "
-                "of the previous step are correct by construction if the "
-                "buffer was allocated for the full chain.\n"
-                "Only flag if you can show the caller violates the "
-                "allocation contract, not if the helper trusts it.", 2))
+                _STATIC_PATTERN_TEXT["crypto_exemplars"], 2))
 
     if ctx.get("active_constraints"):
         cp = [
@@ -741,9 +841,13 @@ def format_context_for_prompt(
             fp.append(f"- {key}: {count}x")
         sections.append(PromptSection("failure_summary", "\n".join(fp), 3))
 
-    if ctx.get("strategy_primers"):
+    primers_for_prompt = (
+        ctx.get("dynamic_primers") if patterns_in_system
+        else ctx.get("strategy_primers")
+    )
+    if primers_for_prompt:
         sp = ["\n### Vulnerability pattern primers"]
-        for primer_text in ctx["strategy_primers"]:
+        for primer_text in primers_for_prompt:
             sp.append(f"\n{primer_text}")
         sections.append(PromptSection("strategy_primers", "\n".join(sp), 3))
 
@@ -760,7 +864,7 @@ def format_context_for_prompt(
             sections.append(PromptSection(
                 "language_patterns", "\n".join(lp_parts), 3))
 
-    if ctx.get("strategy_exemplars"):
+    if ctx.get("strategy_exemplars") and not patterns_in_system:
         ep = ["\n### Strategy exemplars"]
         for ex in ctx["strategy_exemplars"]:
             ep.append(f"\n**{ex['cve']}** ({ex['strategy']}): {ex['title']}")

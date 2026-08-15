@@ -308,6 +308,9 @@ def _make_tier_counters() -> Dict[str, TierCounters]:
         "compiler": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
+        "joern_guard": TierCounters(),
+        "joern_flow": TierCounters(),
+        "coccinelle_flow": TierCounters(),
     }
 
 
@@ -7662,6 +7665,20 @@ def _hypothesis_to_tool_chain(
         chain.append({"type": "coccinelle", "config": {"rule": cocci_rule}})
         seen_types.add("coccinelle")
 
+    if "coccinelle_flow" not in seen_types:
+        try:
+            from .cocci_flow import flow_template_for_hypothesis
+        except ImportError:
+            pass
+        else:
+            flow_template = flow_template_for_hypothesis(hypothesis)
+            if flow_template:
+                chain.append({
+                    "type": "coccinelle_flow",
+                    "config": {"template": flow_template},
+                })
+                seen_types.add("coccinelle_flow")
+
     if cwe and "joern" not in seen_types:
         try:
             from .cwe_dispatch import joern_applicable, sinks_for_cwe
@@ -7727,6 +7744,27 @@ def _cwe_fallback_chain(cwe: str) -> List[Dict[str, Any]]:
         sinks = sinks_for_cwe(cwe)
         if sinks:
             chain.append({"type": "joern", "config": {"sinks": sinks}})
+
+    try:
+        from .joern_verify import flow_chain_entry, guard_chain_entry
+    except ImportError:
+        pass
+    else:
+        guard_entry = guard_chain_entry(cwe)
+        if guard_entry:
+            chain.append(guard_entry)
+        flow_entry = flow_chain_entry(cwe)
+        if flow_entry:
+            chain.append(flow_entry)
+
+    try:
+        from .cocci_flow import chain_entry_for_cwe
+    except ImportError:
+        pass
+    else:
+        cocci_flow_entry = chain_entry_for_cwe(cwe)
+        if cocci_flow_entry:
+            chain.append(cocci_flow_entry)
 
     return chain
 
@@ -8080,6 +8118,108 @@ def _run_tool_chain(
                         _increment_tier_dict(tier_counters, "compiler", "refuted")
                 elif tier_counters:
                     _increment_tier_dict(tier_counters, "compiler", "inconclusive")
+
+
+            elif tool_type in ("joern_guard", "joern_flow"):
+                from .joern_verify import (
+                    extract_flow_endpoints,
+                    extract_guard_target,
+                    run_flow_reachability_check,
+                    run_guard_dominance_check,
+                )
+
+                sinks = tool_cfg.get("sinks", [])
+                if tool_type == "joern_guard":
+                    ident, sink = extract_guard_target(hypothesis, sinks)
+                else:
+                    ident, sink = extract_flow_endpoints(hypothesis, sinks)
+
+                if not ident or not sink or joern_server is None:
+                    # No binding (identifier-consistency control) or no
+                    # live server — decline, don't guess.
+                    if tier_counters:
+                        _increment_tier_dict(tier_counters, tool_type, "skipped")
+                else:
+                    if tool_type == "joern_guard":
+                        jv_result = run_guard_dominance_check(
+                            target_path=effective_target,
+                            file_path=file_path,
+                            function_name=function_name,
+                            identifier=ident,
+                            sink_call=sink,
+                            server=joern_server,
+                        )
+                    else:
+                        jv_result = run_flow_reachability_check(
+                            target_path=effective_target,
+                            file_path=file_path,
+                            function_name=function_name,
+                            source_id=ident,
+                            sink_call=sink,
+                            server=joern_server,
+                        )
+                    if jv_result.outcome == "confirmed":
+                        confirmed.append(jv_result.rule_id or f"joern:{tool_type}")
+                        if tier_counters:
+                            _increment_tier_dict(tier_counters, tool_type, "confirmed")
+                    elif jv_result.outcome == "error":
+                        logger.debug(
+                            "tool_chain %s error %s:%s: %s",
+                            tool_type, file_path, function_name,
+                            jv_result.errors,
+                        )
+                        if tier_counters:
+                            _increment_tier_dict(tier_counters, tool_type, "errors")
+                    elif jv_result.outcome == "refuted":
+                        # Mechanical refutation (dominating check found /
+                        # no flow with endpoints present).  The chain
+                        # contract returns confirmations only; the
+                        # refutation evidence stays in the sweep log.
+                        if tier_counters:
+                            _increment_tier_dict(tier_counters, tool_type, "refuted")
+                    elif tier_counters:
+                        _increment_tier_dict(tier_counters, tool_type, "inconclusive")
+
+            elif tool_type == "coccinelle_flow":
+                from .cocci_flow import run_flow_cocci_sweep
+
+                cf_result = run_flow_cocci_sweep(
+                    target_path=effective_target,
+                    file_path=file_path,
+                    function_name=function_name,
+                    hypothesis=hypothesis,
+                    template=tool_cfg.get("template"),
+                    line_start=line_start if line_start else None,
+                    line_end=None,
+                )
+                if cf_result.outcome == "confirmed":
+                    template_id = (cf_result.rule_id or "cocci-flow").split(":")[-1]
+                    confirmed.append(f"coccinelle:flow-{template_id}")
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "coccinelle_flow", "confirmed",
+                        )
+                elif cf_result.outcome == "error":
+                    logger.debug(
+                        "tool_chain coccinelle_flow error %s:%s: %s",
+                        file_path,
+                        function_name,
+                        cf_result.errors,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "coccinelle_flow", "errors",
+                        )
+                elif cf_result.outcome == "refuted":
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "coccinelle_flow", "refuted",
+                        )
+                elif tier_counters:
+                    _increment_tier_dict(
+                        tier_counters, "coccinelle_flow", "inconclusive",
+                    )
+
 
         except Exception as exc:
             logger.debug(

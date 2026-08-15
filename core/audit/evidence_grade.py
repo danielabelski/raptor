@@ -141,6 +141,17 @@ _RECEIPT_MAP: Dict[str, tuple] = {
     "dynamic:crash": (EvidenceSource.DYNAMIC_CRASH, "non-zero exit without sanitizer confirmation"),
     "frida": (EvidenceSource.DYNAMIC_FRIDA, "confirmed by Frida runtime observation"),
     "joern": (EvidenceSource.JOERN, "confirmed by Joern CPG analysis"),
+    "joern:guard-dominance": (
+        EvidenceSource.JOERN,
+        (
+            "no check on the named identifier dominates the sink "
+            "(Joern CPG dominator analysis)"
+        ),
+    ),
+    "joern:flow": (
+        EvidenceSource.JOERN,
+        "source-to-sink dataflow confirmed by Joern reachableByFlows",
+    ),
     "semgrep": (EvidenceSource.SEMGREP, "confirmed by Semgrep pattern match"),
     "codeql": (EvidenceSource.CODEQL, "confirmed by CodeQL analysis"),
     "coccinelle": (EvidenceSource.COCCINELLE, "confirmed by Coccinelle"),

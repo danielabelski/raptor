@@ -3247,13 +3247,27 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # Audit-sized structured reviews (system prompt + context
         # slice + schema) measure $0.9-1.3 per call on Opus-class
         # models; the old "1.00" default aborted them mid-response
-        # with subtype error_max_budget_usd.
-        budget_usd: str = "5.00",
+        # with subtype error_max_budget_usd. On pricier backends the
+        # biggest call classes (Mode 2 checker synthesis: multi-KB
+        # system prompt, no cross-process cache reuse) can exceed
+        # "5.00" too — RAPTOR_CC_BUDGET_USD overrides the default
+        # without touching call sites.
+        budget_usd: str | None = None,
         timeout_s: int | None = None,
         resumable: bool = False,
     ) -> None:
         super().__init__(config)
         self._claude_bin = claude_bin or "claude"
+        if budget_usd is None:
+            budget_usd = os.environ.get("RAPTOR_CC_BUDGET_USD", "5.00")
+            try:
+                float(budget_usd)
+            except ValueError:
+                logger.warning(
+                    "RAPTOR_CC_BUDGET_USD=%r is not a number — using 5.00",
+                    budget_usd,
+                )
+                budget_usd = "5.00"
         self._budget_usd = budget_usd
         self._resumable = resumable
         self._session_id: str | None = None

@@ -478,6 +478,27 @@ def test_generate_structured_disables_internal_cc_tools(monkeypatch) -> None:
     assert cmd[tools_idx] == ""
 
 
+def test_budget_env_override(monkeypatch) -> None:
+    """RAPTOR_CC_BUDGET_USD overrides the per-call abort ceiling;
+    a non-numeric value falls back to the default."""
+    monkeypatch.setenv("RAPTOR_CC_BUDGET_USD", "12.50")
+    p = ClaudeCodeLLMProvider(_config())
+    assert p._budget_usd == "12.50"
+
+    monkeypatch.setenv("RAPTOR_CC_BUDGET_USD", "not-a-number")
+    p = ClaudeCodeLLMProvider(_config())
+    assert p._budget_usd == "5.00"
+
+    monkeypatch.delenv("RAPTOR_CC_BUDGET_USD")
+    p = ClaudeCodeLLMProvider(_config())
+    assert p._budget_usd == "5.00"
+
+    # explicit kwarg wins over env
+    monkeypatch.setenv("RAPTOR_CC_BUDGET_USD", "12.50")
+    p = ClaudeCodeLLMProvider(_config(), budget_usd="2.00")
+    assert p._budget_usd == "2.00"
+
+
 # ---------------------------------------------------------------------------
 # turn() — delegates to ABC's _tool_use_fallback
 # ---------------------------------------------------------------------------

@@ -39,6 +39,14 @@ binary), so a configuration change forces a fresh probe. On probe
 failure RAPTOR falls back to in-session mode rather than dispatching
 into a transport whose calls would hang.
 
+Each dispatch carries a per-call abort ceiling (`--max-budget-usd`,
+default 5.00 USD). When a call exceeds it, the CLI exits 1 with
+`error_max_budget_usd` in its final stream-json event and the call
+fails — on pricier backends the biggest call classes (audit Mode 2
+checker synthesis) can hit this. Set `RAPTOR_CC_BUDGET_USD` to raise
+or lower the ceiling; total run spend is still governed by the
+orchestrator-level `--max-cost`.
+
 ## Quick Start
 
 ```bash

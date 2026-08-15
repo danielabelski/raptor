@@ -1956,6 +1956,25 @@ class TestResolveGateDemoted:
 class TestRefutationGateWirePoint:
     """Refutation gates demote findings/suspicious via the orchestrator wire point."""
 
+    @pytest.fixture(autouse=True)
+    def _hermetic_tool_layer(self, monkeypatch):
+        """These tests pin gate WIRING, not sweep behaviour.
+
+        Left unstubbed, the outcome depends on which external tools
+        are installed: a locally-installed semgrep re-confirming the
+        planted hypothesis masked a gate regression that only CI
+        (where the sweep found nothing) caught, and Joern server
+        startup adds minutes per test.  "No tool confirmation" is the
+        deterministic baseline the gate assertions are written
+        against.
+        """
+        import core.audit.orchestrator as _orch
+
+        monkeypatch.setattr(_orch, "_run_tool_chain", lambda *a, **k: [])
+        monkeypatch.setattr(
+            _orch, "_start_joern_server_raw", lambda *a, **k: None,
+        )
+
     def test_race_in_single_threaded_demoted_to_clean(self, tmp_path: Path):
         """Architecture gate demotes a race-condition finding to clean."""
         target = tmp_path / "target"

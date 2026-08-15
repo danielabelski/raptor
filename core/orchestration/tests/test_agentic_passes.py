@@ -1000,12 +1000,14 @@ class AdversarialBugsTests(unittest.TestCase):
                 # claude -p: simulate the user Ctrl-C-ing the parent process.
                 raise KeyboardInterrupt()
 
-            with _patch_passes(dispatcher):
-                with self.assertRaises(KeyboardInterrupt):
-                    run_understand_prepass(
-                        target=tmp, agentic_out_dir=tmp,
-                        claude_bin="/fake/claude",
-                    )
+            with (
+                _patch_passes(dispatcher),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                run_understand_prepass(
+                    target=tmp, agentic_out_dir=tmp,
+                    claude_bin="/fake/claude",
+                )
             # Lifecycle "fail" must have been invoked.
             fail_called = any(
                 Path(c[0]).name == "raptor-run-lifecycle" and "fail" in c
@@ -1348,7 +1350,8 @@ class FormatConverterTests(unittest.TestCase):
         # with our renamed fields landing in the right places.
         from core.orchestration.agentic_passes import convert_agentic_to_validate
         from packages.exploitability_validation.models import (
-            Finding, FindingsContainer,
+            Finding,
+            FindingsContainer,
         )
         out = convert_agentic_to_validate([{
             "finding_id": "vuln-1",
@@ -1388,8 +1391,9 @@ class MockContractTests(unittest.TestCase):
         # ("import subprocess") and used as subprocess.run, not as
         # ("from subprocess import run") which would need a different patch
         # path.
-        import core.orchestration.agentic_passes as ap
         import subprocess as sp
+
+        import core.orchestration.agentic_passes as ap
         self.assertIs(ap.subprocess, sp,
                       msg="agentic_passes must keep `import subprocess` so "
                           "tests' patch paths stay valid")

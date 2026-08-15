@@ -469,18 +469,32 @@ def readable_paths_for_cc_dispatch(
             this exact binary; static fallback engages on miss.
 
     The result is the union of the static floor (default install
-    layout + the binary's own exec paths) and the calibrated
-    profile. The calibrated layer EXTENDS the floor rather than
-    replacing it: calibration observes ``open()``/``stat()``
-    syscalls, so it structurally cannot record the ``execve`` of
-    the binary itself — a calibrated-only policy can't even exec
-    the CLI (observed as `/validate` post-pass exit 126 with empty
-    stderr). Every path-using cc_dispatch site
+    layout + the binary's own exec paths + the Python interpreter
+    runtime) and the calibrated profile. The calibrated layer
+    EXTENDS the floor rather than replacing it: calibration observes
+    ``open()``/``stat()`` syscalls, so it structurally cannot record
+    the ``execve`` of the binary itself — a calibrated-only policy
+    can't even exec the CLI (observed as `/validate` post-pass exit
+    126 with empty stderr). Every path-using cc_dispatch site
     (cc_dispatch.invoke_cc_simple + agentic_passes' /understand
     prepass + /validate postpass) routes through this so per-binary
     calibration takes effect everywhere the policy matters.
+
+    The Python runtime paths cover the CLI child's Bash tools running
+    RAPTOR's ``#!/usr/bin/env python3`` libexec scripts: when RAPTOR
+    itself runs from a virtualenv, PATH's ``python3`` is the venv
+    interpreter, whose boot reads ``<venv>/pyvenv.cfg`` — without the
+    venv in the read allowlist every such child died at interpreter
+    startup (observed as `/validate` post-pass exit 1 with
+    ``PermissionError: .../pyvenv.cfg``).
     """
-    floor = _default_readable_paths() + _binary_readable_paths(claude_bin)
+    from core.sandbox.python_paths import python_runtime_tool_paths
+
+    floor = (
+        _default_readable_paths()
+        + _binary_readable_paths(claude_bin)
+        + python_runtime_tool_paths()
+    )
     calibrated = _calibrated_readable_paths(claude_bin) or []
     return list(dict.fromkeys(floor + calibrated))
 

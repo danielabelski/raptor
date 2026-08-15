@@ -392,6 +392,22 @@ class TestReadablePathsForCCDispatch:
         assert any(p == home + "/.claude.json" for p in paths)
         assert any(p == home + "/.local/share/claude" for p in paths)
 
+    def test_python_runtime_paths_included(
+        self, isolated_env, no_override_config, no_calibrate, monkeypatch,
+    ):
+        # The CLI child's Bash tools run RAPTOR's `#!/usr/bin/env
+        # python3` scripts; when RAPTOR runs from a virtualenv, the
+        # interpreter's boot reads <venv>/pyvenv.cfg. Without the
+        # runtime paths, every python child died at startup
+        # (/validate post-pass exit 1, PermissionError pyvenv.cfg).
+        monkeypatch.setattr(
+            "core.sandbox.python_paths.python_runtime_tool_paths",
+            lambda: ["/fake/venv", "/fake/venv/bin"],
+        )
+        paths = readable_paths_for_cc_dispatch()
+        assert "/fake/venv" in paths
+        assert "/fake/venv/bin" in paths
+
     def test_calibrated_paths_extend_the_floor(
         self, isolated_env, no_override_config, monkeypatch,
     ):

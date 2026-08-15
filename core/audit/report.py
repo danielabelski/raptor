@@ -63,6 +63,18 @@ def generate_report(
         "unrecorded_reads": unrecorded,
     }
 
+    # Finding-survival metric: per-evidence-channel /validate outcomes
+    # (pure read-side aggregation over the journal — empty until a
+    # /validate feedback import has run).
+    try:
+        from .survival import aggregate_survival
+        survival = aggregate_survival(out_dir)
+    except Exception:  # reporting must not fail the run
+        logger.debug("survival aggregation failed", exc_info=True)
+        survival = {}
+    if survival:
+        report["survival"] = survival
+
     eval_path = out_dir / "evaluation.json"
     if eval_path.is_file():
         try:
@@ -522,6 +534,13 @@ def _format_summary(report: Dict[str, Any]) -> str:
                 f"- [{severity}] {f.get('title', 'Untitled')} "
                 f"({f.get('file', '?')}:{f.get('line', '?')})"
             )
+
+    survival = report.get("survival")
+    if survival:
+        from .survival import format_survival
+        lines.append("")
+        lines.append("### Finding survival (/validate feedback)")
+        lines.extend(format_survival(survival)[1:])
 
     unrecorded = report.get("unrecorded_reads", [])
     if unrecorded:

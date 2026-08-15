@@ -10,6 +10,7 @@ Static model data (costs, limits, endpoints) lives in model_data.py.
 Availability detection (SDK flags, Ollama, Claude Code) lives in detection.py.
 """
 
+import contextlib
 import os
 import threading as _threading
 from dataclasses import dataclass, field
@@ -375,6 +376,42 @@ def _build_ollama_config() -> Optional['ModelConfig']:
 CLAUDECODE_SESSION_MODEL = "session-default"
 
 
+def _resolve_claudecode_model() -> str:
+    """Model name for the claudecode fallback config.
+
+    Resolution order:
+
+    1. ``RAPTOR_CC_MODEL`` — explicit operator pin, passed to
+       ``claude -p --model`` verbatim.
+    2. The cached pre-flight probe result (``cc_probe``): the
+       backend-resolved identity of the CLI session's own default
+       (e.g. a Bedrock id). Pinning it makes the transport
+       deterministic — a mid-run settings.json edit can no longer
+       silently switch models — gives the scorecard a real name, and
+       lets ``rpm_for``/``derive_max_workers`` resolve actual
+       capacity limits (the ``session-default`` sentinel resolves to
+       0 RPM, which serialised every review loop to one worker).
+       Safe on alternate backends because the id came from THIS
+       backend's own result envelope, not a hardcoded Anthropic
+       name. Cache-only — never runs a live probe here.
+       ``RAPTOR_CC_PIN_MODEL=0`` opts out.
+    3. The ``session-default`` sentinel (probe cache cold or pinning
+       disabled): ``--model`` is omitted and the subprocess resolves
+       its model like an interactive session.
+    """
+    import os
+    explicit = os.environ.get("RAPTOR_CC_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if os.environ.get("RAPTOR_CC_PIN_MODEL", "1") != "0":
+        with contextlib.suppress(Exception):
+            from core.llm.cc_probe import cached_cc_session_model
+            cached = cached_cc_session_model()
+            if cached:
+                return cached
+    return CLAUDECODE_SESSION_MODEL
+
+
 def _build_claudecode_config() -> Optional['ModelConfig']:
     """Last-resort fallback: ``claude`` CLI on PATH, no API key needed.
     Slower (subprocess + ``--json-schema`` structured output for
@@ -391,15 +428,34 @@ def _build_claudecode_config() -> Optional['ModelConfig']:
     import shutil
     if not shutil.which("claude"):
         return None
-    # Capacity limits are unknowable without asking the CLI which model
-    # it will use; assume the current Anthropic flagship's as a proxy.
-    limits = MODEL_LIMITS.get(PROVIDER_DEFAULT_MODELS["anthropic"], {})
+    model_name = _resolve_claudecode_model()
+    if model_name != CLAUDECODE_SESSION_MODEL:
+        # Real identity known — use ITS limits (normalised through
+        # the same alias/Bedrock-prefix stripping as rpm_for).
+        # Unknown ids (an operator's RAPTOR_CC_MODEL alias) keep the
+        # flagship-proxy defaults rather than raising.
+        from core.llm.model_data import context_window_for, max_output_for
+        try:
+            max_tokens = max_output_for(model_name)
+        except KeyError:
+            max_tokens = 32000
+        try:
+            max_context = context_window_for(model_name)
+        except KeyError:
+            max_context = 1000000
+    else:
+        # Capacity limits are unknowable without asking the CLI which
+        # model it will use; assume the current Anthropic flagship's
+        # as a proxy.
+        limits = MODEL_LIMITS.get(PROVIDER_DEFAULT_MODELS["anthropic"], {})
+        max_tokens = limits.get("max_output", 32000)
+        max_context = limits.get("max_context", 1000000)
     return ModelConfig(
         provider="claudecode",
-        model_name=CLAUDECODE_SESSION_MODEL,
+        model_name=model_name,
         api_key=None,
-        max_tokens=limits.get("max_output", 32000),
-        max_context=limits.get("max_context", 1000000),
+        max_tokens=max_tokens,
+        max_context=max_context,
         temperature=0.7,
         timeout=600,
         cost_per_1k_tokens=0.0,

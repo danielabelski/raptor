@@ -122,3 +122,46 @@ class TestProbe:
         monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
         assert probe_cc_session_model("/usr/bin/true") == "model-a"
         assert len(calls) == 2  # cache miss on proxy change
+
+
+class TestCachedRead:
+    """cached_cc_session_model — cache-only, never spawns a probe."""
+
+    @pytest.fixture(autouse=True)
+    def _no_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            cc_probe, "_CACHE_PATH", tmp_path / "cc-probe.json",
+        )
+        self._cache_path = tmp_path / "cc-probe.json"
+
+    def test_cold_cache_returns_none_without_probing(self, monkeypatch):
+        from core.llm.cc_probe import cached_cc_session_model
+
+        def boom(*a, **k):
+            raise AssertionError("cache-only read must not spawn claude")
+
+        monkeypatch.setattr(cc_probe.subprocess, "run", boom)
+        monkeypatch.setattr(
+            cc_probe.shutil, "which", lambda name: "/usr/bin/claude",
+        )
+        assert cached_cc_session_model() is None
+
+    def test_warm_cache_returns_model(self, monkeypatch):
+        from core.llm.cc_probe import cached_cc_session_model
+
+        monkeypatch.setattr(
+            cc_probe.shutil, "which", lambda name: "/usr/bin/claude",
+        )
+        sig = cc_probe._backend_signature("/usr/bin/claude")
+        cc_probe._write_cache(sig, "backend.claude-model-id")
+        monkeypatch.setattr(
+            cc_probe.subprocess, "run",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError),
+        )
+        assert cached_cc_session_model() == "backend.claude-model-id"
+
+    def test_no_claude_binary_returns_none(self, monkeypatch):
+        from core.llm.cc_probe import cached_cc_session_model
+
+        monkeypatch.setattr(cc_probe.shutil, "which", lambda name: None)
+        assert cached_cc_session_model() is None

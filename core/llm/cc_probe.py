@@ -130,6 +130,22 @@ def _write_cache(signature: str, model: str) -> None:
         logger.debug("cc-probe: cache write failed", exc_info=True)
 
 
+def cached_cc_session_model(claude_bin: str | None = None) -> str | None:
+    """Cache-only read of the probe result — never bills, never blocks.
+
+    For callers on the config-construction path (``LLMConfig`` builds
+    happen inside orchestrator workers, CLI shims, tests) that want
+    the backend-resolved model identity when it is already known but
+    must not run a live ``claude -p`` call to learn it. The live
+    probe stays in ``raptor-resolve-mode``, which runs before any
+    orchestrator commits to the transport and warms this cache.
+    """
+    resolved_bin = claude_bin or shutil.which("claude")
+    if not resolved_bin:
+        return None
+    return _read_cache(_backend_signature(resolved_bin))
+
+
 def probe_cc_session_model(
     claude_bin: str | None = None,
     *,

@@ -329,3 +329,113 @@ class TestAgentBuildlessRouting:
         assert "cpp" not in lang_map
         agent.build_detector.detect_build_system.assert_not_called()
         assert any("buildless" in e for e in result.errors)
+
+
+class TestBuildlessDegradationSummary:
+    """Degradation visibility: unresolved-include diagnostics are
+    counted and surfaced so reduced coverage never reads as full
+    coverage in the run log."""
+
+    def _db_with_diag(self, tmp_path, lines):
+        db = tmp_path / "db"
+        diag = db / "diagnostic"
+        diag.mkdir(parents=True)
+        (diag / "extraction.jsonl").write_text("\n".join(lines))
+        return db
+
+    def test_counts_unresolved_includes(self, tmp_path):
+        from packages.codeql.database_manager import (
+            buildless_degradation_summary,
+        )
+        db = self._db_with_diag(tmp_path, [
+            '{"message": "could not find include file: config.h"}',
+            '{"message": "cannot open include file generated/proto.pb.h"}',
+            '{"message": "unrelated warning"}',
+        ])
+        hits, summary = buildless_degradation_summary(db)
+        assert hits == 2
+        assert "unresolved includes" in summary
+        assert "--traced-build" in summary
+
+    def test_clean_database_generic_notice(self, tmp_path):
+        from packages.codeql.database_manager import (
+            buildless_degradation_summary,
+        )
+        db = self._db_with_diag(tmp_path, [
+            '{"message": "extraction completed"}',
+        ])
+        hits, summary = buildless_degradation_summary(db)
+        assert hits == 0
+        assert "without executing the build" in summary
+
+    def test_missing_diagnostic_dir_is_generic_not_error(self, tmp_path):
+        from packages.codeql.database_manager import (
+            buildless_degradation_summary,
+        )
+        db = tmp_path / "db"
+        db.mkdir()
+        hits, summary = buildless_degradation_summary(db)
+        assert hits == 0
+        assert "without executing the build" in summary
+
+    def test_non_json_files_ignored(self, tmp_path):
+        from packages.codeql.database_manager import (
+            buildless_degradation_summary,
+        )
+        db = self._db_with_diag(tmp_path, ['{"message": "ok"}'])
+        (db / "diagnostic" / "notes.txt").write_text(
+            "could not find include file: decoy.h"
+        )
+        hits, _ = buildless_degradation_summary(db)
+        assert hits == 0
+
+
+class TestTracedBuildTrustIndependence:
+    """--traced-build does NOT imply --trust-repo, deliberately.
+
+    The pack-config check is an anomaly alarm: legitimate projects
+    essentially never carry custom CodeQL extractors or build hooks,
+    and the alarm matters most on repos the operator otherwise
+    trusts, where a poisoned analysis would be believed. A traced
+    run hitting unsafe pack config must still refuse and print the
+    findings; the operator escalates with --trust-repo only after
+    auditing them. Capability-wise traced-build dominates, but trust
+    encodes what the operator REVIEWED — the build system, not
+    yaml-buried extractor hooks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_overrides(self):
+        import core.security.cc_trust as cct
+        import core.security.codeql_trust as qlt
+        qlt.set_trust_override(False)
+        cct.set_trust_override(False)
+        yield
+        qlt.set_trust_override(False)
+        cct.set_trust_override(False)
+
+    def _run_main(self, tmp_path, extra_args):
+        """Drive agent.py main() on an empty repo (no languages ->
+        fast no-op path); only the trust side effects of arg
+        parsing matter here."""
+        import contextlib
+
+        import core.security.cc_trust as cct
+        import core.security.codeql_trust as qlt
+        from packages.codeql import agent as agent_mod
+        argv = ["agent.py", "--repo", str(tmp_path),
+                "--out", str(tmp_path / "out"), *extra_args]
+        with patch.object(sys, "argv", argv), \
+                contextlib.suppress(SystemExit):
+            agent_mod.main()
+        return (qlt._trust_override_set, cct._trust_override_set)
+
+    def test_traced_build_sets_no_trust_override(self, tmp_path):
+        ql, cc = self._run_main(tmp_path, ["--traced-build"])
+        assert ql is False
+        assert cc is False
+
+    def test_default_sets_neither(self, tmp_path):
+        ql, cc = self._run_main(tmp_path, [])
+        assert ql is False
+        assert cc is False

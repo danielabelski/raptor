@@ -862,6 +862,13 @@ Examples:
     parser.add_argument("--repo", required=True, help="Repository path to analyze")
     parser.add_argument("--languages", help="Comma-separated languages (auto-detected if not specified)")
     parser.add_argument("--build-command", help="Custom build command")
+    parser.add_argument(
+        "--traced-build", action="store_true",
+        help="Opt into traced-build C/C++ extraction (executes the repo's "
+             "build system — asserts trust in the repo). Default is "
+             "buildless (--build-mode=none): no repo code runs during "
+             "database creation.",
+    )
     parser.add_argument("--force", action="store_true", help="Force database recreation (ignore cache)")
     parser.add_argument("--extended", action="store_true", help="Use extended security suites")
     parser.add_argument("--out", help="Output directory (auto-generated if not specified)")
@@ -951,6 +958,7 @@ Examples:
             force_db_creation=args.force,
             use_extended=args.extended,
             min_files=args.min_files,
+            traced_build=args.traced_build,
         )
 
         # Print summary

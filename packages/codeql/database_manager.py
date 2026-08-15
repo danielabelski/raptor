@@ -56,6 +56,56 @@ BUILDLESS_DEFAULT_LANGUAGES = frozenset({"cpp"})
 # crash and never a silent fallback to a traced build.
 BUILDLESS_CPP_MIN_VERSION = (2, 16)
 
+# Diagnostic messages the extractor emits when an #include could not
+# be resolved.  Matched loosely across CLI versions.
+_UNRESOLVED_INCLUDE_RE = re.compile(
+    r"(could not find|cannot open|could not open|missing|not found)"
+    r".{0,60}include"
+    r"|include.{0,60}"
+    r"(could not find|cannot open|could not open|missing|not found)",
+    re.IGNORECASE,
+)
+
+
+def buildless_degradation_summary(db_path: Path) -> tuple:
+    """(hit_count, one-line summary) for a buildless C/C++ database.
+
+    Buildless extraction never sees build-generated headers
+    (config.h, yacc/protobuf output), so TUs that include them parse
+    partially and dataflow through those regions is silently lost —
+    which reads as "covered" unless surfaced.  Count the extractor
+    diagnostics in the created database that mention unresolved
+    includes.  Fail-safe: any parse trouble degrades to the generic
+    notice (count 0), never an exception.
+    """
+    hits = 0
+    try:
+        diag_root = db_path / "diagnostic"
+        if diag_root.is_dir():
+            for f in sorted(diag_root.rglob("*")):
+                if not f.is_file() or f.suffix.lower() not in (".json", ".jsonl"):
+                    continue
+                try:
+                    text = f.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                hits += sum(
+                    1 for line in text.splitlines()
+                    if _UNRESOLVED_INCLUDE_RE.search(line)
+                )
+    except OSError:
+        hits = 0
+    if hits:
+        return hits, (
+            f"buildless mode: {hits} extractor diagnostic(s) mention "
+            f"unresolved includes — build-generated headers are invisible "
+            f"without a traced build (opt in via --traced-build)"
+        )
+    return 0, (
+        "buildless mode: database created without executing the build; "
+        "TUs needing build-generated headers may be partially analysed"
+    )
+
 
 @dataclass
 class DatabaseMetadata:
@@ -946,6 +996,12 @@ class DatabaseManager:
             )
 
             success = result.returncode == 0
+
+            if success and buildless:
+                # Degradation visibility: silently reduced coverage
+                # must not read as full coverage in the run log.
+                _hits, _summary = buildless_degradation_summary(staging_path)
+                (logger.warning if _hits else logger.info)("%s", _summary)
 
             if not success:
                 errors.append(f"Database creation failed with exit code {result.returncode}")

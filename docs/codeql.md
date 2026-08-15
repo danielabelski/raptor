@@ -32,7 +32,8 @@ autonomous analysis pipeline.
 |------|---------|-------------|
 | `--repo <path>` | required | Repository path to analyse |
 | `--languages <list>` | auto-detect | Comma-separated languages (aliases accepted: `c`, `js`, `ts`, `c#`, `kt`, `py`) |
-| `--build-command <cmd>` | auto-detect | Custom build command (requires exactly one `--languages` entry) |
+| `--build-command <cmd>` | auto-detect | Custom build command (requires exactly one `--languages` entry; implies a traced build for that language) |
+| `--traced-build` | off | Opt into traced-build C/C++ extraction (executes the repo's build system — asserts trust in the repo). Default is buildless |
 | `--out <dir>` | auto | Output directory |
 | `--force` | off | Delete and recreate the CodeQL database from scratch |
 | `--extended` | off | Use `security-extended` suites instead of `security-and-quality` |
@@ -123,6 +124,40 @@ same repository.
 ### Phase 3 -- Database Creation
 
 Implemented in `packages/codeql/database_manager.py`.
+
+**Buildless C/C++ (default).** C/C++ databases are created with
+`--build-mode=none`: the extractor parses source without invoking any
+build system, so no repo-controlled code executes during
+`database create`. This is the untrusted-repo posture — a build
+system is repo code, and there is no mechanical signal that running
+it is safe. Requires CodeQL CLI >= 2.16; older CLIs get a clear skip,
+never a silent fallback to a traced build.
+
+The trade-off is accuracy: buildless extraction cannot see
+build-generated headers (`config.h`, yacc/protobuf output), so TUs
+that include them parse partially and dataflow through those regions
+is lost, and macro configurations are inferred rather than recorded
+from real compiler invocations. After every buildless creation the
+run log carries one line summarising the damage — a WARNING with the
+count of unresolved-include extractor diagnostics when any exist, an
+INFO notice otherwise — so reduced coverage never silently reads as
+full coverage.
+
+**Traced build (opt-in).** `--traced-build` (or an explicit
+`--build-command`) restores full-fidelity extraction by executing the
+repo's build under the sandbox. This is an explicit operator
+assertion of trust in the target — appropriate for first-party code
+and well-known upstreams you would build anyway. It is deliberately
+independent of `--trust-repo`, which gates the CodeQL pack-config
+surface (custom extractors / build hooks declared in
+`codeql-pack.yml`): that check is an anomaly alarm — legitimate
+projects essentially never carry custom extractors, and the alarm
+matters most on repos you otherwise trust, where a poisoned analysis
+would be believed. A traced-build run that hits unsafe pack config
+therefore still refuses and prints the findings; escalate with
+`--trust-repo` only after auditing them. Build detection (Phase 2)
+still runs for traced builds and for the non-C/C++ languages whose
+extractors need it.
 
 Databases are created via `codeql database create` and cached by a
 content hash:

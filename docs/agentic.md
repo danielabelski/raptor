@@ -42,6 +42,10 @@ scan  →  dedup  →  prep  →  analyse (per finding)
 ```
 
 1. **Scan** -- Semgrep by default; CodeQL in parallel when enabled (`--codeql`).
+   C/C++ CodeQL databases build in buildless mode by default (no repo
+   build scripts execute); pass `--traced-build` to opt into
+   full-fidelity traced extraction on a repo you trust (see
+   [CodeQL](codeql.md)).
    External SARIF can be imported with `--sarif` instead of scanning.
 2. **Dedup** -- collapse duplicate and overlapping findings so the same bug is
    not analysed twice.  Skip with `--skip-dedup`.

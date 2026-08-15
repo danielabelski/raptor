@@ -36,7 +36,8 @@ Coccinelle (default-on for C/C++ targets). CodeQL is opt-in via
 | `--no-codeql` | -- | Explicitly disable CodeQL |
 | `--no-cocci` | off | Disable Coccinelle stage |
 | `--languages <list>` | auto | CodeQL language list (only relevant with `--codeql`) |
-| `--build-command <cmd>` | auto | CodeQL build command override (only relevant with `--codeql`) |
+| `--build-command <cmd>` | auto | CodeQL build command override (only relevant with `--codeql`; implies a traced build) |
+| `--traced-build` | off | Opt into traced-build C/C++ CodeQL extraction — executes the repo's build system (asserts trust). Default is buildless: no repo code runs during database creation |
 | `--keep` | off | Keep temporary working directory after completion |
 | `--sequential` | off | Disable parallel scanning; run packs one at a time |
 | `--out <dir>` | auto | Output directory override |

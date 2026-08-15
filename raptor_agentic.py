@@ -1177,6 +1177,12 @@ Examples:
     parser.add_argument("--build-command", help="Custom build command for CodeQL")
     parser.add_argument("--extended", action="store_true", help="Use CodeQL extended security suites")
     parser.add_argument("--codeql-cli", help="Path to CodeQL CLI (auto-detected if not specified)")
+    parser.add_argument(
+        "--traced-build", action="store_true",
+        help="Opt into traced-build C/C++ CodeQL extraction (executes the "
+             "repo's build system — asserts trust in the repo). Default is "
+             "buildless: no repo code runs during database creation.",
+    )
     parser.add_argument("--no-visualizations", action="store_true", help="Disable dataflow visualizations for CodeQL findings")
 
     # Reachability gating control
@@ -2072,6 +2078,8 @@ Examples:
         ]
         if args.languages:
             codeql_cmd.extend(["--languages", args.languages])
+        if args.traced_build:
+            codeql_cmd.append("--traced-build")
         if args.build_command:
             # SECURITY: build_command flows to `codeql database
             # create --command <cmd>`. CodeQL splits --command on

@@ -271,7 +271,7 @@ _SEMGREP_LANG_ALIASES: dict[str, set] = {
 # (e.g. tests) that imported from this module.
 from core.inventory.languages import (  # noqa: F401
     LANG_DISPLAY as _LANG_DISPLAY,  # tests reference via _scanner._LANG_DISPLAY
-    display_lang as _display_lang,  # tests reference via _scanner._display_lang
+    display_lang as _display_lang,  # noqa: F401 — tests reference via _scanner._display_lang
     display_langs as _display_langs,  # used by call sites below
 )
 
@@ -1322,6 +1322,7 @@ def run_codeql(
     out_dir: Path,
     languages: list[str] | None = None,
     build_command: str | None = None,
+    traced_build: bool = False,
 ) -> list[str]:
     """Delegate CodeQL analysis to packages/codeql/agent.py.
 
@@ -1381,6 +1382,8 @@ def run_codeql(
         cmd.extend(["--languages", ",".join(languages)])
     if build_command:
         cmd.extend(["--build-command", build_command])
+    if traced_build:
+        cmd.append("--traced-build")
 
     logger.info("Delegating CodeQL stage to %s", agent_script.name)
     # subprocess.run + timeout SIGKILLs the immediate child only,
@@ -1873,6 +1876,13 @@ def main():
         help="Override CodeQL's build command for compiled languages. "
              "Forwarded to packages/codeql/agent.py --build-command.",
     )
+    ap.add_argument(
+        "--traced-build", action="store_true",
+        help="Opt into traced-build C/C++ CodeQL extraction (executes the "
+             "repo's build system — asserts trust in the repo). Default is "
+             "buildless: no repo code runs during database creation. "
+             "Forwarded to packages/codeql/agent.py --traced-build.",
+    )
     ap.add_argument("--keep", action="store_true", help="Keep temp working directory")
     ap.add_argument("--sequential", action="store_true", help="Disable parallel scanning (for debugging)")
     ap.add_argument("--out", default=None, help="Output directory (from lifecycle). Overrides auto-generated path.")
@@ -2136,6 +2146,7 @@ def main():
                 repo_path, out_dir,
                 languages=languages,
                 build_command=args.build_command,
+                traced_build=args.traced_build,
             )
 
         # Coccinelle stage. Default-on for C/C++ targets; auto-skips

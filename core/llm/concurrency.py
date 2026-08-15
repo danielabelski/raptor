@@ -25,13 +25,59 @@ T = TypeVar("T")
 
 MAX_WORKERS_CAP = 32
 
+# Concurrency ceiling when the primary model is served by the
+# claudecode transport. RPM-derived counts assume an API connection
+# per worker; here every worker is a full ``claude`` CLI subprocess
+# (multi-second boot, hundreds of MB RSS), and N parallel first
+# requests with an identical prompt prefix race the server-side
+# prompt cache — each pays the full cache WRITE instead of one
+# writing and N-1 reading (measured ~19k tokens / ~$0.25 per miss vs
+# ~$0.02 per hit). A small pool keeps the pipeline parallel while the
+# cache warms after call one. ``RAPTOR_CC_MAX_WORKERS`` overrides;
+# ``tuning.json``'s ``max_llm_workers`` still beats both.
+CC_MAX_WORKERS_DEFAULT = 4
+
+
+def _claudecode_worker_cap() -> int:
+    import os
+    raw = os.environ.get("RAPTOR_CC_MAX_WORKERS", "")
+    try:
+        cap = int(raw) if raw else CC_MAX_WORKERS_DEFAULT
+    except ValueError:
+        logger.warning(
+            "RAPTOR_CC_MAX_WORKERS=%r is not an integer — using %d",
+            raw, CC_MAX_WORKERS_DEFAULT,
+        )
+        cap = CC_MAX_WORKERS_DEFAULT
+    return max(1, min(cap, MAX_WORKERS_CAP))
+
+
+def _is_claudecode_primary(model: str) -> bool:
+    """True when *model* is served by the claudecode transport.
+
+    The pinned model name is a real backend id (indistinguishable
+    from an API-served one), so the transport is detected via the
+    configured primary provider — same import ``resolve_model_name``
+    already uses for ``"default"``.
+    """
+    try:
+        from core.llm.config import _get_default_primary_model
+        mc = _get_default_primary_model()
+    except Exception:  # noqa: BLE001 — config probing is best-effort
+        return False
+    if mc is None or mc.provider != "claudecode":
+        return False
+    return model in ("default", "session-default", mc.model_name)
+
 
 def derive_max_workers(model: str) -> int:
     """Derive a safe ``max_workers`` from the model's RPM limit.
 
     If ``max_llm_workers`` in ``tuning.json`` is set to a number,
     that value is used (still clamped to [1, 32]).  Otherwise
-    returns ``rpm // 2`` (headroom for retries) clamped to [1, 32].
+    returns ``rpm // 2`` (headroom for retries) clamped to [1, 32]
+    — and additionally clamped to the claudecode subprocess ceiling
+    when the primary model is served by the CLI transport.
     Falls back to 1 when RPM is unknown.
 
     ``"default"`` is resolved to the actual primary model inside
@@ -46,7 +92,10 @@ def derive_max_workers(model: str) -> int:
     rpm = rpm_for(model)
     if rpm <= 0:
         return 1
-    return max(1, min(rpm // 2, MAX_WORKERS_CAP))
+    workers = max(1, min(rpm // 2, MAX_WORKERS_CAP))
+    if _is_claudecode_primary(model):
+        workers = min(workers, _claudecode_worker_cap())
+    return workers
 
 
 def _tuning_path() -> Path:

@@ -78,3 +78,69 @@ class TestResolveClaudecodeModel:
             api_key=None, timeout=30,
         ))
         assert pinned._cli_model() == "backend.resolved-id"
+
+
+class TestClaudecodeWorkerCap:
+    def _mock_primary(self, monkeypatch, provider, model_name):
+        class _MC:
+            pass
+        mc = _MC()
+        mc.provider = provider
+        mc.model_name = model_name
+        monkeypatch.setattr(
+            "core.llm.config._get_default_primary_model",
+            lambda prefer=None: mc,
+        )
+
+    def test_claudecode_primary_clamped(self, monkeypatch):
+        from core.llm.concurrency import (
+            CC_MAX_WORKERS_DEFAULT,
+            derive_max_workers,
+        )
+
+        self._mock_primary(
+            monkeypatch, "claudecode", "anthropic.claude-mythos-5",
+        )
+        monkeypatch.setattr(
+            "core.llm.concurrency.read_tuning_max_llm_workers",
+            lambda: None,
+        )
+        assert (
+            derive_max_workers("anthropic.claude-mythos-5")
+            == CC_MAX_WORKERS_DEFAULT
+        )
+
+    def test_env_override_raises_cap(self, monkeypatch):
+        from core.llm.concurrency import derive_max_workers
+
+        self._mock_primary(
+            monkeypatch, "claudecode", "anthropic.claude-mythos-5",
+        )
+        monkeypatch.setattr(
+            "core.llm.concurrency.read_tuning_max_llm_workers",
+            lambda: None,
+        )
+        monkeypatch.setenv("RAPTOR_CC_MAX_WORKERS", "8")
+        assert derive_max_workers("anthropic.claude-mythos-5") == 8
+
+    def test_non_claudecode_primary_uncapped(self, monkeypatch):
+        from core.llm.concurrency import derive_max_workers
+
+        self._mock_primary(monkeypatch, "anthropic", "claude-opus-5")
+        monkeypatch.setattr(
+            "core.llm.concurrency.read_tuning_max_llm_workers",
+            lambda: None,
+        )
+        assert derive_max_workers("claude-opus-5") > 4
+
+    def test_tuning_override_beats_cc_cap(self, monkeypatch):
+        from core.llm.concurrency import derive_max_workers
+
+        self._mock_primary(
+            monkeypatch, "claudecode", "anthropic.claude-mythos-5",
+        )
+        monkeypatch.setattr(
+            "core.llm.concurrency.read_tuning_max_llm_workers",
+            lambda: 12,
+        )
+        assert derive_max_workers("anthropic.claude-mythos-5") == 12

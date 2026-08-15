@@ -39,6 +39,11 @@ Manage projects — named workspaces that corral analysis runs into one director
 | `clean [<name>] [--keep <n>] [--dry-run] [--yes]` | Delete old runs, keep latest n |
 | `export <name> <path> [--force]` | Export project as zip (prints sha256) |
 | `import <path> [--force] [--sha256 <hash>]` | Import project from zip |
+| `trust [<marker>] [<name>]` | List trust assertions (markers + binaries count), or set a marker: `config` / `build` / `dynamic` |
+| `untrust <marker> [<name>]` | Remove a trust marker |
+| `set [<key> <value>] [<name>]` | List settings, or set a registry key (`description`, `notes`, `threat-model`, `target-kind`, `build-command[.<lang>]`) |
+| `unset <key> [<name>]` | Remove a setting |
+| `get <key> [<name>]` | Print one setting's bare value (exit 1 when unset) |
 
 ## Execution
 

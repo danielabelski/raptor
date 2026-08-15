@@ -724,6 +724,11 @@ Named workspaces that corral analysis runs into a shared directory.
 /project binary list
 /project binary remove <path>
 /project binary clear
+/project trust [<marker>]
+/project untrust <marker>
+/project set [<key> <value>]
+/project unset <key>
+/project get <key>
 /project help
 ```
 
@@ -756,10 +761,49 @@ Named workspaces that corral analysis runs into a shared directory.
 | `binary list` | List persisted binaries |
 | `binary remove` | Remove a persisted binary |
 | `binary clear` | Clear all persisted binaries |
+| `trust` | List trust assertions (markers + persisted binaries count), or set a marker (`config`/`build`/`dynamic`) |
+| `untrust` | Remove a trust marker |
+| `set` | List settings, or set a registry key (`description`, `notes`, `threat-model`, `target-kind`, `build-command[.<lang>]`) |
+| `unset` | Remove a setting |
+| `get` | Print one setting's bare value (exit 1 when unset — script-friendly) |
 
 Persisted binaries are auto-loaded by `/agentic`, `/codeql`, and `/validate`
 runs.  See [architecture](architecture.md) for run lifecycle and output
 directory conventions.
+
+**Trust markers.** `trust` / `untrust` persist operator trust
+assertions on the project (schema v4), stored as marker → timestamp in
+the project JSON under `~/.raptor/projects/` — never inside the
+scanned repo, and never set automatically. Each marker only loosens a
+gate its per-run flag already loosens:
+
+| Marker | Equivalent per-run flag | Effect |
+|--------|------------------------|--------|
+| `config` | `--trust-repo` | Lifts BOTH the Claude Code config check (`cc_trust`) and the CodeQL pack-config check (`codeql_trust`) |
+| `build` | `--traced-build` | Traced-build C/C++ CodeQL extraction (executes the repo's build system) |
+| `dynamic` | `--dynamic` (audit) | Dynamic validation: Frida observation / target execution defaults on |
+
+Markers are consumed where `/agentic` and `/codeql` load the project's
+persisted binaries, and where the audit pipeline builds
+`dynamic_validation`. Per-run flags always win, in both directions:
+explicit negative flag (`--no-trust-repo`, `--no-traced-build`,
+`--no-dynamic`) > explicit positive flag > project marker > default
+(off). Whenever a marker affects a run, one banner line prints at
+start: `[*] project trust: build, dynamic (per-run flags override)`.
+`build` deliberately does NOT imply `config` — a traced run that hits
+unsafe CodeQL pack config still refuses (see
+[docs/codeql.md](codeql.md)).
+
+**Settings.** `set` / `unset` / `get` manage a small, registry-
+validated key/value surface — unknown keys are rejected with the valid
+list (not an open KV store), and identity fields (name, target,
+output_dir, created) are not settable. `description` and `notes` map
+to the existing project fields; `threat-model` points at an existing
+threat-model JSON (updates `threat_model_path`); `target-kind` is one
+of `library|hybrid|application|auto`; `build-command` stores per-
+language commands (`build-command.<lang>`; the bare key writes the
+`default` slot). `get <key>` prints the bare value and exits 1 when
+unset, for scripting.
 
 ---
 

@@ -87,6 +87,24 @@ class AuditPipelineOpts:
     study_root: Path | None = None
     mode: ReviewMode = ReviewMode.ENSEMBLE
     max_workers: int = 0
+    # Tri-state: True/False = explicit per-run choice (--dynamic /
+    # --no-dynamic); None = defer to the active project's 'dynamic'
+    # trust marker, else off. Resolved via
+    # core.project.trust.resolve_dynamic_validation at config build.
+    dynamic_validation: bool | None = None
+
+
+
+def _resolve_dynamic(opts: AuditPipelineOpts) -> bool:
+    """Resolve ``dynamic_validation``: explicit per-run choice wins;
+    else the active project's ``dynamic`` trust marker (with the
+    trust banner); else off. Best-effort — a project-substrate error
+    must never break the audit."""
+    try:
+        from core.project.trust import resolve_dynamic_validation
+        return resolve_dynamic_validation(opts.dynamic_validation)
+    except Exception:  # noqa: BLE001 — fail-closed to off
+        return bool(opts.dynamic_validation)
 
 
 def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
@@ -149,6 +167,7 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         study_root=opts.study_root,
         mode=opts.mode,
         max_workers=opts.max_workers,
+        dynamic_validation=_resolve_dynamic(opts),
     )
 
     return run_orchestrator(
@@ -187,7 +206,7 @@ def _has_any_mechanical_evidence(ev: str) -> bool:
     discarding findings that have real tool support even if the tool's
     role is detection rather than verification.
     """
-    return not (not ev or ev.startswith(_NON_MECHANICAL))
+    return bool(ev) and not ev.startswith(_NON_MECHANICAL)
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +283,7 @@ def _needs_second_pass(outcome) -> bool:
     if outcome.status != "clean":
         return True
     ev = outcome.evidence_tool or ""
-    return bool(ev and not ev.startswith(NON_MECHANICAL))
+    return bool(ev) and not ev.startswith(NON_MECHANICAL)
 
 
 def _merge_outcomes(sec_outcomes, bf_outcomes):
@@ -416,6 +435,7 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
         study_root=opts.study_root,
         mode=ReviewMode.SECURITY,
         max_workers=opts.max_workers,
+        dynamic_validation=_resolve_dynamic(opts),
     )
 
     result = run_orchestrator(

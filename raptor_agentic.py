@@ -1183,6 +1183,12 @@ Examples:
              "repo's build system — asserts trust in the repo). Default is "
              "buildless: no repo code runs during database creation.",
     )
+    parser.add_argument(
+        "--no-traced-build", action="store_true",
+        help="Force buildless CodeQL extraction for this run, overriding "
+             "both --traced-build and the active project's 'build' trust "
+             "marker (raptor project trust build).",
+    )
     parser.add_argument("--no-visualizations", action="store_true", help="Disable dataflow visualizations for CodeQL findings")
 
     # Reachability gating control
@@ -1430,6 +1436,13 @@ Examples:
              "CodeQL pack/config check (core/security/codeql_trust.py). New "
              "trust checks read the same signal.",
     )
+    parser.add_argument(
+        "--no-trust-repo",
+        action="store_true",
+        help="Keep the strict trust checks for this run, overriding both "
+             "--trust-repo and the active project's 'config' trust marker "
+             "(raptor project trust config).",
+    )
 
     # SCA integration
     parser.add_argument("--sca", action="store_true",
@@ -1465,6 +1478,14 @@ Examples:
         getattr(args, "log_level", None),
         getattr(args, "verbose", False),
     )
+
+    # Project trust markers (schema v4): resolve the active project's
+    # 'config' / 'build' markers into args.trust_repo / args.traced_build.
+    # Per-run flags always win (negative > positive > marker > off);
+    # a banner line prints when a marker affects this run. Mirrors the
+    # persisted-binaries loading path (binary_oracle_cli).
+    from core.project.trust import apply_project_trust_flags
+    apply_project_trust_flags(args)
 
     # Propagate --trust-repo to every target-repo trust check so each
     # in-process consumer (cc_trust, codeql_trust, build_detector, ...)

@@ -528,6 +528,12 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
 # flag into their child args — see the note in main().
 _TRUST_REPO_SEEN = False
 
+# Set True by main() when --no-trust-repo is seen (and stripped from
+# argv). The explicit negative wins over --trust-repo AND over a
+# persisted project 'config' trust marker; re-injected into the
+# codeql/agentic children so their own resolution sees it.
+_NO_TRUST_REPO_SEEN = False
+
 _active_dispatcher = None
 
 
@@ -870,10 +876,13 @@ def mode_agentic(args: list) -> int:
                 file=sys.stderr,
             )
 
-    # Re-inject --trust-repo stripped by main(): the agentic child parses it
-    # to set the cc_trust + codeql_trust overrides in its own process.
+    # Re-inject --trust-repo / --no-trust-repo stripped by main(): the
+    # agentic child parses them to resolve the cc_trust + codeql_trust
+    # overrides in its own process (negative wins there).
     if _TRUST_REPO_SEEN and '--trust-repo' not in args:
         args = ['--trust-repo'] + args
+    if _NO_TRUST_REPO_SEEN and '--no-trust-repo' not in args:
+        args = ['--no-trust-repo'] + args
 
     log_level = _extract_agentic_log_level(args)
     if log_level:
@@ -901,10 +910,13 @@ def mode_codeql(args: list) -> int:
     if '--scan-only' not in args and not analyze:
         args = ['--scan-only'] + args
 
-    # Re-inject --trust-repo stripped by main(): the codeql child parses it
-    # to set the cc_trust + codeql_trust overrides in its own process.
+    # Re-inject --trust-repo / --no-trust-repo stripped by main(): the
+    # codeql child parses them to resolve the cc_trust + codeql_trust
+    # overrides in its own process (negative wins there).
     if _TRUST_REPO_SEEN and '--trust-repo' not in args:
         args = ['--trust-repo'] + args
+    if _NO_TRUST_REPO_SEEN and '--no-trust-repo' not in args:
+        args = ['--no-trust-repo'] + args
 
     return _run_with_lifecycle("codeql", codeql_script, args,
                               "Running CodeQL analysis...")
@@ -1174,10 +1186,18 @@ def main():
     # their child args via _TRUST_REPO_SEEN. Without that, `raptor.py codeql
     # --trust-repo` silently fails to lift the child's target-repo trust
     # checks (fail-closed: it over-blocks, but the documented override breaks).
+    # --no-trust-repo (explicit negative) beats --trust-repo and any
+    # persisted project 'config' trust marker. Stripped here like the
+    # positive flag so subcommands without the flag still parse; the
+    # codeql/agentic handlers re-inject it for their children.
+    global _TRUST_REPO_SEEN, _NO_TRUST_REPO_SEEN
+    if "--no-trust-repo" in sys.argv:
+        _NO_TRUST_REPO_SEEN = True
+        sys.argv = [a for a in sys.argv if a != "--no-trust-repo"]
     if "--trust-repo" in sys.argv:
         from core.security.cc_trust import set_trust_override
-        global _TRUST_REPO_SEEN
-        set_trust_override(True)
+        if not _NO_TRUST_REPO_SEEN:
+            set_trust_override(True)
         _TRUST_REPO_SEEN = True
         sys.argv = [a for a in sys.argv if a != "--trust-repo"]
 

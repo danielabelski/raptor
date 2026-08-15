@@ -307,15 +307,15 @@ def cmd_record(args: argparse.Namespace) -> int:
             return 1
 
     # G1: HYPOTHESIS-FIRST — findings/suspicious/dormant require hypothesis
-    if args.status in ("finding", "suspicious", "dormant"):  # noqa: SIM102
-        if not args.hypothesis:
-            print(
-                f"error [G1 HYPOTHESIS-FIRST]: --status {args.status} "
-                "requires --hypothesis (testable claim, e.g. "
-                "'if input X reaches sink Y without check Z, CWE-N applies').",
-                file=sys.stderr,
-            )
-            return 1
+    if (args.status in ("finding", "suspicious", "dormant")
+            and not args.hypothesis):
+        print(
+            f"error [G1 HYPOTHESIS-FIRST]: --status {args.status} "
+            "requires --hypothesis (testable claim, e.g. "
+            "'if input X reaches sink Y without check Z, CWE-N applies').",
+            file=sys.stderr,
+        )
+        return 1
 
     # G4: EVIDENCE-IN-ANNOTATION — findings/suspicious/dormant require body
     if args.status in ("finding", "suspicious", "dormant") and not args.body:
@@ -1260,6 +1260,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         codeql_db_path=args.codeql_db,
         threat_model=threat_model,
         on_progress=on_progress,
+        # Tri-state: explicit negative > explicit positive > None
+        # (None defers to the active project's 'dynamic' trust marker
+        # inside the pipeline; default off).
+        dynamic_validation=(False if args.no_dynamic
+                            else (True if args.dynamic else None)),
     )
 
     try:
@@ -1571,6 +1576,14 @@ def main() -> int:
                        help="Batch functions at or under this SLOC per file "
                             "into combined reviews (default: 15; 0 disables "
                             "batching)")
+    p_run.add_argument("--dynamic", action="store_true",
+                       help="Enable dynamic validation (Frida observation / "
+                            "target execution) for confirmed findings")
+    p_run.add_argument("--no-dynamic", action="store_true",
+                       help="Disable dynamic validation for this run, "
+                            "overriding both --dynamic and the active "
+                            "project's 'dynamic' trust marker "
+                            "(raptor project trust dynamic)")
     from core.analysis.binary_oracle_cli import add_binary_args
     add_binary_args(p_run, include_edges=False)
 

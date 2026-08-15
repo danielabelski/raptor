@@ -157,7 +157,11 @@ would be believed. A traced-build run that hits unsafe pack config
 therefore still refuses and prints the findings; escalate with
 `--trust-repo` only after auditing them. Build detection (Phase 2)
 still runs for traced builds and for the non-C/C++ languages whose
-extractors need it.
+extractors need it. For targets you audit repeatedly, the assertion
+can be persisted per project — `raptor project trust build` makes
+every subsequent `/codeql` and `/agentic` run on that project behave
+as if `--traced-build` was passed (per-run `--no-traced-build`
+overrides; the `config` marker for `--trust-repo` stays independent).
 
 Databases are created via `codeql database create` and cached by a
 content hash:

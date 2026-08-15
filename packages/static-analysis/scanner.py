@@ -271,7 +271,11 @@ _SEMGREP_LANG_ALIASES: dict[str, set] = {
 # (e.g. tests) that imported from this module.
 from core.inventory.languages import (  # noqa: F401
     LANG_DISPLAY as _LANG_DISPLAY,  # tests reference via _scanner._LANG_DISPLAY
+)
+from core.inventory.languages import (
     display_lang as _display_lang,  # noqa: F401 — tests reference via _scanner._display_lang
+)
+from core.inventory.languages import (
     display_langs as _display_langs,  # used by call sites below
 )
 
@@ -1883,6 +1887,11 @@ def main():
              "buildless: no repo code runs during database creation. "
              "Forwarded to packages/codeql/agent.py --traced-build.",
     )
+    ap.add_argument(
+        "--no-traced-build", action="store_true",
+        help="Force buildless CodeQL extraction for this run, overriding "
+             "--traced-build. Per-run escape hatch.",
+    )
     ap.add_argument("--keep", action="store_true", help="Keep temp working directory")
     ap.add_argument("--sequential", action="store_true", help="Disable parallel scanning (for debugging)")
     ap.add_argument("--out", default=None, help="Output directory (from lifecycle). Overrides auto-generated path.")
@@ -1925,6 +1934,12 @@ def main():
     add_cli_args(ap)
     args = ap.parse_args()
     apply_cli_args(args, parser=ap)
+
+    # Explicit negative beats positive (per-run escape hatch; project
+    # trust-marker consumption lives in the /agentic and /codeql entry
+    # points which resolve markers before forwarding --traced-build).
+    if getattr(args, "no_traced_build", False):
+        args.traced_build = False
 
     # Validate --extra-config paths upfront. Fail-loud on bad input so the
     # operator finds out before a 30-minute scan has burnt its budget. The

@@ -26,13 +26,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.config import RaptorConfig
 from core.json import save_json
-from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
-
 from core.logging import get_logger
-from core.sarif.parser import load_sarif
 from core.sage.hooks import (
     store_codeql_build_reliability,
 )
+from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
+from core.sarif.parser import load_sarif
 from packages.codeql.agent import CodeQLAgent
 from packages.codeql.autonomous_analyzer import AutonomousCodeQLAnalyzer
 
@@ -50,7 +49,7 @@ def get_exploit_validator(work_dir: Path):
     try:
         from packages.autonomous.exploit_validator import ExploitValidator
         return ExploitValidator(work_dir)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — optional component, degrade
         logger.warning("Exploit validator not available: %s", e)
         return None
 
@@ -60,7 +59,7 @@ def get_multi_turn_analyzer(llm_client):
     try:
         from packages.autonomous.dialogue import MultiTurnAnalyser
         return MultiTurnAnalyser(llm_client)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — optional component, degrade
         logger.warning("Multi-turn analyzer not available: %s", e)
         return None
 
@@ -231,7 +230,8 @@ def run_autonomous_workflow(args):
                     logger.info("✗ Not exploitable")
 
             except Exception as e:
-                logger.error("Analysis failed: %s", e, exc_info=True)
+                # RaptorLogger has no .exception method
+                logger.error("Analysis failed: %s", e, exc_info=True)  # noqa: G201
 
     # Save autonomous analysis summary
     short_circuits = getattr(llm_client, "short_circuits", 0)
@@ -312,6 +312,12 @@ Examples:
              "never execute. Traced builds run repo-controlled code under "
              "the sandbox — only use on repos you trust.",
     )
+    parser.add_argument(
+        "--no-traced-build", action="store_true",
+        help="Force buildless extraction for this run, overriding both "
+             "--traced-build and the active project's 'build' trust "
+             "marker (raptor project trust build).",
+    )
     parser.add_argument("--out", help="Output directory")
     parser.add_argument(
         "--force", action="store_true",
@@ -367,6 +373,11 @@ Examples:
                         help="Trust the target repo's config and skip safety checks "
                              "(.claude/settings*.json, .mcp.json, codeql-pack.yml, "
                              "qlpack.yml, .github/codeql/codeql-config.yml).")
+    parser.add_argument("--no-trust-repo", action="store_true",
+                        help="Keep the strict trust checks for this run, "
+                             "overriding both --trust-repo and the active "
+                             "project's 'config' trust marker "
+                             "(raptor project trust config).")
     parser.add_argument(
         "--phase-timeout", type=int,
         default=RaptorConfig.CODEQL_TIMEOUT, metavar="SECONDS",
@@ -409,6 +420,13 @@ Examples:
     # uses the same call site to keep behaviour aligned.
     from core.analysis.binary_oracle_cli import apply_to_config
     apply_to_config(args, Path(args.repo), parser=parser)
+    # Project trust markers (schema v4): resolve the active project's
+    # 'config' / 'build' markers into args.trust_repo / args.traced_build.
+    # Per-run flags always win (negative > positive > marker > off);
+    # a banner line prints when a marker affects this run. Mirrors the
+    # persisted-binaries loading path above.
+    from core.project.trust import apply_project_trust_flags
+    apply_project_trust_flags(args)
     # set_trust_override BEFORE apply_cli_args. apply_cli_args
     # may invoke trust-checks downstream (e.g. when validating
     # caller-supplied paths against project trust state). Pre-fix
@@ -441,7 +459,8 @@ Examples:
         )
         sys.exit(SANDBOX_ENGAGE_EXIT_CODE)
     except Exception as e:
-        logger.error("Fatal error: %s", e, exc_info=True)
+        # RaptorLogger has no .exception method
+        logger.error("Fatal error: %s", e, exc_info=True)  # noqa: G201
         print(f"\n✗ Fatal error: {e}", file=sys.stderr)
         sys.exit(1)
 

@@ -494,7 +494,15 @@ def parse_stream_json_lines(lines: list[str]) -> StreamJsonResult:
             if isinstance(usage.get("output_tokens"), int):
                 result.output_tokens = usage["output_tokens"]
             if obj.get("is_error"):
-                result.error = obj.get("result", "stream-json reported is_error")
+                # ``result`` may be an empty string on abort events
+                # (e.g. budget cap: subtype error_max_budget_usd with
+                # result "") — fall through to the subtype so the
+                # cause is never silently dropped.
+                result.error = (
+                    obj.get("result")
+                    or obj.get("subtype")
+                    or "stream-json reported is_error"
+                )
 
     return result
 
@@ -567,12 +575,17 @@ def run_cc_streaming(
     if proc.returncode != 0:
         stderr_text = proc.stderr.read() if proc.stderr else ""
         from core.security.prompt_output_sanitise import escape_nonprintable
+        partial = parse_stream_json_lines(collected)
+        # Aborts (budget cap, API refusal) exit nonzero with EMPTY
+        # stderr — the cause lives in the final stream-json result
+        # event. Prefer stderr when present, else the parsed event's
+        # error/subtype, so the operator never sees a bare "exited 1:".
+        cause = (stderr_text or "").strip() or (partial.error or "")
         err = StreamJsonResult()
         err.error = (
             f"claude -p exited {proc.returncode}: "
-            f"{escape_nonprintable(redact_secrets((stderr_text or '')[:500]))}"
+            f"{escape_nonprintable(redact_secrets(cause[:500]))}"
         )
-        partial = parse_stream_json_lines(collected)
         err.session_id = partial.session_id
         return err
 

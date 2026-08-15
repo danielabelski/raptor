@@ -324,6 +324,21 @@ class TestParseStreamJsonLines:
         r = parse_stream_json_lines(lines)
         assert r.error == "something broke"
 
+    def test_error_result_empty_text_falls_back_to_subtype(self):
+        # Budget-cap aborts emit is_error with result "" and the cause
+        # only in subtype (error_max_budget_usd).
+        from core.llm.cc_adapter import parse_stream_json_lines
+        lines = [
+            json.dumps({
+                "type": "result",
+                "is_error": True,
+                "subtype": "error_max_budget_usd",
+                "result": "",
+            }),
+        ]
+        r = parse_stream_json_lines(lines)
+        assert r.error == "error_max_budget_usd"
+
     def test_handles_empty_lines(self):
         from core.llm.cc_adapter import parse_stream_json_lines
         r = parse_stream_json_lines(["", "  ", "not json"])

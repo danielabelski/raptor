@@ -3471,9 +3471,14 @@ class ClaudeCodeLLMProvider(LLMProvider):
         if sr.error:
             raise RuntimeError(sr.error)
 
-        result = self._parse_stream_content(sr.content)
-        if isinstance(result, dict) and "error" in result and result["error"]:
-            raise RuntimeError(f"claude -p structured parse failed: {result['error']}")
+        if sr.structured_output is not None:
+            result = sr.structured_output
+        else:
+            result = self._parse_stream_content(sr.content)
+            if isinstance(result, dict) and "error" in result and result["error"]:
+                raise RuntimeError(
+                    f"claude -p structured parse failed: {result['error']}"
+                )
 
         total_tokens = sr.input_tokens + sr.output_tokens
         self.track_usage(
@@ -3734,7 +3739,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             )
 
         content_text = sr.content
-        if not content_text:
+        if not content_text and sr.structured_output is None:
             return TurnResponse(
                 content=[],
                 stop_reason=StopReason.ERROR,
@@ -3753,15 +3758,18 @@ class ClaudeCodeLLMProvider(LLMProvider):
             duration=duration,
         )
 
-        result = self._parse_stream_content(content_text)
-        if isinstance(result, dict) and "error" in result and result["error"]:
-            return TurnResponse(
-                content=[],
-                stop_reason=StopReason.ERROR,
-                input_tokens=sr.input_tokens,
-                output_tokens=sr.output_tokens,
-                error_message=f"structured parse: {result['error']}",
-            )
+        if sr.structured_output is not None:
+            result = sr.structured_output
+        else:
+            result = self._parse_stream_content(content_text)
+            if isinstance(result, dict) and "error" in result and result["error"]:
+                return TurnResponse(
+                    content=[],
+                    stop_reason=StopReason.ERROR,
+                    input_tokens=sr.input_tokens,
+                    output_tokens=sr.output_tokens,
+                    error_message=f"structured parse: {result['error']}",
+                )
 
         return self._parse_turn_structured_result(
             result,

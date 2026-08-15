@@ -331,6 +331,43 @@ class TestParseStreamJsonLines:
         assert r.content == ""
         assert r.session_id is None
 
+    def test_structured_output_captured_from_result(self):
+        # CLI >= 2.1.x delivers --json-schema output via a
+        # StructuredOutput tool call: assistant messages carry no text
+        # blocks, the object arrives on the result event.
+        from core.llm.cc_adapter import parse_stream_json_lines
+        lines = [
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "name": "StructuredOutput",
+                        "input": {"answer": "42"},
+                    }],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            }),
+            json.dumps({
+                "type": "result",
+                "session_id": "s2",
+                "structured_output": {"answer": "42"},
+                "result": '{"answer": "42"}',
+            }),
+        ]
+        r = parse_stream_json_lines(lines)
+        assert r.structured_output == {"answer": "42"}
+        assert r.content == ""
+        assert r.error is None
+
+    def test_structured_output_non_dict_ignored(self):
+        from core.llm.cc_adapter import parse_stream_json_lines
+        lines = [
+            json.dumps({"type": "result", "structured_output": "oops"}),
+        ]
+        r = parse_stream_json_lines(lines)
+        assert r.structured_output is None
+
     def test_result_usage_overrides_assistant_usage(self):
         from core.llm.cc_adapter import parse_stream_json_lines
         lines = [

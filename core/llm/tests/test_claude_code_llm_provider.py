@@ -389,6 +389,29 @@ def test_generate_structured_passes_schema_to_subprocess(monkeypatch) -> None:
     assert json.loads(raw)["answer"] == 42
 
 
+def test_generate_structured_prefers_structured_output(monkeypatch) -> None:
+    """CLI >= 2.1.x delivers --json-schema output via a StructuredOutput
+    tool call: assistant text is empty, the object arrives on the result
+    event's ``structured_output`` field. The provider must consume it
+    instead of failing on the empty content text."""
+    import core.llm.cc_adapter as _cc_adapter
+    monkeypatch.setattr(
+        _cc_adapter, "run_cc_streaming",
+        lambda *a, **k: StreamJsonResult(
+            content="",
+            structured_output={"answer": 7},
+            cost_usd=0.03,
+            input_tokens=3,
+            output_tokens=4,
+        ),
+    )
+    p = ClaudeCodeLLMProvider(_config())
+    result, raw = p.generate_structured("compute", {"type": "object"})
+    assert result == {"answer": 7}
+    assert json.loads(raw) == {"answer": 7}
+    assert p.total_cost == 0.03
+
+
 def test_generate_structured_parse_error_raises(monkeypatch) -> None:
     import core.llm.cc_adapter as _cc_adapter
     monkeypatch.setattr(

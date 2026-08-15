@@ -477,6 +477,15 @@ def parse_stream_json_lines(lines: list[str]) -> StreamJsonResult:
 
         elif msg_type == "result":
             result.session_id = obj.get("session_id")
+            # With ``--json-schema``, current CLIs (>= 2.1.x) have the
+            # model deliver the object via a StructuredOutput tool call
+            # — the assistant messages carry no text blocks, and the
+            # validated object arrives here instead. Older CLIs echoed
+            # the JSON as assistant text, which is why content-text
+            # parsing alone used to work.
+            structured = obj.get("structured_output")
+            if isinstance(structured, dict):
+                result.structured_output = structured
             cost = obj.get("total_cost_usd")
             if isinstance(cost, (int, float)):
                 result.cost_usd = cost

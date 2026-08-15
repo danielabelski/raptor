@@ -1690,7 +1690,12 @@ class TestSuspiciousPromotion:
             "should not promote when LLM has a specific counter-hypothesis"
         )
         assert result.findings == 0
-        assert result.suspicious >= 1
+        # The item must never become a finding.  Its resting status is
+        # environment-dependent: bare hosts keep it suspicious, while
+        # tool-equipped hosts may triage-skip it or apply the
+        # Joern-conditional suspicious-demotion gate (both → clean).
+        assert result.suspicious + result.clean == 1
+        assert all(o.status != "finding" for o in result.outcomes)
 
 
 class TestResolveGateDemoted:

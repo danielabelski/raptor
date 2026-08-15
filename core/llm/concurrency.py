@@ -128,7 +128,7 @@ def _read_tuning() -> dict:
         text = _tuning_path().read_text()
         clean = _strip_json_line_comments(text)
         return json.loads(clean)
-    except Exception:
+    except Exception:  # noqa: BLE001 — tuning.json is optional
         return {}
 
 

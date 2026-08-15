@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 LLM Configuration — types, config file reading, model selection.
 
@@ -15,19 +14,26 @@ import os
 import threading as _threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from core.logging import get_logger
 
+from .detection import (
+    OPENAI_SDK_AVAILABLE,
+    _get_available_ollama_models,
+    _read_config_models,
+    _validate_ollama_url,
+    detect_llm_availability,
+)
+
 # Re-export from submodules for backward compatibility
 from .model_data import (
-    PROVIDER_ENDPOINTS, PROVIDER_DEFAULT_MODELS, PROVIDER_FAST_MODELS,
-    MODEL_COSTS, MODEL_LIMITS, PROVIDER_ENV_KEYS,
-)
-from .detection import (
-    OPENAI_SDK_AVAILABLE, detect_llm_availability,
-    _get_available_ollama_models, _validate_ollama_url,
-    _read_config_models,
+    MODEL_COSTS,
+    MODEL_LIMITS,
+    PROVIDER_DEFAULT_MODELS,
+    PROVIDER_ENDPOINTS,
+    PROVIDER_ENV_KEYS,
+    PROVIDER_FAST_MODELS,
 )
 
 logger = get_logger()
@@ -57,7 +63,7 @@ _DEFAULT_MAX_OUTPUT_LOCAL: int = 4_096            # local quant safe default
 # Config file reading
 # ---------------------------------------------------------------------------
 
-def _get_configured_models() -> List[Dict]:
+def _get_configured_models() -> list[dict]:
     """
     Get all models from RAPTOR config file.
 
@@ -233,7 +239,7 @@ def _get_best_thinking_model() -> Optional['ModelConfig']:
                             )
                         break
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — malformed entries skipped
                 logger.debug("Error processing model entry %s: %s", model_entry.get('model', 'unknown'), e)
                 continue
 
@@ -589,7 +595,7 @@ def set_operator_primary_override(model: Optional['ModelConfig']) -> None:
 
 
 def _get_default_primary_model(
-    prefer: Optional[List[str]] = None,
+    prefer: list[str] | None = None,
 ) -> Optional['ModelConfig']:
     """
     Get default primary model based on available providers.
@@ -677,7 +683,7 @@ def _get_default_primary_model(
     return None
 
 
-def _model_config_from_entry(entry: Dict) -> 'ModelConfig':
+def _model_config_from_entry(entry: dict) -> 'ModelConfig':
     """Build a ModelConfig from a config file entry.
 
     API key resolution: inline api_key → provider env var.
@@ -811,7 +817,7 @@ def _build_fast_model_for(primary: 'ModelConfig') -> Optional['ModelConfig']:
     )
 
 
-def _get_default_fallback_models() -> List['ModelConfig']:
+def _get_default_fallback_models() -> list['ModelConfig']:
     """
     Get default fallback models based on primary model tier.
 
@@ -908,9 +914,12 @@ def _get_default_fallback_models() -> List['ModelConfig']:
                 cost_per_1k_tokens=(costs.get("input", 0.002) + costs.get("output", 0.010)) / 2,
             ))
 
-    if "mistral" not in config_providers and os.getenv("MISTRAL_API_KEY"):
-        if not _is_primary("mistral", "mistral-large-latest"):
-            fallbacks.append(ModelConfig(
+    if (
+        "mistral" not in config_providers
+        and os.getenv("MISTRAL_API_KEY")
+        and not _is_primary("mistral", "mistral-large-latest")
+    ):
+        fallbacks.append(ModelConfig(
                 provider="mistral",
                 model_name="mistral-large-latest",
                 api_key=os.getenv("MISTRAL_API_KEY"),
@@ -945,20 +954,20 @@ def _get_default_fallback_models() -> List['ModelConfig']:
 VALID_ROLES = {"analysis", "code", "consensus", "fallback", "judge", "aggregate"}
 
 
-def get_configured_models() -> List[Dict]:
+def get_configured_models() -> list[dict]:
     """Return all model entries from the operator's config file."""
     return _get_configured_models()
 
 
-def model_config_from_entry(entry: Dict) -> 'ModelConfig':
+def model_config_from_entry(entry: dict) -> 'ModelConfig':
     """Build a ModelConfig from a config-file entry dict."""
     return _model_config_from_entry(entry)
 
 
 def resolve_model_roles(
     primary_model: Optional['ModelConfig'] = None,
-    fallback_models: Optional[List['ModelConfig']] = None,
-) -> Dict[str, Any]:
+    fallback_models: list['ModelConfig'] | None = None,
+) -> dict[str, Any]:
     """Resolve model roles from configured models.
 
     If no roles are specified, applies defaults:
@@ -1038,7 +1047,7 @@ def resolve_model_roles(
     }
 
 
-def _validate_model_roles(models: List['ModelConfig']) -> None:
+def _validate_model_roles(models: list['ModelConfig']) -> None:
     """Validate model role configuration. Raises ConfigError on invalid combos."""
     roles = [m.role for m in models if m.role]
 
@@ -1114,7 +1123,6 @@ def _validate_model_roles(models: List['ModelConfig']) -> None:
 
 class ConfigError(Exception):
     """Configuration validation error."""
-    pass
 
 
 @dataclass
@@ -1122,15 +1130,15 @@ class ModelConfig:
     """Configuration for a specific model."""
     provider: str  # "anthropic", "openai", "mistral", "ollama", "gemini"
     model_name: str  # "claude-opus-4-6", "gpt-5.2", "llama3:70b", etc.
-    api_key: Optional[str] = None
-    api_base: Optional[str] = None  # For non-Anthropic providers
+    api_key: str | None = None
+    api_base: str | None = None  # For non-Anthropic providers
     max_tokens: int = 4096
     max_context: int = 32000
     temperature: float = 0.7
     timeout: int = 120
     cost_per_1k_tokens: float = 0.0  # Fallback rate — used only when model not in MODEL_COSTS
     enabled: bool = True
-    role: Optional[str] = None  # "analysis", "code", "consensus", "fallback", "judge", "aggregate"
+    role: str | None = None  # "analysis", "code", "consensus", "fallback", "judge", "aggregate"
     # Bedrock-only: which Bedrock surface to route this model through.
     # ``"mantle"`` (default) → ``bedrock-mantle.<region>.api.aws/anthropic/
     # v1/messages`` (native Anthropic Messages API, bare model IDs, full
@@ -1160,13 +1168,13 @@ class LLMConfig:
     """Main LLM configuration for RAPTOR."""
 
     # Primary model (fastest/most capable). None when no provider is available.
-    primary_model: Optional[ModelConfig] = field(default_factory=_get_default_primary_model)
+    primary_model: ModelConfig | None = field(default_factory=_get_default_primary_model)
 
     # Fallback models (in priority order)
-    fallback_models: List[ModelConfig] = field(default_factory=_get_default_fallback_models)
+    fallback_models: list[ModelConfig] = field(default_factory=_get_default_fallback_models)
 
     # Analysis-specific models (for different task types)
-    specialized_models: Dict[str, ModelConfig] = field(default_factory=dict)
+    specialized_models: dict[str, ModelConfig] = field(default_factory=dict)
 
     # Global settings
     enable_fallback: bool = True
@@ -1178,13 +1186,13 @@ class LLMConfig:
     # Optional: drop cache entries older than this on read. None = no
     # TTL. Useful when an upgraded model would now produce different
     # output for a previously-cached prompt.
-    cache_ttl_seconds: Optional[float] = None
+    cache_ttl_seconds: float | None = None
     # Optional: cap cache size by number of entries. After each
     # successful save the oldest files (by mtime) are evicted until at
     # or under this cap. None = no eviction (cache grows unboundedly).
     # The directory-walk per save is O(N); fine to ~10k entries, beyond
     # which a real cache backend would be more appropriate.
-    cache_max_entries: Optional[int] = None
+    cache_max_entries: int | None = None
     enable_cost_tracking: bool = True
     max_cost_per_scan: float = 10.0  # USD
     # Model scorecard (core/llm/scorecard) — track per-model
@@ -1216,7 +1224,7 @@ class LLMConfig:
     # identical to the pre-freshness behaviour. Enabling lowers the effective
     # sample size, so confirm the cold-start impact with the offline measurement
     # before turning it on by default. See the design memo.
-    scorecard_freshness_half_life_days: Optional[float] = None
+    scorecard_freshness_half_life_days: float | None = None
 
     def __post_init__(self) -> None:
         """Seed ``specialized_models`` with same-provider fast-tier
@@ -1241,10 +1249,10 @@ class LLMConfig:
         for task in FAST_TIER_TASKS:
             self.specialized_models.setdefault(task, fast_config)
 
-    def _configured_models(self) -> List[ModelConfig]:
+    def _configured_models(self) -> list[ModelConfig]:
         """Every model the operator has configured: primary + fallbacks +
         specialized."""
-        models: List[ModelConfig] = []
+        models: list[ModelConfig] = []
         if self.primary_model is not None:
             models.append(self.primary_model)
         models.extend(self.fallback_models or [])
@@ -1272,13 +1280,13 @@ class LLMConfig:
           4. otherwise a bare config (api_key=None) so the SDK / dispatcher /
              provider env var supplies the credential at call time.
         """
+        from core.llm.model_data import _strip_dated_alias
         from core.security.llm_family import (
             bare_model_id,
             provider_of,
             resolve_model_shorthand,
             unknown_model_message,
         )
-        from core.llm.model_data import _strip_dated_alias
 
         candidates = self._configured_models()
         bare = bare_model_id(model_id)
@@ -1386,7 +1394,7 @@ class LLMConfig:
             "fallback_enabled": self.enable_fallback,
         }, mode=0o600)
 
-    def get_model_for_task(self, task_type: str) -> Optional[ModelConfig]:
+    def get_model_for_task(self, task_type: str) -> ModelConfig | None:
         """Get the model registered for `task_type`, falling back to
         ``primary_model``. Returns None if neither is configured.
 

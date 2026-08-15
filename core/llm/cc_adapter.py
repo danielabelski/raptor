@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from core.security.redaction import redact_secrets
 
@@ -57,6 +57,7 @@ def cc_subprocess_env() -> dict:
     point is that untrusted children never see cloud credentials.
     """
     import os
+
     from core.config import RaptorConfig
     from core.llm.egress import operator_proxy_env
     env = RaptorConfig.get_safe_env()
@@ -66,15 +67,13 @@ def cc_subprocess_env() -> dict:
     # children on every install that never asked for Bedrock.
     bedrock = bool(os.environ.get("CLAUDE_CODE_USE_BEDROCK"))
     for key, value in os.environ.items():
-        if key.startswith(_CC_BACKEND_ENV_PREFIXES):
-            env[key] = value
-        elif bedrock and key.startswith(_CC_BEDROCK_ENV_PREFIX):
+        if key.startswith(_CC_BACKEND_ENV_PREFIXES) or bedrock and key.startswith(_CC_BEDROCK_ENV_PREFIX):
             env[key] = value
     env.update(operator_proxy_env())
     return env
 
 
-_neutral_cwd: Optional[str] = None
+_neutral_cwd: str | None = None
 
 
 def neutral_cwd() -> str:
@@ -122,7 +121,7 @@ class CCDispatchConfig:
     # smuggle a re-instruction past the system layer the operator
     # thought they were setting. None means "no system prompt"
     # (pass-through).
-    system_prompt: Optional[str] = None
+    system_prompt: str | None = None
     # Default-True: sub-agents spawned by raptor's dispatch paths
     # (cc_dispatch, build_detector) don't need MCP servers and
     # shouldn't inherit the operator's ``~/.claude.json`` config.
@@ -132,8 +131,8 @@ class CCDispatchConfig:
     # False only if a caller genuinely needs MCP servers available
     # inside the sub-agent (no current consumer does). (gh #549)
     strict_mcp: bool = True
-    model: Optional[str] = None
-    session_id: Optional[str] = None
+    model: str | None = None
+    session_id: str | None = None
     persist_session: bool = False
     stream_json: bool = False
 
@@ -208,7 +207,7 @@ def strip_json_fences(text: str) -> str:
     if "```" not in text:
         return text
     parts = text.split("```")
-    last_candidate: Optional[str] = None
+    last_candidate: str | None = None
     for part in parts[1::2]:
         lines = part.strip().split("\n", 1)
         candidate = lines[1].strip() if len(lines) > 1 and not lines[0].startswith("{") else part.strip()
@@ -407,7 +406,7 @@ def parse_cc_freeform(stdout: str, stderr: str = "") -> dict[str, Any]:
     return {"content": content}
 
 
-def extract_session_id(stdout: str) -> Optional[str]:
+def extract_session_id(stdout: str) -> str | None:
     """Extract ``session_id`` from a ``claude -p --output-format json`` envelope."""
     try:
         envelope = json.loads(stdout.strip())
@@ -424,15 +423,15 @@ def extract_session_id(stdout: str) -> Optional[str]:
 class StreamJsonResult:
     """Parsed result from ``--output-format stream-json --verbose``."""
     content: str = ""
-    structured_output: Optional[dict[str, Any]] = None
-    session_id: Optional[str] = None
+    structured_output: dict[str, Any] | None = None
+    session_id: str | None = None
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
-    model: Optional[str] = None
-    error: Optional[str] = None
+    model: str | None = None
+    error: str | None = None
 
 
 def parse_stream_json_lines(lines: list[str]) -> StreamJsonResult:
@@ -504,8 +503,8 @@ def run_cc_streaming(
     cmd: list[str],
     prompt: str,
     env: dict[str, str],
-    timeout_s: Optional[int],
-    cwd: Optional[str] = None,
+    timeout_s: int | None,
+    cwd: str | None = None,
 ) -> StreamJsonResult:
     """Run ``claude -p --output-format stream-json`` via Popen, reading
     JSON lines as they arrive.
@@ -524,8 +523,8 @@ def run_cc_streaming(
     surface when the cwd is not operator-controlled. Pass an explicit
     path only when a caller genuinely wants project context loaded.
     """
-    import subprocess
     import select
+    import subprocess
     import time as _time
 
     proc = subprocess.Popen(
@@ -563,8 +562,7 @@ def run_cc_streaming(
                 collected.append(line)
 
     if proc.stdout:
-        for line in proc.stdout:
-            collected.append(line)
+        collected.extend(proc.stdout)
 
     if proc.returncode != 0:
         stderr_text = proc.stderr.read() if proc.stderr else ""

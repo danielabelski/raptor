@@ -11,10 +11,10 @@ import logging
 import re
 import subprocess
 import tempfile
-import time
-from pathlib import Path
 import threading
-from typing import Callable, List, Optional, Set
+import time
+from collections.abc import Callable
+from pathlib import Path
 
 from .models import FlowStep, JoernCPG, JoernMethodSummary, JoernResult, TaintFlow
 from .prereqs import _joern_parse_path, _joern_path
@@ -39,7 +39,7 @@ _IDENTIFIER_QUALIFIED_RE = re.compile(
 )
 
 
-def _validate_query(query: str, *, check_length: bool = True) -> Optional[str]:
+def _validate_query(query: str, *, check_length: bool = True) -> str | None:
     """Validate a query string. Returns error message or None if clean."""
     if check_length and len(query) > _QUERY_MAX_LEN:
         return f"query exceeds {_QUERY_MAX_LEN}-char cap ({len(query)})"
@@ -95,16 +95,16 @@ class _StallMonitor:
     def __init__(
         self,
         proc: subprocess.Popen,
-        on_progress: Optional[Callable] = None,
+        on_progress: Callable | None = None,
     ):
         self._proc = proc
         self._on_progress = on_progress
-        self._file_times: List[float] = []
-        self._threshold: Optional[float] = None
+        self._file_times: list[float] = []
+        self._threshold: float | None = None
         self._last_progress = time.monotonic()
         self._total_files = 0
         self._killed = False
-        self._stderr_lines: List[str] = []
+        self._stderr_lines: list[str] = []
 
     def run(self) -> None:
         """Read stderr line by line, track file processing times."""
@@ -160,12 +160,7 @@ class _StallMonitor:
             "parsing" in low
             or "processing" in low
             or "analyzing" in low
-            or line.endswith(".c")
-            or line.endswith(".cpp")
-            or line.endswith(".h")
-            or line.endswith(".py")
-            or line.endswith(".java")
-            or line.endswith(".js")
+            or line.endswith((".c", ".cpp", ".h", ".py", ".java", ".js"))
         )
 
     @property
@@ -180,12 +175,12 @@ class _StallMonitor:
 def build_cpg(
     target: Path,
     *,
-    languages: Optional[Set[str]] = None,
-    output_dir: Optional[Path] = None,
+    languages: set[str] | None = None,
+    output_dir: Path | None = None,
     timeout: int = 600,
     subprocess_runner=None,
-    on_progress: Optional[Callable] = None,
-    heap_mb: Optional[int] = None,
+    on_progress: Callable | None = None,
+    heap_mb: int | None = None,
 ) -> JoernCPG:
     """Parse target directory into a Code Property Graph.
 
@@ -261,7 +256,7 @@ def build_cpg(
             proc.stderr[:500] if proc.stderr else "(no stderr)",
         )
 
-    detected_langs: Set[str] = set()
+    detected_langs: set[str] = set()
     if proc.stdout:
         for line in proc.stdout.splitlines():
             if "language:" in line.lower():
@@ -281,7 +276,7 @@ def _build_cpg_with_stall_monitor(
     cmd: list,
     cpg_path: Path,
     target: Path,
-    languages: Optional[Set[str]],
+    languages: set[str] | None,
     timeout: int,
     on_progress: Callable,
 ) -> JoernCPG:
@@ -341,7 +336,7 @@ def _build_cpg_with_stall_monitor(
             stderr_text[:500] if stderr_text else "(no stderr)",
         )
 
-    detected_langs: Set[str] = set()
+    detected_langs: set[str] = set()
     if stdout:
         for line in stdout.splitlines():
             if "language:" in line.lower():
@@ -480,11 +475,11 @@ def run_taint_query(
     source_method: str,
     sink_call: str,
     *,
-    source_param: Optional[str] = None,
+    source_param: str | None = None,
     timeout: int = 300,
     subprocess_runner=None,
     max_call_depth: int = 2,
-) -> List[TaintFlow]:
+) -> list[TaintFlow]:
     """Run a source-to-sink taint tracking query.
 
     Returns list of TaintFlow objects. Validates method/sink names
@@ -538,7 +533,7 @@ def run_taint_query(
 def _build_taint_query(
     source_method: str,
     sink_call: str,
-    source_param: Optional[str] = None,
+    source_param: str | None = None,
     *,
     max_call_depth: int = 2,
 ) -> str:
@@ -640,7 +635,7 @@ def _target_content_hash(target: Path) -> str:
 
 def _write_cpg_manifest(
     cpg_dir: Path, target: Path, content_hash: str,
-    languages: Optional[Set[str]] = None, build_time_ms: int = 0,
+    languages: set[str] | None = None, build_time_ms: int = 0,
 ) -> None:
     """Write manifest.json alongside the cached CPG."""
     manifest = {
@@ -653,7 +648,7 @@ def _write_cpg_manifest(
     manifest_path.write_text(json.dumps(manifest, indent=2))
 
 
-def _read_cpg_manifest(cpg_dir: Path) -> Optional[dict]:
+def _read_cpg_manifest(cpg_dir: Path) -> dict | None:
     """Read manifest.json, returning None if missing or corrupt."""
     manifest_path = cpg_dir / "manifest.json"
     if not manifest_path.exists():
@@ -667,7 +662,7 @@ def _read_cpg_manifest(cpg_dir: Path) -> Optional[dict]:
 def load_cached_cpg(
     target: Path,
     cache_dir: Path,
-) -> Optional[JoernCPG]:
+) -> JoernCPG | None:
     """Return a cached CPG if fresh, None if stale or missing."""
     cpg_dir = cache_dir / "joern-cpg"
     cpg_path = cpg_dir / "cpg.bin"
@@ -700,11 +695,11 @@ def build_cpg_cached(
     target: Path,
     cache_dir: Path,
     *,
-    languages: Optional[Set[str]] = None,
+    languages: set[str] | None = None,
     timeout: int = 600,
     subprocess_runner=None,
-    on_progress: Optional[Callable] = None,
-    heap_mb: Optional[int] = None,
+    on_progress: Callable | None = None,
+    heap_mb: int | None = None,
 ) -> JoernCPG:
     """Build or reuse a cached CPG for the target.
 
@@ -787,9 +782,9 @@ def _parse_output(stdout: str) -> tuple:
     prefix/suffix rather than exact line, accept any line whose payload
     parses as JSON, and dedupe.
     """
-    flows: List[TaintFlow] = []
-    errors: List[str] = []
-    seen_flows: Set[str] = set()
+    flows: list[TaintFlow] = []
+    errors: list[str] = []
+    seen_flows: set[str] = set()
     in_flows = False
 
     for raw_line in stdout.splitlines():
@@ -837,9 +832,9 @@ def _parse_output(stdout: str) -> tuple:
     return flows, errors
 
 
-def _parse_dark_methods(stdout: str) -> List[str]:
+def _parse_dark_methods(stdout: str) -> list[str]:
     """Extract JOERN_DARK: markers — methods with uncertain reachability."""
-    dark: List[str] = []
+    dark: list[str] = []
     for line in stdout.splitlines():
         line = line.strip()
         if line.startswith("JOERN_DARK:"):
@@ -849,21 +844,24 @@ def _parse_dark_methods(stdout: str) -> List[str]:
     return dark
 
 
-def _parse_errors(stderr: str) -> List[str]:
+def _parse_errors(stderr: str) -> list[str]:
     """Extract error messages from Joern stderr."""
-    errors: List[str] = []
+    errors: list[str] = []
     for line in stderr.splitlines():
         line = line.strip()
         if not line:
             continue
         low = line.lower()
-        if any(kw in low for kw in ("error", "exception", "failed", "fatal")):
-            if "deprecated" not in low and "warning" not in low:
-                errors.append(line)
+        if (
+            any(kw in low for kw in ("error", "exception", "failed", "fatal"))
+            and "deprecated" not in low
+            and "warning" not in low
+        ):
+            errors.append(line)
     return errors
 
 
-def _build_summary_batch_query(method_names: list[str]) -> Optional[str]:
+def _build_summary_batch_query(method_names: list[str]) -> str | None:
     """Build a Joern query that fetches summaries for multiple methods."""
     if not method_names:
         return None

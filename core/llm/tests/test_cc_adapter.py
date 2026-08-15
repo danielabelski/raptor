@@ -2,14 +2,13 @@
 
 import json
 
-
 from core.llm.cc_adapter import (
     CCDispatchConfig,
     build_cc_command,
-    strip_json_fences,
     extract_envelope_metadata,
-    parse_cc_structured,
     parse_cc_freeform,
+    parse_cc_structured,
+    strip_json_fences,
 )
 
 
@@ -460,6 +459,7 @@ class TestCcSubprocessEnv:
 class TestNeutralCwd:
     def test_creates_private_dir_once(self):
         import os
+
         from core.llm.cc_adapter import neutral_cwd
         d1 = neutral_cwd()
         d2 = neutral_cwd()

@@ -28,12 +28,17 @@ import pytest
 from core.llm.cc_adapter import StreamJsonResult
 from core.llm.config import ModelConfig
 from core.llm.providers import (
-    ClaudeCodeLLMProvider, LLMProvider, create_provider,
+    ClaudeCodeLLMProvider,
+    LLMProvider,
+    create_provider,
 )
 from core.llm.tool_use import (
-    Message, StopReason, TextBlock, ToolCall, ToolDef,
+    Message,
+    StopReason,
+    TextBlock,
+    ToolCall,
+    ToolDef,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake subprocess helpers
@@ -450,7 +455,7 @@ def test_generate_structured_returns_clean_payload(monkeypatch) -> None:
         lambda *a, **k: _stream_result({"answer": 1}, cost_usd=0.05),
     )
     p = ClaudeCodeLLMProvider(_config())
-    result, raw = p.generate_structured("compute", {"type": "object"})
+    result, _raw = p.generate_structured("compute", {"type": "object"})
     assert "answer" in result
 
 
@@ -1008,8 +1013,8 @@ def test_generate_session_default_omits_model_flag(monkeypatch) -> None:
     — the flag is omitted entirely so the subprocess inherits the CLI
     session's own default model (Bedrock/Vertex-backed installs don't
     serve bare Anthropic model IDs)."""
-    from core.llm.config import CLAUDECODE_SESSION_MODEL
     import core.llm.cc_adapter as _cc_adapter
+    from core.llm.config import CLAUDECODE_SESSION_MODEL
     captured: dict[str, Any] = {}
 
     def fake_stream(cmd, prompt, *, env, timeout_s):
@@ -1046,6 +1051,7 @@ def test_build_claudecode_config_uses_session_sentinel(monkeypatch) -> None:
     """The auto-fallback builder stamps the sentinel, not a hardcoded
     Anthropic model name."""
     import shutil as _shutil
+
     from core.llm.config import (
         CLAUDECODE_SESSION_MODEL,
         _build_claudecode_config,

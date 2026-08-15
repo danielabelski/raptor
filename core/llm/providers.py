@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 LLM Provider Implementations — OpenAI SDK + Anthropic SDK + Gemini SDK + Instructor
 
@@ -16,15 +15,17 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
-from inspect import isclass
-from typing import Dict, Optional, Any, Tuple, Type, Union, TYPE_CHECKING
 from dataclasses import dataclass
+from inspect import isclass
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
 from core.logging import get_logger
+
 from .config import ModelConfig
+
 # Wire-shape types for tool-use turn primitive. These live in
 # ``core.llm.tool_use.types`` (zero dependencies on this module);
 # importing them here doesn't create a cycle.
@@ -39,6 +40,10 @@ from .tool_use.types import (
     ToolResult,
     TurnResponse,
 )
+
+# Shared default for ``turn()``-family signatures (B008): CacheControl
+# is a frozen dataclass, so one instance is safe to share.
+_DEFAULT_CACHE_CONTROL = CacheControl()
 
 logger = get_logger()
 
@@ -115,7 +120,11 @@ def _safe_int(value: Any, *, default: int) -> int:
 
 
 # SDK availability flags (canonical source is detection.py)
-from .detection import OPENAI_SDK_AVAILABLE, ANTHROPIC_SDK_AVAILABLE, GENAI_SDK_AVAILABLE  # noqa: E402
+from .detection import (
+    ANTHROPIC_SDK_AVAILABLE,
+    GENAI_SDK_AVAILABLE,
+    OPENAI_SDK_AVAILABLE,
+)
 
 # Re-import the actual modules where available (config.py only sets flags)
 if OPENAI_SDK_AVAILABLE:
@@ -151,7 +160,7 @@ class LLMResponse:
     # the SDK response when it exposes one (e.g. alias "gemini-2.5-pro" →
     # "gemini-2.5-pro-002"). None when the provider doesn't surface it — the
     # provenance manifest then records the alias only, never a guess.
-    resolved_model: Optional[str] = None
+    resolved_model: str | None = None
 
 
 @dataclass
@@ -160,7 +169,7 @@ class StructuredResponse:
 
     Iterable for backwards compatibility: result, raw = response
     """
-    result: Dict[str, Any]
+    result: dict[str, Any]
     raw: str
     cost: float = 0.0
     tokens_used: int = 0
@@ -169,14 +178,14 @@ class StructuredResponse:
     duration: float = 0.0
     cached: bool = False
     # Concrete model snapshot the provider served (see LLMResponse.resolved_model).
-    resolved_model: Optional[str] = None
+    resolved_model: str | None = None
 
     def __iter__(self):
         """Allow unpacking as 2-tuple for backwards compatibility."""
         return iter((self.result, self.raw))
 
 
-def extract_resolved_model(raw: Any) -> Optional[str]:
+def extract_resolved_model(raw: Any) -> str | None:
     """Best-effort: the concrete model id from a provider SDK response object.
 
     Providers are configured with floating aliases ("gemini-2.5-pro"); the SDK
@@ -193,7 +202,7 @@ def extract_resolved_model(raw: Any) -> Optional[str]:
     for attr in ("model", "model_version"):
         try:
             value = getattr(raw, attr, None)
-        except Exception:
+        except Exception:  # noqa: BLE001 — SDK response shims may raise anything
             value = None
         if isinstance(value, str) and value:
             return value
@@ -217,14 +226,13 @@ class LLMProvider(ABC):
         self._usage_lock = threading.Lock()
 
     @abstractmethod
-    def generate(self, prompt: str, system_prompt: Optional[str] = None,
+    def generate(self, prompt: str, system_prompt: str | None = None,
                  **kwargs) -> LLMResponse:
         """Generate completion from the model."""
-        pass
 
     @abstractmethod
-    def generate_structured(self, prompt: str, schema: Dict[str, Any],
-                           system_prompt: Optional[str] = None,
+    def generate_structured(self, prompt: str, schema: dict[str, Any],
+                           system_prompt: str | None = None,
                            **kwargs) -> "StructuredResponse":
         """Generate structured output matching the provided schema.
 
@@ -244,7 +252,6 @@ class LLMProvider(ABC):
         impls should prefer
         ``kwargs.get("temperature", self.config.temperature)``.
         """
-        pass
 
     # ------------------------------------------------------------------
     # Tool-use primitives — opt-in per provider.
@@ -318,14 +325,17 @@ class LLMProvider(ABC):
         if response.cost_usd is not None:
             return response.cost_usd
         in_per_m, out_per_m = self.price_per_million()
-        if in_per_m == 0.0 and out_per_m == 0.0 and (response.input_tokens or response.output_tokens):
-            if self.config.model_name not in _ZERO_PRICE_WARNED:
-                _ZERO_PRICE_WARNED.add(self.config.model_name)
-                logger.warning(
-                    "no pricing for model %s — cost tracking disabled, "
-                    "max_cost_usd budget cap will not trigger",
-                    self.config.model_name,
-                )
+        if (
+            in_per_m == 0.0 and out_per_m == 0.0
+            and (response.input_tokens or response.output_tokens)
+            and self.config.model_name not in _ZERO_PRICE_WARNED
+        ):
+            _ZERO_PRICE_WARNED.add(self.config.model_name)
+            logger.warning(
+                "no pricing for model %s — cost tracking disabled, "
+                "max_cost_usd budget cap will not trigger",
+                self.config.model_name,
+            )
         return (
             response.input_tokens * in_per_m
             + response.output_tokens * out_per_m
@@ -336,9 +346,9 @@ class LLMProvider(ABC):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         **provider_specific: Any,
     ) -> TurnResponse:
         """Send one round-trip with tool/function-call schemas.
@@ -362,9 +372,9 @@ class LLMProvider(ABC):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         **provider_specific: Any,
     ) -> Iterator[StreamChunk]:
         """Streaming variant of :meth:`turn`.
@@ -481,7 +491,7 @@ class LLMProvider(ABC):
     # across the whole process, even when callers create fresh
     # provider instances per request (a common pattern in the agentic
     # dispatch path).
-    _warned_unknown_models: set = set()
+    _warned_unknown_models: ClassVar[set] = set()
     _warned_unknown_models_lock = threading.Lock()
 
     @classmethod
@@ -498,9 +508,9 @@ class LLMProvider(ABC):
             f"or pass cost_per_1k_tokens to the LLMConfig."
         )
 
-    def _structured_fallback(self, prompt: str, schema: Dict[str, Any],
-                             pydantic_model, system_prompt: Optional[str] = None
-                             ) -> Tuple[Dict[str, Any], str]:
+    def _structured_fallback(self, prompt: str, schema: dict[str, Any],
+                             pydantic_model, system_prompt: str | None = None
+                             ) -> tuple[dict[str, Any], str]:
         """
         Universal fallback: ask for JSON in the prompt, validate
         with Pydantic. Works with any LLM that can produce JSON.
@@ -598,9 +608,9 @@ class LLMProvider(ABC):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         **provider_specific: Any,
     ) -> TurnResponse:
         """Synthesise one tool-use round-trip via plain ``generate()``."""
@@ -683,7 +693,7 @@ class LLMProvider(ABC):
     @staticmethod
     def _parse_fallback_response(
         text: str, tools: Sequence[ToolDef],
-    ) -> tuple[Union[TextBlock, ToolCall], StopReason]:
+    ) -> tuple[TextBlock | ToolCall, StopReason]:
         """Extract a tool call (if any) or fall back to a text block.
 
         Uses :func:`core.llm.cc_adapter.strip_json_fences` to find a
@@ -720,7 +730,7 @@ class LLMProvider(ABC):
         return ToolCall(id=call_id, name=name, input=inp), StopReason.NEEDS_TOOL_CALL
 
 
-def _coerce_to_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
+def _coerce_to_schema(data: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
     """Coerce LLM output values to match schema types before Pydantic validation.
 
     LLMs (especially via JSON-in-prompt fallback) often return wrong types:
@@ -836,7 +846,7 @@ def _coerce_to_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str,
     return coerced
 
 
-def _normalize_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Normalize simple format schema to JSON Schema format.
 
     Simple format: {"field": "type description"}
@@ -898,7 +908,7 @@ def _normalize_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     return {"properties": properties, "required": required}
 
 
-def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
+def _schema_to_gemini(schema: dict[str, Any]) -> dict[str, Any]:
     """Convert JSON Schema to Gemini-compatible schema.
 
     The google-genai SDK rejects nullable union types like ["string", "null"].
@@ -909,7 +919,7 @@ def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
         "boolean": "BOOLEAN", "array": "ARRAY", "object": "OBJECT", "null": "NULL",
     }
 
-    def convert_property(prop: Dict[str, Any]) -> Dict[str, Any]:
+    def convert_property(prop: dict[str, Any]) -> dict[str, Any]:
         out = {}
         prop_type = prop.get("type")
         if isinstance(prop_type, list):
@@ -941,7 +951,7 @@ def _schema_to_gemini(schema: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']], _model_name: str = 'DynamicSchema'):
+def _dict_schema_to_pydantic(schema: dict[str, Any] | type['BaseModel'], _model_name: str = 'DynamicSchema'):
     """
     Convert dict schema or Pydantic model to Pydantic model class.
 
@@ -973,7 +983,8 @@ def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']], _
 
     # Validate it's a dict if not Pydantic
     if not isinstance(schema, dict):
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004 — callers catch ValueError; changing type breaks them
+
             f"Schema must be dict or Pydantic BaseModel class, "
             f"got {type(schema).__name__}"
         )
@@ -1026,14 +1037,12 @@ def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']], _
                 item_type = Literal[tuple(items_spec["enum"])]
             else:
                 item_type = type_map.get(items_spec.get("type", "string"), str)
-            from typing import List
-            python_type = List[item_type]
+            python_type = list[item_type]
         else:
             python_type = type_map.get(field_type, str)
 
         if nullable:
-            from typing import Optional as Opt
-            python_type = Opt[python_type]
+            python_type = python_type | None
 
         # Get default value if present
         default_value = field_spec.get("default", ...)
@@ -1046,8 +1055,7 @@ def _dict_schema_to_pydantic(schema: Union[Dict[str, Any], Type['BaseModel']], _
 
         # If field is not required and has no default, make it Optional
         if not is_required and default_value is ...:
-            from typing import Optional as Opt
-            python_type = Opt[python_type]
+            python_type = python_type | None
             default_value = None
 
         # Nullable + REQUIRED: keep `...` (no default) so Pydantic
@@ -1107,8 +1115,8 @@ def _is_openai_reasoning_model(model_name: str) -> bool:
 def _openai_sampling_kwargs(
     model_name: str,
     max_tokens: int,
-    temperature: Optional[float] = None,
-) -> Dict[str, Any]:
+    temperature: float | None = None,
+) -> dict[str, Any]:
     """Return the correct token-limit (+ optional temperature) kwargs for an
     OpenAI chat.completions call, branching on the reasoning-model contract.
 
@@ -1117,7 +1125,7 @@ def _openai_sampling_kwargs(
     """
     if _is_openai_reasoning_model(model_name):
         return {"max_completion_tokens": max_tokens}
-    kw: Dict[str, Any] = {"max_tokens": max_tokens}
+    kw: dict[str, Any] = {"max_tokens": max_tokens}
     if temperature is not None:
         kw["temperature"] = temperature
     return kw
@@ -1203,7 +1211,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         logger.debug("Initialized OpenAICompatibleProvider: %s (base_url=%s)", config.model_name, config.api_base)
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None,
+    def generate(self, prompt: str, system_prompt: str | None = None,
                  **kwargs) -> LLMResponse:
         """Generate completion using the OpenAI SDK."""
         messages = []
@@ -1274,7 +1282,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             logger.debug("[OpenAI] model=%s, tokens=%s, cost=$%.4f, duration=%.2fs%s",
                          self.config.model_name, tokens_used, cost, duration,
-                         (", thinking=%d" % thinking_tokens) if thinking_tokens else "")
+                         f", thinking={thinking_tokens}" if thinking_tokens else "")
 
             return LLMResponse(
                 content=content,
@@ -1312,9 +1320,9 @@ class OpenAICompatibleProvider(LLMProvider):
                          escape_nonprintable(redact_secrets(str(e)))[:1024])
             raise
 
-    def generate_structured(self, prompt: str, schema: Dict[str, Any],
-                           system_prompt: Optional[str] = None,
-                           **kwargs) -> Tuple[Dict[str, Any], str]:
+    def generate_structured(self, prompt: str, schema: dict[str, Any],
+                           system_prompt: str | None = None,
+                           **kwargs) -> tuple[dict[str, Any], str]:
         """Generate structured output using Instructor (or JSON fallback)."""
         pydantic_model = _dict_schema_to_pydantic(schema)
         # Honour caller-supplied temperature so DispatchTask's
@@ -1377,7 +1385,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     resolved_model=extract_resolved_model(completion),
                 )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
                 with self._instructor_lock:
                     self._instructor_consec_failures += 1
                     consec = self._instructor_consec_failures
@@ -1425,9 +1433,9 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         max_retries: int = 3,
         backoff_factor: float = 2.0,
         **_unused: Any,
@@ -1463,7 +1471,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
 
         # ---- tools (function-calling shape) --------------------------
-        tool_schemas: list[Dict[str, Any]] = [
+        tool_schemas: list[dict[str, Any]] = [
             {
                 "type": "function",
                 "function": {
@@ -1476,14 +1484,14 @@ class OpenAICompatibleProvider(LLMProvider):
         ]
 
         # ---- messages (OpenAI flat list with role markers) ----------
-        wire_messages: list[Dict[str, Any]] = []
+        wire_messages: list[dict[str, Any]] = []
         if system:
             wire_messages.append({"role": "system", "content": system})
         for m in messages:
             wire_messages.extend(_message_to_openai_wire(m))
 
         # ---- dispatch (with retry on transient errors) ---------------
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.config.model_name,
             "messages": wire_messages,
             **_openai_sampling_kwargs(self.config.model_name, max_tokens),
@@ -1491,7 +1499,7 @@ class OpenAICompatibleProvider(LLMProvider):
         if tool_schemas:
             kwargs["tools"] = tool_schemas
 
-        from openai import (                                # type: ignore[import-not-found]
+        from openai import (  # type: ignore[import-not-found]
             APIConnectionError,
             APIStatusError,
         )
@@ -1641,9 +1649,9 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         max_retries: int = 3,
         **_unused: Any,
     ) -> Iterator[StreamChunk]:
@@ -1662,7 +1670,7 @@ class OpenAICompatibleProvider(LLMProvider):
             return
 
         # ---- tools (same as turn) ----------------------------------------
-        tool_schemas: list[Dict[str, Any]] = [
+        tool_schemas: list[dict[str, Any]] = [
             {
                 "type": "function",
                 "function": {
@@ -1675,14 +1683,14 @@ class OpenAICompatibleProvider(LLMProvider):
         ]
 
         # ---- messages ----------------------------------------------------
-        wire_messages: list[Dict[str, Any]] = []
+        wire_messages: list[dict[str, Any]] = []
         if system:
             wire_messages.append({"role": "system", "content": system})
         for m in messages:
             wire_messages.extend(_message_to_openai_wire(m))
 
         # ---- dispatch with stream=True -----------------------------------
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.config.model_name,
             "messages": wire_messages,
             "stream": True,
@@ -1691,7 +1699,7 @@ class OpenAICompatibleProvider(LLMProvider):
         if tool_schemas:
             kwargs["tools"] = tool_schemas
 
-        from openai import (                                    # type: ignore[import-not-found]
+        from openai import (  # type: ignore[import-not-found]
             APIConnectionError,
             APIStatusError,
         )
@@ -1738,7 +1746,7 @@ class OpenAICompatibleProvider(LLMProvider):
             return
 
         # ---- consume stream ----------------------------------------------
-        tool_calls_seen: Dict[int, str] = {}
+        tool_calls_seen: dict[int, str] = {}
         input_tokens = output_tokens = 0
         stop = StopReason.ERROR
 
@@ -1833,7 +1841,10 @@ _OPENAI_FINISH_REASON_MAP = {
 def _is_transient_openai(exc: BaseException) -> bool:
     """Same shape as the Anthropic helper. 429 + 5xx retryable;
     permanent 4xx fails fast."""
-    from openai import APIConnectionError, APIStatusError    # type: ignore[import-not-found]
+    from openai import (  # type: ignore[import-not-found]
+        APIConnectionError,
+        APIStatusError,
+    )
     if isinstance(exc, APIConnectionError):
         return True
     if isinstance(exc, APIStatusError):
@@ -1859,7 +1870,7 @@ def _is_tool_use_unsupported_error(exc: BaseException) -> bool:
     never produce this error class — every current model on those
     providers supports tool-use natively.
     """
-    from openai import APIStatusError                        # type: ignore[import-not-found]
+    from openai import APIStatusError  # type: ignore[import-not-found]
     if not isinstance(exc, APIStatusError):
         return False
     status = getattr(exc, "status_code", None)
@@ -1905,7 +1916,7 @@ def _is_tool_use_unsupported_error(exc: BaseException) -> bool:
     return has_unsupported_phrase
 
 
-def _message_to_openai_wire(m: Message) -> list[Dict[str, Any]]:
+def _message_to_openai_wire(m: Message) -> list[dict[str, Any]]:
     """One :class:`Message` → 1+ OpenAI wire dicts.
 
     OpenAI splits user messages with multiple :class:`ToolResult`\\ s
@@ -1931,7 +1942,7 @@ def _message_to_openai_wire(m: Message) -> list[Dict[str, Any]]:
     """
     if m.role == "assistant":
         text_parts: list[str] = []
-        tool_calls: list[Dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
         for b in m.content:
             if isinstance(b, TextBlock):
                 text_parts.append(b.text)
@@ -1944,7 +1955,7 @@ def _message_to_openai_wire(m: Message) -> list[Dict[str, Any]]:
                         "arguments": json.dumps(b.input),
                     },
                 })
-        out: Dict[str, Any] = {"role": "assistant"}
+        out: dict[str, Any] = {"role": "assistant"}
         if text_parts:
             out["content"] = "".join(text_parts)
         if tool_calls:
@@ -1953,7 +1964,7 @@ def _message_to_openai_wire(m: Message) -> list[Dict[str, Any]]:
             out["content"] = ""
         return [out]
     # user role
-    out_msgs: list[Dict[str, Any]] = []
+    out_msgs: list[dict[str, Any]] = []
     text_parts = []
     for b in m.content:
         if isinstance(b, TextBlock):
@@ -2032,7 +2043,7 @@ class AnthropicProvider(LLMProvider):
 
         logger.debug("Initialized AnthropicProvider: %s", config.model_name)
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None,
+    def generate(self, prompt: str, system_prompt: str | None = None,
                  **kwargs) -> LLMResponse:
         """Generate completion using the Anthropic SDK."""
         messages = [{"role": "user", "content": prompt}]
@@ -2127,9 +2138,9 @@ class AnthropicProvider(LLMProvider):
                          escape_nonprintable(redact_secrets(str(e)))[:1024])
             raise
 
-    def generate_structured(self, prompt: str, schema: Dict[str, Any],
-                           system_prompt: Optional[str] = None,
-                           **kwargs) -> Tuple[Dict[str, Any], str]:
+    def generate_structured(self, prompt: str, schema: dict[str, Any],
+                           system_prompt: str | None = None,
+                           **kwargs) -> tuple[dict[str, Any], str]:
         """Generate structured output using Instructor (or JSON fallback)."""
         pydantic_model = _dict_schema_to_pydantic(schema)
         # See OpenAI provider — caller-supplied temperature must
@@ -2198,7 +2209,7 @@ class AnthropicProvider(LLMProvider):
                     resolved_model=extract_resolved_model(completion),
                 )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
                 with self._instructor_lock:
                     self._instructor_consec_failures += 1
                     consec = self._instructor_consec_failures
@@ -2264,11 +2275,11 @@ class AnthropicProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         anthropic_task_budget_beta: bool = False,
-        anthropic_task_budget_tokens: Optional[int] = None,
+        anthropic_task_budget_tokens: int | None = None,
         max_retries: int = 3,
         backoff_factor: float = 2.0,
         **_unused: Any,
@@ -2307,7 +2318,7 @@ class AnthropicProvider(LLMProvider):
         # Anthropic accepts a string OR a content list. Use the list
         # form when caching the system prompt so the cache_control
         # marker can attach to it; otherwise the simpler string form.
-        system_arg: Optional[Union[str, list]]
+        system_arg: str | list | None
         if system:
             if cache_control.system:
                 system_arg = [{
@@ -2321,7 +2332,7 @@ class AnthropicProvider(LLMProvider):
             system_arg = None
 
         # ---- tools ---------------------------------------------------
-        tool_schemas: list[Dict[str, Any]] = [
+        tool_schemas: list[dict[str, Any]] = [
             {
                 "name": t.name,
                 "description": t.description,
@@ -2353,7 +2364,7 @@ class AnthropicProvider(LLMProvider):
             if anthropic_task_budget_beta
             else self.client.messages.create
         )
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.config.model_name,
             "max_tokens": max_tokens,
             "messages": wire_messages,
@@ -2371,7 +2382,7 @@ class AnthropicProvider(LLMProvider):
             kwargs["system"] = system_arg
         send_kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
-        from anthropic import (                              # type: ignore[import-not-found]
+        from anthropic import (  # type: ignore[import-not-found]
             APIConnectionError,
             APIError,
             APIStatusError,
@@ -2539,9 +2550,9 @@ class AnthropicProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         **_unused: Any,
     ) -> Iterator[StreamChunk]:
         """Streaming turn via ``client.messages.stream()``.
@@ -2558,7 +2569,7 @@ class AnthropicProvider(LLMProvider):
             )
 
         # ---- system block (same as turn) --------------------------------
-        system_arg: Optional[Union[str, list]]
+        system_arg: str | list | None
         if system:
             if cache_control.system:
                 system_arg = [{
@@ -2572,7 +2583,7 @@ class AnthropicProvider(LLMProvider):
             system_arg = None
 
         # ---- tools -------------------------------------------------------
-        tool_schemas: list[Dict[str, Any]] = [
+        tool_schemas: list[dict[str, Any]] = [
             {
                 "name": t.name,
                 "description": t.description,
@@ -2596,7 +2607,7 @@ class AnthropicProvider(LLMProvider):
             )
 
         # ---- build send_kwargs -------------------------------------------
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.config.model_name,
             "max_tokens": max_tokens,
             "messages": wire_messages,
@@ -2729,7 +2740,10 @@ def _is_transient_anthropic(exc: BaseException) -> bool:
     """``True`` when ``exc`` is a connection / 429 / 5xx error worth
     retrying. Permanent 4xx (auth, schema, not-found) are False so
     callers fail fast instead of burning budget on hopeless retries."""
-    from anthropic import APIConnectionError, APIStatusError    # type: ignore[import-not-found]
+    from anthropic import (  # type: ignore[import-not-found]
+        APIConnectionError,
+        APIStatusError,
+    )
     if isinstance(exc, APIConnectionError):
         return True
     if isinstance(exc, APIStatusError):
@@ -2780,7 +2794,7 @@ def is_credit_exhausted(exc: BaseException) -> bool:
     ))
 
 
-def _message_to_anthropic_wire(m: Message) -> Dict[str, Any]:
+def _message_to_anthropic_wire(m: Message) -> dict[str, Any]:
     """Our :class:`Message` → Anthropic wire dict.
 
     Anthropic accepts mixed content lists per turn — text, tool_use,
@@ -2793,7 +2807,7 @@ def _message_to_anthropic_wire(m: Message) -> Dict[str, Any]:
     are emitted as ``[{"type": "text", "text": ""}]`` so the wire
     shape stays valid if a caller resumes from a failed run.
     """
-    out_content: list[Dict[str, Any]] = []
+    out_content: list[dict[str, Any]] = []
     for block in m.content:
         if isinstance(block, TextBlock):
             out_content.append({"type": "text", "text": block.text})
@@ -2816,7 +2830,7 @@ def _message_to_anthropic_wire(m: Message) -> Dict[str, Any]:
     return {"role": m.role, "content": out_content}
 
 
-def _attach_anthropic_cache_marker(message: Dict[str, Any]) -> None:
+def _attach_anthropic_cache_marker(message: dict[str, Any]) -> None:
     """Mutate ``message["content"][-1]`` in-place to carry a
     cache_control marker. Anthropic places the marker on the LAST
     block of a region to cache everything preceding it within that
@@ -2849,7 +2863,7 @@ class GeminiProvider(LLMProvider):
         import threading
         self._clients_lock = threading.Lock()
         # {thread_id: Client} — bounded by live-thread reaping.
-        self._clients: Dict[int, Any] = {}
+        self._clients: dict[int, Any] = {}
         logger.debug(
             f"Initialized GeminiProvider: {config.model_name}"
         )
@@ -2870,10 +2884,11 @@ class GeminiProvider(LLMProvider):
                 self._clients.pop(k, None)
         # Build client outside the lock (may do I/O).
         if os.environ.get("RAPTOR_LLM_SOCKET"):
+            from google.genai.types import HttpOptions
+
             from core.llm.dispatcher.client import (
                 make_gemini_base_url,
             )
-            from google.genai.types import HttpOptions
             base_url, http_client = make_gemini_base_url()
             new_client = _genai_module.Client(
                 api_key="dummy-not-used",
@@ -2899,7 +2914,7 @@ class GeminiProvider(LLMProvider):
             self._clients.setdefault(tid, new_client)
             return self._clients[tid]
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None,
+    def generate(self, prompt: str, system_prompt: str | None = None,
                  **kwargs) -> LLMResponse:
         """Generate completion using the native Gemini SDK."""
         config_kwargs = {
@@ -2978,9 +2993,9 @@ class GeminiProvider(LLMProvider):
                          escape_nonprintable(redact_secrets(str(e)))[:1024])
             raise
 
-    def generate_structured(self, prompt: str, schema: Dict[str, Any],
-                           system_prompt: Optional[str] = None,
-                           **kwargs) -> Tuple[Dict[str, Any], str]:
+    def generate_structured(self, prompt: str, schema: dict[str, Any],
+                           system_prompt: str | None = None,
+                           **kwargs) -> tuple[dict[str, Any], str]:
         """Generate structured output using Gemini's native JSON mode."""
         # Normalize simple schema to JSON Schema format so both pydantic and
         # Gemini schema conversion see the same structure
@@ -3113,9 +3128,9 @@ class GeminiProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         **provider_specific: Any,
     ) -> TurnResponse:
         """Tool-use via the ABC's JSON-protocol fallback."""
@@ -3154,13 +3169,13 @@ class ClaudeCodeProvider:
         self.call_count = 0
         self.total_duration = 0.0
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None,
+    def generate(self, prompt: str, system_prompt: str | None = None,
                  **kwargs):
         """Returns None — Claude Code will do the reasoning."""
-        return None
+        return
 
-    def generate_structured(self, prompt: str, schema: Dict[str, Any],
-                           system_prompt: Optional[str] = None,
+    def generate_structured(self, prompt: str, schema: dict[str, Any],
+                           system_prompt: str | None = None,
                            **kwargs):
         """Returns (None, None) — Claude Code will do the reasoning.
 
@@ -3172,7 +3187,7 @@ class ClaudeCodeProvider:
         """
         return None, None
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Return zero stats."""
         return {
             "total_requests": 0,
@@ -3182,7 +3197,7 @@ class ClaudeCodeProvider:
         }
 
 
-def _safe_subprocess_stderr(stderr: Optional[str], *, limit: int = 500) -> str:
+def _safe_subprocess_stderr(stderr: str | None, *, limit: int = 500) -> str:
     """Sanitise subprocess stderr for inclusion in operator-facing
     ``RuntimeError`` messages.
 
@@ -3226,7 +3241,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         self,
         config: ModelConfig,
         *,
-        claude_bin: Optional[str] = None,
+        claude_bin: str | None = None,
         # Per-CALL abort ceiling (claude -p --max-budget-usd), not a
         # run budget — orchestrators cap total spend via --max-cost.
         # Audit-sized structured reviews (system prompt + context
@@ -3234,14 +3249,14 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # models; the old "1.00" default aborted them mid-response
         # with subtype error_max_budget_usd.
         budget_usd: str = "5.00",
-        timeout_s: Optional[int] = None,
+        timeout_s: int | None = None,
         resumable: bool = False,
     ) -> None:
         super().__init__(config)
         self._claude_bin = claude_bin or "claude"
         self._budget_usd = budget_usd
         self._resumable = resumable
-        self._session_id: Optional[str] = None
+        self._session_id: str | None = None
         self._messages_seen: int = 0
         # Per-call timeout: prefer explicit kwarg, then ModelConfig.timeout,
         # then a generous default (Claude Code subprocess + tool-use can
@@ -3269,7 +3284,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
     def context_window(self) -> int:
         return self.config.max_context
 
-    def _cli_model(self) -> Optional[str]:
+    def _cli_model(self) -> str | None:
         """Model name to pass as ``claude -p --model``.
 
         ``None`` (omit the flag; the subprocess inherits the CLI
@@ -3284,8 +3299,8 @@ class ClaudeCodeLLMProvider(LLMProvider):
         return self.config.model_name
 
     def _effective_timeout_s(
-        self, override: Optional[int],
-    ) -> Optional[int]:
+        self, override: int | None,
+    ) -> int | None:
         """Resolve the timeout for one call.
 
         ``override`` is the per-call ``timeout_s`` kwarg — callers
@@ -3302,18 +3317,19 @@ class ClaudeCodeLLMProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
+        system_prompt: str | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Dispatch a prompt to ``claude -p`` via stream-json and parse
         the response."""
+        import subprocess
+        import time as _time
+
         from .cc_adapter import (
             CCDispatchConfig,
             build_cc_command,
             run_cc_streaming,
         )
-        import subprocess
-        import time as _time
 
         call_timeout = self._effective_timeout_s(kwargs.pop("timeout_s", None))
 
@@ -3395,23 +3411,24 @@ class ClaudeCodeLLMProvider(LLMProvider):
     def generate_structured(
         self,
         prompt: str,
-        schema: Dict[str, Any],
-        system_prompt: Optional[str] = None,
+        schema: dict[str, Any],
+        system_prompt: str | None = None,
         **kwargs,
-    ) -> Tuple[Dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str]:
         """Dispatch with ``--json-schema`` for structured output via
         stream-json.
 
         Accepts and ignores ``**kwargs`` — `claude` CLI has no
         temperature flag (see ClaudeCodeProvider.generate_structured).
         """
+        import subprocess
+        import time as _time
+
         from .cc_adapter import (
             CCDispatchConfig,
             build_cc_command,
             run_cc_streaming,
         )
-        import subprocess
-        import time as _time
 
         # Route system_prompt through CC's `--system-prompt` flag instead of
         # concatenating into the user prompt. Pre-fix this path used
@@ -3534,9 +3551,9 @@ class ClaudeCodeLLMProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         max_tokens: int = 4096,
-        cache_control: CacheControl = CacheControl(),
+        cache_control: CacheControl = _DEFAULT_CACHE_CONTROL,
         **provider_specific: Any,
     ) -> TurnResponse:
         """Tool-use via ``generate_structured`` with a discriminated
@@ -3589,7 +3606,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
     ) -> TurnResponse:
         """Original per-subprocess turn with no session state."""
         schema = self._build_turn_schema(tools)
@@ -3635,7 +3652,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         messages: Sequence[Message],
         tools: Sequence[ToolDef],
         *,
-        system: Optional[str] = None,
+        system: str | None = None,
         _retry: bool = False,
     ) -> TurnResponse:
         """Resume-based turn: CC preserves conversation state across
@@ -3649,13 +3666,14 @@ class ClaudeCodeLLMProvider(LLMProvider):
         Uses ``--output-format stream-json`` for streaming responses
         and proper input/output token accounting.
         """
+        import subprocess
+        import time as _time
+
         from .cc_adapter import (
             CCDispatchConfig,
             build_cc_command,
             run_cc_streaming,
         )
-        import subprocess
-        import time as _time
 
         schema = self._build_turn_schema(tools)
         first_turn = self._session_id is None
@@ -3782,8 +3800,9 @@ class ClaudeCodeLLMProvider(LLMProvider):
     @staticmethod
     def _parse_stream_content(text: str) -> dict[str, Any]:
         """Extract the structured JSON object from stream-json content text."""
-        from .cc_adapter import strip_json_fences
         import json
+
+        from .cc_adapter import strip_json_fences
 
         text = strip_json_fences(text.strip())
         try:
@@ -3807,7 +3826,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_turn_schema(tools: Sequence[ToolDef]) -> Dict[str, Any]:
+    def _build_turn_schema(tools: Sequence[ToolDef]) -> dict[str, Any]:
         """Discriminated-union schema CC fills in for one turn.
 
         ``tool_name`` is constrained to the registered tool set so CC
@@ -3854,7 +3873,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
     def _build_turn_system_prompt(
         tools: Sequence[ToolDef],
         *,
-        extra: Optional[str] = None,
+        extra: str | None = None,
     ) -> str:
         # The "do not invent values" instruction is critical and
         # substrate-level (not consumer-specific): without it, the
@@ -3866,19 +3885,25 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # (cve-diff's verified-SHA gate, etc.) remain the
         # belt-and-braces second line.
         lines = [
-            "Decide the next action for an agentic tool-use loop. "
-            "Either invoke a tool to gather more information or "
-            "deliver a final answer. Output JSON matching the "
-            "provided schema.",
+            (
+                "Decide the next action for an agentic tool-use loop. "
+                "Either invoke a tool to gather more information or "
+                "deliver a final answer. Output JSON matching the "
+                "provided schema."
+            ),
             "",
             "RULES:",
-            "1. When invoking a tool, the values you put in tool_input "
-            "MUST come from either the conversation history or the "
-            "user's request. Do not guess, invent, or recall from "
-            "training data — even values that look plausible (slugs, "
-            "SHAs, URLs, IDs, package names).",
-            "2. If you don't have a value the next tool needs, call "
-            "a discovery tool first to obtain it.",
+            (
+                "1. When invoking a tool, the values you put in tool_input "
+                "MUST come from either the conversation history or the "
+                "user's request. Do not guess, invent, or recall from "
+                "training data — even values that look plausible (slugs, "
+                "SHAs, URLs, IDs, package names)."
+            ),
+            (
+                "2. If you don't have a value the next tool needs, call "
+                "a discovery tool first to obtain it."
+            ),
             "3. Call only one tool per response.",
             "",
             "TOOL CATALOG:",
@@ -3917,7 +3942,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
 
     def _parse_turn_structured_result(
         self,
-        result: Dict[str, Any],
+        result: dict[str, Any],
         tools: Sequence[ToolDef],
         *,
         cost_usd: float = 0.0,
@@ -3928,7 +3953,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         :class:`TurnResponse`. Defensive against malformed output —
         falls back to a text block if the result doesn't fit either
         branch of the discriminated schema."""
-        usd: Optional[float] = float(cost_usd) if cost_usd is not None else None
+        usd: float | None = float(cost_usd) if cost_usd is not None else None
         rtype = result.get("type")
         if rtype == "tool_call":
             name = result.get("tool_name")

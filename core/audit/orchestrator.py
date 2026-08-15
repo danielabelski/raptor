@@ -1850,6 +1850,22 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         logger.error("no checklist.json in %s", config.out_dir)
         return None
 
+    # Fidelity-3 macro recovery: function definitions that only exist
+    # post-expansion (DEFINE_HANDLER-style generators) are invisible to
+    # the AST inventory — recover them so they reach the review loop.
+    # Best-effort, bounded (textual prefilter + file cap inside).
+    try:
+        from .preprocessor_view import augment_checklist_with_macro_functions
+
+        augment_checklist_with_macro_functions(
+            checklist, config.target_path,
+            out_dir=config.out_dir, scope=config.scope,
+        )
+    except ImportError:
+        pass
+    except Exception:
+        logger.debug("macro-function recovery failed", exc_info=True)
+
     context_map = load_context_map(config.out_dir)
     if context_map is None:
         context_map = _try_understand_bridge(config)

@@ -3375,6 +3375,7 @@ def _run_audit_body(
                     sarif_cache,
                     checklist,
                     domain_model=domain_model,
+                    mechanical_findings=mechanical_findings,
                 )
                 if corroborated:
                     new_outcomes.append(outcome)
@@ -3563,7 +3564,9 @@ def _run_audit_body(
         }
         logger.debug("entering _promote_suspicious")
         _promote_suspicious(
-            result, config, sarif_cache, checklist, joern_server=joern_server
+            result, config, sarif_cache, checklist,
+            joern_server=joern_server,
+            mechanical_findings=mechanical_findings,
         )
         logger.debug("exited _promote_suspicious")
 
@@ -3692,6 +3695,7 @@ def _run_audit_body(
         checklist,
         domain_model=domain_model,
         available_tools=tool_capabilities,
+        mechanical_findings=mechanical_findings,
     )
     logger.debug("exited _resolve_gate_demoted")
 
@@ -10067,12 +10071,54 @@ def _check_sink_guarded_cached(function_name: str, joern_server) -> str:
     return verdict
 
 
+def _correlated_mech_detector_tool(
+    outcome: ReviewOutcome,
+    hypothesis: str,
+    cwe: str,
+    mechanical_findings: dict[str, list[dict[str, Any]]] | None,
+) -> str | None:
+    """Sweep-grade tool id from a prep-phase mechanical detector hit.
+
+    The prep phase runs standing Coccinelle rules over every source
+    file and keys position-anchored hits by ``file:function``
+    (mechanical-findings.json). Those hits were previously injected
+    only as LLM review context — a ``cocci:use_after_free`` match on
+    the exact lines of an LLM-claimed UAF never counted as the
+    tool-grounded evidence G2 demands, so the finding stayed
+    suspicious while the sweep re-ran other tools from scratch.
+
+    A hit qualifies as promotion evidence under the same discipline
+    as a tool-chain confirmation: only standing cocci rules (their
+    ``@role`` is checked — detection-role rules never promote) and
+    only when the rule's family correlates with the hypothesis/CWE.
+    Bespoke heuristic detectors (callback_lifetime, condition chain)
+    stay review context.
+    """
+    if not mechanical_findings:
+        return None
+    hits = mechanical_findings.get(f"{outcome.file}:{outcome.function}") or []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        detector = hit.get("detector", "")
+        if not detector.startswith("cocci:"):
+            continue
+        stem = detector.split(":", 1)[1]
+        tool_id = f"coccinelle:{stem}"
+        if _is_detection_only(tool_id):
+            continue
+        if evidence_matches_hypothesis(family_for_rule(stem), hypothesis, cwe):
+            return tool_id
+    return None
+
+
 def _promote_suspicious(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     sarif_cache: Optional[SarifCache] = None,
     checklist: Optional[Dict[str, Any]] = None,
     joern_server=None,
+    mechanical_findings: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     """Post-loop pass: try sweep tools on suspicious items with hypotheses.
 
@@ -10136,6 +10182,30 @@ def _promote_suspicious(
             or (outcome.review_result or {}).get("cwe")
             or ""
         )
+
+        mech_tool = _correlated_mech_detector_tool(
+            outcome, hypothesis, cwe, mechanical_findings,
+        )
+        if mech_tool:
+            if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
+                logger.info(
+                    "sweep promotion blocked %s:%s via %s — all sink calls guarded",
+                    outcome.file,
+                    outcome.function,
+                    mech_tool,
+                )
+            else:
+                result.outcomes[i] = _promote_outcome(outcome, mech_tool)
+                result.sweep_promoted += 1
+                result.suspicious -= 1
+                result.findings += 1
+                logger.info(
+                    "sweep promoted %s:%s via %s (prep-phase detector hit)",
+                    outcome.file,
+                    outcome.function,
+                    mech_tool,
+                )
+                continue
 
         pf = run_prefilter(
             target_path=config.target_path,
@@ -11244,6 +11314,7 @@ def _resolve_gate_demoted(
     *,
     domain_model: Optional[Dict[str, Any]] = None,
     available_tools: Optional[Dict[str, bool]] = None,
+    mechanical_findings: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     """Resolve gate-demoted suspicious outcomes.
 
@@ -11267,7 +11338,9 @@ def _resolve_gate_demoted(
             continue
 
         if _has_mechanical_corroboration(
-            outcome, config, sarif_cache, checklist, domain_model=domain_model
+            outcome, config, sarif_cache, checklist,
+            domain_model=domain_model,
+            mechanical_findings=mechanical_findings,
         ):
             ev = outcome.evidence_tool or ""
             if outcome.provenance_all_trusted and "smt" not in ev:
@@ -11795,6 +11868,7 @@ def _has_mechanical_corroboration(
     checklist: Optional[Dict[str, Any]],
     *,
     domain_model: Optional[Dict[str, Any]] = None,
+    mechanical_findings: dict[str, list[dict[str, Any]]] | None = None,
 ) -> bool:
     """Check if any mechanical tool independently flags this function.
 
@@ -11803,6 +11877,14 @@ def _has_mechanical_corroboration(
     Domain-model invariants count as mechanical corroboration because
     they have provenance from the study pipeline.
     """
+    # Prep-phase mechanical detector hits (standing cocci rules,
+    # condition chain, callback lifetime) are keyed by file:function
+    # and position-anchored — they ARE independent mechanical flags.
+    if mechanical_findings and mechanical_findings.get(
+        f"{outcome.file}:{outcome.function}",
+    ):
+        return True
+
     gap = _find_gap_in_checklist(checklist or {}, outcome.file, outcome.function)
     line_end = gap.get("line_end") if gap else None
 

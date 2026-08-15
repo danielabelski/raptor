@@ -8,6 +8,7 @@ confirmation, or drive suspicious→finding promotion.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -333,6 +334,108 @@ class TestRecordUncorrelatedHits:
         _record_uncorrelated_hits(outcome, [hit])
         _record_uncorrelated_hits(outcome, [hit])
         assert len(outcome.review_result["uncorrelated_tool_hits"]) == 1
+
+
+class TestMechDetectorPromotion:
+    """Prep-phase mechanical detector hits join the promotion pass."""
+
+    UAF_HYP = "use after free: object written after early free"
+
+    def _mech(self, detector, func="handler"):
+        return {
+            f"src/a.c:{func}": [{
+                "file": "src/a.c",
+                "function": func,
+                "detector": detector,
+                "line": 11,
+                "description": "freed then used",
+            }],
+        }
+
+    def test_correlated_cocci_hit_returns_tool_id(self):
+        from core.audit.orchestrator import _correlated_mech_detector_tool
+
+        outcome = _mk_outcome(self.UAF_HYP)
+        tool = _correlated_mech_detector_tool(
+            outcome, self.UAF_HYP, "CWE-416",
+            self._mech("cocci:use_after_free"),
+        )
+        assert tool == "coccinelle:use_after_free"
+
+    def test_uncorrelated_cocci_hit_returns_none(self):
+        from core.audit.orchestrator import _correlated_mech_detector_tool
+
+        outcome = _mk_outcome("SQL injection via string concat")
+        tool = _correlated_mech_detector_tool(
+            outcome,
+            "SQL injection via string concat", "CWE-89",
+            self._mech("cocci:use_after_free"),
+        )
+        assert tool is None
+
+    def test_detection_role_rule_never_promotes(self):
+        from core.audit.orchestrator import _correlated_mech_detector_tool
+
+        outcome = _mk_outcome("resource leak on error path")
+        tool = _correlated_mech_detector_tool(
+            outcome, "resource leak on error path", "",
+            self._mech("cocci:resource_leak_err"),
+        )
+        assert tool is None
+
+    def test_non_cocci_detector_stays_context(self):
+        from core.audit.orchestrator import _correlated_mech_detector_tool
+
+        outcome = _mk_outcome(self.UAF_HYP)
+        tool = _correlated_mech_detector_tool(
+            outcome, self.UAF_HYP, "CWE-416",
+            self._mech("callback_lifetime_local"),
+        )
+        assert tool is None
+
+    def test_promote_suspicious_uses_mech_hit(self, tmp_path, monkeypatch):
+        from core.audit.orchestrator import (
+            OrchestratorResult,
+            _promote_suspicious,
+        )
+
+        outcome = _mk_outcome(self.UAF_HYP)
+        outcome.status = "suspicious"
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        result.suspicious = 1
+        # no prefilter hits, no chain confirms — only the mech hit
+        _patch_common(monkeypatch, hits=[], chain_confirms=[])
+        _promote_suspicious(
+            result, _mk_config(tmp_path),
+            mechanical_findings=self._mech("cocci:use_after_free"),
+        )
+        assert result.outcomes[0].status == "finding"
+        assert result.outcomes[0].evidence_tool == "coccinelle:use_after_free"
+        assert result.sweep_promoted == 1
+
+    def test_corroboration_sees_mech_hits(self, tmp_path, monkeypatch):
+        from core.audit.orchestrator import _has_mechanical_corroboration
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "void handler(void) { }",
+        )
+        class _PF:
+            hits: ClassVar[list] = []
+        monkeypatch.setattr(
+            "core.audit.orchestrator.run_prefilter",
+            lambda **kw: _PF(),
+        )
+        outcome = _mk_outcome(self.UAF_HYP)
+        assert _has_mechanical_corroboration(
+            outcome, _mk_config(tmp_path), None, None,
+            mechanical_findings=self._mech("cocci:use_after_free"),
+        )
+        assert not _has_mechanical_corroboration(
+            outcome, _mk_config(tmp_path), None, None,
+            mechanical_findings={},
+        )
 
 
 @pytest.mark.parametrize("rule_id", sorted(PREFILTER_RULE_FAMILY))

@@ -1873,23 +1873,24 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             if nonlocal_audit_mode else None
                         )
                         # skip_mount_ns: no bind-tree, host FS visible.
-                        # Landlock read-restrict needs ALL system dirs
-                        # enumerated (infeasible); pass None → reads
-                        # allowed everywhere, writes still restricted.
+                        # Landlock enforces the read allowlist directly —
+                        # effective_read_paths already enumerates the same
+                        # system-dirs floor the Landlock-only fallback path
+                        # uses (/usr, /lib, /etc, /proc, /sys, target,
+                        # tool_paths), so restrict_reads works without a
+                        # mount tree. Pre-fix this branch forced
+                        # restrict_reads=False, which silently stripped
+                        # read protection from skip_mount_ns callers that
+                        # asked for it (frida's wrapper passes both).
+                        # Without restrict_reads there is nothing to
+                        # enforce: pass None so tool_paths alone never
+                        # engages read restriction on a host-visible fs.
                         _spawn_readable = (
-                            None if _skip_mount_ns
+                            (_readable_with_tools if restrict_reads else None)
+                            if _skip_mount_ns
                             else _readable_with_tools
                         )
-                        _spawn_restrict_reads = (
-                            False if _skip_mount_ns
-                            else restrict_reads
-                        )
-                        if _skip_mount_ns and restrict_reads:
-                            logger.warning(
-                                "skip_mount_ns=True forces restrict_reads=False "
-                                "(Landlock cannot enumerate all system dirs "
-                                "without mount-ns). Writes are still restricted."
-                            )
+                        _spawn_restrict_reads = restrict_reads
                         result = _spawn_mod.run_sandboxed(
                             cmd,
                             target=target, output=output,
@@ -2288,9 +2289,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # if the child had mount-ns isolation or fell back to
         # Landlock-only mode. See ``core/security/THREAT_MODEL.md``
         # I2-(a) for why this matters.
-        result.sandbox_info["mount_ns_active"] = bool(used_spawn and use_mount)
-        _eff_restrict_reads = restrict_reads and not (_skip_mount_ns and use_mount)
-        result.sandbox_info["restrict_reads"] = bool(_eff_restrict_reads)
+        # not `use_mount` alone: a per-call skip_mount_ns=True child has
+        # no bind tree even on a mount-capable host — reporting True
+        # would tell forensic readers the child had fs isolation it
+        # didn't have.
+        result.sandbox_info["mount_ns_active"] = bool(
+            used_spawn and use_mount and not _skip_mount_ns
+        )
+        # restrict_reads is enforced on every engaged path: mount-ns via
+        # the bind tree + Landlock, skip_mount_ns and Landlock-only via
+        # the Landlock read allowlist alone.
+        result.sandbox_info["restrict_reads"] = bool(restrict_reads)
         if _use_proxy_netns:
             result.sandbox_info["proxy_enforcement"] = "netns"
         elif use_egress_proxy:

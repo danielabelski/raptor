@@ -1406,6 +1406,51 @@ class TestE2ELandlockReadRestriction(unittest.TestCase):
                              f"stderr={r.stderr[:200]!r}")
             self.assertTrue(bin_path.exists())
 
+    def test_skip_mount_ns_keeps_restrict_reads(self):
+        """skip_mount_ns=True must NOT demote restrict_reads.
+
+        Pre-fix, the spawn path forced restrict_reads=False whenever
+        skip_mount_ns was set, on the (wrong) theory that the Landlock
+        read allowlist needs a mount tree. frida's wrapper passes
+        skip_mount_ns=True + restrict_reads=True, so its read
+        protection silently vanished on mount-capable hosts. The
+        Landlock preexec enforces the same system-dirs allowlist with
+        no bind tree; $HOME must stay denied, and sandbox_info must
+        report both restrict_reads and the absent mount tree
+        truthfully.
+        """
+        restricted_file = Path.home() / ".raptor_skipmnt_rr_test.txt"
+        restricted_file.write_text("SECRET-CREDENTIAL\n")
+        try:
+            with TemporaryDirectory() as out:
+                r = sandbox_run(
+                    ["cat", str(restricted_file)],
+                    target=out, output=out,
+                    restrict_reads=True,
+                    skip_mount_ns=True,
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertNotEqual(
+                    r.returncode, 0,
+                    "read of $HOME file should fail under "
+                    "skip_mount_ns + restrict_reads")
+                self.assertNotIn(
+                    "SECRET-CREDENTIAL", r.stdout,
+                    "credential leaked: skip_mount_ns demoted "
+                    "restrict_reads")
+                self.assertTrue(
+                    r.sandbox_info.get("restrict_reads"),
+                    "sandbox_info must report restrict_reads enforced")
+                self.assertFalse(
+                    r.sandbox_info.get("mount_ns_active"),
+                    "skip_mount_ns child has no bind tree — "
+                    "mount_ns_active must be False")
+        finally:
+            try:
+                restricted_file.unlink()
+            except OSError:
+                pass
+
     def test_dev_shm_blocked_under_restrict_reads(self):
         """/dev/shm must NOT be readable under restrict_reads.
 

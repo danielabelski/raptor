@@ -143,6 +143,7 @@ def assemble_context(
         "line_end": line_end,
     }
 
+    ctx["target_path"] = str(target_path)
     ctx["source"] = _read_source(target_path, file_path, line_start, line_end)
     ctx["metadata"] = _extract_metadata(checklist, file_path, function_name)
     ctx["callers"] = _find_callers(
@@ -310,11 +311,52 @@ _KERNEL_PATH_HINTS = (
 )
 
 
-def _is_kernel_c(ctx: Dict[str, Any]) -> bool:
+# File-content markers that corroborate "this is Linux kernel C".
+# Path hints alone misclassify ordinary userland projects: openssl,
+# and many libraries besides, have top-level crypto/ lib/ net/ fs/
+# directories, and a false kernel verdict steers the reviewer with
+# kernel-only exemplars (RCU, kref, spinlock discipline) while
+# suppressing the userland crypto guidance.
+_KERNEL_SOURCE_MARKERS = (
+    "#include <linux/", "#include <asm/", "EXPORT_SYMBOL",
+    "MODULE_LICENSE", "MODULE_AUTHOR", "SPDX-License-Identifier: GPL-2.0",
+)
+_kernel_file_cache: dict[str, bool] = {}
+
+
+def _file_has_kernel_markers(ctx: dict[str, Any]) -> bool:
+    """Sniff the file head for kernel markers (cached per file).
+
+    Falls back to True (trust the path hint) when the file can't be
+    read — the old, over-inclusive behaviour, chosen because kernel
+    exemplars on kernel code matter more than their absence on the
+    rare unreadable userland file.
+    """
+    fp = ctx.get("file", "")
+    cached = _kernel_file_cache.get(fp)
+    if cached is not None:
+        return cached
+    result = True
+    target = ctx.get("target_path")
+    if target:
+        full = _safe_path(Path(target), fp)
+        if full is not None and full.is_file():
+            try:
+                head = full.read_text(errors="replace")[:4096]
+                result = any(m in head for m in _KERNEL_SOURCE_MARKERS)
+            except OSError:
+                result = True
+    _kernel_file_cache[fp] = result
+    return result
+
+
+def _is_kernel_c(ctx: dict[str, Any]) -> bool:
     fp = ctx.get("file", "")
     if not fp.endswith((".c", ".h")):
         return False
-    return any(fp.startswith(h) or f"/{h}" in fp for h in _KERNEL_PATH_HINTS)
+    if not any(fp.startswith(h) or f"/{h}" in fp for h in _KERNEL_PATH_HINTS):
+        return False
+    return _file_has_kernel_markers(ctx)
 
 
 # Run-stable pattern texts shared by the per-prompt sections

@@ -88,3 +88,40 @@ def test_kernel_blocks_gated():
     p_system = format_context_for_prompt(dict(ctx), patterns_in_system=True)
     if "Kernel-internal patterns" in p_default:
         assert "Kernel-internal patterns" not in p_system
+
+
+class TestKernelHeuristicCorroboration:
+    """Path hints alone must not classify userland trees as kernel C
+    (openssl has crypto/ lib/ — the whole codebase got kernel
+    exemplars). A kernel verdict now needs file-content markers."""
+
+    def test_userland_crypto_dir_not_kernel(self, tmp_path):
+        from core.audit.context import _is_kernel_c, _kernel_file_cache
+        _kernel_file_cache.clear()
+        src = tmp_path / "crypto" / "aes"
+        src.mkdir(parents=True)
+        f = src / "aes_core.c"
+        f.write_text('#include <openssl/aes.h>\nint f(void){return 1;}\n')
+        ctx = {"file": "crypto/aes/aes_core.c",
+               "target_path": str(tmp_path)}
+        assert _is_kernel_c(ctx) is False
+
+    def test_kernel_file_with_markers_is_kernel(self, tmp_path):
+        from core.audit.context import _is_kernel_c, _kernel_file_cache
+        _kernel_file_cache.clear()
+        src = tmp_path / "drivers" / "net"
+        src.mkdir(parents=True)
+        f = src / "foo.c"
+        f.write_text('#include <linux/module.h>\nMODULE_LICENSE("GPL");\n')
+        ctx = {"file": "drivers/net/foo.c", "target_path": str(tmp_path)}
+        assert _is_kernel_c(ctx) is True
+
+    def test_unreadable_file_falls_back_to_path_hint(self):
+        from core.audit.context import _is_kernel_c, _kernel_file_cache
+        _kernel_file_cache.clear()
+        ctx = {"file": "drivers/net/gone.c", "target_path": "/nonexistent"}
+        assert _is_kernel_c(ctx) is True
+
+    def test_non_hinted_path_never_kernel(self):
+        from core.audit.context import _is_kernel_c
+        assert _is_kernel_c({"file": "src/app.c"}) is False

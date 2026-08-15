@@ -241,6 +241,8 @@ class SweepResult:
             entry["match_count"] = len(self.matches)
         if self.errors:
             entry["errors"] = self.errors
+        if self.details and self.details.get("reason"):
+            entry["reason"] = self.details["reason"]
         return entry
 
 
@@ -252,6 +254,8 @@ def run_semgrep_sweep(
     rule_config: str,
     line_start: int = 0,
     line_end: int = 0,
+    hypothesis: str = "",
+    rule_keyword: str = "",
 ) -> SweepResult:
     """Run a semgrep rule against a single file and classify matches.
 
@@ -263,6 +267,14 @@ def run_semgrep_sweep(
             inline rule written to a temp file by the caller.
         line_start: Function start line (for filtering matches to function).
         line_end: Function end line.
+        hypothesis: For dynamic per-hypothesis rules: the hypothesis text.
+            When it names concrete identifiers, a match may only confirm
+            if its ±2-line window mentions one of them.
+        rule_keyword: For dynamic per-hypothesis rules: the keyword that
+            selected the pattern (from hypothesis_to_semgrep_rule_keyed).
+            Enables the negative-control check — a rule that also matches
+            the keyword's guarded fixture is a presence detector and is
+            capped at "inconclusive".
 
     Returns:
         SweepResult with outcome and matches.
@@ -309,7 +321,40 @@ def run_semgrep_sweep(
             else:
                 in_function.append(finding)
 
-        if in_function:
+        capped_reason: str | None = None
+        if in_function and hypothesis:
+            named = _hypothesis_identifiers(hypothesis)
+            if named:
+                consistent = _filter_identifier_consistent(
+                    in_function, full_path, named,
+                )
+                if consistent:
+                    in_function = consistent
+                else:
+                    capped_reason = (
+                        "identifier mismatch: no match line (±2) mentions "
+                        "any identifier named by the hypothesis ("
+                        + ", ".join(sorted(named)[:5]) + ")"
+                    )
+
+        if (
+            in_function and capped_reason is None and rule_keyword
+            and _rule_matches_negative_control(
+                rule_config, rule_keyword, file_path,
+            )
+        ):
+            capped_reason = (
+                f"presence detector: rule for {rule_keyword!r} also "
+                "matches the guarded negative-control fixture"
+            )
+
+        if capped_reason:
+            logger.info(
+                "semgrep sweep capped at inconclusive for %s:%s — %s",
+                file_path, function_name, capped_reason,
+            )
+            outcome = "inconclusive"
+        elif in_function:
             outcome = "confirmed"
         elif result.errors:
             # A rule that failed to parse/run produced no findings for
@@ -338,6 +383,7 @@ def run_semgrep_sweep(
             matches=serialized,
             rule_id=rule_config,
             errors=result.errors,
+            details={"reason": capped_reason} if capped_reason else None,
         )
     except Exception as exc:
         return SweepResult(
@@ -347,6 +393,149 @@ def run_semgrep_sweep(
             outcome="error",
             errors=[str(exc)],
         )
+
+
+# ── Negative controls for dynamic per-hypothesis rules ──────────────
+#
+# The dynamic rules in hypothesis_mapping are keyword→regex presence
+# patterns ("use after free" → free\().  Presence of the API must not
+# count as confirmation of the vulnerability claim, so each keyword
+# family has a small human-authored fixture that uses the API *safely*
+# (guarded free, parameterized SQL, ...).  A rule that also matches its
+# fixture is a presence detector and its outcome is capped at
+# "inconclusive".
+
+_NEGATIVE_CONTROLS_DIR = (
+    Path(__file__).resolve().parents[2] / "engine" / "negative_controls"
+)
+
+# hypothesis_mapping keyword → fixture stem.  xss/reflected/cross-site
+# share one pattern (and therefore one fixture).
+_KEYWORD_FIXTURE_STEMS: dict[str, str] = {
+    "buffer overflow": "buffer_overflow",
+    "sql injection": "sql_injection",
+    "command injection": "command_injection",
+    "path traversal": "path_traversal",
+    "format string": "format_string",
+    "use after free": "use_after_free",
+    "double free": "double_free",
+    "xss": "xss",
+    "reflected": "xss",
+    "cross-site": "xss",
+}
+
+# Keyed by (keyword, fixture suffix): the pattern for a keyword is a
+# module constant, so the control verdict is stable per language.
+_negative_control_cache: dict[tuple, bool] = {}
+
+
+def negative_control_fixture(keyword: str, file_path: str) -> Path | None:
+    """Return the negative-control fixture for a rule keyword, or None.
+
+    The fixture language follows the audited file: .py targets get the
+    .py fixture, everything else the .c one.  Missing fixtures (e.g. a
+    Java target) return None — the control check is then skipped.
+    """
+    stem = _KEYWORD_FIXTURE_STEMS.get(keyword)
+    if not stem:
+        return None
+    suffix = ".py" if file_path.endswith(".py") else ".c"
+    fixture = _NEGATIVE_CONTROLS_DIR / f"{stem}{suffix}"
+    return fixture if fixture.is_file() else None
+
+
+def _rule_matches_negative_control(
+    rule_config: str, keyword: str, file_path: str,
+) -> bool:
+    """Run *rule_config* against the keyword's guarded fixture.
+
+    True means the rule fires on safe code — it is a presence detector.
+    Errors return False: a broken control run must not fabricate
+    inconclusive outcomes for rules that behaved on the real target.
+    """
+    fixture = negative_control_fixture(keyword, file_path)
+    if fixture is None:
+        return False
+    cache_key = (keyword, fixture.suffix)
+    if cache_key in _negative_control_cache:
+        return _negative_control_cache[cache_key]
+    try:
+        from packages.semgrep.runner import run_rule
+
+        result = run_rule(fixture, rule_config, timeout=60)
+        matched = bool(result.findings)
+    except Exception:  # noqa: BLE001
+        return False
+    _negative_control_cache[cache_key] = matched
+    return matched
+
+
+def _finding_line(finding: Any) -> int:
+    """Extract the (1-based) line from a semgrep finding of any shape."""
+    if hasattr(finding, "line"):
+        return finding.line or 0
+    if isinstance(finding, dict):
+        return finding.get("start", {}).get("line", 0) or finding.get("line", 0)
+    return 0
+
+
+def _hypothesis_identifiers(hypothesis: str) -> frozenset:
+    """Identifiers explicitly named by a hypothesis.
+
+    Prose words don't count — only tokens marked as code (backticks or
+    quotes), call syntax ``name(...)``, member references, or
+    code-shaped bare tokens (underscore / digit / mixedCase).  An empty
+    result means the hypothesis names nothing concrete and the
+    identifier-consistency check does not apply.
+    """
+    import re
+
+    idents: set = set()
+    idents.update(re.findall(
+        r"[`'\"]([A-Za-z_][A-Za-z0-9_]*)(?:\(\))?[`'\"]", hypothesis,
+    ))
+    idents.update(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", hypothesis))
+    idents.update(re.findall(r"(?:->|\.)([A-Za-z_][A-Za-z0-9_]*)", hypothesis))
+    idents.update(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*->", hypothesis))
+    for tok in _IDENT_RE.findall(hypothesis):
+        if "_" in tok or any(c.isdigit() for c in tok):
+            idents.add(tok)
+        elif tok[:1].islower() and not tok.islower():
+            idents.add(tok)  # mixedCase
+    return frozenset(
+        i for i in idents
+        if len(i) > 1 and i.lower() not in _PROSE_STOP_WORDS
+    )
+
+
+def _filter_identifier_consistent(
+    findings: list[Any], full_path: Path, identifiers: frozenset,
+) -> list[Any]:
+    """Keep findings whose match line ±2 mentions a hypothesis identifier.
+
+    Findings without line information cannot be tied to the hypothesis
+    and are dropped (fail closed — the caller caps at inconclusive).
+    """
+    import re
+
+    try:
+        file_lines = full_path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+
+    patterns = [
+        re.compile(r"\b" + re.escape(ident) + r"\b")
+        for ident in identifiers
+    ]
+    consistent = []
+    for finding in findings:
+        line = _finding_line(finding)
+        if not line:
+            continue
+        window = "\n".join(file_lines[max(0, line - 3):line + 2])
+        if any(p.search(window) for p in patterns):
+            consistent.append(finding)
+    return consistent
 
 
 def run_coccinelle_sweep(

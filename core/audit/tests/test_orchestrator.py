@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from core.audit.hypothesis_mapping import (
+    hypothesis_to_semgrep_rule as _hypothesis_to_semgrep_rule,
+)
 from core.audit.orchestrator import (
     OrchestratorConfig,
     OrchestratorResult,
@@ -15,7 +18,6 @@ from core.audit.orchestrator import (
     _check_finding_gates,
     _joern_live_query,
     _multi_pass_review,
-    _hypothesis_to_semgrep_rule,
     _hypothesis_to_tool_chain,
     _promote_hypothesis_inconsistent,
     _resolve_gate_demoted,

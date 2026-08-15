@@ -104,7 +104,7 @@ from .loaders import (
     load_or_build_taint_approx as _load_or_build_taint_approx_raw,
 )
 from .hypothesis_mapping import (
-    hypothesis_to_semgrep_rule as _hypothesis_to_semgrep_rule,
+    hypothesis_to_semgrep_rule_keyed as _hypothesis_to_semgrep_rule_keyed,
     hypothesis_to_smt_verb as _hypothesis_to_smt_verb,
     hypothesis_to_cocci_check as _hypothesis_to_cocci_check,
 )
@@ -7581,9 +7581,15 @@ def _hypothesis_to_tool_chain(
             chain.append(entry)
             seen_types.add(entry["type"])
 
-    semgrep_rule = _hypothesis_to_semgrep_rule(hypothesis, file_path)
+    keyed_rule = _hypothesis_to_semgrep_rule_keyed(hypothesis, file_path)
+    semgrep_rule, semgrep_keyword = keyed_rule if keyed_rule else (None, "")
     if semgrep_rule and "semgrep" not in seen_types:
-        chain.append({"type": "semgrep", "config": {"rule": semgrep_rule}})
+        # keyword travels with the rule so the sweep can run the
+        # matching negative-control fixture before confirming.
+        chain.append({
+            "type": "semgrep",
+            "config": {"rule": semgrep_rule, "keyword": semgrep_keyword},
+        })
         seen_types.add("semgrep")
     elif not semgrep_rule and "semgrep" not in seen_types:
         try:
@@ -7761,6 +7767,10 @@ def _run_tool_chain(
                         continue
 
                 rule_path = tool_cfg["rule"]
+                # keyword marks a dynamic per-hypothesis rule: only
+                # those get the identifier-consistency and
+                # negative-control gates (stock rules are curated).
+                rule_keyword = tool_cfg.get("keyword") or ""
                 try:
                     sweep = run_semgrep_sweep(
                         target_path=effective_target,
@@ -7771,6 +7781,8 @@ def _run_tool_chain(
                         line_end=_checklist_line_end(
                             config, file_path, function_name)
                         or (line_start + 50 if line_start else 0),
+                        hypothesis=hypothesis if rule_keyword else "",
+                        rule_keyword=rule_keyword,
                     )
                 finally:
                     if rule_path and os.path.basename(rule_path).startswith("audit_sweep_"):
@@ -7791,6 +7803,17 @@ def _run_tool_chain(
                     )
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "semgrep", "errors")
+                elif sweep.outcome == "inconclusive":
+                    logger.info(
+                        "tool_chain semgrep inconclusive %s:%s: %s",
+                        file_path,
+                        function_name,
+                        (sweep.details or {}).get("reason", ""),
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "semgrep", "inconclusive",
+                        )
                 elif tier_counters:
                     _increment_tier_dict(tier_counters, "semgrep", "refuted")
 

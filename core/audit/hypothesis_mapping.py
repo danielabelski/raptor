@@ -31,15 +31,32 @@ def hypothesis_to_semgrep_rule(hypothesis: str, file_path: str) -> Optional[str]
 
     Returns a path to a temp YAML file, or None if no rule can be derived.
     """
+    keyed = hypothesis_to_semgrep_rule_keyed(hypothesis, file_path)
+    return keyed[0] if keyed else None
+
+
+def hypothesis_to_semgrep_rule_keyed(
+    hypothesis: str, file_path: str,
+) -> tuple[str, str] | None:
+    """Like hypothesis_to_semgrep_rule, but also returns the keyword.
+
+    Returns ``(rule_yaml_path, keyword)`` where *keyword* is the
+    ``_HYPOTHESIS_SEMGREP_PATTERNS`` key that selected the pattern.
+    The keyword lets the sweep engine look up the matching negative
+    control fixture (engine/negative_controls/) so a presence-detector
+    rule cannot return "confirmed".
+    """
     hyp_lower = hypothesis.lower()
 
     pattern = None
+    matched_keyword = ""
     rule_id = "hypothesis-check"
     for keyword, regex in _HYPOTHESIS_SEMGREP_PATTERNS.items():
         if keyword in hyp_lower:
             if keyword == "format string" and file_path.endswith(".go"):
                 continue
             pattern = regex
+            matched_keyword = keyword
             rule_id = keyword.replace(" ", "-")
             break
 
@@ -74,7 +91,7 @@ def hypothesis_to_semgrep_rule(hypothesis: str, file_path: str) -> Optional[str]
         )
         tmp.write(rule_yaml)
         tmp.close()
-        return tmp.name
+        return tmp.name, matched_keyword
     except OSError:
         return None
 

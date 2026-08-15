@@ -11,10 +11,12 @@ produces a ``review_fn`` callable that:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from .context import format_context_for_prompt
 from .orchestrator import OrchestratorConfig, ReviewOutcome, _ContentFilterError
@@ -799,16 +801,14 @@ _QUALITY_SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(**_QUALITY_SLOTS)
 
 def _system_prompt_for_mode(
     mode: ReviewMode,
-    out_dir: Optional[Path] = None,
+    out_dir: Path | None = None,
 ) -> str:
     base = _QUALITY_SYSTEM_PROMPT if mode.is_defect_oriented else _DEFAULT_SYSTEM_PROMPT
-    try:
-        from .learning import load_corrections, format_corrections_for_prompt
+    with contextlib.suppress(Exception):
+        from .learning import format_corrections_for_prompt, load_corrections
         corrections = load_corrections(out_dir)
         if corrections:
             return base + format_corrections_for_prompt(corrections)
-    except Exception:
-        pass
     return base
 
 
@@ -911,7 +911,7 @@ def _is_contract_delegation(lower: str) -> bool:
     """
     if any(d in lower for d in _CONTRACT_DELEGATION_CALLER):
         return True
-    if any(d in lower for d in _CONTRACT_DELEGATION_SUBJECT_AGNOSTIC):
+    if any(d in lower for d in _CONTRACT_DELEGATION_SUBJECT_AGNOSTIC):  # noqa: SIM102
         if any(w in lower for w in _CALLER_REFERENCE_WORDS):
             return True
     return False
@@ -944,9 +944,7 @@ def _counter_hypothesis_is_compelling(counter: str) -> bool:
     )
     if not any(m in lower for m in specificity_markers):
         return False
-    if _is_contract_delegation(lower):
-        return False
-    return True
+    return not _is_contract_delegation(lower)
 
 
 def _lang_correction(filename: str) -> float:
@@ -967,7 +965,7 @@ def _lang_correction(filename: str) -> float:
     return 1.0
 
 
-def _prompt_budget(ctx: Dict[str, Any], system_prompt: str) -> int:
+def _prompt_budget(ctx: dict[str, Any], system_prompt: str) -> int:
     """Compute the user-message token budget for this review call.
 
     When the triage classifier has set a token budget on the context,
@@ -980,7 +978,7 @@ def _prompt_budget(ctx: Dict[str, Any], system_prompt: str) -> int:
     sys_tokens = estimate_tokens(system_prompt) if system_prompt else 0
     try:
         model_budget = context_budget_for_model(model, system_prompt_tokens=sys_tokens)
-    except Exception:
+    except Exception:  # noqa: BLE001
         model_budget = 0
     if triage_budget > 0 and model_budget > 0:
         budget = min(triage_budget, model_budget)
@@ -995,15 +993,15 @@ def _prompt_budget(ctx: Dict[str, Any], system_prompt: str) -> int:
 def make_review_fn(
     llm_client: Any,
     *,
-    system_prompt: Optional[str] = None,
+    system_prompt: str | None = None,
     task_type: str = "audit",
-    schema: Optional[Dict[str, Any]] = None,
-    blind_schema: Optional[Dict[str, Any]] = None,
-    model_name: Optional[str] = None,
+    schema: dict[str, Any] | None = None,
+    blind_schema: dict[str, Any] | None = None,
+    model_name: str | None = None,
     escalate_clean: bool = True,
     mode: ReviewMode = ReviewMode.SECURITY,
-    out_dir: Optional[Path] = None,
-) -> Callable[[Dict[str, Any], OrchestratorConfig], ReviewOutcome]:
+    out_dir: Path | None = None,
+) -> Callable[[dict[str, Any], OrchestratorConfig], ReviewOutcome]:
     """Build a review_fn for run_orchestrator.
 
     Args:
@@ -1039,8 +1037,8 @@ def make_review_fn(
 
     def _single_pass(
         prompt: str,
-        active_schema: Dict[str, Any],
-        kwargs: Dict[str, Any],
+        active_schema: dict[str, Any],
+        kwargs: dict[str, Any],
     ):
         """Standard single-call structured generation."""
         response = llm_client.generate_structured(
@@ -1060,14 +1058,14 @@ def make_review_fn(
         return result, cost, model
 
     def review_fn(
-        ctx: Dict[str, Any],
+        ctx: dict[str, Any],
         config: OrchestratorConfig,
     ) -> ReviewOutcome:
         budget = _prompt_budget(ctx, effective_system_prompt)
         prompt = format_context_for_prompt(ctx, budget_limit=budget)
         t0 = time.monotonic()
 
-        kwargs: Dict[str, Any] = {}
+        kwargs: dict[str, Any] = {}
         if model_config_override is not None:
             kwargs["model_config"] = model_config_override
         else:
@@ -1171,8 +1169,8 @@ def call_llm_for_rule_refinement(
     prompt: str,
     config: OrchestratorConfig,
     *,
-    client: Optional[Any] = None,
-) -> Optional[str]:
+    client: Any | None = None,
+) -> str | None:
     """Single-shot free-form LLM call for Semgrep rule refinement.
 
     Returns the raw text response, or None on failure.

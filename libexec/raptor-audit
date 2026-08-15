@@ -18,6 +18,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import faulthandler
 import json
 import logging
@@ -30,7 +31,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
@@ -44,7 +46,7 @@ if not (os.environ.get("CLAUDECODE")
 _RAPTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_DIR))
 os.environ.setdefault("RAPTOR_DIR", str(_RAPTOR_DIR))
-import core.startup.process_init  # noqa: E402,F401
+import core.startup.process_init  # noqa: F401
 
 
 def cmd_gaps(args: argparse.Namespace) -> int:
@@ -69,6 +71,7 @@ def cmd_gaps(args: argparse.Namespace) -> int:
                 [sys.executable, str(_RAPTOR_DIR / "libexec" / "raptor-build-checklist"),
                  str(target_path), str(out_dir)],
                 env=env, capture_output=True, text=True, timeout=300,
+                check=False,
             )
             if cp.returncode != 0:
                 print(f"error: checklist build failed: {cp.stderr.strip()}", file=sys.stderr)
@@ -193,8 +196,8 @@ def cmd_context(args: argparse.Namespace) -> int:
 
 
 def cmd_record(args: argparse.Namespace) -> int:
-    from core.audit.record import append_audit_log, load_audit_log, _compute_hash
     from core.audit.journal import ReviewJournalEntry, append_entry, now_iso
+    from core.audit.record import _compute_hash, append_audit_log, load_audit_log
 
     out_dir = Path(args.out)
     target_path = Path(args.target) if args.target else _guess_target(out_dir)
@@ -269,7 +272,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             return 1
 
     # G1: HYPOTHESIS-FIRST — findings/suspicious/dormant require hypothesis
-    if args.status in ("finding", "suspicious", "dormant"):
+    if args.status in ("finding", "suspicious", "dormant"):  # noqa: SIM102
         if not args.hypothesis:
             print(
                 f"error [G1 HYPOTHESIS-FIRST]: --status {args.status} "
@@ -304,7 +307,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         elif e.get("status") and e.get("action") != "context":
             last_record_idx = i
 
-    if last_record_idx is not None:
+    if last_record_idx is not None:  # noqa: SIM102
         if last_sweep_idx is None or last_sweep_idx < last_record_idx:
             print(
                 f"error [G3 NO-SELF-CRITIQUE]: {func_key} was already recorded "
@@ -544,17 +547,18 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     if not rule_file and args.rule and tool in ("semgrep", "coccinelle"):
         import tempfile
         suffix = ".yaml" if tool == "semgrep" else ".cocci"
-        _tmp = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             mode="w", suffix=suffix, dir=str(out_dir),
             prefix=".sweep-rule-", delete=False,
-        )
-        _tmp.write(args.rule)
-        _tmp.close()
-        rule_file = _tmp.name
+        ) as _tmp:
+            _tmp.write(args.rule)
+            rule_file = _tmp.name
 
     if rule_file and tool in ("semgrep", "coccinelle", "codeql"):
         from core.audit.sweep import (
-            run_semgrep_sweep, run_coccinelle_sweep, run_codeql_sweep,
+            run_coccinelle_sweep,
+            run_codeql_sweep,
+            run_semgrep_sweep,
         )
 
         rule_path = Path(rule_file)
@@ -701,7 +705,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 def cmd_rules(args: argparse.Namespace) -> int:
     """Manage synthesized checker rules (Mode 2)."""
-    from core.audit.rules import save_rule, list_rules, run_rule_sweep
+    from core.audit.rules import list_rules, run_rule_sweep, save_rule
 
     out_dir = Path(args.out)
     action = args.action
@@ -778,7 +782,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def cmd_stale(args: argparse.Namespace) -> int:
-    from core.annotations.storage import iter_all_annotations, compute_function_hash
+    from core.annotations.storage import compute_function_hash, iter_all_annotations
 
     annotations_dir = Path(args.annotations_dir)
     target_path = Path(args.target)
@@ -1056,6 +1060,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
              "start", "audit", "--target", str(target_path)],
             capture_output=True, text=True,
+            check=False,
         )
         if lifecycle.returncode != 0:
             print(f"lifecycle start failed: {lifecycle.stderr.strip()}",
@@ -1079,6 +1084,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             [str(_RAPTOR_DIR / "libexec" / "raptor-build-checklist"),
              str(target_path), "--out", str(out_dir)],
             capture_output=True, text=True, timeout=300,
+            check=False,
         )
         if ck.returncode != 0:
             print(f"checklist build failed: {ck.stderr.strip()}",
@@ -1113,7 +1119,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if (candidate / "raptor-project.json").exists():
             project_dir = candidate
         else:
-            try:
+            with contextlib.suppress(Exception):
                 from core.project.project import ProjectManager
                 pm = ProjectManager()
                 active_name = pm.get_active()
@@ -1123,8 +1129,6 @@ def cmd_run(args: argparse.Namespace) -> int:
                         active_out = Path(active_project.output_dir).resolve()
                         if active_out == candidate.resolve():
                             project_dir = candidate
-            except Exception:  # noqa: BLE001
-                pass
     if project_dir is not None:
         legacy_diag = _check_legacy_state(project_dir)
         if legacy_diag:
@@ -1215,7 +1219,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     try:
         result = run_audit_pipeline(opts)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         print(f"error: audit pipeline failed: {exc}", file=sys.stderr)
         _lifecycle_fail(out_dir, f"audit pipeline failed: {exc}")
         return 1
@@ -1246,7 +1250,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     ]
     if model_id:
         lifecycle_args.extend(["--model", model_id])
-    subprocess.run(lifecycle_args, capture_output=True)
+    subprocess.run(lifecycle_args, capture_output=True, check=False)
 
     return 0 if result.terminated_by == "complete" else 1
 
@@ -1337,6 +1341,7 @@ def _lifecycle_fail(out_dir: Path, reason: str) -> None:
         [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
          "fail", str(out_dir), reason],
         capture_output=True,
+        check=False,
     )
 
 

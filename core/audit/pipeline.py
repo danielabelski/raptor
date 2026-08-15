@@ -7,11 +7,13 @@ corpus runner can run in-process (no subprocess, no cold-start).
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -59,28 +61,28 @@ class AuditPipelineOpts:
 
     target_path: Path = field(default_factory=lambda: Path("."))
     out_dir: Path = field(default_factory=lambda: Path("out"))
-    scope: Optional[list[str]] = None
-    functions: Optional[list[str]] = None
-    models: Optional[list[str]] = None
-    max_cost_usd: Optional[float] = None
-    max_seconds: Optional[float] = None
-    budget: Optional[int] = None
-    strategy_filter: Optional[str] = None
+    scope: list[str] | None = None
+    functions: list[str] | None = None
+    models: list[str] | None = None
+    max_cost_usd: float | None = None
+    max_seconds: float | None = None
+    budget: int | None = None
+    strategy_filter: str | None = None
     review_passes: int = 1
     adversarial: bool = False
-    max_propagation_depth: Optional[int] = None
+    max_propagation_depth: int | None = None
     subsystem_depth: int = 0
     validate: bool = True
     no_binary_oracle: bool = False
-    binary_verdicts: Optional[Dict[str, str]] = None
-    inventory: Optional[Dict[str, Any]] = None
-    annotations_dir: Optional[Path] = None
-    codeql_db_path: Optional[str] = None
-    threat_model: Optional[Dict[str, Any]] = None
-    joern_overrides: Optional[Dict[str, Any]] = None
-    joern_server: Optional[Any] = None
-    on_progress: Optional[Callable] = None
-    study_root: Optional[Path] = None
+    binary_verdicts: dict[str, str] | None = None
+    inventory: dict[str, Any] | None = None
+    annotations_dir: Path | None = None
+    codeql_db_path: str | None = None
+    threat_model: dict[str, Any] | None = None
+    joern_overrides: dict[str, Any] | None = None
+    joern_server: Any | None = None
+    on_progress: Callable | None = None
+    study_root: Path | None = None
     mode: ReviewMode = ReviewMode.ENSEMBLE
     max_workers: int = 0
 
@@ -95,10 +97,9 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
 
     quiet_noisy_loggers()
 
-    from core.llm.client import LLMClient
     from core.audit.llm_review import make_review_fn
     from core.audit.orchestrator import OrchestratorConfig, run_orchestrator
-
+    from core.llm.client import LLMClient
     from core.llm.config import LLMConfig
 
     models = opts.models or ["default"]
@@ -166,12 +167,10 @@ def _is_verification_evidence(ev: str) -> bool:
     """
     if not ev or ev.startswith(_NON_MECHANICAL):
         return False
-    try:
+    with contextlib.suppress(Exception):
         from core.audit.orchestrator import _is_detection_only
         if _is_detection_only(ev):
             return False
-    except Exception:
-        pass
     return True
 
 
@@ -183,9 +182,7 @@ def _has_any_mechanical_evidence(ev: str) -> bool:
     discarding findings that have real tool support even if the tool's
     role is detection rather than verification.
     """
-    if not ev or ev.startswith(_NON_MECHANICAL):
-        return False
-    return True
+    return not (not ev or ev.startswith(_NON_MECHANICAL))
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +259,7 @@ def _needs_second_pass(outcome) -> bool:
     if outcome.status != "clean":
         return True
     ev = outcome.evidence_tool or ""
-    if ev and not ev.startswith(NON_MECHANICAL):
-        return True
-    return False
+    return bool(ev and not ev.startswith(NON_MECHANICAL))
 
 
 def _merge_outcomes(sec_outcomes, bf_outcomes):
@@ -328,16 +323,16 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
     pass-2 reviews for early functions overlap with pass-1 reviews for
     later ones — wall-clock ≈ max(per-function chains), not sum-of-passes.
     """
-    import time
     import threading
+    import time
 
     from core.llm.log_quiet import quiet_noisy_loggers
 
     quiet_noisy_loggers()
 
-    from core.llm.client import LLMClient
     from core.audit.llm_review import make_review_fn
     from core.audit.orchestrator import OrchestratorConfig, run_orchestrator
+    from core.llm.client import LLMClient
 
     t0 = time.monotonic()
 
@@ -668,10 +663,7 @@ def is_speculative_race(item) -> bool:
         return False
 
     ev = _get_evidence(item)
-    if ev and any(ev.startswith(p) for p in RACE_EVIDENCE_WHITELIST):
-        return False
-
-    return True
+    return not (ev and any(ev.startswith(p) for p in RACE_EVIDENCE_WHITELIST))
 
 
 def apply_speculative_race_gate(outcomes) -> int:

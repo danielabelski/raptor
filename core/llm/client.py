@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 LLM Client with Automatic Fallback and Cost Tracking
 
@@ -11,23 +10,25 @@ Manages multiple LLM providers with:
 """
 
 import json
-import re
-import threading
-import time
-from collections import OrderedDict
-from pathlib import Path
-from typing import Dict, Optional, Any, Tuple
-
-from core.hash import sha256_string
-from core.logging import get_logger
-from .config import LLMConfig, ModelConfig
-from .providers import LLMProvider, LLMResponse, StructuredResponse, create_provider
 
 # Import for type-based error detection (optional SDKs)
 # DEBUG log on import failure so operators can diagnose partial-
 # install issues via --verbose. See core/llm/detection.py for the
 # canonical probe sites.
 import logging as _logging
+import re
+import threading
+import time
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any
+
+from core.hash import sha256_string
+from core.logging import get_logger
+
+from .config import LLMConfig, ModelConfig
+from .providers import LLMProvider, LLMResponse, StructuredResponse, create_provider
+
 _client_log = _logging.getLogger(__name__)
 
 try:
@@ -288,12 +289,9 @@ def _is_retryable_error(error: Exception) -> bool:
         return True
     json_parse_patterns = ("unterminated string", "expecting value",
                            "expecting property name", "invalid \\escape")
-    if any(p in error_str for p in json_parse_patterns):
-        return True
-
-    # Everything else is non-retryable (schema errors, 400, 401, 403, 404,
-    # Instructor failures, Pydantic validation, etc.)
-    return False
+    # Anything else is non-retryable (schema errors, 400, 401, 403, 404,
+    # Instructor failures, Pydantic validation, etc.).
+    return any(p in error_str for p in json_parse_patterns)
 
 
 def _get_quota_guidance(model_name: str, provider: str) -> str:
@@ -366,10 +364,11 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
     hit the same auth error they would have at call time anyway.
     """
     from dataclasses import replace
+
     from core.llm.config import (
-        ModelConfig,
-        MODEL_LIMITS,
         _PROVIDER_BUILDERS,
+        MODEL_LIMITS,
+        ModelConfig,
         _get_configured_models,
     )
 
@@ -378,6 +377,8 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
     else:
         from core.security.llm_family import (
             provider_of as _provider_of,
+        )
+        from core.security.llm_family import (
             resolve_model_shorthand as _resolve_shorthand,
         )
         configured = [
@@ -431,8 +432,8 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
 class LLMClient:
     """Unified LLM client with multi-provider support and fallback."""
 
-    def __init__(self, config: Optional[LLMConfig] = None,
-                 *, pinned_model: Optional[str] = None):
+    def __init__(self, config: LLMConfig | None = None,
+                 *, pinned_model: str | None = None):
         """Construct the LLM client.
 
         When ``pinned_model`` is set the caller commits to overriding the
@@ -454,16 +455,16 @@ class LLMClient:
         else:
             self.config = LLMConfig()
         self._pinned_model = pinned_model
-        self.providers: Dict[str, LLMProvider] = {}
+        self.providers: dict[str, LLMProvider] = {}
         self.total_cost = 0.0
         self.request_count = 0
         self.cache_hits = 0
-        self.task_type_costs: Dict[str, float] = {}  # task_type → cumulative cost
+        self.task_type_costs: dict[str, float] = {}  # task_type → cumulative cost
         # Distinct models actually invoked during this client's lifetime,
         # keyed by (provider, alias, resolved, role) → call count. Feeds the
         # run provenance manifest. Cache hits are NOT recorded — a cache hit
         # fired no provider call. Guarded by _stats_lock.
-        self._fired_models: Dict[tuple, int] = {}
+        self._fired_models: dict[tuple, int] = {}
         # Number of full ANALYSE calls avoided because the scorecard
         # trusted the cheap-tier verdict and the consumer short-
         # circuited. Bumped by consumers via ``record_short_circuit``;
@@ -743,7 +744,7 @@ class LLMClient:
             return lock
 
     @staticmethod
-    def _kwargs_for_cache_key(kwargs: Optional[Dict[str, Any]]) -> str:
+    def _kwargs_for_cache_key(kwargs: dict[str, Any] | None) -> str:
         """Canonicalise generation kwargs (temperature, max_tokens, …)
         for inclusion in a cache key.
 
@@ -762,7 +763,7 @@ class LLMClient:
             return repr(sorted(kwargs.items()))
 
     def _record_fired_model(self, provider: str, alias: str,
-                            resolved: Optional[str], role: str) -> None:
+                            resolved: str | None, role: str) -> None:
         """Record that a provider call fired for (provider, alias, role).
 
         ``resolved`` is the provider-served snapshot when the SDK exposed one,
@@ -786,7 +787,7 @@ class LLMClient:
             # so mocked/cached clients that never call a provider never register
             # an atexit handler or write to the scorecard.
             self._arm_usage_flush()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("_record_fired_model failed: %s", exc)
 
     def _record_usage(
@@ -814,9 +815,8 @@ class LLMClient:
                 cur["input_tokens"] += int(input_tokens or 0)
                 cur["output_tokens"] += int(output_tokens or 0)
                 cur["latency_ms_sum"] += ms
-                if ms > cur["latency_ms_max"]:
-                    cur["latency_ms_max"] = ms
-        except Exception as exc:
+                cur["latency_ms_max"] = max(cur["latency_ms_max"], ms)
+        except Exception as exc:  # noqa: BLE001
             logger.debug("_record_usage failed: %s", exc)
 
     def _record_schema_validity(self, alias: str, *, success: bool) -> None:
@@ -838,7 +838,7 @@ class LLMClient:
                     cur["pass"] += 1
                 else:
                     cur["fail"] += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("_record_schema_validity failed: %s", exc)
 
     def _arm_usage_flush(self) -> None:
@@ -853,7 +853,7 @@ class LLMClient:
                 return
             import atexit
             atexit.register(self.flush_usage_to_scorecard)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("_arm_usage_flush failed: %s", exc)
 
     def _snapshot_and_clear_fired(self) -> tuple:
@@ -903,7 +903,7 @@ class LLMClient:
                  "role": role, "calls": int(n)}
                 for (p, a, r, role), n in fired_dict.items()
             ]
-            agg: Dict[str, Dict[str, Any]] = {}
+            agg: dict[str, dict[str, Any]] = {}
             for f in fired:
                 alias = f.get("alias")
                 if not alias:
@@ -996,9 +996,9 @@ class LLMClient:
                     f"`raptor-llm-scorecard` for details",
                     file=_sys.stderr,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("scorecard summary print failed: %s", exc)
-        except Exception as e:  # pragma: no cover - shutdown-path best effort
+        except Exception as e:  # pragma: no cover - shutdown-path best effort  # noqa: BLE001
             logger.debug("scorecard usage flush failed: %s", e)
 
     def get_fired_models(self) -> list:
@@ -1020,8 +1020,8 @@ class LLMClient:
         ]
 
     def _get_cache_key(
-        self, prompt: str, system_prompt: Optional[str], model: str,
-        kwargs: Optional[Dict[str, Any]] = None,
+        self, prompt: str, system_prompt: str | None, model: str,
+        kwargs: dict[str, Any] | None = None,
     ) -> str:
         """Generate cache key for prompt."""
         content = (
@@ -1030,7 +1030,7 @@ class LLMClient:
         )
         return sha256_string(content)
 
-    def _is_entry_stale(self, data: Dict[str, Any]) -> bool:
+    def _is_entry_stale(self, data: dict[str, Any]) -> bool:
         """Return True if a cache entry's ``timestamp`` is older than
         ``cache_ttl_seconds``. Entries without a timestamp are treated
         as fresh — they predate this version of the code and we can't
@@ -1044,7 +1044,7 @@ class LLMClient:
             return False
         return (time.time() - ts) > ttl
 
-    def _get_cached_response(self, cache_key: str) -> Optional[str]:
+    def _get_cached_response(self, cache_key: str) -> str | None:
         """Retrieve cached response if available."""
         if not self.config.enable_caching:
             return None
@@ -1089,7 +1089,7 @@ class LLMClient:
             # concurrent dispatch from ThreadPoolExecutor.
             with self._stats_lock:
                 self._cache_write_failures = 0
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # _stats_lock — `+= 1` decomposes to load/incr/store; under
             # ThreadPoolExecutor dispatch the counter can lose increments
             # without a lock, and the `enable_caching = False` flip would
@@ -1133,7 +1133,7 @@ class LLMClient:
         # Stat each file once. A file may disappear between glob and
         # stat (concurrent eviction in another process); treat missing
         # as already-gone.
-        with_mtime: list[Tuple[float, Path]] = []
+        with_mtime: list[tuple[float, Path]] = []
         for p in entries:
             try:
                 with_mtime.append((p.stat().st_mtime, p))
@@ -1154,9 +1154,9 @@ class LLMClient:
     _STRUCTURED_CACHE_VERSION = 3  # v3: nested schema recursion
 
     def _get_structured_cache_key(
-        self, prompt: str, system_prompt: Optional[str],
-        model: str, schema: Dict[str, Any],
-        kwargs: Optional[Dict[str, Any]] = None,
+        self, prompt: str, system_prompt: str | None,
+        model: str, schema: dict[str, Any],
+        kwargs: dict[str, Any] | None = None,
     ) -> str:
         """Cache key for generate_structured. Includes schema so two callers
         who share a prompt but ask for different shapes don't collide,
@@ -1181,7 +1181,7 @@ class LLMClient:
 
     def _get_cached_structured_response(
         self, cache_key: str,
-    ) -> Optional[Tuple[Dict[str, Any], str]]:
+    ) -> tuple[dict[str, Any], str] | None:
         """Retrieve cached (result_dict, raw) tuple if available."""
         if not self.config.enable_caching:
             return None
@@ -1222,7 +1222,7 @@ class LLMClient:
                 "tokens_used": response.tokens_used,
                 "timestamp": time.time(),
             }, mode=0o600)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # _stats_lock — see _save_to_cache above for the rationale.
             with self._stats_lock:
                 self._cache_write_failures += 1
@@ -1292,8 +1292,8 @@ class LLMClient:
         with self._stats_lock:
             self.total_cost -= reservation
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None,
-                 task_type: Optional[str] = None, **kwargs) -> LLMResponse:
+    def generate(self, prompt: str, system_prompt: str | None = None,
+                 task_type: str | None = None, **kwargs) -> LLMResponse:
         """
         Generate completion with automatic fallback.
 
@@ -1332,7 +1332,7 @@ class LLMClient:
         # dispatch set — which would create a duplicate (the same model
         # showing up under two slots in the model panel). Pop here so the
         # value doesn't propagate to providers via **kwargs.
-        exclude_fallback_to: Optional[set] = kwargs.pop('exclude_fallback_to', None)
+        exclude_fallback_to: set | None = kwargs.pop('exclude_fallback_to', None)
         if not model_config:
             if task_type:
                 model_config = self.config.get_model_for_task(task_type)
@@ -1417,7 +1417,7 @@ class LLMClient:
                         continue
                     # Skip if different tier (don't mix local and cloud)
                     is_local_fallback = fallback.provider.lower() == "ollama"
-                    if is_local_primary == is_local_fallback:
+                    if is_local_primary == is_local_fallback:  # noqa: SIM102
                         # Skip if same as primary (already trying it)
                         if fallback.model_name != model_config.model_name:
                             # Skip if caller marked this name as already-active
@@ -1528,7 +1528,7 @@ class LLMClient:
 
                         return response
 
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         last_error = e
 
                         if getattr(e, "status_code", None) == 429:
@@ -1537,7 +1537,9 @@ class LLMClient:
 
                         if _is_daily_quota_error(e):
                             self._daily_quota_exhausted.add(model_key)
-                            from core.security.log_sanitisation import escape_nonprintable as _esc
+                            from core.security.log_sanitisation import (
+                                escape_nonprintable as _esc,
+                            )
                             logger.warning(
                                 "Daily quota exhausted for %s/%s — "
                                 "skipping for remainder of session",
@@ -1550,7 +1552,9 @@ class LLMClient:
                             # — config-loaded strings, could carry
                             # ANSI/BIDI/control bytes from a hostile
                             # models.json edit. Defence in depth.
-                            from core.security.log_sanitisation import escape_nonprintable as _esc
+                            from core.security.log_sanitisation import (
+                                escape_nonprintable as _esc,
+                            )
                             logger.warning(
                                 "Quota error for %s/%s:%s",
                                 _esc(model.provider), _esc(model.model_name),
@@ -1633,9 +1637,9 @@ class LLMClient:
             logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-    def generate_structured(self, prompt: str, schema: Dict[str, Any],
-                           system_prompt: Optional[str] = None,
-                           task_type: Optional[str] = None, **kwargs):
+    def generate_structured(self, prompt: str, schema: dict[str, Any],
+                           system_prompt: str | None = None,
+                           task_type: str | None = None, **kwargs):
         """
         Generate structured JSON output with automatic fallback.
 
@@ -1666,7 +1670,7 @@ class LLMClient:
         # Get appropriate model (priority: explicit model_config > task_type > primary)
         model_config = kwargs.pop('model_config', None)
         # See ``generate`` for the rationale on exclude_fallback_to.
-        exclude_fallback_to: Optional[set] = kwargs.pop('exclude_fallback_to', None)
+        exclude_fallback_to: set | None = kwargs.pop('exclude_fallback_to', None)
         if not model_config:
             if task_type:
                 model_config = self.config.get_model_for_task(task_type)
@@ -1746,7 +1750,7 @@ class LLMClient:
                     if not fallback.enabled:
                         continue
                     is_local_fallback = fallback.provider.lower() == "ollama"
-                    if is_local_primary == is_local_fallback:
+                    if is_local_primary == is_local_fallback:  # noqa: SIM102
                         if fallback.model_name != model_config.model_name:
                             # Multi-model duplicate guard — see ``generate``.
                             if exclude_fallback_to and fallback.model_name in exclude_fallback_to:
@@ -1879,7 +1883,7 @@ class LLMClient:
                         self._save_structured_to_cache(cache_key, structured_response)
                         return structured_response
 
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         last_error = e
                         # Schema reliability signal — only record the model as
                         # schema-failing when the error class points at a
@@ -1897,7 +1901,9 @@ class LLMClient:
 
                         if _is_daily_quota_error(e):
                             self._daily_quota_exhausted.add(model_key)
-                            from core.security.log_sanitisation import escape_nonprintable as _esc
+                            from core.security.log_sanitisation import (
+                                escape_nonprintable as _esc,
+                            )
                             logger.warning(
                                 "Daily quota exhausted for %s/%s — "
                                 "skipping for remainder of session",
@@ -1910,7 +1916,9 @@ class LLMClient:
                             # — config-loaded strings, could carry
                             # ANSI/BIDI/control bytes from a hostile
                             # models.json edit. Defence in depth.
-                            from core.security.log_sanitisation import escape_nonprintable as _esc
+                            from core.security.log_sanitisation import (
+                                escape_nonprintable as _esc,
+                            )
                             logger.warning(
                                 "Quota error for %s/%s:%s",
                                 _esc(model.provider), _esc(model.model_name),
@@ -1981,13 +1989,13 @@ class LLMClient:
             logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get usage statistics with per-provider, per-task-type, and token split breakdowns."""
         provider_stats = {}
         for key, provider in self.providers.items():
             avg_duration = (provider.total_duration / provider.call_count
                            if provider.call_count > 0 else 0.0)
-            pstat: Dict[str, Any] = {
+            pstat: dict[str, Any] = {
                 "call_count": provider.call_count,
                 "total_tokens": provider.total_tokens,
                 "input_tokens": provider.total_input_tokens,

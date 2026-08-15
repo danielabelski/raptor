@@ -56,7 +56,12 @@ from .priority import (
     score_functions,
 )
 from .propagation import PropagationConfig, propagate_one_hop
-from .prefilter import PrefilterResult, run_prefilter
+from .prefilter import (
+    PrefilterResult,
+    evidence_matches_hypothesis,
+    family_for_rule,
+    run_prefilter,
+)
 from .pipeline import ReviewMode, VerificationTier
 from .shared_state import SharedState
 from .topo_order import topological_sort as _topological_sort
@@ -7718,6 +7723,7 @@ def _run_tool_chain(
     joern_server=None,
     target_path_override: Optional[Path] = None,
     domain_vocab: Any = None,
+    cwe: str = "",
 ) -> List[str]:
     """Run tools from *chain* in order, collecting all confirmations.
 
@@ -7727,7 +7733,10 @@ def _run_tool_chain(
     next tool in the chain is tried — this is the fallback behaviour.
 
     When *sarif_cache* is provided, semgrep sweeps check for prior
-    SARIF results before spawning a subprocess.
+    SARIF results before spawning a subprocess.  Cached SARIF hits
+    only count as confirmation when their rule family correlates with
+    the hypothesis (or *cwe*) — an unrelated scan hit near the same
+    lines proves nothing about this claim.
     """
     effective_target = target_path_override or config.target_path
     confirmed: List[str] = []
@@ -7757,13 +7766,32 @@ def _run_tool_chain(
                     )
                     if cached is not None:
                         if cached:
-                            confirmed.append("sarif_cache:semgrep")
-                            logger.debug(
-                                "sarif_cache hit: %s:%s — %d prior results",
-                                file_path,
-                                function_name,
-                                len(cached),
-                            )
+                            correlated = [
+                                r for r in cached
+                                if evidence_matches_hypothesis(
+                                    family_for_rule(r.get("ruleId", "")),
+                                    hypothesis,
+                                    cwe,
+                                )
+                            ]
+                            if correlated:
+                                confirmed.append("sarif_cache:semgrep")
+                                logger.debug(
+                                    "sarif_cache hit: %s:%s — %d correlated "
+                                    "prior results",
+                                    file_path,
+                                    function_name,
+                                    len(correlated),
+                                )
+                            else:
+                                logger.debug(
+                                    "sarif_cache: %s:%s — %d prior results "
+                                    "uncorrelated with hypothesis; context "
+                                    "only, not confirmation",
+                                    file_path,
+                                    function_name,
+                                    len(cached),
+                                )
                         continue
 
                 rule_path = tool_cfg["rule"]
@@ -8147,6 +8175,12 @@ def _sweep_validate(
         if _decomp_tmp_dir is not None:
             effective_file = f"{outcome.function}.c"
 
+    cwe = (
+        (outcome.review_result or {}).get("cwe_class")
+        or (outcome.review_result or {}).get("cwe")
+        or ""
+    )
+
     try:
         if not is_binary:
             pf = run_prefilter(
@@ -8159,13 +8193,27 @@ def _sweep_validate(
             )
 
             if pf.hits:
-                return _stamp_evidence(outcome, f"prefilter:{pf.hits[0].rule_id}")
+                # Only a hit in the hypothesis's vulnerability family
+                # is evidence; anything else is review context.
+                correlated = [
+                    h for h in pf.hits
+                    if evidence_matches_hypothesis(
+                        family_for_rule(h.rule_id), hypothesis, cwe,
+                    )
+                ]
+                if correlated:
+                    return _stamp_evidence(
+                        outcome, f"prefilter:{correlated[0].rule_id}",
+                    )
+                _record_uncorrelated_hits(outcome, pf.hits)
+                logger.info(
+                    "sweep_validate: %s:%s prefilter hits (%s) uncorrelated "
+                    "with hypothesis — kept as context, not evidence",
+                    outcome.file,
+                    outcome.function,
+                    ",".join(h.rule_id for h in pf.hits[:3]),
+                )
 
-        cwe = (
-            (outcome.review_result or {}).get("cwe_class")
-            or (outcome.review_result or {}).get("cwe")
-            or ""
-        )
         chain = _hypothesis_to_tool_chain(hypothesis, effective_file, cwe=cwe)
 
         if is_binary:
@@ -8191,6 +8239,7 @@ def _sweep_validate(
             evidence_index=evidence_index,
             joern_server=joern_server,
             target_path_override=_decomp_tmp_dir if is_binary and _decomp_tmp_dir else None,
+            cwe=cwe,
         )
 
         # Frida auto-launch — last resort for binary targets.
@@ -8819,6 +8868,7 @@ def _run_critique(
             sarif_cache=sarif_cache,
             tier_counters=result.tier_counters,
             joern_server=joern_server,
+            cwe=cwe,
         )
         if confirmed:
             # Same promotion discipline as _promote_suspicious: only
@@ -10065,6 +10115,12 @@ def _promote_suspicious(
             line_end,
         )
 
+        cwe = (
+            (outcome.review_result or {}).get("cwe_class")
+            or (outcome.review_result or {}).get("cwe")
+            or ""
+        )
+
         pf = run_prefilter(
             target_path=config.target_path,
             file_path=outcome.file,
@@ -10080,8 +10136,17 @@ def _promote_suspicious(
                     for h in pf.hits
                     if not h.line or outcome.line <= h.line <= line_end
                 ]
-            if pf.hits:
-                tool = f"prefilter:{pf.hits[0].rule_id}"
+            # Promotion needs evidence in the hypothesis's family; an
+            # unrelated pattern hit stays context and falls through to
+            # the hypothesis-specific tool chain.
+            correlated = [
+                h for h in pf.hits
+                if evidence_matches_hypothesis(
+                    family_for_rule(h.rule_id), hypothesis, cwe,
+                )
+            ]
+            if correlated:
+                tool = f"prefilter:{correlated[0].rule_id}"
                 result.outcomes[i] = _promote_outcome(outcome, tool)
                 result.sweep_promoted += 1
                 result.suspicious -= 1
@@ -10093,12 +10158,16 @@ def _promote_suspicious(
                     tool,
                 )
                 continue
+            if pf.hits:
+                _record_uncorrelated_hits(outcome, pf.hits)
+                logger.info(
+                    "sweep promotion withheld %s:%s — prefilter hits (%s) "
+                    "uncorrelated with hypothesis",
+                    outcome.file,
+                    outcome.function,
+                    ",".join(h.rule_id for h in pf.hits[:3]),
+                )
 
-        cwe = (
-            (outcome.review_result or {}).get("cwe_class")
-            or (outcome.review_result or {}).get("cwe")
-            or ""
-        )
         chain = _hypothesis_to_tool_chain(hypothesis, outcome.file, cwe=cwe)
         confirmed = _run_tool_chain(
             chain,
@@ -10111,6 +10180,7 @@ def _promote_suspicious(
             sarif_cache=sarif_cache,
             tier_counters=result.tier_counters,
             joern_server=joern_server,
+            cwe=cwe,
         )
 
         if confirmed:
@@ -11673,6 +11743,33 @@ def _stamp_evidence(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:
     if outcome.review_result:
         outcome.review_result["evidence_tool"] = tool
     return outcome
+
+
+def _record_uncorrelated_hits(outcome: ReviewOutcome, hits) -> None:
+    """Keep tool hits that don't correlate with the hypothesis as context.
+
+    They stay visible for review but never stamp evidence_tool or
+    drive status changes.
+    """
+    if outcome.review_result is None:
+        outcome.review_result = {}
+    ctx = outcome.review_result.setdefault("uncorrelated_tool_hits", [])
+    seen = {(h.get("tool"), h.get("rule_id"), h.get("line")) for h in ctx}
+    for hit in hits:
+        key = (
+            getattr(hit, "tool", "prefilter"),
+            getattr(hit, "rule_id", ""),
+            getattr(hit, "line", 0),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        ctx.append({
+            "tool": key[0],
+            "rule_id": key[1],
+            "line": key[2],
+            "message": getattr(hit, "message", ""),
+        })
 
 
 def _has_mechanical_corroboration(

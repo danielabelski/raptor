@@ -156,6 +156,226 @@ class PrefilterHit:
     tool: str = "prefilter"
 
 
+# ── Evidence↔hypothesis correlation ─────────────────────────────────
+#
+# A prefilter/SARIF hit only supports a hypothesis in the same
+# vulnerability family: a strcpy hit says nothing about a SQL-injection
+# claim.  Each rule id maps to a coarse CWE family; a hit whose family
+# does not correlate with the hypothesis text (or stated CWE) may be
+# shown as review context but must not stamp evidence_tool or drive
+# suspicious→finding promotion.
+
+PREFILTER_RULE_FAMILY: dict[str, str] = {
+    # C / C++
+    "unbounded-strcpy": "memory",
+    "unbounded-sprintf": "memory",
+    "gets-usage": "memory",
+    "format-string-concat": "memory",
+    "sql-string-format": "injection",
+    "narrow-integer-size": "memory",
+    "atoi-unchecked": "memory",
+    "malloc-multiply-overflow": "memory",
+    "assign-in-conditional": "other",
+    "array-index-unchecked": "memory",
+    "double-free": "memory",
+    "use-after-free": "memory",
+    "toctou-filesystem": "concurrency",
+    "post-loop-oob-write": "memory",
+    # Python
+    "path-join-no-containment": "path",
+    "open-user-controlled-path": "path",
+    "eval-exec": "injection",
+    "subprocess-shell-true": "injection",
+    "pickle-untrusted": "injection",
+    "yaml-unsafe-load": "injection",
+    # Go
+    "go-exec-command": "injection",
+    "go-unsafe-usage": "memory",
+    "go-sql-string-concat": "injection",
+    "go-template-unescaped": "injection",
+    "go-path-traversal": "path",
+    "go-ssrf": "injection",
+    "go-deserialize-interface": "injection",
+    "go-gob-decode": "injection",
+    "go-cgo-call": "memory",
+    # Rust
+    "rust-unsafe-block": "memory",
+    "rust-command-exec": "injection",
+    "rust-raw-pointer-cast": "memory",
+    "rust-transmute": "memory",
+    "rust-ffi-extern": "memory",
+    "rust-no-mangle": "memory",
+    "rust-from-raw-parts": "memory",
+    "rust-sql-format": "injection",
+    # PHP
+    "php-eval-variable": "injection",
+    "php-command-exec": "injection",
+    "php-file-inclusion": "path",
+    "php-unserialize": "injection",
+    "php-preg-replace-e": "injection",
+    "php-sql-injection": "injection",
+    "php-xss": "injection",
+    "php-extract-superglobal": "injection",
+    "php-path-traversal": "path",
+    "php-open-redirect": "other",
+    # Java
+    "java-runtime-exec": "injection",
+    "java-process-builder": "injection",
+    "java-deserialization": "injection",
+    "java-sql-concat": "injection",
+    "java-reflection": "injection",
+    "java-path-traversal": "path",
+    "java-xxe": "injection",
+    "java-script-injection": "injection",
+    "java-ldap-injection": "injection",
+    # JavaScript / TypeScript
+    "js-eval": "injection",
+    "js-function-constructor": "injection",
+    "js-command-exec": "injection",
+    "js-xss-dom": "injection",
+    "js-react-dangerous-html": "injection",
+    "js-sql-injection": "injection",
+    "js-path-traversal": "path",
+    "js-unsafe-parse": "injection",
+    "js-open-redirect": "other",
+    "js-regex-injection": "injection",
+    # Lua
+    "lua-loadstring": "injection",
+    "lua-file-exec": "injection",
+    "lua-os-execute": "injection",
+    "lua-io-popen": "injection",
+    "lua-io-open": "path",
+    "lua-setfenv": "other",
+    "lua-metatable-abuse": "other",
+    "lua-raw-access": "other",
+    "lua-debug-library": "other",
+    "lua-format-injection": "injection",
+    # Perl
+    "perl-eval": "injection",
+    "perl-command-exec": "injection",
+    "perl-backtick-injection": "injection",
+    "perl-open-pipe": "injection",
+    "perl-sql-injection": "injection",
+    "perl-xss": "injection",
+    "perl-regex-eval": "injection",
+    "perl-require-variable": "injection",
+    "perl-chmod-unsafe": "auth",
+}
+
+# Per-family hypothesis vocabulary.  Single-word keywords match on a
+# word-prefix boundary (\bfree matches "freed"); multi-word keywords
+# match as substrings.  "other" has no vocabulary: hits without a
+# family never correlate and stay context-only.
+_FAMILY_KEYWORDS: dict[str, frozenset] = {
+    "memory": frozenset({
+        "overflow", "underflow", "out-of-bounds", "out of bounds", "oob",
+        "buffer", "bounds", "memcpy", "strcpy", "strcat", "sprintf",
+        "gets", "use-after-free", "use after free", "uaf", "double free",
+        "double-free", "dangling", "heap", "stack", "memory", "free",
+        "alloc", "off-by-one", "off by one", "wraparound", "integer",
+        "truncation", "format string", "uninitialized", "uninitialised",
+        "null pointer", "null deref",
+    }),
+    "injection": frozenset({
+        "injection", "inject", "sql", "command", "shell", "exec", "eval",
+        "xss", "cross-site", "cross site", "script", "deserial",
+        "unserialize", "pickle", "yaml", "template", "ssrf", "xxe",
+        "ldap", "redos", "prototype pollution", "code execution",
+    }),
+    "crypto": frozenset({
+        "crypto", "cipher", "encrypt", "decrypt", "hash", "hmac",
+        "random", "nonce", "salt", "tls", "ssl", "signature",
+        "certificate", "weak key", "key generation",
+    }),
+    "auth": frozenset({
+        "auth", "authentication", "authorization", "authorisation",
+        "permission", "privilege", "access control", "acl", "session",
+        "credential", "bypass", "chmod", "setuid",
+    }),
+    "concurrency": frozenset({
+        "race", "toctou", "time-of-check", "time of check", "concurrent",
+        "lock", "deadlock", "atomic", "thread", "reentran",
+        "signal handler",
+    }),
+    "path": frozenset({
+        "path traversal", "traversal", "directory", "symlink", "path",
+        "file inclusion", "lfi", "rfi", "containment", "..",
+        "filename", "file name",
+    }),
+    "other": frozenset(),
+}
+
+# CWE number → family, for correlating via a stated vuln_type/cwe_class.
+_CWE_FAMILY: dict[int, str] = {
+    **dict.fromkeys(
+        (119, 120, 121, 122, 124, 125, 126, 127, 131, 134, 190, 191,
+         193, 401, 415, 416, 457, 476, 562, 590, 680, 787, 788, 824,
+         825), "memory",
+    ),
+    **dict.fromkeys(
+        (77, 78, 79, 88, 89, 90, 91, 94, 95, 96, 502, 611, 643, 652,
+         917, 918, 1336), "injection",
+    ),
+    **dict.fromkeys((22, 23, 36, 59, 61, 73, 426, 427), "path"),
+    **dict.fromkeys(
+        (250, 269, 276, 287, 288, 306, 307, 522, 732, 798, 862, 863),
+        "auth",
+    ),
+    **dict.fromkeys(
+        (326, 327, 328, 330, 331, 335, 338, 347, 757, 916), "crypto",
+    ),
+    **dict.fromkeys((362, 364, 366, 367, 368, 421, 1223), "concurrency"),
+}
+
+
+def _keyword_in_text(kw: str, text: str) -> bool:
+    if " " in kw or "-" in kw or kw == "..":
+        return kw in text
+    return re.search(r"\b" + re.escape(kw), text) is not None
+
+
+def family_for_rule(rule_id: str) -> str:
+    """Map a rule id (prefilter or SARIF) to a coarse CWE family.
+
+    Prefilter ids resolve via PREFILTER_RULE_FAMILY; unknown ids (e.g.
+    semgrep/CodeQL SARIF rules) fall back to keyword inference on the
+    id text itself.  Unmatchable ids return "other".
+    """
+    if not rule_id:
+        return "other"
+    family = PREFILTER_RULE_FAMILY.get(rule_id)
+    if family:
+        return family
+    text = re.sub(r"[._\-/]+", " ", rule_id.lower())
+    for fam, keywords in _FAMILY_KEYWORDS.items():
+        if fam == "other":
+            continue
+        if any(_keyword_in_text(kw, text) for kw in keywords):
+            return fam
+    return "other"
+
+
+def evidence_matches_hypothesis(
+    rule_family: str,
+    hypothesis_text: str,
+    vuln_type: str = "",
+) -> bool:
+    """True when evidence from *rule_family* speaks to the hypothesis.
+
+    Correlates either by CWE number in *vuln_type* (or the hypothesis
+    itself) or by family vocabulary in the combined text.  Family
+    "other" never correlates — its hits are review context only.
+    """
+    keywords = _FAMILY_KEYWORDS.get(rule_family)
+    if not keywords:
+        return False
+    text = f"{hypothesis_text} {vuln_type}".lower()
+    m = re.search(r"cwe[-_ ]?(\d+)", text)
+    if m and _CWE_FAMILY.get(int(m.group(1))) == rule_family:
+        return True
+    return any(_keyword_in_text(kw, text) for kw in keywords)
+
+
 @dataclass
 class PrefilterResult:
     """Result of running the pre-filter on one function."""

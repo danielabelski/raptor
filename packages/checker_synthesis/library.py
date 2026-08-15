@@ -253,11 +253,24 @@ class RuleLibrary:
 
         Returns the new/updated LibraryEntry, or None if the result
         doesn't meet promotion criteria (no rule, dual control failed,
-        no triage).
+        rule_tier below "library" — e.g. missing fixtures or a failed
+        fix-mutant control — or no triage).
         """
         if result.rule is None or result.rule_path is None:
             return None
         if not result.dual_control:
+            return None
+        # Fail-closed library gate: synthesise_and_run only stamps
+        # rule_tier="library" when every mechanical control passed
+        # (positive + dual + fix-mutant).  getattr keeps foreign /
+        # legacy result objects without the field excluded too.
+        if getattr(result, "rule_tier", "sweep_once") != "library":
+            logger.info(
+                "promote refused for %s: rule_tier=%r (library "
+                "requires all mechanical controls to pass)",
+                result.rule.rule_id,
+                getattr(result, "rule_tier", "sweep_once"),
+            )
             return None
         if not result.triage:
             return None

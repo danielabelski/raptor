@@ -205,6 +205,9 @@ def synthesize_and_sweep(
                     cs_result.rule_path = rule_path
                     cs_result.matches = matches
                     cs_result.dual_control = entry.dual_control
+                    # Replayed from the library — the mechanical
+                    # controls passed at promotion time.
+                    cs_result.rule_tier = "library"
                     logger.info(
                         "audit synthesis: replayed library rule %s — %d match(es)",
                         entry.rule_id, len(matches),

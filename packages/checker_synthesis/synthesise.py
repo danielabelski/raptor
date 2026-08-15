@@ -285,6 +285,7 @@ def _propose_rule(
     rationale = data.get("rationale", "") or ""
     test_positive = data.get("test_positive", "") or ""
     test_negative = data.get("test_negative", "") or ""
+    fix_patch = data.get("fix_patch", "") or ""
     if not isinstance(body, str) or not body.strip():
         return None, "llm response missing 'rule_body'"
     if len(body.encode("utf-8")) > _RULE_BODY_MAX_BYTES:
@@ -304,6 +305,7 @@ def _propose_rule(
         rationale=rationale,
         test_positive=str(test_positive),
         test_negative=str(test_negative),
+        fix_patch=str(fix_patch),
     ), None
 
 
@@ -365,6 +367,111 @@ def _dual_control(
                 f"({len(neg_matches)} hit(s) — rule is too broad)"
             )
             return False, errors
+
+    return True, errors
+
+
+def _fix_mutant_control(
+    seed: SeedBug,
+    rule: SynthesisedRule,
+    rule_path: Path,
+    repo_root: Path,
+    engine: str,
+) -> tuple[bool | None, list[str]]:
+    """Mechanical fix-mutant control.
+
+    Applies the LLM-supplied guard-insertion patch (``rule.fix_patch``
+    — a drop-in replacement for the seed's line range) to a COPY of
+    the seed file, then re-runs the rule against the patched copy.  A
+    rule that still matches inside the patched region cannot
+    distinguish fixed from unfixed code — it keys on guard-insensitive
+    syntax, not on the missing check.
+
+    Unlike dual control, the fixtures here are anchored to the REAL
+    seed file: the LLM only authors the guard insertion, and the
+    apply + re-run steps are mechanical, so the rule is not grading
+    its own homework end-to-end.
+
+    Returns ``(verdict, errors)``:
+
+      * ``True``  — patch applied and the rule no longer matches the
+        patched region (control passed).
+      * ``False`` — the rule still matches the patched region
+        (control failed).
+      * ``None``  — patch missing / failed to apply / result not
+        verifiable.  Callers treat this fail-closed for library
+        acceptance.
+    """
+    errors: list[str] = []
+    if not rule.fix_patch.strip():
+        return None, ["fix-mutant: LLM did not emit fix_patch"]
+
+    seed_file = repo_root / seed.file
+    try:
+        original = seed_file.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return None, [f"fix-mutant: cannot read seed file: {e}"]
+
+    lines = original.split("\n")
+    line_start, line_end = seed.line_start, seed.line_end
+    if not (1 <= line_start <= line_end <= len(lines)):
+        return None, [
+            (f"fix-mutant: seed line range {line_start}-{line_end} "
+             f"outside file ({len(lines)} lines) — patch not applicable"),
+        ]
+
+    patch_lines = rule.fix_patch.split("\n")
+    # Trim one trailing empty line from the patch — LLMs habitually
+    # end strings with "\n", which would otherwise insert a blank.
+    if patch_lines and patch_lines[-1] == "":
+        patch_lines = patch_lines[:-1]
+    if not patch_lines:
+        return None, ["fix-mutant: fix_patch is empty after trimming"]
+
+    original_region = lines[line_start - 1:line_end]
+    if [ln.strip() for ln in patch_lines] == \
+            [ln.strip() for ln in original_region]:
+        return None, [
+            ("fix-mutant: fix_patch is identical to the seed lines "
+             "(no guard inserted) — patch failed to apply"),
+        ]
+
+    patched = "\n".join(
+        lines[:line_start - 1] + patch_lines + lines[line_end:],
+    )
+
+    ext = Path(seed.file).suffix or _fixture_ext(seed, engine)
+    dummy = SynthesisedRule(engine=engine, rule_id="probe", body="")
+    with tempfile.TemporaryDirectory(prefix="raptor_fm_") as tmp:
+        patched_file = Path(tmp) / f"fix_mutant{ext}"
+        patched_file.write_text(patched, encoding="utf-8")
+        matches, run_errors = _run_engine(dummy, rule_path, patched_file)
+        errors.extend(run_errors)
+
+    # The patched region now spans [line_start, line_start+len-1].
+    # Matches with line 0 (engine gave no location) are counted as
+    # in-region — fail-closed rather than silently passing.
+    region_end = line_start + len(patch_lines) - 1
+    in_region = [
+        m for m in matches
+        if m.line == 0 or line_start <= m.line <= region_end
+    ]
+    if in_region:
+        errors.append(
+            f"fix-mutant: rule still matches the patched seed region "
+            f"({len(in_region)} hit(s)) — rule cannot distinguish "
+            f"fixed from unfixed code"
+        )
+        return False, errors
+
+    if run_errors and not matches:
+        # Engine failed on the patched copy (e.g. the patch broke
+        # parsing) — the control ran but proved nothing.
+        errors.append(
+            "fix-mutant: engine errored on patched copy — "
+            "control not verifiable"
+        )
+        return None, errors
 
     return True, errors
 
@@ -535,9 +642,20 @@ def synthesise_and_run(
                     rule_path = None
                     continue
                 else:
+                    # Fail-closed: without fixtures the rule was never
+                    # exercised against known-good/known-bad code, so
+                    # it may not enter the persistent library
+                    # (rule_tier stays "sweep_once").  The rule is
+                    # still used for this run's codebase sweep.
+                    result.errors.append(
+                        f"{tag}: dual control skipped — LLM did not "
+                        "emit test fixtures; rule excluded from "
+                        "library (rule_tier=sweep_once)"
+                    )
                     logger.warning(
                         "dual control skipped: LLM did not emit "
-                        "test fixtures for %s",
+                        "test fixtures for %s — rule excluded from "
+                        "library",
                         seed.file,
                     )
                     break
@@ -560,6 +678,33 @@ def synthesise_and_run(
     result.rule = rule
     result.rule_path = rule_path
     result.positive_control = True
+
+    # Fix-mutant control (library gate, not a sweep gate): only rules
+    # that passed dual control are candidates for the library, so only
+    # those pay for the extra engine run.  Verdict semantics and the
+    # fail-closed policy are documented on _fix_mutant_control.
+    if result.dual_control:
+        fm_ok, fm_errors = _fix_mutant_control(
+            seed, rule, rule_path, repo_root, rule.engine,
+        )
+        result.fix_mutant_control = fm_ok
+        result.errors.extend(fm_errors)
+        if fm_ok is True:
+            result.rule_tier = "library"
+        else:
+            reason = (
+                "patch missing or failed to apply" if fm_ok is None
+                else "rule matched the patched seed"
+            )
+            result.errors.append(
+                f"fix-mutant control did not pass ({reason}); rule "
+                "excluded from library (rule_tier=sweep_once)"
+            )
+            logger.info(
+                "fix-mutant control %s for %s (%s) — library excluded",
+                "not applicable" if fm_ok is None else "failed",
+                seed.file, rule.engine,
+            )
 
     # Codebase scan.
     matches, run_errors = _run_engine(rule, rule_path, repo_root)

@@ -52,6 +52,10 @@ class SynthesisedRule:
     rationale: str = ""  # LLM's explanation of what the rule looks for
     test_positive: str = ""  # minimal vulnerable snippet the rule must match
     test_negative: str = ""  # minimal safe snippet the rule must NOT match
+    # Minimal guard-insertion fix for the seed's line range.  Applied
+    # mechanically to a COPY of the seed file for the fix-mutant
+    # control: the rule must stop matching once the guard is in place.
+    fix_patch: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,14 @@ class CheckerSynthesisResult:
         up before returning a bad rule).
       * ``matches`` — cross-codebase matches found by the rule.
       * ``triage`` — optional LLM verdicts per match, in match order.
+      * ``fix_mutant_control`` — mechanical fix-mutant gate verdict:
+        True (patched seed no longer matches), False (rule cannot
+        distinguish fixed from unfixed code), None (patch missing or
+        failed to apply — fail-closed).
+      * ``rule_tier`` — ``"library"`` when every mechanical control
+        (positive, dual, fix-mutant) passed and the rule may be
+        promoted into the persistent library; ``"sweep_once"`` when
+        the rule may only be used for this run's codebase sweep.
       * ``capped`` — True when the match count exceeded
         ``max_matches`` and the result was truncated.
       * ``errors`` — best-effort log of failures along the way (rule
@@ -99,6 +111,8 @@ class CheckerSynthesisResult:
     rule_path: Optional[Path] = None
     positive_control: bool = False
     dual_control: bool = False
+    fix_mutant_control: bool | None = None
+    rule_tier: str = "sweep_once"
     matches: List[Match] = field(default_factory=list)
     triage: List[MatchTriage] = field(default_factory=list)
     capped: bool = False
@@ -127,6 +141,8 @@ class CheckerSynthesisResult:
             "rule_path": str(self.rule_path) if self.rule_path else None,
             "positive_control": self.positive_control,
             "dual_control": self.dual_control,
+            "fix_mutant_control": self.fix_mutant_control,
+            "rule_tier": self.rule_tier,
             "matches": [
                 {
                     "file": m.file, "line": m.line,

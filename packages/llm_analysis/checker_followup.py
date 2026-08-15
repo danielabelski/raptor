@@ -223,6 +223,9 @@ def _try_replay_from_library(
         result.rule_path = rule_path
         result.positive_control = True
         result.dual_control = entry.dual_control
+        # Replayed from the library — the mechanical controls passed
+        # at promotion time.
+        result.rule_tier = "library"
         result.matches = variants
         result.triage = triage_list
         result.errors = errors

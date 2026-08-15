@@ -492,8 +492,9 @@ class TestDualControl:
         assert any("too broad" in e for e in result.errors)
 
     def test_no_fixtures_skips_dual_control(self, tmp_path, monkeypatch):
-        """When LLM omits test fixtures, dual control is skipped
-        gracefully — synthesis still succeeds on positive control alone."""
+        """When LLM omits test fixtures, dual control is skipped —
+        synthesis still succeeds on positive control alone (sweep-once),
+        but the rule is fail-closed OUT of the library."""
         seed = _seed(tmp_path)
         seed_match = Match(file="src/auth.py", line=3)
         variant = Match(file="src/admin.py", line=42)
@@ -511,6 +512,16 @@ class TestDualControl:
         assert result.positive_control is True
         assert result.dual_control is False
         assert len(result.matches) == 1
+        # Fail-closed: no fixtures → sweep-once tier, with the reason
+        # logged, and the library refuses promotion.
+        assert result.rule_tier == "sweep_once"
+        assert any(
+            "did not emit test fixtures" in e and "excluded from library" in e
+            for e in result.errors
+        )
+        from packages.checker_synthesis import RuleLibrary
+        lib = RuleLibrary(tmp_path / "lib")
+        assert lib.promote(result) is None
 
     def test_dual_control_exhausts_retries(self, tmp_path, monkeypatch):
         """If dual control keeps failing and retries run out, no rule
@@ -567,6 +578,178 @@ class TestDualControl:
             line_start=1, line_end=2, cwe="CWE-1", reasoning="r",
         )
         assert _fixture_ext(seed, "semgrep") == ".go"
+
+
+# ---------------------------------------------------------------------------
+# Fix-mutant control
+# ---------------------------------------------------------------------------
+
+
+_FIXTURES = {
+    "test_positive": "def bad():\n    cursor.execute(f'{x}')\n",
+    "test_negative": "def good():\n    cursor.execute('?', (x,))\n",
+}
+
+_FIX_PATCH = (
+    "def login(req):\n"
+    "    q = sanitise(req.get('q'))\n"
+    "    return cursor.execute('SELECT * FROM t WHERE x=?', (q,))\n"
+)
+
+
+class TestFixMutantControl:
+    """Mechanical fix-mutant control: the LLM's guard-insertion patch
+    is applied to a copy of the seed file; the rule must stop matching.
+    Engine call order once dual control passes:
+
+      0: positive control (seed file)
+      1: dual control positive fixture
+      2: dual control negative fixture
+      3: fix-mutant patched copy        (only when fix_patch present)
+      4: codebase scan
+    """
+
+    def _llm(self, fix_patch=_FIX_PATCH):
+        payload = {
+            "rule_body": "rules:\n  - id: x\n    pattern: ...\n",
+            "rationale": "f-string into execute",
+            **_FIXTURES,
+        }
+        if fix_patch is not None:
+            payload["fix_patch"] = fix_patch
+        return _stub_llm([payload])
+
+    def test_pass_promotes_to_library_tier(self, tmp_path, monkeypatch):
+        seed = _seed(tmp_path)
+        seed_match = Match(file="src/auth.py", line=3)
+        pos_match = Match(file="test_positive.py", line=2)
+        _stub_engines_sequence(monkeypatch, [
+            ([seed_match], []),   # positive control
+            ([pos_match], []),    # dual pos
+            ([], []),             # dual neg
+            ([], []),             # fix-mutant: patched copy clean
+            ([seed_match], []),   # codebase scan
+        ])
+        result = synthesise_and_run(seed, tmp_path, tmp_path / "out",
+                                    self._llm())
+        assert result.dual_control is True
+        assert result.fix_mutant_control is True
+        assert result.rule_tier == "library"
+
+    def test_rule_matching_patched_copy_fails_closed(
+        self, tmp_path, monkeypatch,
+    ):
+        seed = _seed(tmp_path)
+        seed_match = Match(file="src/auth.py", line=3)
+        pos_match = Match(file="test_positive.py", line=2)
+        # Fix-mutant run still matches inside the patched region
+        # (line 3 of a 3-line patch starting at line 1).
+        _stub_engines_sequence(monkeypatch, [
+            ([seed_match], []),
+            ([pos_match], []),
+            ([], []),
+            ([Match(file="fix_mutant.py", line=3)], []),  # still matches
+            ([seed_match], []),
+        ])
+        result = synthesise_and_run(seed, tmp_path, tmp_path / "out",
+                                    self._llm())
+        assert result.dual_control is True
+        assert result.fix_mutant_control is False
+        assert result.rule_tier == "sweep_once"
+        assert any("cannot distinguish fixed from unfixed" in e
+                   for e in result.errors)
+
+    def test_missing_fix_patch_fails_closed(self, tmp_path, monkeypatch):
+        seed = _seed(tmp_path)
+        seed_match = Match(file="src/auth.py", line=3)
+        pos_match = Match(file="test_positive.py", line=2)
+        _stub_engines_sequence(monkeypatch, [
+            ([seed_match], []),
+            ([pos_match], []),
+            ([], []),
+            # No fix-mutant engine run: patch missing.
+            ([seed_match], []),   # codebase scan
+        ])
+        result = synthesise_and_run(seed, tmp_path, tmp_path / "out",
+                                    self._llm(fix_patch=None))
+        assert result.dual_control is True
+        assert result.fix_mutant_control is None
+        assert result.rule_tier == "sweep_once"
+        assert any("did not emit fix_patch" in e for e in result.errors)
+
+    def test_noop_patch_fails_closed(self, tmp_path, monkeypatch):
+        """A fix_patch identical to the seed lines inserted no guard —
+        treated as 'patch failed to apply'."""
+        seed = _seed(tmp_path)
+        seed_src = (tmp_path / "src" / "auth.py").read_text()
+        seed_match = Match(file="src/auth.py", line=3)
+        pos_match = Match(file="test_positive.py", line=2)
+        _stub_engines_sequence(monkeypatch, [
+            ([seed_match], []),
+            ([pos_match], []),
+            ([], []),
+            # No fix-mutant engine run: no-op patch rejected first.
+            ([seed_match], []),
+        ])
+        result = synthesise_and_run(seed, tmp_path, tmp_path / "out",
+                                    self._llm(fix_patch=seed_src))
+        assert result.fix_mutant_control is None
+        assert result.rule_tier == "sweep_once"
+        assert any("identical to the seed lines" in e for e in result.errors)
+
+    def test_bad_line_range_fails_closed(self, tmp_path, monkeypatch):
+        from packages.checker_synthesis import SeedBug
+        _seed(tmp_path)  # plants src/auth.py (3 lines)
+        seed = SeedBug(
+            file="src/auth.py", function="login",
+            line_start=1, line_end=99,   # beyond EOF
+            cwe="CWE-89", reasoning="r",
+        )
+        seed_match = Match(file="src/auth.py", line=3)
+        pos_match = Match(file="test_positive.py", line=2)
+        _stub_engines_sequence(monkeypatch, [
+            ([seed_match], []),
+            ([pos_match], []),
+            ([], []),
+            ([seed_match], []),
+        ])
+        result = synthesise_and_run(seed, tmp_path, tmp_path / "out",
+                                    self._llm())
+        assert result.fix_mutant_control is None
+        assert result.rule_tier == "sweep_once"
+        assert any("patch not applicable" in e for e in result.errors)
+
+    def test_patched_file_content_and_region(self, tmp_path, monkeypatch):
+        """The engine sees a copy with the seed lines replaced by the
+        patch; matches OUTSIDE the patched region don't fail the
+        control."""
+        seed = _seed(tmp_path)
+        seen = {}
+        seed_match = Match(file="src/auth.py", line=3)
+        pos_match = Match(file="test_positive.py", line=2)
+        calls = {"n": 0}
+
+        def fake_run(rule, rule_path, target):
+            n = calls["n"]
+            calls["n"] += 1
+            if n == 0:
+                return [seed_match], []
+            if n == 1:
+                return [pos_match], []
+            if n == 2:
+                return [], []
+            if n == 3:
+                seen["content"] = Path(target).read_text()
+                # Match far outside the 3-line patched region.
+                return [Match(file=str(target), line=40)], []
+            return [seed_match], []
+
+        monkeypatch.setattr(synth_mod, "_run_engine", fake_run)
+        result = synthesise_and_run(seed, tmp_path, tmp_path / "out",
+                                    self._llm())
+        assert seen["content"].startswith("def login(req):\n    q = sanitise")
+        assert result.fix_mutant_control is True
+        assert result.rule_tier == "library"
 
 
 # ---------------------------------------------------------------------------

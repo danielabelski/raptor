@@ -56,7 +56,11 @@ _SYNTHESIS_SYSTEM_BASE = (
     "  4. Come with test fixtures — a minimal vulnerable snippet that "
     "MUST match (test_positive) and a minimal safe snippet that must "
     "NOT match (test_negative) — proving the rule distinguishes buggy "
-    "from correct code.\n\n"
+    "from correct code.\n"
+    "  5. Come with a fix patch (fix_patch) — the seed's own lines "
+    "rewritten with the minimal missing guard/check inserted. It is "
+    "applied mechanically as a drop-in replacement for those exact "
+    "lines, and the rule must NOT match the patched copy.\n\n"
     "Avoid rules that match every call to a common API (e.g. every "
     "``subprocess.run``). Match the structural shape that makes the "
     "ORIGINAL bug unsafe — typically the absence of a check, the use "
@@ -79,7 +83,10 @@ def synthesis_system_for_engine(engine: str) -> str:
 
 SYNTHESIS_SCHEMA: Dict[str, Any] = {
     "type": "object",
-    "required": ["rule_body", "rationale", "test_positive", "test_negative"],
+    "required": [
+        "rule_body", "rationale", "test_positive", "test_negative",
+        "fix_patch",
+    ],
     "properties": {
         "rule_body": {
             "type": "string",
@@ -118,6 +125,21 @@ SYNTHESIS_SCHEMA: Dict[str, Any] = {
                 "(e.g. parameterised query instead of string concat, "
                 "bounds check added, resource freed). Must be complete "
                 "enough to parse."
+            ),
+        },
+        "fix_patch": {
+            "type": "string",
+            "description": (
+                "The FIXED version of the seed bug's own lines (the "
+                "exact line range shown in the prompt): the same code "
+                "with the minimal missing guard/check inserted, "
+                "nothing else changed. This text mechanically "
+                "REPLACES those lines in a copy of the seed file, so "
+                "it must be drop-in compatible (same indentation, "
+                "complete statements). The rule must NOT match the "
+                "patched copy — this is the fix-mutant control that "
+                "proves the rule keys on the missing guard, not on "
+                "guard-insensitive syntax."
             ),
         },
     },
@@ -181,8 +203,16 @@ def build_synthesis_prompt(
         "structurally similar but SAFE (the fix applied) — the rule "
         "must NOT match this.",
         "",
+        (f"Also provide fix_patch: the FIXED replacement for lines "
+         f"{seed.line_start}–{seed.line_end} of {seed.file} — the same "
+         "code with the minimal missing guard/check inserted, drop-in "
+         "compatible with the surrounding file (same indentation, "
+         "complete statements). The rule must NOT match the file once "
+         "this patch is applied."),
+        "",
         "Respond with JSON: {\"rule_body\": \"...\", \"rationale\": \"...\", "
-        "\"test_positive\": \"...\", \"test_negative\": \"...\"}.",
+        "\"test_positive\": \"...\", \"test_negative\": \"...\", "
+        "\"fix_patch\": \"...\"}.",
     ]
     if retry_feedback:
         parts += [

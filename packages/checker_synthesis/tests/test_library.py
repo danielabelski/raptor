@@ -59,6 +59,7 @@ def _result(
     dual_control: bool = True,
     matches: int = 3,
     triage_status: str = "variant",
+    rule_tier: str = "library",
 ) -> CheckerSynthesisResult:
     seed = _seed(cwe)
     rule = _rule(engine)
@@ -74,6 +75,10 @@ def _result(
     result.rule_path = Path("/tmp/fake/r1.yml")
     result.positive_control = True
     result.dual_control = dual_control
+    # Library promotion requires every mechanical control to have
+    # passed; the helper models that happy path by default.
+    result.rule_tier = rule_tier if dual_control else "sweep_once"
+    result.fix_mutant_control = True if rule_tier == "library" else None
     result.matches = match_list
     result.triage = triage_list
     return result
@@ -143,6 +148,22 @@ class TestRuleLibraryPromote:
         rule_on_disk = tmp_path / "lib" / "semgrep" / "r1.yml"
         assert rule_on_disk.exists()
         assert "execute" in rule_on_disk.read_text()
+
+    def test_promote_rejects_sweep_once_tier(self, tmp_path):
+        """Fail-closed library gate: dual control alone is not enough —
+        a rule whose fix-mutant control did not pass (or whose fixtures
+        were missing) stays rule_tier=sweep_once and is refused."""
+        lib = RuleLibrary(tmp_path / "lib")
+        result = _result(rule_tier="sweep_once")
+        result.fix_mutant_control = None
+        assert lib.promote(result) is None
+
+    def test_promote_rejects_missing_rule_tier_field(self, tmp_path):
+        """Legacy/foreign result objects without rule_tier fail closed."""
+        lib = RuleLibrary(tmp_path / "lib")
+        result = _result()
+        del result.rule_tier
+        assert lib.promote(result) is None
 
     def test_promote_rejects_no_dual_control(self, tmp_path):
         lib = RuleLibrary(tmp_path / "lib")

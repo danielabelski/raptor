@@ -394,8 +394,12 @@ class UnderstandPrepassTests(unittest.TestCase):
             paths = kw.get("readable_paths") or []
             self.assertTrue(any(p.endswith("/.claude") for p in paths),
                             f"missing ~/.claude in readable_paths: {paths!r}")
-            self.assertTrue(any("raptor" in p.lower() for p in paths),
-                            f"missing RAPTOR_DIR in readable_paths: {paths!r}")
+            # Assert the actual module-derived path, not a "raptor"
+            # substring — the repo dir is not always named raptor
+            # (worktrees, CI checkouts).
+            from core.orchestration.agentic_passes import _RAPTOR_DIR
+            self.assertIn(str(_RAPTOR_DIR), paths,
+                          f"missing RAPTOR_DIR in readable_paths: {paths!r}")
 
     def test_happy_path_enriches_agentic_checklist(self):
         # End-to-end: pre-pass writes context-map.json into the understand
@@ -634,8 +638,12 @@ class ValidatePostpassTests(unittest.TestCase):
             paths = kw.get("readable_paths") or []
             self.assertTrue(any(p.endswith("/.claude") for p in paths),
                             f"missing ~/.claude in readable_paths: {paths!r}")
-            self.assertTrue(any("raptor" in p.lower() for p in paths),
-                            f"missing RAPTOR_DIR in readable_paths: {paths!r}")
+            # Assert the actual module-derived path, not a "raptor"
+            # substring — the repo dir is not always named raptor
+            # (worktrees, CI checkouts).
+            from core.orchestration.agentic_passes import _RAPTOR_DIR
+            self.assertIn(str(_RAPTOR_DIR), paths,
+                          f"missing RAPTOR_DIR in readable_paths: {paths!r}")
 
     def test_skips_when_lifecycle_start_fails(self):
         with TemporaryDirectory() as tmp:

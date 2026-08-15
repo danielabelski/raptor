@@ -1204,6 +1204,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         budget=args.budget,
         strategy_filter=args.strategy,
         review_passes=args.review_passes,
+        batch_sloc_threshold=args.batch_sloc_threshold,
         adversarial=args.adversarial,
         max_propagation_depth=args.max_propagation_depth,
         subsystem_depth=args.subsystem_depth,
@@ -1518,6 +1519,10 @@ def main() -> int:
                        help="Number of independent review passes per function (self-consistency)")
     p_run.add_argument("--subsystem-depth", type=int, default=0,
                        help="Directory grouping depth for subsystem-ordered review")
+    p_run.add_argument("--batch-sloc-threshold", type=int, default=None,
+                       help="Batch functions at or under this SLOC per file "
+                            "into combined reviews (default: 15; 0 disables "
+                            "batching)")
     from core.analysis.binary_oracle_cli import add_binary_args
     add_binary_args(p_run, include_edges=False)
 

@@ -19,7 +19,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 ```
 /audit <target_path> [--strategy <name>] [--budget <N>] [--scope <dir>] [--out <dir>]
        [--codeql-db <path>] [--max-cost <USD>] [--max-time <seconds>]
-       [--review-passes <N>] [--subsystem-depth <N>]
+       [--review-passes <N>] [--subsystem-depth <N>] [--batch-sloc-threshold <N>]
        [--max-propagation-depth <N>] [--adversarial]
        [--annotations-dir <path>] [--no-validate] [--model <name> ...]
 ```
@@ -34,6 +34,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--max-time <seconds>` — stop after this many wall-clock seconds
 - `--review-passes <N>` — independent review passes per function for self-consistency (default: 1)
 - `--subsystem-depth <N>` — directory grouping depth for subsystem-ordered review (default: 0)
+- `--batch-sloc-threshold <N>` — functions at or under N SLOC are batched per file into combined reviews (default: 15; 0 disables). Raise on codebases dense with tiny accessors/wrappers to cut per-call overhead
 - `--annotations-dir <path>` — annotations directory for team workflows or cross-run review (default: `$OUTPUT_DIR/annotations`)
 - `--no-validate` — skip the /validate post-pass (not recommended)
 - `--model <name>` — model ID (repeatable for multi-model consensus; first model used for lifecycle)
@@ -84,7 +85,7 @@ If the operator passed `--scope`, still map the full target (the map covers the 
 libexec/raptor-audit run "$TARGET_PATH" --out "$OUTPUT_DIR"
 ```
 
-Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--max-time`, `--review-passes`, `--subsystem-depth`).
+Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`).
 
 The orchestrator handles everything from here: gap computation, context assembly, LLM review, tool chain dispatch, Joern background build, sweep validation, constraint propagation, Mode 2 checker synthesis, /validate post-pass, report generation, and lifecycle completion.
 

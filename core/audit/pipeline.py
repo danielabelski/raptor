@@ -69,6 +69,7 @@ class AuditPipelineOpts:
     budget: int | None = None
     strategy_filter: str | None = None
     review_passes: int = 1
+    batch_sloc_threshold: int | None = None
     adversarial: bool = False
     max_propagation_depth: int | None = None
     subsystem_depth: int = 0
@@ -130,6 +131,8 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         max_seconds=opts.max_seconds,
         review_passes=opts.review_passes,
         subsystem_depth=opts.subsystem_depth,
+        **({"batch_sloc_threshold": opts.batch_sloc_threshold}
+           if opts.batch_sloc_threshold is not None else {}),
         max_propagation_depth=opts.max_propagation_depth,
         validate=opts.validate,
         no_binary_oracle=opts.no_binary_oracle,
@@ -394,6 +397,8 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
         max_seconds=opts.max_seconds,
         review_passes=opts.review_passes,
         subsystem_depth=opts.subsystem_depth,
+        **({"batch_sloc_threshold": opts.batch_sloc_threshold}
+           if opts.batch_sloc_threshold is not None else {}),
         max_propagation_depth=opts.max_propagation_depth,
         validate=opts.validate,
         no_binary_oracle=opts.no_binary_oracle,

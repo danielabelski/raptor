@@ -41,6 +41,21 @@ from packages.codeql.tunables import CodeQLTunables
 
 logger = get_logger()
 
+# Languages whose databases are created with ``--build-mode=none``
+# (buildless extraction) BY DEFAULT.  For C/C++ a traced build runs the
+# target repo's build system — attacker-controlled code — so untrusted
+# repos must never trigger it implicitly.  Buildless extraction parses
+# the source without executing anything from the repo, removing the
+# repo-code-execution vector entirely.  Operators opt back into traced
+# builds explicitly (``--traced-build`` on the CLI, an explicit
+# ``--build-command``, or ``create_database(traced_build=True)``).
+BUILDLESS_DEFAULT_LANGUAGES = frozenset({"cpp"})
+
+# ``codeql database create --build-mode=none`` for C/C++ requires
+# CodeQL CLI >= 2.16.  Older CLIs degrade to a clear skip, never a
+# crash and never a silent fallback to a traced build.
+BUILDLESS_CPP_MIN_VERSION = (2, 16)
+
 
 @dataclass
 class DatabaseMetadata:
@@ -186,6 +201,42 @@ class DatabaseManager:
         except Exception as e:
             logger.warning("Failed to get CodeQL version: %s", e)
             return None
+
+    def supports_buildless_cpp(self) -> tuple:
+        """Probe whether the CLI supports C/C++ ``--build-mode=none``.
+
+        Returns ``(supported, detail)`` — ``detail`` is the version on
+        success, a human-readable reason on failure.  Requires CodeQL
+        CLI >= 2.16 (:data:`BUILDLESS_CPP_MIN_VERSION`).  Never raises;
+        an absent/unparseable CLI reads as unsupported so callers can
+        degrade with a clear skip instead of a crash.  Cached per
+        manager instance (the CLI doesn't change mid-run).
+        """
+        cached = getattr(self, "_buildless_probe", None)
+        if cached is not None:
+            return cached
+        version = self.get_codeql_version()
+        if not version:
+            result = (False, "CodeQL CLI version could not be determined")
+        else:
+            try:
+                parts = tuple(int(p) for p in version.split(".")[:3])
+            except ValueError:
+                result = (False, f"unparseable CodeQL version {version!r}")
+            else:
+                if parts < BUILDLESS_CPP_MIN_VERSION:
+                    result = (
+                        False,
+                        (
+                            f"CodeQL {version} < "
+                            f"{'.'.join(map(str, BUILDLESS_CPP_MIN_VERSION))} "
+                            "— C/C++ --build-mode=none unsupported"
+                        ),
+                    )
+                else:
+                    result = (True, version)
+        self._buildless_probe = result
+        return result
 
     def compute_repo_hash(self, repo_path: Path) -> str:
         """
@@ -558,6 +609,7 @@ class DatabaseManager:
         build_system: Optional[BuildSystem] = None,
         force: bool = False,
         audit_run_dir: Optional[Path] = None,
+        traced_build: bool = False,
     ) -> DatabaseResult:
         """
         Create CodeQL database.
@@ -566,6 +618,17 @@ class DatabaseManager:
             repo_path: Path to source code
             language: Programming language
             build_system: Build system info (None for no-build mode)
+            traced_build: Opt into traced-build extraction for
+                languages in :data:`BUILDLESS_DEFAULT_LANGUAGES`.
+                Default False: C/C++ databases are created with
+                ``--build-mode=none`` so an untrusted repo's build
+                scripts NEVER execute (any ``build_system`` command is
+                ignored with a log line).  Buildless C/C++ requires
+                CodeQL CLI >= 2.16 — older CLIs return a clear failed
+                DatabaseResult (graceful skip, no crash, no silent
+                traced fallback).  ``traced_build=True`` restores the
+                pre-existing traced path, which runs the repo build
+                under the sandbox — the operator asserts trust.
             audit_run_dir: When --audit is engaged, where the tracer
                 should drop the audit JSONL. Decoupled from output= so
                 Landlock writable_paths isn't restricted (codeql
@@ -677,6 +740,40 @@ class DatabaseManager:
         # canonical exists but is older than the TTL.
         self._evict_stale_canonical(repo_hash, language, max_age_days=7)
 
+        # Buildless default for C/C++: never execute an untrusted
+        # repo's build system unless the operator explicitly opted in.
+        # Gate AFTER the cache checks (a cached DB is safe to serve
+        # regardless of how the CLI was probed) and BEFORE command
+        # construction.
+        buildless = (
+            language in BUILDLESS_DEFAULT_LANGUAGES and not traced_build
+        )
+        if buildless:
+            supported, detail = self.supports_buildless_cpp()
+            if not supported:
+                logger.error(
+                    "✗ Buildless %s extraction unavailable: %s", language, detail,
+                )
+                return DatabaseResult(
+                    success=False,
+                    language=language,
+                    database_path=None,
+                    metadata=None,
+                    errors=[
+                        (
+                            f"buildless {language} extraction unavailable: "
+                            f"{detail}. Upgrade the CodeQL CLI (>= "
+                            f"{'.'.join(map(str, BUILDLESS_CPP_MIN_VERSION))}) "
+                            "or explicitly opt into traced-build mode "
+                            "(--traced-build / --build-command) if the repo "
+                            "is trusted — traced builds EXECUTE the repo's "
+                            "build scripts."
+                        )
+                    ],
+                    duration_seconds=time.time() - start_time,
+                    cached=False,
+                )
+
         # Cleanup any prior leftover staging from this same process (e.g.,
         # from a previous crashed run with the same PID after PID reuse).
         shutil.rmtree(staging_path, ignore_errors=True)
@@ -691,6 +788,12 @@ class DatabaseManager:
             f"--language={language}",
             f"--source-root={repo_path}",
         ]
+        if buildless:
+            # Buildless extraction: codeql parses the source without
+            # invoking any build system, so no repo-controlled code
+            # runs during `database create`.  (The sandbox below is
+            # kept anyway — the extractor still parses hostile input.)
+            cmd.append("--build-mode=none")
         # Central CodeQL resource tunables (-j / -M / --max-disk-cache,
         # tuning.json-backed).  ``include_disk_cache=True`` because
         # ``database create`` accepts the flag; ``database analyze``
@@ -750,7 +853,13 @@ class DatabaseManager:
         # so shell operators (&&, ||, ;, |) break. Wrap in a script unless
         # the command is already a path to an executable (e.g. synthesised builds).
         build_script = None
-        if build_system and build_system.command:
+        if buildless and build_system and build_system.command:
+            logger.info(
+                "Buildless mode (--build-mode=none): ignoring detected "
+                "build command %r — pass traced_build=True to use it",
+                build_system.command,
+            )
+        elif build_system and build_system.command:
             build_cmd = build_system.command
             if Path(build_cmd).is_file() or re.fullmatch(r'[a-zA-Z0-9._-]+', build_cmd):
                 cmd.extend(["--command", build_cmd])
@@ -978,8 +1087,14 @@ class DatabaseManager:
                 # produced silently-wrong age calculations.
                 created_at=datetime.now(timezone.utc).isoformat(),
                 codeql_version=self.get_codeql_version() or "unknown",
-                build_command=build_system.command if build_system else "",
-                build_system=build_system.type if build_system else "no-build",
+                build_command=(
+                    "" if buildless
+                    else build_system.command if build_system else ""
+                ),
+                build_system=(
+                    "buildless" if buildless
+                    else build_system.type if build_system else "no-build"
+                ),
                 file_count=file_count,
                 success=success,
                 duration_seconds=time.time() - start_time,
@@ -1072,6 +1187,7 @@ class DatabaseManager:
         force: bool = False,
         max_workers: Optional[int] = None,
         audit_run_dir: Optional[Path] = None,
+        traced_languages: "set | None" = None,
     ) -> Dict[str, DatabaseResult]:
         """
         Create multiple databases in parallel.
@@ -1083,6 +1199,10 @@ class DatabaseManager:
             max_workers: Max parallel workers (default: RaptorConfig.MAX_CODEQL_WORKERS)
             audit_run_dir: Forwarded to per-language create_database for
                 audit JSONL targeting (no Landlock impact).
+            traced_languages: Languages the operator explicitly opted
+                into traced-build extraction for (see
+                ``create_database(traced_build=...)``).  Languages not
+                in the set keep the buildless default for C/C++.
 
         Returns:
             Dict mapping language -> DatabaseResult
@@ -1106,6 +1226,7 @@ class DatabaseManager:
                     build_system,
                     force,
                     audit_run_dir,
+                    lang in (traced_languages or ()),
                 ): lang
                 for lang, build_system in language_build_map.items()
             }
@@ -1282,6 +1403,13 @@ def main():
     parser.add_argument("--repo", required=True, help="Repository path")
     parser.add_argument("--language", required=True, help="Programming language")
     parser.add_argument("--build-command", help="Build command")
+    parser.add_argument(
+        "--traced-build", action="store_true",
+        help="Opt into traced-build extraction for C/C++ (default is "
+             "--build-mode=none, which never executes the repo's build "
+             "scripts). Traced builds run repo-controlled code — only "
+             "use on trusted repos. Implied by --build-command.",
+    )
     parser.add_argument("--force", action="store_true", help="Force recreation")
     parser.add_argument("--cleanup", type=int, help="Cleanup databases older than N days")
     args = parser.parse_args()
@@ -1306,12 +1434,14 @@ def main():
             detected_files=[],
         )
 
-    # Create database
+    # Create database.  An explicit --build-command is an operator
+    # assertion of trust — it implies traced-build mode.
     result = manager.create_database(
         Path(args.repo),
         args.language,
         build_system,
-        force=args.force
+        force=args.force,
+        traced_build=args.traced_build or bool(args.build_command),
     )
 
     if result.success:

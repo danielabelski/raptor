@@ -214,6 +214,30 @@ python3 packages/codeql/language_detector.py --repo /path/to/code --json
 
 **Fallback**: No-build mode for interpreted languages
 
+### Buildless C/C++ (default)
+
+C/C++ databases are created with `--build-mode=none` **by default** — the
+extractor parses the source without invoking any build system, so an
+untrusted repo's build scripts (Make/CMake/configure — repo-controlled
+code) never execute. Requires CodeQL CLI >= 2.16; older CLIs skip C/C++
+with a clear error instead of silently falling back to a traced build.
+
+Operators opt into traced-build extraction explicitly, asserting trust
+in the repo:
+
+```bash
+# traced build with auto-detected build system
+python3 raptor_codeql.py --repo /path/to/code --traced-build
+
+# an explicit build command also implies a traced build
+python3 raptor_codeql.py --repo /path/to/code --languages cpp \
+  --build-command "make -j"
+```
+
+Traced builds still run under the sandbox (network blocked, safe env),
+but they execute repo-controlled code by design — buildless mode removes
+that vector entirely.
+
 **Test build detection:**
 
 ```bash

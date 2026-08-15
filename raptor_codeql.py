@@ -119,6 +119,7 @@ def run_autonomous_workflow(args):
         force_db_creation=args.force,
         use_extended=args.extended,
         min_files=args.min_files,
+        traced_build=args.traced_build,
     )
 
     if not scan_result.success:
@@ -303,7 +304,14 @@ Examples:
 
     parser.add_argument("--repo", required=True, help="Repository path")
     parser.add_argument("--languages", help="Comma-separated languages")
-    parser.add_argument("--build-command", help="Custom build command")
+    parser.add_argument("--build-command", help="Custom build command (implies a traced build for that language)")
+    parser.add_argument(
+        "--traced-build", action="store_true",
+        help="Opt into traced-build C/C++ extraction. Default is buildless "
+             "(--build-mode=none, CodeQL >= 2.16): the repo's build scripts "
+             "never execute. Traced builds run repo-controlled code under "
+             "the sandbox — only use on repos you trust.",
+    )
     parser.add_argument("--out", help="Output directory")
     parser.add_argument(
         "--force", action="store_true",

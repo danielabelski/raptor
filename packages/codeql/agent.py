@@ -29,7 +29,11 @@ from core.run.safe_io import safe_run_mkdir
 from core.run.output import unique_run_suffix as _unique_run_suffix
 from packages.codeql.language_detector import LanguageDetector, LanguageInfo
 from core.build.build_detector import BuildDetector, BuildSystem
-from packages.codeql.database_manager import DatabaseManager, DatabaseResult
+from packages.codeql.database_manager import (
+    BUILDLESS_DEFAULT_LANGUAGES,
+    DatabaseManager,
+    DatabaseResult,
+)
 from packages.codeql.query_runner import QueryRunner, QueryResult
 
 logger = get_logger()
@@ -207,6 +211,7 @@ class CodeQLAgent:
         force_db_creation: bool = False,
         use_extended: bool = False,
         min_files: int = 3,
+        traced_build: bool = False,
     ) -> CodeQLWorkflowResult:
         """
         Run complete autonomous CodeQL analysis workflow.
@@ -217,6 +222,12 @@ class CodeQLAgent:
             force_db_creation: Force database recreation
             use_extended: Use extended security suites
             min_files: Minimum files to consider a language present
+            traced_build: Opt into traced-build extraction for C/C++.
+                Default False: C/C++ databases are created with
+                ``--build-mode=none`` — the untrusted repo's build
+                scripts never execute, and build detection is skipped
+                entirely for those languages.  An explicit per-language
+                entry in ``build_commands`` also opts that language in.
 
         Returns:
             CodeQLWorkflowResult with complete analysis results
@@ -348,7 +359,41 @@ class CodeQLAgent:
             logger.info("%s", '=' * 70)
 
             language_build_map = {}
+            traced_languages = set()
             for lang in detected:
+                if traced_build or (build_commands and lang in build_commands):
+                    # Operator explicitly opted this language into a
+                    # traced build (asserts trust in the repo).
+                    traced_languages.add(lang)
+                if (
+                    lang in BUILDLESS_DEFAULT_LANGUAGES
+                    and lang not in traced_languages
+                ):
+                    # Buildless default for C/C++: never run build
+                    # detection / synthesis for an untrusted repo —
+                    # `codeql database create --build-mode=none`
+                    # extracts without executing any repo code.
+                    supported, detail = (
+                        self.database_manager.supports_buildless_cpp()
+                    )
+                    if not supported:
+                        msg = (
+                            f"{lang}: buildless extraction unavailable "
+                            f"({detail}); skipping this language — pass "
+                            "--traced-build or --build-command to run a "
+                            "traced build on a repo you trust"
+                        )
+                        logger.warning(msg)
+                        errors.append(msg)
+                        continue
+                    logger.info(
+                        "%s: buildless mode (--build-mode=none) — repo "
+                        "build scripts will not execute", lang,
+                    )
+                    language_build_map[lang] = (
+                        self.build_detector.generate_no_build_config(lang)
+                    )
+                    continue
                 if build_commands and lang in build_commands:
                     # Use custom build command
                     logger.info("%s: Using custom build command", lang)
@@ -409,6 +454,7 @@ class CodeQLAgent:
                 language_build_map,
                 force=force_db_creation,
                 audit_run_dir=self.out_dir,
+                traced_languages=traced_languages,
             )
 
             # Clean up synthesised build artifacts. Per-path try

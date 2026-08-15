@@ -50,9 +50,7 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
-
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +128,7 @@ def _network_probe_enabled() -> bool:
         return True
     if os.environ.get("CLAUDE_CODE_USE_VERTEX"):
         return True
-    if os.environ.get("CLAUDE_CODE_USE_FOUNDRY"):
-        return True
-    return False
+    return bool(os.environ.get("CLAUDE_CODE_USE_FOUNDRY"))
 
 
 def _cc_probe_args() -> tuple[str, ...]:
@@ -153,7 +149,7 @@ def _cc_probe_args() -> tuple[str, ...]:
     return ("--version",)
 
 
-def _load_override_config() -> Optional[list[str]]:
+def _load_override_config() -> list[str] | None:
     """Load the operator's override list, or None if not configured.
 
     Schema:
@@ -211,7 +207,7 @@ def _vertex_hosts() -> list[str]:
     ]
 
 
-def _foundry_hosts() -> Optional[list[str]]:
+def _foundry_hosts() -> list[str] | None:
     """Azure OpenAI / Foundry hosts. Endpoint is per-deployment so we
     derive it from the operator-supplied URL env var. Returns None
     when the URL is missing or unparseable — caller should treat as
@@ -242,12 +238,12 @@ def _foundry_hosts() -> Optional[list[str]]:
 # the dict (mostly used in tests). Production callers don't need
 # to invalidate during normal operation — sha256 verification on
 # load handles binary self-update.
-_CALIBRATED_CACHE: dict[str, "object"] = {}
+_CALIBRATED_CACHE: dict[str, object] = {}
 _CALIBRATED_CACHE_LOCK = threading.Lock()
 _MISSING = object()  # sentinel distinct from None (a valid cached result)
 
 
-def _resolve_claude_bin() -> Optional[str]:
+def _resolve_claude_bin() -> str | None:
     """Locate the Claude Code binary on PATH. Returns None when
     not found (calibration disabled for that run; static fallback
     layers still apply).
@@ -255,7 +251,7 @@ def _resolve_claude_bin() -> Optional[str]:
     return shutil.which("claude")
 
 
-def _calibrated_profile(claude_bin: Optional[str] = None):
+def _calibrated_profile(claude_bin: str | None = None):
     """Load (or trigger calibration of) a SandboxProfile for the
     target Claude Code binary + provider env. Returns None when
     calibration is unavailable (binary missing, observe-mode
@@ -335,8 +331,8 @@ def _calibrated_profile(claude_bin: Optional[str] = None):
 
 
 def _calibrated_proxy_hosts(
-    claude_bin: Optional[str] = None,
-) -> Optional[list[str]]:
+    claude_bin: str | None = None,
+) -> list[str] | None:
     """Calibrated layer of proxy_hosts_for_cc_dispatch's resolution
     chain. Returns None when no calibrated profile exists OR the
     profile carries an empty proxy_hosts list (the default
@@ -349,8 +345,8 @@ def _calibrated_proxy_hosts(
 
 
 def _calibrated_readable_paths(
-    claude_bin: Optional[str] = None,
-) -> Optional[list[str]]:
+    claude_bin: str | None = None,
+) -> list[str] | None:
     """Calibrated layer of readable_paths_for_cc_dispatch's
     resolution chain. Returns the union of paths_read + paths_stat
     (probes that *check for* a file via stat() before deciding to
@@ -369,7 +365,7 @@ def _calibrated_readable_paths(
 
 
 def proxy_hosts_for_cc_dispatch(
-    claude_bin: Optional[str] = None,
+    claude_bin: str | None = None,
 ) -> list[str]:
     """Return the egress proxy hostname allowlist for a cc_dispatch
     invocation, given the current process env + operator config.
@@ -434,7 +430,7 @@ _DEFAULT_ANTHROPIC_HOSTS: tuple[str, ...] = (
 )
 
 
-def _binary_readable_paths(claude_bin: Optional[str] = None) -> list[str]:
+def _binary_readable_paths(claude_bin: str | None = None) -> list[str]:
     """Paths needed to *exec* the Claude Code binary itself.
 
     Landlock blocks execve on files outside the readable set, and
@@ -458,7 +454,7 @@ def _binary_readable_paths(claude_bin: Optional[str] = None) -> list[str]:
 
 
 def readable_paths_for_cc_dispatch(
-    claude_bin: Optional[str] = None,
+    claude_bin: str | None = None,
 ) -> list[str]:
     """Return the Landlock readable-paths set for a cc_dispatch
     invocation.

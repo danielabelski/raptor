@@ -192,7 +192,7 @@ class TestJoernServerRunTieredSweep:
         assert "not found" in result.errors[0]
 
     def test_substitutes_lang_profile_sinks(self, tmp_path):
-        from packages.joern.lang_config import PYTHON, C_CPP
+        from packages.joern.lang_config import C_CPP, PYTHON
         script_path = (
             __import__("pathlib").Path(__file__).resolve().parent.parent
             / "queries" / "tiered_taint.sc"
@@ -262,13 +262,15 @@ class TestJoernServerZGCFlags:
             mock_proc.wait = MagicMock()
             return mock_proc
 
-        with patch("packages.joern.server.os.killpg",
-                   side_effect=ProcessLookupError):
-            with patch("packages.joern.server.subprocess.Popen",
-                       side_effect=fake_popen):
-                with patch.object(srv, "_wait_for_ready", return_value=True):
-                    with patch.object(srv, "_warmup_imports"):
-                        srv.start()
+        with (
+            patch("packages.joern.server.os.killpg",
+                  side_effect=ProcessLookupError),
+            patch("packages.joern.server.subprocess.Popen",
+                  side_effect=fake_popen),
+            patch.object(srv, "_wait_for_ready", return_value=True),
+            patch.object(srv, "_warmup_imports"),
+        ):
+            srv.start()
         return captured_cmd
 
     def test_start_cmd_includes_zgc_jdk21(self):
@@ -317,15 +319,17 @@ class TestJoernServerZGCFlags:
 
         ready_results = iter([False, True])
 
-        with patch("packages.joern.prereqs._java_version", return_value=25):
-            with patch("packages.joern.server.os.killpg",
-                       side_effect=ProcessLookupError):
-                with patch("packages.joern.server.subprocess.Popen",
-                           side_effect=fake_popen):
-                    with patch.object(srv, "_wait_for_ready",
-                                      side_effect=lambda: next(ready_results)):
-                        with patch.object(srv, "_warmup_imports"):
-                            srv.start()
+        with (
+            patch("packages.joern.prereqs._java_version", return_value=25),
+            patch("packages.joern.server.os.killpg",
+                  side_effect=ProcessLookupError),
+            patch("packages.joern.server.subprocess.Popen",
+                  side_effect=fake_popen),
+            patch.object(srv, "_wait_for_ready",
+                         side_effect=lambda: next(ready_results)),
+            patch.object(srv, "_warmup_imports"),
+        ):
+            srv.start()
 
         assert len(launches) == 2
         assert any(a.startswith("-J-XX:") for a in launches[0])

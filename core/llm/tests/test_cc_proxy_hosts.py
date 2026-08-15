@@ -720,6 +720,7 @@ class TestBuildDetectorMigration:
 
     def test_build_detector_imports_proxy_hosts_for_cc_dispatch(self):
         import inspect
+
         from core.build import build_detector
         src = inspect.getsource(build_detector)
         assert "proxy_hosts_for_cc_dispatch" in src, (
@@ -732,6 +733,7 @@ class TestBuildDetectorMigration:
 
     def test_build_detector_no_longer_hardcodes_anthropic_host(self):
         import inspect
+
         from core.build import build_detector
         src = inspect.getsource(build_detector)
         # The pre-migration literal. If this returns, the call

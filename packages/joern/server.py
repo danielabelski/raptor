@@ -13,6 +13,7 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -244,12 +245,10 @@ class JoernServer:
                 logger.error("Joern server exited during boot: %s",
                              stderr[:500])
                 return False
-            try:
+            with contextlib.suppress(Exception):
                 resp = self._post_sync(_HEALTH_QUERY, timeout=5)
                 if resp is not None:
                     return True
-            except Exception:
-                pass
             time.sleep(_BOOT_POLL_INTERVAL_S)
         return False
 
@@ -269,7 +268,7 @@ class JoernServer:
         )
         try:
             self._post_sync(warmup, timeout=30)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — warmup is best-effort
             logger.debug("Joern warmup imports failed: %s", e)
 
     def _warmup_dataflow(self) -> None:
@@ -290,7 +289,7 @@ class JoernServer:
         )
         try:
             self._post_sync(warmup, timeout=30)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — warmup is best-effort
             logger.debug("Joern dataflow warmup failed: %s", e)
 
     def stop(self) -> None:
@@ -327,10 +326,8 @@ class JoernServer:
             pass
 
         if self._http_client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._http_client.close()
-            except Exception:
-                pass
             self._http_client = None
         self._proc = None
         self._port = None
@@ -347,7 +344,7 @@ class JoernServer:
         try:
             resp = self._post_sync(_HEALTH_QUERY, timeout=5)
             return resp is not None
-        except Exception:
+        except Exception:  # noqa: BLE001 — any failure means not alive
             return False
 
     def restart(self) -> bool:
@@ -527,7 +524,7 @@ class JoernServer:
         script_path: Path,
         *,
         timeout: int | None = None,
-        cancel_check: "Callable[[], bool] | None" = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> JoernResult:
         """Execute a .sc script file via the server.
 
@@ -589,7 +586,7 @@ class JoernServer:
         try:
             resp = client.post(url, json=payload)
             return resp.json()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — classified below by message
             if "timed out" in str(e).lower() or "timeout" in type(e).__name__.lower():
                 self._last_post_error = f"query timed out after {timeout}s"
             elif "connect" in str(e).lower() or "refused" in str(e).lower():
@@ -647,7 +644,7 @@ class JoernServer:
                 with _NO_PROXY_OPENER.open(req, timeout=10) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             return data.get("uuid") or data.get("id")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — submit is best-effort
             logger.debug("async query submit failed: %s", e)
             return None
 
@@ -667,7 +664,7 @@ class JoernServer:
             if data.get("success") is not None:
                 return data
             return None
-        except Exception:
+        except Exception:  # noqa: BLE001 — poll is best-effort
             return None
 
     def query_cancellable(
@@ -675,7 +672,7 @@ class JoernServer:
         cpgql: str,
         *,
         timeout: int | None = None,
-        cancel_check: "Callable[[], bool] | None" = None,
+        cancel_check: Callable[[], bool] | None = None,
         poll_interval: float = 2.0,
         validate: bool = True,
         check_length: bool = True,
@@ -880,8 +877,10 @@ class JoernServer:
             "import io.shiftleft.codepropertygraph.generated.nodes.CfgNode",
             "import scala.util.Try",
             f"val batchConfig = EngineConfig(maxCallDepth = {max_call_depth})",
-            "implicit val batchContext: EngineContext = "
-            "EngineContext(config = batchConfig)",
+            (
+                "implicit val batchContext: EngineContext = "
+                "EngineContext(config = batchConfig)"
+            ),
         ]
 
         for i, (src, sink) in enumerate(valid_pairs):
@@ -919,7 +918,7 @@ class JoernServer:
         content: str,
         *,
         timeout: int = 300,
-        cancel_check: "Callable[[], bool] | None" = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> JoernResult:
         if cancel_check is not None:
             return self.query_cancellable(
@@ -935,7 +934,7 @@ class JoernServer:
         *,
         timeout: int | None = None,
         lang_profile: Any | None = None,
-        cancel_check: "Callable[[], bool] | None" = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> JoernResult:
         """Run the tiered taint sweep with per-language tuning.
 
@@ -981,7 +980,7 @@ class JoernServer:
         method_names: list[str],
         *,
         timeout: int | None = None,
-        cancel_check: "Callable[[], bool] | None" = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, JoernMethodSummary]:
         """Run taint-rule, precondition, and return summaries for multiple methods.
 
@@ -1038,7 +1037,7 @@ class JoernServer:
     def pid(self) -> int | None:
         return self._proc.pid if self._proc else None
 
-    def __enter__(self) -> JoernServer:
+    def __enter__(self) -> Self:
         self.start()
         return self
 

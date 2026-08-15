@@ -558,3 +558,49 @@ class TestWarmupDataflow:
         assert "reachableBy" in query
         assert "__RAPTOR_WARMUP_NONEXISTENT__" in query
         assert "dataflowengineoss" in query
+
+
+class TestJoernServerIsolatedWorkspace:
+    """The server boots in a fresh temp cwd, never the caller's.
+
+    Joern loads every project in $CWD/workspace/ at startup; a corrupt
+    entry left by a killed run (overlays but no project.json) wedged
+    the REPL bridge before it bound the port — every subsequent boot
+    on the machine failed with "failed to start within 120s".
+    """
+
+    def test_start_uses_fresh_temp_cwd(self):
+        import os as _os
+        from unittest.mock import MagicMock, patch
+
+        srv = JoernServer()
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured.update(kwargs)
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_proc.poll.return_value = None
+            mock_proc.stderr = MagicMock()
+            mock_proc.wait = MagicMock()
+            return mock_proc
+
+        with (
+            patch("packages.joern.prereqs._java_version", return_value=25),
+            patch("packages.joern.server.subprocess.Popen",
+                  side_effect=fake_popen),
+            patch.object(srv, "_wait_for_ready", return_value=True),
+            patch.object(srv, "_warmup_imports"),
+        ):
+            srv.start()
+
+        workdir = captured.get("cwd")
+        assert workdir, "server must not inherit the caller's cwd"
+        assert workdir != _os.getcwd()
+        assert _os.path.isdir(workdir)
+        assert _os.path.basename(workdir).startswith("raptor-joern-ws-")
+
+        with patch("packages.joern.server.os.killpg",
+                   side_effect=ProcessLookupError):
+            srv.stop()
+        assert not _os.path.isdir(workdir), "stop() must clean the workdir"

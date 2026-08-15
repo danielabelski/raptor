@@ -17,9 +17,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -156,6 +158,7 @@ class JoernServer:
         self._http_client: Any | None = None
         self._last_post_error: str = ""
         self._restart_lock = threading.Lock()
+        self._workdir: str | None = None
 
     def start(self) -> None:
         """Boot the Joern server and wait for readiness."""
@@ -163,6 +166,17 @@ class JoernServer:
             return
 
         binary = _repl_bridge_path() or _joern_path() or "joern"
+
+        # Fresh, empty working directory per boot. Joern treats
+        # ``$CWD/workspace/`` as its project store and loads EVERY
+        # entry at startup — inheriting the caller's cwd (the RAPTOR
+        # repo) meant one corrupt entry left by a killed run (a
+        # ``cpg.binN/`` with overlays but no project.json) wedged the
+        # REPL bridge before it ever bound the port: every subsequent
+        # server boot on the machine failed with "failed to start
+        # within 120s". The workspace is incidental state (imports use
+        # absolute CPG paths), so give each server a disposable one.
+        self._workdir = tempfile.mkdtemp(prefix="raptor-joern-ws-")
 
         heap_flags: list[str] = []
         if self._heap_mb is not None:
@@ -199,6 +213,7 @@ class JoernServer:
                 text=True,
                 env=RaptorConfig.get_safe_env(),
                 start_new_session=True,
+                cwd=self._workdir,
             )
 
             if self._wait_for_ready():
@@ -321,6 +336,10 @@ class JoernServer:
         self._port = None
         self._base_url = None
         self._cpg_loaded = False
+
+        if self._workdir is not None:
+            shutil.rmtree(self._workdir, ignore_errors=True)
+            self._workdir = None
 
     def is_alive(self) -> bool:
         if self._proc is None or self._proc.poll() is not None:

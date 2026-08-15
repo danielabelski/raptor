@@ -8134,15 +8134,23 @@ def _sweep_validate(
     """
     review = outcome.review_result or {}
     hypothesis = _resolve_hypothesis(outcome)
-    raw_et = review.get("evidence_tool") or outcome.evidence_tool or ""
-    # Sanitize BEFORE the skip check. review["evidence_tool"] is the raw
-    # LLM string — the schema invites values like "semgrep", and a
-    # hallucinated tool name must trigger mechanical validation, not
-    # bypass it (the honest "llm" answer was being validated while the
-    # confident fabrication skipped the very sweep that would test it).
-    evidence_tool = _sanitize_llm_et(raw_et)
-    if _is_tool_confirmed(evidence_tool):
+    # Two evidence channels with different trust: outcome.evidence_tool
+    # is pipeline-controlled (llm_review sanitizes LLM-supplied values
+    # to llm-claimed:* before they land there; sweep/critique/dynamic
+    # stamps are genuine) — a confirmed stamp there legitimately skips
+    # re-validation. review["evidence_tool"] is the RAW LLM response:
+    # a hallucinated "semgrep" must trigger validation, never bypass
+    # it, so it is sanitized before any use. (Sanitizing the OUTCOME
+    # value too was a regression: sanitize_llm_evidence_tool
+    # namespaces unconditionally, so genuine stamps lost their
+    # refutation-gate protection whenever the live sweep didn't
+    # re-confirm.)
+    outcome_et = outcome.evidence_tool or ""
+    if _is_tool_confirmed(outcome_et):
         return outcome
+    evidence_tool = _sanitize_llm_et(
+        review.get("evidence_tool") or outcome_et,
+    )
 
     if not hypothesis:
         logger.info(
@@ -8464,15 +8472,23 @@ def _proactive_validate(
 
     dispatched = dispatched_tools or set()
 
-    raw_et = review.get("evidence_tool") or outcome.evidence_tool or ""
-    # Sanitize BEFORE the skip check. review["evidence_tool"] is the raw
-    # LLM string — the schema invites values like "semgrep", and a
-    # hallucinated tool name must trigger mechanical validation, not
-    # bypass it (the honest "llm" answer was being validated while the
-    # confident fabrication skipped the very sweep that would test it).
-    evidence_tool = _sanitize_llm_et(raw_et)
-    if _is_tool_confirmed(evidence_tool):
+    # Two evidence channels with different trust: outcome.evidence_tool
+    # is pipeline-controlled (llm_review sanitizes LLM-supplied values
+    # to llm-claimed:* before they land there; sweep/critique/dynamic
+    # stamps are genuine) — a confirmed stamp there legitimately skips
+    # re-validation. review["evidence_tool"] is the RAW LLM response:
+    # a hallucinated "semgrep" must trigger validation, never bypass
+    # it, so it is sanitized before any use. (Sanitizing the OUTCOME
+    # value too was a regression: sanitize_llm_evidence_tool
+    # namespaces unconditionally, so genuine stamps lost their
+    # refutation-gate protection whenever the live sweep didn't
+    # re-confirm.)
+    outcome_et = outcome.evidence_tool or ""
+    if _is_tool_confirmed(outcome_et):
         return outcome
+    evidence_tool = _sanitize_llm_et(
+        review.get("evidence_tool") or outcome_et,
+    )
 
     confirmed_tools = []
 

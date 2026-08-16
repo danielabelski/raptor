@@ -199,6 +199,83 @@ static int crypto_init(void)
         results = prep._extract_functions(src, "crypto.c")
         assert any(f["name"] == "crypto_init" for f in results)
 
+    def test_forward_decl_does_not_shadow_implementation(self) -> None:
+        """A forward declaration must not prevent the implementation
+        from being extracted — both should be returned."""
+        src = """\
+static int set_cmnd(void);
+static int create_flag(void);
+
+int
+set_cmnd(void)
+{
+    int x = 1;
+    if (x) {
+        x = 2;
+    }
+    return x;
+}
+"""
+        results = prep._extract_functions(src, "sudoers.c")
+        set_cmnd_entries = [f for f in results if f["name"] == "set_cmnd"]
+        assert len(set_cmnd_entries) >= 2, (
+            f"expected prototype + implementation, got {len(set_cmnd_entries)}"
+        )
+        bodies = [f for f in set_cmnd_entries if f.get("body")]
+        assert len(bodies) >= 1, "implementation body not extracted"
+        assert "x = 2" in bodies[0]["body"]
+
+    def test_forward_decl_with_attribute(self) -> None:
+        """A forward declaration with __attribute__ is kept alongside
+        the implementation."""
+        src = """\
+__attribute__((visibility("default"))) int do_work(int n);
+
+int
+do_work(int n)
+{
+    return n + 1;
+}
+"""
+        results = prep._extract_functions(src, "work.c")
+        do_work_entries = [f for f in results if f["name"] == "do_work"]
+        assert len(do_work_entries) >= 2
+        sigs = [f["signature"] for f in do_work_entries]
+        assert any("visibility" in s for s in sigs), (
+            "attribute from forward declaration not preserved"
+        )
+
+    def test_extern_forward_decl(self) -> None:
+        """extern forward declarations are matched."""
+        src = """\
+extern int handler(int sig);
+
+int
+handler(int sig)
+{
+    return sig + 1;
+}
+"""
+        results = prep._extract_functions(src, "signal.c")
+        entries = [f for f in results if f["name"] == "handler"]
+        assert len(entries) >= 2
+        assert any("extern" in f["signature"] for f in entries)
+
+    def test_declspec_forward_decl(self) -> None:
+        """__declspec(dllexport) forward declarations are matched."""
+        src = """\
+__declspec(dllexport) int api_init(void);
+
+int
+api_init(void)
+{
+    return 0;
+}
+"""
+        results = prep._extract_functions(src, "api.c")
+        entries = [f for f in results if f["name"] == "api_init"]
+        assert len(entries) >= 2
+
 
 # ------------------------------------------------------------------
 # Parameter type extraction with qualifiers

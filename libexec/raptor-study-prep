@@ -598,8 +598,19 @@ def _extract_doc_comment(source: str, pos: int) -> str:
 # Function extraction
 # ------------------------------------------------------------------
 
+# Attribute/declspec prefix: handles __attribute__((visibility("default"))),
+# __attribute__((format(printf, 1, 2))), __declspec(dllexport), extern, etc.
+# Two-level paren matching covers all common attribute forms.
+_ATTR_PREFIX = (
+    r"(?:__attribute__\s*\(\((?:[^()]*|\([^()]*\))*\)\)\s*)*"
+    r"(?:__declspec\s*\([^()]*\)\s*)?"
+    r"(?:extern\s+)?"
+)
+
 _C_FUNC_RE = re.compile(
-    r"^(?:static\s+)?(?:inline\s+)?(?:const\s+)?(?:unsigned\s+)?"
+    r"^" + _ATTR_PREFIX +
+    r"(?:static\s+)?(?:inline\s+)?(?:__\w+\s+)*"
+    r"(?:const\s+)?(?:unsigned\s+)?"
     r"(?:struct\s+\w+(?:\s+\*\s*|\s+)|enum\s+\w+\s+|union\s+\w+(?:\s+\*\s*|\s+)|"
     r"\w+(?:\s+\*\s*|\s+))"
     r"(\w+)\s*\(",
@@ -612,15 +623,19 @@ def _extract_functions(
     filepath: str,
     _nl_index: list[int] | None = None,
 ) -> list[dict]:
-    """Extract function definitions (name, line, signature, structural signals)."""
+    """Extract function definitions (name, line, signature, structural signals).
+
+    Returns ALL regex matches including forward declarations and
+    implementations of the same function — a forward declaration may
+    carry attributes or decorations absent from the implementation.
+    Downstream consumers (call graph, type index) use dict-last-wins
+    on name keys, so the implementation (with body) naturally takes
+    precedence.
+    """
     nl_index = _nl_index if _nl_index is not None else _build_newline_index(source)
     results = []
-    seen = set()
     for m in _C_FUNC_RE.finditer(source):
         name = m.group(1)
-        if name in seen:
-            continue
-        seen.add(name)
         line = _offset_to_line(nl_index, m.start())
         sig_end = source.find(")", m.end())
         sig = source[m.start():sig_end + 1] if sig_end != -1 else source[m.start():m.start() + 200]
@@ -1456,7 +1471,7 @@ def _build_study_items(
         )
         if not scoped and not has_content:
             continue
-        item_id = f"func_{f['name']}"
+        item_id = f"func_{f['name']}_{f['line']}"
         if item_id in seen_ids:
             continue
         seen_ids.add(item_id)

@@ -496,6 +496,19 @@ BLOCK_NONE`); if a response is still blocked, the block reason is surfaced in th
 error. Truncated native structured responses (output cut mid-JSON) are detected
 and raised rather than returned as silently-corrupt data.
 
+## HTTP Transport Tuning
+
+The in-process SDK transports (anthropic, openai, google-genai — all
+httpx-based) use a shared pooled-client factory (`core/llm/http_pool.py`)
+whose idle keepalive outlives the think-time gap between LLM calls.
+httpx's default pool expires idle connections after 5 seconds, so
+without this nearly every call re-establishes its connection — cheap on
+a direct network, but behind the egress chokepoint chained to a
+corporate proxy each re-establishment pays TCP + CONNECT negotiation
+per hop plus the TLS handshake. Defaults: 60 s keepalive, 20 pooled
+idle connections, 100 total. Tune with `RAPTOR_HTTP_KEEPALIVE_S`,
+`RAPTOR_HTTP_MAX_KEEPALIVE`, `RAPTOR_HTTP_MAX_CONNECTIONS`.
+
 ## Environment Variables Summary
 
 | Variable | Purpose |
@@ -518,3 +531,6 @@ and raised rather than returned as silently-corrupt data.
 | `RAPTOR_CC_EFFORT` / `RAPTOR_CC_FALLBACK_MODEL` | Claude Code child effort / fallback model |
 | `RAPTOR_CC_PROBE_WARM` | `0` skips the run-start probe warm |
 | `RAPTOR_LLM_CACHE_TTL_S` | LLM response cache TTL override (default 24 h) |
+| `RAPTOR_HTTP_KEEPALIVE_S` | SDK transport idle keepalive expiry (default 60) |
+| `RAPTOR_HTTP_MAX_KEEPALIVE` | SDK transport pooled idle connections (default 20) |
+| `RAPTOR_HTTP_MAX_CONNECTIONS` | SDK transport total connections (default 100) |

@@ -1246,24 +1246,26 @@ class OpenAICompatibleProvider(LLMProvider):
             self.client = make_openai_client(timeout=config.timeout)
             logger.debug("OpenAICompatibleProvider: routing via credential-isolation dispatcher")
         else:
-            _client_kwargs = {}
             # Loopback gateways (Ollama, vLLM, LM Studio): the SDK's
             # default httpx client honours proxy env (trust_env), so
             # on mandatory-proxy hosts whose NO_PROXY lacks loopback,
             # every localhost call detours through the corporate
             # proxy and fails. Pin a trust_env=False transport for
             # loopback bases; remote bases keep proxy-env behaviour.
+            # Both get the pooled transport (see core.llm.http_pool)
+            # so idle keepalive outlives the inter-call gap.
             from core.llm.egress import url_is_loopback
-            if config.api_base and url_is_loopback(config.api_base):
-                import httpx as _httpx
-                _client_kwargs["http_client"] = _httpx.Client(
-                    timeout=config.timeout, trust_env=False,
-                )
+            from core.llm.http_pool import sdk_http_client
+            _loopback = bool(
+                config.api_base and url_is_loopback(config.api_base)
+            )
             self.client = OpenAI(
                 api_key=config.api_key or "unused",
                 base_url=config.api_base,
                 timeout=config.timeout,
-                **_client_kwargs,
+                http_client=sdk_http_client(
+                    config.timeout, trust_env=not _loopback,
+                ),
             )
             logger.debug(
                 f"OpenAICompatibleProvider: direct SDK (no dispatcher) provider={config.provider}"
@@ -2067,9 +2069,16 @@ class AnthropicProvider(LLMProvider):
             self.client = make_anthropic_client(timeout=config.timeout)
             logger.debug("AnthropicProvider: routing via credential-isolation dispatcher")
         else:
+            from core.llm.http_pool import sdk_http_client
             self.client = anthropic.Anthropic(
                 api_key=config.api_key,
                 timeout=config.timeout,
+                # Pooled transport whose idle keepalive outlives the
+                # inter-call gap — the SDK default expires idle
+                # connections after 5s, forcing a reconnect (and,
+                # behind chained proxies, CONNECT negotiation per
+                # hop) on nearly every call. See core.llm.http_pool.
+                http_client=sdk_http_client(config.timeout),
             )
             logger.debug("AnthropicProvider: direct SDK (no dispatcher)")
 
@@ -2908,6 +2917,26 @@ def _attach_anthropic_cache_marker(message: dict[str, Any]) -> None:
     message["content"][-1] = last
 
 
+def _pooled_gemini_http_options(timeout: float):
+    """``HttpOptions`` carrying a pooled httpx client, or ``None``
+    when this google-genai version has no ``httpx_client`` injection
+    point.
+
+    Feature-detected rather than version-pinned: ``httpx_client`` is
+    the same field the dispatcher route relies on, but the direct
+    route must keep working (with the SDK's own transport) on
+    versions that predate it.
+    """
+    try:
+        from google.genai.types import HttpOptions
+    except ImportError:
+        return None
+    if "httpx_client" not in getattr(HttpOptions, "model_fields", {}):
+        return None
+    from core.llm.http_pool import sdk_http_client
+    return HttpOptions(httpx_client=sdk_http_client(timeout))
+
+
 class GeminiProvider(LLMProvider):
     """Native Google Gemini provider using the google-genai SDK.
 
@@ -2986,9 +3015,22 @@ class GeminiProvider(LLMProvider):
                 "credential-isolation dispatcher"
             )
         else:
-            new_client = _genai_module.Client(
-                api_key=self.config.api_key,
+            # Pooled transport whose idle keepalive outlives the
+            # inter-call gap (see core.llm.http_pool); falls back to
+            # the SDK's own transport when this google-genai version
+            # has no httpx_client injection point.
+            _http_options = _pooled_gemini_http_options(
+                self.config.timeout,
             )
+            if _http_options is not None:
+                new_client = _genai_module.Client(
+                    api_key=self.config.api_key,
+                    http_options=_http_options,
+                )
+            else:
+                new_client = _genai_module.Client(
+                    api_key=self.config.api_key,
+                )
             logger.debug(
                 "GeminiProvider: direct SDK (no dispatcher)"
             )

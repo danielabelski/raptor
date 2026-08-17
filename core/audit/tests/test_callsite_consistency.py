@@ -135,10 +135,13 @@ class TestDetectDeviations:
         src = textwrap.dedent("""\
             def a():
                 result = obj.validate(x)
+                use(result)
             def b():
                 result = other.validate(y)
+                use(result)
             def c():
                 result = third.validate(z)
+                use(result)
             def d():
                 something.validate(w)
         """)
@@ -166,19 +169,25 @@ class TestDetectDeviations:
         src = textwrap.dedent("""\
             def a():
                 result = frobnicate(x)
+                use(result)
             def b():
                 result = frobnicate(y)
+                use(result)
             def c():
                 result = frobnicate(z)
+                use(result)
             def d():
                 frobnicate(w)
 
             def e():
                 result = validate(1)
+                use(result)
             def f():
                 result = validate(2)
+                use(result)
             def g():
                 result = validate(3)
+                use(result)
             def h():
                 validate(4)
         """)
@@ -410,10 +419,13 @@ class TestIRISExtraSecurityNames:
         src = textwrap.dedent("""\
             def a():
                 result = frobnicate(x)
+                use(result)
             def b():
                 result = frobnicate(y)
+                use(result)
             def c():
                 result = frobnicate(z)
+                use(result)
             def d():
                 frobnicate(w)
         """)

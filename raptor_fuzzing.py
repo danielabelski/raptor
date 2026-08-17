@@ -957,7 +957,10 @@ Examples:
     # Store end-of-run strategy outcome through the canonical SAGE path.
     store_fuzzing_strategy_outcome(
         repo_path=str(binary_path.parent),
-        binary_fingerprint=sha256_file(binary_path)[:16],
+        # Reuse the fingerprint computed at campaign start — the binary
+        # has not changed, and re-hashing a large binary at end-of-run
+        # is pure overhead.
+        binary_fingerprint=binary_hash,
         strategy_id="default",
         duration_s=args.duration,
         execs=0,

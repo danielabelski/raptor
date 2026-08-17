@@ -136,6 +136,81 @@ class TestImportValidateEvidence:
         )
         assert not result.has_content
 
+    def test_project_sibling_target_path_key(self, tmp_path):
+        """Run manifests write "target_path", not the legacy "target"."""
+        target = tmp_path / "src"
+        target.mkdir()
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        sibling = project_dir / "exploitability-validation-20260710"
+        sibling.mkdir()
+        (sibling / ".raptor-run.json").write_text(
+            json.dumps({"target_path": str(target)})
+        )
+        _write_validate_findings(sibling)
+
+        audit_dir = project_dir / "audit_20260711"
+        audit_dir.mkdir()
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        assert result.has_content
+        assert "sibling" in result.source_command
+
+    def test_project_sibling_equivalent_path_spelling(self, tmp_path):
+        """Resolved comparison matches different spellings of one path."""
+        target = tmp_path / "src"
+        target.mkdir()
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        sibling = project_dir / "exploitability-validation-20260710"
+        sibling.mkdir()
+        (sibling / ".raptor-run.json").write_text(
+            json.dumps({"target_path": str(target)})
+        )
+        _write_validate_findings(sibling)
+
+        audit_dir = project_dir / "audit_20260711"
+        audit_dir.mkdir()
+
+        unresolved = project_dir / ".." / "src"
+        result = import_validate_evidence(
+            audit_dir, unresolved, project_dir=project_dir,
+        )
+        assert result.has_content
+
+    def test_global_out_anchored_to_raptor_dir(self, tmp_path, monkeypatch):
+        """The global out/ fallback must not depend on the process CWD."""
+        target = tmp_path / "src"
+        target.mkdir()
+
+        repo_root = tmp_path / "repo"
+        out_dir = repo_root / "out"
+        candidate = out_dir / "exploitability-validation-20260710"
+        candidate.mkdir(parents=True)
+        (candidate / ".raptor-run.json").write_text(
+            json.dumps({"target_path": str(target)})
+        )
+        _write_validate_findings(candidate)
+
+        audit_dir = tmp_path / "audit_20260711"
+        audit_dir.mkdir()
+
+        # CWD deliberately somewhere with no ./out
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setenv("RAPTOR_DIR", str(repo_root))
+
+        result = import_validate_evidence(audit_dir, target)
+        assert result.has_content
+        assert "global" in result.source_command
+
 
 class TestImportAuditEvidence:
     def test_project_sibling(self, tmp_path):

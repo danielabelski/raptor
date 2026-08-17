@@ -5,19 +5,23 @@ its Stage E feasibility verdicts and runtime evidence rather than
 re-analysing the binary.  The reverse direction also works: /audit
 Layer 0 findings and taint flows feed /validate's Stage A/C.
 
-Search order for sibling output (same as understand_bridge):
+Search order for sibling output (similar to understand_bridge):
   1. Co-located (same output directory — shared --out)
   2. Project siblings (same project, different run type)
-  3. Global out/ by target path + SHA-256 freshness
+  3. Global out/ by target path match (newest name first)
 
-No binary is analysed twice — the first command to touch it caches
-results by build-ID; subsequent commands consume the cache.
+Unlike understand_bridge there is NO freshness check: candidates
+match purely on target path, so a run against an older checkout of
+the same path is imported as current evidence. A build-ID keyed
+cache exists (core/audit/build_id_cache.py) but is not wired into
+this flow — binaries may be re-analysed across commands.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -156,7 +160,17 @@ def _check_target_match(
     if not checklist:
         manifest = _load_json(candidate_dir / ".raptor-run.json")
         if manifest:
-            return str(target_path) == manifest.get("target", "")
+            # Run manifests write "target_path" (core/run/metadata.py);
+            # "target" is the legacy key. Resolve both sides so
+            # equivalent spellings of the same path still match —
+            # same pattern as strategy_stats/binary_bridge.
+            sibling_target = manifest.get("target_path") or manifest.get("target", "")
+            if not sibling_target:
+                return False
+            try:
+                return Path(sibling_target).resolve() == target_path.resolve()
+            except OSError:
+                return False
         return False
 
     return checklist.get("target", "") == str(target_path)
@@ -218,8 +232,10 @@ def import_validate_evidence(
                 logger.debug("bridge: found project sibling at %s", sibling)
                 return result
 
-    # 3. Global out/
-    out_dir = Path("out")
+    # 3. Global out/ — anchored to the repo root via RAPTOR_DIR so the
+    #    fallback doesn't silently depend on the process CWD (workers
+    #    may be spawned with the target as cwd).
+    out_dir = Path(os.environ["RAPTOR_DIR"]) / "out"
     if out_dir.is_dir():
         for candidate in sorted(out_dir.iterdir(), reverse=True):
             if not candidate.is_dir():
@@ -272,8 +288,8 @@ def import_audit_evidence(
             if sibling.is_dir() and sibling.name.startswith("audit_"):
                 search_dirs.append(sibling)
 
-    # 3. Global out/
-    out_dir = Path("out")
+    # 3. Global out/ — RAPTOR_DIR-anchored, see import_validate_evidence
+    out_dir = Path(os.environ["RAPTOR_DIR"]) / "out"
     if out_dir.is_dir():
         for candidate in sorted(out_dir.iterdir(), reverse=True):
             if candidate.is_dir() and candidate.name.startswith("audit_"):

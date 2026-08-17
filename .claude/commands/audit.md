@@ -20,7 +20,9 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 /audit <target_path> [--strategy <name>] [--budget <N>] [--scope <dir>] [--out <dir>]
        [--codeql-db <path>] [--max-cost <USD>] [--max-time <seconds>]
        [--review-passes <N>] [--subsystem-depth <N>] [--batch-sloc-threshold <N>]
-       [--max-propagation-depth <N>] [--adversarial]
+       [--include-kinds <list>] [--max-propagation-depth <N>] [--adversarial]
+       [--no-verdict-reuse] [--schedule {cost,priority}] [--dynamic | --no-dynamic]
+       [--binary <path> ...] [--binary-auto] [--no-binary-oracle]
        [--annotations-dir <path>] [--no-validate] [--model <name> ...]
 ```
 
@@ -35,7 +37,12 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--review-passes <N>` — independent review passes per function for self-consistency (default: 1)
 - `--subsystem-depth <N>` — directory grouping depth for subsystem-ordered review (default: 0)
 - `--batch-sloc-threshold <N>` — functions at or under N SLOC are batched per file into combined reviews (default: 15; 0 disables). Raise on codebases dense with tiny accessors/wrappers to cut per-call overhead
-- `--annotations-dir <path>` — annotations directory for team workflows or cross-run review (default: `$OUTPUT_DIR/annotations`)
+- `--include-kinds <list>` — comma-separated extra item kinds to review beyond functions/methods: `top_level`, `macro`, `global` (default: none)
+- `--no-verdict-reuse` — disable cross-run verdict reuse (importing prior-run journal verdicts for functions whose source is unchanged)
+- `--schedule {cost,priority}` — parallel review ordering: `cost` packs predicted-longest reviews first (shortest wall time), `priority` reviews the most promising functions first (fastest first finding)
+- `--dynamic` / `--no-dynamic` — enable/disable dynamic validation (Frida observation / target execution) for confirmed findings; `--no-dynamic` also overrides the project's `dynamic` trust marker
+- `--binary <path>` — debug binary for binary-oracle enrichment (repeatable); `--binary-auto` auto-detects under common build dirs; `--no-binary-oracle` disables the oracle for this run
+- `--annotations-dir <path>` — annotations directory for team workflows or cross-run review (default: project-level `annotations/` for lifecycle runs, else `$OUTPUT_DIR/annotations`)
 - `--no-validate` — skip the /validate post-pass (not recommended)
 - `--model <name>` — model ID (repeatable for multi-model consensus; first model used for lifecycle)
 - `--adversarial` — enable adversarial reviewer that challenges positive verdicts (requires `--model` x2+)
@@ -85,7 +92,7 @@ If the operator passed `--scope`, still map the full target (the map covers the 
 libexec/raptor-audit run "$TARGET_PATH" --out "$OUTPUT_DIR"
 ```
 
-Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`).
+Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`, `--include-kinds`, `--no-verdict-reuse`, `--schedule`, `--dynamic`, `--no-dynamic`, `--binary`, `--binary-auto`, `--no-binary-oracle`).
 
 The orchestrator handles everything from here: gap computation, context assembly, LLM review, tool chain dispatch, Joern background build, sweep validation, constraint propagation, Mode 2 checker synthesis, /validate post-pass, report generation, and lifecycle completion.
 
@@ -106,14 +113,14 @@ When the orchestrator completes, read and print the summary from `$OUTPUT_DIR/au
    b. LLM review: form hypotheses about assumptions and violations
    c. Generate mechanical tests (Semgrep/Coccinelle/CodeQL/SMT)
    d. Run tests via tool chain dispatch → evaluate results
-   e. Write annotation (what was tested, tool evidence)
+   e. Record journal entry (what was tested, tool evidence)
    f. Record status (clean/suspicious/finding/error/dormant)
    g. If pattern has variants: generate codebase-wide checker (Mode 2)
 4. Joern CPG builds in background, drains when ready for dataflow re-review
 5. Constraint propagation across related functions
 6. Sweep validation to confirm tool-backed evidence
 7. Tool-grounded critique: identifies gaps, generates additional tool invocations
-8. Report: coverage-audit.json + findings.json + summary
+8. Report: review-journal.jsonl + findings.json + summary
 9. /validate post-pass on findings (unless --no-validate)
 ```
 
@@ -127,7 +134,10 @@ These tools are available for hypothesis validation. The orchestrator invokes th
 | **Coccinelle** | `raptor-audit sweep --tool coccinelle --rule-file rule.cocci --file F --function FN --out $DIR --target $T` | Inconsistency detection, variant sweep |
 | **CodeQL** | `raptor-audit sweep --tool codeql --rule-file query.ql --file F --function FN --out $DIR --target $T [--codeql-db $DB]` | Dataflow validation |
 | **SMT** | `raptor-audit sweep --tool smt --smt-verb check-overflow --smt-args '{"var":"len","type":"int32","op":"len*size","bound":"4294967295"}' --file F --function FN --out $DIR` | Arithmetic/bounds/path feasibility |
-| **Joern** | CPG-based dataflow queries (background build, drain on ready) | Complex dataflow reachability |
+| **Joern** | CPG-based dataflow queries (background build, drain on ready; guard-dominance and flow-reachability channels; not a `sweep --tool` choice) | Complex dataflow reachability |
+| **Compiler analyzers** | Orchestrator channel: gcc `-fanalyzer` / clang `--analyze` verification sweep over hypothesis TUs | Mechanical corroboration of memory/null-deref hypotheses |
+| **Expanded-view Semgrep** | Orchestrator channel: rules re-run over fidelity-3 preprocessor-expanded C/C++ views | Macro-hidden sinks |
+| **Git history** | Orchestrator channel: prior security fixes touching the function (corroboration only, never a verdict) | Bug-class recurrence |
 
 **SMT verbs:** `check-overflow`, `check-oob`, `check-null-deref`, `check-overflow-to-oob`, `check-negative-bypass`, `validate-path`
 
@@ -149,7 +159,7 @@ libexec/raptor-audit record --out "$OUTPUT_DIR" --file <file> --function <name> 
 libexec/raptor-audit record --out "$OUTPUT_DIR" --file <file> --function <name> --status finding --hypothesis "testable claim" --evidence-tool semgrep --vuln-type buffer_overflow --body "what was tested and tool output"
 ```
 
-Line numbers auto-resolve from the checklist. `--evidence-tool`: semgrep|coccinelle|codeql|smt|compilation. `--vuln-type`: sql_injection|buffer_overflow|path_traversal|xss|command_injection|use_after_free|etc.
+Line numbers auto-resolve from the checklist. `--evidence-tool`: semgrep|coccinelle|codeql|smt|compilation|compiler|joern|dark_verify:confirmed|dark_verify:refuted|dynamic:crash|dynamic:sanitizer|frida:runtime. `--vuln-type`: sql_injection|buffer_overflow|path_traversal|xss|command_injection|use_after_free|etc.
 
 ## Automatic /validate post-pass
 
@@ -167,10 +177,12 @@ Import validation results to close the Reflexion loop:
 libexec/raptor-audit feedback --validation-report <validate-out>/findings.json --annotations-dir "$OUTPUT_DIR/annotations" --audit-out "$OUTPUT_DIR"
 ```
 
-- **Disproven findings** → annotation downgraded to `clean` with reason
-- **Missed vulnerabilities** → annotation upgraded to `finding`
-- **Corroborated findings** → confirmation appended, no status change
-- Human annotations (`source=human`) are never modified
+Corrections append fresh review-journal entries (carrying the prior verdict and lesson) — nothing is rewritten in place:
+
+- **Disproven findings** → correction entry downgrading to `clean` with reason
+- **Missed vulnerabilities** → correction entry upgrading to `finding`
+- **Corroborated findings** → confirmation entry, no status change
+- Human annotations (`source=human`) are never modified — they veto feedback for their function entirely
 
 ### Staleness check
 
@@ -208,8 +220,10 @@ OUTPUT_DIR=/path/to/out libexec/raptor-audit gaps --out /path/to/out
 
 ## Output
 
-- `$OUTPUT_DIR/annotations/<source_path>.md` — per-function review prose
-- `$OUTPUT_DIR/coverage-audit.json` — per-function status + hash
+- `$OUTPUT_DIR/review-journal.jsonl` — per-function review decisions (status, hypotheses, tools, cost)
 - `$OUTPUT_DIR/findings.json` — findings in standard format (→ `/validate`)
 - `$OUTPUT_DIR/gaps.json` — gap list used for this run
 - `$OUTPUT_DIR/.audit-log.jsonl` — full audit trail (context/sweep/record/feedback actions)
+- `$OUTPUT_DIR/cost-breakdown.json` — per-consumer cost ledger reconciliation
+- `$OUTPUT_DIR/llm-telemetry.jsonl` — per-call LLM telemetry
+- `annotations/<source_path>.md` — human-written per-function notes (project-level; never written by the LLM)

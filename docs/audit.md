@@ -42,7 +42,7 @@ full flag table.
 |------|-------------|
 | `--strategy <name>` | Filter to one strategy: general, input_handling, concurrency, memory, auth, crypto, aliasing |
 | `--budget <N>` | Maximum functions to review (default: all gaps) |
-| `--scope <dir>` | Restrict to a subdirectory (successive scoped runs accumulate) |
+| `--scope <dir>` | Restrict to a subdirectory (repeatable; successive scoped runs accumulate) |
 | `--out <dir>` | Output directory |
 | `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep |
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
@@ -53,6 +53,13 @@ full flag table.
 | `--model <name>` | Model ID (repeatable for multi-model consensus) |
 | `--adversarial` | Adversarial reviewer that challenges positive verdicts (requires `--model` x2+) |
 | `--no-validate` | Skip the /validate post-pass |
+| `--include-kinds <list>` | Extra item kinds to review beyond functions/methods: `top_level`, `macro`, `global` |
+| `--batch-sloc-threshold <N>` | Batch functions at or under this SLOC per file into combined reviews (default: 15; 0 disables) |
+| `--no-verdict-reuse` | Disable cross-run verdict reuse (importing prior-run journal verdicts for unchanged functions) |
+| `--schedule {cost,priority}` | Parallel review ordering: `cost` packs predicted-longest reviews first, `priority` reviews most promising first |
+| `--dynamic` / `--no-dynamic` | Enable/disable dynamic validation (Frida observation / target execution) for confirmed findings |
+| `--binary <path>` / `--binary-auto` / `--no-binary-oracle` | Binary-oracle reachability enrichment of the inventory |
+| `--annotations-dir <dir>` | Annotations directory (default: project-level `annotations/`, falling back to `<out>/annotations`) |
 
 
 ## Pipeline
@@ -66,14 +73,14 @@ full flag table.
    b. LLM review: form hypotheses about assumptions and violations
    c. Generate mechanical tests (Semgrep/Coccinelle/CodeQL/SMT rules)
    d. Run tests via tool chain dispatch → evaluate results
-   e. Write annotation (what was tested, tool evidence)
+   e. Record journal entry (what was tested, tool evidence)
    f. Record status (clean / suspicious / finding / error / dormant)
    g. If pattern has variants: generate codebase-wide checker (Mode 2)
 4. Joern CPG builds in background, drains when ready for dataflow re-review
 5. Constraint propagation across related functions
 6. Sweep validation to confirm tool-backed evidence
 7. Tool-grounded critique: identifies gaps, generates additional tool invocations
-8. Report: coverage-audit.json + findings.json + summary
+8. Report: review-journal.jsonl + findings.json + summary
 9. /validate post-pass on findings (unless --no-validate)
 ```
 
@@ -118,25 +125,30 @@ alongside the target code.
 
 ## Tool Menu
 
-All tool invocations run through `libexec/raptor-audit sweep` so results
-are logged to the audit trail automatically.
+Semgrep, Coccinelle, CodeQL, SMT, and compilation invocations run through
+`libexec/raptor-audit sweep` so results are logged to the audit trail
+automatically.  Joern, the compiler analyzers, the expanded-view Semgrep
+pass, and the git-history oracle run as orchestrator channels.
 
 | Tool | What it validates | Example use |
 |------|-------------------|-------------|
 | **Semgrep** | Pattern matching, missing checks | "Return value of `read()` is used without checking for -1" |
-| **Coccinelle** | Inconsistency detection, variant sweep | "Other call sites check error, this one doesn't" |
+| **Coccinelle** | Inconsistency detection, variant sweep; flow-sensitive per-hypothesis rules | "Other call sites check error, this one doesn't" |
 | **CodeQL** | Dataflow reachability | "Tainted input reaches `execv()` without sanitisation" |
 | **SMT** | Arithmetic/bounds/path feasibility | "Integer overflow when `len * size > UINT32_MAX`" |
-| **Joern** | Complex dataflow, indirect calls | "Callback registered at A reaches sink at B" |
+| **Joern** | Complex dataflow, indirect calls; guard-dominance and flow-reachability channels | "Callback registered at A reaches sink at B" |
+| **Compiler analyzers** | Mechanical verification sweep (gcc `-fanalyzer` / clang `--analyze`) over hypothesis TUs | "Analyzer confirms the null-deref path the hypothesis names" |
+| **Expanded-view Semgrep** | Re-runs rules over fidelity-3 preprocessor-expanded views of macro-heavy C/C++ | "Sink hidden behind a macro expansion" |
+| **Git history** | Corroboration only -- prior security fixes touching the function (never a verdict by itself) | "This function was patched for the same bug class before" |
 
 ### SMT verbs
 
 | Verb | CWE | What it checks |
 |------|-----|----------------|
 | `check-overflow` | CWE-190 | Integer overflow in arithmetic expressions |
-| `check-oob` | CWE-119/122 | Out-of-bounds access given buffer size and index |
+| `check-oob` | CWE-125/787 | Out-of-bounds access given buffer size and index |
 | `check-null-deref` | CWE-476 | Null dereference reachability |
-| `check-overflow-to-oob` | CWE-190→122 | Overflow feeding a buffer index |
+| `check-overflow-to-oob` | CWE-680 | Overflow feeding a buffer index |
 | `check-negative-bypass` | CWE-839 | Signed comparison bypass with negative values |
 | `validate-path` | Various | Branch condition satisfiability along a dataflow path |
 
@@ -148,9 +160,9 @@ Every finding must pass these gates before it can be emitted:
 | Gate | Rule |
 |------|------|
 | **G1 Hypothesis-first** | Every suspicion framed as a testable hypothesis before any finding is emitted |
-| **G2 Tool-grounded** | At least one mechanical validation (Semgrep, CodeQL, Coccinelle, SMT, compilation) |
+| **G2 Tool-grounded** | At least one mechanical validation (Semgrep, CodeQL, Coccinelle, SMT, compilation, compiler analyzers, Joern, dark-verify, dynamic) |
 | **G3 No self-critique loop** | Iteration without tool feedback is prohibited |
-| **G4 Evidence in annotation** | Annotation body includes tool names and results |
+| **G4 Evidence recorded** | Journal entry includes tool names and results |
 | **G5 Read-first** | Code read with the Read tool before any hypothesis is formed |
 | **G6 Assumption-trust** | For every function, identify what it trusts and what happens when violated |
 | **G7 Reachability** | Findings must be reachable -- zero callers AND binary oracle `absent` forces `dormant` |
@@ -179,8 +191,11 @@ generates a codebase-wide checker:
 
 1. Abstract the pattern from the specific finding
 2. Generate a Semgrep or Coccinelle rule
-3. Run it across the entire codebase
-4. Each match is a new candidate to review
+3. Validate the rule with dual control: a positive fixture it must match
+   and a negative control it must not (over-broad rules are refuted and
+   refined iteratively)
+4. Run it across the entire codebase
+5. Each match is a new candidate to review
 
 This is the KNighter pattern: one hypothesis → sweep the whole codebase.
 Rules are stored in the project's rule library and can be replayed across
@@ -198,9 +213,11 @@ libexec/raptor-audit feedback --validation-report <dir>/findings.json \
     --annotations-dir "$OUTPUT_DIR/annotations" --audit-out "$OUTPUT_DIR"
 ```
 
-Disproven findings are downgraded to `clean`; missed vulnerabilities are
-upgraded to `finding`; corroborated findings get confirmation appended.
-Human annotations (`source=human`) are never modified.
+Corrections are appended as fresh review-journal entries (with the prior
+verdict and lesson recorded): disproven findings are downgraded to `clean`,
+missed vulnerabilities are upgraded to `finding`, corroborated findings get
+a confirmation entry.  Nothing is rewritten in place, and human annotations
+(`source=human`) veto feedback for their function entirely.
 
 ### Staleness check
 
@@ -239,12 +256,13 @@ Query audit state across all four layers:
 
 | File | Contents |
 |------|----------|
-| `annotations/<source_path>.md` | Per-function review prose with tool evidence |
-| `coverage-audit.json` | Per-function status and source hash |
+| `annotations/<source_path>.md` | Human-written per-function notes (read as review context; never written by the LLM) |
 | `findings.json` | Findings in standard format (fed to `/validate`) |
 | `gaps.json` | Gap list used for this run |
 | `.audit-log.jsonl` | Full audit trail |
 | `review-journal.jsonl` | Per-function review decisions (strategies, hypotheses, tools, cost) |
+| `cost-breakdown.json` | Per-consumer cost ledger reconciliation |
+| `llm-telemetry.jsonl` | Per-call LLM telemetry |
 | `audit-report.json` | Summary report |
 
 

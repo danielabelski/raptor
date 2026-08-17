@@ -717,3 +717,68 @@ int check(int x) {
 }
 """)
         assert len(self._hits(r)) == 0
+
+
+class TestKernelVocabViaPack:
+    """The kernel API bulk reaches the prefilter via the vocab pack.
+
+    _DANGEROUS_C_APIS keeps only the classic kernel core (kmalloc /
+    kzalloc / kfree / copy_from_user / copy_to_user); the kv* / devm_*
+    and __copy/_copy_iter variants come from the linux_kernel pack
+    through domain_vocab.
+    """
+
+    def _run(self, source, callees=None, vocab=None):
+        from core.audit.prefilter import run_prefilter
+
+        return run_prefilter(
+            target_path=Path("/tmp"),
+            file_path="drv.c",
+            function_name="f",
+            source=source,
+            callees=callees,
+            domain_vocab=vocab,
+        )
+
+    def test_seed_core_still_hardcoded(self):
+        src = "int f(void){ p = kmalloc(8, GFP_KERNEL); copy_from_user(d, s, n); kfree(p); return 0; }"
+        r = self._run(src)
+        assert r.has_dangerous_apis
+
+    def test_pack_tier_names_need_vocab(self):
+        src = (
+            "int f(void){\n"
+            "    p = devm_kzalloc(dev, 8, GFP_KERNEL);\n"
+            "    _copy_from_iter(p, n, iter);\n"
+            "    return 0;\n"
+            "}"
+        )
+        assert not self._run(src).has_dangerous_apis
+
+        from core.audit.vocab_packs import load_pack
+
+        r = self._run(src, vocab=load_pack("linux_kernel"))
+        assert r.has_dangerous_apis
+
+    def test_boundary_transfers_flow_through_vocab_union(self):
+        from core.audit.condition_smt import DomainVocabulary
+
+        vocab = DomainVocabulary(
+            boundary_transfers=frozenset({"acme_copy_in"}),
+            nullable_returns=frozenset({"acme_find_port"}),
+        )
+        src = "int f(void){ acme_copy_in(dst, src, n); return 0; }"
+        assert not self._run(src).has_dangerous_apis
+        assert self._run(src, vocab=vocab).has_dangerous_apis
+
+    def test_pack_callee_marks_dangerous(self):
+        from core.audit.vocab_packs import load_pack
+
+        src = "int f(struct x *x){ int v = x->a; helper(x); return v; }"
+        callees = [{"name": "kvfree_rcu"}]
+        seeds_only = self._run(src, callees=callees)
+        with_pack = self._run(
+            src, callees=callees, vocab=load_pack("linux_kernel"),
+        )
+        assert not seeds_only.has_dangerous_apis
+        assert with_pack.has_dangerous_apis

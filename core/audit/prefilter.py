@@ -19,23 +19,25 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ._util import safe_join
 
 logger = logging.getLogger(__name__)
 
+# Universal libc/POSIX surface plus a marked kernel SEED core
+# (kmalloc/kzalloc/kfree exemplars + the classic copy_from_user /
+# copy_to_user boundary). The kernel API bulk (kv*/devm_* allocators,
+# __copy_*_user / _copy_*_iter variants, ...) is served by the
+# linux_kernel vocab pack through domain_vocab below — do not grow the
+# kernel subset here; teach the study loop / pack instead.
 _DANGEROUS_C_APIS = frozenset({
     "strcpy", "strcat", "sprintf", "gets", "scanf", "vsprintf",
     "memcpy", "memmove", "memset",
     "strncpy", "strncat", "snprintf",
     "malloc", "calloc", "realloc", "free",
-    "kmalloc", "kzalloc", "kvmalloc", "vmalloc",
-    "kfree", "kfree_rcu", "kvfree", "kvfree_rcu",
-    "vfree", "krealloc", "devm_kzalloc",
+    "kmalloc", "kzalloc", "kfree",
     "copy_from_user", "copy_to_user",
-    "__copy_from_user", "__copy_to_user",
-    "_copy_from_iter", "_copy_to_iter",
     "fopen", "open", "read", "write", "recv", "send",
     "execve", "system", "popen",
     "atoi", "atol", "atof", "strtol", "strtoul",
@@ -383,7 +385,7 @@ class PrefilterResult:
     function: str
     skip_llm: bool = False
     skip_reason: str = ""
-    hits: List[PrefilterHit] = field(default_factory=list)
+    hits: list[PrefilterHit] = field(default_factory=list)
     has_dangerous_apis: bool = False
     has_pointer_ops: bool = False
     has_array_access: bool = False
@@ -430,11 +432,11 @@ def run_prefilter(
     source: str,
     line_start: int = 0,
     line_end: int = 0,
-    callers: Optional[List[Dict[str, Any]]] = None,
-    callees: Optional[List[Dict[str, Any]]] = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    callers: list[dict[str, Any]] | None = None,
+    callees: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
     sink_unreachable: bool = False,
-    project_sinks: Optional[frozenset] = None,
+    project_sinks: frozenset | None = None,
     domain_vocab: Any = None,
 ) -> PrefilterResult:
     """Run mechanical pre-filter on a single function.
@@ -455,6 +457,10 @@ def run_prefilter(
         extra_dangerous = (
             getattr(domain_vocab, "allocators", frozenset())
             | getattr(domain_vocab, "deallocators", frozenset())
+            | getattr(domain_vocab, "boundary_transfers", frozenset())
+            | getattr(domain_vocab, "nullable_returns", frozenset())
+            | getattr(domain_vocab, "refcount_gets", frozenset())
+            | getattr(domain_vocab, "refcount_puts", frozenset())
         )
         extra_concurrency = (
             getattr(domain_vocab, "lock_acquires", frozenset())
@@ -506,13 +512,12 @@ def run_prefilter(
             result.skip_llm = True
             result.skip_reason = wrapper_reason
 
-    if not result.skip_llm and sink_unreachable:
-        if _is_sink_unreachable_clean(
-            result, source, sloc,
-            extra_concurrency=extra_concurrency,
-        ):
-            result.skip_llm = True
-            result.skip_reason = "no sink path + no logic-class signals"
+    if not result.skip_llm and sink_unreachable and _is_sink_unreachable_clean(
+        result, source, sloc,
+        extra_concurrency=extra_concurrency,
+    ):
+        result.skip_llm = True
+        result.skip_reason = "no sink path + no logic-class signals"
 
     return result
 
@@ -520,9 +525,9 @@ def run_prefilter(
 def _is_trivially_clean(
     result: PrefilterResult,
     source: str,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
-    metadata: Optional[Dict[str, Any]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
+    metadata: dict[str, Any] | None,
     *,
     extra_dangerous: frozenset = frozenset(),
 ) -> bool:
@@ -583,9 +588,9 @@ _WRAPPER_PTR_ARITH_RE = re.compile(
 def _is_trivial_wrapper(
     source: str,
     lang: str,
-    callees: Optional[List[Dict[str, Any]]],
+    callees: list[dict[str, Any]] | None,
     *,
-    project_sinks: Optional[frozenset] = None,
+    project_sinks: frozenset | None = None,
     extra_dangerous: frozenset = frozenset(),
 ) -> tuple[bool, str]:
     """Detect thin wrapper functions that delegate entirely to one callee.
@@ -623,7 +628,7 @@ def _is_trivial_wrapper(
         body_no_sig = body_no_sig.strip()
     elif lang == "python":
         for i, ln in enumerate(code_lines):
-            if ln.startswith("def ") or ln.startswith("async def "):
+            if ln.startswith(("def ", "async def ")):
                 body_no_sig = " ".join(code_lines[i + 1:])
                 break
 
@@ -776,10 +781,7 @@ def _is_sink_unreachable_clean(
     if re.search(r"==\s*(0x[0-9a-fA-F]+|[4-5]\d{2})\b", source):
         return False
 
-    if _has_integer_arithmetic(source):
-        return False
-
-    return True
+    return not _has_integer_arithmetic(source)
 
 
 def _is_simple_accessor(source: str, lang: str) -> bool:
@@ -875,8 +877,8 @@ def _check_c_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
     *,
     extra_dangerous: frozenset = frozenset(),
 ) -> None:
@@ -968,8 +970,9 @@ def _check_c_patterns(
                 severity="warning",
             ))
 
-        if re.search(r'\batoi\s*\(|\batol\s*\(', stripped):
-            if not re.search(r'if\s*\(', stripped):
+        if re.search(r'\batoi\s*\(|\batol\s*\(', stripped) and not re.search(
+            r'if\s*\(', stripped,
+        ):
                 result.hits.append(PrefilterHit(
                     rule_id="atoi-unchecked",
                     message="atoi/atol does not report errors — use strtol with errno check",
@@ -1000,7 +1003,7 @@ _ASSIGN_IN_COND_RE = re.compile(
     r"(?!\s*\()"
     r"(\w+)\s*=\s*"
     r"(0|1|NULL|nil|None|false|true|-1)\s*\)",
-    re.I,
+    re.IGNORECASE,
 )
 
 _ASSIGN_IN_COND_INTENTIONAL_RE = re.compile(
@@ -1017,7 +1020,7 @@ def _check_c_assign_in_cond(
     """Detect assignment-in-conditional with a constant (CWE-480/481)."""
     for i, line in enumerate(source.splitlines(), start=line_start):
         stripped = line.strip()
-        if stripped.startswith("//") or stripped.startswith("*"):
+        if stripped.startswith(("//", "*")):
             continue
         if _ASSIGN_IN_COND_INTENTIONAL_RE.search(stripped):
             continue
@@ -1084,7 +1087,7 @@ def _check_c_use_after_free(
     whether they are dereferenced or freed again afterwards.
     """
     lines = source.splitlines()
-    freed_vars: Dict[str, int] = {}
+    freed_vars: dict[str, int] = {}
 
     for i, line in enumerate(lines, start=line_start):
         stripped = line.strip()
@@ -1106,17 +1109,7 @@ def _check_c_use_after_free(
             continue
 
         for var, free_line in list(freed_vars.items()):
-            if re.search(rf'\b{re.escape(var)}\s*->', stripped):
-                result.hits.append(PrefilterHit(
-                    rule_id="use-after-free",
-                    message=(
-                        f"'{var}' freed at line {free_line}, "
-                        f"dereferenced at line {i}"
-                    ),
-                    line=i,
-                    severity="error",
-                ))
-            elif re.search(rf'\*\s*{re.escape(var)}\b', stripped):
+            if re.search(rf'\b{re.escape(var)}\s*->', stripped) or re.search(rf'\*\s*{re.escape(var)}\b', stripped):
                 result.hits.append(PrefilterHit(
                     rule_id="use-after-free",
                     message=(
@@ -1136,9 +1129,8 @@ def _check_c_use_after_free(
             if re.search(
                 rf'\b{re.escape(var)}\s*(?<![!<>+\-*/&|^%=])=(?!=)\s*',
                 stripped,
-            ):
-                if not re.search(r'\bfree\s*\(', stripped):
-                    del freed_vars[var]
+            ) and not re.search(r'\bfree\s*\(', stripped):
+                del freed_vars[var]
 
 
 def _check_c_toctou(
@@ -1204,9 +1196,9 @@ def _check_c_post_loop_oob(
         r'(?!\s*[-+*/])',
     )
     brace_depth = 0
-    loop_index_var: Optional[str] = None
-    loop_cap_var: Optional[str] = None
-    loop_line: Optional[int] = None
+    loop_index_var: str | None = None
+    loop_cap_var: str | None = None
+    loop_line: int | None = None
     in_loop = False
     loop_brace_depth = 0
     braceless_body = False
@@ -1273,8 +1265,8 @@ def _check_python_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Python source for known vulnerability patterns."""
     callee_names = set()
@@ -1286,28 +1278,29 @@ def _check_python_patterns(
     for i, line in enumerate(source.splitlines(), start=line_start):
         stripped = line.strip()
 
-        if re.search(r'\bos\.path\.join\b', stripped):
-            if not re.search(
-                r'os\.path\.realpath|os\.path\.abspath|'
-                r'\.startswith\(|resolve\(\)',
-                source,
-            ):
-                result.hits.append(PrefilterHit(
-                    rule_id="path-join-no-containment",
-                    message=(
-                        "os.path.join without path containment check "
-                        "(realpath/startswith) — path traversal risk"
-                    ),
-                    line=i,
-                    severity="warning",
-                ))
+        if re.search(r'\bos\.path\.join\b', stripped) and not re.search(
+            r'os\.path\.realpath|os\.path\.abspath|'
+            r'\.startswith\(|resolve\(\)',
+            source,
+        ):
+            result.hits.append(PrefilterHit(
+                rule_id="path-join-no-containment",
+                message=(
+                    "os.path.join without path containment check "
+                    "(realpath/startswith) — path traversal risk"
+                ),
+                line=i,
+                severity="warning",
+            ))
 
-        if re.search(r'\bopen\s*\(', stripped):
-            if re.search(r'os\.path\.join|user|request|param|filename', source):
-                if not re.search(
+        if (re.search(r'\bopen\s*\(', stripped)
+                and re.search(
+                    r'os\.path\.join|user|request|param|filename', source,
+                )
+                and not re.search(
                     r'os\.path\.realpath|\.startswith\(|resolve\(\)',
                     source,
-                ):
+                )):
                     result.hits.append(PrefilterHit(
                         rule_id="open-user-controlled-path",
                         message=(
@@ -1342,8 +1335,9 @@ def _check_python_patterns(
                 severity="error",
             ))
 
-        if re.search(r'\byaml\.load\s*\(', stripped):
-            if not re.search(r'Loader\s*=\s*yaml\.SafeLoader', stripped):
+        if re.search(r'\byaml\.load\s*\(', stripped) and not re.search(
+            r'Loader\s*=\s*yaml\.SafeLoader', stripped,
+        ):
                 result.hits.append(PrefilterHit(
                     rule_id="yaml-unsafe-load",
                     message="yaml.load without SafeLoader can execute arbitrary code",
@@ -1356,8 +1350,8 @@ def _check_go_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Go source for known vulnerability patterns."""
     callee_names = set()
@@ -1396,8 +1390,8 @@ def _check_go_patterns(
                 severity="warning",
             ))
 
-        if re.search(r'\bdb\.(Query|QueryRow|Exec)\s*\(', stripped):
-            if re.search(
+        if re.search(r'\bdb\.(Query|QueryRow|Exec)\s*\(', stripped) and (
+            re.search(
                 r'fmt\.Sprintf|"\s*\+\s*\w|\w\s*\+\s*"',
                 stripped,
             ) or (
@@ -1406,7 +1400,8 @@ def _check_go_patterns(
                     source,
                 )
                 and not re.search(r'\$\d+', source)
-            ):
+            )
+        ):
                 result.hits.append(PrefilterHit(
                     rule_id="go-sql-string-concat",
                     message=(
@@ -1435,33 +1430,32 @@ def _check_go_patterns(
             r'\bos\.(Open|Create|Remove|ReadFile|WriteFile|'
             r'OpenFile|RemoveAll|MkdirAll)\s*\(',
             stripped,
+        ) and re.search(
+            r'user|request|param|filename|r\.\w+|'
+            r'c\.Param|c\.Query|chi\.|mux\.',
+            source,
+        ) and not re.search(
+            r'filepath\.Clean|filepath\.Abs|'
+            r'strings\.Contains.*\.\.|path\.Clean',
+            source,
         ):
-            if re.search(
-                r'user|request|param|filename|r\.\w+|'
-                r'c\.Param|c\.Query|chi\.|mux\.',
-                source,
-            ):
-                if not re.search(
-                    r'filepath\.Clean|filepath\.Abs|'
-                    r'strings\.Contains.*\.\.|path\.Clean',
-                    source,
-                ):
-                    result.hits.append(PrefilterHit(
-                        rule_id="go-path-traversal",
-                        message=(
-                            "file operation with potentially "
-                            "user-controlled path and no containment "
-                            "check (filepath.Clean / strings.Contains)"
-                        ),
-                        line=i,
-                        severity="warning",
-                    ))
+            result.hits.append(PrefilterHit(
+                rule_id="go-path-traversal",
+                message=(
+                    "file operation with potentially "
+                    "user-controlled path and no containment "
+                    "check (filepath.Clean / strings.Contains)"
+                ),
+                line=i,
+                severity="warning",
+            ))
 
-        if re.search(r'\bhttp\.(Get|Post|PostForm)\s*\(', stripped):
-            if re.search(
-                r'user|request|param|fmt\.Sprintf|"\s*\+',
-                stripped,
-            ):
+        if re.search(
+            r'\bhttp\.(Get|Post|PostForm)\s*\(', stripped,
+        ) and re.search(
+            r'user|request|param|fmt\.Sprintf|"\s*\+',
+            stripped,
+        ):
                 result.hits.append(PrefilterHit(
                     rule_id="go-ssrf",
                     message=(
@@ -1475,17 +1469,16 @@ def _check_go_patterns(
         if re.search(
             r'\b(?:json|xml)\.(?:Unmarshal|NewDecoder)',
             stripped,
-        ):
-            if re.search(r'interface\s*\{\s*\}|any\b', source):
-                result.hits.append(PrefilterHit(
-                    rule_id="go-deserialize-interface",
-                    message=(
-                        "deserialisation into interface{}/any — "
-                        "type confusion risk, prefer concrete types"
-                    ),
-                    line=i,
-                    severity="warning",
-                ))
+        ) and re.search(r'interface\s*\{\s*\}|any\b', source):
+            result.hits.append(PrefilterHit(
+                rule_id="go-deserialize-interface",
+                message=(
+                    "deserialisation into interface{}/any — "
+                    "type confusion risk, prefer concrete types"
+                ),
+                line=i,
+                severity="warning",
+            ))
 
         if re.search(r'\bgob\.(NewDecoder|Decode)\b', stripped):
             result.hits.append(PrefilterHit(
@@ -1517,8 +1510,8 @@ def _check_rust_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Rust source for known vulnerability patterns."""
     callee_names = set()
@@ -1636,8 +1629,8 @@ def _check_php_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check PHP source for known vulnerability patterns."""
     callee_names = set()
@@ -1711,19 +1704,18 @@ def _check_php_patterns(
         if re.search(
             r'\b(?:mysql_query|mysqli_query|pg_query)\s*\(',
             stripped,
+        ) and re.search(r'\$', stripped) and not re.search(
+            r'prepare\s*\(|bind_param|pg_query_params', source,
         ):
-            if re.search(r'\$', stripped) and not re.search(
-                r'prepare\s*\(|bind_param|pg_query_params', source,
-            ):
-                result.hits.append(PrefilterHit(
-                    rule_id="php-sql-injection",
-                    message=(
-                        "SQL query with variable interpolation — "
-                        "use prepared statements"
-                    ),
-                    line=i,
-                    severity="error",
-                ))
+            result.hits.append(PrefilterHit(
+                rule_id="php-sql-injection",
+                message=(
+                    "SQL query with variable interpolation — "
+                    "use prepared statements"
+                ),
+                line=i,
+                severity="error",
+            ))
 
         if re.search(r'\becho\b.*\$_(?:GET|POST|REQUEST|COOKIE)', stripped):
             result.hits.append(PrefilterHit(
@@ -1753,20 +1745,19 @@ def _check_php_patterns(
             r'\b(?:file_get_contents|file_put_contents|fopen|'
             r'readfile|unlink|rename)\s*\(\s*\$',
             stripped,
+        ) and not re.search(
+            r'realpath|basename|str_replace.*\.\.',
+            source,
         ):
-            if not re.search(
-                r'realpath|basename|str_replace.*\.\.',
-                source,
-            ):
-                result.hits.append(PrefilterHit(
-                    rule_id="php-path-traversal",
-                    message=(
-                        "file operation with variable path — "
-                        "path traversal risk"
-                    ),
-                    line=i,
-                    severity="warning",
-                ))
+            result.hits.append(PrefilterHit(
+                rule_id="php-path-traversal",
+                message=(
+                    "file operation with variable path — "
+                    "path traversal risk"
+                ),
+                line=i,
+                severity="warning",
+            ))
 
         if re.search(r'\bheader\s*\(\s*["\']Location.*\$', stripped):
             result.hits.append(PrefilterHit(
@@ -1781,8 +1772,8 @@ def _check_java_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Java source for known vulnerability patterns."""
     callee_names = set()
@@ -1827,17 +1818,16 @@ def _check_java_patterns(
         if re.search(
             r'\.(?:executeQuery|executeUpdate|execute)\s*\(',
             stripped,
-        ):
-            if re.search(r'"\s*\+\s*\w|\w\s*\+\s*"', stripped):
-                result.hits.append(PrefilterHit(
-                    rule_id="java-sql-concat",
-                    message=(
-                        "SQL query with string concatenation — "
-                        "use PreparedStatement"
-                    ),
-                    line=i,
-                    severity="error",
-                ))
+        ) and re.search(r'"\s*\+\s*\w|\w\s*\+\s*"', stripped):
+            result.hits.append(PrefilterHit(
+                rule_id="java-sql-concat",
+                message=(
+                    "SQL query with string concatenation — "
+                    "use PreparedStatement"
+                ),
+                line=i,
+                severity="error",
+            ))
 
         if re.search(
             r'Class\.forName\s*\(|\.newInstance\s*\(|'
@@ -1878,22 +1868,21 @@ def _check_java_patterns(
         if re.search(
             r'XMLInputFactory|SAXParser|DocumentBuilder',
             stripped,
+        ) and not re.search(
+            r'FEATURE_SECURE_PROCESSING|'
+            r'disallow-doctype-decl|'
+            r'setExpandEntityReferences.*false',
+            source,
         ):
-            if not re.search(
-                r'FEATURE_SECURE_PROCESSING|'
-                r'disallow-doctype-decl|'
-                r'setExpandEntityReferences.*false',
-                source,
-            ):
-                result.hits.append(PrefilterHit(
-                    rule_id="java-xxe",
-                    message=(
-                        "XML parser without entity expansion disabled — "
-                        "XXE risk"
-                    ),
-                    line=i,
-                    severity="warning",
-                ))
+            result.hits.append(PrefilterHit(
+                rule_id="java-xxe",
+                message=(
+                    "XML parser without entity expansion disabled — "
+                    "XXE risk"
+                ),
+                line=i,
+                severity="warning",
+            ))
 
         if re.search(
             r'ScriptEngine|\.eval\s*\(.*(?:request|param|input)',
@@ -1919,8 +1908,8 @@ def _check_js_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check JavaScript/TypeScript source for known vulnerability patterns."""
     callee_names = set()
@@ -1993,42 +1982,39 @@ def _check_js_patterns(
         if re.search(
             r'\.query\s*\(\s*[`"\']\s*(?:SELECT|INSERT|UPDATE|DELETE)',
             stripped, re.IGNORECASE,
-        ):
-            if re.search(r'\$\{|\+\s*\w|\w\s*\+', stripped):
-                result.hits.append(PrefilterHit(
-                    rule_id="js-sql-injection",
-                    message=(
-                        "SQL query with string interpolation — "
-                        "use parameterised queries"
-                    ),
-                    line=i,
-                    severity="error",
-                ))
+        ) and re.search(r'\$\{|\+\s*\w|\w\s*\+', stripped):
+            result.hits.append(PrefilterHit(
+                rule_id="js-sql-injection",
+                message=(
+                    "SQL query with string interpolation — "
+                    "use parameterised queries"
+                ),
+                line=i,
+                severity="error",
+            ))
 
         if re.search(
             r'\bfs\.(?:readFile|writeFile|unlink|rename|'
             r'readFileSync|writeFileSync|unlinkSync|renameSync|'
             r'createReadStream|createWriteStream)\s*\(',
             stripped,
+        ) and re.search(
+            r'req\.|params\.|query\.|body\.|headers\.',
+            source,
+        ) and not re.search(
+            r'path\.(?:resolve|normalize|basename)|'
+            r'sanitize|includes.*\.\.',
+            source,
         ):
-            if re.search(
-                r'req\.|params\.|query\.|body\.|headers\.',
-                source,
-            ):
-                if not re.search(
-                    r'path\.(?:resolve|normalize|basename)|'
-                    r'sanitize|includes.*\.\.',
-                    source,
-                ):
-                    result.hits.append(PrefilterHit(
-                        rule_id="js-path-traversal",
-                        message=(
-                            "file operation with request-derived path — "
-                            "path traversal risk"
-                        ),
-                        line=i,
-                        severity="warning",
-                    ))
+            result.hits.append(PrefilterHit(
+                rule_id="js-path-traversal",
+                message=(
+                    "file operation with request-derived path — "
+                    "path traversal risk"
+                ),
+                line=i,
+                severity="warning",
+            ))
 
         if re.search(
             r'req\.(?:body|params|query|headers|cookies)\b',
@@ -2039,17 +2025,16 @@ def _check_js_patterns(
         if re.search(
             r'(?:JSON|YAML|yaml)\.parse\s*\(',
             stripped,
-        ):
-            if re.search(r'req\.|body\.|params\.', source):
-                result.hits.append(PrefilterHit(
-                    rule_id="js-unsafe-parse",
-                    message=(
-                        "parsing user-supplied data — "
-                        "prototype pollution / injection risk"
-                    ),
-                    line=i,
-                    severity="warning",
-                ))
+        ) and re.search(r'req\.|body\.|params\.', source):
+            result.hits.append(PrefilterHit(
+                rule_id="js-unsafe-parse",
+                message=(
+                    "parsing user-supplied data — "
+                    "prototype pollution / injection risk"
+                ),
+                line=i,
+                severity="warning",
+            ))
 
         if re.search(r'\.redirect\s*\(.*(?:req\.|params\.|query\.)', stripped):
             result.hits.append(PrefilterHit(
@@ -2072,8 +2057,8 @@ def _check_lua_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Lua source for known vulnerability patterns."""
     callee_names = set()
@@ -2137,8 +2122,9 @@ def _check_lua_patterns(
                 severity="warning",
             ))
 
-        if re.search(r'\bsetmetatable\s*\(', stripped):
-            if re.search(r'__index|__newindex|__call|__gc', source):
+        if re.search(r'\bsetmetatable\s*\(', stripped) and re.search(
+            r'__index|__newindex|__call|__gc', source,
+        ):
                 result.hits.append(PrefilterHit(
                     rule_id="lua-metatable-abuse",
                     message=(
@@ -2172,8 +2158,9 @@ def _check_lua_patterns(
                 severity="warning",
             ))
 
-        if re.search(r'\bstring\.format\s*\(', stripped):
-            if re.search(r'%s.*user|%s.*input|%s.*req', stripped, re.IGNORECASE):
+        if re.search(r'\bstring\.format\s*\(', stripped) and re.search(
+            r'%s.*user|%s.*input|%s.*req', stripped, re.IGNORECASE,
+        ):
                 result.hits.append(PrefilterHit(
                     rule_id="lua-format-injection",
                     message="string.format with user input — format string risk",
@@ -2186,8 +2173,8 @@ def _check_perl_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: Optional[List[Dict[str, Any]]],
-    callees: Optional[List[Dict[str, Any]]],
+    callers: list[dict[str, Any]] | None,
+    callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Perl source for known vulnerability patterns."""
     callee_names = set()
@@ -2228,8 +2215,9 @@ def _check_perl_patterns(
                 severity="error",
             ))
 
-        if re.search(r'\bopen\s*\(?\s*\w+\s*,\s*["\$]', stripped):
-            if re.search(r'\||\>', stripped):
+        if re.search(
+            r'\bopen\s*\(?\s*\w+\s*,\s*["\$]', stripped,
+        ) and re.search(r'\||\>', stripped):
                 result.hits.append(PrefilterHit(
                     rule_id="perl-open-pipe",
                     message=(
@@ -2243,22 +2231,22 @@ def _check_perl_patterns(
         if re.search(
             r'\bDBI\b.*\bdo\s*\(|\bprepare\s*\(.*\$',
             stripped,
+        ) and re.search(r'"\s*\.\s*\$|\$\w+', stripped) and not re.search(
+            r'\?|placeholder', stripped, re.IGNORECASE,
         ):
-            if re.search(r'"\s*\.\s*\$|\$\w+', stripped) and not re.search(
-                r'\?|placeholder', stripped, re.IGNORECASE,
-            ):
-                result.hits.append(PrefilterHit(
-                    rule_id="perl-sql-injection",
-                    message=(
-                        "SQL with variable interpolation — "
-                        "use placeholders (?)"
-                    ),
-                    line=i,
-                    severity="error",
-                ))
+            result.hits.append(PrefilterHit(
+                rule_id="perl-sql-injection",
+                message=(
+                    "SQL with variable interpolation — "
+                    "use placeholders (?)"
+                ),
+                line=i,
+                severity="error",
+            ))
 
-        if re.search(r'\bprint\b.*\$(?:query|param|input|cgi)', stripped, re.IGNORECASE):
-            if not re.search(r'encode_entities|escapeHTML|CGI::escape', source):
+        if re.search(
+            r'\bprint\b.*\$(?:query|param|input|cgi)', stripped, re.IGNORECASE,
+        ) and not re.search(r'encode_entities|escapeHTML|CGI::escape', source):
                 result.hits.append(PrefilterHit(
                     rule_id="perl-xss",
                     message="printing user input without escaping — XSS risk",
@@ -2297,8 +2285,8 @@ def _check_perl_patterns(
 def run_prefilter_batch(
     *,
     target_path: Path,
-    functions: List[Dict[str, Any]],
-) -> Dict[str, PrefilterResult]:
+    functions: list[dict[str, Any]],
+) -> dict[str, PrefilterResult]:
     """Run pre-filter on a batch of functions.
 
     Returns dict keyed by 'file:function'.

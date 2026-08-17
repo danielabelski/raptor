@@ -458,7 +458,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--out", type=Path, default=None,
                    help=("output dir (default: "
                          "out/binary-oracle-precision/runs/<ts>)"))
+    from core.sandbox import PROFILES as _SANDBOX_PROFILES
+    p.add_argument("--sandbox", default="strict",
+                   choices=sorted(_SANDBOX_PROFILES),
+                   help=("sandbox profile for the oracle's tool "
+                         "invocations (default: strict — a measurement "
+                         "run under silently-degraded isolation would "
+                         "report a precision number the deployed posture "
+                         "didn't earn, so the harness aborts instead; "
+                         "pass --sandbox full to measure on a host "
+                         "without namespace support)"))
     args = p.parse_args(argv)
+
+    # CLI-parsed value only — same prompt-injection-safety contract as
+    # every other set_cli_profile() caller.
+    from core.sandbox.cli import set_cli_profile
+    set_cli_profile(args.sandbox)
 
     # Late import: the registry is the only thing the harness depends on
     # for driver lookup; pulling it lazily lets the harness module stay

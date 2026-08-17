@@ -1195,6 +1195,14 @@ def _run_self_test(
     # fake_home, Landlock writes limited to ``tmp_root`` and the
     # target's ``.git/`` dir) — same containment posture as the
     # resolver runners that execute ``./mvnw`` / ``./gradlew`` etc.
+    # profile="strict" on the substantive calls: a SELF-TEST that
+    # silently degrades its isolation reports confidence it didn't
+    # earn — better to abort (SandboxSetupError, caught by cli.py's
+    # top-level handler) than to pass under weaker containment than
+    # the posture this comment documents. The best-effort cleanup
+    # call in ``finally`` stays on the default profile: strict's
+    # abort is a BaseException, which would escape the cleanup's
+    # ``except Exception`` and mask the self-test verdict.
     target_git_dir = str(target / ".git")
     try:
         # ``git stash create`` materialises the working tree (including
@@ -1211,6 +1219,7 @@ def _run_self_test(
             cwd=str(target),
             capture_output=True, text=True, timeout=30,
             caller_label="sca-harden-self-test/git-stash",
+            profile="strict",
         )
         # ``git stash create`` exit codes: 0 = stash commit created
         # (SHA on stdout, tree had uncommitted changes); 1 = nothing to
@@ -1238,6 +1247,7 @@ def _run_self_test(
             cwd=str(target),
             capture_output=True, text=True, timeout=120,
             caller_label="sca-harden-self-test/git-worktree-add",
+            profile="strict",
         )
         if proc.returncode != 0:
             print(f"raptor-sca fix --harden --self-test: git worktree add failed: "
@@ -1259,6 +1269,7 @@ def _run_self_test(
             input=patch_text,
             capture_output=True, text=True, timeout=60,
             caller_label="sca-harden-self-test/git-apply",
+            profile="strict",
         )
         if proc.returncode != 0:
             print(f"raptor-sca fix --harden --self-test: patch application failed: "

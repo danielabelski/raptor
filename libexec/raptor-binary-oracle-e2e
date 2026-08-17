@@ -49,6 +49,26 @@ import core.startup.process_init  # noqa: F401
 
 os.environ.setdefault("RAPTOR_DIR", str(RAPTOR))
 
+# ─── sandbox posture ────────────────────────────────────────
+# Default strict: an audit that silently degrades its isolation
+# asserts consumer behaviour under a posture the deployment never
+# sees. strict aborts (SandboxSetupError) instead — pass
+# --sandbox full to run the audit on a host without namespace
+# support. CLI-parsed value only, per the set_cli_profile()
+# contract.
+import argparse
+
+from core.sandbox import PROFILES as _SANDBOX_PROFILES
+from core.sandbox.cli import set_cli_profile
+
+_ap = argparse.ArgumentParser(prog="raptor-binary-oracle-e2e")
+_ap.add_argument("--sandbox", default="strict",
+                 choices=sorted(_SANDBOX_PROFILES),
+                 help="sandbox profile for oracle tool invocations "
+                      "(default: strict — fail-closed)")
+set_cli_profile(_ap.parse_args().sandbox)
+# ─── end sandbox posture ────────────────────────────────────
+
 TARGET = Path(tempfile.gettempdir()) / "raptor-bo-e2e"
 BINARY = TARGET / "build" / "app"
 

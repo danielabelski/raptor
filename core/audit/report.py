@@ -346,6 +346,14 @@ def _load_review_state(out_dir: Path) -> dict[str, Any]:
             "function": entry.function,
             "status": entry.verdict,
             "hash": entry.source_hash or None,
+            # Post-loop mechanical entries (taint-spec / negative-space
+            # checks journalled after the review loop) are not LLM
+            # reviews — carry the marker so stats can state one
+            # counting rule instead of silently inflating "reviewed".
+            "mechanical": (
+                "post-loop-mechanical" in (entry.strategies or [])
+                or (entry.body or "").startswith("[mechanical]")
+            ),
         })
         if entry.file:
             files_examined.add(entry.file)
@@ -430,8 +438,20 @@ def _load_gaps(out_dir: Path) -> dict[str, Any]:
 
 
 def _compute_stats(audit_data: dict[str, Any]) -> dict[str, int]:
-    """Count statuses across all reviewed functions."""
-    counts = {"reviewed": 0, "clean": 0, "suspicious": 0, "finding": 0, "dormant": 0, "error": 0}
+    """Count statuses across all reviewed functions.
+
+    One counting rule, shared with the console summary: ``reviewed``
+    (and the per-status counts) cover LLM reviews only; post-loop
+    mechanical journal entries land in ``mechanical``. Pre-fix the
+    journal-derived report counted every entry as reviewed while the
+    console counted only tallied LLM outcomes — one run printed
+    14 reviewed / 8 suspicious in the report against 9 / 3 on the
+    console for the same journal.
+    """
+    counts = {
+        "reviewed": 0, "clean": 0, "suspicious": 0, "finding": 0,
+        "dormant": 0, "error": 0, "mechanical": 0,
+    }
 
     if "files" in audit_data:
         for file_data in audit_data["files"].values():
@@ -442,6 +462,9 @@ def _compute_stats(audit_data: dict[str, Any]) -> dict[str, int]:
                     counts[status] += 1
     elif "functions_analysed" in audit_data:
         for func_data in audit_data["functions_analysed"]:
+            if func_data.get("mechanical"):
+                counts["mechanical"] += 1
+                continue
             counts["reviewed"] += 1
             status = func_data.get("status", "clean")
             if status in counts:
@@ -557,10 +580,12 @@ def _find_unrecorded_reads(
 def _format_summary(report: dict[str, Any]) -> str:
     """Format a human-readable summary."""
     stats = report.get("stats", {})
+    mech = stats.get("mechanical", 0)
+    mech_s = f" (+{mech} mechanical post-loop)" if mech else ""
     lines = [
         "## Audit Summary",
         "",
-        f"Functions reviewed: {stats.get('reviewed', 0)}",
+        f"Functions LLM-reviewed: {stats.get('reviewed', 0)}{mech_s}",
         f"  Clean: {stats.get('clean', 0)}",
         f"  Dormant: {stats.get('dormant', 0)}",
         f"  Suspicious: {stats.get('suspicious', 0)}",

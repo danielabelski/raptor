@@ -256,7 +256,7 @@ class TestAuditE2E:
         r = _run([_AUDIT_CLI, "report",
                   "--out", str(out_dir), "--target", str(target)])
         assert r.returncode == 0, r.stderr
-        assert "Functions reviewed: 3" in r.stdout
+        assert "Functions LLM-reviewed: 3" in r.stdout
         assert "Clean: 2" in r.stdout
         assert "Finding: 1" in r.stdout
         assert "Tool-confirmed findings: 1" in r.stdout

@@ -436,6 +436,14 @@ class OrchestratorResult:
     # hash unchanged). Counted separately from ``reviewed`` — no LLM
     # call happened for them this run.
     reused_from_prior: int = 0
+    # Post-loop mechanical journal entries (taint-spec / negative-space
+    # / postcondition checks appended after the review loop). Counted
+    # separately from ``reviewed``: no LLM call happened for them, but
+    # they DO appear in the review journal — so the report's
+    # journal-derived counts include them. Surfacing this figure lets
+    # every summary state one counting rule ("N reviewed, +M mechanical
+    # post-loop") instead of two surfaces silently disagreeing.
+    post_loop_mechanical: int = 0
     # Spend attributed to completed review calls (outcome-carrying).
     total_cost_usd: float = 0.0
     # Spend consumed by attempts that raised (timeouts, retries, budget
@@ -4505,6 +4513,11 @@ def _run_audit_body(
                     },
                     checked_by=["audit:post-loop"],
                 )
+                # Journalled but NOT tallied as reviewed — count it so
+                # the console summary can state the mechanical share
+                # instead of contradicting the journal-derived report.
+                with result._lock:
+                    result.post_loop_mechanical += 1
             except Exception:
                 logger.debug(
                     "post-loop journal append failed for %s:%s",

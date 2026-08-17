@@ -1303,7 +1303,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         if duration_s >= 60 else f"{duration_s:.0f}s"
     )
     print(f"\n{'='*60}", flush=True)
-    print(f"Audit complete in {duration_str}: {result.reviewed} reviewed, "
+    # One counting rule across every surface: "reviewed" = LLM
+    # reviews; post-loop mechanical journal entries are stated
+    # separately (the report derives its counts from the journal,
+    # which contains them — without the split the two summaries
+    # silently contradict each other).
+    mech = getattr(result, "post_loop_mechanical", 0)
+    mech_s = f" (+{mech} mechanical post-loop)" if mech else ""
+    print(f"Audit complete in {duration_str}: "
+          f"{result.reviewed} LLM-reviewed{mech_s}, "
           f"{result.findings} findings, {result.suspicious} suspicious, "
           f"{result.clean} clean, {result.errors} errors", flush=True)
     reused = getattr(result, "reused_from_prior", 0)

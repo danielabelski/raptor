@@ -25,7 +25,7 @@ cold-start trust accumulation.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from core.llm.task_types import TaskType
 from core.security.prompt_defense_profiles import CONSERVATIVE
@@ -85,8 +85,8 @@ def _fast_tier_model_name(client) -> str:
 
 
 def _cheap_fp_check(
-    client, item: Dict[str, Any],
-) -> Optional[Tuple[str, str]]:
+    client, item: dict[str, Any],
+) -> tuple[str, str] | None:
     """Ask the fast-tier model whether this finding is a clear false
     positive. Returns ``(verdict, reasoning)`` on success, ``None`` on
     call failure or unexpected response shape (caller treats as "no
@@ -145,12 +145,10 @@ def _cheap_fp_check(
             "Cheap FP check failed (falling through to full): %s", e,
         )
         return None
-    # ``LLMClient.generate_structured`` returns a StructuredResponse
-    # with ``.result`` dict. Older code paths (some test stubs) return
-    # a (dict, raw) tuple. Handle both.
-    result = getattr(response, "result", None)
-    if result is None and isinstance(response, tuple) and response:
-        result = response[0]
+    # Shared unwrap: handles both the StructuredResponse shape and the
+    # legacy (dict, raw) tuple some test stubs return.
+    from core.llm.structured_call import unwrap_structured_response
+    result = unwrap_structured_response(response).result
     if not isinstance(result, dict):
         return None
     verdict = str(result.get("verdict") or "").strip().lower()
@@ -164,7 +162,7 @@ def _cheap_fp_check(
     return verdict, reasoning
 
 
-def agentic_fp_analysis(reasoning: str) -> Dict[str, Any]:
+def agentic_fp_analysis(reasoning: str) -> dict[str, Any]:
     """Build a per-finding analysis dict from a cheap-tier ``clear_fp``
     verdict. Shape mirrors the keys consumers downstream of dispatch
     (orchestrator merge loop, /agentic summary print, console table)
@@ -199,8 +197,8 @@ def agentic_fp_analysis(reasoning: str) -> Dict[str, Any]:
 
 
 def prefilter_for_finding(
-    client, item: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+    client, item: dict[str, Any],
+) -> dict[str, Any] | None:
     """Return a short-circuit analysis dict if the scorecard trusts a
     cheap-tier ``clear_fp`` verdict for this finding, or ``None`` to
     fall through to the full ANALYSE call.

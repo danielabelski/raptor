@@ -885,18 +885,14 @@ def _schema_for_mode(mode: ReviewMode) -> dict:
     return base
 
 
-_CONTENT_FILTER_MARKERS = (
-    "content filter",
-    "content_filter",
-    "model refused",
-    "safety filter",
-    "blocked by",
-)
-
-
 def _is_content_filter_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return any(m in msg for m in _CONTENT_FILTER_MARKERS)
+    """Delegates to the shared word-boundary classifier
+    (core.llm.structured_call) — the substring-marker list this module
+    carried false-positived on phrases like "thread-safety violation";
+    the shared vocabulary is the union of both pipelines' markers.
+    """
+    from core.llm.structured_call import is_content_filter_text
+    return is_content_filter_text(str(exc))
 
 
 _LLM_ONLY_EVIDENCE = frozenset({
@@ -1108,29 +1104,18 @@ def make_review_fn(
         kwargs: dict[str, Any],
     ):
         """Standard single-call structured generation."""
+        from core.llm.structured_call import unwrap_structured_response
         response = llm_client.generate_structured(
             prompt,
             active_schema,
             system_prompt=effective_system_prompt,
             **kwargs,
         )
-        if hasattr(response, "result"):
-            result = response.result
-        elif response:
-            result = response[0]
-        else:
-            result = {"status": "error", "body": "empty LLM response"}
-        cost = response.cost if hasattr(response, "cost") else 0.0
-        model = response.model if hasattr(response, "model") else ""
-        usage = {
-            "tokens_in": getattr(response, "input_tokens", 0) or 0,
-            "tokens_out": getattr(response, "output_tokens", 0) or 0,
-            "cache_read_tokens": getattr(
-                response, "cache_read_tokens", 0) or 0,
-            "cache_write_tokens": getattr(
-                response, "cache_write_tokens", 0) or 0,
-        }
-        return result, cost, model, usage
+        call = unwrap_structured_response(
+            response,
+            empty_result={"status": "error", "body": "empty LLM response"},
+        )
+        return call.result, call.cost, call.model, call.usage
 
     def review_fn(
         ctx: dict[str, Any],

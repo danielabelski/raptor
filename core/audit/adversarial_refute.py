@@ -222,18 +222,14 @@ def run_refutation(
         )
         return None
 
-    if hasattr(response, "result"):
-        raw = response.result
-    elif response:
-        raw = response[0]
-    else:
-        raw = None
+    from core.llm.structured_call import unwrap_structured_response
+    call = unwrap_structured_response(response)
 
-    parsed = parse_refutation(raw)
+    parsed = parse_refutation(call.result)
     if parsed is None:
         return None
-    parsed.cost_usd = getattr(response, "cost", 0.0) or 0.0
-    parsed.model = getattr(response, "model", "") or (model_name or "")
+    parsed.cost_usd = call.cost
+    parsed.model = call.model or (model_name or "")
     return parsed
 
 

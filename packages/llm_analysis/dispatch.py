@@ -6,11 +6,11 @@ Task subclasses define semantics: what prompt, what schema, which model.
 """
 
 import logging
-import re
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +29,9 @@ _DISPATCH_CORPORA = (
 class DispatchResult:
     """Normalised result from any dispatch path (external LLM or CC)."""
 
-    def __init__(self, result: Dict[str, Any], cost: float = 0.0,
+    def __init__(self, result: dict[str, Any], cost: float = 0.0,
                  tokens: int = 0, model: str = "", duration: float = 0.0,
-                 quality: float = 1.0, resolved_model: Optional[str] = None):
+                 quality: float = 1.0, resolved_model: str | None = None):
         self.result = result
         self.cost = cost
         self.tokens = tokens
@@ -78,15 +78,15 @@ class DispatchTask:
         model = role_resolution.get(f"{self.model_role}_model")
         return [model] if model else []
 
-    def build_prompt(self, item: Dict[str, Any]) -> str:
+    def build_prompt(self, item: dict[str, Any]) -> str:
         """Build the prompt for one item. Must be implemented by subclass."""
         raise NotImplementedError
 
-    def get_schema(self, item: Dict[str, Any]) -> Optional[dict]:
+    def get_schema(self, item: dict[str, Any]) -> dict | None:
         """Schema for structured output, or None for free-form generate()."""
         return None
 
-    def get_system_prompt(self) -> Optional[str]:
+    def get_system_prompt(self) -> str | None:
         """System prompt for this task."""
         return None
 
@@ -99,8 +99,8 @@ class DispatchTask:
         return 0
 
     def process_result(
-        self, item: Dict[str, Any], result: DispatchResult,
-    ) -> Dict[str, Any]:
+        self, item: dict[str, Any], result: DispatchResult,
+    ) -> dict[str, Any]:
         """Post-process a single result. Default: return result dict with metadata."""
         out = dict(result.result)
         if result.cost > 0:
@@ -125,18 +125,18 @@ class DispatchTask:
             out["quality"] = quality_rounded
         return out
 
-    def finalize(self, results: List[Dict], prior_results: dict) -> List[Dict]:
+    def finalize(self, results: list[dict], prior_results: dict) -> list[dict]:
         """Post-dispatch processing. Default: no-op.
 
         Override for consensus verdicts, etc.
         """
         return results
 
-    def get_item_id(self, item: Dict[str, Any]) -> str:
+    def get_item_id(self, item: dict[str, Any]) -> str:
         """ID for result matching and progress display."""
         return item.get("finding_id", item.get("group_id", "unknown"))
 
-    def get_item_display(self, item: Dict[str, Any]) -> str:
+    def get_item_display(self, item: dict[str, Any]) -> str:
         """Human-readable location for progress line."""
         fp = item.get("file_path", "")
         if fp:
@@ -152,73 +152,18 @@ def _format_elapsed(seconds: float) -> str:
     return format_elapsed(seconds)
 
 
-# Word-boundary patterns for auth and classify_error keywords.
-# Pre-fix the substring `in lower` checks produced false positives:
-#   * `"401"` matched any error string containing the digits "401"
-#     anywhere — including stack-trace line numbers (`line 401, in
-#     ...`), HTTP status logs from unrelated endpoints, content-
-#     length headers, etc.
-#   * `"safety"` matched legitimate non-content-filter contexts
-#     ("safety check failed in tokenizer", "thread-safety
-#     violation", "safe to retry").
-#   * `"credit"` matched "credentials", "credit card validation",
-#     "discredit". The intent was billing-credit-exhausted but
-#     the substring caught everything credit-shaped.
-#   * `"refusal"` was OK as a substring; "refused request" was
-#     fine; but neither is reliably emitted by all providers.
-# Word-boundary regex via `\b...\b` keeps the keywords but
-# anchors them to token boundaries.
-_AUTH_KEYWORDS_RE = re.compile(
-    # Bare 401/403 only when preceded by a status-context word
-    # (HTTP, status, code) — "line 401" in a stack trace
-    # otherwise false-positives. Word words remain unconstrained.
-    r"\b((?:http|status|code)\s+40[13]\b|"
-    r"40[13]\s+(?:unauthorized|forbidden)|"
-    r"authentication|unauthorized|invalid api key|billing|"
-    r"quota|rate limit|insufficient_quota|credits?|"
-    r"api[_ ]?key (?:invalid|expired|missing))\b",
-    re.IGNORECASE,
+# Error classification moved to the shared consumer-side envelope
+# (core.llm.structured_call) — the word-boundary regexes this module
+# introduced are now the ONE classifier, extended with audit's
+# provider phrasings ("model refused", content_filter, "blocked by").
+# The module-level names below stay as thin aliases: they are this
+# package's documented seam (tests and callers import them from here).
+from core.llm.structured_call import (
+    classify_error_text as _classify_error,
 )
-
-_BLOCKED_KEYWORDS_RE = re.compile(
-    r"\b(content filter|blocked response|content (?:policy|safety) violation|"
-    r"refused (?:request|to respond)|response (?:was )?refused|"
-    r"safety filter|content blocked|moderation block)\b",
-    re.IGNORECASE,
+from core.llm.structured_call import (
+    is_auth_error_text as _is_auth_error,
 )
-
-_TIMEOUT_KEYWORDS_RE = re.compile(
-    r"\b(timeout|timed out|deadline exceeded|read timed? out)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_auth_error(error_str: str) -> bool:
-    """Check if an error string indicates an authentication/billing failure.
-
-    Word-boundary matched (see module-level RE comments) so a
-    "line 401, in foo" stack-trace fragment doesn't false-positive.
-    """
-    return bool(_AUTH_KEYWORDS_RE.search(error_str or ""))
-
-
-def _classify_error(error_str: str) -> str:
-    """Classify an error for structured reporting.
-
-    Returns: 'blocked' (content filter/safety/refusal), 'auth' (key/billing/quota),
-    'timeout', or 'error' (everything else).
-
-    Uses word-boundary regex matching — see module RE comments for
-    the substring false-positives this fixes.
-    """
-    text = error_str or ""
-    if _BLOCKED_KEYWORDS_RE.search(text):
-        return "blocked"
-    if _is_auth_error(text):
-        return "auth"
-    if _TIMEOUT_KEYWORDS_RE.search(text):
-        return "timeout"
-    return "error"
 
 
 def dispatch_task(
@@ -229,8 +174,8 @@ def dispatch_task(
     prior_results: dict,
     cost_tracker: Any,
     max_parallel: int = 3,
-    prefilter_fn: Optional[Callable] = None,
-) -> List[Dict[str, Any]]:
+    prefilter_fn: Callable | None = None,
+) -> list[dict[str, Any]]:
     """Generic parallel dispatcher.
 
     Handles threading, progress output, cost tracking, error handling,
@@ -346,13 +291,13 @@ def dispatch_task(
         _throttle.close()
 
 
-def _dispatch_inner(  # noqa: PLR0913, PLR0912, PLR0915
+def _dispatch_inner(
     task, work, selected, dispatch_fn, cost_tracker,
     max_parallel, prefilter_fn, prior_results, _throttle,
     start, system_prompt, profile_name,
 ):
-    from core.security.prompt_telemetry import defense_telemetry
     from core.security.prompt_input_preflight import preflight
+    from core.security.prompt_telemetry import defense_telemetry
 
     total = len(work)
     completed = 0
@@ -361,7 +306,7 @@ def _dispatch_inner(  # noqa: PLR0913, PLR0912, PLR0915
     abort = False
     _per_model_auth_fail: set = set()
     _per_model_dead: set = set()
-    _per_model_state: Dict[str, Dict[str, int]] = {}
+    _per_model_state: dict[str, dict[str, int]] = {}
 
     import threading as _th
     # Key by (item_id, model_key) tuple — NOT just item_id. With N
@@ -537,7 +482,7 @@ def _dispatch_inner(  # noqa: PLR0913, PLR0912, PLR0915
                 )
                 print(f"{prefix} {display} {status}{cost_str}")
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — per-item isolation: one failed dispatch must not sink the batch
                 err_str = str(e)
                 error_type = _classify_error(err_str)
                 model_name = model.model_name if model is not None else "?"

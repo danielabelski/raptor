@@ -112,6 +112,22 @@ class TestPartitionStudyBatch:
 # Reading-list marking semantics (pinned)
 # ------------------------------------------------------------------
 
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _scorecard_events(monkeypatch):
+    """Capture scorecard events; never write the real sidecar."""
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "core.audit.orchestrator._record_study_scorecard",
+        lambda model, agreed, reason: events.append(
+            (model, agreed, reason),
+        ),
+    )
+    return events
+
+
 def _seed_reading_list(out_dir, entries):
     from core.concepts.audit_bridge import queue_reading_list_item
 
@@ -124,30 +140,256 @@ def _load_rl(out_dir):
 
 
 class TestMarkBatchReadingList:
-    def test_resolved_requires_domain_model_evidence(self, tmp_path) -> None:
+    def test_mechanical_tier_resolves(self, tmp_path) -> None:
         q = "Does `parse_config` validate its input?"
         _seed_reading_list(tmp_path, [{
             "question": q, "source_file": "pkg/config.py",
             "source_function": "handler",
         }])
-        dm = {"concepts": [{"id": "parse_config_contract"}],
+        dm = {"concepts": [{"id": "parse_config_contract",
+                            "provenance": "mechanical"}],
               "invariants": [], "contracts": []}
-        _mark_batch_reading_list(
+        eligible = _mark_batch_reading_list(
             tmp_path,
-            [_req("pkg/config.py", q)],
+            [_req("pkg/config.py", q, source_function="handler")],
             dm,
             {},
         )
         item = _load_rl(tmp_path)["items"][0]
         assert item["resolved"]
         assert item["resolved_concept_id"] == "parse_config_contract"
+        assert "pkg/config.py:handler" in eligible
+
+    def test_verbatim_tier_resolves_after_agreement(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        import core.concepts.answer_gate as _gate
+        monkeypatch.setattr(
+            _gate, "verify_flip_answer",
+            lambda *a, **kw: {"agreed": True, "reason": "agreed"},
+        )
+        q = "Does `parse_config` validate its input?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "pkg/config.py",
+            "source_function": "handler",
+        }])
+        dm = {"concepts": [{
+            "id": "parse_config_contract", "provenance": "verbatim",
+            "receipt": {"file": "pkg/config.py", "line": 1,
+                        "quote": "def parse_config(path):",
+                        "verified": True},
+        }], "invariants": [], "contracts": []}
+        eligible = _mark_batch_reading_list(
+            tmp_path,
+            [_req("pkg/config.py", q, source_function="handler")],
+            dm, {},
+            study_client=object(), source_root=tmp_path,
+        )
+        assert _load_rl(tmp_path)["items"][0]["resolved"]
+        assert "pkg/config.py:handler" in eligible
+
+    def test_verbatim_gate_disagreement_is_inconclusive(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        import core.concepts.answer_gate as _gate
+        monkeypatch.setattr(
+            _gate, "verify_flip_answer",
+            lambda *a, **kw: {"agreed": False,
+                              "reason": "independent resolution cited "
+                                        "different source"},
+        )
+        q = "Does `parse_config` validate its input?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "pkg/config.py",
+        }])
+        dm = {"concepts": [{
+            "id": "parse_config_contract", "provenance": "verbatim",
+            "receipt": {"verified": True, "file": "f", "line": 1,
+                        "quote": "q" * 20},
+        }], "invariants": [], "contracts": []}
+        eligible = _mark_batch_reading_list(
+            tmp_path, [_req("pkg/config.py", q)], dm, {},
+            study_client=object(), source_root=tmp_path,
+        )
+        item = _load_rl(tmp_path)["items"][0]
+        assert not item["resolved"]
+        assert not item["unresolvable"], (
+            "inconclusive is not terminal unresolvable"
+        )
+        assert eligible == set(), "quarantined answer must not re-review"
+        answers = json.loads(
+            (tmp_path / "study-answers.json").read_text())["answers"]
+        assert answers[0]["status"] == "inconclusive"
+        assert not answers[0]["agreement"]["agreed"]
+
+    def test_verbatim_without_client_fails_closed(self, tmp_path) -> None:
+        q = "Does `parse_config` validate its input?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "pkg/config.py",
+        }])
+        dm = {"concepts": [{
+            "id": "parse_config_contract", "provenance": "verbatim",
+            "receipt": {"verified": True},
+        }], "invariants": [], "contracts": []}
+        eligible = _mark_batch_reading_list(
+            tmp_path, [_req("pkg/config.py", q)], dm, {},
+        )
+        assert eligible == set()
+        assert not _load_rl(tmp_path)["items"][0]["resolved"]
+
+    def test_unverified_tier_is_hint_only(self, tmp_path) -> None:
+        """An answer without a verified receipt (legacy or
+        no-quote) never resolves and never re-reviews."""
+        q = "Does `parse_config` validate its input?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "pkg/config.py",
+        }])
+        dm = {"concepts": [{"id": "parse_config_contract"}],
+              "invariants": [], "contracts": []}
+        eligible = _mark_batch_reading_list(
+            tmp_path, [_req("pkg/config.py", q)], dm, {},
+        )
+        item = _load_rl(tmp_path)["items"][0]
+        assert not item["resolved"]
+        assert not item["unresolvable"]
+        assert eligible == set()
+        answers = json.loads(
+            (tmp_path / "study-answers.json").read_text())["answers"]
+        assert answers[0]["status"] == "pending"
+        assert "unverified hint" in answers[0]["reason"]
+
+    def _corpus(self, tmp_path, items):
+        sl = tmp_path / "study-list.json"
+        sl.write_text(json.dumps({
+            "target": str(tmp_path), "source_root": str(tmp_path),
+            "items": items,
+        }))
+        return sl
+
+    def test_spot_check_resolves_and_overrides(self, tmp_path) -> None:
+        sl = self._corpus(tmp_path, [{
+            "name": "MAX_FRAME", "kind": "macro", "file": "lib.rs",
+            "line": 2,
+            "definition": "pub const MAX_FRAME: usize = 4096;",
+        }])
+        q = "Is MAX_FRAME 4096?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "lib.rs",
+            "source_function": "decode",
+        }])
+        # An unverified LLM summary exists for the same identifier —
+        # the mechanical spot-check must displace it.
+        dm = {"concepts": [{"id": "max_frame_limit"}],
+              "invariants": [], "contracts": []}
+        eligible = _mark_batch_reading_list(
+            tmp_path,
+            [_req("lib.rs", q, source_function="decode")],
+            dm, {}, study_list_path=sl,
+        )
+        item = _load_rl(tmp_path)["items"][0]
+        assert item["resolved"]
+        assert item["resolved_concept_id"] == "spotcheck:MAX_FRAME"
+        assert "lib.rs:decode" in eligible
+        answers = json.loads(
+            (tmp_path / "study-answers.json").read_text())["answers"]
+        assert answers[0]["tier"] == "mechanical"
+        assert answers[0]["spot_check_override"] is True
+        assert answers[0]["receipt"]["verified"]
+
+    def test_spot_check_mismatch_still_mechanical_answer(
+        self, tmp_path,
+    ) -> None:
+        sl = self._corpus(tmp_path, [{
+            "name": "MAX_FRAME", "kind": "macro", "file": "lib.rs",
+            "line": 2,
+            "definition": "pub const MAX_FRAME: usize = 4096;",
+        }])
+        q = "Is MAX_FRAME equal to 8192?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "lib.rs",
+        }])
+        _mark_batch_reading_list(
+            tmp_path, [_req("lib.rs", q)], None, {},
+            study_list_path=sl,
+        )
+        answers = json.loads(
+            (tmp_path / "study-answers.json").read_text())["answers"]
+        assert "DOES NOT match" in answers[0]["answer"]
+
+    def test_no_extracted_snippet_is_unresolvable(self, tmp_path) -> None:
+        """Extract-then-answer enforcement: when extraction produced
+        nothing for the identifier, the LLM is never allowed to
+        answer from prior knowledge — terminal unresolvable."""
+        sl = self._corpus(tmp_path, [{
+            "name": "unrelated_fn", "kind": "function",
+            "file": "a.c", "line": 1,
+            "definition": "int unrelated_fn(void) { return 0; }",
+        }])
+        q = "Does `ghost_helper` retry on failure?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "a.c",
+        }])
+        dm = {"concepts": [{"id": "ghost_helper_retries",
+                            "provenance": "verbatim",
+                            "receipt": {"verified": True}}],
+              "invariants": [], "contracts": []}
+        eligible = _mark_batch_reading_list(
+            tmp_path, [_req("a.c", q)], dm, {}, study_list_path=sl,
+        )
+        item = _load_rl(tmp_path)["items"][0]
+        assert item["unresolvable"]
+        assert "no extracted source snippet" in item["unresolvable_reason"]
+        assert eligible == set()
+
+    def test_receipt_discard_marks_unresolvable(self, tmp_path) -> None:
+        (tmp_path / "study-discards.json").write_text(json.dumps({
+            "discarded": [{
+                "kind": "concept", "id": "parse_config_contract",
+                "reason": "receipt verification failed",
+                "names": ["parse_config_contract", "parse_config"],
+            }],
+        }))
+        q = "Does `parse_config` validate its input?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "pkg/config.py",
+        }])
+        _mark_batch_reading_list(
+            tmp_path, [_req("pkg/config.py", q)], None, {},
+        )
+        item = _load_rl(tmp_path)["items"][0]
+        assert item["unresolvable"]
+        assert item["unresolvable_reason"] == "receipt verification failed"
+
+    def test_scorecard_records_gate_outcomes(
+        self, tmp_path, monkeypatch, _scorecard_events,
+    ) -> None:
+        import core.concepts.answer_gate as _gate
+        monkeypatch.setattr(
+            _gate, "verify_flip_answer",
+            lambda *a, **kw: {"agreed": False, "reason": "disagreed"},
+        )
+        q = "Does `parse_config` validate its input?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "pkg/config.py",
+        }])
+        dm = {"concepts": [{
+            "id": "parse_config_contract", "provenance": "verbatim",
+            "receipt": {"verified": True},
+        }], "invariants": [], "contracts": []}
+        _mark_batch_reading_list(
+            tmp_path, [_req("pkg/config.py", q)], dm, {},
+            study_client=object(), source_root=tmp_path,
+            scorecard_model="modelX",
+        )
+        assert ("modelX", False, "disagreed") in _scorecard_events
 
     def test_attempted_but_unverified_stays_pending(self, tmp_path) -> None:
         q = "Does `parse_config` validate its input?"
         _seed_reading_list(tmp_path, [{
             "question": q, "source_file": "pkg/config.py",
         }])
-        dm = {"concepts": [{"id": "unrelated_concept"}],
+        dm = {"concepts": [{"id": "unrelated_concept",
+                            "provenance": "verbatim"}],
               "invariants": [], "contracts": []}
         _mark_batch_reading_list(
             tmp_path, [_req("pkg/config.py", q)], dm, {},
@@ -195,13 +437,15 @@ class TestMarkBatchReadingList:
         )
         assert any("CRITICAL assumption unresolvable" in ln for ln in lines)
 
-    def test_invariant_subject_counts_as_evidence(self, tmp_path) -> None:
+    def test_actionable_invariant_counts_as_evidence(self, tmp_path) -> None:
         q = "Does MaxHeaderLen bound the buffer?"
         _seed_reading_list(tmp_path, [{
             "question": q, "source_file": "server/header.go",
         }])
         dm = {"concepts": [],
-              "invariants": [{"subject": "maxheaderlen"}],
+              "invariants": [{"id": "maxheaderlen_bound",
+                              "provenance": "mechanical",
+                              "statement": "len <= MaxHeaderLen"}],
               "contracts": []}
         _mark_batch_reading_list(
             tmp_path, [_req("server/header.go", q)], dm, {},
@@ -252,13 +496,19 @@ def _stub_llm(monkeypatch):
     )
 
 
-def _stub_run_study(monkeypatch, out_dir, concepts):
+def _stub_run_study(monkeypatch, out_dir, concepts, *, tier="mechanical"):
     import core.concepts.study as _study_mod
+
+    tiered = []
+    for c in concepts:
+        c = dict(c)
+        c.setdefault("provenance", tier)
+        tiered.append(c)
 
     def fake_run_study(study_list_path, output_dir, client, **kw):
         (out_dir / "domain-model.json").write_text(json.dumps({
             "version": "1", "target": "", "source_root": "",
-            "concepts": concepts, "invariants": [], "contracts": [],
+            "concepts": tiered, "invariants": [], "contracts": [],
             "bug_patterns": [],
         }))
 

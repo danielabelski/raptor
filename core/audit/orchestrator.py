@@ -8253,38 +8253,198 @@ def _resolve_multilang_requests(
     return failures
 
 
+def _match_domain_entry(
+    domain_model: dict | None,
+    concept_l: str,
+    tail: str,
+) -> tuple[str, str, dict | None, str] | None:
+    """Best domain-model entry matching a question's identifier.
+
+    Returns ``(entry_id, provenance, receipt, description)`` preferring
+    actionable tiers (verbatim/mechanical) over unverified summaries,
+    or None when nothing matches.
+    """
+    if not domain_model or not concept_l:
+        return None
+    from core.concepts.receipts import tier_rank
+
+    candidates: list[tuple[str, str, dict | None, str]] = []
+    for c in domain_model.get("concepts", []):
+        cid = (c.get("id") or "").lower()
+        if cid and (concept_l in cid or (tail and tail in cid)):
+            candidates.append((
+                c.get("id") or "",
+                c.get("provenance") or "",
+                c.get("receipt"),
+                c.get("description") or "",
+            ))
+    for inv in domain_model.get("invariants", []):
+        iid = (inv.get("id") or "").lower()
+        ic = (inv.get("concept") or "").lower()
+        if (iid and (concept_l in iid or (tail and tail in iid))) or (
+            ic and (concept_l in ic or (tail and tail in ic))
+        ):
+            candidates.append((
+                inv.get("id") or "",
+                inv.get("provenance") or "",
+                inv.get("receipt"),
+                inv.get("statement") or "",
+            ))
+    for ct in domain_model.get("contracts", []):
+        fn = (ct.get("function") or "").lower()
+        if fn and (concept_l in fn or (tail and tail == fn)):
+            candidates.append((
+                f"contract:{ct.get('function')}",
+                ct.get("provenance") or "",
+                ct.get("receipt"),
+                ct.get("output_semantics") or ct.get("implication") or "",
+            ))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: tier_rank(c[1]))
+    return candidates[0]
+
+
+def _record_study_scorecard(
+    model: str, agreed: bool, reason: str,
+) -> None:
+    """Log a flip-path study answer to the per-model scorecard
+    (study_question decision class).  Best-effort — never blocks the
+    consumer."""
+    try:
+        from core.llm.scorecard.scorecard import EventType, ModelScorecard
+
+        raptor_dir = os.environ.get("RAPTOR_DIR")
+        path = (
+            Path(raptor_dir) / "out" / "llm_scorecard.json"
+            if raptor_dir else Path("out/llm_scorecard.json")
+        )
+        sc = ModelScorecard(path)
+        sc.record_event(
+            "study_question",
+            model or "default",
+            EventType.STUDY_QUESTION,
+            "correct" if agreed else "incorrect",
+            sample=None if agreed else {"reason": reason[:200]},
+        )
+    except Exception:
+        logger.debug("study scorecard record failed", exc_info=True)
+
+
+def _corpus_has_snippet(concept_l: str, tail: str, study_items: list[dict]) -> bool:
+    """Extract-then-answer check: did mechanical extraction produce
+    ANY snippet for this identifier?"""
+    for it in study_items:
+        if not isinstance(it, dict):
+            continue
+        name = (it.get("name") or "").lower()
+        if name and (
+            name in (tail, concept_l)
+            or concept_l.endswith(("." + name, "::" + name))
+        ):
+            return True
+        defn = (it.get("definition") or "").lower()
+        if tail and tail in defn:
+            return True
+    return False
+
+
+_NO_SNIPPET_REASON = (
+    "no extracted source snippet — the study loop does not answer "
+    "from prior knowledge"
+)
+
+
 def _mark_batch_reading_list(
     out_dir: Path,
     reqs: list[StudyRequest],
     domain_model: dict | None,
     failures: dict[str, str],
-) -> None:
+    *,
+    study_list_path: Path | None = None,
+    source_root: Path | None = None,
+    study_client: Any = None,
+    scorecard_model: str = "",
+) -> set[str]:
     """Post-study reading-list bookkeeping for one batch.
 
     Semantics (pinned by tests):
-    - resolved: the study produced a domain-model concept matching the
-      question's identifier — the assumption was verified.
+    - resolved: an ACTIONABLE-tier answer (receipt-verified verbatim
+      quote, or mechanical extraction) matches the question — and, on
+      the verbatim flip path, survived the independent agreement
+      gate.  Only resolved questions re-enter the review queue.
     - unresolvable(+reason): the resolver reported the question cannot
-      be answered from the source.  Never counted as resolved.
-    - pending: studied but no matching concept landed — attempted yet
+      be answered from the source, the answer's receipt failed
+      verification, or extraction produced no snippet (the study loop
+      never answers from prior knowledge).  Never counted as resolved.
+    - inconclusive: the agreement gate disagreed — the answer is
+      quarantined in the ledger, the item stays pending, no re-review.
+    - pending: studied but no verified answer landed — attempted yet
       unverified is NOT resolved-clean; the item stays visible.
+
+    Every processed question is recorded in study-answers.json with
+    its tier, receipt, and original assumption.  Returns the set of
+    ``file:function`` keys whose questions RESOLVED (re-review
+    eligible).
     """
     from core.concepts.reading_list import ReadingList
+    from core.concepts.receipts import (
+        TIER_LLM_SUMMARIZED,
+        TIER_VERBATIM,
+        is_actionable_tier,
+    )
+    from core.concepts.study_answers import StudyAnswer, append_answers
 
     rl_path = out_dir / "reading-list.json"
     rl = ReadingList.load(rl_path)
 
-    dm_ids: list[str] = []
-    if domain_model:
-        for c in domain_model.get("concepts", []):
-            dm_ids.append(c.get("id", "") or c.get("name", ""))
-        for inv in domain_model.get("invariants", []):
-            dm_ids.append(inv.get("subject", "") or inv.get("concept", ""))
-        for ct in domain_model.get("contracts", []):
-            dm_ids.append(ct.get("function", ""))
-    dm_ids = [d.lower() for d in dm_ids if d]
+    # Study corpus (for spot-checks + extract-then-answer enforcement)
+    study_items: list[dict] = []
+    corpus_loaded = False
+    if study_list_path is not None and Path(study_list_path).is_file():
+        try:
+            import json as _json
+            raw = _json.loads(Path(study_list_path).read_text(
+                encoding="utf-8"))
+            study_items = raw.get("items", []) if isinstance(raw, dict) else []
+            corpus_loaded = True
+        except (OSError, ValueError):
+            study_items = []
 
+    # Receipt-verification discards from run_study
+    discard_names: set[str] = set()
+    discards_path = out_dir / "study-discards.json"
+    if discards_path.is_file():
+        try:
+            import json as _json
+            for d in _json.loads(discards_path.read_text(
+                    encoding="utf-8")).get("discarded", []):
+                for n in [d.get("id"), *(d.get("names") or [])]:
+                    if n:
+                        discard_names.add(str(n).lower())
+        except (OSError, ValueError):
+            pass
+
+    import re as _re
+    eligible: set[str] = set()
+    ledger: list = []
     changed = False
+
+    def _mark_unresolvable(item, req, reason: str, tier: str = "") -> None:
+        nonlocal changed
+        item.mark_unresolvable(reason)
+        _warn_critical_unresolvable(req, reason)
+        changed = True
+        ledger.append(StudyAnswer(
+            question=req.question,
+            source_file=req.source_file,
+            source_function=req.source_function,
+            assumption=req.context or "",
+            tier=tier,
+            status="unresolvable",
+            reason=reason,
+        ))
+
     for req in reqs:
         item = next(
             (
@@ -8296,28 +8456,190 @@ def _mark_batch_reading_list(
         )
         if item is None:
             continue
+        fn_key = f"{req.source_file}:{req.source_function}"
+
         reason = failures.get(req.question)
         if reason:
-            item.mark_unresolvable(reason)
-            _warn_critical_unresolvable(req, reason)
-            changed = True
+            _mark_unresolvable(item, req, reason)
             continue
+
         concept = _extract_concept_from_question(req.question)
         cl = (concept or "").lower()
-        if not cl:
+        tail = _re.split(r"\.|::", cl)[-1] if cl else ""
+
+        # Receipt-check failure: the study answered but the quote did
+        # not verify — the answer was discarded, never delivered.
+        if cl and (cl in discard_names or (tail and tail in discard_names)):
+            _mark_unresolvable(
+                item, req, "receipt verification failed",
+            )
             continue
-        import re as _re
-        tail = _re.split(r"\.|::", cl)[-1]
-        matched = next(
-            (d for d in dm_ids if cl in d or (tail and tail in d)),
-            None,
-        )
-        if matched:
-            item.resolve(matched)
+
+        # Mechanical spot-check: decidable without an LLM — preferred
+        # over any LLM summary.
+        spot = None
+        if study_items:
+            try:
+                from core.concepts.spot_check import spot_check_question
+                spot = spot_check_question(req.question, study_items)
+            except Exception:
+                logger.debug("spot-check failed", exc_info=True)
+        if spot is not None:
+            spot_l = spot.identifier.lower()
+            overrode = _match_domain_entry(
+                domain_model, cl or spot_l, tail or spot_l,
+            ) is not None
+            concept_id = f"spotcheck:{spot.identifier}"
+            item.resolve(concept_id)
             changed = True
-        # else: stays pending — attempted but unverified.
+            eligible.add(fn_key)
+            if overrode:
+                logger.info(
+                    "study-consumer: mechanical spot-check overrode "
+                    "LLM summary for %r", spot.identifier,
+                )
+            _record_study_scorecard(
+                scorecard_model, True, "mechanical spot-check",
+            )
+            ledger.append(StudyAnswer(
+                question=req.question,
+                source_file=req.source_file,
+                source_function=req.source_function,
+                assumption=req.context or "",
+                answer=spot.answer,
+                tier="mechanical",
+                receipt=spot.receipt.to_dict(),
+                status="resolved",
+                resolved_concept_id=concept_id,
+                spot_check_override=overrode,
+                agreement={
+                    "agreed": True,
+                    "reason": "mechanical answer — deterministic, "
+                              "gate skipped",
+                },
+            ))
+            continue
+
+        # Extract-then-answer: no mechanically extracted snippet for
+        # this identifier means the question is unresolvable — the
+        # LLM must never answer it from prior knowledge.
+        if cl and corpus_loaded and not _corpus_has_snippet(
+            cl, tail, study_items,
+        ):
+            _mark_unresolvable(item, req, _NO_SNIPPET_REASON)
+            continue
+
+        entry = _match_domain_entry(domain_model, cl, tail)
+        if entry is None:
+            ledger.append(StudyAnswer(
+                question=req.question,
+                source_file=req.source_file,
+                source_function=req.source_function,
+                assumption=req.context or "",
+                status="pending",
+                reason="studied but produced no matching domain-model "
+                       "concept",
+            ))
+            continue
+        matched_id, provenance, receipt, description = entry
+
+        if not is_actionable_tier(provenance):
+            # Unverified hint only — never resolves, never re-reviews.
+            ledger.append(StudyAnswer(
+                question=req.question,
+                source_file=req.source_file,
+                source_function=req.source_function,
+                assumption=req.context or "",
+                answer=description,
+                tier=provenance or TIER_LLM_SUMMARIZED,
+                status="pending",
+                reason="answer lacks a verified receipt — unverified "
+                       "hint only",
+                resolved_concept_id="",
+            ))
+            continue
+
+        # Agreement gate on the flip-causing (re-review) path.
+        agreement = {
+            "agreed": True,
+            "reason": "mechanical answer — deterministic, gate skipped",
+        }
+        if provenance == TIER_VERBATIM:
+            if study_client is None or source_root is None:
+                agreement = {
+                    "agreed": False,
+                    "reason": "no verification client available",
+                }
+            else:
+                try:
+                    from core.concepts.answer_gate import verify_flip_answer
+                    snippets = [
+                        it for it in study_items
+                        if isinstance(it, dict)
+                        and (it.get("name") or "").lower() in (tail, cl)
+                    ] or study_items[:4]
+                    agreement = verify_flip_answer(
+                        req.question, snippets, receipt,
+                        study_client, Path(source_root),
+                        tier=provenance,
+                    )
+                except Exception:
+                    logger.debug("agreement gate failed", exc_info=True)
+                    agreement = {
+                        "agreed": False,
+                        "reason": "verification call failed",
+                    }
+            _record_study_scorecard(
+                scorecard_model,
+                bool(agreement.get("agreed")),
+                agreement.get("reason") or "",
+            )
+        if not agreement.get("agreed"):
+            logger.info(
+                "study-consumer: flip-causing answer quarantined "
+                "(%s): %s", agreement.get("reason"), req.question,
+            )
+            ledger.append(StudyAnswer(
+                question=req.question,
+                source_file=req.source_file,
+                source_function=req.source_function,
+                assumption=req.context or "",
+                answer=description,
+                tier=provenance,
+                receipt=receipt,
+                status="inconclusive",
+                reason=agreement.get("reason") or "",
+                agreement=agreement,
+            ))
+            continue
+
+        item.resolve(matched_id)
+        changed = True
+        eligible.add(fn_key)
+        ledger.append(StudyAnswer(
+            question=req.question,
+            source_file=req.source_file,
+            source_function=req.source_function,
+            assumption=req.context or "",
+            answer=description,
+            tier=provenance,
+            receipt=receipt,
+            status="resolved",
+            resolved_concept_id=matched_id,
+            agreement=agreement,
+        ))
+
     if changed:
         rl.save(rl_path)
+    if ledger:
+        try:
+            append_answers(out_dir, ledger)
+        except OSError:
+            logger.warning(
+                "study-consumer: answer ledger write failed",
+                exc_info=True,
+            )
+    return eligible
 
 
 # Drain policy for the study consumer (all seconds):
@@ -8908,19 +9230,29 @@ def _study_consumer_loop(
         # Mark studied concepts so the suppression gate can release
         _mark_concepts_studied(study_queue, fresh)
 
-        # Reading-list bookkeeping: resolved only when the study
-        # produced a matching domain-model concept; unresolvable (with
-        # reason) when the resolver said the question cannot be
-        # answered from the source; otherwise the item stays pending —
-        # attempted but unverified is NOT resolved-clean.  Runs after
-        # every study batch, before the re-review eligibility checks
-        # below (which can continue/break past it).
+        # Reading-list bookkeeping + answer ledger: resolution is
+        # tier-gated (verbatim requires a verified receipt AND
+        # agreement-gate survival; mechanical spot-checks pass
+        # directly); receipt failures / missing snippets become
+        # unresolvable; everything else stays pending as an
+        # unverified hint.  Runs after every study batch, before the
+        # re-review eligibility checks below (which can
+        # continue/break past it).  Only RESOLVED questions may
+        # trigger re-reviews.
+        eligible_keys: set[str] = set()
         try:
-            _mark_batch_reading_list(
+            eligible_keys = _mark_batch_reading_list(
                 config.out_dir,
                 c_reqs + ml_reqs,
                 shared.domain_model,
                 ml_failures,
+                study_list_path=study_list_path,
+                source_root=Path(config.study_root or config.target_path),
+                study_client=study_client,
+                scorecard_model=(
+                    config.models[0]
+                    if config.models else "default"
+                ),
             )
         except Exception:
             logger.debug(
@@ -8951,6 +9283,16 @@ def _study_consumer_loop(
             dm,
             shared.domain_model if n_after > n_before else None,
         )
+        # Tier gate: only receipt-verified / mechanical concepts may
+        # widen the re-review set beyond the originating functions.
+        if new_concept_names and shared.domain_model:
+            from core.concepts.receipts import is_actionable_tier
+            actionable_names = {
+                (c.get("id") or c.get("name") or "").lower()
+                for c in shared.domain_model.get("concepts", [])
+                if is_actionable_tier(c.get("provenance") or "")
+            }
+            new_concept_names &= actionable_names
 
         if re_review_count >= _STUDY_MAX_RE_REVIEWS:
             logger.info(
@@ -8959,15 +9301,12 @@ def _study_consumer_loop(
             )
             continue
 
-        # Collect re-review candidates: originating functions +
-        # broader concept-scoped functions from ConceptIndex.
-        # Unsupported-language and unresolvable questions gained no
-        # knowledge — their originating functions are not re-reviewed.
-        source_keys = {
-            f"{r.source_file}:{r.source_function}"
-            for r in c_reqs + ml_reqs
-            if r.question not in ml_failures
-        }
+        # Collect re-review candidates: originating functions of
+        # RESOLVED questions + broader concept-scoped functions from
+        # ConceptIndex.  Unresolvable / inconclusive / unverified
+        # questions gained no verified knowledge — their originating
+        # functions are not re-reviewed.
+        source_keys = set(eligible_keys)
 
         ci = (concept_index_ref[0]
               if concept_index_ref and concept_index_ref[0]

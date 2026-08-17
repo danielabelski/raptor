@@ -369,8 +369,8 @@ Examples:
             logger.debug("Capability probe failed, falling back to legacy: %s", e)
 
     if use_orchestrator:
+        from core.llm.factory import get_client
         from packages.fuzzing import FuzzingOrchestrator
-        from packages.llm_analysis import get_client
 
         llm = None
         try:

@@ -40,7 +40,7 @@ logger = get_logger()
 
 def get_llm_client():
     """Initialize LLM client from existing RAPTOR system."""
-    from packages.llm_analysis import get_client
+    from core.llm.factory import get_client
     return get_client()
 
 

@@ -524,16 +524,47 @@ def _candidate_callees(hypothesis: str, segment: str) -> list[str]:
     ]
 
 
+def _same_file_wur(source: str, tail: str) -> bool:
+    """True when the TU itself declares ``tail`` with a
+    warn_unused_result spelling (kernel ``__must_check``, glibc
+    ``__wur``, ``[[nodiscard]]``, …) — the target's own header is the
+    fallibility witness."""
+    try:
+        from packages.source_intel.aliases import wur_alias_in
+    except ImportError:
+        return False
+    lines = source.splitlines()
+    decl_re = re.compile(rf"\b{re.escape(tail)}\s*\(")
+    for idx, line in enumerate(lines):
+        if not decl_re.search(line):
+            continue
+        window = "\n".join(lines[max(0, idx - 2):idx + 1])
+        if wur_alias_in(window):
+            return True
+    return False
+
+
 def _c_fallibility(
-    callee: str, role: RoleEvidence, role_context: RoleContext,
+    callee: str,
+    role: RoleEvidence,
+    role_context: RoleContext,
+    source: str = "",
 ) -> dict[str, Any] | None:
-    """Leg 2b for C: wur fact, learned/registry return contract, or
-    Tier-A membership."""
+    """Leg 2b for C: wur fact (harvested or from the TU's own
+    declaration), learned/registry return contract, or Tier-A
+    membership."""
     tail = _function_tail(callee)
     if tail in role_context.wur_functions:
         return {
             "callee": callee,
             "evidence": f"wur:{tail}",
+            "types": [],
+        }
+    if source and _same_file_wur(source, tail):
+        return {
+            "callee": callee,
+            "evidence": f"wur:{tail} (declared warn_unused_result in "
+                        "this TU)",
             "types": [],
         }
     if role.contract:
@@ -611,7 +642,7 @@ def _run_c_check(
     tristate = role.contract.startswith("tristate")
     base_rule = RULE_TRISTATE if tristate else RULE_IGNORED_RETURN
 
-    fallible = _c_fallibility(callee, role, role_context)
+    fallible = _c_fallibility(callee, role, role_context, source)
     if fallible is None:
         return _inconclusive(
             REASON_FALLIBILITY_UNRESOLVED,

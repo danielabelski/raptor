@@ -809,6 +809,33 @@ class TestVerdictsC:
         assert res.fallible is not None
         assert res.fallible["evidence"] == "wur:validate_tx"
 
+    def test_tu_declared_wur_supplies_fallibility(self, tmp_path):
+        # The target's OWN header attribute is the fallibility witness
+        # — no harvested facts passed in.
+        src = (
+            "__attribute__((warn_unused_result))\n"
+            "int validate_tx(struct tx *t);\n"
+            "\n"
+            "int commit(struct tx *t) {\n"
+            "    validate_tx(t);\n"
+            "    return apply(t);\n"
+            "}\n"
+        )
+        _write(tmp_path, "src/tx.c", src)
+        out = _out_dir_with_spec(
+            tmp_path, "validate_tx", tier="header_backed",
+        )
+        res = run_fail_open_check(
+            tmp_path, "src/tx.c", "commit",
+            "the return value of validate_tx is ignored and the "
+            "transaction is applied anyway",
+            role_context=RoleContext(out_dir=out),
+        )
+        assert res.outcome == "confirmed"
+        assert res.fallible is not None
+        assert res.fallible["evidence"].startswith("wur:validate_tx")
+        assert "TU" in res.fallible["evidence"]
+
 
 class TestCalibrationCases:
     """The two operator calibration shapes: both must confirm."""

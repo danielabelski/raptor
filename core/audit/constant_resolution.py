@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 _IF_RE = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef)\b", re.MULTILINE)
 _ENDIF_RE = re.compile(r"^\s*#\s*endif\b", re.MULTILINE)
-_DEFINE_LINE_RE = re.compile(r"^\s*#\s*define\s+(\w+)", re.MULTILINE)
 
 _IDENT_RE = re.compile(r"[a-zA-Z_]")
 _SAFE_ARITH_RE = re.compile(

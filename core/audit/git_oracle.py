@@ -54,6 +54,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.git.clone import safe_git_readonly_command
+from core.git.security_fixes import (
+    GREP_UNION as _GREP_UNION,
+)
+from core.git.security_fixes import (
+    SECURITY_FIX_PATTERNS,
+    match_categories,
+)
 
 from ._util import safe_join
 
@@ -74,33 +81,12 @@ NOT_A_VERDICT_NOTE = (
     "never a confirmed/refuted verdict"
 )
 
-# Security-fix vocabulary.  Each entry is (label, python_regex) — the
-# labels surface as ``matched_patterns`` on the records; the union is
-# compiled into one extended regex for `git log --grep -i -E`.
-SECURITY_FIX_PATTERNS: tuple = (
-    ("cve", r"CVE-[0-9]{4}-[0-9]+"),
-    ("overflow", r"overflow"),
-    ("underflow", r"underflow"),
-    ("use_after_free", r"use[- ]after[- ]free"),
-    ("double_free", r"double[- ]free"),
-    ("out_of_bounds", r"out[- ]of[- ]bounds"),
-    ("null_deref", r"null (pointer )?deref"),
-    ("uninitialized", r"uninitial[a-z]*"),
-    ("security", r"security"),
-    ("sanitize", r"saniti[sz]"),
-    ("injection", r"injection"),
-    ("vulnerability", r"vulnerab"),
-    ("exploit", r"exploit"),
-    ("race_condition", r"race condition|toctou"),
-    ("memory_corruption", r"memory (corruption|safety)"),
-    ("bounds_check", r"bounds check"),
-)
-
-_GREP_UNION = "|".join(p for _label, p in SECURITY_FIX_PATTERNS)
-_LABEL_RES = tuple(
-    (label, re.compile(pattern, re.IGNORECASE))
-    for label, pattern in SECURITY_FIX_PATTERNS
-)
+# Security-fix vocabulary — shared data owned by
+# :mod:`core.git.security_fixes` ((regex, category) pairs; categories
+# surface as ``matched_patterns`` on the records, the union regex
+# feeds `git log --grep -i -E`).  ``SECURITY_FIX_PATTERNS`` is
+# re-exported above for backwards compatibility; extend the shared
+# module, not this one.
 
 # Per-invocation hardening flags.  Env-level hygiene (get_safe_git_env)
 # cannot suppress hostile per-repo .git/config — git reads it
@@ -254,10 +240,9 @@ def _is_git_repo(target_path: Path) -> bool:
 
 
 def _match_labels(subject: str, body: str) -> tuple:
-    hay = f"{subject}\n{body}"
-    return tuple(
-        label for label, rx in _LABEL_RES if rx.search(hay)
-    )
+    """Categories matching subject+body — thin shim over the shared
+    classifier (kept because tests and parsers address it locally)."""
+    return match_categories(f"{subject}\n{body}")
 
 
 def _parse_log_records(stdout: str) -> list:

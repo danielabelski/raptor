@@ -20,7 +20,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from .condition_smt import DomainVocabulary
@@ -31,13 +31,13 @@ _PACK_DIR = Path(__file__).resolve().parent / "data" / "vocab_packs"
 
 # Kernel out-of-tree module Makefiles assign kernel objects via
 # obj-m / obj-y / obj-$(CONFIG_...).
-_KBUILD_OBJ_RE = re.compile(r"^obj-(?:[my]|\$\(CONFIG_\w+\))\s*[+:]?=", re.M)
+_KBUILD_OBJ_RE = re.compile(r"^obj-(?:[my]|\$\(CONFIG_\w+\))\s*[+:]?=", re.MULTILINE)
 
-_pack_cache: dict[str, "DomainVocabulary | None"] = {}
+_pack_cache: dict[str, DomainVocabulary | None] = {}
 _kernel_tree_cache: dict[str, bool] = {}
 
 
-def load_pack(name: str) -> "Optional[DomainVocabulary]":
+def load_pack(name: str) -> DomainVocabulary | None:
     """Load a vocab pack by name into a DomainVocabulary (cached).
 
     Returns None (with a logged warning) when the pack file is missing
@@ -50,7 +50,7 @@ def load_pack(name: str) -> "Optional[DomainVocabulary]":
     return vocab
 
 
-def _load_pack_uncached(name: str) -> "Optional[DomainVocabulary]":
+def _load_pack_uncached(name: str) -> DomainVocabulary | None:
     from .condition_smt import DomainVocabulary
 
     path = _PACK_DIR / f"{name}.json"
@@ -94,7 +94,7 @@ def _load_pack_uncached(name: str) -> "Optional[DomainVocabulary]":
     )
 
 
-def is_kernel_tree(target_path: "str | Path") -> bool:
+def is_kernel_tree(target_path: str | Path) -> bool:
     """Heuristic: does the target look like a Linux kernel tree/module?
 
     Markers (any one suffices): a Kconfig or Kbuild file at the root
@@ -114,9 +114,7 @@ def is_kernel_tree(target_path: "str | Path") -> bool:
 
     result = False
     try:
-        if (root / "include" / "linux").is_dir():
-            result = True
-        elif (root / "Kconfig").is_file() or (root / "Kbuild").is_file():
+        if (root / "include" / "linux").is_dir() or (root / "Kconfig").is_file() or (root / "Kbuild").is_file():
             result = True
         else:
             makefile = root / "Makefile"
@@ -132,7 +130,7 @@ def is_kernel_tree(target_path: "str | Path") -> bool:
     return result
 
 
-def pack_for_target(target_path: "str | Path") -> "Optional[DomainVocabulary]":
+def pack_for_target(target_path: str | Path) -> DomainVocabulary | None:
     """Return the vocab pack matching the target kind, if any."""
     if is_kernel_tree(target_path):
         return load_pack("linux_kernel")

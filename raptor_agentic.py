@@ -1290,6 +1290,28 @@ Examples:
             "Slow; requires --binary."
         ),
     )
+    # Keep in sync with core/analysis/binary_oracle_cli.add_binary_args
+    # (raptor_codeql.py takes the whole set from that helper; this CLI
+    # declares the flags inline because its --binary help documents the
+    # agentic-specific mitigation-analysis use). The downstream code
+    # has always read no_binary_oracle defensively via getattr, and the
+    # >=50%-suppression warning tells operators to re-run with this
+    # flag — it must actually parse.
+    parser.add_argument(
+        "--no-binary-oracle", action="store_true",
+        dest="no_binary_oracle",
+        help=(
+            "Disable binary-oracle reachability filtering for this run. "
+            "Default behaviour auto-detects locally-built debug binaries "
+            "(untracked by git — repo-committed binaries skipped as "
+            "unverified provenance) and uses them to filter dead-code "
+            "findings. Pass this flag for library-only targets with no "
+            "main binary, runs where you want every finding unfiltered "
+            "for review, or when a build mismatch is causing the oracle "
+            "to over-suppress. Overrides --binary / --binary-auto with "
+            "a warning if combined."
+        ),
+    )
     parser.add_argument("--check-mitigations", action="store_true",
                        help="Run mitigation analysis before scanning (for binary exploit targets)")
     parser.add_argument("--skip-mitigation-checks", action="store_true",

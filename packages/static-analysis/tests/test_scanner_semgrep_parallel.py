@@ -20,6 +20,19 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from core.config import RaptorConfig
+
+# The dispatchers under test resolve baseline registry packs via
+# ``RaptorConfig.get_semgrep_config`` and then drop unresolved
+# (``p/...``) packs when semgrep.dev is unreachable — so on hosts
+# without registry access (CI: no cache, no network, no proxy) every
+# baseline-pack assertion below would fail. Pin the cached path with
+# the stub registry cache so pack resolution is local and
+# deterministic on every host (see conftest.py).
+pytestmark = pytest.mark.usefixtures("stub_semgrep_registry_cache")
+
 
 # packages/static-analysis has a hyphen — load via importlib.
 _SCANNER_PATH = Path(__file__).parent.parent / "scanner.py"
@@ -32,8 +45,6 @@ _spec.loader.exec_module(_scanner_mod)
 
 semgrep_scan_parallel = _scanner_mod.semgrep_scan_parallel
 semgrep_scan_sequential = _scanner_mod.semgrep_scan_sequential
-
-from core.config import RaptorConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +216,7 @@ class TestSemgrepScanParallelSilentDropDetection:
             # Return success + sarif path — but never write the file.
             return str(sarif), True
         mock_single.side_effect = lying_stub
-        paths, failed = semgrep_scan_parallel(tmp_path, [], tmp_path, timeout=10)
+        _paths, failed = semgrep_scan_parallel(tmp_path, [], tmp_path, timeout=10)
         # Every submitted pack name appears in failed (since none
         # produced an on-disk SARIF). Worker returned success so
         # `failure_count` from the future loop alone would have
@@ -232,7 +243,7 @@ class TestSemgrepScanParallelSilentDropDetection:
             return str(sarif), True
 
         mock_single.side_effect = mixed_stub
-        paths, failed = semgrep_scan_parallel(tmp_path, [], tmp_path, timeout=10)
+        _paths, failed = semgrep_scan_parallel(tmp_path, [], tmp_path, timeout=10)
         # First pack landed → not in failed. Remaining baselines → in failed.
         # (The exact count is len(BASELINE_SEMGREP_PACKS) - 1; threading
         # makes the call-order non-deterministic so we don't assert which
@@ -267,7 +278,7 @@ class TestSemgrepScanSequential:
             sarif = out_dir / f"semgrep_{suffix}.sarif"
             return str(sarif), True  # claim success, never write
         mock_single.side_effect = lying_stub
-        paths, failed = semgrep_scan_sequential(tmp_path, [], tmp_path, timeout=10)
+        _paths, failed = semgrep_scan_sequential(tmp_path, [], tmp_path, timeout=10)
         baseline_names = {n for n, _ in RaptorConfig.BASELINE_SEMGREP_PACKS}
         assert baseline_names.issubset(set(failed))
 

@@ -2514,6 +2514,88 @@ _STRATEGY_EXEMPLARS: dict[str, list[dict[str, str]]] = {
                 "real bounds are checked."
             ),
         },
+        {
+            "cve": "CVE-2020-12271",
+            "title": "pre-auth SQL injection via direct API parameter",
+            "reasoning": (
+                "A request parameter is concatenated into a SQL query. "
+                "The web UI validates the field, but the API endpoint "
+                "accepts the same parameter directly. Assumption: 'the "
+                "frontend sanitizes input' is false for every caller "
+                "that is not the frontend — parameterize at the query, "
+                "not at the form."
+            ),
+        },
+        {
+            "cve": "CVE-2020-11022",
+            "title": "jQuery htmlPrefilter sanitizer-then-transform XSS",
+            "reasoning": (
+                "Input is sanitized, THEN a regex rewrites self-closing "
+                "tags before DOM insertion — the transform re-creates "
+                "executable markup the sanitizer already approved. "
+                "Assumption: 'sanitized HTML stays sanitized' fails "
+                "when any transformation runs after the sanitizer."
+            ),
+        },
+        {
+            "cve": "CVE-2021-26855",
+            "title": "Exchange proxy SSRF via client-controlled routing",
+            "reasoning": (
+                "The frontend proxies requests to a backend chosen from "
+                "a client-supplied cookie value. Assumption: 'routing "
+                "metadata is server-generated' — any client-influenced "
+                "host, URL, or route identifier that reaches an outbound "
+                "request is an SSRF primitive."
+            ),
+        },
+        {
+            "cve": "CVE-2021-41773",
+            "title": "Apache path normalization ordering traversal",
+            "reasoning": (
+                "The traversal check runs BEFORE percent-decoding, so "
+                "%2e%2e/ passes the check and decodes to ../ afterwards. "
+                "The checked value and the used value diverge — "
+                "normalize fully, then validate, never the reverse."
+            ),
+        },
+        {
+            "cve": "CVE-2014-6271",
+            "title": "Shellshock env-value parsed past the data boundary",
+            "reasoning": (
+                "bash parses function definitions from environment "
+                "values and keeps interpreting past the closing brace, "
+                "executing trailing commands. Assumption: 'this input "
+                "is data' fails when the parser hands any suffix of it "
+                "to an evaluator — attacker-controlled strings reaching "
+                "shell/eval/interpreter contexts are code."
+            ),
+        },
+    ],
+    "integer": [
+        {
+            "cve": "CVE-2021-33909",
+            "title": "seq_file size_t→int truncation to OOB write",
+            "reasoning": (
+                "A buffer offset computed as size_t is stored into an "
+                "int. A path longer than 2GB makes the conversion "
+                "negative, and the subtraction that follows lands the "
+                "write out of bounds. Assumption: 'this value fits the "
+                "narrower type' — every size_t→int/u64→u32 assignment "
+                "on an attacker-influenceable size is suspect."
+            ),
+        },
+        {
+            "cve": "CVE-2022-23772",
+            "title": "Rat.SetString unchecked exponent arithmetic",
+            "reasoning": (
+                "Go's math/big Rat.SetString multiplies a parsed "
+                "exponent without an overflow check; a crafted string "
+                "drives an uncontrolled allocation. Assumption: 'parsed "
+                "numbers are reasonable' — arithmetic on any value "
+                "derived from input needs explicit bounds before it "
+                "sizes memory or indexes."
+            ),
+        },
     ],
     "concurrency": [
         {

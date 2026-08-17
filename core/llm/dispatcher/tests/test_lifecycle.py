@@ -89,3 +89,34 @@ class TestLlmDispatcherInRun:
                 sock_dir_holder["path"] = d._sock_dir
                 raise RuntimeError("boom")
         assert not sock_dir_holder["path"].exists()
+
+
+class TestEnsureInprocessDispatcherEnv:
+    def test_noop_when_route_exists(self, monkeypatch):
+        from core.llm.dispatcher.lifecycle import (
+            ensure_inprocess_dispatcher_env,
+        )
+        monkeypatch.setenv("RAPTOR_LLM_SOCKET", "/tmp/existing.sock")
+        assert ensure_inprocess_dispatcher_env() is None
+
+    def test_starts_and_exports_route(self, monkeypatch):
+        from core.llm.dispatcher.lifecycle import (
+            ensure_inprocess_dispatcher_env,
+        )
+        monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+        monkeypatch.delenv("RAPTOR_LLM_TOKEN_FD", raising=False)
+        d = ensure_inprocess_dispatcher_env(label="test-inproc")
+        try:
+            assert d is not None
+            import os
+            sock = os.environ["RAPTOR_LLM_SOCKET"]
+            assert sock == str(d.socket_path)
+            fd = int(os.environ["RAPTOR_LLM_TOKEN_FD"])
+            # The exported FD carries a readable token, same contract
+            # spawn_worker gives a child process.
+            from core.llm.dispatcher.client import read_token
+            token = read_token(fd)
+            assert token
+        finally:
+            if d is not None:
+                d.shutdown()

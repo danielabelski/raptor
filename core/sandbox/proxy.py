@@ -73,13 +73,26 @@ import asyncio
 import atexit
 import contextlib
 import ipaddress
+import itertools
 import logging
 import socket
 import threading
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+# Module-top so the import doesn't run on every CONNECT — the proxy
+# tunnel handler used to do `from core.security.log_sanitisation
+# import has_nonprintable` inline on the hot path. Cached after the
+# first call but still a dict lookup + module attribute access per
+# request.
+from core.security.log_sanitisation import has_nonprintable
+
+# Process-unique lane ids. Labels are NOT unique (two concurrent
+# contexts may share caller_label="sandbox"), so event->buffer
+# subscription matching keys on this id, never the label.
+_LANE_IDS = itertools.count(1)
 
 
 @dataclass
@@ -99,13 +112,8 @@ class _Lane:
 
     label: str
     audit_log_only: bool = False
+    lane_id: int = field(default_factory=lambda: next(_LANE_IDS))
 
-# Module-top so the import doesn't run on every CONNECT — the proxy
-# tunnel handler used to do `from core.security.log_sanitisation
-# import has_nonprintable` inline on the hot path. Cached after the
-# first call but still a dict lookup + module attribute access per
-# request.
-from core.security.log_sanitisation import has_nonprintable
 
 logger = logging.getLogger(__name__)
 
@@ -497,8 +505,10 @@ class EgressProxy:
         #
         # Per-sandbox buffers. Each active sandbox() context registers
         # via register_sandbox(), receives a token, and on exit reads
-        # back its accumulated event list via unregister_sandbox(). The
-        # proxy fans every recorded event into every registered buffer.
+        # back its accumulated event list via unregister_sandbox().
+        # Fan-out is lane-aware (D3): run-global buffers get every
+        # event; lane-subscribed buffers get only their own lane's
+        # events (see _record for the rule).
         # Per-sandbox buffers (rather than one shared ring) eliminate
         # the flood-masks-attack evasion of the old time-windowed deque
         # design: a child making 10 000 CONNECTs to allow-listed hosts
@@ -508,6 +518,12 @@ class EgressProxy:
         # ~300 bytes per event per active sandbox.
         self._sandbox_buffers: dict = {}
         self._sandbox_labels: dict = {}
+        # Per-token lane subscription (lane_id or None). None = the
+        # run-global view: the buffer receives EVERY event (the
+        # pre-lane fan-out behaviour). A lane_id-subscribed buffer
+        # receives only its own lane's events, so concurrent runs no
+        # longer see each other's would-deny records (design doc D3).
+        self._sandbox_lane_subs: dict = {}
         self._next_token = 0
         self._buffer_lock = threading.Lock()
         # Atomic snapshot of the buffer-list refs for the hot path.
@@ -525,7 +541,8 @@ class EgressProxy:
         # caller's view — same end-state as the previous design where
         # the late event would have been recorded into a buffer the
         # caller had already left behind.
-        self._sandbox_buffers_snapshot: tuple[list, ...] = ()
+        # Snapshot entries are (buffer, lane_subscription) pairs.
+        self._sandbox_buffers_snapshot: tuple = ()
 
         # Synchronise startup: the thread runs the asyncio loop and signals
         # `_ready` once the server is bound and port is known. The calling
@@ -848,27 +865,60 @@ class EgressProxy:
         with self._hosts_lock:
             return host.lower() in self._allowed_hosts
 
-    def register_sandbox(self, caller_label: str | None = None) -> int:
+    def register_sandbox(self, caller_label: str | None = None,
+                         lane_key: "str | int | None" = None) -> int:
         """Register an active sandbox and receive a token.
 
-        While registered, every tunnel event the proxy records is
-        fanned into this sandbox's private event list. `caller_label`
+        While registered, tunnel events the proxy records are fanned
+        into this sandbox's private event list. `caller_label`
         (if provided) is stamped onto each event as `event["caller"]`
         so post-mortem filtering can separate, e.g., claude-sub-agent
         traffic from codeql-pack-download even when they share the
         proxy singleton.
 
+        ``lane_key`` scopes the buffer to ONE lane (the unix socket
+        path or TCP lane port the caller's sandbox transport rides):
+        only events attributed to that lane land in this buffer, so
+        concurrent runs no longer see each other's would-deny records.
+        With ``lane_key=None`` (default) the buffer is run-global and
+        receives every event — the pre-lane behaviour, and the home
+        for events that carry no lane attribution (main-listener
+        traffic, handler errors): un-laned events are never dropped
+        from the global view, and never leak into lane-scoped views.
+
+        Fail-open on lookup miss BY DESIGN for the audit trail: a
+        ``lane_key`` that matches no live lane degrades to the
+        run-global subscription (over-capture, never under-capture) —
+        the caller keeps a complete event view rather than a silently
+        empty one.
+
         Must be paired with `unregister_sandbox(token)` — typically via
         try/finally around the sandboxed subprocess invocation. The
         token is opaque; callers must not inspect it.
         """
+        lane_sub = None
+        if lane_key is not None:
+            with self._lanes_lock:
+                lane = (self._unix_lanes.get(lane_key)
+                        if isinstance(lane_key, str)
+                        else self._tcp_lanes.get(lane_key))
+            if lane is not None:
+                lane_sub = lane.lane_id
+            else:
+                logger.warning(
+                    "egress proxy: register_sandbox lane_key %r matches "
+                    "no live lane — buffer degrades to the run-global "
+                    "view (over-capture, never dropped).", lane_key,
+                )
         with self._buffer_lock:
             self._next_token += 1
             token = self._next_token
             self._sandbox_buffers[token] = []
             self._sandbox_labels[token] = caller_label
+            self._sandbox_lane_subs[token] = lane_sub
             self._sandbox_buffers_snapshot = tuple(
-                self._sandbox_buffers.values()
+                (buf, self._sandbox_lane_subs[tok])
+                for tok, buf in self._sandbox_buffers.items()
             )
             return token
 
@@ -891,8 +941,10 @@ class EgressProxy:
         with self._buffer_lock:
             events = self._sandbox_buffers.pop(token, [])
             label = self._sandbox_labels.pop(token, None)
+            self._sandbox_lane_subs.pop(token, None)
             self._sandbox_buffers_snapshot = tuple(
-                self._sandbox_buffers.values()
+                (buf, self._sandbox_lane_subs[tok])
+                for tok, buf in self._sandbox_buffers.items()
             )
             # Pre-fix the copy `[{**e, "caller": label} for e in events]`
             # happened OUTSIDE the lock. Per the docstring some event
@@ -933,7 +985,19 @@ class EgressProxy:
             event.update(**fields)
 
     def _record(self, event: dict) -> None:
-        """Fan a tunnel event into every registered sandbox's buffer.
+        """Fan a tunnel event into the subscribed sandbox buffers.
+
+        Fan-out rule (design doc D3 — lane-scoped buffers):
+
+          - run-global buffers (registered with ``lane_key=None``)
+            receive EVERY event — the pre-lane behaviour;
+          - lane-subscribed buffers receive only events whose
+            ``lane_id`` matches their subscription, so concurrent
+            runs' events segregate;
+          - an event with no lane attribution (``lane_id`` absent or
+            None: main-listener traffic, handler errors) goes to the
+            run-global buffers only — never dropped from the global
+            view, never leaked into another run's lane view.
 
         Each buffer holds a REFERENCE to the same event dict, NOT a
         copy. That's deliberate: the tunnel handler records at CONNECT
@@ -954,8 +1018,10 @@ class EgressProxy:
         Under bursty traffic this avoids serialising every recorder on
         a single mutex shared with register/unregister.
         """
-        for buf in self._sandbox_buffers_snapshot:
-            buf.append(event)
+        lane_id = event.get("lane_id")
+        for buf, sub in self._sandbox_buffers_snapshot:
+            if sub is None or (lane_id is not None and sub == lane_id):
+                buf.append(event)
 
     async def _cached_getaddrinfo(self, host: str, port: int) -> list:
         """Resolve `host:port` with a TTL cache.
@@ -1380,6 +1446,11 @@ class EgressProxy:
             "t": t_start, "host": None, "port": None,
             "result": None, "reason": None, "resolved_ip": None,
             "lane": lane.label if lane is not None else "main",
+            # Subscription key for lane-scoped buffers (labels are not
+            # unique across concurrent contexts; the id is). None =
+            # main listener — such events reach only run-global
+            # (unsubscribed) buffers.
+            "lane_id": lane.lane_id if lane is not None else None,
             "bytes_c2u": 0, "bytes_u2c": 0, "duration": 0.0,
         }
 

@@ -2105,8 +2105,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # per-sandbox dict would grow unboundedly across a long
         # session with flaky sandboxes.
         try:
+            # Lane-scoped buffer (D3): subscribe to THIS context's
+            # transport so concurrent runs' events segregate. No lane
+            # (bind failure / advisory tier) degrades to the
+            # run-global view — over-capture, never dropped.
             proxy_token = (
-                proxy_instance.register_sandbox(caller_label=caller_label)
+                proxy_instance.register_sandbox(
+                    caller_label=caller_label,
+                    lane_key=(_proxy_unix_path if _use_proxy_netns
+                              else _proxy_tcp_lane_port),
+                )
                 if proxy_instance is not None else None
             )
             if spawn_eligible and use_seatbelt:
@@ -2854,11 +2862,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     _block_token: int | None = None
     if (use_egress_proxy and _will_engage_audit and output
             and proxy_instance is not None):
+        # Same lane subscription as the per-spawn buffers (D3): the
+        # cm-block view collects THIS context's would-deny records,
+        # not a concurrent run's.
         _block_token = proxy_instance.register_sandbox(
             caller_label=(
                 f"{caller_label}:cm-block" if caller_label
                 else "sandbox:cm-block"
             ),
+            lane_key=(_proxy_unix_path if _use_proxy_netns
+                      else _proxy_tcp_lane_port),
         )
     if use_egress_proxy and _will_engage_audit:
         # Scope the leniency to THIS context's lane. Concurrent

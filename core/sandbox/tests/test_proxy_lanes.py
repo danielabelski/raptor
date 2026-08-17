@@ -206,8 +206,9 @@ class TestContextWiring:
             def release_audit_log_only(self):
                 self.calls.append(("release_audit",))
 
-            def register_sandbox(self, caller_label=None):
-                self.calls.append(("register", caller_label))
+            def register_sandbox(self, caller_label=None,
+                                 lane_key=None):
+                self.calls.append(("register", caller_label, lane_key))
                 return 1
 
             def unregister_sandbox(self, token):
@@ -242,3 +243,129 @@ class TestContextWiring:
         # Teardown clears the bit and closes the lane.
         assert ("set_lane_audit", 18081, False) in fake.calls
         assert ("close_tcp_lane", 18081) in fake.calls
+
+
+class TestLaneScopedEventBuffers:
+    """D3: buffers subscribe by lane. Pre-fix every event fanned into
+    EVERY registered buffer, so concurrent runs saw each other's
+    would-deny records."""
+
+    def test_live_events_segregate_across_lanes(self, reset_proxy,
+                                                tmp_path):
+        proxy = proxy_mod.EgressProxy(allowed_hosts=set())
+        path_a = str(tmp_path / "a.sock")
+        path_b = str(tmp_path / "b.sock")
+        try:
+            proxy.bind_unix(path_a, label="run-a")
+            proxy.bind_unix(path_b, label="run-b")
+            tok_a = proxy.register_sandbox(caller_label="run-a",
+                                           lane_key=path_a)
+            tok_b = proxy.register_sandbox(caller_label="run-b",
+                                           lane_key=path_b)
+            tok_g = proxy.register_sandbox(caller_label="global")
+
+            assert _connect_unix(path_a, "a-target.invalid:443") == 403
+            assert _connect_unix(path_b, "b-target.invalid:443") == 403
+
+            ev_a = proxy.unregister_sandbox(tok_a)
+            ev_b = proxy.unregister_sandbox(tok_b)
+            ev_g = proxy.unregister_sandbox(tok_g)
+            # Each lane-scoped buffer holds ONLY its own lane's event.
+            assert {e["host"] for e in ev_a} == {"a-target.invalid"}
+            assert {e["lane"] for e in ev_a} == {"run-a"}
+            assert {e["host"] for e in ev_b} == {"b-target.invalid"}
+            assert {e["lane"] for e in ev_b} == {"run-b"}
+            # The run-global buffer preserves the full pre-lane view.
+            assert {e["host"] for e in ev_g} == {
+                "a-target.invalid", "b-target.invalid"}
+        finally:
+            proxy.stop()
+
+    def test_unlaned_event_reaches_global_buffer_only(self, reset_proxy,
+                                                      tmp_path):
+        """Fail-closed direction: an event with no lane attribution
+        (main listener, handler errors) lands in the run-global
+        buffer — never dropped, never leaked into a lane view."""
+        proxy = proxy_mod.EgressProxy(allowed_hosts=set())
+        path = str(tmp_path / "a.sock")
+        try:
+            proxy.bind_unix(path, label="run-a")
+            tok_lane = proxy.register_sandbox(caller_label="run-a",
+                                              lane_key=path)
+            tok_g = proxy.register_sandbox(caller_label="global")
+
+            # Main-listener CONNECT: lane is None -> lane_id None.
+            assert _connect_tcp(proxy.port, _DENIED) == 403
+            # Handler-error-shaped event with NO lane keys at all.
+            proxy._record({
+                "t": 0.0, "host": None, "port": None,
+                "result": "handler_error", "reason": "boom",
+                "resolved_ip": None,
+                "bytes_c2u": 0, "bytes_u2c": 0, "duration": 0.0,
+            })
+
+            ev_lane = proxy.unregister_sandbox(tok_lane)
+            ev_g = proxy.unregister_sandbox(tok_g)
+            assert ev_lane == []
+            results = [e["result"] for e in ev_g]
+            assert "denied_host" in results
+            assert "handler_error" in results
+        finally:
+            proxy.stop()
+
+    def test_lane_key_lookup_miss_degrades_to_global_view(
+            self, reset_proxy, tmp_path):
+        """A lane_key matching no live lane must over-capture (global
+        view), never produce a silently empty audit buffer."""
+        proxy = proxy_mod.EgressProxy(allowed_hosts=set())
+        path = str(tmp_path / "live.sock")
+        try:
+            proxy.bind_unix(path, label="live")
+            tok = proxy.register_sandbox(
+                caller_label="orphan",
+                lane_key=str(tmp_path / "never-bound.sock"),
+            )
+            assert _connect_unix(path, _DENIED) == 403
+            events = proxy.unregister_sandbox(tok)
+            assert [e["result"] for e in events] == ["denied_host"]
+        finally:
+            proxy.stop()
+
+    def test_same_label_lanes_still_segregate(self, reset_proxy,
+                                              tmp_path):
+        """Labels are not unique across concurrent contexts; the
+        subscription must key on lane identity, not the label."""
+        proxy = proxy_mod.EgressProxy(allowed_hosts=set())
+        path_a = str(tmp_path / "a.sock")
+        path_b = str(tmp_path / "b.sock")
+        try:
+            proxy.bind_unix(path_a, label="sandbox")
+            proxy.bind_unix(path_b, label="sandbox")
+            tok_a = proxy.register_sandbox(lane_key=path_a)
+            tok_b = proxy.register_sandbox(lane_key=path_b)
+            assert _connect_unix(path_a, "only-a.invalid:443") == 403
+            ev_a = proxy.unregister_sandbox(tok_a)
+            ev_b = proxy.unregister_sandbox(tok_b)
+            assert {e["host"] for e in ev_a} == {"only-a.invalid"}
+            assert ev_b == []
+        finally:
+            proxy.stop()
+
+    def test_context_registers_buffers_with_its_lane(self, tmp_path,
+                                                     monkeypatch):
+        """The sandbox() context subscribes its event buffers (per-
+        spawn and cm-block) to its own transport's lane."""
+        import core.sandbox.context as ctx
+        fake = TestContextWiring._fake_proxy(TestContextWiring())
+        monkeypatch.setattr(proxy_mod, "get_proxy",
+                            lambda *a, **k: fake)
+        monkeypatch.setattr(ctx, "check_net_available", lambda: False)
+        with ctx.sandbox(use_egress_proxy=True,
+                         proxy_hosts=["allowed.example"],
+                         audit=True, output=str(tmp_path)):
+            pass
+        registers = [c for c in fake.calls if c[0] == "register"]
+        assert registers, "no register_sandbox call observed"
+        # Tier-2: the tcp lane port (18081 in the fake) is the key.
+        for _name, _label, lane_key in registers:
+            assert lane_key == 18081

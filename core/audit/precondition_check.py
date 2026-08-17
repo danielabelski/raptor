@@ -15,7 +15,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class CheckResult:
 class PreconditionVerdict:
     """Aggregate result of checking all preconditions for a finding."""
 
-    checks: List[CheckResult] = field(default_factory=list)
+    checks: list[CheckResult] = field(default_factory=list)
 
     @property
     def any_contradicted(self) -> bool:
@@ -48,11 +48,29 @@ class PreconditionVerdict:
                 parts.append(f"{c.check_type}: {c.evidence}")
         return "; ".join(parts)
 
+    @property
+    def all_supported(self) -> bool:
+        """True when every check verified in the vulnerability-supporting direction.
+
+        Empty check lists are NOT "all supported" — an absent verdict is
+        not a positive one.
+        """
+        return bool(self.checks) and all(
+            c.verdict == "supported" for c in self.checks
+        )
+
+    @property
+    def supported_types(self) -> frozenset:
+        """check_type values whose verdict came back supported."""
+        return frozenset(
+            c.check_type for c in self.checks if c.verdict == "supported"
+        )
+
 
 def verify_preconditions(
-    preconditions: List[Dict[str, Any]],
+    preconditions: list[dict[str, Any]],
     target_path: Path,
-    context_map: Optional[Dict[str, Any]] = None,
+    context_map: dict[str, Any] | None = None,
 ) -> PreconditionVerdict:
     """Run mechanical checks on LLM-stated preconditions.
 
@@ -126,7 +144,7 @@ def verify_preconditions(
 
 def _read_function_source(
     target_path: Path, file_path: str, function_name: str,
-) -> Optional[str]:
+) -> str | None:
     """Read a function's source from the target directory."""
     full = (target_path / file_path).resolve()
     if not full.is_relative_to(target_path.resolve()):
@@ -147,7 +165,7 @@ def _read_function_source(
     return text
 
 
-def _extract_c_function(source: str, name: str) -> Optional[str]:
+def _extract_c_function(source: str, name: str) -> str | None:
     """Extract a C function body (heuristic brace-matching)."""
     # Find the function definition: type name(...)  {
     pattern = re.compile(
@@ -194,7 +212,7 @@ def _extract_c_function(source: str, name: str) -> Optional[str]:
     return source[start:]
 
 
-def _extract_python_function(source: str, name: str) -> Optional[str]:
+def _extract_python_function(source: str, name: str) -> str | None:
     """Extract a Python function body (indent-based)."""
     pattern = re.compile(rf'^([ \t]*)def\s+{re.escape(name)}\s*\(', re.MULTILINE)
     m = pattern.search(source)
@@ -442,7 +460,7 @@ def _check_sanitization(
 def _check_attacker_control(
     source: str, file: str, func: str,
     parameter: str, expect_absent: bool,
-    context_map: Optional[Dict[str, Any]] = None,
+    context_map: dict[str, Any] | None = None,
 ) -> CheckResult:
     """Check if a function's input is attacker-controlled.
 
@@ -490,10 +508,12 @@ def _check_attacker_control(
         # Check 2-hop
         for caller in callers_of_func:
             for edge in context_map.get("call_edges", []):
-                if edge.get("callee") == caller:
-                    if edge.get("caller", "") in entry_points:
-                        reachable = True
-                        break
+                if (
+                    edge.get("callee") == caller
+                    and edge.get("caller", "") in entry_points
+                ):
+                    reachable = True
+                    break
             if reachable:
                 break
 

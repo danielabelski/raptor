@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class EvidenceSource(str, enum.Enum):
@@ -44,6 +44,7 @@ class EvidenceSource(str, enum.Enum):
     DARK_VERIFY = "mechanical:dark_verify"
     COMPILATION = "mechanical:compilation"
     COMPILER_ANALYZER = "mechanical:compiler_analyzer"
+    PRECONDITION = "mechanical:precondition"
 
 
 class Confidence(str, enum.Enum):
@@ -54,7 +55,7 @@ class Confidence(str, enum.Enum):
     LOW = "low"
 
 
-_SOURCE_CONFIDENCE: Dict[EvidenceSource, Confidence] = {
+_SOURCE_CONFIDENCE: dict[EvidenceSource, Confidence] = {
     EvidenceSource.TREE_SITTER: Confidence.HIGH,
     EvidenceSource.TAINT_APPROX: Confidence.HIGH,
     EvidenceSource.CALL_GRAPH: Confidence.HIGH,
@@ -76,6 +77,11 @@ _SOURCE_CONFIDENCE: Dict[EvidenceSource, Confidence] = {
     EvidenceSource.DARK_VERIFY: Confidence.HIGH,
     EvidenceSource.COMPILATION: Confidence.MEDIUM,
     EvidenceSource.COMPILER_ANALYZER: Confidence.HIGH,
+    # Precondition checks are regex + context-map reachability — real
+    # mechanical evidence, but weaker than an engine match: MEDIUM,
+    # never HIGH, so precondition-promoted findings grade tool-backed
+    # rather than confirmed.
+    EvidenceSource.PRECONDITION: Confidence.MEDIUM,
 }
 
 VALID_EVIDENCE_TOOLS: frozenset = frozenset({
@@ -87,7 +93,7 @@ VALID_EVIDENCE_TOOLS: frozenset = frozenset({
 
 _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "prefilter", "critique", "sweep", "sarif_cache", "triage",
-    "dynamic", "frida", "dark_verify",
+    "dynamic", "frida", "dark_verify", "precondition",
 })
 
 
@@ -136,7 +142,7 @@ def sanitize_llm_evidence_tool(raw: str) -> str:
     return f"{LLM_CLAIM_PREFIX}{value}"
 
 
-_RECEIPT_MAP: Dict[str, tuple] = {
+_RECEIPT_MAP: dict[str, tuple] = {
     "dynamic:sanitizer": (EvidenceSource.DYNAMIC_SANITIZER, "confirmed by dynamic sanitizer"),
     "dynamic:crash": (EvidenceSource.DYNAMIC_CRASH, "non-zero exit without sanitizer confirmation"),
     "frida": (EvidenceSource.DYNAMIC_FRIDA, "confirmed by Frida runtime observation"),
@@ -163,9 +169,16 @@ _RECEIPT_MAP: Dict[str, tuple] = {
     "compiler": (EvidenceSource.COMPILER_ANALYZER, "confirmed by compiler static-analyzer diagnostic"),
     "critique": (EvidenceSource.PREFILTER, "confirmed by critique prefilter"),
     "sarif_cache": (EvidenceSource.SEMGREP, "matched prior SARIF result"),
+    "precondition": (
+        EvidenceSource.PRECONDITION,
+        (
+            "LLM-stated preconditions mechanically verified in the "
+            "vulnerability-supporting direction"
+        ),
+    ),
 }
 
-_CONFIDENCE_PRIORITY: Dict[Confidence, int] = {
+_CONFIDENCE_PRIORITY: dict[Confidence, int] = {
     Confidence.HIGH: 0,
     Confidence.MEDIUM: 1,
     Confidence.LOW: 2,
@@ -179,10 +192,10 @@ class GradedEvidence:
     source: EvidenceSource
     confidence: Confidence
     description: str
-    detail: Optional[str] = None
+    detail: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "source": self.source.value,
             "confidence": self.confidence.value,
             "description": self.description,
@@ -205,8 +218,8 @@ def grade_evidence(
     source: EvidenceSource,
     description: str,
     *,
-    detail: Optional[str] = None,
-    confidence_override: Optional[Confidence] = None,
+    detail: str | None = None,
+    confidence_override: Confidence | None = None,
 ) -> GradedEvidence:
     """Create a graded evidence item."""
     conf = confidence_override or default_confidence(source)
@@ -218,7 +231,7 @@ def grade_evidence(
     )
 
 
-def finding_confidence(chain: List[GradedEvidence]) -> Confidence:
+def finding_confidence(chain: list[GradedEvidence]) -> Confidence:
     """Compute overall confidence for a finding from its evidence chain.
 
     The finding's confidence is the highest confidence in the chain.
@@ -248,13 +261,13 @@ def finding_confidence(chain: List[GradedEvidence]) -> Confidence:
     return best
 
 
-def grade_evidence_record(record: Any) -> List[GradedEvidence]:
+def grade_evidence_record(record: Any) -> list[GradedEvidence]:
     """Convert an EvidenceRecord into a list of GradedEvidence items.
 
     Maps each populated field of the existing EvidenceRecord to graded
     evidence with appropriate source tags.
     """
-    items: List[GradedEvidence] = []
+    items: list[GradedEvidence] = []
 
     if getattr(record, "taint_approx", None) is not None:
         approx = record.taint_approx
@@ -387,11 +400,11 @@ def grade_evidence_record(record: Any) -> List[GradedEvidence]:
 
 
 def grade_review_result(
-    review_result: Optional[Dict[str, Any]],
+    review_result: dict[str, Any] | None,
     evidence_tool: str = "",
-) -> List[GradedEvidence]:
+) -> list[GradedEvidence]:
     """Extract graded evidence from an LLM review result."""
-    items: List[GradedEvidence] = []
+    items: list[GradedEvidence] = []
 
     rr = review_result or {}
 
@@ -431,7 +444,7 @@ def grade_review_result(
     return items
 
 
-def format_evidence_chain(chain: List[GradedEvidence]) -> str:
+def format_evidence_chain(chain: list[GradedEvidence]) -> str:
     """Render an evidence chain as human-readable text."""
     if not chain:
         return ""

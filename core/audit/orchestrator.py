@@ -422,6 +422,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "cwe_inference": TierCounters(),
+        "precondition_promotion": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
         "joern_guard": TierCounters(),
@@ -471,6 +472,10 @@ class OrchestratorResult:
     # Self-refuted hypotheses that a mechanical tool subsequently
     # confirmed (clean → suspicious promotions with a tool receipt).
     refuted_rescued: int = 0
+    # Suspicious outcomes whose LLM-stated preconditions ALL verified
+    # mechanically in the vulnerability-supporting direction
+    # (suspicious → finding promotions with a precondition receipt).
+    precondition_promoted: int = 0
     synthesis_amplified: int = 0
     refinement_rounds: int = 0
     clean_checks: int = 0
@@ -3989,6 +3994,10 @@ def _run_audit_body(
             mechanical_findings=mechanical_findings,
         )
         logger.debug("exited _promote_suspicious")
+
+        logger.debug("entering _promote_suspicious_preconditions")
+        _promote_suspicious_preconditions(result, config, context_map)
+        logger.debug("exited _promote_suspicious_preconditions")
 
         logger.debug("entering _promote_clean_refuted")
         _promote_clean_refuted(
@@ -11578,6 +11587,191 @@ def _promote_suspicious(
                 outcome.function,
                 tool,
             )
+
+
+# Load-bearing precondition check types: promotion requires at least one
+# of these among the SUPPORTED checks. Regex absence of a sanitizer or
+# bounds check alone does not prove the calling context is hostile —
+# attacker reachability or a sink in the function body must also verify.
+_LOAD_BEARING_PRECONDITIONS = frozenset({
+    "attacker_controls_input",
+    "function_reaches_sink",
+})
+
+# Bound the mechanical work per function: at most this many stated
+# preconditions are checked (schema order preserved — the LLM states
+# load-bearing assumptions first).
+_MAX_PRECONDITION_CHECKS_PER_FN = 6
+
+
+def _promote_suspicious_preconditions(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+    context_map: dict[str, Any] | None = None,
+) -> None:
+    """Post-loop pass: verify LLM-stated preconditions on suspicious outcomes.
+
+    "Suspicious" means "real bug, not proven exploitable in the current
+    calling context". The review schema already collects mechanically
+    testable preconditions, and the checking machinery already runs for
+    findings — but only to demote on contradiction; SUPPORTED results
+    were discarded. This pass runs the same checks on suspicious
+    outcomes and uses the positive direction:
+
+    - ALL stated preconditions verify in the vulnerability-supporting
+      direction AND at least one load-bearing check
+      (attacker_controls_input / function_reaches_sink) is among them →
+      promote suspicious → finding with a distinct precondition receipt
+      recording which checks ran.
+    - Partial support stays suspicious; the per-check results are
+      recorded on the review result for the report and export layers.
+
+    No LLM calls — purely mechanical (regex + context-map reachability).
+    Bounded per function via ``_MAX_PRECONDITION_CHECKS_PER_FN``;
+    dispatches are counted in tier telemetry under
+    ``precondition_promotion``.
+    """
+    for i, outcome in enumerate(result.outcomes):
+        if outcome.status != "suspicious":
+            continue
+
+        if outcome.body.startswith(
+            (
+                "[gate violation:",
+                "[sink-unreachability:",
+                "[guarded-sink:",
+                "[smt-infeasible:",
+                "[entry-unreachability:",
+                "[self-contradiction:",
+            )
+        ):
+            continue
+
+        review = outcome.review_result or {}
+        preconditions = [
+            p for p in (review.get("preconditions") or [])
+            if isinstance(p, dict) and p.get("check_type")
+        ]
+        if not preconditions:
+            continue
+        preconditions = preconditions[:_MAX_PRECONDITION_CHECKS_PER_FN]
+
+        try:
+            from .precondition_check import verify_preconditions
+
+            verdict = verify_preconditions(
+                preconditions,
+                target_path=config.target_path,
+                context_map=context_map,
+            )
+        except Exception:
+            logger.debug(
+                "precondition promotion check failed for %s:%s",
+                outcome.file, outcome.function, exc_info=True,
+            )
+            continue
+
+        checks = verdict.checks
+        if not checks:
+            continue
+
+        # Record the per-check results regardless of the aggregate —
+        # partial support is review money already spent; keep it.
+        review["precondition_verification"] = {
+            "checks": [
+                {
+                    "check_type": c.check_type,
+                    "assumption": c.assumption,
+                    "verdict": c.verdict,
+                    "evidence": c.evidence,
+                }
+                for c in checks
+            ],
+            "all_supported": verdict.all_supported,
+        }
+
+        if verdict.any_contradicted:
+            _increment_tier_dict(
+                result.tier_counters, "precondition_promotion", "refuted",
+            )
+            continue
+
+        supported_types = verdict.supported_types
+        if not verdict.all_supported:
+            _increment_tier_dict(
+                result.tier_counters, "precondition_promotion",
+                "inconclusive",
+            )
+            continue
+        if not (supported_types & _LOAD_BEARING_PRECONDITIONS):
+            _increment_tier_dict(
+                result.tier_counters, "precondition_promotion",
+                "inconclusive",
+            )
+            logger.debug(
+                "precondition promotion withheld %s:%s — all supported "
+                "but no load-bearing check among %s",
+                outcome.file, outcome.function,
+                ",".join(sorted(supported_types)),
+            )
+            continue
+
+        tool = "precondition:" + ",".join(sorted(supported_types))
+        summary = "; ".join(
+            f"{c.check_type}: {c.evidence or c.assumption}" for c in checks
+        )
+        promoted = ReviewOutcome(
+            file=outcome.file,
+            function=outcome.function,
+            status="finding",
+            body=(
+                f"[precondition-verified via {tool}] All {len(checks)} "
+                f"stated precondition(s) verified in the "
+                f"vulnerability-supporting direction: {summary}\n\n"
+                f"{outcome.body}"
+            ),
+            hypothesis=outcome.hypothesis,
+            hypotheses=outcome.hypotheses,
+            evidence_tool=tool,
+            cost_usd=outcome.cost_usd,
+            model=outcome.model,
+            duration_s=outcome.duration_s,
+            review_result=outcome.review_result,
+            line=outcome.line,
+        )
+        promoted.tools_dispatched = (
+            (outcome.tools_dispatched or set()) | {"precondition"}
+        )
+        promoted.tools_errored = outcome.tools_errored
+        promoted.semantic_confidence = outcome.semantic_confidence
+        if promoted.review_result is not None:
+            promoted.review_result["evidence_tool"] = tool
+        result.outcomes[i] = promoted
+        result.precondition_promoted += 1
+        result.sweep_promoted += 1
+        result.suspicious -= 1
+        result.findings += 1
+        _increment_tier_dict(
+            result.tier_counters, "precondition_promotion", "confirmed",
+        )
+        append_audit_log(config.out_dir, {
+            "action": "precondition_verified_promotion",
+            "key": f"{outcome.file}:{outcome.function}:{outcome.line or 0}",
+            "file": outcome.file,
+            "function": outcome.function,
+            "status": "finding",
+            "prior_status": "suspicious",
+            "evidence_tool": tool,
+            "checks": [
+                {"check_type": c.check_type, "verdict": c.verdict}
+                for c in checks
+            ],
+        })
+        logger.info(
+            "precondition-verified %s:%s — promoted suspicious → finding "
+            "via %s",
+            outcome.file, outcome.function, tool,
+        )
 
 
 def _is_detection_only(tool_id: str) -> bool:

@@ -414,6 +414,18 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # Off-by-one — the truncation-boundary leg: a (v)snprintf return
+    # compared with > (or flipped <) where >= is needed treats the
+    # exact-fit case as untruncated (silent truncation / NUL clip).
+    # Universal libc vocabulary (tier-A idiom family); CWE-193 is also
+    # a consistency-census family (consistency_verify.CONSISTENCY_CWES).
+    "CWE-193": {
+        "smt": None,
+        "cocci": "snprintf_truncation_boundary.cocci",
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
     # Uninitialised variable
     "CWE-457": {
         "smt": None,
@@ -494,6 +506,9 @@ _HYPOTHESIS_CWE_MAP = [
     ((r"infinite\s+loop|loop.{0,30}(?:never|unreachable|cannot)"
       r".{0,15}(?:exit|terminat)|unbounded\s+loop|endless\s+loop"),
      "CWE-835"),
+    ((r"(?:v?snprintf).{0,80}truncat|truncat\w*.{0,40}"
+      r"(?:boundary|exact.fit|off.by.one)|"
+      r"exact.fit.{0,30}truncat"), "CWE-193"),
     ((r"authentic(?:ity)?.{0,40}(?:not|un|insufficient|missing|no)\w*"
       r".{0,15}(?:verif|check|validat)|(?:unverified|unauthenticated)"
       r".{0,25}(?:data|origin|source|message|payload|signature)|"

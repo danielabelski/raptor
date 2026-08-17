@@ -114,18 +114,11 @@ def _resolve_dynamic(opts: AuditPipelineOpts) -> bool:
         return bool(opts.dynamic_validation)
 
 
-def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
-    """Run the audit orchestrator and return its result.
+def _make_llm_client(opts: AuditPipelineOpts):
+    """Build the budget-capped LLM client both entry points share.
 
-    Sets up the LLM client, builds the OrchestratorConfig, and calls
-    ``run_orchestrator``.  Returns the ``OrchestratorResult``.
+    Returns ``(client, models, primary_model)``.
     """
-    from core.llm.log_quiet import quiet_noisy_loggers
-
-    quiet_noisy_loggers()
-
-    from core.audit.llm_review import make_review_fn
-    from core.audit.orchestrator import OrchestratorConfig, run_orchestrator
     from core.llm.client import LLMClient
     from core.llm.config import LLMConfig
 
@@ -139,12 +132,24 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
     else:
         llm_cfg = LLMConfig(max_cost_per_scan=max_cost)
         client = LLMClient(config=llm_cfg)
+    return client, models, primary_model
 
-    review_fn = make_review_fn(
-        client, task_type="audit", model_name=primary_model,
-        mode=opts.mode, out_dir=opts.out_dir,
-    )
-    config = OrchestratorConfig(
+
+def _build_orchestrator_config(
+    opts: AuditPipelineOpts,
+    client: Any,
+    models: list[str],
+    mode: ReviewMode,
+):
+    """Thread AuditPipelineOpts into an OrchestratorConfig.
+
+    Single source of truth for the opts → config mapping — a new
+    OrchestratorConfig field only needs wiring here for both
+    ``run_audit_pipeline`` and ``run_ensemble_pipeline`` to pick it up.
+    """
+    from core.audit.orchestrator import OrchestratorConfig
+
+    return OrchestratorConfig(
         target_path=opts.target_path,
         out_dir=opts.out_dir,
         budget=opts.budget,
@@ -172,7 +177,7 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         joern_overrides=opts.joern_overrides,
         joern_server=opts.joern_server,
         study_root=opts.study_root,
-        mode=opts.mode,
+        mode=mode,
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
@@ -180,6 +185,28 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         llm_budget_client=client,
         llm_client=client,
     )
+
+
+def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
+    """Run the audit orchestrator and return its result.
+
+    Sets up the LLM client, builds the OrchestratorConfig, and calls
+    ``run_orchestrator``.  Returns the ``OrchestratorResult``.
+    """
+    from core.llm.log_quiet import quiet_noisy_loggers
+
+    quiet_noisy_loggers()
+
+    from core.audit.llm_review import make_review_fn
+    from core.audit.orchestrator import run_orchestrator
+
+    client, models, primary_model = _make_llm_client(opts)
+
+    review_fn = make_review_fn(
+        client, task_type="audit", model_name=primary_model,
+        mode=opts.mode, out_dir=opts.out_dir,
+    )
+    config = _build_orchestrator_config(opts, client, models, opts.mode)
 
     return run_orchestrator(
         config, review_fn, on_progress=opts.on_progress, prep_cache=prep_cache,
@@ -366,23 +393,11 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
     quiet_noisy_loggers()
 
     from core.audit.llm_review import make_review_fn
-    from core.audit.orchestrator import OrchestratorConfig, run_orchestrator
-    from core.llm.client import LLMClient
+    from core.audit.orchestrator import run_orchestrator
 
     t0 = time.monotonic()
 
-    from core.llm.config import LLMConfig
-
-    models = opts.models or ["default"]
-    primary_model = models[0] if models[0] != "default" else None
-    max_cost = opts.max_cost_usd if opts.max_cost_usd is not None else float("inf")
-
-    if primary_model:
-        client = LLMClient(pinned_model=primary_model)
-        client.config.max_cost_per_scan = max_cost
-    else:
-        llm_cfg = LLMConfig(max_cost_per_scan=max_cost)
-        client = LLMClient(config=llm_cfg)
+    client, models, primary_model = _make_llm_client(opts)
 
     sec_review = make_review_fn(
         client, task_type="audit", model_name=primary_model,
@@ -416,41 +431,8 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
         result.duration_s = outcome1.duration_s + outcome2.duration_s
         return result
 
-    config = OrchestratorConfig(
-        target_path=opts.target_path,
-        out_dir=opts.out_dir,
-        budget=opts.budget,
-        scope=opts.scope,
-        strategy_filter=opts.strategy_filter,
-        models=models,
-        multi_model=len(models) > 1,
-        adversarial=opts.adversarial,
-        max_cost_usd=opts.max_cost_usd,
-        max_seconds=opts.max_seconds,
-        review_passes=opts.review_passes,
-        subsystem_depth=opts.subsystem_depth,
-        **({"batch_sloc_threshold": opts.batch_sloc_threshold}
-           if opts.batch_sloc_threshold is not None else {}),
-        include_kinds=opts.include_kinds,
-        max_propagation_depth=opts.max_propagation_depth,
-        validate=opts.validate,
-        no_binary_oracle=opts.no_binary_oracle,
-        binary_verdicts=opts.binary_verdicts,
-        inventory=opts.inventory,
-        codeql_db_path=opts.codeql_db_path,
-        threat_model=opts.threat_model,
-        annotations_dir=opts.annotations_dir,
-        functions=opts.functions,
-        joern_overrides=opts.joern_overrides,
-        joern_server=opts.joern_server,
-        study_root=opts.study_root,
-        mode=ReviewMode.SECURITY,
-        max_workers=opts.max_workers,
-        dynamic_validation=_resolve_dynamic(opts),
-        verdict_reuse=opts.verdict_reuse,
-        schedule=opts.schedule,
-        llm_budget_client=client,
-        llm_client=client,
+    config = _build_orchestrator_config(
+        opts, client, models, ReviewMode.SECURITY,
     )
 
     result = run_orchestrator(

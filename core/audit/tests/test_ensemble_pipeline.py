@@ -1173,3 +1173,60 @@ class TestRuleRole:
             "engine", "coccinelle", "rules", "use_after_free.cocci",
         )
         assert get_rule_role(rule) == "verification"
+
+
+class TestBuildOrchestratorConfig:
+    """Both pipeline entry points build their OrchestratorConfig via
+    the shared _build_orchestrator_config helper."""
+
+    def test_threads_opts_fields(self, tmp_path):
+        from core.audit.pipeline import (
+            AuditPipelineOpts,
+            ReviewMode,
+            _build_orchestrator_config,
+        )
+
+        opts = AuditPipelineOpts(
+            target_path=tmp_path,
+            out_dir=tmp_path / "out",
+            models=["m1", "m2"],
+            max_cost_usd=5.0,
+            batch_sloc_threshold=42,
+            schedule="priority",
+            adversarial=True,
+            max_workers=3,
+        )
+        client = object()
+        cfg = _build_orchestrator_config(
+            opts, client, ["m1", "m2"], ReviewMode.SECURITY,
+        )
+        assert cfg.target_path == tmp_path
+        assert cfg.models == ["m1", "m2"]
+        assert cfg.multi_model is True
+        assert cfg.adversarial is True
+        assert cfg.max_cost_usd == 5.0
+        assert cfg.batch_sloc_threshold == 42
+        assert cfg.schedule == "priority"
+        assert cfg.max_workers == 3
+        assert cfg.mode is ReviewMode.SECURITY
+        assert cfg.llm_client is client
+        assert cfg.llm_budget_client is client
+
+    def test_batch_sloc_default_preserved(self, tmp_path):
+        from core.audit.orchestrator import OrchestratorConfig
+        from core.audit.pipeline import (
+            AuditPipelineOpts,
+            ReviewMode,
+            _build_orchestrator_config,
+        )
+
+        opts = AuditPipelineOpts(target_path=tmp_path, out_dir=tmp_path)
+        cfg = _build_orchestrator_config(
+            opts, object(), ["default"], ReviewMode.ENSEMBLE,
+        )
+        assert cfg.batch_sloc_threshold == (
+            OrchestratorConfig(
+                target_path=tmp_path, out_dir=tmp_path,
+            ).batch_sloc_threshold
+        )
+        assert cfg.multi_model is False

@@ -257,3 +257,50 @@ def test_bedrock_entry_without_credentials_not_primary(
         {"provider": "bedrock", "model": "anthropic.claude-sonnet-5"},
     ])
     assert primary is None or primary.provider != "bedrock"
+
+
+# ---------------------------------------------------------------------------
+# claudecode entries as explicit fallbacks
+# ---------------------------------------------------------------------------
+
+def test_claudecode_entry_auth_resolvable_via_binary(monkeypatch):
+    """A keyless claudecode entry authenticates through the installed
+    CLI — resolvable exactly when the binary exists."""
+    from core.llm.config import ModelConfig, _entry_auth_resolvable
+    mc = ModelConfig(provider="claudecode", model_name="session-default")
+    with patch("shutil.which", return_value="/usr/bin/claude"):
+        assert _entry_auth_resolvable(mc) is True
+    with patch("shutil.which", return_value=None):
+        assert _entry_auth_resolvable(mc) is False
+
+
+def test_claudecode_entry_backfills_model():
+    from core.llm.config import _model_config_from_entry
+    mc = _model_config_from_entry({"provider": "claudecode",
+                                   "role": "fallback"})
+    assert mc.provider == "claudecode"
+    assert mc.model_name
+    assert mc.role == "fallback"
+
+
+def test_claudecode_fallback_behind_bedrock_primary(monkeypatch):
+    """The declared safety net: Bedrock primary + claudecode fallback
+    both resolve from one models.json."""
+    import core.llm.config as cfg
+    monkeypatch.setenv("AWS_PROFILE", "bedrock-access")
+    entries = [
+        {"provider": "bedrock", "model": "anthropic.claude-sonnet-5"},
+        {"provider": "claudecode", "role": "fallback"},
+    ]
+    monkeypatch.setattr(cfg, "_get_configured_models", lambda: entries)
+    monkeypatch.setattr(cfg, "_get_best_thinking_model", lambda: None)
+    primary = cfg._get_default_primary_model()
+    assert primary is not None and primary.provider == "bedrock"
+    with patch("shutil.which", return_value="/usr/bin/claude"), \
+         patch.object(cfg, "detect_llm_availability") as av, \
+         patch.object(cfg, "_get_available_ollama_models",
+                      return_value=[]):
+        av.return_value = type("A", (), {"external_llm": True})()
+        fallbacks = cfg._get_default_fallback_models()
+    providers = [m.provider for m in fallbacks]
+    assert "claudecode" in providers

@@ -847,6 +847,11 @@ def _model_config_from_entry(entry: dict) -> 'ModelConfig':
             provider = derived
     if not model_name and provider:
         model_name = PROVIDER_DEFAULT_MODELS.get(provider, "")
+    if not model_name and provider in ("claudecode", "claudecode-resumable"):
+        # CLI transport: same backend-resolved / sentinel model the env
+        # builder would pick — a bare {"provider": "claudecode"} entry
+        # is valid config.
+        model_name = _resolve_claudecode_model()
 
     # Bedrock: resolve the surface first (the model backfill below is
     # surface-keyed), then backfill a missing model.  Surface ladder:
@@ -1049,6 +1054,13 @@ def _entry_auth_resolvable(mc: 'ModelConfig') -> bool:
         return bool(
             os.getenv("AWS_BEARER_TOKEN_BEDROCK")
         ) or bedrock_sigv4_intent()
+    if mc.provider in ("claudecode", "claudecode-resumable"):
+        # CLI transport authenticates through the installed ``claude``
+        # binary's own session — no key to carry.  Lets an operator
+        # declare CC as an explicit safety net behind an API primary
+        # ({"provider": "claudecode", "role": "fallback"}).
+        import shutil
+        return shutil.which("claude") is not None
     return False
 
 

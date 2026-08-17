@@ -138,28 +138,27 @@ class DomainVocabulary:
         cb_reg: set[str] = set()
         cb_cancel: set[str] = set()
 
-        _KIND_MAP = {
-            "alloc": (alloc, dealloc),
-            "allocator": (alloc, dealloc),
-            "refcount": (ref_get, ref_put),
-            "spinlock": (lock_acq, lock_rel),
-            "mutex": (lock_acq, lock_rel),
-            "rwlock": (lock_acq, lock_rel),
-            "rcu": (lock_acq, lock_rel),
-            "lock": (lock_acq, lock_rel),
-            "semaphore": (lock_acq, lock_rel),
-            # Async-callback register/cancel family (study elicits
-            # kind "callback"; the facility aliases cover in-session
-            # written models).
-            "callback": (cb_reg, cb_cancel),
-            "register": (cb_reg, cb_cancel),
-            "timer": (cb_reg, cb_cancel),
-            "work": (cb_reg, cb_cancel),
-            "workqueue": (cb_reg, cb_cancel),
-            "tasklet": (cb_reg, cb_cancel),
-            "hrtimer": (cb_reg, cb_cancel),
-            "notifier": (cb_reg, cb_cancel),
-        }
+        # Pair-kind aliases per vocabulary class. The study prompt
+        # elicits the canonical kinds (alloc/lock/refcount/callback);
+        # the aliases cover in-session-written domain models.
+        _ALLOC_KINDS = ("alloc", "allocator")
+        _REFCOUNT_KINDS = ("refcount",)
+        _LOCK_KINDS = (
+            "spinlock", "mutex", "rwlock", "rcu", "lock", "semaphore",
+        )
+        _CALLBACK_KINDS = (
+            "callback", "register", "timer", "work", "workqueue",
+            "tasklet", "hrtimer", "notifier",
+        )
+        _KIND_MAP: dict[str, tuple[set[str], set[str]]] = {}
+        for kinds, buckets_for_kind in (
+            (_ALLOC_KINDS, (alloc, dealloc)),
+            (_REFCOUNT_KINDS, (ref_get, ref_put)),
+            (_LOCK_KINDS, (lock_acq, lock_rel)),
+            (_CALLBACK_KINDS, (cb_reg, cb_cancel)),
+        ):
+            for k in kinds:
+                _KIND_MAP[k] = buckets_for_kind
 
         for pair in (pairs or []):
             if not isinstance(pair, dict) or not _entry_actionable(pair):

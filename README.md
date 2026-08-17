@@ -491,6 +491,7 @@ See `docs/README.md` for the full index. Key guides:
 | `docs/python-cli.md` | Python CLI reference for scripting and CI |
 | `docs/concepts.md` | Core concepts: two-layer model, finding lifecycle, choosing a command |
 | `docs/agentic.md` | Autonomous workflow: `/agentic` pipeline, enrichment flags, multi-model |
+| `docs/sage.md` | SAGE persistent memory: setup, HMAC key, CPU/GPU, use cases |
 | `docs/dependencies.md` | External tools, versions, and licences |
 | `tiers/personas/README.md` | Expert persona reference |
 

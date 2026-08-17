@@ -120,8 +120,8 @@ tool is installed, try `synthesise_build_command` (generates a Python
 shim to compile individual files; C++ and Java only), then fall back to
 no-build mode (interpreted languages or when nothing else works).
 
-SAGE build-recall context is threaded into the detection when
-available, providing hints from previous successful builds of the
+[SAGE](sage.md) build-recall context is threaded into the detection
+when available, providing hints from previous successful builds of the
 same repository.
 
 ### Phase 3 -- Database Creation

@@ -482,12 +482,6 @@ class PreconditionVerification:
     is_universally_satisfied: bool = False
     evidence: list[dict[str, str]] = field(default_factory=list)
 
-    @property
-    def verification_rate(self) -> float:
-        if self.total_call_sites == 0:
-            return 0.0
-        return self.verified_sites / self.total_call_sites
-
 
 def verify_preconditions_at_call_sites(
     spec: InferredSpec,
@@ -714,71 +708,6 @@ def build_spec_prompt(
         "function": TaintedString(value=function_name, trust="untrusted"),
     }
     return envelope_prompt(_LLM_SPEC_SYSTEM, (block,), slots, model_id=model_id)
-
-
-async def infer_spec_with_llm(
-    gap: dict[str, Any],
-    llm_call,
-    mechanical_spec: InferredSpec | None = None,
-) -> InferredSpec:
-    """Infer a function's specification using an LLM for semantic understanding.
-
-    Supplements mechanical inference for high-value targets (entry points,
-    sinks, auth/crypto functions). The LLM reads source code and infers
-    the function's security contract — what it SHOULD do.
-
-    llm_call: async callable(prompt: str) -> str
-    """
-    function_name = gap.get("name", "")
-    file_path = gap.get("file", "")
-    source = gap.get("source", "")
-
-    if not source:
-        return mechanical_spec or InferredSpec(function=function_name, file=file_path)
-
-    # ``llm_call`` exposes a single prompt channel — join the enveloped
-    # system and user parts; the block/nonce/slot defences all live in
-    # the message text itself.
-    user, system = build_spec_prompt(function_name, file_path, source)
-    prompt = f"{system}\n\n{user}"
-
-    spec = mechanical_spec or InferredSpec(function=function_name, file=file_path)
-
-    try:
-        response = await llm_call(prompt)
-        data = _parse_llm_spec_response(response)
-    except Exception:  # noqa: BLE001 — inference is best-effort; fall back to mechanical spec
-        logger.debug("LLM spec inference failed for %s:%s", file_path, function_name)
-        return spec
-
-    if data.get("intent") and not spec.intent:
-        spec.intent = data["intent"]
-        spec.sources.append(SpecSource(
-            signal="llm_inference", confidence="medium", evidence="LLM-inferred intent",
-        ))
-
-    for pc in data.get("preconditions", []):
-        if pc and pc not in spec.preconditions:
-            spec.preconditions.append(pc)
-
-    for pc in data.get("postconditions", []):
-        if pc and pc not in spec.postconditions:
-            spec.postconditions.append(pc)
-
-    for inv in data.get("invariants", []):
-        if inv and inv not in spec.invariants:
-            spec.invariants.append(inv)
-
-    for ns in data.get("negative_specs", []):
-        if ns and ns not in spec.negative_specs:
-            spec.negative_specs.append(ns)
-
-    if not any(s.signal == "llm_inference" for s in spec.sources):
-        spec.sources.append(SpecSource(
-            signal="llm_inference", confidence="medium", evidence="LLM semantic analysis",
-        ))
-
-    return spec
 
 
 # Strict top-level schema for the spec response — the keys the prompt

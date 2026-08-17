@@ -15,7 +15,6 @@ from __future__ import annotations
 import ast
 import logging
 import re
-from dataclasses import dataclass, field
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from .condition_classifier import classify_condition
@@ -84,15 +83,6 @@ def _matches_sink(name: str, sink_names: FrozenSet[str]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # AST condition extraction
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class _FunctionContext:
-    """Context for condition extraction within one function."""
-    func_name: str
-    func_node: ast.AST
-    decorators: List[str] = field(default_factory=list)
-    constants: Dict[str, Any] = field(default_factory=dict)
 
 
 def _extract_decorators(

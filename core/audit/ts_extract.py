@@ -1016,33 +1016,6 @@ def extract_function_body(
 # Convenience: file-level batch extraction
 # ---------------------------------------------------------------------------
 
-def extract_all_returns(
-    source_text: Dict[str, str],
-) -> Dict[str, List[FunctionReturns]]:
-    """Batch extract return semantics for all non-Python files."""
-    results: Dict[str, List[FunctionReturns]] = {}
-    for fp, src in source_text.items():
-        if fp.endswith(".py"):
-            continue
-        ret = extract_function_returns(fp, src)
-        if ret:
-            results[fp] = ret
-    return results
-
-
-def extract_all_call_chains(
-    source_text: Dict[str, str],
-) -> Dict[str, List[CallChain]]:
-    """Batch extract call chains for all non-Python files."""
-    results: Dict[str, List[CallChain]] = {}
-    for fp, src in source_text.items():
-        if fp.endswith(".py"):
-            continue
-        chains = extract_call_chains(fp, src)
-        if chains:
-            results[fp] = chains
-    return results
-
 
 def extract_all_string_literals(
     source_text: Dict[str, str],

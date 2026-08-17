@@ -74,21 +74,6 @@ def _latest_journal_entry(out_dir: Path, file_path: str,
     return entries.get(f"{file_path}:{function_name}")
 
 
-def _write_coverage_audit(out_dir: Path, entries: dict) -> None:
-    """Write a coverage-audit.json for testing."""
-    data = {"tool": "audit", "files": {}, "files_examined": []}
-    for file_path, functions in entries.items():
-        data["files"][file_path] = {"functions": {}}
-        data["files_examined"].append(file_path)
-        for fn_name, status in functions.items():
-            data["files"][file_path]["functions"][fn_name] = {
-                "status": status,
-                "hash": None,
-                "strategies": [],
-            }
-    (out_dir / "coverage-audit.json").write_text(json.dumps(data, indent=2))
-
-
 # ---- _classify_verdict ----
 
 class TestClassifyVerdict:

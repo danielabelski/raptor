@@ -45,10 +45,6 @@ class AdequacyResult:
     missing_categories: FrozenSet[str]
     notes: List[str] = field(default_factory=list)
 
-    @property
-    def is_adequate(self) -> bool:
-        return self.verdict in (Adequacy.SUFFICIENT, Adequacy.PARTIAL)
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "sink_api": self.sink_api,

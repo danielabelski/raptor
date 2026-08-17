@@ -157,11 +157,6 @@ def _extract_functions(source: str) -> List[Tuple[str, int, str]]:
     return extract_functions_from_source(source)
 
 
-def _line_number_of(source: str, match_start: int) -> int:
-    """1-based line number for a character offset."""
-    return source[:match_start].count("\n") + 1
-
-
 # ---------------------------------------------------------------------------
 # Sub-detector: optional_not_checked
 # ---------------------------------------------------------------------------

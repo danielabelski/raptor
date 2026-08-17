@@ -514,32 +514,6 @@ def find_dispatch_gaps(
     return gaps
 
 
-def _key_looks_related(candidate: str, existing_keys: Set[str]) -> bool:
-    """Heuristic: does *candidate* look like it belongs in *existing_keys*?
-
-    We require:
-    - Candidate is non-empty and doesn't contain spaces (dispatch keys
-      are typically identifiers or short tokens).
-    - Candidate length is within 3x of the median existing key length.
-    - Candidate shares the same "shape" as at least one existing key
-      (all-lowercase, snake_case, etc.).
-    """
-    if not candidate or " " in candidate:
-        return False
-    if not existing_keys:
-        return False
-    lengths = sorted(len(k) for k in existing_keys)
-    median_len = lengths[len(lengths) // 2]
-    if median_len == 0:
-        return False
-    if len(candidate) > median_len * 3 or len(candidate) < median_len / 3:
-        return False
-    # Shape check: does the candidate match the general character
-    # pattern of at least one existing key?
-    cand_shape = _key_shape(candidate)
-    return any(_key_shape(k) == cand_shape for k in existing_keys)
-
-
 def _shares_affix(candidate: str, existing_keys: Set[str], min_affix: int = 3) -> bool:
     """Does *candidate* share a prefix or suffix with any key in the table?
 

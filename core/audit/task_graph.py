@@ -369,10 +369,6 @@ class TaskGraph:
     def pending(self) -> int:
         return len(self._tasks) - len(self._completed)
 
-    @property
-    def completed_count(self) -> int:
-        return len(self._completed)
-
     def has_dependents(self, key: str) -> bool:
         """True when other tasks depend on *key*'s taint summary."""
         return bool(self._dependents.get(key))

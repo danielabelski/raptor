@@ -74,7 +74,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,24 +105,6 @@ _KNOWN_ARTIFACTS = frozenset({
     "edges",
     "oracle-verdicts",
 })
-
-
-@dataclass
-class CacheEntry:
-    """A cached binary analysis artifact."""
-
-    build_id: str
-    artifact: str
-    data: dict[str, Any]
-    source_command: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "build_id": self.build_id,
-            "artifact": self.artifact,
-            "source_command": self.source_command,
-            "data": self.data,
-        }
 
 
 @dataclass
@@ -306,24 +287,6 @@ def load_build_id_cache(
             from core.config import RaptorConfig
             cache_dir = RaptorConfig.REPO_ROOT / _DEFAULT_CACHE_DIR
     return BuildIDCache(cache_dir=cache_dir)
-
-
-def extract_build_id(binary_path: Path) -> str | None:
-    """Extract ELF build-ID from a binary using readelf (sandboxed)."""
-    if not binary_path.is_file():
-        return None
-    try:
-        from core.sandbox.context import run_trusted
-        result = run_trusted(
-            ["readelf", "-n", str(binary_path)],
-            capture_output=True, text=True, timeout=10,
-        )
-        for line in result.stdout.splitlines():
-            if "Build ID:" in line:
-                return line.split("Build ID:")[-1].strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ImportError):
-        pass
-    return None
 
 
 def import_validate_evidence(

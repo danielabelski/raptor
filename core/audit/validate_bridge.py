@@ -78,17 +78,6 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _load_json_list(path: Path) -> list[dict[str, Any]]:
-    data = _load_json(path)
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for key in ("findings", "items", "flows", "results"):
-            if isinstance(data.get(key), list):
-                return data[key]
-    return []
-
-
 def _extract_feasibility_verdicts(
     findings_data: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:

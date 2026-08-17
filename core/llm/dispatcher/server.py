@@ -144,6 +144,15 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     return value
 
 
+# The conventional proxy-route family (same set core.llm.egress
+# snapshots as _PROXY_VAR_NAMES) — the forwarding-leg client is keyed
+# on these because httpx resolves proxy mounts at client construction.
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+)
+
+
 def _upstream_timeout() -> httpx.Timeout:
     """Timeout for the dispatcher→provider forwarding leg.
 
@@ -272,6 +281,19 @@ class LLMDispatcher:
 
         self._creds = creds or CredentialStore()
         self._rules: dict[str, ProviderRule] = build_rules(self._creds)
+
+        # One pooled client for the forwarding leg, shared by every
+        # request (httpx.Client is thread-safe). Building a client
+        # per request forced a fresh TCP + TLS handshake — and,
+        # behind chained proxies, CONNECT negotiation per hop — on
+        # every forwarded LLM call. Built lazily and keyed on the
+        # proxy env (see _upstream_client): httpx snapshots proxy
+        # routes at client construction, and the egress chokepoint
+        # mutates HTTPS_PROXY in-process after the dispatcher may
+        # already exist — a construction-time client would bypass it.
+        self._upstream_http: httpx.Client | None = None
+        self._upstream_http_env: tuple | None = None
+        self._upstream_http_lock = threading.Lock()
 
         self._tokens: dict[str, _TokenRecord] = {}
         self._tokens_lock = threading.Lock()
@@ -447,6 +469,39 @@ class LLMDispatcher:
         ))
         return str(self.socket_path), read_fd
 
+    def _upstream_client(self) -> httpx.Client:
+        """The pooled forwarding-leg client, rebuilt on proxy-env change.
+
+        httpx resolves proxy routes when the client is CONSTRUCTED,
+        not per request. The egress chokepoint
+        (``core.llm.egress.enable_llm_egress``) points HTTPS_PROXY at
+        the in-process proxy after startup, so the client is keyed on
+        a snapshot of the proxy env: same env → full connection
+        reuse; env changed → rebuild once and reuse from there. Env
+        changes happen at startup, before workers dispatch — closing
+        the superseded client here cannot race an in-flight stream in
+        any real sequence, and a hypothetical racer surfaces as a
+        502 the worker SDK already retries.
+        """
+        env = tuple(os.environ.get(v) for v in _PROXY_ENV_VARS)
+        with self._upstream_http_lock:
+            if self._upstream_http is None or self._upstream_http_env != env:
+                from core.llm.http_pool import pool_limits
+                old = self._upstream_http
+                self._upstream_http = httpx.Client(
+                    timeout=_upstream_timeout(), limits=pool_limits(),
+                )
+                self._upstream_http_env = env
+                if old is not None:
+                    try:
+                        old.close()
+                    except Exception:
+                        _logger.debug(
+                            "llm-dispatcher: superseded upstream client "
+                            "close failed", exc_info=True,
+                        )
+            return self._upstream_http
+
     def shutdown(self) -> None:
         """Stop the server thread and remove the socket directory.
 
@@ -485,6 +540,14 @@ class LLMDispatcher:
                 "llm-dispatcher: server.server_close() failed", exc_info=True,
             )
             errors.append("server_close")
+        try:
+            if self._upstream_http is not None:
+                self._upstream_http.close()
+        except Exception:
+            _logger.warning(
+                "llm-dispatcher: upstream client close failed", exc_info=True,
+            )
+            errors.append("upstream_http_close")
         # Remove socket file then dir
         try:
             self.socket_path.unlink(missing_ok=True)
@@ -812,29 +875,31 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
 
             # ---- forward to upstream + stream response back ----
             try:
-                with httpx.Client(timeout=_upstream_timeout()) as client:  # noqa: SIM117 — merging the two `with`s would force re-indenting the whole streaming block
-                    with client.stream(method, url, content=body, headers=forwarded) as up:
-                        self.send_response(up.status_code)
-                        for k, v in up.headers.items():
-                            # Strip hop-by-hop headers only. ``content-
-                            # encoding`` is response-scoped and MUST be
-                            # preserved: ``iter_raw()`` below forwards
-                            # the upstream's still-compressed bytes (it
-                            # does not auto-decompress), so the worker
-                            # needs the header to know to decompress.
-                            # Stripping it ships gzipped bytes labelled
-                            # as plain JSON — Anthropic always gzips,
-                            # so worker SDK calls choke on the bytes.
-                            if k.lower() in (
-                                "transfer-encoding",
-                                "connection",
-                            ):
-                                continue
-                            self.send_header(k, v)
-                        self.end_headers()
-                        for chunk in up.iter_raw():
-                            self.wfile.write(chunk)
-                        self.wfile.flush()
+                with dispatcher._upstream_client().stream(
+                    method, url, content=body, headers=forwarded,
+                    timeout=_upstream_timeout(),
+                ) as up:
+                    self.send_response(up.status_code)
+                    for k, v in up.headers.items():
+                        # Strip hop-by-hop headers only. ``content-
+                        # encoding`` is response-scoped and MUST be
+                        # preserved: ``iter_raw()`` below forwards
+                        # the upstream's still-compressed bytes (it
+                        # does not auto-decompress), so the worker
+                        # needs the header to know to decompress.
+                        # Stripping it ships gzipped bytes labelled
+                        # as plain JSON — Anthropic always gzips,
+                        # so worker SDK calls choke on the bytes.
+                        if k.lower() in (
+                            "transfer-encoding",
+                            "connection",
+                        ):
+                            continue
+                        self.send_header(k, v)
+                    self.end_headers()
+                    for chunk in up.iter_raw():
+                        self.wfile.write(chunk)
+                    self.wfile.flush()
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="request.dispatch",
                     peer_pid=None, peer_uid=None,

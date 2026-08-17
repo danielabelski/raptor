@@ -158,7 +158,11 @@ def run_llm_summary_pass(
             timeout_s=SHORT_CALL_TIMEOUT_S,
             call_class="summary",
         )
-        text = response.text if hasattr(response, "text") else str(response)
+        # LLMResponse carries output in ``content`` (no ``text``
+        # attribute); str(response) is the dataclass repr, which the
+        # summary parser cannot read.
+        from core.audit.batch_glance import _response_text
+        text = _response_text(response)
         summary = _parse_summary_response(text, function_name, file_path)
         if summary and not summary.is_empty():
             return (f"{file_path}:{function_name}", summary)

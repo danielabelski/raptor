@@ -225,10 +225,15 @@ class OrchestratorConfig:
     # ``is_budget_exhausted()`` before expensive per-function prep, and
     # ``_check_budget`` consults its ledger — which, unlike
     # ``result.total_cost_usd``, includes spend from failed/timed-out
-    # attempts that never produced an outcome. Deliberately NOT named
-    # ``llm_client``: that attribute would switch on the executor's
-    # batch-glance dispatch (see executor._get_batch_review_fn).
+    # attempts that never produced an outcome.
     llm_budget_client: Optional[Any] = None
+    # The LLM client the executor's batch-glance dispatch uses to send
+    # ten GLANCE-tier functions in ONE call (see
+    # executor._get_batch_review_fn / batch_glance.make_batch_review_fn).
+    # None disables batching (every glance falls back to an individual
+    # review call). Distinct from ``llm_budget_client`` in ROLE only —
+    # the pipeline wires the same client instance into both.
+    llm_client: Any | None = None
     # Cross-run verdict reuse: when True (default), prior-run journal
     # entries whose source_hash still matches the current source are
     # imported as $0 ``reused`` outcomes instead of being silently
@@ -2272,7 +2277,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     # Cross-run verdict reuse: compute_gaps fills this with
     # hash-verified, reuse-eligible prior-run journal entries; they
     # are imported as $0 outcomes just before the review loop.
-    reuse_candidates: Dict[str, Any] = {}
+    reuse_candidates: dict[str, Any] = {}
     _reuse_enabled = (
         getattr(config, "verdict_reuse", True)
         and not config.force

@@ -79,6 +79,21 @@ def parse_batch_response(
     return results
 
 
+def _response_text(response: Any) -> str:
+    """Extract the model output text from a generate() response.
+
+    ``LLMResponse`` carries it in ``content``; duck-typed responses
+    may use ``text``. Non-string attributes are skipped so mocks or
+    exotic response objects degrade to ``str(response)`` instead of
+    propagating non-text into the parser.
+    """
+    for attr in ("content", "text"):
+        value = getattr(response, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return str(response)
+
+
 def _classify_batch_error(exc: Exception) -> str:
     msg = str(exc).lower()
     if "rate limit" in msg or "timeout" in msg or "overloaded" in msg:
@@ -159,7 +174,13 @@ def make_batch_review_fn(
                 for ctx in contexts
             ]
 
-        raw_text = response.text if hasattr(response, "text") else str(response)
+        # LLMResponse carries the model output in ``content`` (there
+        # is no ``text`` attribute) — falling through to
+        # ``str(response)`` produced the dataclass repr, which the
+        # JSON-array parse rejected and every batch silently fell
+        # back to individual reviews. ``text`` is kept as a fallback
+        # for duck-typed responses.
+        raw_text = _response_text(response)
         duration = time.monotonic() - t0
         model = getattr(response, "model", "")
         cost = getattr(response, "cost", 0.0)

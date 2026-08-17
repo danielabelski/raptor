@@ -433,6 +433,111 @@ class TestCycleRepass:
         assert stats.repass_completed == 0
 
 
+class TestBatchWiringThroughConfig:
+    """The batch path engages when ``config.llm_client`` is set —
+    pinned end-to-end through the REAL ``_get_batch_review_fn`` and
+    ``make_batch_review_fn`` (no monkeypatched dispatch), because the
+    wiring was dead in production for want of the attribute."""
+
+    @staticmethod
+    def _glance_shared(n: int):
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeBucket:
+            value: str
+
+        @dataclass
+        class FakeTriageResult:
+            bucket: FakeBucket
+
+        shared = MagicMock()
+        shared.triage_results = {
+            f"a.py:f{i}:1": FakeTriageResult(FakeBucket("glance"))
+            for i in range(n)
+        }
+        return shared
+
+    @staticmethod
+    def _config(client):
+        cfg = MagicMock()
+        cfg.llm_client = client
+        cfg.models = ["default"]
+        return cfg
+
+    def test_no_client_disables_batching(self) -> None:
+        from core.audit.executor import _get_batch_review_fn
+        cfg = MagicMock()
+        cfg.llm_client = None
+        assert _get_batch_review_fn(MagicMock(), cfg) is None
+
+    def test_client_enables_batching(self) -> None:
+        from core.audit.executor import _get_batch_review_fn
+        fn = _get_batch_review_fn(MagicMock(), self._config(MagicMock()))
+        assert callable(fn)
+
+    def test_default_model_sentinel_not_resolved(self) -> None:
+        # models=["default"] must not be passed to config_for_model.
+        from core.audit.executor import _get_batch_review_fn
+        client = MagicMock()
+        fn = _get_batch_review_fn(MagicMock(), self._config(client))
+        assert callable(fn)
+        client.config.config_for_model.assert_not_called()
+
+    def test_glance_tasks_take_one_llm_call(self, monkeypatch) -> None:
+        import json
+
+        n = 10
+        wq = [_gap("a.py", f"f{i}") for i in range(n)]
+        graph = TaskGraph.from_workqueue(wq, [])
+        result = _FakeResult()
+        shared = self._glance_shared(n)
+
+        client = MagicMock()
+        response = MagicMock()
+        response.content = json.dumps([
+            {"file": "a.py", "function": f"f{i}",
+             "status": "clean", "body": "safe"}
+            for i in range(n)
+        ])
+        response.model = "test-model"
+        response.cost = 0.01
+        client.generate.return_value = response
+        client.config.config_for_model.side_effect = AssertionError
+
+        import core.audit.orchestrator as orch_mod
+        monkeypatch.setattr(
+            orch_mod, "_build_context",
+            lambda config, gap, *a, **kw: {
+                "file": gap["file"], "function": gap["name"],
+                "source": "pass", "line_start": 1, "line_end": 2,
+            },
+        )
+
+        collector = MagicMock()
+        individual: list[str] = []
+
+        def tracking_review(gap, shared, config, review_fn, result_obj, **kw):
+            individual.append(gap["name"])
+            return _mock_review_fn(
+                gap, shared, config, review_fn, result_obj, **kw)
+
+        stats = run_executor_sync(
+            graph, MagicMock(), shared, self._config(client), result,
+            ExecutorConfig(max_workers=1),
+            review_one_fn=tracking_review,
+            collector=collector,
+        )
+
+        assert stats.completed == n
+        assert client.generate.call_count == 1, (
+            "ten glance functions must ride ONE LLM call"
+        )
+        assert individual == [], "no per-function fallback expected"
+        assert collector.submit.call_count == n
+        assert result.clean == n
+
+
 class TestAsyncGlanceBatch:
     """Verify the parallel executor batches glance-tier tasks."""
 

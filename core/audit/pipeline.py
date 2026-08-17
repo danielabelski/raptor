@@ -174,6 +174,7 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
         llm_budget_client=client,
+        llm_client=client,
     )
 
     return run_orchestrator(
@@ -444,6 +445,7 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
         llm_budget_client=client,
+        llm_client=client,
     )
 
     result = run_orchestrator(

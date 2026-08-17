@@ -713,6 +713,11 @@ def _get_batch_review_fn(shared: Any, config: Any) -> Any:
         from .batch_glance import make_batch_review_fn
         models = getattr(config, "models", None)
         model_name = models[0] if models else None
+        # The "default" sentinel means "no explicit model" — passing
+        # it through would fail config_for_model resolution and log a
+        # spurious warning on every run.
+        if model_name == "default":
+            model_name = None
         return make_batch_review_fn(llm_client, model_name=model_name)
     except Exception:
         logger.debug("batch glance init failed", exc_info=True)

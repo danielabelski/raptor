@@ -349,6 +349,11 @@ class ReviewOutcome:
     reused_from_run: str = ""
     verification_tier: str = "speculative"
     tools_dispatched: set | None = field(default=None, repr=False)
+    # Chain step types that errored or timed out while verifying THIS
+    # function. A channel that errored did not meaningfully run — the
+    # gate-resolution pass must not count it as class coverage (a
+    # Joern query timeout is a failure, not a refutation).
+    tools_errored: set | None = field(default=None, repr=False)
     semantic_confidence: str = ""
     provenance_all_trusted: bool = False
     caller_attributed: bool = False
@@ -1812,23 +1817,19 @@ def review_one_function(
                 exc_info=True,
             )
 
-    # ── Suspicious demotion gate ────────────────────────────────────
-    # Runs AFTER finding gates (G2) so that finding→suspicious demotions
-    # are also caught.
-    # Suspicious without verification evidence demotes to clean.
-    # Only active when Joern is running (cross-function verifiers need
-    # the CPG to confirm interprocedural bugs that intra-function
-    # SMT/Coccinelle can't reach).
-    if (
-        outcome.status == "suspicious"
-        and joern_server is not None
-        and not _is_verification_evidence_for_gate(outcome)
-    ):
-        outcome.status = "clean"
-        outcome.body = (
-            "[suspicious-demotion: no verification evidence "
-            "with Joern available]\n\n" + outcome.body
-        )
+    # ── Suspicious demotion gate: REMOVED ───────────────────────────
+    # The old in-loop gate demoted EVERY suspicious outcome without
+    # verification evidence to clean whenever Joern was up — blind to
+    # the bug class (a tool-blind auth-logic hypothesis was "resolved"
+    # by tools that cannot see it) and blind to tool errors (a Joern
+    # query timeout became a clean verdict). Its body prefix also
+    # excluded the outcome from every later rescue pass. These
+    # outcomes now stay suspicious through deepen/sweep and are
+    # resolved by the end-of-run ``_resolve_gate_demoted`` pass:
+    # mechanical-corroboration check, then class coverage computed
+    # from channels that actually RAN (error-aware) → clean when a
+    # covering channel ran silent, dark when the class is tool-blind
+    # or the channel errored.
 
     # ── Dynamic validation ────────────────────────────────────────────
     if config.dynamic_validation and outcome.status == "finding":
@@ -8698,6 +8699,7 @@ def _run_tool_chain(
     target_path_override: Path | None = None,
     domain_vocab: Any = None,
     cwe: str = "",
+    errored_types: set | None = None,
 ) -> list[str]:
     """Run tools from *chain* in order, collecting all confirmations.
 
@@ -8705,6 +8707,9 @@ def _run_tool_chain(
     "coccinelle:missing_bounds_check"]``).  A tool that errors or
     whose dependency is missing is skipped (logged at debug) and the
     next tool in the chain is tried — this is the fallback behaviour.
+    When *errored_types* is provided, the step types that errored are
+    collected into it so callers can record per-function tool failures
+    (a channel that errored did not meaningfully run).
 
     When *sarif_cache* is provided, semgrep sweeps check for prior
     SARIF results before spawning a subprocess.  Cached SARIF hits
@@ -8817,6 +8822,8 @@ def _run_tool_chain(
                         function_name,
                         sweep.errors,
                     )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "semgrep", "errors")
                 elif sweep.outcome == "inconclusive":
@@ -8852,6 +8859,8 @@ def _run_tool_chain(
                         function_name,
                         smt_result.errors,
                     )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "smt", "errors")
                 elif smt_result.outcome == "inconclusive":
@@ -8908,6 +8917,8 @@ def _run_tool_chain(
                         function_name,
                         cocci_result.errors,
                     )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "coccinelle", "errors")
                 elif tier_counters:
@@ -8977,6 +8988,8 @@ def _run_tool_chain(
                         function_name,
                         codeql_result.errors,
                     )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "codeql", "errors")
                 elif tier_counters:
@@ -9006,6 +9019,8 @@ def _run_tool_chain(
                         function_name,
                         comp_result.errors,
                     )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "compiler", "errors")
                 elif comp_result.outcome == "refuted":
@@ -9077,6 +9092,8 @@ def _run_tool_chain(
                             tool_type, file_path, function_name,
                             jv_result.errors,
                         )
+                        if errored_types is not None:
+                            errored_types.add(tool_type)
                         if tier_counters:
                             _increment_tier_dict(tier_counters, tool_type, "errors")
                     elif jv_result.outcome == "refuted":
@@ -9115,6 +9132,8 @@ def _run_tool_chain(
                         function_name,
                         cf_result.errors,
                     )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
                     if tier_counters:
                         _increment_tier_dict(
                             tier_counters, "coccinelle_flow", "errors",
@@ -9138,6 +9157,8 @@ def _run_tool_chain(
                 function_name,
                 exc,
             )
+            if errored_types is not None:
+                errored_types.add(tool_type)
         finally:
             if tier_counters:
                 _increment_tier_dict(
@@ -9373,6 +9394,7 @@ def _sweep_validate(
                 pass
 
         dispatched = {step.get("type") for step in chain if step.get("type")}
+        errored: set = set()
 
         confirmed = _run_tool_chain(
             chain,
@@ -9388,6 +9410,7 @@ def _sweep_validate(
             joern_server=joern_server,
             target_path_override=_decomp_tmp_dir if is_binary and _decomp_tmp_dir else None,
             cwe=cwe,
+            errored_types=errored,
         )
 
         # No Frida auto-launch here — an earlier last-resort path gated
@@ -9397,7 +9420,9 @@ def _sweep_validate(
         # run_dynamic_sweep in the review loop, gated on
         # config.dynamic_validation) and core/audit/frida_observe.py.
 
-        outcome.tools_dispatched = dispatched
+        outcome.tools_dispatched = (outcome.tools_dispatched or set()) | dispatched
+        if errored:
+            outcome.tools_errored = (outcome.tools_errored or set()) | errored
         if confirmed:
             high_prec = [t for t in confirmed if not _is_detection_only(t)]
             if high_prec:
@@ -9615,6 +9640,12 @@ def _proactive_validate(
     )
 
     confirmed_tools = []
+    # Per-function dispatch record: which channels actually RAN here
+    # (and which errored). Gate resolution's covered==ran check reads
+    # these off the outcome — an installed-but-never-dispatched tool
+    # must not count as class coverage.
+    ran: set = set()
+    errored: set = set()
 
     smt_verb = smt_verb_for_cwe(cwe) if _has_cwe_dispatch else None
     if smt_verb and "smt" not in dispatched:
@@ -9626,6 +9657,7 @@ def _proactive_validate(
                     source_text = src_path.read_text(errors="replace")
             except OSError:
                 pass
+            ran.add("smt")
             smt_result = run_smt_verb_direct(
                 verb=smt_verb,
                 file_path=outcome.file,
@@ -9640,16 +9672,20 @@ def _proactive_validate(
             elif smt_result.outcome == "refuted":
                 if tier_counters:
                     _increment_tier_dict(tier_counters, "smt", "refuted")
-            elif tier_counters:
+            else:
                 # inconclusive / error — count separately so the
                 # diagnostics don't overstate SMT's refutation power.
-                _increment_tier_dict(
-                    tier_counters, "smt",
-                    "errors" if smt_result.outcome == "error"
-                    else "inconclusive",
-                )
+                if smt_result.outcome == "error":
+                    errored.add("smt")
+                if tier_counters:
+                    _increment_tier_dict(
+                        tier_counters, "smt",
+                        "errors" if smt_result.outcome == "error"
+                        else "inconclusive",
+                    )
         except Exception:
             logger.debug("proactive SMT failed for %s", cwe, exc_info=True)
+            errored.add("smt")
             if tier_counters:
                 _increment_tier_dict(tier_counters, "smt", "errors")
 
@@ -9661,11 +9697,13 @@ def _proactive_validate(
             rec = evidence_index.get(key)
             if rec and rec.all_joern_flows():
                 confirmed_tools.append("joern:pre_sweep")
+                ran.add("joern")
                 if tier_counters:
                     _increment_tier_dict(tier_counters, "joern", "confirmed")
                 pre_hit = True
 
         if not pre_hit and sinks and joern_server is not None:
+            ran.add("joern")
             live_hits = _joern_live_query(
                 joern_server,
                 outcome.function,
@@ -9685,6 +9723,7 @@ def _proactive_validate(
                 from .sweep import run_codeql_sweep
 
                 for sink in sinks[:2]:
+                    ran.add("codeql")
                     codeql_result = run_codeql_sweep(
                         target_path=config.target_path,
                         file_path=outcome.file,
@@ -9700,12 +9739,14 @@ def _proactive_validate(
                             _increment_tier_dict(tier_counters, "codeql", "confirmed")
                         break
                     elif codeql_result.outcome == "error":
+                        errored.add("codeql")
                         if tier_counters:
                             _increment_tier_dict(tier_counters, "codeql", "errors")
                     elif tier_counters:
                         _increment_tier_dict(tier_counters, "codeql", "refuted")
             except Exception:
                 logger.debug("proactive CodeQL failed for %s", cwe, exc_info=True)
+                errored.add("codeql")
                 if tier_counters:
                     _increment_tier_dict(tier_counters, "codeql", "errors")
 
@@ -9715,6 +9756,7 @@ def _proactive_validate(
         cocci_rule = _hypothesis_to_cocci_check(mechanism) if mechanism else None
         if cocci_rule:
             try:
+                ran.add("coccinelle")
                 cocci_result = run_coccinelle_sweep(
                     target_path=config.target_path,
                     file_path=outcome.file,
@@ -9739,12 +9781,14 @@ def _proactive_validate(
                                     f" {m_file}:{match.get('line', '?')}",
                                 )
                 elif cocci_result.outcome == "error":
+                    errored.add("coccinelle")
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "coccinelle", "errors")
                 elif tier_counters:
                     _increment_tier_dict(tier_counters, "coccinelle", "refuted")
             except Exception:
                 logger.debug("proactive Coccinelle failed for %s", cwe, exc_info=True)
+                errored.add("coccinelle")
                 if tier_counters:
                     _increment_tier_dict(tier_counters, "coccinelle", "errors")
 
@@ -9753,6 +9797,7 @@ def _proactive_validate(
     if joern_server is not None and "cross_function" not in dispatched:
         try:
             from .cross_function_verify import cross_function_verify
+            ran.add("cross_function")
             xf_result = cross_function_verify(
                 function_name=outcome.function,
                 file_path=outcome.file,
@@ -9778,8 +9823,16 @@ def _proactive_validate(
                 "cross-function verify failed for %s:%s",
                 outcome.file, outcome.function, exc_info=True,
             )
+            errored.add("cross_function")
             if tier_counters:
                 _increment_tier_dict(tier_counters, "joern_xf", "errors")
+
+    # Attach the dispatch record before any status-changing return so
+    # gate resolution can tell "ran and silent" from "never ran".
+    if ran:
+        outcome.tools_dispatched = (outcome.tools_dispatched or set()) | ran
+    if errored:
+        outcome.tools_errored = (outcome.tools_errored or set()) | errored
 
     # Path feasibility: check whether flow trace conditions are jointly
     # satisfiable (strengthens or refutes the finding's reachability claim)
@@ -12330,6 +12383,9 @@ def _promote_outcome(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:
         review_result=outcome.review_result,
         line=outcome.line,
     )
+    promoted.tools_dispatched = outcome.tools_dispatched
+    promoted.tools_errored = outcome.tools_errored
+    promoted.semantic_confidence = outcome.semantic_confidence
     if promoted.review_result:
         promoted.review_result["evidence_tool"] = tool
     return promoted
@@ -12357,26 +12413,45 @@ def _resolve_gate_demoted(
     available_tools: dict[str, bool] | None = None,
     mechanical_findings: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
-    """Resolve gate-demoted suspicious outcomes.
+    """Resolve gate-demoted AND evidence-free suspicious outcomes.
 
     Gate demotions (G2 no-evidence, self-contradiction) catch LLM
     hallucinations.  But they leave the outcome as "suspicious" with no
-    path to resolution — deepen and sweep both skip them.
+    path to resolution — deepen and sweep both skip them.  Plain
+    suspicious outcomes without verification evidence used to be
+    demoted to clean by an in-loop gate whenever Joern was up — class-
+    and error-blind; they are resolved here instead (only when Joern
+    was available this run, preserving the old gate's activation
+    condition, and only AFTER deepen/sweep had their chance).
 
     This pass checks whether ANY mechanical tool independently flags the
     same function.  If nothing corroborates the LLM's retracted claim:
-    - If the vulnerability class IS tool-covered → resolved to clean
-      (a tool could have found it but didn't — disconfirmed).
-    - If the vulnerability class is NOT tool-covered → resolved to dark
-      (no tool can detect this class — needs concrete verification).
+    - If a tool that covers the class actually RAN for this function
+      (dispatch record / SARIF file hit, minus errored channels) →
+      resolved to clean (a tool looked and stayed silent — disconfirmed).
+    - Otherwise → resolved to dark (no tool ever looked, the class is
+      tool-blind, or the covering channel errored — needs concrete
+      verification). A tool that errored or timed out did NOT run:
+      converting a Joern timeout into a clean verdict is a failure
+      mode masquerading as a refutation.
 
     No LLM calls.
     """
+    joern_up = bool((available_tools or {}).get("joern"))
+
     for i, outcome in enumerate(result.outcomes):
         if outcome.status != "suspicious":
             continue
-        if not outcome.body.startswith(_GATE_DEMOTED_PREFIXES):
-            continue
+        gate_demoted = outcome.body.startswith(_GATE_DEMOTED_PREFIXES)
+        if not gate_demoted:
+            # Replacement for the removed in-loop suspicious-demotion
+            # gate: evidence-free suspicious outcomes resolve here,
+            # class- and error-aware, only when Joern was available
+            # (matching the old gate's activation condition).
+            if not joern_up:
+                continue
+            if _is_verification_evidence_for_gate(outcome):
+                continue
 
         if _has_mechanical_corroboration(
             outcome, config, sarif_cache, checklist,
@@ -12400,11 +12475,30 @@ def _resolve_gate_demoted(
                 )
                 continue
 
-        # Determine if the vulnerability class is tool-covered
+        # Determine if a tool covering the vulnerability class actually
+        # RAN for this function. The dispatch record comes from
+        # sweep/proactive validation; a SARIF hit for the file means a
+        # scan pass ran over it; errored channels did not run.
         class_covered = False
         if available_tools is not None:
             try:
                 from .tool_coverage import is_class_covered
+
+                ran: set = set(outcome.tools_dispatched or set())
+                if (
+                    sarif_cache is not None
+                    and sarif_cache.lookup(outcome.file) is not None
+                ):
+                    ran.add("sarif_cache")
+                errored = set(outcome.tools_errored or set())
+                if errored:
+                    logger.debug(
+                        "gate resolution %s:%s — channels errored (%s), "
+                        "excluded from coverage",
+                        outcome.file, outcome.function,
+                        ",".join(sorted(errored)),
+                    )
+                ran -= errored
 
                 rr = outcome.review_result or {}
                 class_covered = is_class_covered(
@@ -12412,6 +12506,7 @@ def _resolve_gate_demoted(
                     mechanism=rr.get("mechanism", outcome.hypothesis or ""),
                     hypothesis=outcome.hypothesis or "",
                     available_tools=available_tools,
+                    ran_tools=ran,
                 )
             except Exception:
                 logger.warning(
@@ -12420,6 +12515,10 @@ def _resolve_gate_demoted(
                     outcome.function,
                     exc_info=True,
                 )
+
+        marker = "" if gate_demoted else (
+            "[suspicious-resolution: no verification evidence]\n\n"
+        )
 
         if class_covered:
             if outcome.semantic_confidence == "high":
@@ -12435,7 +12534,7 @@ def _resolve_gate_demoted(
                 file=outcome.file,
                 function=outcome.function,
                 status="clean",
-                body=outcome.body,
+                body=marker + outcome.body,
                 hypothesis=outcome.hypothesis,
                 hypotheses=outcome.hypotheses,
                 evidence_tool=outcome.evidence_tool,
@@ -12445,12 +12544,14 @@ def _resolve_gate_demoted(
                 review_result=outcome.review_result,
                 line=outcome.line,
             )
+            resolved.tools_dispatched = outcome.tools_dispatched
+            resolved.tools_errored = outcome.tools_errored
             result.outcomes[i] = resolved
             result.suspicious -= 1
             result.clean += 1
             logger.info(
                 "gate-resolved %s:%s → clean "
-                "(no mechanical corroboration, class covered)",
+                "(no mechanical corroboration, covering channel ran silent)",
                 outcome.file,
                 outcome.function,
             )
@@ -12459,7 +12560,7 @@ def _resolve_gate_demoted(
                 file=outcome.file,
                 function=outcome.function,
                 status="dark",
-                body=outcome.body,
+                body=marker + outcome.body,
                 hypothesis=outcome.hypothesis,
                 hypotheses=outcome.hypotheses,
                 evidence_tool=outcome.evidence_tool,
@@ -12469,12 +12570,14 @@ def _resolve_gate_demoted(
                 review_result=outcome.review_result,
                 line=outcome.line,
             )
+            resolved.tools_dispatched = outcome.tools_dispatched
+            resolved.tools_errored = outcome.tools_errored
             result.outcomes[i] = resolved
             result.suspicious -= 1
             result.dormant += 1
             logger.info(
                 "gate-resolved %s:%s → dark "
-                "(no mechanical corroboration, class not tool-covered)",
+                "(no mechanical corroboration, no covering channel ran)",
                 outcome.file,
                 outcome.function,
             )
@@ -13034,8 +13137,13 @@ def _smt_demotion_reason(
 
 
 def _demote_outcome(outcome: ReviewOutcome, reason: str) -> ReviewOutcome:
-    """Demote a finding to suspicious with a reason prefix."""
-    return ReviewOutcome(
+    """Demote a finding to suspicious with a reason prefix.
+
+    Carries the dispatch record (tools_dispatched / tools_errored) and
+    semantic confidence through the demotion — gate resolution reads
+    them off the demoted outcome to decide clean vs dark.
+    """
+    demoted = ReviewOutcome(
         file=outcome.file,
         function=outcome.function,
         status="suspicious",
@@ -13049,6 +13157,11 @@ def _demote_outcome(outcome: ReviewOutcome, reason: str) -> ReviewOutcome:
         review_result=outcome.review_result,
         line=outcome.line,
     )
+    demoted.tools_dispatched = outcome.tools_dispatched
+    demoted.tools_errored = outcome.tools_errored
+    demoted.semantic_confidence = outcome.semantic_confidence
+    demoted.provenance_all_trusted = outcome.provenance_all_trusted
+    return demoted
 
 
 _MAX_PROPAGATION_ROUNDS = 5

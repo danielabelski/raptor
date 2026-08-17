@@ -641,18 +641,28 @@ class TestConcurrencyHypothesisMapping:
         assert result is not None
         assert "atomic_check_then_act" in result
 
-    def test_cwe_362_now_covered(self):
+    def test_cwe_362_covered_when_coccinelle_ran(self):
         from core.audit.tool_coverage import is_class_covered
         assert is_class_covered(
             "CWE-362", "race condition", "",
             {"coccinelle": True},
+            ran_tools={"coccinelle"},
         )
 
-    def test_cwe_667_now_covered(self):
+    def test_cwe_362_not_covered_when_coccinelle_never_ran(self):
+        """Installed-but-never-dispatched is NOT coverage."""
+        from core.audit.tool_coverage import is_class_covered
+        assert not is_class_covered(
+            "CWE-362", "race condition", "",
+            {"coccinelle": True},
+        )
+
+    def test_cwe_667_covered_when_coccinelle_ran(self):
         from core.audit.tool_coverage import is_class_covered
         assert is_class_covered(
             "CWE-667", "improper locking", "",
             {"coccinelle": True},
+            ran_tools={"coccinelle"},
         )
 
     def test_toctou_routes_to_double_fetch_first(self):

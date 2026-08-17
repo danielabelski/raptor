@@ -1900,12 +1900,154 @@ class TestResolveGateDemoted:
             hypothesis="integer overflow in addition",
             line=1,
         )
+        # SMT actually RAN for this function and stayed silent —
+        # covered==ran semantics require the dispatch record.
+        outcome.tools_dispatched = {"smt"}
         result = self._make_result(outcome)
         _resolve_gate_demoted(
             result, config, sarif_cache=None, checklist=checklist,
             available_tools={"prefilter": True, "smt": True},
         )
         assert result.outcomes[0].status == "clean"
+
+    def test_covered_class_without_dispatch_record_resolves_dark(self, tmp_path: Path):
+        """Installed-but-never-ran is NOT coverage: the same outcome
+        with no dispatch record routes to dark, not clean."""
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "a.c",
+                "items": [{"name": "f", "line_start": 1, "line_end": 1}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="[gate violation: G2: finding emitted without tool-grounded evidence]",
+            hypothesis="integer overflow in addition",
+            line=1,
+        )
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+            available_tools={"prefilter": True, "smt": True},
+        )
+        assert result.outcomes[0].status == "dark"
+
+    def test_errored_channel_routes_to_dark_not_clean(self, tmp_path: Path):
+        """A dispatched channel that errored/timed out did not run —
+        it must not convert the outcome into a clean verdict."""
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "a.c",
+                "items": [{"name": "f", "line_start": 1, "line_end": 1}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="[gate violation: G2: finding emitted without tool-grounded evidence]",
+            hypothesis="integer overflow in addition",
+            line=1,
+        )
+        outcome.tools_dispatched = {"smt"}
+        outcome.tools_errored = {"smt"}
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+            available_tools={"prefilter": True, "smt": True},
+        )
+        assert result.outcomes[0].status == "dark"
+
+    def test_plain_suspicious_resolved_when_joern_up(self, tmp_path: Path):
+        """Replacement for the in-loop Joern-up demotion: evidence-free
+        plain suspicious outcomes resolve here (class/error-aware)."""
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "a.c",
+                "items": [{"name": "f", "line_start": 1, "line_end": 1}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        # Tool-blind hypothesis, nothing ran → dark (old gate: clean).
+        outcome = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="looks like an auth bypass",
+            hypothesis="authorization bypass in role check",
+            line=1,
+        )
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+            available_tools={"joern": True},
+        )
+        assert result.outcomes[0].status == "dark"
+        assert result.outcomes[0].body.startswith("[suspicious-resolution:")
+
+    def test_plain_suspicious_with_silent_covering_channel_resolves_clean(
+        self, tmp_path: Path,
+    ):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        checklist = {
+            "files": [{
+                "path": "a.c",
+                "items": [{"name": "f", "line_start": 1, "line_end": 1}],
+            }],
+        }
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="possible overflow",
+            hypothesis="integer overflow in addition",
+            line=1,
+        )
+        outcome.tools_dispatched = {"smt"}
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist=checklist,
+            available_tools={"joern": True, "smt": True},
+        )
+        assert result.outcomes[0].status == "clean"
+
+    def test_plain_suspicious_with_verification_evidence_untouched(
+        self, tmp_path: Path,
+    ):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="tool-backed", hypothesis="integer overflow",
+            evidence_tool="semgrep:rule-1",
+            line=1,
+        )
+        result = self._make_result(outcome)
+        _resolve_gate_demoted(
+            result, config, sarif_cache=None, checklist={},
+            available_tools={"joern": True},
+        )
+        assert result.outcomes[0].status == "suspicious"
 
 
     def test_provenance_all_trusted_overrides_corroboration(self, tmp_path: Path):
@@ -1935,13 +2077,15 @@ class TestResolveGateDemoted:
         )
         outcome.provenance_all_trusted = True
         outcome.evidence_tool = "joern"
+        # A covering channel (codeql for CWE-120) ran and stayed silent.
+        outcome.tools_dispatched = {"codeql"}
         result = self._make_result(outcome)
         _resolve_gate_demoted(
             result, config, sarif_cache=None, checklist=checklist,
-            available_tools={"prefilter": True},
+            available_tools={"prefilter": True, "codeql": True},
         )
         # Prefilter would normally corroborate (strcpy), but provenance
-        # override lets it fall through to class-covered → clean.
+        # override lets it fall through to covered-and-ran → clean.
         assert result.outcomes[0].status == "clean"
 
     def test_provenance_smt_evidence_not_overridden(self, tmp_path: Path):

@@ -170,31 +170,79 @@ def _extract_cwes(
     return deduped
 
 
+# Chain step types / evidence namespaces → the coverage map's tool
+# vocabulary. Joern sub-channels and the coccinelle flow templates all
+# count as their parent tool; a SARIF-cache hit means a semgrep scan
+# ran over the file.
+_CHANNEL_ALIASES: dict[str, str] = {
+    "coccinelle_flow": "coccinelle",
+    "joern_guard": "joern",
+    "joern_flow": "joern",
+    "cross_function": "joern",
+    "sarif_cache": "semgrep",
+}
+
+
+def normalize_ran_channels(raw) -> set[str]:
+    """Normalize a dispatched-tool record to the coverage map vocabulary.
+
+    Accepts chain step types (``joern_guard``), namespaced receipts
+    (``semgrep:rule-id``), or plain tool names. Unknown entries pass
+    through unchanged — they simply never intersect the map.
+    """
+    out: set[str] = set()
+    for entry in raw or ():
+        name = str(entry).strip().lower()
+        if not name:
+            continue
+        name = name.split(":", 1)[0]
+        out.add(_CHANNEL_ALIASES.get(name, name))
+    return out
+
+
 def is_class_covered(
     cwe_field: str,
     mechanism: str,
     hypothesis: str,
     available_tools: dict[str, bool],
+    *,
+    ran_tools=None,
 ) -> bool:
-    """Check if any available tool can detect the claimed vulnerability class.
+    """Check if a tool that can detect the claimed class actually RAN.
 
-    Returns True if at least one CWE extracted from the review output
-    is mapped to a tool that is currently available. Returns False
-    (conservative — triggers dark classification) when:
+    "Covered" means a mapped channel executed for this function —
+    an installed-but-never-dispatched tool is NOT coverage. Treating
+    installation as coverage let the gate-resolution pass convert
+    correct hypotheses to ``clean`` on the claim that "a tool could
+    have found it but didn't", when in fact no tool ever looked.
+
+    ``ran_tools`` is the function's dispatched-tool record (chain step
+    types, evidence receipts, or a SARIF-cache file hit), normalized
+    via :func:`normalize_ran_channels`. Tools marked unavailable in
+    ``available_tools`` are discarded from the ran set (a stale
+    dispatch record cannot claim coverage for a dead tool).
+
+    Returns False (conservative — triggers dark classification) when:
     - No CWEs could be extracted
     - All extracted CWEs are unmapped (not in _CWE_TOOL_MAP)
-    - All mapped tools for all extracted CWEs are unavailable
+    - No mapped tool for any extracted CWE actually ran
     """
     cwes = _extract_cwes(cwe_field, mechanism, hypothesis)
     if not cwes:
         return False
 
-    live_tools = {t for t, avail in available_tools.items() if avail}
-    live_tools.add("prefilter")
+    ran = normalize_ran_channels(ran_tools)
+    if not ran:
+        return False
+
+    unavailable = {
+        t for t, avail in (available_tools or {}).items() if not avail
+    }
+    ran -= unavailable
 
     for cwe in cwes:
         tools_for_cwe = _CWE_TOOL_MAP.get(cwe)
-        if tools_for_cwe and tools_for_cwe & live_tools:
+        if tools_for_cwe and tools_for_cwe & ran:
             return True
 
     return False

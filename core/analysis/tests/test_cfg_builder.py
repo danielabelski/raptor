@@ -32,7 +32,6 @@ from unittest import mock
 from core.analysis.cfg_builder import (
     ENTRY_LINENO,
     EXIT_LINENO,
-    PyCFGNode,
     PythonCFG,
     build_cpp_callgraph,
     build_python_cfg,
@@ -49,14 +48,6 @@ def _cfg(source: str, func: str = "f") -> PythonCFG:
     cfg = build_python_cfg(source, func)
     assert cfg is not None, f"function {func!r} not found in source"
     return cfg
-
-
-def _by_label(cfg: PythonCFG) -> dict:
-    return {n.label: n for n in cfg.nodes()}
-
-
-def _successors(cfg: PythonCFG, node: PyCFGNode):
-    return list(cfg.successors(node))
 
 
 # ---------------------------------------------------------------------------

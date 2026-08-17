@@ -58,14 +58,6 @@ def _reachable(cfg: CPPCFG, src: CPPCFGNode) -> set[CPPCFGNode]:
     return seen
 
 
-def _predecessors_of(cfg: CPPCFG, target: CPPCFGNode) -> set[CPPCFGNode]:
-    out = set()
-    for n in cfg.nodes():
-        if target in cfg.successors(n):
-            out.add(n)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Basic shape — entry, exit, nodes, params
 # ---------------------------------------------------------------------------

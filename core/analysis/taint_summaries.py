@@ -588,23 +588,6 @@ def _compute_one_summary(
     )
 
 
-def _is_return_node(node: PyCFGNode, fn_ast: ast.AST) -> bool:
-    """True iff ``node`` corresponds to a ``return`` statement in
-    ``fn_ast``. Detection is by lineno + the AST containing a
-    Return at that line — cheap and good enough.
-
-    Falls back to ``False`` for fall-through "implicit returns"
-    (Python returns None at end of body); those don't carry taint
-    from any param to the return so omitting them is sound.
-    """
-    if node.kind != "stmt":
-        return False
-    for ast_n in ast.walk(fn_ast):
-        if isinstance(ast_n, ast.Return) and ast_n.lineno == node.lineno:
-            return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Outer fixed-point — call-graph iteration
 # ---------------------------------------------------------------------------

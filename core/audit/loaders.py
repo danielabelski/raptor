@@ -8,16 +8,17 @@ orchestrator state is mutated.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def load_variants(out_dir: Path) -> Set[str]:
+def load_variants(out_dir: Path) -> set[str]:
     """Load variants.json from /understand --hunt if present.
 
     Returns a set of "file:function" keys that match known variant
@@ -29,7 +30,17 @@ def load_variants(out_dir: Path) -> Set[str]:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        targets: Set[str] = set()
+        # Visibility plumbing (docs/security.md I2-(b)): variants.json
+        # is LLM-authored; log its provenance stamp (or its absence —
+        # both read as untrusted) so the audit trail records the trust
+        # status of the priority-boost source.
+        from core.artifacts.provenance import provenance_of
+        prov = provenance_of(data)
+        logger.info(
+            "variants: provenance generator=%s untrusted=%s legacy=%s",
+            prov["generator"], prov["untrusted"], prov["legacy"],
+        )
+        targets: set[str] = set()
         for variant in data if isinstance(data, list) else data.get("variants", []):
             fp = variant.get("file", "")
             fn = variant.get("function", "")
@@ -43,7 +54,7 @@ def load_variants(out_dir: Path) -> Set[str]:
         return set()
 
 
-def load_coverage_records(out_dir: Path) -> List[Dict[str, Any]]:
+def load_coverage_records(out_dir: Path) -> list[dict[str, Any]]:
     """Load legacy coverage-record.json if present.
 
     Back-compat: modern coverage uses per-tool records (coverage-*.json)
@@ -78,7 +89,7 @@ def load_exploit_feedback(out_dir: Path, load_feedback_state, FeedbackState):
     return FeedbackState()
 
 
-def load_fuzz_coverage(out_dir: Path) -> Optional[Dict[str, Any]]:
+def load_fuzz_coverage(out_dir: Path) -> dict[str, Any] | None:
     """Load fuzz coverage data if present."""
     path = out_dir / "coverage-fuzz.json"
     if not path.exists():
@@ -91,10 +102,10 @@ def load_fuzz_coverage(out_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 def fuzz_coverage_for(
-    fuzz_data: Dict[str, Any],
+    fuzz_data: dict[str, Any],
     file_path: str,
     function_name: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Extract fuzz coverage for a specific function."""
     flat_key = f"{file_path}:{function_name}"
     if flat_key in fuzz_data:
@@ -107,15 +118,15 @@ def fuzz_coverage_for(
 
 
 def load_or_build_taint_approx(
-    target_path: Optional[Path],
-    out_dir: Optional[Path],
-    scope: Optional[list] = None,
-) -> Optional[Dict[str, Any]]:
+    target_path: Path | None,
+    out_dir: Path | None,
+    scope: list | None = None,
+) -> dict[str, Any] | None:
     """Load cached taint approximations or build and persist them."""
     if out_dir:
         cache_path = out_dir / "taint-approx.json"
         if cache_path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 from core.json import load_json
                 cached = load_json(cache_path)
                 if cached:
@@ -123,22 +134,18 @@ def load_or_build_taint_approx(
                         "taint_approx: loaded %d cached results", len(cached),
                     )
                     return cached
-            except Exception:
-                pass
     results = _build_taint_approx(target_path, scope=scope)
     if results and out_dir:
-        try:
+        with contextlib.suppress(Exception):
             from core.json import save_json
             save_json(out_dir / "taint-approx.json", results)
-        except Exception:
-            pass
     return results
 
 
 def _build_taint_approx(
-    target_path: Optional[Path],
-    scope: Optional[list] = None,
-) -> Optional[Dict[str, Any]]:
+    target_path: Path | None,
+    scope: list | None = None,
+) -> dict[str, Any] | None:
     """Build tree-sitter taint approximations for all C/C++ files."""
     if not target_path or not target_path.is_dir():
         return None
@@ -156,7 +163,7 @@ def _build_taint_approx(
         if scope else None
     )
 
-    results: Dict[str, Any] = {}
+    results: dict[str, Any] = {}
     c_exts = {".c", ".h"}
     cpp_exts = {".cc", ".cpp", ".cxx", ".hpp"}
 

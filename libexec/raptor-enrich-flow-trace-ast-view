@@ -39,8 +39,34 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: F401
+from core.artifacts.provenance import (
+    FLOW_TRACE_TEXT_SCHEMA,
+    sanitise_free_text,
+    stamp_provenance,
+)
 from core.json import load_json, save_json
 from core.orchestration.flow_trace_ast_view import enrich_with_ast_view
+
+
+def _stamp_traces(understand_dir: Path) -> int:
+    """Provenance chokepoint for in-session /understand --trace output.
+
+    Defangs free-text fields and stamps every flow-trace-*.json as
+    LLM-derived (untrusted). Runs before the enrichment pass (and even
+    when enrichment is skipped) so the stamp does not depend on the
+    inventory being buildable.
+    """
+    stamped = 0
+    for trace_path in sorted(understand_dir.glob("flow-trace-*.json")):
+        trace = load_json(trace_path)
+        if not isinstance(trace, dict):
+            continue
+        sanitise_free_text(trace, FLOW_TRACE_TEXT_SCHEMA)
+        stamp_provenance(trace, "understand:trace",
+                         untrusted=True, overwrite_generator=False)
+        save_json(trace_path, trace)
+        stamped += 1
+    return stamped
 
 
 def main() -> int:
@@ -62,6 +88,13 @@ def main() -> int:
             "not a directory", file=sys.stderr,
         )
         return 1
+
+    stamped = _stamp_traces(understand_dir)
+    if stamped:
+        print(
+            f"raptor-enrich-flow-trace-ast-view: stamped provenance on "
+            f"{stamped} trace file(s)"
+        )
 
     checklist = load_json(understand_dir / "checklist.json") or {}
     target_path = (

@@ -869,6 +869,16 @@ def _run_fuzz_validation_smoke(findings_path: Path, target: Path, out_dir: Path)
     findings = load_json(findings_path)
     if not findings:
         return {"ran": False, "reason": "no fuzz findings"}
+    # Provenance chokepoint for the validate-style handoff: crash
+    # analysis mixes mechanical reproduction data with LLM-derived
+    # narrative, so the container is stamped untrusted (docs/security.md
+    # I2-(b)) and marked free-text fields are defanged.
+    from core.artifacts.provenance import sanitise_free_text, stamp_provenance
+    from packages.exploitability_validation.schemas import FINDINGS_SCHEMA
+    if isinstance(findings, dict):
+        sanitise_free_text(findings, FINDINGS_SCHEMA)
+    stamp_provenance(findings, "agentic-fuzz", untrusted=True,
+                     overwrite_generator=False)
     save_json(validation_dir / "findings.json", findings)
     helper = Path(__file__).resolve().parent / "libexec" / "raptor-validation-helper"
     stdout_path = validation_dir / "validation-helper.stdout.log"

@@ -38,10 +38,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.artifacts.provenance import (
+    provenance_of,
+    sanitise_free_text,
+    stamp_provenance,
+)
 from core.json import load_json, save_json
 from core.security.log_sanitisation import escape_nonprintable
 
 logger = logging.getLogger(__name__)
+
+# Provenance generator id stamped on artifacts (re)written by this
+# bridge. Content originates from LLM-authored /understand output, so
+# everything the bridge writes is stamped untrusted per docs/security.md
+# I2-(b).
+_BRIDGE_GENERATOR = "understand-bridge"
 
 # Label used in attack-paths to mark entries imported from /understand traces.
 # Stage B uses this to distinguish its own paths from pre-loaded ones.
@@ -451,6 +462,14 @@ def load_understand_context(
 
     summary["context_map_loaded"] = True
     summary["context_map"] = context_map
+    # Surface the writer-side provenance stamp (a missing stamp reads
+    # as untrusted + legacy) so downstream stages see the trust bit
+    # without re-deriving it.
+    summary["context_map_provenance"] = provenance_of(context_map)
+    if summary["context_map_provenance"]["legacy"]:
+        logger.info(
+            "understand_bridge: context-map has no provenance stamp "
+            "(legacy artifact) — treating content as untrusted")
 
     # --- Populate attack-surface.json ---
     surface_stats = _merge_attack_surface(context_map, validate_dir, understand_dir)
@@ -1027,6 +1046,11 @@ def enrich_checklist(checklist: dict[str, Any], context_map: dict[str, Any],
 
     if output_dir:
         from core.inventory import save_checklist
+        # The enriched checklist mixes mechanical inventory with
+        # LLM-derived priority markers from the context-map — stamp it
+        # untrusted before the mechanical writer default applies.
+        stamp_provenance(checklist, _BRIDGE_GENERATOR, untrusted=True,
+                         overwrite_generator=False)
         save_checklist(output_dir, checklist)
 
     return checklist
@@ -1380,6 +1404,15 @@ def _merge_attack_surface(
         taint_summary = context_map.get("taint_summary")
         if taint_summary:
             attack_surface["taint_summary"] = taint_summary
+        # Provenance chokepoint: the surface is a selective copy of the
+        # LLM-authored context-map (merged with whatever Stage B wrote),
+        # so it is stamped untrusted; marked free-text fields are
+        # defanged before persisting.
+        from packages.exploitability_validation.schemas import (
+            ATTACK_SURFACE_SCHEMA,
+        )
+        sanitise_free_text(attack_surface, ATTACK_SURFACE_SCHEMA)
+        stamp_provenance(attack_surface, _BRIDGE_GENERATOR, untrusted=True)
         # mode=0o600 — attack-surface JSON lists entry points, trust
         # boundaries, and sinks. Default umask makes this readable to
         # other local users; on multi-tenant hosts the file is a soft-
@@ -1518,6 +1551,10 @@ def _import_flow_traces(
         imported += 1
 
     if imported > 0:
+        # Provenance chokepoint: per-element stamp (top-level array),
+        # untrusted — content comes from LLM-authored flow traces.
+        # Existing generator ids on already-stamped elements survive.
+        _sanitise_and_stamp_paths(existing_paths)
         # mode=0o600 — attack-paths.json persists exploitation chains
         # (steps, blockers, proximity scores) imported from /understand
         # --trace. Same threat profile as attack-surface.json above.
@@ -1599,6 +1636,9 @@ def _import_unchecked_flow_conditions(
         imported += 1
 
     if imported > 0:
+        # Provenance chokepoint — see comment on the earlier
+        # paths_path write.
+        _sanitise_and_stamp_paths(existing_paths)
         # mode=0o600 — see comment on the earlier paths_path write.
         save_json(paths_path, existing_paths, mode=0o600)
 
@@ -1607,6 +1647,15 @@ def _import_unchecked_flow_conditions(
         "imported_as_paths": imported,
         "skipped_no_conditions": skipped,
     }
+
+
+def _sanitise_and_stamp_paths(paths: list) -> None:
+    """Defang free-text fields and stamp every attack-path element."""
+    from packages.exploitability_validation.schemas import ATTACK_PATH_SCHEMA
+
+    sanitise_free_text(paths, {"items": ATTACK_PATH_SCHEMA})
+    stamp_provenance(paths, _BRIDGE_GENERATOR, untrusted=True,
+                     overwrite_generator=False)
 
 
 def _trace_to_attack_path(trace: dict[str, Any], trace_file: Path) -> dict[str, Any]:

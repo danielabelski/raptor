@@ -39,10 +39,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import hashlib
 
 import core.startup.process_init  # noqa: F401
+from core.artifacts.provenance import sanitise_free_text, stamp_provenance
 from core.inventory.lookup import normalise_path
 from core.json import load_json, save_json
 from core.schema_constants import MEMORY_CORRUPTION_TYPES, normalise_vuln_type
 from packages.exploitability_validation.schemas import (
+    ATTACK_PATH_SCHEMA,
+    ATTACK_SURFACE_SCHEMA,
+    ATTACK_TREE_SCHEMA,
+    DISPROVEN_SCHEMA,
+    FINDINGS_SCHEMA,
+    HYPOTHESIS_SCHEMA,
     create_empty_findings,
     validate_attack_paths,
     validate_attack_surface,
@@ -51,6 +58,38 @@ from packages.exploitability_validation.schemas import (
     validate_findings,
     validate_hypotheses,
 )
+
+# Provenance generator id for artifacts (re)written by this helper.
+# Everything here carries LLM-derived content (stage outputs, merged
+# findings, working docs), so stamps default to untrusted per
+# docs/security.md I2-(b). See core.artifacts.provenance.
+_GENERATOR = "validation-helper"
+
+# Free-text schemas per working-doc filename, used to defang prose
+# fields at this writer chokepoint before persisting.
+_DOC_TEXT_SCHEMAS = {
+    "findings.json": FINDINGS_SCHEMA,
+    "attack-surface.json": ATTACK_SURFACE_SCHEMA,
+    "attack-tree.json": ATTACK_TREE_SCHEMA,
+    "disproven.json": DISPROVEN_SCHEMA,
+    "attack-paths.json": {"items": ATTACK_PATH_SCHEMA},
+    "hypotheses.json": {"items": HYPOTHESIS_SCHEMA},
+}
+
+
+def _save_artifact(path, data):
+    """Sanitise free text, stamp provenance, and save a working doc.
+
+    The single write chokepoint for LLM-derived pipeline artifacts in
+    this helper — keeps any generator id an earlier writer recorded.
+    """
+    path = Path(path)
+    schema = _DOC_TEXT_SCHEMAS.get(path.name)
+    if schema is not None:
+        sanitise_free_text(data, schema)
+    stamp_provenance(data, _GENERATOR, untrusted=True,
+                     overwrite_generator=False)
+    save_json(path, data)
 
 STAGE_LETTERS = "ABCDEF"
 
@@ -145,7 +184,7 @@ def _findings(workdir):
 
 
 def _save_findings(workdir, data):
-    save_json(Path(workdir) / "findings.json", data)
+    _save_artifact(Path(workdir) / "findings.json", data)
 
 
 WORKING_DOCS = [
@@ -205,7 +244,7 @@ def _apply_stage_file(workdir, stage_letter):
         target_path = staged.get("target_path", "")
         container = create_empty_findings("A", target_path, staged.get("vuln_type_focus"))
         container["findings"] = staged.get("findings", [])
-        save_json(findings_path, container)
+        _save_artifact(findings_path, container)
         count = len(container["findings"])
         print(f"  Built findings.json from stage-a.json: {count} findings")
     else:
@@ -275,7 +314,7 @@ def _apply_stage_file(workdir, stage_letter):
                 container[key] = value
 
         container["stage"] = staged.get("stage", stage_letter.upper())
-        save_json(findings_path, container)
+        _save_artifact(findings_path, container)
         print(f"  Merged stage-{stage_letter.lower()}.json: {applied} findings updated")
 
     # Delete the stage file. Guard the unlink — pre-fix
@@ -693,8 +732,8 @@ def prepare_B(workdir, target=None):
     # Always create all 5 working docs (empty if no data).
     # This ensures Claude can Read-then-Write without "file not found" errors.
     wdir = Path(workdir)
-    save_json(wdir / "hypotheses.json", hypotheses)
-    save_json(wdir / "attack-paths.json", attack_paths)
+    _save_artifact(wdir / "hypotheses.json", hypotheses)
+    _save_artifact(wdir / "attack-paths.json", attack_paths)
 
     # Frida runtime-evidence annotation (best-effort).
     with contextlib.suppress(Exception):
@@ -706,15 +745,15 @@ def prepare_B(workdir, target=None):
             [wdir, wdir.parent], target_path=target)
         if evidence_map and attack_paths:
             attack_paths = annotate_attack_paths(attack_paths, evidence_map)
-            save_json(wdir / "attack-paths.json", attack_paths)
+            _save_artifact(wdir / "attack-paths.json", attack_paths)
             print(f"  Frida runtime evidence: {len(evidence_map)} functions observed")
 
     if not (wdir / "attack-surface.json").exists():
-        save_json(wdir / "attack-surface.json", {"sources": [], "sinks": [], "trust_boundaries": []})
+        _save_artifact(wdir / "attack-surface.json", {"sources": [], "sinks": [], "trust_boundaries": []})
     if not (wdir / "attack-tree.json").exists():
-        save_json(wdir / "attack-tree.json", {"root": "ROOT", "nodes": []})
+        _save_artifact(wdir / "attack-tree.json", {"root": "ROOT", "nodes": []})
     if not (wdir / "disproven.json").exists():
-        save_json(wdir / "disproven.json", {"disproven": []})
+        _save_artifact(wdir / "disproven.json", {"disproven": []})
     _save_findings(workdir, data)
 
     if fast_count:
@@ -1318,7 +1357,7 @@ def _bridge_understand_output(out_dir, checklist, target,
     if understand_dir == out_dir:
         context_map_path = out_dir / "context-map.json"
         if context_map_path.exists():
-            from core.json import load_json, save_json
+            from core.json import load_json
             context_map = load_json(context_map_path)
             if context_map:
                 if stale_files:
@@ -1326,7 +1365,7 @@ def _bridge_understand_output(out_dir, checklist, target,
                 # Write attack-surface.json from (filtered) context-map so
                 # Stage B has consistent data.  Matches tier 2/3 behavior
                 # where load_understand_context always writes this file.
-                save_json(out_dir / "attack-surface.json", {
+                _save_artifact(out_dir / "attack-surface.json", {
                     "sources": context_map.get("sources", []),
                     "sinks": context_map.get("sinks", []),
                     "trust_boundaries": context_map.get("trust_boundaries", []),
@@ -1347,6 +1386,14 @@ def _bridge_understand_output(out_dir, checklist, target,
         print(f"  Bridge: loaded {understand_dir.name}"
               f" — {n_sources} sources, {n_sinks} sinks,"
               f" {n_traces} traces, {n_targets} priority targets")
+        prov = bridge.get("context_map_provenance") or {}
+        if prov:
+            # Visibility plumbing (docs/security.md I2-(b)): the
+            # imported context-map is LLM-derived; record its stamp.
+            print(f"  Bridge: context-map provenance —"
+                  f" generator={prov.get('generator')}"
+                  f" untrusted={prov.get('untrusted')}"
+                  f" legacy={prov.get('legacy')}")
 
 
 def _bridge_audit_output(out_dir, target=None):

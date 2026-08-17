@@ -3230,27 +3230,6 @@ class ClaudeCodeProvider:
         }
 
 
-def _safe_subprocess_stderr(stderr: str | None, *, limit: int = 500) -> str:
-    """Sanitise subprocess stderr for inclusion in operator-facing
-    ``RuntimeError`` messages.
-
-    Per ``project_log_sanitisation_adoption.md`` (threats A + B):
-    redact credentials that the child process may have echoed
-    (``ANTHROPIC_API_KEY``, bearer tokens, ``user:pass@`` URLs) and
-    escape non-printable bytes (ANSI / BIDI / control bytes) so the
-    error message can't corrupt operator terminals or be reshared
-    with secrets intact.
-
-    Truncation happens *after* sanitisation so the limit applies to
-    the rendered length, not the raw byte count.
-    """
-    if not stderr:
-        return ""
-    from core.security.log_sanitisation import escape_nonprintable
-    from core.security.redaction import redact_secrets
-    return escape_nonprintable(redact_secrets(stderr))[:limit]
-
-
 class ClaudeCodeLLMProvider(LLMProvider):
     """Claude Code subprocess transport as a real :class:`LLMProvider`.
 

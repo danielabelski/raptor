@@ -378,25 +378,41 @@ def import_annotations(
     checklist: dict[str, Any],
     tool: str = "annotations",
 ) -> int:
-    """Import durable human-authored annotations as coverage evidence.
+    """Import durable annotations as coverage evidence, tiered by
+    provenance grade.
 
-    Only ``source=human`` annotations are imported — LLM-authored
-    annotations are not coverage evidence (LLM review state is tracked
-    by the review journal instead).  Annotations survive ``/project
-    clean``, so importing them keeps retained operator reviews counting
-    even after the run dirs that produced them are gone.  A ``finding``
-    / ``suspicious`` status creates a linked finding.  Returns the count.
+    Human-grade annotations (``source=human`` with an interactive-TTY
+    provenance stamp, or legacy pre-stamp notes) import as durable
+    operator evidence: marked under ``tool``, and a ``finding`` /
+    ``suspicious`` status creates a retained linked finding.
+
+    Non-human-grade notes — ``source=agent``, and ``source=human``
+    stamped non-interactive (the laundering shape) — still count as
+    examination coverage, but at the machine tier: marked under
+    ``<tool>:machine`` and never linked as operator findings.
+
+    Legacy ``source=llm`` annotations are not imported at all: LLM
+    review state is tracked by the review journal instead (the
+    journal importer marks that coverage).
+
+    Annotations survive ``/project clean``, so importing them keeps
+    retained reviews counting even after the run dirs that produced
+    them are gone.  Returns the count imported.
     """
     base_dir = Path(base_dir)
     if not base_dir.exists():
         return 0
+    from core.annotations import is_human_grade
     from core.annotations.storage import iter_all_annotations
 
     ranges = _function_ranges(checklist)
 
     imported = 0
     for ann in iter_all_annotations(base_dir):
-        if ann.metadata.get("source") != "human":
+        human_grade = is_human_grade(ann.metadata)
+        if not human_grade and ann.metadata.get("source") not in (
+            "human", "agent",
+        ):
             continue
         rng = ranges.get((ann.file, ann.function)) or _parse_lines(
             ann.metadata.get("lines")
@@ -404,8 +420,11 @@ def import_annotations(
         if rng is None:
             continue
         lo, hi = rng
-        store.mark(ann.file, lo, hi if hi is not None else lo, tool)
-        if ann.metadata.get("status") in ("finding", "suspicious"):
+        label = tool if human_grade else f"{tool}:machine"
+        store.mark(ann.file, lo, hi if hi is not None else lo, label)
+        if human_grade and ann.metadata.get("status") in (
+            "finding", "suspicious",
+        ):
             store.link_finding(
                 ann.file, f"annotation:{ann.file}:{ann.function}",
                 line=lo, retained=True,

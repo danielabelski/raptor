@@ -82,6 +82,9 @@ class AdaptiveThrottle:
         self._last_signal: float = 0.0
         self._signal_count: int = 0
         self._in_flight: int = 0
+        # Normal-priority acquire_sync callers currently blocked
+        # waiting for a slot. Low-priority callers yield to them.
+        self._sync_waiters: int = 0
 
         self._event: asyncio.Event | None = None
         self._condition = threading.Condition(self._lock)
@@ -210,13 +213,21 @@ class AdaptiveThrottle:
                     event.set()
 
     @contextmanager
-    def acquire_sync(self) -> Iterator[None]:
+    def acquire_sync(self, *, low_priority: bool = False) -> Iterator[None]:
         """Synchronous blocking counterpart of ``acquire()``.
 
         For use in ``ThreadPoolExecutor`` worker threads — blocks the
         calling thread (via ``threading.Condition.wait()``) until a
         concurrency slot is available.  On exit, releases the slot
         and wakes one waiter.
+
+        ``low_priority=True`` marks background work (e.g. the study
+        consumer's batch calls): it only takes a slot when one is
+        free AND no normal-priority caller is currently blocked
+        waiting — review calls always win the contended slot.  Once
+        acquired, the slot is held normally (no preemption).  The
+        0.5s wait timeout below bounds any wake-one/priority race:
+        a starving waiter re-evaluates at least twice per second.
 
         ``_maybe_restore`` cannot be called while holding
         ``_condition`` (it acquires the same underlying lock, and
@@ -228,10 +239,19 @@ class AdaptiveThrottle:
         while True:
             self._maybe_restore()
             with self._condition:
-                if self._in_flight < self._effective:
+                if self._in_flight < self._effective and (
+                    not low_priority or self._sync_waiters == 0
+                ):
                     self._in_flight += 1
                     break
-                self._condition.wait(timeout=0.5)
+                if low_priority:
+                    self._condition.wait(timeout=0.5)
+                else:
+                    self._sync_waiters += 1
+                    try:
+                        self._condition.wait(timeout=0.5)
+                    finally:
+                        self._sync_waiters -= 1
         try:
             yield
         finally:

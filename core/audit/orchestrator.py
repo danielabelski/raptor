@@ -6488,6 +6488,44 @@ def _study_consumer(
         study_queue.signal_consumer_done()
 
 
+# Mechanical share of the study-prep budget (struct/pair extraction,
+# include resolution) on top of the LLM seeding call's timeout.
+_STUDY_PREP_MECHANICAL_MARGIN_S = 300
+
+
+def _study_prep_timeout_s() -> int:
+    """Subprocess timeout for study-prep, sized to its call class.
+
+    Prep is mechanical extraction PLUS one LLM concept-seeding call,
+    so its ceiling must cover the configured primary model's per-call
+    timeout (600s on the claude CLI transport) plus a mechanical
+    margin. The old hardcoded 120s guaranteed a timeout on any
+    cc-transport run whose seeding call ran long — and each timed-out
+    prep silently disabled the domain-model subsystem.
+    """
+    llm_timeout = 600
+    try:
+        from core.llm.config import _get_default_primary_model
+        mc = _get_default_primary_model()
+        if mc is not None and mc.timeout:
+            llm_timeout = max(int(mc.timeout), 120)
+    except Exception:  # config probing is best-effort
+        logger.debug("study-prep timeout probe failed", exc_info=True)
+    return llm_timeout + _STUDY_PREP_MECHANICAL_MARGIN_S
+
+
+def _announce_study_disabled(reason: str) -> None:
+    """ONE operator-visible line when the domain-model subsystem is
+    disabled for the rest of the run. Reviews continue without domain
+    concepts — but the operator must be able to see that the run
+    degraded, not discover it from a silent absence of concepts."""
+    logger.warning(
+        "study-consumer: %s — domain-model subsystem DISABLED for "
+        "this run (reviews continue without domain concepts)",
+        reason,
+    )
+
+
 def _study_consumer_loop(
     study_queue: StudyQueue,
     config: OrchestratorConfig,
@@ -6587,34 +6625,45 @@ def _study_consumer_loop(
 
             study_env = RaptorConfig.get_safe_env()
             study_env["_RAPTOR_TRUSTED"] = "1"
+            # Prep runs AT MOST ONCE per run. Any failure disables
+            # the subsystem loudly and stops the consumer — the old
+            # ``continue`` retried the whole prep from scratch on
+            # every subsequent batch, re-paying the full timeout each
+            # time while the domain model stayed silently empty.
+            prep_timeout = _study_prep_timeout_s()
             try:
                 prep_result = subprocess.run(
                     prep_cmd,
                     env=study_env,
                     capture_output=True,
                     text=True,
-                    timeout=120,
+                    timeout=prep_timeout,
                 )
                 if prep_result.returncode != 0:
-                    logger.warning(
-                        "study-consumer: prep failed (exit %d): %s",
-                        prep_result.returncode,
-                        (prep_result.stderr or "").strip()[:200],
+                    _stderr_tail = (prep_result.stderr or "").strip()[:200]
+                    _announce_study_disabled(
+                        f"study-prep failed "
+                        f"(exit {prep_result.returncode}): {_stderr_tail}",
                     )
-                    continue
+                    break
             except subprocess.TimeoutExpired:
-                logger.warning("study-consumer: prep timed out")
-                continue
+                _announce_study_disabled(
+                    f"study-prep timed out after {prep_timeout}s",
+                )
+                break
             except Exception:
-                logger.warning("study-consumer: prep error", exc_info=True)
-                continue
+                logger.debug(
+                    "study-consumer: prep error", exc_info=True,
+                )
+                _announce_study_disabled("study-prep raised an error")
+                break
 
             study_list_path = config.out_dir / "study-list.json"
             if not study_list_path.is_file():
-                logger.warning(
-                    "study-consumer: no study-list.json after prep",
+                _announce_study_disabled(
+                    "study-prep produced no study-list.json",
                 )
-                continue
+                break
             study_list_built = True
 
             # Build ConceptIndex from study-prep type data
@@ -6637,7 +6686,10 @@ def _study_consumer_loop(
             study_client = LLMClient(pinned_model=study_model)
             try:
                 if throttle is not None:
-                    with throttle.acquire_sync():
+                    # Low priority: study batches yield the contended
+                    # throttle slot to review calls — background
+                    # enrichment must not starve the main loop.
+                    with throttle.acquire_sync(low_priority=True):
                         run_study(
                             study_list_path,
                             config.out_dir,

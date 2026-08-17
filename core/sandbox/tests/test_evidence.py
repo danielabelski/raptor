@@ -223,18 +223,21 @@ class TestAnonymousFd:
         finally:
             os.close(fd)
 
-    def test_unlinked_tempfile_branch(self, monkeypatch):
+    def test_unlinked_tempfile_branch(self, monkeypatch, tmp_path):
         # Force the non-memfd branch (the macOS implementation) and
         # verify it behaves identically: readable content, no
-        # discoverable path left behind.
+        # discoverable path left behind. tempfile is pointed at a
+        # PRIVATE directory for the duration — a before/after listing
+        # of the shared tmpdir is not hermetic under parallel workers
+        # (any concurrent test's scratch file lands in the diff), and
+        # the private dir also strengthens the positive property: the
+        # unlinked file provably went to the observed directory.
         monkeypatch.setattr(ev.sys, "platform", "darwin")
-        tmpdir = tempfile.gettempdir()
-        before = set(os.listdir(tmpdir))
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
         fd = ev.anonymous_fd(b"macos-branch")
         monkeypatch.undo()
         try:
-            after = set(os.listdir(tmpdir))
-            assert after - before == set(), (
+            assert set(os.listdir(tmp_path)) == set(), (
                 "unlinked-tempfile branch left a discoverable path"
             )
             assert os.read(fd, 64) == b"macos-branch"

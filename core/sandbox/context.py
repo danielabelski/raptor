@@ -1416,6 +1416,20 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # get_safe_env path (see core/config.py); the caller path
         # is "you know what you're doing".
         strict_env = kwargs.pop("strict_env", False)
+        # ``strip_trust_markers``: opt-in from run_untrusted() /
+        # run_untrusted_networked(). CLAUDECODE / _RAPTOR_TRUSTED pass
+        # through get_safe_env() because the sandbox setup chain
+        # (raptor-pid1-shim on the unshare fallback) needs a marker to
+        # run — but an untrusted TARGET holding them could invoke
+        # libexec scripts as a "trusted caller". When set, the env
+        # handed to any path that execs the target directly (fork
+        # backend, seatbelt, Landlock-only subprocess) has both
+        # markers removed; the shim-bearing unshare path keeps them
+        # because the shim itself strips both before exec'ing the
+        # target (see raptor-pid1-shim). RAPTOR_DIR is deliberately
+        # NOT stripped: it is not accepted by the libexec trust gate
+        # and children may derive tool paths from it.
+        strip_trust_markers = kwargs.pop("strip_trust_markers", False)
         # ``env_caller_filtered``: opt-in assertion from the caller
         # that the env dict was constructed from a get_safe_env-
         # equivalent base AND that any DANGEROUS_ENV_VARS present
@@ -1532,6 +1546,19 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 and (block_network or use_mount or restrict_reads)
                 and "_RAPTOR_TRUSTED" not in kwargs["env"]):
             kwargs["env"] = {**kwargs["env"], "_RAPTOR_TRUSTED": "1"}
+
+        # Target-bound env view. Identical to kwargs["env"] unless
+        # strip_trust_markers is set, in which case the trust markers
+        # are removed. kwargs["env"] itself keeps them so the
+        # unshare+shim fallback (which needs a marker to pass the
+        # shim's own trust gate, and strips both before the target
+        # exec) still works.
+        _env_for_target = kwargs["env"]
+        if strip_trust_markers:
+            _env_for_target = {
+                k: v for k, v in kwargs["env"].items()
+                if k not in ("CLAUDECODE", "_RAPTOR_TRUSTED")
+            }
 
         # Force FD close at fork. Python defaults close_fds=True on POSIX
         # but we reject explicit overrides — inheriting FDs from RAPTOR
@@ -2053,7 +2080,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     sandbox_profile=(profile if profile is not None
                                      else DEFAULT_PROFILE),
                     seccomp_block_udp=seccomp_block_udp,
-                    env=kwargs.get("env"),
+                    env=_env_for_target,
                     cwd=kwargs.get("cwd"),
                     timeout=kwargs.get("timeout"),
                     capture_output=kwargs.get("capture_output", False),
@@ -2156,7 +2183,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 if allowed_tcp_ports else None,
                             seccomp_profile=seccomp_profile,
                             seccomp_block_udp=seccomp_block_udp,
-                            env=kwargs.get("env"),
+                            env=_env_for_target,
                             cwd=kwargs.get("cwd"),
                             timeout=kwargs.get("timeout"),
                             capture_output=kwargs.get("capture_output", False),
@@ -2454,7 +2481,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     landlock_preexec=_ll_preexec,
                                     seccomp_preexec=_sc_preexec,
                                     rlimit_preexec=_rlimit_only,
-                                    env=kwargs.get("env"),
+                                    # full_cmd carries the pid1 shim
+                                    # when need_unshare — the shim
+                                    # needs the trust marker and
+                                    # strips it before the target
+                                    # exec. Without the shim the env
+                                    # goes straight to the target, so
+                                    # hand it the stripped view.
+                                    env=(kwargs.get("env")
+                                         if need_unshare
+                                         else _env_for_target),
                                     cwd=kwargs.get("cwd"),
                                     timeout=kwargs.get("timeout"),
                                     capture_output=kwargs.get(
@@ -2520,10 +2556,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     pass
                     else:
                         try:
+                            # No shim on this path — full_cmd IS the
+                            # target, so it gets the marker-stripped
+                            # env view.
+                            _pk = dict(kwargs)
+                            _pk["env"] = _env_for_target
                             result = subprocess.run(
                                 full_cmd,
                                 start_new_session=_start_new_session,
-                                **kwargs,
+                                **_pk,
                                 check=False,
                             )
                         except OSError as _ebadf:
@@ -2959,6 +3000,13 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     invoking target build scripts, or anything else where the command or
     its inputs trace back to untrusted material.
 
+    The trust markers (``CLAUDECODE`` / ``_RAPTOR_TRUSTED``) are
+    stripped from the child environment so a target-spawned process
+    cannot invoke RAPTOR's ``libexec/`` scripts as a "trusted caller"
+    — it hits their refusal path instead. ``RAPTOR_DIR`` is kept: the
+    libexec trust gate does not accept it and children may derive
+    tool paths from it.
+
     `**kwargs` forwards to run() — composable with audit/audit_verbose
     (audit-mode applies to the run_untrusted's full-strict profile),
     caller_label=, env=, cwd=, etc. `profile=` is accepted as a RATCHET
@@ -3044,6 +3092,7 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
                writable_paths=writable_paths,
                fake_home=fake_home,
                strict_env=True,
+               strip_trust_markers=True,
                **kwargs)
 
 
@@ -3088,11 +3137,15 @@ def run_untrusted_networked(
         reachable from inside the sandbox.
 
     Mirrors :func:`run_untrusted`'s stdin / start_new_session
-    defaults — DEVNULL stdin, setsid — for the same passive-sniffer +
-    controlling-tty reasons.
+    defaults — DEVNULL stdin, setsid — and its trust-marker hygiene
+    (``CLAUDECODE`` / ``_RAPTOR_TRUSTED`` stripped from the child
+    env) for the same reasons.
 
-    No callers in this PR. Provides the safe shape for future
-    cc_dispatch-style migrations to use; see THREAT_MODEL.md.
+    Callers: Claude Code sub-agent dispatch (packages/llm_analysis/
+    cc_dispatch.py, core/orchestration/agentic_passes.py,
+    core/audit/validate.py), git network operations
+    (core/git/clone.py), and other hostname-allowlisted egress
+    consumers; see THREAT_MODEL.md.
     """
     if not (target or output):
         raise ValueError(
@@ -3138,5 +3191,6 @@ def run_untrusted_networked(
         proxy_hosts=list(proxy_hosts),
         allowed_tcp_ports=[443],
         strict_env=True,
+        strip_trust_markers=True,
         **kwargs,
     )

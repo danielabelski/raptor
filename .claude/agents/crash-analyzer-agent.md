@@ -1,6 +1,7 @@
 ---
 name: crash-analyzer
 description: Analyze crashes using rr recordings, function traces, and coverage data to produce root-cause analyses.
+tools: Read, Write, Edit, Bash, Grep, Glob
 model: inherit
 ---
 

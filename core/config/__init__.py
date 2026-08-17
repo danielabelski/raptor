@@ -407,7 +407,11 @@ class RaptorConfig:
         # or Claude Code). Pure boolean flags; not shell-interpreted.
         # Must propagate through get_safe_env() because the sandbox
         # spawns its own libexec scripts (raptor-pid1-shim,
-        # raptor-run-sandboxed) using this env.
+        # raptor-run-sandboxed) using this env. Untrusted TARGETS do
+        # not see them: run_untrusted()/run_untrusted_networked()
+        # strip both from the target-bound env (strip_trust_markers
+        # in core/sandbox/context.py), and the pid1 shim strips them
+        # before exec on the unshare path.
         "_RAPTOR_TRUSTED", "CLAUDECODE",
         # RAPTOR runtime config that downstream subprocesses must
         # honour for the operator's intent to take effect:

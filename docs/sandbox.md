@@ -287,6 +287,7 @@ All kwargs accepted by `sandbox()` and `run()` (and most by
 | `require_sanitisation` | `False` | Fail-closed if fingerprint sanitisation cannot engage (e.g. no mount-ns). |
 | `etc_overlay` | `None` | Dict mapping in-sandbox `/etc` paths to host source files. Bind-mounted when every target exists on the host; if any target is missing, `/etc` becomes a tmpfs shallow-copy of host `/etc` (plus stubs), remounted read-only. Context-level (set once, reused across `run()` calls). |
 | `strict_env` | `False` | Strip `DANGEROUS_ENV_VARS` from any caller-supplied `env=` dict. Automatically `True` in `run_untrusted()` / `run_untrusted_networked()`. |
+| `strip_trust_markers` | `False` | Remove the libexec trust markers (`CLAUDECODE`, `_RAPTOR_TRUSTED`) from the target-bound child env so a target-spawned process cannot invoke `libexec/` scripts as a trusted caller. Automatically `True` in `run_untrusted()` / `run_untrusted_networked()`. The pid1-shim path keeps the marker for the shim itself, which strips it before the target exec. |
 | `env_caller_filtered` | `False` | Caller assertion that the `env=` dict was already filtered. Suppresses the operational-hygiene warning without stripping vars. |
 | `degraded_net_deny` | `True` | When `block_network=True` cannot get a namespace backend, deny ALL TCP connects via Landlock (ABI 4+) instead of degrading silently. See [Degraded network deny](#degraded-network-deny). |
 

@@ -4342,17 +4342,18 @@ def _run_audit_body(
     )
 
     # --- Start incremental study consumer (Thread B) ---
-    _C_STUDY_SUFFIXES = frozenset(
-        (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"),
-    )
-    _has_c_files = any(
-        Path(g["file"]).suffix.lower() in _C_STUDY_SUFFIXES
-        for g in workqueue
+    # The study loop resolves assumptions in C/C++ (via the study-prep
+    # corpus) and in Python/Go/Java/JS-TS/Rust (via in-process
+    # lang_resolve dispatch); reviews of any of those languages may
+    # emit reading_list items.
+    from core.concepts.lang_resolve import is_study_supported_path
+    _has_study_files = any(
+        is_study_supported_path(g["file"]) for g in workqueue
     )
     study_queue: StudyQueue | None = None
     study_consumer_thread: _threading.Thread | None = None
     concept_index_ref: list = [ConceptIndex.empty()]
-    if _has_c_files and config.out_dir:
+    if _has_study_files and config.out_dir:
         study_queue = StudyQueue()
         shared.study_queue = study_queue
         study_consumer_thread = _threading.Thread(
@@ -7750,6 +7751,14 @@ class StudyRequest:
     context: str = ""
 
 
+# C/C++ suffixes route to the study-prep corpus; the other supported
+# languages (core.concepts.lang_resolve.STUDY_LANGUAGES) resolve
+# in-process per batch.
+_C_STUDY_SUFFIXES = frozenset(
+    (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"),
+)
+
+
 class StudyQueue:
     """Thread-safe producer-consumer queue for study requests.
 
@@ -8038,15 +8047,277 @@ def _extract_concept_from_question(question: str) -> str | None:
     """Pull the key identifier from a reading-list question.
 
     Handles patterns like "what is sk_buff?", "how does skb_put work?",
-    "Does process_heartbeat validate payload_len against out_cap?".
+    "Does process_heartbeat validate payload_len against out_cap?",
+    and dotted/qualified non-C shapes like "Does json.loads reject
+    NaN?" or "Does Vec::with_capacity zero memory?".
     """
     import re as _re
     m = _re.search(
-        r"(?:what is|how does|does)\s+[`'\"]?(\w+)[`'\"]?",
+        r"(?:what is|how does|does)\s+[`'\"]?([\w.:]+)[`'\"]?",
         question,
         _re.IGNORECASE,
     )
-    return m.group(1) if m else None
+    if not m:
+        return None
+    concept = m.group(1).strip(".:")
+    return concept or None
+
+
+def _partition_study_batch(
+    batch: list[StudyRequest],
+) -> tuple[list[StudyRequest], list[StudyRequest], list[StudyRequest]]:
+    """Split a study batch by resolver.
+
+    Returns ``(c_reqs, ml_reqs, unsupported)``: C/C++ questions resolve
+    against the study-prep corpus, ``ml_reqs`` (Python/Go/Java/JS-TS/
+    Rust) resolve in-process, and ``unsupported`` languages have no
+    resolver — those items are marked unresolvable, never guessed.
+    Requests without a source file stay on the C path (legacy shape).
+    """
+    from core.concepts.lang_resolve import language_for_path
+
+    c_reqs: list[StudyRequest] = []
+    ml_reqs: list[StudyRequest] = []
+    unsupported: list[StudyRequest] = []
+    for req in batch:
+        sf = req.source_file or ""
+        suffix = Path(sf).suffix.lower()
+        if not sf or suffix in _C_STUDY_SUFFIXES:
+            c_reqs.append(req)
+        elif language_for_path(sf):
+            ml_reqs.append(req)
+        else:
+            unsupported.append(req)
+    return c_reqs, ml_reqs, unsupported
+
+
+def _mark_concepts_studied(
+    study_queue: StudyQueue, reqs: list[StudyRequest],
+) -> None:
+    """Release the suppression gate for this batch's concepts."""
+    batch_concepts = set()
+    for req in reqs:
+        c = _extract_concept_from_question(req.question)
+        if c:
+            batch_concepts.add(c.lower())
+    if batch_concepts:
+        study_queue.mark_studied(batch_concepts)
+
+
+def _warn_critical_unresolvable(req: StudyRequest, reason: str) -> None:
+    """A critical assumption the verdict depended on could not be
+    verified — one operator-visible line, mirroring the loud-
+    degradation convention of the rest of the consumer."""
+    if (req.priority or "") == "critical":
+        logger.warning(
+            "study-consumer: CRITICAL assumption unresolvable "
+            "(%s): %s [%s:%s]",
+            reason, req.question, req.source_file, req.source_function,
+        )
+
+
+def _mark_unsupported_unresolvable(
+    out_dir: Path, reqs: list[StudyRequest],
+) -> None:
+    """Mark reading-list items from languages with no resolver as
+    unresolvable — they must not be studied, retried, or reported as
+    resolved-clean."""
+    try:
+        from core.concepts.reading_list import ReadingList
+
+        rl_path = out_dir / "reading-list.json"
+        rl = ReadingList.load(rl_path)
+        changed = False
+        for req in reqs:
+            suffix = Path(req.source_file or "").suffix or "?"
+            reason = (
+                f"study loop has no resolver for '{suffix}' sources"
+            )
+            for item in rl.items:
+                if (
+                    item.question == req.question
+                    and not item.resolved
+                    and not item.unresolvable
+                ):
+                    item.mark_unresolvable(reason)
+                    changed = True
+                    _warn_critical_unresolvable(req, reason)
+                    break
+        if changed:
+            rl.save(rl_path)
+    except Exception:
+        logger.debug(
+            "study-consumer: unsupported-language marking failed",
+            exc_info=True,
+        )
+
+
+def _resolve_multilang_requests(
+    config: OrchestratorConfig,
+    ml_reqs: list[StudyRequest],
+    study_list_path: Path | None,
+) -> dict[str, str]:
+    """Per-batch in-process resolution for non-C study requests.
+
+    Resolved definitions are merged into study-list.json so the
+    subsequent run_study call (which re-reads the file) studies them.
+    Returns ``{question: reason}`` for questions whose identifiers
+    could not be statically resolved — the caller marks those
+    reading-list items unresolvable instead of resolved-clean.
+    """
+    failures: dict[str, str] = {}
+    try:
+        from core.concepts.lang_resolve import (
+            extract_question_identifiers,
+            merge_into_study_list,
+            resolve_concept_docs,
+            resolve_identifiers,
+        )
+    except Exception:
+        logger.warning(
+            "study-consumer: lang_resolve unavailable — multilang "
+            "batch skipped", exc_info=True,
+        )
+        return failures
+
+    root = Path(config.study_root or config.target_path)
+    ident_reqs = [r for r in ml_reqs if r.resolution != "concept"]
+    concept_reqs = [r for r in ml_reqs if r.resolution == "concept"]
+
+    q_idents: dict[str, list[str]] = {}
+    all_idents: list[str] = []
+    seen: set[str] = set()
+    for req in ident_reqs:
+        names = extract_question_identifiers(req.question, req.context)
+        sf_fn = (req.source_function or "").strip()
+        if sf_fn and sf_fn not in names:
+            names.append(sf_fn)
+        q_idents[req.question] = names
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                all_idents.append(n)
+
+    unresolved_by_name: dict[str, str] = {}
+    if all_idents:
+        res = resolve_identifiers(root, all_idents)
+        unresolved_by_name = {
+            u["name"]: u["reason"] for u in res.unresolved
+        }
+        if study_list_path is not None:
+            try:
+                merge_into_study_list(
+                    study_list_path, res.items, unresolved=res.unresolved,
+                )
+            except OSError:
+                logger.warning(
+                    "study-consumer: study-list merge failed",
+                    exc_info=True,
+                )
+        logger.info(
+            "study-consumer: multilang batch: %d identifiers → "
+            "%d items, %d unresolvable",
+            len(all_idents), len(res.items), len(res.unresolved),
+        )
+
+    for req in ident_reqs:
+        names = q_idents.get(req.question) or []
+        if not names:
+            failures[req.question] = (
+                "question names no resolvable identifier"
+            )
+            continue
+        if all(n in unresolved_by_name for n in names):
+            failures[req.question] = unresolved_by_name[names[0]]
+
+    if concept_reqs:
+        docs = resolve_concept_docs(
+            root, [r.question for r in concept_reqs],
+        )
+        if docs and study_list_path is not None:
+            try:
+                merge_into_study_list(
+                    study_list_path, [], related_docs=docs,
+                )
+            except OSError:
+                logger.warning(
+                    "study-consumer: study-list doc merge failed",
+                    exc_info=True,
+                )
+        if not docs:
+            for req in concept_reqs:
+                failures[req.question] = (
+                    "no project documentation found for this concept"
+                )
+
+    return failures
+
+
+def _mark_batch_reading_list(
+    out_dir: Path,
+    reqs: list[StudyRequest],
+    domain_model: dict | None,
+    failures: dict[str, str],
+) -> None:
+    """Post-study reading-list bookkeeping for one batch.
+
+    Semantics (pinned by tests):
+    - resolved: the study produced a domain-model concept matching the
+      question's identifier — the assumption was verified.
+    - unresolvable(+reason): the resolver reported the question cannot
+      be answered from the source.  Never counted as resolved.
+    - pending: studied but no matching concept landed — attempted yet
+      unverified is NOT resolved-clean; the item stays visible.
+    """
+    from core.concepts.reading_list import ReadingList
+
+    rl_path = out_dir / "reading-list.json"
+    rl = ReadingList.load(rl_path)
+
+    dm_ids: list[str] = []
+    if domain_model:
+        for c in domain_model.get("concepts", []):
+            dm_ids.append(c.get("id", "") or c.get("name", ""))
+        for inv in domain_model.get("invariants", []):
+            dm_ids.append(inv.get("subject", "") or inv.get("concept", ""))
+        for ct in domain_model.get("contracts", []):
+            dm_ids.append(ct.get("function", ""))
+    dm_ids = [d.lower() for d in dm_ids if d]
+
+    changed = False
+    for req in reqs:
+        item = next(
+            (
+                i for i in rl.items
+                if i.question == req.question
+                and not i.resolved and not i.unresolvable
+            ),
+            None,
+        )
+        if item is None:
+            continue
+        reason = failures.get(req.question)
+        if reason:
+            item.mark_unresolvable(reason)
+            _warn_critical_unresolvable(req, reason)
+            changed = True
+            continue
+        concept = _extract_concept_from_question(req.question)
+        cl = (concept or "").lower()
+        if not cl:
+            continue
+        import re as _re
+        tail = _re.split(r"\.|::", cl)[-1]
+        matched = next(
+            (d for d in dm_ids if cl in d or (tail and tail in d)),
+            None,
+        )
+        if matched:
+            item.resolve(matched)
+            changed = True
+        # else: stays pending — attempted but unverified.
+    if changed:
+        rl.save(rl_path)
 
 
 # Drain policy for the study consumer (all seconds):
@@ -8437,6 +8708,19 @@ def _study_consumer_loop(
             )
             continue
 
+        # Language dispatch: C/C++ questions resolve against the
+        # study-prep corpus; Python/Go/Java/JS-TS/Rust resolve
+        # in-process per batch; languages with no resolver are marked
+        # unresolvable up front — never studied, never resolved-clean.
+        c_reqs, ml_reqs, unsupported = _partition_study_batch(fresh)
+        if unsupported:
+            _mark_unsupported_unresolvable(config.out_dir, unsupported)
+        if not c_reqs and not ml_reqs:
+            # Nothing studyable in this batch: release the suppression
+            # gate and skip the LLM study call entirely.
+            _mark_concepts_studied(study_queue, fresh)
+            continue
+
         # Study-prep: run once, cache study-list + parsed data
         if not study_list_built:
             study_target = str(config.study_root or config.target_path)
@@ -8533,6 +8817,15 @@ def _study_consumer_loop(
                     concept_index_ref, checklist, config.out_dir,
                 )
 
+        # Multi-language requests: resolve in-process and merge the
+        # definitions into study-list.json (run_study re-reads it), so
+        # batches after the one-shot prep still gain non-C corpus.
+        ml_failures: dict[str, str] = {}
+        if ml_reqs:
+            ml_failures = _resolve_multilang_requests(
+                config, ml_reqs, study_list_path,
+            )
+
         # Study-run: in-process, scoped to this batch's reading-list.
         if study_queue.stop_requested:
             logger.info(
@@ -8613,13 +8906,27 @@ def _study_consumer_loop(
                        ) if shared.domain_model else 0
 
         # Mark studied concepts so the suppression gate can release
-        batch_concepts = set()
-        for req in fresh:
-            c = _extract_concept_from_question(req.question)
-            if c:
-                batch_concepts.add(c.lower())
-        if batch_concepts:
-            study_queue.mark_studied(batch_concepts)
+        _mark_concepts_studied(study_queue, fresh)
+
+        # Reading-list bookkeeping: resolved only when the study
+        # produced a matching domain-model concept; unresolvable (with
+        # reason) when the resolver said the question cannot be
+        # answered from the source; otherwise the item stays pending —
+        # attempted but unverified is NOT resolved-clean.  Runs after
+        # every study batch, before the re-review eligibility checks
+        # below (which can continue/break past it).
+        try:
+            _mark_batch_reading_list(
+                config.out_dir,
+                c_reqs + ml_reqs,
+                shared.domain_model,
+                ml_failures,
+            )
+        except Exception:
+            logger.debug(
+                "study-consumer: reading-list resolve failed",
+                exc_info=True,
+            )
 
         # Starvation guard
         if n_after == n_before:
@@ -8653,9 +8960,13 @@ def _study_consumer_loop(
             continue
 
         # Collect re-review candidates: originating functions +
-        # broader concept-scoped functions from ConceptIndex
+        # broader concept-scoped functions from ConceptIndex.
+        # Unsupported-language and unresolvable questions gained no
+        # knowledge — their originating functions are not re-reviewed.
         source_keys = {
-            f"{r.source_file}:{r.source_function}" for r in fresh
+            f"{r.source_file}:{r.source_function}"
+            for r in c_reqs + ml_reqs
+            if r.question not in ml_failures
         }
 
         ci = (concept_index_ref[0]
@@ -8712,28 +9023,6 @@ def _study_consumer_loop(
         )
         re_review_count += len(to_review)
         study_queue.note_progress()
-
-        # Resolve batch items in reading-list
-        try:
-            from core.concepts.reading_list import ReadingList
-
-            rl = ReadingList.load(config.out_dir / "reading-list.json")
-            for req in fresh:
-                for item in rl.pending():
-                    if item.get("question") == req.question:
-                        rl.resolve(
-                            item["id"],
-                            concept_id=_extract_concept_from_question(
-                                req.question,
-                            ),
-                        )
-                        break
-            rl.save(config.out_dir / "reading-list.json")
-        except Exception:
-            logger.debug(
-                "study-consumer: reading-list resolve failed",
-                exc_info=True,
-            )
 
     logger.info(
         "study-consumer: done (re-reviews=%d, stale_batches=%d)",

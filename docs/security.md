@@ -353,7 +353,7 @@ table):
 The callsite census above is historical (it motivated the envelope
 work); the current state is lint-enforced rather than hand-counted:
 
-- `core/security/prompt_envelope_audit.py` registers **33 prompt-
+- `core/security/prompt_envelope_audit.py` registers **32 prompt-
   construction files**; every interpolation in them is either
   envelope-constructed (`build_prompt` with UntrustedBlocks and slots)
   or carries an audited allowlist entry with a written justification.

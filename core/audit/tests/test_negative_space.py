@@ -579,8 +579,13 @@ class TestProtocolAmbiguity:
 
 class TestMissingAppFeatures:
     def test_detects_missing_rate_limit(self):
+        # Framework evidence present (flask import): the checklist runs.
         gaps = [
-            {"name": "login", "file": "auth.py", "source": "def login(user, pw): ..."},
+            {
+                "name": "login",
+                "file": "auth.py",
+                "source": "from flask import Flask\ndef login(user, pw): ...",
+            },
         ]
         findings = check_missing_app_features(gaps)
         assert any("Rate limiting" in f.title for f in findings)
@@ -599,10 +604,37 @@ class TestMissingAppFeatures:
 
     def test_detects_missing_csrf(self):
         gaps = [
-            {"name": "form", "file": "forms.py", "source": "def submit(): pass"},
+            {
+                "name": "form",
+                "file": "forms.py",
+                "source": "import django\ndef submit(): pass",
+            },
         ]
         findings = check_missing_app_features(gaps)
         assert any("CSRF" in f.title for f in findings)
+
+    def test_gated_off_for_pure_c_target(self):
+        # A C crypto library has no web-application obligations: the
+        # checklist previously emitted all six "Missing: …" findings
+        # against pure C (observed on a real run).
+        gaps = [
+            {"name": "bio_ctrl", "file": "crypto/bio/bss_file.c",
+             "source": "static long file_ctrl(BIO *b) { return 0; }"},
+            {"name": "xsyslog", "file": "crypto/bio/bss_log.c",
+             "source": "static void xsyslog(BIO *bp) {}"},
+        ]
+        findings = check_missing_app_features(gaps)
+        assert findings == []
+
+    def test_gated_off_without_framework_evidence(self):
+        # Web-capable language but no framework/HTTP-server marker
+        # (e.g. a Python CLI tool): still no CSRF surface.
+        gaps = [
+            {"name": "main", "file": "cli.py",
+             "source": "def main():\n    print('hello')"},
+        ]
+        findings = check_missing_app_features(gaps)
+        assert findings == []
 
 
 class TestUBPatterns:
@@ -850,9 +882,12 @@ class TestPostLoopHydration:
         assert any(f.check_type == "lock_ordering" for f in findings)
 
     def test_missing_app_features_from_disk(self, tmp_path):
-        body = "def index(req):\n    return render(req, 'index.html')\n"
+        body = (
+            "@app.route('/')\n"
+            "def index(req):\n    return render(req, 'index.html')\n"
+        )
         (tmp_path / "views.py").write_text(body)
-        gap = self._gap("views.py", "index", 1, 2)
+        gap = self._gap("views.py", "index", 1, 3)
         findings = check_missing_app_features([gap], target_path=tmp_path)
         assert len(findings) > 0
 

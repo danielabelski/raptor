@@ -59,6 +59,9 @@
     "artifacts:orphan_reader::coverage-semgrep.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
+    "artifacts:orphan_reader::database-create-*.log": {
+      "note": "externally produced input: the CodeQL CLI writes log/database-create-*.log; database_manager salvages it on creation failure"
+    },
     "artifacts:orphan_reader::exploit-context.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
@@ -290,6 +293,9 @@
     "artifacts:write_only_artifact::provenance.md": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
+    "artifacts:write_only_artifact::r.yml": {
+      "note": "externally consumed: raptor-self-test writes a scratch Semgrep rule file that semgrep (external tool) reads via --config"
+    },
     "artifacts:write_only_artifact::recon.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
@@ -316,6 +322,9 @@
     },
     "artifacts:write_only_artifact::selected-findings.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::source-binary-map.json": {
+      "note": "operator/LLM-facing output: Stage A source-to-binary map summary written by raptor-validation-helper for the validation skill stages"
     },
     "artifacts:write_only_artifact::stderr.log": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -346,6 +355,9 @@
     },
     "artifacts:write_only_artifact::tier-diagnostics.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::tool-matrix.txt": {
+      "note": "operator-facing output: raptor-self-test tool-sandbox matrix report"
     },
     "artifacts:write_only_artifact::triage-summary.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"

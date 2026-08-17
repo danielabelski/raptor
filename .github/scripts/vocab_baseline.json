@@ -1088,6 +1088,11 @@
     "count": 23,
     "kind": "literal"
   },
+  "core/sandbox/proxy.py::event": {
+    "count": 10,
+    "kind": "literal",
+    "note": "proxy tunnel-event telemetry field names (framework record keys, not target API names)"
+  },
   "core/sandbox/seatbelt.py::MACOS_STRICT_MACH_SERVICES": {
     "count": 17,
     "kind": "literal"

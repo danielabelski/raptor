@@ -14,21 +14,19 @@ import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any
 
+from core.build.macro_config import extract_build_tus, extract_macro_config
+from core.build.rust_modules import extract_rust_crate_modules
 from core.config import RaptorConfig
 from core.hash import sha256_bytes
 from core.json import load_json
 
-from .languages import LANGUAGE_MAP, detect_language
-from .exclusions import (
-    DEFAULT_EXCLUDES,
-    ROOT_ANCHORED_EXCLUDE_DIRS,
-    is_binary_file,
-    is_generated_file,
-    match_exclusion_reason,
+from .build_membership import (
+    crate_module_excluded,
+    detect_build_excluded,
+    tu_membership_excluded,
 )
-from .extractors import extract_items, count_sloc, compute_interstitial_items
 from .call_graph import (
     extract_call_graph_c,
     extract_call_graph_cpp,
@@ -45,21 +43,23 @@ from .call_graph import (
     extract_call_graph_scala,
     extract_call_graph_swift,
 )
-from .diff import compare_inventories
-from core.build.macro_config import extract_build_tus, extract_macro_config
-from core.build.rust_modules import extract_rust_crate_modules
 from .dead_scope import detect_dead_scopes
-from .build_membership import (
-    crate_module_excluded,
-    detect_build_excluded,
-    tu_membership_excluded,
+from .diff import compare_inventories
+from .exclusions import (
+    DEFAULT_EXCLUDES,
+    ROOT_ANCHORED_EXCLUDE_DIRS,
+    is_binary_file,
+    is_generated_file,
+    match_exclusion_reason,
 )
+from .extractors import compute_interstitial_items, count_sloc, extract_items
+from .languages import LANGUAGE_MAP, detect_language
 from .module_load_abort import detect_module_load_abort
 from .translation_view import detect_macro_call_targets, preprocess_view
 
 logger = logging.getLogger(__name__)
 
-def _extract_python_dunder_all(content: str) -> Optional[List[str]]:
+def _extract_python_dunder_all(content: str) -> list[str] | None:
     """Return the list of names declared in module-level ``__all__``, or
     ``None`` if not declared (or the file isn't valid Python).
 
@@ -80,7 +80,7 @@ def _extract_python_dunder_all(content: str) -> Optional[List[str]]:
         tree = ast.parse(content)
     except (SyntaxError, ValueError):
         return None
-    names: List[str] = []
+    names: list[str] = []
     saw_declaration = False
     for node in tree.body:
         targets = []
@@ -181,15 +181,15 @@ def default_cache_dir(
 
 def build_inventory(
     target_path: str,
-    output_dir: Optional[str] = None,
-    exclude_patterns: Optional[List[str]] = None,
-    extensions: Optional[Set[str]] = None,
+    output_dir: str | None = None,
+    exclude_patterns: list[str] | None = None,
+    extensions: set[str] | None = None,
     skip_generated: bool = True,
     parallel: bool = True,
     allow_unreachable: bool = False,
-    treat_exports_as_entries: Union[bool, str] = "auto",
-    scope: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    treat_exports_as_entries: bool | str = "auto",
+    scope: list[str] | None = None,
+) -> dict[str, Any]:
     """Build a source inventory of all files and functions in the target path.
 
     Enumerates source files, detects languages, extracts functions via
@@ -344,13 +344,13 @@ def build_inventory(
             pool = None
         if pool is None:
             pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-            submit_fn = lambda fp: pool.submit(  # noqa: E731
+            submit_fn = lambda fp: pool.submit(
                 _process_single_file, fp, target, exclude_patterns,
                 skip_generated, old_files_by_path, allow_unreachable,
                 macro_config, build_tus, crate_modules,
             )
         else:
-            submit_fn = lambda fp: pool.submit(  # noqa: E731
+            submit_fn = lambda fp: pool.submit(
                 _process_file_in_worker, fp,
             )
         with pool:
@@ -359,7 +359,7 @@ def build_inventory(
                 fp = futures[future]
                 try:
                     _collect_result(future.result(timeout=300))
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — one bad file must not sink the pool
                     logger.warning(
                         "inventory: per-file extractor raised on "
                         "%s — skipping (%s: %s)",
@@ -458,8 +458,8 @@ def build_inventory(
         if RaptorConfig.BINARY_ORACLE_EDGES:
             try:
                 from core.analysis.binary_oracle_edges import (
-                    extract_direct_call_edges,
                     annotate_inventory_with_edges,
+                    extract_direct_call_edges,
                 )
                 indices = [extract_direct_call_edges(Path(p))
                            for p in bin_paths]
@@ -501,9 +501,9 @@ def build_inventory(
 
 
 def _carry_forward_coverage(
-    old: Dict[str, Any],
-    new: Dict[str, Any],
-    modified: Optional[set] = None,
+    old: dict[str, Any],
+    new: dict[str, Any],
+    modified: set | None = None,
 ) -> None:
     """Carry forward checked_by from old inventory to new for unchanged files.
 
@@ -539,7 +539,7 @@ def _carry_forward_coverage(
                 item['checked_by'] = list(old_coverage[key])
 
 
-def _count_source_files(dirpath: Path, extensions: Set[str], cap: int = 1000) -> int:
+def _count_source_files(dirpath: Path, extensions: set[str], cap: int = 1000) -> int:
     """Count files under ``dirpath`` whose extension is a recognised source
     extension, bounded at ``cap`` (we only need "holds source? roughly how
     many" for an operator warning — not an exact census of a huge tree).
@@ -557,8 +557,8 @@ def _count_source_files(dirpath: Path, extensions: Set[str], cap: int = 1000) ->
 
 
 def _collect_source_files(
-    target: Path, extensions: Set[str],
-) -> tuple[List[Path], List[Dict[str, Any]]]:
+    target: Path, extensions: set[str],
+) -> tuple[list[Path], list[dict[str, Any]]]:
     """Collect all source files in a single pass.
 
     Returns ``(file_list, pruned_dirs)`` where ``pruned_dirs`` lists
@@ -594,8 +594,8 @@ def _collect_source_files(
         else:
             exact_dir_names.add(bare)
 
-    file_list: List[Path] = []
-    pruned_dirs: List[Dict[str, Any]] = []
+    file_list: list[Path] = []
+    pruned_dirs: list[dict[str, Any]] = []
     # Hidden-dir whitelist: pre-fix the blanket `d.startswith('.')`
     # check pruned EVERY dot-dir, including ones that legitimately
     # carry analysable security-relevant source. Concrete misses:
@@ -680,14 +680,14 @@ def _collect_source_files(
     return file_list, pruned_dirs
 
 
-_worker_ctx: Dict[str, Any] = {}
+_worker_ctx: dict[str, Any] = {}
 
 
 def _init_inventory_worker(
     target: Path,
-    exclude_patterns: List[str],
+    exclude_patterns: list[str],
     skip_generated: bool,
-    old_files: Dict[str, Any],
+    old_files: dict[str, Any],
     allow_unreachable: bool,
     macro_config,
     build_tus,
@@ -703,7 +703,7 @@ def _init_inventory_worker(
     _worker_ctx["crate_modules"] = crate_modules
 
 
-def _process_file_in_worker(filepath: Path) -> Optional[Dict[str, Any]]:
+def _process_file_in_worker(filepath: Path) -> dict[str, Any] | None:
     return _process_single_file(
         filepath,
         _worker_ctx["target"],
@@ -720,14 +720,14 @@ def _process_file_in_worker(filepath: Path) -> Optional[Dict[str, Any]]:
 def _process_single_file(
     filepath: Path,
     target: Path,
-    exclude_patterns: List[str],
+    exclude_patterns: list[str],
     skip_generated: bool = True,
-    old_files: Dict[str, Any] = None,
+    old_files: dict[str, Any] | None = None,
     allow_unreachable: bool = False,
-    macro_config: Optional[object] = None,
-    build_tus: Optional[frozenset] = None,
-    crate_modules: Optional[frozenset] = None,
-) -> Optional[Dict[str, Any]]:
+    macro_config: object | None = None,
+    build_tus: frozenset | None = None,
+    crate_modules: frozenset | None = None,
+) -> dict[str, Any] | None:
     """Process a single file for the inventory.
 
     If old_files contains an entry for this file with a matching SHA-256,
@@ -850,7 +850,7 @@ def _process_single_file(
         items = items + compute_interstitial_items(items, parse_text)
         sloc = count_sloc(content, language, _tree=tree_cache.get("tree"))
 
-        record: Dict[str, Any] = {
+        record: dict[str, Any] = {
             'path': rel_path,
             'language': language,
             'lines': line_count,

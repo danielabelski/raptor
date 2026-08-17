@@ -408,6 +408,12 @@ def convert_agentic_to_validate(agentic_findings: list, target_path: str) -> dic
     — fragile, since the LLM may forget fields or mis-handle the
     ``ruling`` string→object change.
 
+    The output is built on the canonical /validate dataclasses
+    (``FindingsContainer.create_empty`` + ``Finding.from_dict``) so
+    coercion fixes on the /validate side (line coercion, None handling)
+    apply here automatically instead of being re-implemented. Only the
+    INPUT-side field mapping (agentic → validate names) lives here.
+
     Args:
         agentic_findings: list of finding dicts in /agentic shape (per
             FINDING_RESULT_SCHEMA).
@@ -417,49 +423,47 @@ def convert_agentic_to_validate(agentic_findings: list, target_path: str) -> dic
         A dict in /validate FindingsContainer shape — ready to drop into a
         findings.json that /validate's Stage 0/A can consume directly.
     """
-    converted = []
-    for f in agentic_findings or []:
-        if not isinstance(f, dict):
-            continue
-        converted.append(_convert_one_finding(f))
-    return {
-        "stage": "agentic-postpass",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "target_path": target_path,
-        "source": "agentic-hybrid-orchestration",
-        "findings": converted,
-    }
+    from packages.exploitability_validation.models import FindingsContainer
 
-
-def _safe_line(raw) -> int:
-    """Coerce LLM-emitted `line` (int / "12" / "12-15" / garbage) to int.
-
-    LLMs occasionally emit ranges or non-numeric strings; an unguarded
-    `int()` would crash the entire post-pass. Fall through to 0 on parse
-    failure — schemas downstream will surface a "missing line" warning.
-    """
-    if isinstance(raw, int):
-        return max(0, raw)
-    try:
-        return max(0, int(str(raw).split("-", 1)[0]))
-    except (TypeError, ValueError):
-        return 0
+    container = FindingsContainer.create_empty(
+        "agentic-postpass", target_path)
+    container.source = "agentic-hybrid-orchestration"
+    payload = container.to_dict()
+    payload["findings"] = [
+        _convert_one_finding(f)
+        for f in (agentic_findings or [])
+        if isinstance(f, dict)
+    ]
+    return payload
 
 
 def _convert_one_finding(f: dict) -> dict:
-    """Convert a single /agentic finding dict to /validate Finding shape."""
+    """Convert a single /agentic finding dict to /validate Finding shape.
+
+    Input-side renames stay here; the value coercion and serialisation
+    happen in the canonical ``Finding`` dataclass. Two caller-owned
+    exceptions ride on top of the canonical dict:
+
+    - ``ruling``: /agentic's verdict trace passes through verbatim
+      (deep-copied) — the canonical ``Ruling`` would drop the
+      ``agentic_ruling`` marker and any nested evidence other readers
+      still hold references to.
+    - ``origin``: set to "agentic-postpass" so /validate knows the
+      finding came pre-analysed.
+    """
+    from packages.exploitability_validation.models import Finding
+
     # Renames per the schema_constants alignment table.
-    out: dict = {
+    raw: dict = {
         "id": str(f.get("finding_id") or f.get("id") or ""),
         "file": f.get("file_path") or f.get("file") or "",
-        "line": _safe_line(f.get("start_line") or f.get("line") or 0),
+        "line": f.get("start_line") or f.get("line") or 0,
         "description": f.get("reasoning") or f.get("description") or "",
-        # ruling: /agentic emits a string verdict (e.g. "validated",
-        # "false_positive"); /validate expects an object {"status": ...}.
-        "ruling": _convert_ruling(f.get("ruling"), f.get("false_positive_reason")),
+        # Origin marker so /validate knows the finding came pre-analysed
+        # and may want to skip Stage A discovery.
+        "origin": "agentic-postpass",
     }
-    # Pass-through fields — same names on both sides. Only include when
-    # present so /validate's _clean_dict doesn't have to strip them.
+    # Pass-through fields — same names on both sides.
     for key in (
         "vuln_type", "cwe_id", "severity_assessment",
         "cvss_vector", "cvss_score_estimate",
@@ -469,19 +473,23 @@ def _convert_one_finding(f: dict) -> dict:
         "tool", "rule_id",
     ):
         if f.get(key) is not None:
-            out[key] = f[key]
+            raw[key] = f[key]
     # is_exploitable: /agentic uses two key names depending on dispatch
     # mode (the schema says is_exploitable, sequential mode emits the
     # legacy "exploitable"). Normalise to is_exploitable.
     if f.get("is_exploitable") is not None:
-        out["is_exploitable"] = f["is_exploitable"]
+        raw["is_exploitable"] = f["is_exploitable"]
     elif f.get("exploitable") is not None:
-        out["is_exploitable"] = f["exploitable"]
+        raw["is_exploitable"] = f["exploitable"]
     if f.get("is_true_positive") is not None:
-        out["is_true_positive"] = f["is_true_positive"]
-    # Origin marker so /validate knows the finding came pre-analysed and
-    # may want to skip Stage A discovery.
-    out["origin"] = "agentic-postpass"
+        raw["is_true_positive"] = f["is_true_positive"]
+
+    out = Finding.from_dict(raw).to_dict()
+    # ruling: /agentic emits a string verdict (e.g. "validated",
+    # "false_positive"); /validate expects an object {"status": ...}.
+    # Attached AFTER canonical serialisation — see docstring.
+    out["ruling"] = _convert_ruling(
+        f.get("ruling"), f.get("false_positive_reason"))
     return out
 
 

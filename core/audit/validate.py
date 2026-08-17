@@ -327,44 +327,53 @@ def _emit_findings_json(
 ) -> Path:
     """Write audit findings in /validate container format.
 
-    Produces the exact schema that /validate Stage A reads
-    as pre-existing findings: a container with ``stage``,
-    ``target_path``, and a ``findings`` array where each
-    entry has ``id``, ``file``, ``function``, ``line``,
-    ``vuln_type``, and ``status``.
+    Built on the canonical /validate dataclasses
+    (``FindingsContainer.create_empty`` + ``Finding.from_dict``) so
+    the emission carries the same schema /validate Stage A reads —
+    including the ``timestamp`` this hand-rolled emitter had silently
+    drifted away from — and inherits the canonical value coercion.
+    Only the INPUT-side mapping (ReviewOutcome → field names) lives
+    here, plus two audit-owned extras the canonical dataclass doesn't
+    model (``title``, ``hypothesis``).
     """
+    from packages.exploitability_validation.models import (
+        Finding,
+        FindingsContainer,
+    )
+
     findings: list[dict[str, Any]] = []
     for seq, (_, outcome) in enumerate(findings_outcomes, start=1):
         cwe = _extract_cwe(outcome)
         vuln_type = _resolve_vuln_type(outcome, cwe)
-        finding: dict[str, Any] = {
+        raw: dict[str, Any] = {
             "id": f"FIND-{seq:03d}",
             "file": outcome.file,
             "function": outcome.function,
             "line": outcome.line or 1,
             "vuln_type": vuln_type,
             "status": "pending",
-            "title": outcome.hypothesis or f"Finding in {outcome.function}",
             "description": outcome.body,
             "severity": "medium",
             "origin": "pre_existing",
         }
+        if cwe:
+            raw["cwe_id"] = cwe
+        finding = Finding.from_dict(raw).to_dict()
+        # Audit-owned extras (not modelled by the canonical Finding).
+        finding["title"] = (outcome.hypothesis
+                            or f"Finding in {outcome.function}")
         if outcome.hypothesis:
             finding["hypothesis"] = outcome.hypothesis
-        if cwe:
-            finding["cwe_id"] = cwe
         findings.append(finding)
 
-    container = {
-        "stage": "audit",
-        "target_path": str(target_path),
-        "source": "audit",
-        "findings": findings,
-    }
+    container = FindingsContainer.create_empty("audit", str(target_path))
+    container.source = "audit"
+    payload = container.to_dict()
+    payload["findings"] = findings
 
     path = out_dir / "findings.json"
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(container, f, indent=2)
+        json.dump(payload, f, indent=2)
 
     logger.info("emitted %d findings to %s", len(findings), path)
     return path

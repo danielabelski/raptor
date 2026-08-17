@@ -137,6 +137,41 @@ class TestEmitFindings:
         finding = json.loads((tmp_path / "findings.json").read_text())["findings"][0]
         assert finding["vuln_type"] == "sql_injection"
 
+    def test_container_carries_timestamp(self, tmp_path):
+        # The hand-rolled emitter had drifted from the canonical
+        # FindingsContainer schema: no timestamp. Now built on
+        # FindingsContainer.create_empty, which stamps one.
+        outcomes = [(0, _outcome())]
+        _emit_findings_json(outcomes, tmp_path, Path("/target"))
+
+        data = json.loads((tmp_path / "findings.json").read_text())
+        assert data.get("timestamp")
+
+    def test_emission_round_trips_canonical_dataclasses(self, tmp_path):
+        # The strongest contract check: /validate loads this file via
+        # FindingsContainer.from_dict — verify the emission survives
+        # the round trip with fields in the right places.
+        from packages.exploitability_validation.models import (
+            FindingsContainer,
+        )
+        outcomes = [(0, _outcome(body="overflow", hypothesis="off-by-one",
+                                 review_result={"cwe": "CWE-120"},
+                                 line=42))]
+        _emit_findings_json(outcomes, tmp_path, Path("/target"))
+
+        container = FindingsContainer.from_dict(
+            json.loads((tmp_path / "findings.json").read_text()))
+        assert container.stage == "audit"
+        assert container.source == "audit"
+        assert len(container.findings) == 1
+        f = container.findings[0]
+        assert f.id == "FIND-001"
+        assert f.line == 42
+        assert f.vuln_type == "buffer_overflow"
+        assert f.cwe_id == "CWE-120"
+        assert f.description == "overflow"
+        assert f.origin == "pre_existing"
+
     def test_vuln_type_from_review_result_takes_precedence(self, tmp_path):
         outcomes = [
             (0, _outcome(review_result={

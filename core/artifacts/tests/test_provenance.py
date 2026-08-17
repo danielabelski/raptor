@@ -252,7 +252,7 @@ class TestFreeText(unittest.TestCase):
     def test_artifact_text_schemas_registry(self):
         self.assertEqual(
             set(ARTIFACT_TEXT_SCHEMAS),
-            {"context-map", "flow-trace", "variants"})
+            {"context-map", "flow-trace", "variants", "bug-report"})
 
 
 if __name__ == "__main__":

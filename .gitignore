@@ -19,6 +19,8 @@ out/
 .env*
 .claude/*.local.json
 .claude/raptor.env
+# Per-dispatch runtime state (webfetch anchor files + fetch logs)
+.claude/run/
 
 # Compiled test fixtures (rebuilt on demand)
 core/analysis/tests/fixtures/*.o

@@ -451,8 +451,30 @@ VARIANTS_TEXT_SCHEMA: dict = {
     },
 }
 
+# bug-report.json (crash-analysis fetch stage) carries prose lifted
+# verbatim from a public bug tracker — the highest-injection-risk
+# artifact in the set, so every prose field is marked. crash_command /
+# crash_output are code-bearing (ASAN frames start with `#`, commands
+# carry flags) and deliberately unmarked; attachments[].url is
+# structural, not prose.
+BUG_REPORT_TEXT_SCHEMA: dict = {
+    "properties": {
+        "tracker": _FT,
+        "title": _FT,
+        "summary": _FT,
+        "reproduction_steps": {"items": _FT},
+        "attachments": {"items": {"properties": {
+            "description": _FT,
+        }}},
+        "affected_versions": {"items": _FT},
+        "reporter_remarks": _FT,
+        "fetch_notes": _FT,
+    },
+}
+
 ARTIFACT_TEXT_SCHEMAS: dict[str, dict] = {
     "context-map": CONTEXT_MAP_TEXT_SCHEMA,
     "flow-trace": FLOW_TRACE_TEXT_SCHEMA,
     "variants": VARIANTS_TEXT_SCHEMA,
+    "bug-report": BUG_REPORT_TEXT_SCHEMA,
 }

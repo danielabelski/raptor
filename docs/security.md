@@ -218,9 +218,10 @@ approval before execution.
 | oss-investigator-ioc-extractor-agent | Read, Write, WebFetch | Y | Y | N | 2 | needs-tightening |
 | oss-investigator-local-git-agent | Bash, Read, Write, Glob, Grep | Y | Y | N | 2 | needs-tightening |
 | oss-investigator-wayback-agent | Bash, Read, Write, WebFetch | Y | Y | N | 2 | needs-tightening |
-| crash-analysis-agent | Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, Git, Task | Y | Y | Y | 3 | needs-HITL |
+| crash-analysis-agent | Read, Write, Edit, Bash, Grep, Glob, Task | Y | Y | N | 2 | needs-tightening |
+| crash-report-fetcher-agent | Read, Write, WebFetch | Y | N | Y | 2 | needs-tightening |
+| oss-investigator-gh-archive-agent | Bash, Read, Write | Y | N | Y | 2 | needs-tightening |
 | offsec-specialist | all tools | Y | Y | Y | 3 | needs-HITL |
-| oss-investigator-gh-archive-agent | Bash, Read, Write | Y | Y | Y | 3 | needs-HITL |
 | oss-investigator-github-agent | Bash, Read, Write, WebFetch | Y | Y | Y | 3 | needs-HITL |
 
 **Verdicts:**
@@ -228,10 +229,42 @@ approval before execution.
 - **floor-safe** (1 agent) -- reads untrusted data but has no dangerous
   tools.
 - **tight** (2 agents) -- properly constrained; no changes needed.
-- **needs-tightening** (10 agents) -- Rule of Two score of 2; tool
+- **needs-tightening** (13 agents) -- Rule of Two score of 2; tool
   access could be narrowed.
-- **needs-HITL** (4 agents) -- Rule of Two score of 3 (all three axes);
+- **needs-HITL** (2 agents) -- Rule of Two score of 3 (all three axes);
   requires human-in-the-loop approval.
+
+The `crash-report-fetcher-agent` row scores A+C without B: its only
+write is `bug-report.json` — a single artifact that is
+provenance-stamped `untrusted`, run through the output sanitiser at
+write time, and refused by `raptor-validate-schema bug-report` when
+either property is missing — so the sensitive-access leg is treated as
+severed even though the Write tool is technically present. Its C leg
+is domain-gated: the WebFetch hook pins fetches to the registrable
+domain of the operator-supplied bug-tracker URL (anchor file written
+by the orchestrator before dispatch), with off-domain attachment hosts
+allowed only as logged, operator-visible additions.
+
+The `oss-investigator-gh-archive-agent` row scores A+C without B: its
+Bash is mechanically pinned by a per-agent `PreToolUse` hook
+(`.claude/hooks/bash-command-allowlist.py`) to plain single
+invocations of exactly two commands — the typed read-only BigQuery
+wrapper `libexec/raptor-bq-query` (SELECT/WITH only, single statement,
+bytes-billed cap, structured errors) and the evidence-kit ingest
+script — with compound commands, substitution, and redirects rejected,
+and its only writes are `evidence.json` plus SQL/rows scratch files in
+the working directory. The C leg (BigQuery egress) stays: by default
+the wrapper runs the client under `run_untrusted_networked` with the
+egress proxy pinned to {bigquery.googleapis.com,
+oauth2.googleapis.com, www.googleapis.com} + the key file's
+`token_uri` host, and the real read-only boundary is the service
+account's `BigQuery User`-only role — the wrapper's statement
+validation is misuse prevention, not SQL sandboxing. Honest residuals:
+`--no-sandbox` (needed for gcloud ADC) drops the egress pin, and the
+frontmatter `tools:` field cannot express `Bash(prefix *)` rules —
+qualified entries are permission-rule syntax and would stop the agent
+from launching — so the hook is the enforcement point, active only
+when the workspace is trusted.
 
 ### Patterns Identified
 
@@ -259,7 +292,11 @@ approval before execution.
    body-level instruction to fetch only the supplied report and its
    internal links. Note: the hook constrains WebFetch, not Bash-level
    network access (`curl`), which remains bounded by the sandbox /
-   permission layers.
+   permission layers. For the gh-archive agent the Bash side IS now
+   constrained: `.claude/hooks/bash-command-allowlist.py` (same
+   per-agent `PreToolUse` mechanism) restricts it to the typed
+   `libexec/raptor-bq-query` wrapper and the evidence-kit ingest
+   script — see the matrix note above.
 
 4. **Default "all tools" agents** --
    ADDRESSED for the pipeline agents: `coverage-analyzer`,
@@ -271,6 +308,23 @@ approval before execution.
    all-tools: its job inherently spans untrusted input, exploitation
    tooling, and network reach, so it stays in the needs-HITL class
    rather than pretending a narrower list fits.
+
+5. **Network reach in the crash-analysis pipeline** --
+   ADDRESSED: `crash-analysis-agent` no longer carries
+   WebFetch/WebSearch/Git — fetching the bug tracker is split into the
+   dedicated `crash-report-fetcher-agent` (Read, Write, WebFetch;
+   WebFetch domain-gated via the anchor-file mode of
+   `.claude/hooks/webfetch-domain-allowlist.py`), whose sole output is
+   the schema-gated `bug-report.json`. Repository cloning is
+   mechanical (`libexec/raptor-clone-repo` → `core.git.clone`:
+   URL allowlist, sandboxed git, hardened env), as are attachment
+   downloads (`libexec/raptor-fetch-attachment`: URL must appear in
+   the validated report; egress-allowlisted HTTP client). Honest
+   residual: the orchestrator and builder/analyzer agents keep Bash
+   because builds, rr, and gdb require it — tool-level network denial
+   is the enforced boundary; Bash-level egress remains bounded by the
+   sandbox / permission layers, same residual as the forensics
+   fetchers in pattern 3.
 
 ---
 

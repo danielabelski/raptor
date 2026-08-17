@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .strategy_stats import _safe_mtime
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +222,9 @@ def load_corrections(
     """Load correction rules from the most recent corpus run.
 
     Searches for prompt-corrections.json in:
-      1. The given out_dir
-      2. The active project directory
-      3. out/audit-corpus-* directories (newest first)
+      1. The given out_dir (for project runs this IS the project's
+         run directory — there is no separate active-project lookup)
+      2. Repo-level out/audit-corpus-* directories (newest first)
 
     Returns a list of correction rule strings.
     """
@@ -229,11 +232,15 @@ def load_corrections(
     if out_dir:
         candidates.append(out_dir / "prompt-corrections.json")
 
-    out_root = Path("out")
+    # RAPTOR_DIR-anchored so the corpus fallback doesn't depend on
+    # the process CWD (workers may run with the target as cwd).
+    out_root = Path(os.environ["RAPTOR_DIR"]) / "out"
     if out_root.is_dir():
         corpus_dirs = sorted(
             out_root.glob("audit-corpus-*"),
-            key=lambda p: p.stat().st_mtime if p.is_dir() else 0,
+            # OSError-tolerant mtime: a corpus dir can be deleted
+            # between glob() and the key call.
+            key=_safe_mtime,
             reverse=True,
         )
         for d in corpus_dirs[:5]:

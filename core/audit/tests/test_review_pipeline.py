@@ -1113,6 +1113,27 @@ class TestLearningLoop:
         assert len(corrections) == 1
         assert "caller contract" in corrections[0]
 
+    def test_corpus_fallback_anchored_to_raptor_dir(self, tmp_path, monkeypatch):
+        """The out/audit-corpus-* fallback must not depend on process CWD."""
+        import json as _json
+
+        from core.audit.learning import load_corrections
+
+        repo_root = tmp_path / "repo"
+        corpus = repo_root / "out" / "audit-corpus-20260101"
+        corpus.mkdir(parents=True)
+        (corpus / "prompt-corrections.json").write_text(_json.dumps({
+            "corrections": [{"rule": "Check bounds before memcpy."}],
+        }))
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setenv("RAPTOR_DIR", str(repo_root))
+
+        corrections = load_corrections()
+        assert corrections == ["Check bounds before memcpy."]
+
     def test_format_corrections_for_prompt(self):
         from core.audit.learning import format_corrections_for_prompt
         corrections = [

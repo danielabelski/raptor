@@ -871,36 +871,8 @@ class EgressProxy:
         """
         v6, v4 = _split_addrinfo_by_family(addrinfo)
 
-        # Single-family path: no race needed, just walk in order.
-        if not v6 or not v4:
-            ordered = v6 if v6 else v4
-            last_exc: Exception | None = None
-            for entry in ordered:
-                family, _socktype, _proto, _, sockaddr = entry
-                ip = sockaddr[0]
-                if _ip_is_blocked(ip):
-                    last_exc = OSError(f"IP {ip} blocked by gate 2")
-                    continue
-                try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(host=ip, port=port,
-                                                 family=family),
-                        timeout=_PROXY_READ_TIMEOUT_S,
-                    )
-                    return reader, writer, ip
-                except (OSError, asyncio.TimeoutError) as e:
-                    last_exc = e
-                    continue
-            raise last_exc if last_exc is not None else OSError(
-                "no addresses to dial"
-            )
-
-        # Dual-family: race v6 first, kick v4 _HAPPY_EYEBALLS_DELAY later.
-        # Take the first connector to succeed; cancel the other. Note
-        # we only race the FIRST address of each family — if both fail
-        # we then walk the rest serially as a single-family fallback.
-        # (Most upstream registries return one address per family, so
-        # the common case is exactly two attempts.)
+        # Gate-2 (resolved-IP block) lives in _attempt so EVERY dialed
+        # address — raced or walked as fallback — is re-checked.
         async def _attempt(entry):
             family, _socktype, _proto, _, sockaddr = entry
             ip = sockaddr[0]
@@ -912,6 +884,36 @@ class EgressProxy:
                 timeout=_PROXY_READ_TIMEOUT_S,
             )
             return reader, writer, ip
+
+        async def _walk_serial(entries):
+            last_exc: Exception | None = None
+            for entry in entries:
+                try:
+                    return await _attempt(entry)
+                except (OSError, asyncio.TimeoutError) as e:
+                    last_exc = e
+                    continue
+            raise last_exc if last_exc is not None else OSError(
+                "no addresses to dial"
+            )
+
+        # Single-family path: no race needed, just walk in order.
+        if not v6 or not v4:
+            return await _walk_serial(v6 if v6 else v4)
+
+        # Dual-family: race v6 first, kick v4 _HAPPY_EYEBALLS_DELAY later.
+        # Take the first connector to succeed; cancel the other. We only
+        # race the FIRST address of each family — if both fail, the
+        # remaining addresses (interleaved v6/v4, preserving resolver
+        # order within each family) are walked serially below. (Most
+        # upstream registries return one address per family, so the
+        # common case is exactly two attempts and an empty remainder.)
+        remainder = []
+        for i in range(1, max(len(v6), len(v4))):
+            if i < len(v6):
+                remainder.append(v6[i])
+            if i < len(v4):
+                remainder.append(v4[i])
 
         v6_task = asyncio.ensure_future(_attempt(v6[0]))
         v4_task: asyncio.Task | None = None
@@ -928,7 +930,12 @@ class EgressProxy:
                 try:
                     return v6_task.result()
                 except (OSError, asyncio.TimeoutError):
-                    return await _attempt(v4[0])
+                    try:
+                        return await _attempt(v4[0])
+                    except (OSError, asyncio.TimeoutError):
+                        if not remainder:
+                            raise
+                        return await _walk_serial(remainder)
             # v6 still pending after delay: kick off v4 in parallel.
             v4_task = asyncio.ensure_future(_attempt(v4[0]))
             done, pending = await asyncio.wait(
@@ -960,6 +967,10 @@ class EgressProxy:
                     return result
                 except (OSError, asyncio.TimeoutError) as e:
                     last_err = e
+            # First address of each family failed — walk the rest
+            # serially before giving up.
+            if remainder:
+                return await _walk_serial(remainder)
             raise last_err if last_err is not None else OSError(
                 "all dual-stack attempts failed"
             )

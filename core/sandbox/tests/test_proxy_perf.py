@@ -236,6 +236,117 @@ class TestHappyEyeballs:
         finally:
             proxy.stop()
 
+    def test_dual_family_falls_back_to_remaining_addresses(
+        self, reset_proxy,
+    ):
+        """Dual-stack host whose FIRST v6 and FIRST v4 addresses are
+        dead must fall back to the remaining addrinfo entries, as the
+        single-family path always did. Pre-fix the dual-stack path
+        raced only v6[0]/v4[0] and gave up."""
+        proxy = proxy_mod.EgressProxy(allowed_hosts={"example.com"})
+        try:
+            connect_calls = []
+
+            async def fake_open(host, port, family=None, **kwargs):
+                connect_calls.append(host)
+                if host in ("2606:2800:220:1::", "1.2.3.4"):
+                    raise ConnectionRefusedError(f"{host} dead")
+                return ("r", "w")
+
+            addrinfo = [
+                self._addrinfo(socket.AF_INET6, "2606:2800:220:1::"),
+                self._addrinfo(socket.AF_INET, "1.2.3.4"),
+                self._addrinfo(socket.AF_INET, "5.6.7.8"),
+            ]
+
+            async def driver():
+                with patch("asyncio.open_connection", fake_open):
+                    return await proxy._happy_eyeballs_connect(
+                        addrinfo, 443,
+                    )
+
+            _r, _w, ip = asyncio.run_coroutine_threadsafe(
+                driver(), proxy._loop,
+            ).result(timeout=5)
+            assert ip == "5.6.7.8", (
+                f"remaining v4 address not walked: {connect_calls}"
+            )
+        finally:
+            proxy.stop()
+
+    def test_dual_family_fallback_after_slow_race_failure(
+        self, reset_proxy,
+    ):
+        """Both racing tasks fail (v6 slowly, past the 250ms gate) —
+        the remainder must still be walked."""
+        proxy = proxy_mod.EgressProxy(allowed_hosts={"example.com"})
+        try:
+
+            async def fake_open(host, port, family=None, **kwargs):
+                if host == "2606:2800:220:1::":
+                    await asyncio.sleep(0.4)
+                    raise ConnectionRefusedError("v6 dead, slowly")
+                if host == "1.2.3.4":
+                    raise ConnectionRefusedError("v4 dead")
+                return ("r", "w")
+
+            addrinfo = [
+                self._addrinfo(socket.AF_INET6, "2606:2800:220:1::"),
+                self._addrinfo(socket.AF_INET6, "2606:2800:220:2::"),
+                self._addrinfo(socket.AF_INET, "1.2.3.4"),
+            ]
+
+            async def driver():
+                with patch("asyncio.open_connection", fake_open):
+                    return await proxy._happy_eyeballs_connect(
+                        addrinfo, 443,
+                    )
+
+            _r, _w, ip = asyncio.run_coroutine_threadsafe(
+                driver(), proxy._loop,
+            ).result(timeout=5)
+            assert ip == "2606:2800:220:2::"
+        finally:
+            proxy.stop()
+
+    def test_dual_family_fallback_respects_gate2(self, reset_proxy):
+        """Gate-2 (resolved-IP block) applies to every fallback
+        address — a poisoned record in the remainder must be skipped,
+        never dialled."""
+        proxy = proxy_mod.EgressProxy(allowed_hosts={"example.com"})
+        try:
+            connect_calls = []
+
+            async def fake_open(host, port, family=None, **kwargs):
+                connect_calls.append(host)
+                if host in ("2606:2800:220:1::", "1.2.3.4"):
+                    raise ConnectionRefusedError(f"{host} dead")
+                return ("r", "w")
+
+            addrinfo = [
+                self._addrinfo(socket.AF_INET6, "2606:2800:220:1::"),
+                self._addrinfo(socket.AF_INET, "1.2.3.4"),
+                # Poisoned remainder entry — private address.
+                self._addrinfo(socket.AF_INET, "127.0.0.1"),
+                self._addrinfo(socket.AF_INET, "5.6.7.8"),
+            ]
+
+            async def driver():
+                with patch("asyncio.open_connection", fake_open):
+                    return await proxy._happy_eyeballs_connect(
+                        addrinfo, 443,
+                    )
+
+            _r, _w, ip = asyncio.run_coroutine_threadsafe(
+                driver(), proxy._loop,
+            ).result(timeout=5)
+            assert ip == "5.6.7.8"
+            assert "127.0.0.1" not in connect_calls, (
+                f"gate-2-blocked IP was dialled: {connect_calls}"
+            )
+        finally:
+            proxy.stop()
+
     def test_gate2_blocks_first_candidate_falls_through(
         self, reset_proxy,
     ):

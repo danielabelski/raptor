@@ -31,6 +31,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from core.paths import confine
+
 # ------------------------------------------------------------------
 # Tiers
 # ------------------------------------------------------------------
@@ -101,16 +103,12 @@ def _normalise(text: str) -> str:
 def _confine(source_root: Path, file_path: str) -> Path | None:
     """Containment chokepoint for receipt file paths (same policy as
     the study doc loader): the resolved path must stay inside the
-    resolved source root."""
+    resolved source root. Delegates to :func:`core.paths.confine`;
+    the empty-path pre-reject stays (``confine`` would resolve it to
+    the root itself)."""
     if not file_path:
         return None
-    try:
-        root = Path(source_root).resolve()
-        candidate = (Path(source_root) / file_path).resolve()
-        candidate.relative_to(root)
-    except (OSError, ValueError):
-        return None
-    return candidate
+    return confine(source_root, file_path)
 
 
 def verify_receipt(

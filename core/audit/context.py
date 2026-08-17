@@ -18,6 +18,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from core.paths import confine
 from core.security.prompt_envelope import neutralize_tag_forgery
 
 logger = logging.getLogger(__name__)
@@ -40,14 +41,15 @@ CONSISTENCY_SITES_PROMPT_CAP = 5
 def _safe_path(target_path: Path, file_path: str) -> Path | None:
     """Join target_path / file_path with traversal guard.
 
-    Returns the resolved path if it's within target_path, None otherwise.
+    Returns the resolved path if it's within target_path, None
+    otherwise. Delegates to :func:`core.paths.confine`, which also
+    absorbs pathological inputs (NUL bytes) as None instead of
+    letting ``resolve()`` raise out of the guard.
     """
-    full = (target_path / file_path).resolve()
-    target_resolved = target_path.resolve()
-    if full == target_resolved or str(full).startswith(str(target_resolved) + "/"):
-        return full
-    logger.warning("path traversal blocked: %s", file_path)
-    return None
+    full = confine(target_path, file_path)
+    if full is None:
+        logger.warning("path traversal blocked: %s", file_path)
+    return full
 
 
 def _build_tool_catalog() -> str:

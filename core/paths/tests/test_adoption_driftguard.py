@@ -83,6 +83,45 @@ def test_no_hand_rolled_stripper(rel_path):
         )
 
 
+# Modules whose confine-shaped containment helpers must delegate to
+# core.paths.confine rather than carry their own join+resolve+
+# containment bodies.
+_CONFINE_ADOPTERS = [
+    "core/audit/_util.py",
+    "core/audit/context.py",
+    "core/concepts/receipts.py",
+    "core/concepts/study.py",
+]
+
+
+@pytest.mark.parametrize("rel_path", _CONFINE_ADOPTERS)
+def test_confine_helpers_delegate(rel_path):
+    src = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+    assert re.search(r"from core\.paths import .*\bconfine\b", src), (
+        f"{rel_path} must import confine from core.paths"
+    )
+    # The tell-tale of a re-grown local guard body inside the helper:
+    # a relative_to/startswith containment check right after a
+    # resolve() of a joined candidate. Cheap textual pin: the old
+    # spelling used `.resolve()` + `relative_to(root)` /
+    # `startswith(str(` in the module's containment helper — the
+    # helpers now contain a single confine(...) call.
+    for helper in ("def safe_join", "def _safe_path",
+                   "def _confine", "def _resolve_in_root"):
+        idx = src.find(helper)
+        if idx == -1:
+            continue
+        body = src[idx:src.find("\ndef ", idx + 1)]
+        assert "confine(" in body, (
+            f"{rel_path}:{helper} no longer delegates to core.paths."
+            "confine"
+        )
+        assert ".resolve()" not in body, (
+            f"{rel_path}:{helper} re-grew a hand-rolled containment "
+            "body; delegate to core.paths.confine"
+        )
+
+
 @pytest.mark.parametrize("rel_path", _TRIPLET_ADOPTERS)
 def test_triplet_helpers_delegate(rel_path):
     """The ``_relative_path`` / ``path_to_module`` family must import

@@ -20,6 +20,8 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from core.paths import confine
+
 from .model import (
     CONFIDENCE_GRADES,
     BugPattern,
@@ -171,13 +173,7 @@ def _resolve_in_root(source_root: Path, file_path: str) -> Path | None:
     """
     if not file_path:
         return None
-    try:
-        root = source_root.resolve()
-        candidate = (source_root / file_path).resolve()
-        candidate.relative_to(root)
-    except (OSError, ValueError):
-        return None
-    return candidate
+    return confine(source_root, file_path)
 
 
 def _load_doc_context(related_docs: list[dict], source_root: Path) -> str:

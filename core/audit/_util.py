@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from core.paths import confine
+
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _IDENTIFIER_QUALIFIED_RE = re.compile(
@@ -27,19 +29,14 @@ def safe_join(base: Path, relative: str) -> Path | None:
 
     Returns None when the path contains ``..`` segments or resolves
     outside *base*.  Callers should treat None as "path rejected".
+
+    The containment half delegates to :func:`core.paths.confine`; the
+    lexical ``..``-segment pre-reject is this helper's own, stricter
+    policy (a non-escaping ``a/../b`` is still rejected) and is kept.
     """
     if ".." in relative.split("/"):
         return None
-    full = base / relative
-    try:
-        resolved = full.resolve()
-        base_resolved = base.resolve()
-        if not str(resolved).startswith(str(base_resolved) + "/") and \
-           resolved != base_resolved:
-            return None
-    except (OSError, ValueError):
-        return None
-    return resolved
+    return confine(base, relative)
 
 
 def is_valid_identifier(name: str) -> bool:

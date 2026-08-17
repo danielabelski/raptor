@@ -10374,6 +10374,23 @@ def _run_critique(
 _MIN_SLOC_FOR_DEEPEN = 20
 
 
+def _prior_hypotheses_for(outcome: ReviewOutcome) -> list[dict[str, Any]]:
+    """Prior-pass hypothesis array for re-review context injection.
+
+    Returns the preserved hypotheses (mechanism / confidence / counter
+    dicts) so re-review prompts can render the 'previously considered'
+    block instead of letting the model re-derive already-refuted
+    mechanisms or re-litigate counters it has already written.
+    """
+    hyps = getattr(outcome, "hypotheses", None) or []
+    if not hyps and outcome.review_result:
+        hyps = outcome.review_result.get("hypotheses") or []
+    return [
+        h for h in hyps
+        if isinstance(h, dict) and (h.get("mechanism") or "").strip()
+    ]
+
+
 def _deepen_suspicious(
     result: OrchestratorResult,
     config: OrchestratorConfig,
@@ -10503,6 +10520,10 @@ def _deepen_suspicious(
             }
             if prior_outcome.hypothesis:
                 ctx["prior_verdict"]["hypothesis"] = prior_outcome.hypothesis
+
+        prior_hyps = _prior_hypotheses_for(prior_outcome)
+        if prior_hyps:
+            ctx["prior_hypotheses"] = prior_hyps
 
         ctx["deepen"] = True
         prepared.append((deepen_idx, prior_outcome, gap, ctx))
@@ -10974,6 +10995,9 @@ def _iterative_re_review(
                     "status": prior.status,
                     "body": prior.body,
                 }
+                prior_hyps = _prior_hypotheses_for(prior)
+                if prior_hyps:
+                    ctx["prior_hypotheses"] = prior_hyps
             prepared.append((len(prepared), gap, ctx))
 
         def _do_review(item):
@@ -14535,6 +14559,9 @@ def _re_review_joern_enriched(
                 gap["name"],
             )
         ctx["joern_re_review"] = True
+        prior_hyps = _prior_hypotheses_for(prior_outcome)
+        if prior_hyps:
+            ctx["prior_hypotheses"] = prior_hyps
         prepared.append((len(prepared), gap, prior_outcome, ctx))
 
     def _do_review(item):
@@ -14924,6 +14951,9 @@ def _re_review_study_enriched(
                 else ""
             ),
         }
+        prior_hyps = _prior_hypotheses_for(prior_outcome)
+        if prior_hyps:
+            ctx["prior_hypotheses"] = prior_hyps
         prepared.append((len(prepared), gap, prior_outcome, ctx))
 
     def _do_review(item):

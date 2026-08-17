@@ -1204,6 +1204,10 @@ def format_context_for_prompt(
             )
         sections.append(PromptSection("prior_verdict", "\n".join(pp), 1))
 
+    prior_hyp_text = _format_prior_hypotheses(ctx.get("prior_hypotheses"))
+    if prior_hyp_text:
+        sections.append(PromptSection("prior_hypotheses", prior_hyp_text, 1))
+
     if ctx.get("disagreement_override"):
         do = ctx["disagreement_override"]
         dp = [
@@ -1325,6 +1329,64 @@ def format_context_for_prompt(
         return "\n".join(s.text for s in kept)
 
     return "\n".join(s.text for s in sections)
+
+
+# Cap the previously-considered block: re-review token budgets are
+# tight and the marginal hypothesis past this count is noise.
+_MAX_PRIOR_HYPOTHESES = 8
+
+_CONFIDENCE_SAFE_RE = re.compile(r"[^a-z_-]")
+
+
+def _format_prior_hypotheses(prior_hypotheses: Any) -> str:
+    """Render the compact 'previously considered' block for re-reviews.
+
+    Deepen / study / Joern re-review passes previously rebuilt context
+    blind to what earlier passes had already hypothesised and refuted —
+    the model re-derived the same refuted mechanism or re-litigated
+    counters across ~100 already-paid re-review calls per run. This
+    block lists prior hypotheses with their confidence and recorded
+    counter-argument, with explicit framing: don't re-derive; either
+    supply NEW evidence against a counter or explore different
+    mechanisms.
+
+    Hypothesis and counter text is prior-LLM output over attacker-
+    visible source (untrusted) — defanged with
+    ``neutralize_tag_forgery`` before interpolation.
+    """
+    if not prior_hypotheses:
+        return ""
+    from core.security.prompt_envelope import neutralize_tag_forgery
+
+    entries = [
+        h for h in prior_hypotheses
+        if isinstance(h, dict) and (h.get("mechanism") or "").strip()
+    ]
+    if not entries:
+        return ""
+
+    lines = [
+        "\n### Previously considered hypotheses",
+        ("Earlier review passes already examined the hypotheses below. "
+         "Do NOT re-derive them. For each, either supply NEW evidence "
+         "that defeats the recorded counter-argument, or explore a "
+         "DIFFERENT mechanism. A counter-argument that looks weak or "
+         "hand-wavy is worth attacking — say explicitly which counter "
+         "you are contesting and what new evidence defeats it."),
+    ]
+    for h in entries[:_MAX_PRIOR_HYPOTHESES]:
+        conf = _CONFIDENCE_SAFE_RE.sub(
+            "", str(h.get("confidence", "") or "").lower(),
+        )[:16] or "unstated"
+        mechanism = neutralize_tag_forgery(
+            str(h.get("mechanism", "")).strip()[:200],
+        )
+        line = f"- ({conf}) {mechanism}"
+        counter = str(h.get("counter", "") or "").strip()
+        if counter:
+            line += f" — counter: {neutralize_tag_forgery(counter[:200])}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _format_glance_prompt(ctx: dict[str, Any]) -> str:

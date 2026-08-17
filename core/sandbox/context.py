@@ -2954,8 +2954,12 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
 
     `**kwargs` forwards to run() — composable with audit/audit_verbose
     (audit-mode applies to the run_untrusted's full-strict profile),
-    profile= (override the default 'full' if absolutely needed),
-    caller_label=, env=, cwd=, etc. Forbidden via TypeError:
+    caller_label=, env=, cwd=, etc. `profile=` is accepted as a RATCHET
+    only: 'full' (the default) or 'strict' (fail-closed — aborts with
+    SandboxSetupError instead of degrading when an isolation layer is
+    unavailable; see PROFILES). Weaker profiles are rejected via
+    TypeError because they would relax the untrusted-execution contract
+    this helper exists to enforce. Also forbidden via TypeError:
     `block_network` and `allowed_tcp_ports` — run_untrusted's contract
     is namespace-level network block, no TCP allowlist; callers
     needing varied network policy use sandbox() directly.
@@ -2977,13 +2981,28 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
         "audit", "audit_verbose", "audit_run_dir",
         "observe", "exclude_tmp_baseline",
         "tool_paths",
+        "profile",
     })
     rejected = set(kwargs.keys()) - _UNTRUSTED_ALLOWED_KWARGS
     if rejected:
         raise TypeError(
             f"run_untrusted() does not accept {sorted(rejected)} — "
-            f"isolation policy (network, profile, writable_paths, "
-            f"namespace controls) is fixed. Use sandbox() directly "
+            f"isolation policy (network, writable_paths, namespace "
+            f"controls) is fixed. Use sandbox() directly for varied "
+            f"policy."
+        )
+    # profile= is a ratchet, not a free choice: only the default
+    # ('full') or the stronger fail-closed 'strict' may pass through.
+    # Anything weaker (none, network-only, debug, target_run, frida)
+    # would relax the very contract this helper exists to enforce.
+    # The --sandbox CLI flag remains authoritative over this value,
+    # as everywhere.
+    _profile = kwargs.get("profile")
+    if _profile is not None and _profile not in ("full", "strict"):
+        raise TypeError(
+            f"run_untrusted() accepts only profile='strict' or 'full' "
+            f"(got {_profile!r}) — weaker profiles would relax the "
+            f"untrusted-execution contract. Use sandbox() directly "
             f"for varied policy."
         )
     # Default stdin to DEVNULL for untrusted code. If the parent's stdin

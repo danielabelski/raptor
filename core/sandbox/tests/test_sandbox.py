@@ -1034,6 +1034,26 @@ class TestRunUntrustedGuard(unittest.TestCase):
         with TemporaryDirectory() as out, self.assertRaises(TypeError):
             run_untrusted(["true"], output=out, allowed_tcp_ports=[443])
 
+    def test_run_untrusted_rejects_weaker_profiles(self):
+        """profile= is a ratchet: anything below 'full' would relax the
+        untrusted-execution contract and must be rejected."""
+        from core.sandbox import run_untrusted
+        with TemporaryDirectory() as out:
+            for weaker in ("none", "network-only", "debug",
+                           "target_run", "frida"):
+                with self.assertRaises(TypeError,
+                                       msg=f"should reject profile={weaker}"):
+                    run_untrusted(["true"], output=out, profile=weaker)
+
+    def test_run_untrusted_forwards_ratchet_profiles(self):
+        """'strict' and the default 'full' pass through to run()."""
+        from core.sandbox import context
+        for allowed in ("strict", "full"):
+            with TemporaryDirectory() as out, \
+                 patch.object(context, "run") as m:
+                context.run_untrusted(["true"], output=out, profile=allowed)
+                self.assertEqual(m.call_args.kwargs["profile"], allowed)
+
 
 class TestSandboxRunKwargGuard(unittest.TestCase):
     """sandbox().run() must reject per-call sandbox kwargs."""

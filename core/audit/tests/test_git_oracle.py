@@ -33,6 +33,7 @@ from core.audit.git_oracle import (
     corroboration_for_journal,
 )
 from core.audit.sweep import SweepResult
+from core.git.clone import safe_git_readonly_command
 
 HAVE_GIT = shutil.which("git") is not None
 
@@ -361,16 +362,46 @@ class TestHardenedInvocation:
             assert call["block_network"] is True
             assert call["target"] == str(repo)
             assert "timeout" in call
-            # Per-invocation hardening — spec-mandated flags.
-            assert "--no-pager" in cmd
-            joined = list(cmd)
-            for override in (
-                "core.fsmonitor=false",
-                "core.hooksPath=/dev/null",
-                "protocol.allow=never",
-            ):
-                idx = joined.index(override)
-                assert joined[idx - 1] == "-c"
+            # Per-invocation hardening — the FULL shared strict
+            # read-only posture from core.git (single source of
+            # truth), asserted via the shared helper rather than
+            # duplicated literals.  argv[0] is the resolved absolute
+            # git path; the rest of the prefix must match exactly.
+            expected = safe_git_readonly_command()
+            assert cmd[1:len(expected)] == expected[1:]
+
+    def test_shared_posture_carries_spec_mandated_pins(self):
+        """Guard against a silent weakening of the SHARED constant: the
+        oracle's spec-mandated pins must still be present in what
+        ``safe_git_readonly_command`` emits."""
+        cmd = safe_git_readonly_command()
+        assert "--no-pager" in cmd
+        for override in (
+            "core.hooksPath=/dev/null",
+            "protocol.allow=never",
+            "protocol.file.allow=never",
+            "core.sshCommand=false",
+        ):
+            idx = cmd.index(override)
+            assert cmd[idx - 1] == "-c"
+        # fsmonitor neutralised (an empty value disables the monitor
+        # regardless of hostile per-repo config; `false` would too).
+        fsmon = [a for a in cmd if str(a).startswith("core.fsmonitor=")]
+        assert fsmon and fsmon[0] in ("core.fsmonitor=", "core.fsmonitor=false")
+
+    def test_line_range_log_is_ext_diff_proof(self, tmp_path, sandbox_spy):
+        """``git log -L`` forces patch output (diff-family) and
+        diff.external cannot be neutralised via ``-c`` — the invocation
+        must carry ``--no-ext-diff``."""
+        repo = _make_repo(tmp_path)
+        corroborate_finding(
+            target_path=repo, file_path="src.c",
+            line_start=1, line_end=5, out_dir=tmp_path / "out",
+        )
+        l_calls = [c for c in sandbox_spy if "-L" in c["cmd"]]
+        assert l_calls
+        for call in l_calls:
+            assert "--no-ext-diff" in call["cmd"]
 
     def test_no_shell_string_ever(self, tmp_path, sandbox_spy):
         repo = _make_repo(tmp_path)

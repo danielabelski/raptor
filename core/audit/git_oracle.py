@@ -26,10 +26,13 @@ config, CVE-2024-32002 family).  Every git invocation here:
 * runs under ``core.sandbox.context.run`` with ``block_network=True``
   plus Landlock target/output confinement — and REFUSES to run
   unsandboxed if the sandbox is unimportable (empty corroboration);
-* passes hardening flags neutralising per-repo config vectors:
-  ``git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null
-  -c protocol.allow=never ...`` plus editor/pager/askpass/credential/
-  gitProxy overrides;
+* passes the shared strict read-only hardening flags from
+  :func:`core.git.clone.safe_git_readonly_command` — the
+  ``safe_git_command`` posture (fsmonitor / hooksPath / editor /
+  pager / askpass / credential / gitProxy / gpg / diff.external
+  neutralised) plus ``protocol.allow=never`` and
+  ``core.sshCommand=false`` (this oracle is local-only; no transport
+  should ever engage) and ``--no-pager``;
 * uses list-based argv with the sanitised git env — never a shell
   string, never a repo path interpolated into a shell.
 
@@ -49,6 +52,8 @@ import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from core.git.clone import safe_git_readonly_command
 
 from ._util import safe_join
 
@@ -99,21 +104,13 @@ _LABEL_RES = tuple(
 
 # Per-invocation hardening flags.  Env-level hygiene (get_safe_git_env)
 # cannot suppress hostile per-repo .git/config — git reads it
-# unconditionally — so these ride on every argv.  Superset of the
-# core.git.clone.safe_git_command posture, with protocol.allow=never
-# (this oracle is local-only; no protocol should ever engage).
-_GIT_HARDENING: tuple = (
-    "--no-pager",
-    "-c", "core.fsmonitor=false",
-    "-c", "core.hooksPath=/dev/null",
-    "-c", "protocol.allow=never",
-    "-c", "core.pager=cat",
-    "-c", "core.editor=true",
-    "-c", "core.askPass=true",
-    "-c", "core.sshCommand=false",
-    "-c", "credential.helper=",
-    "-c", "core.gitProxy=",
-)
+# unconditionally — so hardening rides on every argv.  This module used
+# to carry its own copy of the posture; it now consumes the shared
+# strict read-only variant (single source of truth):
+# ``core.git.clone.safe_git_readonly_command`` — the safe_git_command
+# posture plus ``protocol.allow=never`` + ``core.sshCommand=false``
+# (this oracle is local-only; no transport should ever engage) and
+# ``--no-pager``.  Imported with the module's top-level imports.
 
 _REC_SEP = "\x1e"
 _FIELD_SEP = "\x1f"
@@ -216,7 +213,10 @@ def _run_git(
     if scratch_root:
         os.makedirs(scratch_root, exist_ok=True)
     workdir = tempfile.mkdtemp(prefix="git_oracle_", dir=scratch_root)
-    cmd = [git, *_GIT_HARDENING, "-C", str(repo), *args]
+    # Shared strict read-only posture; argv[0] swapped for the resolved
+    # absolute git path (the helper emits a bare "git").
+    cmd = safe_git_readonly_command("-C", str(repo), *args)
+    cmd[0] = git
     try:
         return sandbox_run(
             cmd,
@@ -409,6 +409,13 @@ def corroborate_finding(
             [
                 "log",
                 "--format=%H",
+                # -L forces patch output — a diff-family invocation.
+                # diff.external cannot be neutralised via -c (an empty
+                # value is itself a configured command, see the
+                # _SAFE_GIT_OVERRIDES comment in core.git.clone), so a
+                # hostile repo-configured external diff driver is
+                # closed off per-invocation here.
+                "--no-ext-diff",
                 "-L", f"{int(line_start)},{int(line_end)}:{rel}",
             ],
             out_dir=out_dir,

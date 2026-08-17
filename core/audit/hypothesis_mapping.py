@@ -7,9 +7,47 @@ consistency-check.  Pure functions — no orchestrator state.
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from pathlib import Path
+
+# P10 web families — unsafe-shape patterns shared across their keyword
+# aliases. Each family has a guarded fixture under
+# engine/negative_controls/ that the pattern must NOT match (safe
+# usage: json/yaml.safe_load, fixed-URL fetches, defusedxml / NONET
+# parsing, allowlist-derived redirect targets). A pattern that matched
+# its fixture would be a presence detector and the sweep caps it at
+# inconclusive.
+_DESERIALIZATION_PATTERN = (
+    "pickle\\.loads?\\s*\\(|yaml\\.load\\s*\\(|unserialize\\s*\\(|"
+    "Marshal\\.load|ObjectInputStream|marshal\\.loads?\\s*\\("
+)
+_SSRF_PATTERN = (
+    # request call whose URL argument is an f-string, a concatenation,
+    # or a request-derived attribute — a bare identifier (allowlist
+    # lookup result) does not match.
+    # \x27 is the apostrophe: the rendered rule embeds this pattern in
+    # a single-quoted YAML scalar, so a literal quote char would
+    # truncate the rule text.
+    "urlopen\\s*\\(\\s*(?:f[\\x27\"]|[^),]*\\+)|"
+    "requests\\.\\w+\\s*\\(\\s*(?:f[\\x27\"]|[^),]*\\+)|"
+    "(?:urlopen|requests\\.\\w+)\\s*\\(\\s*(?:request|req)\\.|"
+    "curl_easy_setopt\\s*\\([^;]*CURLOPT_URL[^;]*(?:\\+|argv|buf|input)|"
+    "curl_exec.*\\$_(?:GET|POST|REQUEST)"
+)
+_XXE_PATTERN = (
+    "resolve_entities\\s*=\\s*True|load_dtd\\s*=\\s*True|"
+    "etree\\.parse\\s*\\(|minidom\\.parse|"
+    "simplexml_load_string|libxml_disable_entity_loader\\s*\\(\\s*false|"
+    "XML_PARSE_NOENT|xmlSubstituteEntitiesDefault\\s*\\(\\s*1"
+)
+_OPEN_REDIRECT_PATTERN = (
+    "redirect\\s*\\(\\s*(?:request\\.|req\\.|params|"
+    "\\$_(?:GET|POST|REQUEST)|url|target|next|dest)|"
+    "sendRedirect\\s*\\(\\s*request|"
+    "header\\s*\\(\\s*[\\x27\"]Location:?[\\x27\"]?\\s*\\."
+)
 
 _HYPOTHESIS_SEMGREP_PATTERNS: dict[str, str] = {
     "buffer overflow": "strcpy|sprintf|gets\\s*\\(|strcat",
@@ -22,6 +60,15 @@ _HYPOTHESIS_SEMGREP_PATTERNS: dict[str, str] = {
     "xss": "(snprintf|sprintf)\\s*\\([^)]*\"%s|write\\s*\\(.*\\+|response\\.write|res\\.send",
     "reflected": "(snprintf|sprintf)\\s*\\([^)]*\"%s|write\\s*\\(.*\\+|response\\.write|res\\.send",
     "cross-site": "(snprintf|sprintf)\\s*\\([^)]*\"%s|write\\s*\\(.*\\+|response\\.write|res\\.send",
+    "deserialization": _DESERIALIZATION_PATTERN,
+    "deserialisation": _DESERIALIZATION_PATTERN,
+    "unpickle": _DESERIALIZATION_PATTERN,
+    "ssrf": _SSRF_PATTERN,
+    "server-side request": _SSRF_PATTERN,
+    "xxe": _XXE_PATTERN,
+    "xml external entit": _XXE_PATTERN,
+    "open redirect": _OPEN_REDIRECT_PATTERN,
+    "unvalidated redirect": _OPEN_REDIRECT_PATTERN,
 }
 
 
@@ -122,12 +169,12 @@ def hypothesis_to_semgrep_rule_keyed(
     )
 
     try:
-        with tempfile.NamedTemporaryFile(
-            prefix="audit_sweep_", suffix=".yaml",
-            mode="w", delete=False,
-        ) as tmp:
-            tmp.write(rule_yaml)
-        return tmp.name, matched_keyword
+        fd, tmp_name = tempfile.mkstemp(
+            prefix="audit_sweep_", suffix=".yaml", text=True,
+        )
+        with os.fdopen(fd, "w") as fh:
+            fh.write(rule_yaml)
+        return tmp_name, matched_keyword
     except OSError:
         return None
 

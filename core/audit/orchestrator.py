@@ -448,6 +448,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "joern_guard": TierCounters(),
         "joern_flow": TierCounters(),
         "coccinelle_flow": TierCounters(),
+        "joern_dominance": TierCounters(),
     }
 
 
@@ -3304,6 +3305,9 @@ def _run_audit_body(
         binary_verdicts=config.binary_verdicts,
         inventory=config.inventory,
         evidence_index=evidence_index,
+        # P23: dominance resolver tier consults the already-running
+        # Joern server (caller-owned lifecycle) when the CPG is warm.
+        joern_server=joern_server,
     )
 
     session_observations: list[dict[str, str]] = []
@@ -15257,9 +15261,10 @@ def _run_dark_verification(
     )
 
     try:
-        from .cwe_dispatch import dark_verify_applicable
+        from .cwe_dispatch import dark_verify_applicable, dark_verify_statuses
     except ImportError:
         dark_verify_applicable = lambda _cwe: False
+        dark_verify_statuses = lambda _cwe: None
 
     def _eligible(o: ReviewOutcome) -> bool:
         if o.status == "dark":
@@ -15274,7 +15279,13 @@ def _run_dark_verification(
             or (o.review_result or {}).get("cwe")
             or ""
         )
-        return bool(cwe) and dark_verify_applicable(cwe)
+        if not (cwe and dark_verify_applicable(cwe)):
+            return False
+        # P10 families declare a status filter bounding witness-call
+        # cost: a clean outcome in those classes does not spend an LLM
+        # call. Families without a filter keep the original behaviour.
+        allowed = dark_verify_statuses(cwe)
+        return allowed is None or o.status in allowed
 
     dark_outcomes = [o for o in result.outcomes if _eligible(o)]
     if not dark_outcomes:

@@ -12,9 +12,9 @@ Consumed by:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
+CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
     # Memory / bounds
     "CWE-120": {
         "smt": "check-oob",
@@ -95,6 +95,100 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
         "joern": True,
         "codeql": None,
         "sinks": ["eval", "exec", "loadstring", "dofile"],
+        "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
+    },
+    "CWE-95": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "js/code-injection",
+        "sinks": ["eval", "exec", "Function", "setTimeout", "setInterval",
+                  "vm.runInContext"],
+        "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
+    },
+    "CWE-77": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "cpp/command-line-injection",
+        "sinks": ["system", "popen", "execve", "execl", "os.system",
+                  "subprocess.Popen", "subprocess.call"],
+    },
+    # Path traversal
+    "CWE-22": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "py/path-injection",
+        "sinks": ["open", "fopen", "readFile", "readFileSync",
+                  "file_get_contents", "os.path.join", "send_file",
+                  "sendFile", "include", "require_once"],
+        "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
+    },
+    "CWE-23": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "py/path-injection",
+        "sinks": ["open", "fopen", "readFile", "readFileSync",
+                  "file_get_contents", "os.path.join", "send_file",
+                  "sendFile", "include", "require_once"],
+    },
+    # Deserialization
+    "CWE-502": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "py/unsafe-deserialization",
+        "sinks": ["pickle.loads", "pickle.load", "yaml.load", "unserialize",
+                  "Marshal.load", "readObject", "ObjectInputStream", "loads"],
+        "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
+    },
+    # Server-side request forgery
+    "CWE-918": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "py/full-ssrf",
+        "sinks": ["requests.get", "requests.post", "urlopen", "fetch",
+                  "curl_exec", "curl_easy_setopt", "http.Get", "axios.get",
+                  "file_get_contents"],
+        "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
+    },
+    # XML external entity
+    "CWE-611": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "py/xxe",
+        "sinks": ["etree.parse", "fromstring", "parseString",
+                  "simplexml_load_string", "XMLReader", "DocumentBuilder",
+                  "xmlReadFile", "xmlParseFile", "xmlCtxtReadMemory"],
+    },
+    # Open redirect
+    "CWE-601": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "py/url-redirection",
+        "sinks": ["redirect", "sendRedirect", "header", "set_header",
+                  "RedirectResponse"],
+        "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
+    },
+    # Prototype pollution
+    "CWE-1321": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "js/prototype-polluting-assignment",
+        "sinks": ["merge", "extend", "assign", "defaultsDeep", "setWith",
+                  "set"],
     },
     # Error handling
     "CWE-252": {
@@ -228,7 +322,7 @@ CWE_TO_TOOL_DISPATCH: Dict[str, Dict[str, Any]] = {
 }
 
 
-def lookup(cwe: str) -> Optional[Dict[str, Any]]:
+def lookup(cwe: str) -> dict[str, Any] | None:
     """Look up dispatch rules for a CWE identifier.
 
     Accepts "CWE-78", "cwe-78", "78", etc.
@@ -258,12 +352,25 @@ _HYPOTHESIS_CWE_MAP = [
     (r"resource.*leak|memory.*leak|missing.*free", "CWE-401"),
     (r"(?:integer|type).*(?:truncat|narrow)", "CWE-681"),
     (r"uninitiali[sz]ed", "CWE-457"),
+    # Web-facing families (P10). Appended after the memory/injection
+    # entries so pre-existing first-match behaviour is unchanged.
+    ((r"path.travers|directory.travers|\.\./|path.inject|"
+      r"arbitrary.file.(?:read|write|access)"), "CWE-22"),
+    ((r"deseriali[sz]|unpickl|pickle\.loads?|unseriali[sz]e|"
+      r"marshal\.load|yaml\.load"), "CWE-502"),
+    ((r"\bssrf\b|server.side.request.forgery|"
+      r"forged.*(?:server|internal).*request"), "CWE-918"),
+    (r"\bxxe\b|xml.external.entit|external.entity.(?:inject|expan)", "CWE-611"),
+    ((r"open.redirect|unvalidated.redirect|"
+      r"redirect.*attacker.(?:controlled|supplied)"), "CWE-601"),
+    (r"prototype.pollution|__proto__", "CWE-1321"),
+    (r"(?:code|eval).*inject", "CWE-94"),
 ]
 
 _HYPOTHESIS_CWE_RE = None
 
 
-def infer_cwe_from_hypothesis(hypothesis: str) -> Optional[str]:
+def infer_cwe_from_hypothesis(hypothesis: str) -> str | None:
     """Extract a CWE from hypothesis text via keyword matching.
 
     Returns the first matching CWE that has a dispatch entry, or None.
@@ -278,13 +385,12 @@ def infer_cwe_from_hypothesis(hypothesis: str) -> Optional[str]:
         ]
 
     for regex, cwe in _HYPOTHESIS_CWE_RE:
-        if regex.search(hypothesis or ""):
-            if lookup(cwe) is not None:
-                return cwe
+        if regex.search(hypothesis or "") and lookup(cwe) is not None:
+            return cwe
     return None
 
 
-def sinks_for_cwe(cwe: str) -> List[str]:
+def sinks_for_cwe(cwe: str) -> list[str]:
     """Return sink targets for a CWE, or empty list."""
     entry = lookup(cwe)
     if entry is None:
@@ -292,7 +398,7 @@ def sinks_for_cwe(cwe: str) -> List[str]:
     return entry.get("sinks", [])
 
 
-def smt_verb_for_cwe(cwe: str) -> Optional[str]:
+def smt_verb_for_cwe(cwe: str) -> str | None:
     """Return the SMT verb for a CWE, or None."""
     entry = lookup(cwe)
     if entry is None:
@@ -300,7 +406,7 @@ def smt_verb_for_cwe(cwe: str) -> Optional[str]:
     return entry.get("smt")
 
 
-def cocci_rule_for_cwe(cwe: str) -> Optional[str]:
+def cocci_rule_for_cwe(cwe: str) -> str | None:
     """Return the Coccinelle rule filename for a CWE, or None."""
     entry = lookup(cwe)
     if entry is None:
@@ -308,7 +414,7 @@ def cocci_rule_for_cwe(cwe: str) -> Optional[str]:
     return entry.get("cocci")
 
 
-def codeql_query_for_cwe(cwe: str) -> Optional[str]:
+def codeql_query_for_cwe(cwe: str) -> str | None:
     """Return the CodeQL query ID for a CWE, or None."""
     entry = lookup(cwe)
     if entry is None:
@@ -330,3 +436,20 @@ def dark_verify_applicable(cwe: str) -> bool:
     if entry is None:
         return False
     return bool(entry.get("dark_verify"))
+
+
+def dark_verify_statuses(cwe: str):
+    """Optional outcome-status filter for dark-verify eligibility.
+
+    Returns a frozenset of eligible review statuses when the entry
+    declares one (the P10 web families bound witness-call cost to
+    non-clean outcomes), or ``None`` when the CWE has no filter — the
+    pre-existing families keep their unfiltered behaviour.
+    """
+    entry = lookup(cwe)
+    if entry is None:
+        return None
+    statuses = entry.get("dark_verify_statuses")
+    if not statuses:
+        return None
+    return frozenset(statuses)

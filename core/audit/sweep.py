@@ -576,6 +576,15 @@ _KEYWORD_FIXTURE_STEMS: dict[str, str] = {
     "xss": "xss",
     "reflected": "xss",
     "cross-site": "xss",
+    "deserialization": "deserialization",
+    "deserialisation": "deserialization",
+    "unpickle": "deserialization",
+    "ssrf": "ssrf",
+    "server-side request": "ssrf",
+    "xxe": "xxe",
+    "xml external entit": "xxe",
+    "open redirect": "open_redirect",
+    "unvalidated redirect": "open_redirect",
 }
 
 # Keyed by (keyword, fixture suffix): the pattern for a keyword is a

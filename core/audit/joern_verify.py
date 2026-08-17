@@ -51,9 +51,18 @@ FLOW_STAMP = "joern:flow"
 # orchestrator._cwe_fallback_chain).
 GUARD_DOMINANCE_CWES = frozenset({
     "CWE-120", "CWE-122", "CWE-125", "CWE-787", "CWE-476",
+    # P10 web families: "missing validation before sink" shapes — a
+    # dominating check on the hypothesis identifier refutes, an
+    # unguarded sink site confirms.
+    "CWE-22", "CWE-23", "CWE-502", "CWE-918", "CWE-611", "CWE-601",
+    "CWE-77",
 })
 FLOW_CWES = frozenset({
     "CWE-20", "CWE-74", "CWE-78", "CWE-89", "CWE-79",
+    # P10 web families: source→sink reachability is verification-grade
+    # for all of these (sinks come from cwe_dispatch).
+    "CWE-22", "CWE-23", "CWE-502", "CWE-918", "CWE-611", "CWE-601",
+    "CWE-77", "CWE-94", "CWE-95", "CWE-1321",
 })
 
 # Fallback sink lists for CWEs without a sink-carrying cwe_dispatch

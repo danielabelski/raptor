@@ -82,6 +82,24 @@ class TestKeyedRuleGeneration:
         Path(path).unlink()
 
 
+# The original keyword families use PRESENCE regexes: the guarded
+# fixture deliberately matches, and the sweep caps the rule at
+# inconclusive (a presence detector can never confirm). The P10 web
+# families instead use UNSAFE-SHAPE patterns in the cocci_flow house
+# style: the guarded fixture must NOT match, so a hit on the target is
+# confirmation-grade (test_web_family_channels.py pins the non-match
+# side). Keep the two disciplines separate here.
+_PRESENCE_STYLE_KEYWORDS = (
+    "buffer overflow", "sql injection", "command injection",
+    "path traversal", "format string", "use after free", "double free",
+    "xss", "reflected", "cross-site",
+)
+
+_UNSAFE_SHAPE_STEMS = {
+    "deserialization", "ssrf", "xxe", "open_redirect",
+}
+
+
 class TestFixtures:
     def test_every_keyword_has_a_fixture_stem(self):
         for keyword in _HYPOTHESIS_SEMGREP_PATTERNS:
@@ -90,26 +108,60 @@ class TestFixtures:
                 "negative-control fixture stem"
             )
 
-    def test_every_stem_has_a_c_fixture_on_disk(self):
+    def test_every_stem_has_a_fixture_on_disk(self):
+        # Presence-style stems ship a .c fixture; unsafe-shape stems
+        # ship fixtures in the languages where their pattern is
+        # meaningful (at least one on disk).
         for stem in set(_KEYWORD_FIXTURE_STEMS.values()):
-            fixture = _NEGATIVE_CONTROLS_DIR / f"{stem}.c"
-            assert fixture.is_file(), f"missing fixture {fixture}"
+            if stem in _UNSAFE_SHAPE_STEMS:
+                found = any(
+                    (_NEGATIVE_CONTROLS_DIR / f"{stem}{ext}").is_file()
+                    for ext in (".py", ".c")
+                )
+                assert found, f"missing any fixture for stem {stem}"
+            else:
+                fixture = _NEGATIVE_CONTROLS_DIR / f"{stem}.c"
+                assert fixture.is_file(), f"missing fixture {fixture}"
 
     def test_python_relevant_families_have_py_fixtures(self):
-        for stem in ("sql_injection", "command_injection", "path_traversal"):
+        for stem in ("sql_injection", "command_injection", "path_traversal",
+                     "deserialization", "ssrf", "xxe", "open_redirect"):
             fixture = _NEGATIVE_CONTROLS_DIR / f"{stem}.py"
             assert fixture.is_file(), f"missing fixture {fixture}"
 
-    @pytest.mark.parametrize("keyword", sorted(_HYPOTHESIS_SEMGREP_PATTERNS))
+    @pytest.mark.parametrize("keyword", sorted(_PRESENCE_STYLE_KEYWORDS))
     def test_c_fixture_matches_its_pattern(self, keyword):
-        """Each fixture is a true negative control: the presence regex
-        for its keyword family fires on the (guarded) fixture code."""
+        """Each presence-style fixture is a true negative control: the
+        presence regex for its keyword family fires on the (guarded)
+        fixture code."""
         pattern = _HYPOTHESIS_SEMGREP_PATTERNS[keyword]
         stem = _KEYWORD_FIXTURE_STEMS[keyword]
         text = (_NEGATIVE_CONTROLS_DIR / f"{stem}.c").read_text()
         assert any(re.search(pattern, line) for line in text.splitlines()), (
             f"fixture {stem}.c does not match pattern for {keyword!r}"
         )
+
+    @pytest.mark.parametrize("keyword", sorted(
+        k for k, s in _KEYWORD_FIXTURE_STEMS.items()
+        if s in _UNSAFE_SHAPE_STEMS
+    ))
+    def test_unsafe_shape_fixture_does_not_match(self, keyword):
+        """Unsafe-shape families: safe usage must NOT trip the pattern
+        (in every language the family ships a fixture for)."""
+        pattern = _HYPOTHESIS_SEMGREP_PATTERNS[keyword]
+        stem = _KEYWORD_FIXTURE_STEMS[keyword]
+        checked = 0
+        for ext in (".py", ".c"):
+            fixture = _NEGATIVE_CONTROLS_DIR / f"{stem}{ext}"
+            if not fixture.is_file():
+                continue
+            checked += 1
+            text = fixture.read_text()
+            assert not re.search(pattern, text), (
+                f"unsafe-shape pattern for {keyword!r} matches its "
+                f"guarded fixture {fixture.name}"
+            )
+        assert checked, f"no fixture on disk for stem {stem}"
 
     @pytest.mark.parametrize("keyword,stem", [
         ("sql injection", "sql_injection"),

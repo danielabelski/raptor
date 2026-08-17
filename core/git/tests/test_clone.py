@@ -864,3 +864,71 @@ def test_ls_remote_argv_carries_safe_git_pins() -> None:
     assert "core.fsmonitor=" in pins
     assert "core.hooksPath=/dev/null" in pins
     assert "protocol.allow=never" not in pins
+
+
+# ---------------------------------------------------------------------------
+# ls_remote: ref patterns + bearer-token env mechanism
+# ---------------------------------------------------------------------------
+
+
+def test_ls_remote_patterns_follow_end_of_options_separator() -> None:
+    """Ref patterns land after ``--`` so neither the URL nor a pattern
+    can ever be parsed as a git option."""
+    with patch("core.sandbox.run_untrusted_networked") as mock_run:
+        mock_run.return_value = _completed(0, stdout="")
+        ls_remote(
+            "https://github.com/foo/bar.git",
+            proxy_hosts=["github.com"],
+            patterns=("v4", "refs/tags/v4", "refs/heads/v4"),
+        )
+    cmd = _strip_pins(mock_run.call_args.args[0])
+    i = cmd.index("--")
+    assert cmd[i + 1] == "https://github.com/foo/bar.git"
+    assert cmd[i + 2:] == ["v4", "refs/tags/v4", "refs/heads/v4"]
+
+
+@pytest.mark.parametrize("bad_pattern", ["-v4", "--upload-pack=x", ""])
+def test_ls_remote_rejects_dash_or_empty_patterns(bad_pattern: str) -> None:
+    with patch("core.sandbox.run_untrusted_networked") as mock_run:
+        with pytest.raises(ValueError, match="pattern"):
+            ls_remote(
+                "https://github.com/foo/bar.git",
+                proxy_hosts=["github.com"],
+                patterns=(bad_pattern,),
+            )
+        mock_run.assert_not_called()
+
+
+def test_ls_remote_bearer_token_env_not_argv() -> None:
+    """The bearer credential must ride the ``GIT_CONFIG_*`` env
+    mechanism — NEVER argv (argv is same-uid world-readable via
+    /proc/<pid>/cmdline)."""
+    token = "ghp_SECRETSECRETSECRETSECRET"  # noqa: S105 — test fixture
+    with patch("core.sandbox.run_untrusted_networked") as mock_run:
+        mock_run.return_value = _completed(0, stdout="")
+        ls_remote(
+            "https://github.com/foo/bar.git",
+            proxy_hosts=["github.com"],
+            bearer_token=token,
+        )
+    cmd = mock_run.call_args.args[0]
+    assert all(token not in arg for arg in cmd), (
+        f"bearer token leaked onto argv: {cmd}"
+    )
+    assert all("extraheader" not in arg for arg in cmd)
+    env = mock_run.call_args.kwargs["env"]
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "http.extraheader"
+    assert env["GIT_CONFIG_VALUE_0"] == f"Authorization: bearer {token}"
+
+
+def test_ls_remote_no_token_leaves_env_unaugmented() -> None:
+    with patch("core.sandbox.run_untrusted_networked") as mock_run:
+        mock_run.return_value = _completed(0, stdout="")
+        ls_remote(
+            "https://github.com/foo/bar.git",
+            proxy_hosts=["github.com"],
+        )
+    env = mock_run.call_args.kwargs["env"]
+    assert "GIT_CONFIG_COUNT" not in env
+    assert "GIT_CONFIG_KEY_0" not in env

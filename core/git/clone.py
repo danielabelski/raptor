@@ -43,6 +43,15 @@ from core.git.validate import validate_repo_url
 from core.logging import log_security_event as _log_security_event
 from core.security.redaction import redact_url_secrets_only
 
+# Backwards-compat re-export — historical callers + tests reference
+# ``core.git.clone._PROXY_HOSTS`` directly. Kept as the static-default
+# tuple (no operator override applied) so existing semantics hold;
+# new call sites should use ``_proxy_hosts_for_git()`` to pick up the
+# operator override config. (See the egress-allowlist commentary
+# further down for why these hosts and no others.)
+from ._proxy_hosts import _DEFAULT_GIT_HOSTS as _PROXY_HOSTS  # noqa: F401
+from ._proxy_hosts import proxy_hosts_for_git as _proxy_hosts_for_git
+
 # Git allows SHA abbreviations of 4+ chars; full SHA-1 is 40 hex.
 # We reject anything that doesn't match this shape so a tainted SHA
 # cannot be parsed as a ``git fetch`` flag (e.g. ``--upload-pack=`` for
@@ -85,15 +94,9 @@ logger = logging.getLogger(__name__)
 # Without these, clones of LFS-using repos failed with `unable to
 # access 'https://raw.githubusercontent.com/...'` errors mid-checkout
 # — operator saw "git clone failed" with no signal that the proxy
-# allowlist was the missing piece. Add them so the egress proxy
-# accepts the redirected hosts.
-# Backwards-compat re-export — historical callers + tests reference
-# ``core.git.clone._PROXY_HOSTS`` directly. Kept as the static-default
-# tuple (no operator override applied) so existing semantics hold;
-# new call sites should use ``_proxy_hosts_for_git()`` to pick up the
-# operator override config.
-from ._proxy_hosts import _DEFAULT_GIT_HOSTS as _PROXY_HOSTS  # noqa: F401
-from ._proxy_hosts import proxy_hosts_for_git as _proxy_hosts_for_git
+# allowlist was the missing piece. The hosts live in ``._proxy_hosts``
+# (re-exported at the top of this module as ``_PROXY_HOSTS``) so the
+# egress proxy accepts the redirected hosts.
 
 
 def get_safe_git_env(*, preserve_proxy: bool = False) -> dict[str, str]:
@@ -662,6 +665,8 @@ def ls_remote(
     *,
     proxy_hosts: Iterable[str],
     timeout: int = 20,
+    patterns: Iterable[str] | None = None,
+    bearer_token: str | None = None,
 ) -> list[tuple[str, str]]:
     """Run ``git ls-remote --heads --tags`` against ``url``.
 
@@ -696,6 +701,20 @@ def ls_remote(
         timeout: per-call wall-clock cap (seconds; default 20).
             Tighter than ``RaptorConfig.GIT_CLONE_TIMEOUT`` because
             ls-remote returns a ref-list, not whole repos.
+        patterns: optional ref patterns appended after an ``--``
+            end-of-options separator, so the remote only advertises
+            matching refs (``git ls-remote <url> <pattern>...``).
+            Each pattern must be non-empty and must not start with
+            ``-`` (would otherwise be parseable as a git option —
+            same argument-position defence as ``fetch_commit``'s
+            SHA shape check).
+        bearer_token: optional bearer credential for the forge
+            (private repos / rate-limit relief). Injected via the
+            ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_0``/
+            ``GIT_CONFIG_VALUE_0`` environment mechanism as an
+            ``http.extraheader`` — NEVER placed on argv (argv is
+            world-readable via /proc/<pid>/cmdline) and never
+            logged.
 
     Returns:
         ``[(sha, ref), ...]`` — e.g.
@@ -721,6 +740,14 @@ def ls_remote(
     proxy_host_list = list(proxy_hosts)
     if not proxy_host_list:
         raise ValueError("ls_remote requires non-empty proxy_hosts")
+
+    pattern_list = list(patterns) if patterns is not None else []
+    for pat in pattern_list:
+        if not pat or pat.startswith("-"):
+            raise ValueError(
+                f"ls_remote: invalid ref pattern {pat!r} (empty or "
+                f"leading dash — could be parsed as a git option)"
+            )
 
     # ``urlparse`` is more honest than a regex for the "is this a
     # safe URL shape" check — handles userinfo, fragments, ports
@@ -808,11 +835,31 @@ def ls_remote(
         logger.info("git ls-remote: %s (allowlist=%s)",
                      redact_secrets(url),
                      ",".join(sorted(allowed_lower)))
+        # ``--`` ends option parsing so neither the URL nor any ref
+        # pattern can ever be interpreted as a git option.
+        cmd = safe_git_command(
+            "ls-remote", "--heads", "--tags", "--", url, *pattern_list,
+        )
+        env = get_safe_git_env()
+        if bearer_token:
+            # Credential rides the GIT_CONFIG_* env mechanism (git
+            # ≥2.31), NOT argv: /proc/<pid>/cmdline is readable by
+            # every same-uid process, env is not. Equivalent to
+            # ``-c http.extraheader=...`` in precedence terms except
+            # explicit ``-c`` options would win — safe_git_command
+            # sets no http.extraheader, so this value applies. The
+            # env dict is never logged.
+            env.update({
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "http.extraheader",
+                "GIT_CONFIG_VALUE_0":
+                    f"Authorization: bearer {bearer_token}",
+            })
         proc = run_untrusted_networked(
-            safe_git_command("ls-remote", "--heads", "--tags", url),
+            cmd,
             target=td,
             output=td,
-            env=get_safe_git_env(),
+            env=env,
             proxy_hosts=proxy_host_list,
             fake_home=True,
             timeout=timeout,

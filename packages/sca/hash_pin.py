@@ -8,9 +8,19 @@ Composer git) currently get a warning; those handlers can drop in here.
 Auth strategy: use ``git ls-remote <repo> <ref>`` rather than the
 GitHub REST API. ``ls-remote`` works against public repos without any
 token, side-stepping the design's noted 60 req/hour unauthenticated
-rate limit. When a token IS available (``GITHUB_TOKEN`` env), we pass
-it via ``http.extraheader`` — useful for private repos and gives a
-modest speedup on large monorepos.
+rate limit. When a token IS available (``GITHUB_TOKEN`` env), it is
+passed via the ``GIT_CONFIG_*`` environment mechanism as an
+``http.extraheader`` — useful for private repos and gives a modest
+speedup on large monorepos. The token never appears on argv (argv is
+readable by every same-uid process via /proc/<pid>/cmdline) and is
+never logged.
+
+Execution posture: every resolve goes through
+:func:`core.git.ls_remote` — sandbox-routed (namespace + Landlock),
+egress-proxied with the allowlist pinned to ``github.com``, safe-git
+config pins applied. Pre-fix this module ran a raw ``subprocess.run``
+with ambient proxy env (bypassing the egress allowlist) and carried
+the bearer token on argv.
 
 The rewriter is line-based, idempotent (already-SHA refs are skipped),
 and preserves the original ref as a trailing comment so operators can
@@ -23,10 +33,16 @@ import logging
 import os
 import re
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Egress allowlist for the resolver's sandboxed ls-remote. GitHub
+# Actions ``uses:`` refs always live on github.com — the URL below is
+# constructed from that literal, so the allowlist is exactly one host.
+_LS_REMOTE_PROXY_HOSTS = ("github.com",)
 
 
 # ``uses: org/action@<ref>`` — captures the ref so we can decide whether
@@ -199,63 +215,46 @@ def _resolve_sha(
     if key in cache:
         return cache[key]
     url = f"https://github.com/{owner}/{repo}.git"
-    # Pass token via -c http.extraheader rather than embedding in the
-    # URL. The token still appears in our own /proc/<pid>/cmdline (so
-    # same-uid processes can read it), but it no longer appears inside
-    # the URL — keeping it out of git's URL-rewriting code paths and
-    # its on-disk credential cache. For full token isolation, callers
-    # should set the GIT_HTTP_EXTRAHEADER env var or use GIT_ASKPASS.
-    cmd = ["git"]
-    if token:
-        cmd += ["-c", f"http.extraheader=Authorization: bearer {token}"]
-    # ``--`` ends option parsing so the URL and ref patterns can never
-    # be interpreted as git options.
-    cmd += ["ls-remote", "--", url, ref,
-            f"refs/tags/{ref}", f"refs/heads/{ref}"]
+    # Sandbox-routed, egress-allowlisted ls-remote via the safe-git
+    # substrate (same convergence as cve_diff's agent tools). The
+    # token rides the GIT_CONFIG_* env mechanism inside ls_remote —
+    # never argv, never logged.
     try:
-        from core.config import RaptorConfig
-        from core.sandbox.preexec import set_pdeathsig
-        proc = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=20,
-            # preserve_proxy: ls-remote dials the forge — git honours
-            # proxy env; no direct route on mandatory-proxy hosts.
-            env=RaptorConfig.get_safe_env(preserve_proxy=True),
-            preexec_fn=set_pdeathsig(),
-            check=False,
+        from core.git import ls_remote
+        refs = ls_remote(
+            url,
+            proxy_hosts=_LS_REMOTE_PROXY_HOSTS,
+            timeout=20,
+            patterns=(ref, f"refs/tags/{ref}", f"refs/heads/{ref}"),
+            bearer_token=token,
         )
-    except (subprocess.SubprocessError, OSError) as e:
+    except (RuntimeError, ValueError, OSError,
+            subprocess.SubprocessError) as e:
         logger.warning("sca.hash_pin: git ls-remote failed for %s/%s@%s: %s",
                         owner, repo, ref, e)
         cache[key] = None
         return None
-    if proc.returncode != 0:
-        cache[key] = None
-        return None
-    # Output: ``<sha>\t<refname>\n``. Prefer the annotated-tag commit
+    # Refs: ``[(sha, refname), ...]``. Prefer the annotated-tag commit
     # (``^{}`` suffix) when present — that's the actual commit, not the
     # tag-object SHA.
-    sha = _pick_sha(proc.stdout)
+    sha = _pick_sha(refs)
     cache[key] = sha
     return sha
 
 
-def _pick_sha(stdout: str) -> str | None:
-    """Pick the right SHA from git ls-remote output.
+def _pick_sha(refs: Iterable[tuple[str, str]]) -> str | None:
+    """Pick the right SHA from git ls-remote ref pairs.
 
-    Prefers the dereferenced-tag entry (``<sha>\\trefs/tags/<tag>^{}``)
-    over the annotated-tag entry (``<sha>\\trefs/tags/<tag>``) so we
+    Prefers the dereferenced-tag entry (``(<sha>, refs/tags/<tag>^{})``)
+    over the annotated-tag entry (``(<sha>, refs/tags/<tag>)``) so we
     record the commit SHA, not the tag-object SHA.
     """
     annotated_lines = []
     tag_lines = []
     head_lines = []
     bare_lines = []
-    for line in stdout.splitlines():
-        parts = line.split("\t", 1)
-        if len(parts) != 2:
-            continue
-        sha, refname = parts[0].strip(), parts[1].strip()
+    for sha, refname in refs:
+        sha, refname = sha.strip(), refname.strip()
         if not _SHA_RE.match(sha):
             continue
         if refname.endswith("^{}"):

@@ -195,7 +195,7 @@ class TestOrchestrate:
         cc_result = json.dumps(_make_cc_result("finding-001"))
 
         with patch.dict(os.environ, {"CLAUDECODE": "1"}), \
-             patch("packages.llm_analysis.orchestrator.shutil.which", return_value="/usr/bin/claude"), \
+             patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked",
                    side_effect=_mock_subprocess_ok([cc_result])):
             result = orchestrate(
@@ -214,7 +214,7 @@ class TestOrchestrate:
         report_path.write_text(json.dumps(report))
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("packages.llm_analysis.orchestrator.shutil.which", return_value=None):
+             patch("core.llm.cc_adapter.resolve_claude_cli", return_value=None):
             result = orchestrate(
                 prep_report_path=report_path,
                 repo_path=tmp_path,
@@ -281,7 +281,7 @@ class TestOrchestrate:
         }
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("packages.llm_analysis.orchestrator.shutil.which", return_value="/usr/bin/claude"), \
+             patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked",
                    side_effect=_mock_subprocess_ok(cc_results)):
             result = orchestrate(
@@ -324,7 +324,7 @@ class TestOrchestrate:
         cc_results = [json.dumps(sloppy)]
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("packages.llm_analysis.orchestrator.shutil.which", return_value="/usr/bin/claude"), \
+             patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked",
                    side_effect=_mock_subprocess_ok(cc_results)):
             result = orchestrate(
@@ -360,7 +360,7 @@ class TestOrchestrate:
         report_path.write_text(json.dumps(report))
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("packages.llm_analysis.orchestrator.shutil.which", return_value="/usr/bin/claude"):
+             patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"):
             result = orchestrate(
                 prep_report_path=report_path,
                 repo_path=tmp_path,
@@ -387,7 +387,7 @@ class TestOrchestrate:
             return result
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("packages.llm_analysis.orchestrator.shutil.which", return_value="/usr/bin/claude"), \
+             patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked", side_effect=mock_run):
             result = orchestrate(
                 prep_report_path=report_path,
@@ -1009,7 +1009,7 @@ class TestWeakenedDefenses:
         cc_result = json.dumps(_make_cc_result("finding-001"))
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("packages.llm_analysis.orchestrator.shutil.which",
+             patch("core.llm.cc_adapter.resolve_claude_cli",
                    return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked",
                    side_effect=_mock_subprocess_ok([cc_result])):

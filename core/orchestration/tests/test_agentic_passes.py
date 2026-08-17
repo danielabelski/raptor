@@ -13,6 +13,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+from core.orchestration.agentic_passes import (
+    _enrich_agentic_checklist,
+    _select_findings_for_validate,
+    run_understand_prepass,
+    run_validate_postpass,
+)
+
 # proxy_hosts_for_cc_dispatch is provider-aware: on a host whose ambient
 # env selects Bedrock/Vertex/Foundry it returns that cloud's endpoints,
 # not the first-party defaults these tests assert. Pin the provider env
@@ -23,13 +30,6 @@ _FIRST_PARTY_PROVIDER_ENV = {
     "CLAUDE_CODE_USE_VERTEX": "",
     "CLAUDE_CODE_USE_FOUNDRY": "",
 }
-
-from core.orchestration.agentic_passes import (
-    _enrich_agentic_checklist,
-    _select_findings_for_validate,
-    run_understand_prepass,
-    run_validate_postpass,
-)
 
 # Force the Rule-of-Two agentic-pass gate open for all tests except
 # RuleOfTwoTests (which drives the gate's legs explicitly). The gate allows
@@ -262,7 +262,7 @@ class UnderstandPrepassTests(unittest.TestCase):
 
     def test_skips_when_claude_not_on_path(self):
         with TemporaryDirectory() as tmp, \
-             patch("core.orchestration.skill_dispatch.shutil.which", return_value=None):
+             patch("core.llm.cc_adapter.resolve_claude_cli", return_value=None):
             result = run_understand_prepass(
                 target=Path(tmp), agentic_out_dir=Path(tmp),
             )

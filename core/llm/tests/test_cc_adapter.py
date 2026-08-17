@@ -547,3 +547,43 @@ class TestNeutralCwd:
         # .claude hooks the CLI child would execute.
         assert (os.stat(d1).st_mode & 0o777) == 0o700
         assert os.listdir(d1) == []
+
+
+class TestResolveClaudeCli:
+    """resolve_claude_cli: realpath at the dispatch resolution seam.
+
+    Symlinked installs (~/.local/bin/claude -> versioned dir) failed
+    the mount-ns visibility check when cmd[0] was the un-realpath'd
+    which() result — silent isolation downgrade to Landlock-only.
+    """
+
+    def test_none_when_not_found(self, monkeypatch):
+        from core.llm.cc_adapter import resolve_claude_cli
+        monkeypatch.setattr("shutil.which", lambda _: None)
+        assert resolve_claude_cli() is None
+
+    def test_path_lookup_result_is_realpathed(self, monkeypatch, tmp_path):
+        from core.llm.cc_adapter import resolve_claude_cli
+        real = tmp_path / "versions" / "2.1" / "claude"
+        real.parent.mkdir(parents=True)
+        real.write_text("#!/bin/sh\n")
+        link = tmp_path / "bin" / "claude"
+        link.parent.mkdir()
+        link.symlink_to(real)
+        monkeypatch.setattr("shutil.which", lambda _: str(link))
+        assert resolve_claude_cli() == str(real.resolve())
+
+    def test_explicit_path_is_realpathed(self, tmp_path):
+        from core.llm.cc_adapter import resolve_claude_cli
+        real = tmp_path / "install" / "claude"
+        real.parent.mkdir()
+        real.write_text("#!/bin/sh\n")
+        link = tmp_path / "claude"
+        link.symlink_to(real)
+        assert resolve_claude_cli(str(link)) == str(real.resolve())
+
+    def test_regular_path_unchanged(self, tmp_path):
+        from core.llm.cc_adapter import resolve_claude_cli
+        p = tmp_path / "claude"
+        p.write_text("#!/bin/sh\n")
+        assert resolve_claude_cli(str(p)) == str(p.resolve())

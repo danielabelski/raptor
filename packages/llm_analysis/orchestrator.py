@@ -17,7 +17,6 @@ import contextlib
 import copy
 import logging
 import os
-import shutil
 import sys
 import threading
 import time
@@ -784,7 +783,8 @@ def orchestrate(
             print("  Use an external LLM (GEMINI_API_KEY, OPENAI_API_KEY) or remove the helpers to enable CC dispatch", file=sys.stderr)
             return None
 
-        claude_bin = shutil.which("claude")
+        from core.llm.cc_adapter import resolve_claude_cli
+        claude_bin = resolve_claude_cli()
         if not claude_bin:
             print("\n  ✗ claude not found on PATH — cannot dispatch sub-agents", file=sys.stderr)
             print("  Install Claude Code: npm install -g @anthropic-ai/claude-code", file=sys.stderr)
@@ -966,7 +966,8 @@ def orchestrate(
     if (dispatch_mode == "external_llm"
             and analysis_results
             and all("error" in r for r in analysis_results)):
-        claude_bin = shutil.which("claude")
+        from core.llm.cc_adapter import resolve_claude_cli
+        claude_bin = resolve_claude_cli()
         if claude_bin:
             print("\n  ⚠️  All external LLM calls failed — falling back to Claude Code", file=sys.stderr)
             dispatch_mode = "cc_fallback"

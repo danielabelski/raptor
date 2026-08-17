@@ -31,6 +31,37 @@ _CC_BACKEND_ENV_PREFIXES = ("CLAUDE_CODE_", "ANTHROPIC_")
 _CC_BEDROCK_ENV_PREFIX = "AWS_"
 
 
+def resolve_claude_cli(explicit: str | None = None) -> str | None:
+    """Resolve the ``claude`` CLI to its REAL path for sandboxed dispatch.
+
+    Standard installs place a symlink launcher on PATH
+    (``~/.local/bin/claude`` -> versioned install dir). The sandbox's
+    mount-ns visibility check realpaths ``cmd[0]`` and requires the
+    REAL location inside the bind tree, so dispatching via the
+    un-realpath'd ``shutil.which`` result silently downgrades
+    isolation to the Landlock-only fallback tier whenever the resolved
+    parent isn't bound — the same class as the fixed semgrep / codeql
+    symlink bugs (selftest-05 precedent: exec scanners via their real
+    path). Resolving once at construction also locks the binary in
+    against PATH mutation between probe and exec.
+
+    Args:
+        explicit: caller-supplied path (wins over PATH lookup); may
+            itself be a symlink and is realpath'd too.
+
+    Returns ``None`` when the CLI is not found.
+    """
+    import os as _os
+    import shutil as _shutil
+    path = explicit or _shutil.which("claude")
+    if not path:
+        return None
+    try:
+        return _os.path.realpath(path)
+    except OSError:
+        return path
+
+
 def cc_subprocess_env() -> dict:
     """Sanitised env for spawning the trusted ``claude`` binary.
 

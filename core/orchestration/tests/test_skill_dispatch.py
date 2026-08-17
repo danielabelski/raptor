@@ -98,12 +98,39 @@ class GateOrderTests(unittest.TestCase):
         self.assertIsNone(result.run_dir)
 
     def test_claude_missing(self):
+        # Resolution moved to cc_adapter.resolve_claude_cli (realpath
+        # at the seam); missing CLI still gates the dispatch off.
         with TemporaryDirectory() as tmp, \
-             patch("core.orchestration.skill_dispatch.shutil.which",
+             patch("core.llm.cc_adapter.resolve_claude_cli",
                    return_value=None):
             result = _run(tmp, Path(tmp) / "run", claude_bin=None)
         self.assertFalse(result.ran)
         self.assertIn("claude not on PATH", result.skipped_reason)
+
+    def test_symlinked_claude_dispatches_via_realpath(self):
+        # The mount-ns visibility check realpaths cmd[0]; execing the
+        # symlink silently downgraded isolation. The dispatch must
+        # exec the REAL binary path (selftest-05 precedent).
+        with TemporaryDirectory() as tmp:
+            real = Path(tmp) / "versions" / "1.0" / "claude"
+            real.parent.mkdir(parents=True)
+            real.write_text("#!/bin/sh\n")
+            link = Path(tmp) / "bin" / "claude"
+            link.parent.mkdir()
+            link.symlink_to(real)
+            seen_cmds = []
+            run_dir = Path(tmp) / "run"
+            dispatcher = _lifecycle_dispatcher(run_dir)
+
+            def _sandbox_spy(cmd, *args, **kwargs):
+                seen_cmds.append(list(cmd))
+                return dispatcher(cmd, *args, **kwargs)
+
+            result = _run(tmp, run_dir, claude_bin=str(link),
+                          sandbox=_sandbox_spy)
+        self.assertTrue(result.ran)
+        self.assertTrue(seen_cmds, "sandboxed dispatch never spawned")
+        self.assertEqual(seen_cmds[0][0], str(real.resolve()))
 
     def test_preflight_skip_reason_propagates(self):
         with TemporaryDirectory() as tmp:

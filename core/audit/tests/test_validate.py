@@ -417,8 +417,8 @@ class TestDispatchGates:
             lambda repo_path, trust_override=None: False,
         )
         monkeypatch.setattr(
-            "core.orchestration.skill_dispatch.shutil.which",
-            lambda _: None,
+            "core.llm.cc_adapter.resolve_claude_cli",
+            lambda explicit=None: None,
         )
         postpass = _dispatch_validate(
             target_path=tmp_path,
@@ -443,8 +443,8 @@ class TestDispatchGates:
             lambda repo_path, trust_override=None: False,
         )
         monkeypatch.setattr(
-            "core.orchestration.skill_dispatch.shutil.which",
-            lambda _: "/fake/claude",
+            "core.llm.cc_adapter.resolve_claude_cli",
+            lambda explicit=None: "/fake/claude",
         )
         run_dir = tmp_path / "validate_run"
         lifecycle_calls = []

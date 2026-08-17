@@ -141,12 +141,12 @@ def test_agentic_launcher_writes_pointer_into_validate_dir(tmp_path):
         return rc_mock
 
     # Mock just enough to bypass the LLM dispatch; the rest of
-    # the flow stays real. Patch ``shutil.which`` so claude
+    # the flow stays real. Patch ``resolve_claude_cli`` so claude
     # appears to exist.
     from core.orchestration import agentic_passes
     with patch("core.orchestration.skill_dispatch.run_untrusted_networked",
                side_effect=_capture_dispatch), \
-         patch("core.orchestration.skill_dispatch.shutil.which",
+         patch("core.llm.cc_adapter.resolve_claude_cli",
                return_value="/usr/bin/fake-claude"), \
          patch("core.security.rule_of_two."
                "require_human_or_sandbox_for_agentic_pass"):

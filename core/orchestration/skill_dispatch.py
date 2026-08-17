@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import logging
 import math
-import shutil
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -322,7 +321,11 @@ def run_skill_dispatch(
     except NonInteractiveError as e:
         return SkillDispatchResult(ran=False, skipped_reason=str(e))
 
-    claude_bin = claude_bin or shutil.which("claude")
+    # Realpath at the resolution seam: symlinked installs otherwise
+    # fail the mount-ns visibility check and silently downgrade the
+    # dispatch to Landlock-only (see resolve_claude_cli).
+    from core.llm.cc_adapter import resolve_claude_cli
+    claude_bin = resolve_claude_cli(claude_bin)
     if not claude_bin:
         return SkillDispatchResult(ran=False, skipped_reason="claude not on PATH")
 

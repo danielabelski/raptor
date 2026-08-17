@@ -429,6 +429,27 @@ from a related count after a transform (e.g. nents vs orig_nents).
 - **corroborated**: confirmed by multiple independent paths or items.
 - **documented**: matches a doc comment that explicitly states the semantic.
 - **tested**: matches test behaviour (rare in kernel code).
+
+## Answer discipline (mechanically enforced)
+
+- **Answer ONLY from the provided snippets.** Everything you claim must \
+  be derivable from the FOCUS/CONTEXT items and doc context in this \
+  prompt. NEVER answer from training knowledge or prior familiarity \
+  with this codebase — if the provided items do not contain what you \
+  need, put the question in `unresolved_references` instead of \
+  answering.
+- **Quote or abstain.** Every evidence citation must include a `quote`: \
+  a VERBATIM snippet copied from the provided definitions (with \
+  file:line where known). A deterministic checker verifies each quote \
+  exists in the source at the stated location; answers whose quotes \
+  fail verification are DISCARDED and never delivered. Copy exactly — \
+  do not paraphrase, do not reconstruct from memory. If you cannot \
+  quote it, do not claim it.
+- **Code over comments.** When a doc comment and the code body disagree \
+  on the contract, the CODE is the contract. Describe the disagreement \
+  explicitly (stale documentation) — never silently trust the comment. \
+  Items may carry a STALE-DOC WARNING where a disagreement was \
+  mechanically detected; treat the comment on those items as unreliable.
 """
 
 
@@ -440,6 +461,11 @@ def _format_item(item: StudyItem, *, role: str = "focus") -> str:
 
     if item.doc_comment:
         parts.append(f"Doc comment:\n{item.doc_comment}")
+    if item.stale_doc:
+        parts.append(
+            f"STALE-DOC WARNING: {item.stale_doc}. The comment above "
+            "is unreliable — the CODE is the contract."
+        )
 
     if item.definition:
         defn = item.definition[:800]
@@ -513,6 +539,18 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
                                 "observation": {"type": "string"},
                                 "line": {"type": ["integer", "null"]},
                                 "item": {"type": ["string", "null"]},
+                                "quote": {
+                                    "type": "string",
+                                    "description": (
+                                        "VERBATIM snippet copied from the "
+                                        "provided definition that supports "
+                                        "this observation. Copy exactly — "
+                                        "a mechanical checker verifies the "
+                                        "quote exists at file:line and "
+                                        "DISCARDS the answer if it does "
+                                        "not. Do not paraphrase."
+                                    ),
+                                },
                             },
                             "required": ["type", "file", "observation"],
                         },
@@ -557,6 +595,24 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
                         "description": (
                             "CWE IDs relevant when this invariant "
                             "is violated. E.g. ['CWE-787', 'CWE-416']."
+                        ),
+                    },
+                    "evidence_file": {
+                        "type": "string",
+                        "description": (
+                            "File containing the code that "
+                            "establishes this invariant."
+                        ),
+                    },
+                    "evidence_line": {"type": ["integer", "null"]},
+                    "quote": {
+                        "type": "string",
+                        "description": (
+                            "VERBATIM snippet copied from the provided "
+                            "definitions that establishes this "
+                            "invariant. Copy exactly — a mechanical "
+                            "checker verifies it and DISCARDS the "
+                            "invariant if the quote is not found."
                         ),
                     },
                 },
@@ -609,6 +665,18 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
                                 "observation": {"type": "string"},
                                 "line": {"type": ["integer", "null"]},
                                 "item": {"type": ["string", "null"]},
+                                "quote": {
+                                    "type": "string",
+                                    "description": (
+                                        "VERBATIM snippet copied from the "
+                                        "provided definition that supports "
+                                        "this observation. Copy exactly — "
+                                        "a mechanical checker verifies the "
+                                        "quote exists at file:line and "
+                                        "DISCARDS the answer if it does "
+                                        "not. Do not paraphrase."
+                                    ),
+                                },
                             },
                             "required": ["type", "file", "observation"],
                         },
@@ -1301,6 +1369,7 @@ def _parse_batch_response(
     raw: dict[str, Any],
     source_root: Path | None = None,
     focus_items: list[StudyItem] | None = None,
+    discard_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1331,6 +1400,7 @@ def _parse_batch_response(
                 observation=e.get("observation") or "",
                 line=e.get("line"),
                 item=e.get("item"),
+                quote=e.get("quote") or None,
             ))
         if source_root is not None:
             _stamp_evidence_hashes(evidence, source_root)
@@ -1348,7 +1418,7 @@ def _parse_batch_response(
         if not inv_desc:
             stmt = inv.get("statement") or ""
             inv_desc = stmt.split(". ")[0] if stmt else ""
-        invariants.append(Invariant(
+        parsed_inv = Invariant(
             id=inv.get("id") or "",
             concept=inv.get("concept") or "",
             statement=inv.get("statement") or "",
@@ -1356,7 +1426,15 @@ def _parse_batch_response(
             description=inv_desc,
             confidence=inv.get("confidence") or "inferred",
             relevant_cwes=inv.get("relevant_cwes") or [],
-        ))
+        )
+        if inv.get("quote"):
+            parsed_inv.receipt = {
+                "file": inv.get("evidence_file") or "",
+                "line": inv.get("evidence_line"),
+                "quote": inv.get("quote") or "",
+                "verified": False,
+            }
+        invariants.append(parsed_inv)
 
     sm_concepts, sm_invariants = _parse_state_machines(raw, source_root)
     concepts.extend(sm_concepts)
@@ -1410,7 +1488,117 @@ def _parse_batch_response(
                 "annotation": sa.get("annotation", ""),
             })
 
+    if source_root is not None:
+        concepts, invariants, contracts = _apply_receipts(
+            concepts, invariants, contracts, source_root,
+            focus_items or [], discard_sink,
+        )
+
     return concepts, invariants, contracts, bug_patterns, struct_annotations
+
+
+def _apply_receipts(
+    concepts: list[Concept],
+    invariants: list[Invariant],
+    contracts: list[Contract],
+    source_root: Path,
+    focus_items: list[StudyItem],
+    discard_sink: list | None,
+) -> tuple[list[Concept], list[Invariant], list[Contract]]:
+    """Quote-or-abstain enforcement + provenance tiers.
+
+    - An entry with >=1 deterministically verified quote is tier
+      ``verbatim`` and carries the verified receipt.
+    - An entry whose quotes ALL fail verification is DISCARDED (never
+      delivered); the discard is recorded in *discard_sink* with the
+      reason "receipt verification failed" so the consumer can mark
+      the originating reading-list question unresolvable.
+    - An entry with no quotes at all is kept but demoted to
+      ``llm_summarized`` — tier-gated consumers treat it as an
+      unverified hint only.
+    - Contracts whose function matches a mechanically extracted focus
+      item are tier ``mechanical`` (receipt = the item's own snippet).
+    """
+    from .receipts import (
+        TIER_LLM_SUMMARIZED,
+        TIER_VERBATIM,
+        mechanical_receipt,
+        verify_receipt,
+    )
+
+    def _discard(kind: str, entry_id: str, names: list[str]) -> None:
+        logger.warning(
+            "study receipts: discarding %s %r — receipt verification "
+            "failed (quote not found in source)", kind, entry_id,
+        )
+        if discard_sink is not None:
+            discard_sink.append({
+                "kind": kind,
+                "id": entry_id,
+                "reason": "receipt verification failed",
+                "names": names,
+            })
+
+    kept_concepts: list[Concept] = []
+    for c in concepts:
+        quoted = [e for e in c.evidence if e.quote]
+        if not quoted:
+            c.provenance = TIER_LLM_SUMMARIZED
+            kept_concepts.append(c)
+            continue
+        verified = None
+        for e in quoted:
+            r = verify_receipt(source_root, e.file, e.line, e.quote or "")
+            if r.verified:
+                r.tier = TIER_VERBATIM
+                verified = r
+                break
+        if verified is not None:
+            c.provenance = TIER_VERBATIM
+            c.receipt = verified.to_dict()
+            kept_concepts.append(c)
+        else:
+            names = [e.item for e in c.evidence if e.item]
+            _discard("concept", c.id, [c.id, *names])
+
+    kept_invariants: list[Invariant] = []
+    for inv in invariants:
+        raw_receipt = inv.receipt
+        if not raw_receipt or not raw_receipt.get("quote"):
+            inv.receipt = None
+            if not inv.provenance:
+                inv.provenance = TIER_LLM_SUMMARIZED
+            kept_invariants.append(inv)
+            continue
+        r = verify_receipt(
+            source_root,
+            raw_receipt.get("file") or "",
+            raw_receipt.get("line"),
+            raw_receipt.get("quote") or "",
+        )
+        if r.verified:
+            r.tier = TIER_VERBATIM
+            inv.provenance = TIER_VERBATIM
+            inv.receipt = r.to_dict()
+            kept_invariants.append(inv)
+        else:
+            _discard("invariant", inv.id, [inv.id, inv.concept])
+
+    item_by_name = {it.name: it for it in focus_items}
+    for ct in contracts:
+        item = item_by_name.get(ct.function)
+        if item is not None and item.definition:
+            from .receipts import TIER_MECHANICAL
+            r = mechanical_receipt(
+                item.file, item.line,
+                "\n".join(item.definition.splitlines()[:6]),
+            )
+            ct.provenance = TIER_MECHANICAL
+            ct.receipt = r.to_dict()
+        elif not ct.provenance:
+            ct.provenance = TIER_LLM_SUMMARIZED
+
+    return kept_concepts, kept_invariants, contracts
 
 
 def _stamp_evidence_hashes(
@@ -1520,6 +1708,7 @@ def _run_one_batch(
     on_batch: Any,
     doc_context: str = "",
     correlate: list[str] | None = None,
+    discard_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1590,6 +1779,7 @@ def _run_one_batch(
     concepts, invariants, contracts, bug_patterns, struct_annots = (
         _parse_batch_response(
             result, source_root=src_root, focus_items=focus,
+            discard_sink=discard_sink,
         )
     )
 
@@ -1615,6 +1805,7 @@ def run_phase2(
     reading_list: Any = None,
     doc_context: str = "",
     correlate: list[str] | None = None,
+    discard_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1656,14 +1847,14 @@ def run_phase2(
         return _run_phase2_serial(
             batches, target, source_root, llm_client,
             on_batch, reading_list, doc_context=doc_context,
-            correlate=correlate,
+            correlate=correlate, discard_sink=discard_sink,
         )
 
     logger.info("Phase 2: parallel dispatch, max_workers=%d", max_workers)
     return _run_phase2_parallel(
         batches, target, source_root, llm_client,
         on_batch, reading_list, max_workers, doc_context=doc_context,
-        correlate=correlate,
+        correlate=correlate, discard_sink=discard_sink,
     )
 
 
@@ -1676,6 +1867,7 @@ def _run_phase2_serial(
     reading_list: Any,
     doc_context: str = "",
     correlate: list[str] | None = None,
+    discard_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1694,7 +1886,7 @@ def _run_phase2_serial(
                 _run_one_batch(
                     idx, total, focus, context, target, source_root,
                     llm_client, reading_list, on_batch, doc_context=doc_context,
-                    correlate=correlate,
+                    correlate=correlate, discard_sink=discard_sink,
                 )
             )
         except _BatchLLMError:
@@ -1728,6 +1920,7 @@ def _run_phase2_parallel(
     max_workers: int,
     doc_context: str = "",
     correlate: list[str] | None = None,
+    discard_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1749,6 +1942,7 @@ def _run_phase2_parallel(
             idx, total, focus, ctx, target, source_root,
             llm_client, reading_list, on_batch,
             doc_context=doc_context, correlate=correlate,
+            discard_sink=discard_sink,
         )
         with _fail_lock:
             _consecutive_failures[0] = 0
@@ -2316,6 +2510,46 @@ def _scope_items_for_reading_list(
     return list(expanded.values())
 
 
+def _record_discards(output_dir: Path, discards: list[dict]) -> None:
+    """Persist receipt-verification discards for the study consumer.
+
+    ``study-discards.json`` accumulates across batches within a run;
+    the consumer marks reading-list questions matching a discarded
+    answer unresolvable ("receipt verification failed") instead of
+    leaving a silently missing concept.
+    """
+    if not discards:
+        return
+    import os
+    import tempfile
+
+    path = output_dir / "study-discards.json"
+    existing: list[dict] = []
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                existing = raw.get("discarded", [])
+        except (OSError, json.JSONDecodeError):
+            existing = []
+    seen = {(d.get("kind"), d.get("id")) for d in existing}
+    for d in discards:
+        if (d.get("kind"), d.get("id")) not in seen:
+            existing.append(d)
+            seen.add((d.get("kind"), d.get("id")))
+    fd, tmp = tempfile.mkstemp(
+        dir=str(output_dir), suffix=".tmp", prefix="study-discards-",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"discarded": existing}, f, indent=2)
+            f.write("\n")
+        Path(tmp).rename(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 # ------------------------------------------------------------------
 # End-to-end
 # ------------------------------------------------------------------
@@ -2441,6 +2675,7 @@ def run_study(
                 f"(was {before})",
             )
 
+    receipt_discards: list[dict] = []
     concepts, invariants, contracts, bug_patterns, struct_annots = run_phase2(
         items, target, llm_client,
         source_root=source_root,
@@ -2448,7 +2683,15 @@ def run_study(
         reading_list=reading_list,
         doc_context=combined_doc,
         correlate=correlate,
+        discard_sink=receipt_discards,
     )
+    _record_discards(output_dir, receipt_discards)
+    if receipt_discards and on_progress:
+        on_progress(
+            "receipts",
+            f"Discarded {len(receipt_discards)} answer(s) — receipt "
+            "verification failed",
+        )
 
     # Merge skipped concepts back into Phase 3 input
     concepts = skipped_concepts + concepts

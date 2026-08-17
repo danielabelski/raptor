@@ -544,6 +544,7 @@ def resolve_identifiers(
                 doc = _doc_comment_above(lines, start, lang)
 
             kind = _KIND_MAP.get(ci.kind, "function")
+            from .receipts import detect_stale_doc
             item = StudyItem(
                 id=f"{lang}_{ci.kind}_{ci.name}_{rel}_{start}".replace("/", "_"),
                 kind=kind,
@@ -554,6 +555,7 @@ def resolve_identifiers(
                 doc_comment=doc,
                 calls=_extract_calls(definition) if kind == "function" else [],
                 relevance_tier=0,
+                stale_doc=detect_stale_doc(doc, definition, ci.name, lang),
             )
             if class_name:
                 item.related_items = [class_name]
@@ -598,6 +600,8 @@ def resolve_identifiers(
                     doc = _python_docstrings(content).get(
                         (tail, line_no), "",
                     )
+                from .receipts import detect_stale_doc
+                snippet = _slice_block(lines, line_no)
                 matched[orig] = [StudyItem(
                     id=(
                         f"{lang}_{kind}_{tail}_{rel}_{line_no}"
@@ -606,9 +610,10 @@ def resolve_identifiers(
                     name=tail,
                     file=rel,
                     line=line_no,
-                    definition=_slice_block(lines, line_no),
+                    definition=snippet,
                     doc_comment=doc,
                     relevance_tier=0,
+                    stale_doc=detect_stale_doc(doc, snippet, tail, lang),
                 )]
                 break
 

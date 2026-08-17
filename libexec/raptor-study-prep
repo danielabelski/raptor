@@ -2929,6 +2929,28 @@ def main() -> None:
               f"passthru={usage_counts['passthru']})",
               file=sys.stderr)
 
+    # Stale-doc post-pass: mechanically decidable doc/code contract
+    # disagreements are flagged on the item — the study prompt treats
+    # the comment as unreliable (code-over-comments precedence).
+    try:
+        from core.concepts.receipts import detect_stale_doc
+        from core.inventory.languages import detect_language
+
+        n_stale = 0
+        for it in items:
+            if it.doc_comment and it.definition and not it.stale_doc:
+                it.stale_doc = detect_stale_doc(
+                    it.doc_comment, it.definition, it.name,
+                    detect_language(it.file) or "c",
+                )
+                if it.stale_doc:
+                    n_stale += 1
+        if n_stale:
+            print(f"study-prep: stale-doc markers on {n_stale} item(s)",
+                  file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - marker pass is best-effort
+        print(f"study-prep: stale-doc pass skipped: {exc}", file=sys.stderr)
+
     out_path = output_dir / "study-list.json"
     out_data = {
         "target": str(target),

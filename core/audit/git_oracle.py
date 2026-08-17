@@ -48,7 +48,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +60,7 @@ from core.git.security_fixes import (
     SECURITY_FIX_PATTERNS,
     match_categories,
 )
+from core.run.scratch import scratch_dir
 
 from ._util import safe_join
 
@@ -195,35 +195,31 @@ def _run_git(
         )
         return None
 
-    scratch_root = str(out_dir) if out_dir else None
-    if scratch_root:
-        os.makedirs(scratch_root, exist_ok=True)
-    workdir = tempfile.mkdtemp(prefix="git_oracle_", dir=scratch_root)
     # Shared strict read-only posture; argv[0] swapped for the resolved
     # absolute git path (the helper emits a bare "git").
     cmd = safe_git_readonly_command("-C", str(repo), *args)
     cmd[0] = git
-    try:
-        return sandbox_run(
-            cmd,
-            block_network=True,
-            target=str(repo),
-            output=workdir,
-            cwd=workdir,
-            env=_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_S,
-            caller_label="audit-git-oracle",
-        )
-    except subprocess.TimeoutExpired:
-        logger.debug("git_oracle: git timed out (%ss)", _GIT_TIMEOUT_S)
-        return None
-    except (subprocess.SubprocessError, OSError, ValueError, TypeError) as exc:
-        logger.debug("git_oracle: git invocation failed: %s", exc)
-        return None
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+    with scratch_dir("git_oracle_", dir=out_dir) as workdir:
+        try:
+            return sandbox_run(
+                cmd,
+                block_network=True,
+                target=str(repo),
+                output=str(workdir),
+                cwd=str(workdir),
+                env=_git_env(),
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT_S,
+                caller_label="audit-git-oracle",
+            )
+        except subprocess.TimeoutExpired:
+            logger.debug("git_oracle: git timed out (%ss)", _GIT_TIMEOUT_S)
+            return None
+        except (subprocess.SubprocessError, OSError, ValueError,
+                TypeError) as exc:
+            logger.debug("git_oracle: git invocation failed: %s", exc)
+            return None
 
 
 def _is_git_repo(target_path: Path) -> bool:

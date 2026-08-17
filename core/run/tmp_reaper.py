@@ -97,6 +97,25 @@ _DIR_PREFIXES = (
     "pymp-",
 )
 
+# Prefixes registered at runtime by core.run.scratch.scratch_dir for
+# system-tmp scratch areas. Per-process: a registration made here is
+# visible to every later sweep in the SAME process (a long-lived
+# orchestrator reaping strays from an earlier crashed run), but not to
+# unrelated processes — cross-process reaping still requires a static
+# _DIR_PREFIXES entry above.
+_RUNTIME_DIR_PREFIXES: set[str] = set()
+
+
+def register_dir_prefix(prefix: str) -> None:
+    """Register *prefix* for the stale-tmp dir sweep (this process)."""
+    if prefix:
+        _RUNTIME_DIR_PREFIXES.add(prefix)
+
+
+def _dir_prefixes() -> tuple[str, ...]:
+    return _DIR_PREFIXES + tuple(_RUNTIME_DIR_PREFIXES)
+
+
 # File patterns with the same always-cleaned contract.
 _FILE_PATTERNS = (
     ("audit_sweep_", ".yaml"),
@@ -221,7 +240,7 @@ def _reap(now: float | None) -> list[Path]:
     dir_candidates: list[Path] = []
     file_candidates: list[Path] = []
     for name in names:
-        if any(name.startswith(p) for p in _DIR_PREFIXES):
+        if any(name.startswith(p) for p in _dir_prefixes()):
             dir_candidates.append(tmp_root / name)
         elif any(
             name.startswith(pre) and name.endswith(suf)

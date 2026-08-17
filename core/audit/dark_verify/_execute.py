@@ -19,6 +19,8 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from core.run.scratch import scratch_dir
+
 from ._harness import (
     generate_c_harness,
     generate_go_harness,
@@ -659,40 +661,44 @@ def _execute_native(
         )
 
     harness_src = generate_c_harness(spec, target_root)
-    work_dir = None
     try:
-        work_dir = Path(tempfile.mkdtemp(prefix="raptor_dark_c_"))
-        ext = ".c" if lang == "c" else ".cpp"
-        harness_file = work_dir / f"harness{ext}"
-        harness_file.write_text(harness_src, encoding="utf-8")
-        binary = work_dir / "harness_bin"
+        with scratch_dir("raptor_dark_c_") as work_dir:
+            ext = ".c" if lang == "c" else ".cpp"
+            harness_file = work_dir / f"harness{ext}"
+            harness_file.write_text(harness_src, encoding="utf-8")
+            binary = work_dir / "harness_bin"
 
-        source_file = target_root / spec.file
-        compile_cmd = [
-            cc, "-fsanitize=address,undefined", "-g", "-O0",
-            "-o", str(binary),
-            str(harness_file), str(source_file),
-            "-lm",
-        ]
+            source_file = target_root / spec.file
+            compile_cmd = [
+                cc, "-fsanitize=address,undefined", "-g", "-O0",
+                "-o", str(binary),
+                str(harness_file), str(source_file),
+                "-lm",
+            ]
 
-        # The compile itself executes target-derived code paths (#embed /
-        # .incbin can read any operator-readable file into the binary), so
-        # it gets the same sandbox as the run step — and fails closed.
-        sandbox_run = _import_sandbox_run()
-        if sandbox_run is None:
-            return _sandbox_refusal_result(spec, lang)
-        comp = _sandboxed_compile(
-            sandbox_run, compile_cmd,
-            target_root=target_root, work_dir=work_dir,
-            caller_label=f"audit-dark-verify-{lang}-compile",
-        )
-        if comp.returncode != 0:
-            return DarkVerifyResult(
-                finding_key=spec.finding_key, verdict="error", language=lang,
-                match_detail=f"compilation failed: {(comp.stderr or '')[:300]}",
+            # The compile itself executes target-derived code paths
+            # (#embed / .incbin can read any operator-readable file into
+            # the binary), so it gets the same sandbox as the run step —
+            # and fails closed.
+            sandbox_run = _import_sandbox_run()
+            if sandbox_run is None:
+                return _sandbox_refusal_result(spec, lang)
+            comp = _sandboxed_compile(
+                sandbox_run, compile_cmd,
+                target_root=target_root, work_dir=work_dir,
+                caller_label=f"audit-dark-verify-{lang}-compile",
             )
+            if comp.returncode != 0:
+                return DarkVerifyResult(
+                    finding_key=spec.finding_key, verdict="error",
+                    language=lang,
+                    match_detail=(
+                        f"compilation failed: {(comp.stderr or '')[:300]}"
+                    ),
+                )
 
-        return _run_native_binary(spec, binary, target_root, timeout_s, lang)
+            return _run_native_binary(
+                spec, binary, target_root, timeout_s, lang)
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -705,10 +711,6 @@ def _execute_native(
             finding_key=spec.finding_key, verdict="error", language=lang,
             match_detail=f"execution failed: {type(exc).__name__}: {exc}",
         )
-    finally:
-        if work_dir and work_dir.exists():
-            with contextlib.suppress(OSError):
-                shutil.rmtree(work_dir)
 
 
 def _execute_c(spec: DarkWitnessSpec, target_root: Path, timeout_s: int) -> DarkVerifyResult:
@@ -732,54 +734,56 @@ def _execute_go(
         )
 
     harness_src = generate_go_harness(spec, target_root)
-    work_dir = None
     try:
-        work_dir = Path(tempfile.mkdtemp(prefix="raptor_dark_go_"))
-        harness_file = work_dir / "harness_main.go"
-        harness_file.write_text(harness_src, encoding="utf-8")
+        with scratch_dir("raptor_dark_go_") as work_dir:
+            harness_file = work_dir / "harness_main.go"
+            harness_file.write_text(harness_src, encoding="utf-8")
 
-        go_package = spec.lang_config.get("package", "main")
-        build_files = [str(harness_file)]
-        if go_package == "main":
-            source_file = target_root / spec.file
-            src_text = source_file.read_text(encoding="utf-8")
-            src_text = re.sub(
-                r'(?m)^func\s+main\s*\(\s*\)\s*\{',
-                'func _original_main() {',
-                src_text,
+            go_package = spec.lang_config.get("package", "main")
+            build_files = [str(harness_file)]
+            if go_package == "main":
+                source_file = target_root / spec.file
+                src_text = source_file.read_text(encoding="utf-8")
+                src_text = re.sub(
+                    r'(?m)^func\s+main\s*\(\s*\)\s*\{',
+                    'func _original_main() {',
+                    src_text,
+                )
+                target_copy = work_dir / "target_source.go"
+                target_copy.write_text(src_text, encoding="utf-8")
+                build_files.append(str(target_copy))
+
+            from core.config import RaptorConfig
+            safe_env = RaptorConfig.get_safe_env()
+            safe_env["GOPATH"] = str(work_dir / "gopath")
+            safe_env["GOCACHE"] = str(work_dir / "gocache")
+
+            binary = work_dir / "harness_bin"
+            build_cmd = [go_bin, "build", "-o", str(binary)] + build_files
+            # `go build` can execute target-derived code (cgo,
+            # //go:generate tooling in odd setups) — sandbox it like the
+            # run step, fail closed without one.  GOPATH/GOCACHE stay
+            # redirected into the work area; strict_env strips
+            # DANGEROUS_ENV_VARS on the way in.
+            sandbox_run = _import_sandbox_run()
+            if sandbox_run is None:
+                return _sandbox_refusal_result(spec, "go")
+            comp = _sandboxed_compile(
+                sandbox_run, build_cmd,
+                target_root=target_root, work_dir=work_dir,
+                caller_label="audit-dark-verify-go-compile",
+                env=safe_env,
             )
-            target_copy = work_dir / "target_source.go"
-            target_copy.write_text(src_text, encoding="utf-8")
-            build_files.append(str(target_copy))
+            if comp.returncode != 0:
+                stderr = (comp.stderr or "")[:300]
+                return DarkVerifyResult(
+                    finding_key=spec.finding_key, verdict="error",
+                    language="go",
+                    match_detail=f"go build failed: {stderr}",
+                )
 
-        from core.config import RaptorConfig
-        safe_env = RaptorConfig.get_safe_env()
-        safe_env["GOPATH"] = str(work_dir / "gopath")
-        safe_env["GOCACHE"] = str(work_dir / "gocache")
-
-        binary = work_dir / "harness_bin"
-        build_cmd = [go_bin, "build", "-o", str(binary)] + build_files
-        # `go build` can execute target-derived code (cgo, //go:generate
-        # tooling in odd setups) — sandbox it like the run step, fail
-        # closed without one.  GOPATH/GOCACHE stay redirected into the
-        # work area; strict_env strips DANGEROUS_ENV_VARS on the way in.
-        sandbox_run = _import_sandbox_run()
-        if sandbox_run is None:
-            return _sandbox_refusal_result(spec, "go")
-        comp = _sandboxed_compile(
-            sandbox_run, build_cmd,
-            target_root=target_root, work_dir=work_dir,
-            caller_label="audit-dark-verify-go-compile",
-            env=safe_env,
-        )
-        if comp.returncode != 0:
-            stderr = (comp.stderr or "")[:300]
-            return DarkVerifyResult(
-                finding_key=spec.finding_key, verdict="error", language="go",
-                match_detail=f"go build failed: {stderr}",
-            )
-
-        return _run_native_binary(spec, binary, target_root, timeout_s, "go")
+            return _run_native_binary(
+                spec, binary, target_root, timeout_s, "go")
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -792,10 +796,6 @@ def _execute_go(
             finding_key=spec.finding_key, verdict="error", language="go",
             match_detail=f"execution failed: {type(exc).__name__}: {exc}",
         )
-    finally:
-        if work_dir and work_dir.exists():
-            with contextlib.suppress(OSError):
-                shutil.rmtree(work_dir)
 
 
 def _execute_js(
@@ -865,74 +865,78 @@ def _execute_rust(
         )
 
     harness_src = generate_rust_harness(spec, target_root)
-    work_dir = None
     try:
-        work_dir = Path(tempfile.mkdtemp(prefix="raptor_dark_rs_"))
-        harness_file = work_dir / "harness.rs"
-        harness_file.write_text(harness_src, encoding="utf-8")
-        binary = work_dir / "harness_bin"
+        with scratch_dir("raptor_dark_rs_") as work_dir:
+            harness_file = work_dir / "harness.rs"
+            harness_file.write_text(harness_src, encoding="utf-8")
+            binary = work_dir / "harness_bin"
 
-        # rustc accepts exactly one crate root, so the harness pulls the
-        # target in via include!("target_source.rs") — copy the source
-        # next to the harness under that fixed name (contract with
-        # generate_rust_harness). Copying into work_dir also keeps the
-        # compile read-set minimal. Rename any target fn main so it
-        # cannot collide with the harness main once spliced into the
-        # same crate (same idiom as the Go executor).
-        source_file = target_root / spec.file
-        source_copy = work_dir / "target_source.rs"
-        src_content = source_file.read_text(encoding="utf-8")
-        src_content = re.sub(
-            r'(?m)^fn\s+main\s*\(\s*\)',
-            'fn _original_main()',
-            src_content,
-        )
-        source_copy.write_text(src_content, encoding="utf-8")
-        # -C panic=abort: a panicking witness must register as a crash.
-        # Default unwind exits with code 101 (no signal), which the
-        # shared classifier reads as a normal exit — abort raises SIGABRT
-        # and flows through the existing EXIT_SIGNAL path.
-        compile_cmd = [
-            rustc, "--edition", "2021",
-            "-C", "panic=abort",
-            "-Z", "sanitizer=address",
-            "-g", "-o", str(binary),
-            str(harness_file),
-        ]
-
-        # rustc executes target-derived code paths at compile time
-        # (include_str!/include_bytes! read any operator-readable file
-        # into the binary) — sandbox the compile like the run step and
-        # fail closed without one.
-        sandbox_run = _import_sandbox_run()
-        if sandbox_run is None:
-            return _sandbox_refusal_result(spec, "rust")
-        comp = _sandboxed_compile(
-            sandbox_run, compile_cmd,
-            target_root=target_root, work_dir=work_dir,
-            caller_label="audit-dark-verify-rust-compile",
-        )
-
-        if comp.returncode != 0:
-            compile_cmd_simple = [
+            # rustc accepts exactly one crate root, so the harness pulls
+            # the target in via include!("target_source.rs") — copy the
+            # source next to the harness under that fixed name (contract
+            # with generate_rust_harness). Copying into work_dir also
+            # keeps the compile read-set minimal. Rename any target fn
+            # main so it cannot collide with the harness main once
+            # spliced into the same crate (same idiom as the Go
+            # executor).
+            source_file = target_root / spec.file
+            source_copy = work_dir / "target_source.rs"
+            src_content = source_file.read_text(encoding="utf-8")
+            src_content = re.sub(
+                r'(?m)^fn\s+main\s*\(\s*\)',
+                'fn _original_main()',
+                src_content,
+            )
+            source_copy.write_text(src_content, encoding="utf-8")
+            # -C panic=abort: a panicking witness must register as a
+            # crash. Default unwind exits with code 101 (no signal),
+            # which the shared classifier reads as a normal exit — abort
+            # raises SIGABRT and flows through the existing EXIT_SIGNAL
+            # path.
+            compile_cmd = [
                 rustc, "--edition", "2021",
                 "-C", "panic=abort",
+                "-Z", "sanitizer=address",
                 "-g", "-o", str(binary),
                 str(harness_file),
             ]
+
+            # rustc executes target-derived code paths at compile time
+            # (include_str!/include_bytes! read any operator-readable
+            # file into the binary) — sandbox the compile like the run
+            # step and fail closed without one.
+            sandbox_run = _import_sandbox_run()
+            if sandbox_run is None:
+                return _sandbox_refusal_result(spec, "rust")
             comp = _sandboxed_compile(
-                sandbox_run, compile_cmd_simple,
+                sandbox_run, compile_cmd,
                 target_root=target_root, work_dir=work_dir,
                 caller_label="audit-dark-verify-rust-compile",
             )
-            if comp.returncode != 0:
-                return DarkVerifyResult(
-                    finding_key=spec.finding_key, verdict="error",
-                    language="rust",
-                    match_detail=f"compilation failed: {(comp.stderr or '')[:300]}",
-                )
 
-        return _run_native_binary(spec, binary, target_root, timeout_s, "rust")
+            if comp.returncode != 0:
+                compile_cmd_simple = [
+                    rustc, "--edition", "2021",
+                    "-C", "panic=abort",
+                    "-g", "-o", str(binary),
+                    str(harness_file),
+                ]
+                comp = _sandboxed_compile(
+                    sandbox_run, compile_cmd_simple,
+                    target_root=target_root, work_dir=work_dir,
+                    caller_label="audit-dark-verify-rust-compile",
+                )
+                if comp.returncode != 0:
+                    return DarkVerifyResult(
+                        finding_key=spec.finding_key, verdict="error",
+                        language="rust",
+                        match_detail=(
+                            f"compilation failed: {(comp.stderr or '')[:300]}"
+                        ),
+                    )
+
+            return _run_native_binary(
+                spec, binary, target_root, timeout_s, "rust")
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -946,10 +950,6 @@ def _execute_rust(
             finding_key=spec.finding_key, verdict="error", language="rust",
             match_detail=f"execution failed: {type(exc).__name__}: {exc}",
         )
-    finally:
-        if work_dir and work_dir.exists():
-            with contextlib.suppress(OSError):
-                shutil.rmtree(work_dir)
 
 
 def _execute_java(
@@ -966,57 +966,59 @@ def _execute_java(
         )
 
     harness_src = generate_java_harness(spec, target_root)
-    work_dir = None
     try:
-        work_dir = Path(tempfile.mkdtemp(prefix="raptor_dark_java_"))
-        harness_file = work_dir / "DarkWitnessHarness.java"
-        harness_file.write_text(harness_src, encoding="utf-8")
+        with scratch_dir("raptor_dark_java_") as work_dir:
+            harness_file = work_dir / "DarkWitnessHarness.java"
+            harness_file.write_text(harness_src, encoding="utf-8")
 
-        source_file = target_root / spec.file
+            source_file = target_root / spec.file
 
-        # -proc:none: javac auto-discovers annotation processors from the
-        # compile classpath — which includes target_root — and RUNS them
-        # at compile time.  Disabling processing means target classes
-        # never execute inside javac, even in the sandbox (belt and
-        # braces, and faster).
-        compile_cmd = [
-            javac, "-proc:none", "-cp",
-            f"{work_dir}:{source_file.parent}:{target_root}",
-            str(harness_file), str(source_file),
-        ]
+            # -proc:none: javac auto-discovers annotation processors from
+            # the compile classpath — which includes target_root — and
+            # RUNS them at compile time.  Disabling processing means
+            # target classes never execute inside javac, even in the
+            # sandbox (belt and braces, and faster).
+            compile_cmd = [
+                javac, "-proc:none", "-cp",
+                f"{work_dir}:{source_file.parent}:{target_root}",
+                str(harness_file), str(source_file),
+            ]
 
-        sandbox_run = _import_sandbox_run()
-        if sandbox_run is None:
-            return _sandbox_refusal_result(spec, "java")
-        comp = _sandboxed_compile(
-            sandbox_run, compile_cmd,
-            target_root=target_root, work_dir=work_dir,
-            caller_label="audit-dark-verify-java-compile",
-        )
-        if comp.returncode != 0:
-            return DarkVerifyResult(
-                finding_key=spec.finding_key, verdict="error", language="java",
-                match_detail=f"compilation failed: {(comp.stderr or '')[:300]}",
+            sandbox_run = _import_sandbox_run()
+            if sandbox_run is None:
+                return _sandbox_refusal_result(spec, "java")
+            comp = _sandboxed_compile(
+                sandbox_run, compile_cmd,
+                target_root=target_root, work_dir=work_dir,
+                caller_label="audit-dark-verify-java-compile",
+            )
+            if comp.returncode != 0:
+                return DarkVerifyResult(
+                    finding_key=spec.finding_key, verdict="error",
+                    language="java",
+                    match_detail=(
+                        f"compilation failed: {(comp.stderr or '')[:300]}"
+                    ),
+                )
+
+            run_cmd = [
+                java_bin, "-cp",
+                f"{work_dir}:{source_file.parent}:{target_root}",
+                "DarkWitnessHarness",
+            ]
+
+            proc = sandbox_run(
+                run_cmd,
+                block_network=True,
+                target=str(target_root),
+                capture_output=True, text=True,
+                timeout=timeout_s,
+                caller_label="audit-dark-verify-java",
+                tool_paths=[str(work_dir)],
             )
 
-        run_cmd = [
-            java_bin, "-cp",
-            f"{work_dir}:{source_file.parent}:{target_root}",
-            "DarkWitnessHarness",
-        ]
-
-        proc = sandbox_run(
-            run_cmd,
-            block_network=True,
-            target=str(target_root),
-            capture_output=True, text=True,
-            timeout=timeout_s,
-            caller_label="audit-dark-verify-java",
-            tool_paths=[str(work_dir)],
-        )
-
-        stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
-        return _classify_json_output(spec, stdout, "java")
+            stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
+            return _classify_json_output(spec, stdout, "java")
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -1030,10 +1032,6 @@ def _execute_java(
             finding_key=spec.finding_key, verdict="error", language="java",
             match_detail=f"execution failed: {type(exc).__name__}: {exc}",
         )
-    finally:
-        if work_dir and work_dir.exists():
-            with contextlib.suppress(OSError):
-                shutil.rmtree(work_dir)
 
 
 # ---------------------------------------------------------------------------

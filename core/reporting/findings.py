@@ -202,10 +202,22 @@ def _md_table_cell(s: str) -> str:
       * `|` → `\\|` (table column separator)
       * `` ` `` → `\\` ` (inline-code fence)
       * Newlines → `<br>` (rows must be one line)
+
+    Also strips autofetch markup (image/`<img>`/`<iframe>` tags,
+    `javascript:`/`data:` links) via the shared prompt-envelope
+    helper. The LLM-output sanitiser (`sanitise_string`) already
+    does this; without the same strip here, a finding-derived value
+    (file path, function name, scanner message) carrying `![](url)`
+    rendered as a live autofetch in the report — same exfil class,
+    different door. Parens/brackets are deliberately NOT escaped
+    (function cells legitimately contain them); the targeted strip
+    removes the markup family instead.
     """
     if s is None:
         return ""
+    from core.security.prompt_envelope import _strip_autofetch_markup
     s = str(s)
+    s = _strip_autofetch_markup(s)
     s = s.replace("\\", "\\\\")
     s = s.replace("|", "\\|")
     s = s.replace("`", "\\`")

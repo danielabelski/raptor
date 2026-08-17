@@ -14,6 +14,22 @@ from unittest.mock import patch
 
 import pytest
 
+# Same probe-and-skipif pattern as
+# core/llm/dispatcher/tests/test_bedrock_signing.py: botocore is an
+# optional dependency (commented out in requirements.txt), so tests
+# that assert on the REAL host install must skip where it's absent.
+try:
+    import botocore  # noqa: F401
+
+    _HAS_BOTOCORE = True
+except ImportError:
+    _HAS_BOTOCORE = False
+
+needs_botocore = pytest.mark.skipif(
+    not _HAS_BOTOCORE,
+    reason="botocore not installed (optional parent-only dependency)",
+)
+
 
 @pytest.fixture(autouse=True)
 def _clear_availability_cache():
@@ -471,14 +487,38 @@ def _restore_detection_module():
     importlib.reload(detection)
 
 
+@needs_botocore
 def test_botocore_only_environment_is_detected(
     monkeypatch, _restore_detection_module,
 ):
-    """requirements.txt ships botocore WITHOUT boto3 and the SigV4
-    signer (core/llm/dispatcher/auth.py) imports botocore only —
+    """A botocore install WITHOUT boto3 (the shape the optional
+    ``requirements.txt`` line installs) satisfies the SigV4 signer
+    (core/llm/dispatcher/auth.py), which imports botocore only —
     detection must reach the same verdict in that environment.
     Regression: the probe used to `import boto3`, so a botocore-only
-    install had working signing but failing detection."""
+    install had working signing but failing detection.
+
+    Skipped where botocore isn't installed (it's an optional dep);
+    the stub variant below keeps the detection logic covered on
+    those hosts."""
+    mod = _reload_detection(monkeypatch, hide=("boto3",))
+    assert mod.BOTOCORE_SDK_AVAILABLE is True
+
+
+def test_botocore_stub_environment_is_detected(
+    monkeypatch, _restore_detection_module,
+):
+    """Hermetic twin of the botocore-only test: pin botocore PRESENCE
+    by injecting a stub module into ``sys.modules`` (the inverse of
+    the hide blocker), so the probe's positive branch is exercised on
+    every host — including bare CI, where the optional botocore dep
+    isn't installed and the real-install test above skips."""
+    import sys
+    import types
+
+    monkeypatch.setitem(
+        sys.modules, "botocore", types.ModuleType("botocore"),
+    )
     mod = _reload_detection(monkeypatch, hide=("boto3",))
     assert mod.BOTOCORE_SDK_AVAILABLE is True
 

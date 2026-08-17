@@ -154,8 +154,19 @@ def find_project_log_dirs(
     except OSError:
         return []
 
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    # A sibling can be deleted between iterdir() and the sort (e.g. a
+    # concurrent `/project clean --keep N`); an unguarded stat() would
+    # raise and crash the audit prep phase.
+    candidates.sort(key=_safe_mtime, reverse=True)
     return candidates[:max_dirs]
+
+
+def _safe_mtime(p: Path) -> float:
+    """mtime that survives the path racing away (same as binary_bridge)."""
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def load_strategy_weights(

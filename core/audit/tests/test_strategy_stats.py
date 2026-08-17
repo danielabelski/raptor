@@ -149,6 +149,42 @@ class TestFindProjectLogDirs:
         dirs = find_project_log_dirs(current, max_dirs=2)
         assert len(dirs) == 2
 
+    def test_survives_sibling_deleted_before_sort(self, tmp_path, monkeypatch):
+        """A sibling deleted between iterdir() and the mtime sort (e.g.
+        concurrent `/project clean`) must not crash the lookup."""
+        import shutil
+
+        from core.audit import strategy_stats as ss
+
+        _write_audit_log(tmp_path / "run1", [
+            {"action": "orchestrator_review", "status": "clean",
+             "strategies": ["general"]},
+        ])
+        _write_audit_log(tmp_path / "run2", [
+            {"action": "orchestrator_review", "status": "clean",
+             "strategies": ["general"]},
+        ])
+        current = tmp_path / "current"
+        current.mkdir()
+
+        doomed = tmp_path / "run1"
+        real_safe_mtime = ss._safe_mtime
+
+        def racy_mtime(p):
+            # Simulate the reaper winning the race: run1 vanishes
+            # right before its mtime is read.
+            if p == doomed and doomed.exists():
+                shutil.rmtree(doomed)
+            return real_safe_mtime(p)
+
+        monkeypatch.setattr(ss, "_safe_mtime", racy_mtime)
+        dirs = find_project_log_dirs(current)
+        assert tmp_path / "run2" in dirs
+
+    def test_safe_mtime_missing_path(self, tmp_path):
+        from core.audit.strategy_stats import _safe_mtime
+        assert _safe_mtime(tmp_path / "gone") == 0.0
+
 
 class TestLoadStrategyWeights:
     def test_returns_none_without_data(self, tmp_path):

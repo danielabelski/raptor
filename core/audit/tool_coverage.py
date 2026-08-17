@@ -108,7 +108,14 @@ _MECHANISM_CWE_MAP: dict[str, list[str]] = {
     "path traversal":      ["CWE-22", "CWE-23"],
     "directory traversal": ["CWE-22"],
     "toctou":              ["CWE-367"],
-    "race condition":      ["CWE-367"],
+    # "race condition" maps to CWE-362 (concurrent execution / lock
+    # races, coccinelle-only coverage), NOT CWE-367: the prefilter's
+    # TOCTOU check only detects access()/stat()-then-open patterns, so
+    # mapping generic races to CWE-367 would mark every race hypothesis
+    # tool-covered (prefilter is always live) and resolve genuine lock
+    # races to clean-when-silent instead of dark. TOCTOU keeps its own
+    # keyword above.
+    "race condition":      ["CWE-362"],
     "deserialization":     ["CWE-502"],
     "pickle":              ["CWE-502"],
     "yaml load":           ["CWE-502"],

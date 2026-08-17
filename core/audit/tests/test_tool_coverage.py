@@ -41,6 +41,20 @@ class TestExtractCwes:
     def test_mechanism_codeql_injection(self):
         assert "CWE-94" in _extract_cwes("", mechanism="CodeQL injection via proposed_guard")
 
+    def test_mechanism_race_condition_is_cwe_362(self):
+        """Generic races are CWE-362 (lock races), not CWE-367 (TOCTOU).
+
+        The prefilter's TOCTOU check only detects stat/access-then-open
+        patterns; mapping generic races to CWE-367 marked every race
+        hypothesis tool-covered via the always-on prefilter.
+        """
+        cwes = _extract_cwes("", mechanism="race condition on shared counter")
+        assert "CWE-362" in cwes
+        assert "CWE-367" not in cwes
+
+    def test_mechanism_toctou_is_cwe_367(self):
+        assert _extract_cwes("", mechanism="toctou between stat and open") == ["CWE-367"]
+
 
 class TestIsClassCovered:
     ALL_TOOLS = {
@@ -94,6 +108,18 @@ class TestIsClassCovered:
     def test_race_condition_not_covered(self):
         """Race conditions (CWE-367) only covered by prefilter (TOCTOU)."""
         assert is_class_covered("CWE-367", "", "", self.NO_TOOLS) is True
+
+    def test_race_mechanism_dark_without_coccinelle(self):
+        """Lock races (CWE-362) are coccinelle-only — dark when absent."""
+        assert is_class_covered(
+            "", "race condition on shared counter", "", self.NO_TOOLS,
+        ) is False
+
+    def test_race_mechanism_covered_with_coccinelle(self):
+        assert is_class_covered(
+            "", "race condition on shared counter", "",
+            {"coccinelle": True},
+        ) is True
 
     def test_ssrf_needs_semgrep_or_codeql(self):
         tools = {"joern": True, "codeql": False, "semgrep": False,

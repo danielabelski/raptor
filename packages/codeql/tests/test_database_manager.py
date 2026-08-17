@@ -5,7 +5,7 @@ import stat
 import subprocess as sp
 import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -550,3 +550,64 @@ class TestEvictStaleCanonicalGracePeriod:
             "orphaned canonical past grace period should be evicted"
         assert len(list(canonical.parent.glob("*.stale.*"))) == 1, \
             "exactly one stale marker should be created from eviction"
+
+
+class TestAutoCleanupWiring:
+    """CODEQL_DB_AUTO_CLEANUP was dead config: nothing ever invoked
+    cleanup_old_databases outside the manual --cleanup CLI flag, so the
+    default db_root accumulated stale databases the read side (7-day
+    staleness gate in get_cached_database) would never serve again."""
+
+    @pytest.fixture
+    def _fresh_flag(self):
+        """Reset the once-per-process guard around each test."""
+        old = DatabaseManager._auto_cleanup_done
+        DatabaseManager._auto_cleanup_done = False
+        yield
+        DatabaseManager._auto_cleanup_done = old
+
+    def _mgr(self, tmp_path, monkeypatch, *, auto, db_root=None):
+        from core.config import RaptorConfig
+        monkeypatch.setattr(RaptorConfig, "CODEQL_DB_DIR", tmp_path / "dbs")
+        monkeypatch.setattr(RaptorConfig, "CODEQL_DB_AUTO_CLEANUP", auto)
+        monkeypatch.setattr(RaptorConfig, "CODEQL_DB_CACHE_DAYS", 7)
+        with patch.object(DatabaseManager, "_detect_codeql_cli",
+                          return_value="/usr/bin/codeql"), \
+             patch.object(DatabaseManager, "cleanup_old_databases",
+                          return_value=[]) as cleanup:
+            DatabaseManager(db_root=db_root)
+        return cleanup
+
+    def test_default_root_triggers_cleanup(self, tmp_path, monkeypatch,
+                                           _fresh_flag):
+        cleanup = self._mgr(tmp_path, monkeypatch, auto=True)
+        cleanup.assert_called_once_with(days=7)
+
+    def test_flag_off_skips_cleanup(self, tmp_path, monkeypatch,
+                                    _fresh_flag):
+        cleanup = self._mgr(tmp_path, monkeypatch, auto=False)
+        cleanup.assert_not_called()
+
+    def test_custom_db_root_skips_cleanup(self, tmp_path, monkeypatch,
+                                          _fresh_flag):
+        custom = tmp_path / "custom"
+        cleanup = self._mgr(tmp_path, monkeypatch, auto=True, db_root=custom)
+        cleanup.assert_not_called()
+
+    def test_runs_once_per_process(self, tmp_path, monkeypatch, _fresh_flag):
+        first = self._mgr(tmp_path, monkeypatch, auto=True)
+        second = self._mgr(tmp_path, monkeypatch, auto=True)
+        first.assert_called_once()
+        second.assert_not_called()
+
+    def test_cleanup_failure_does_not_break_init(self, tmp_path, monkeypatch,
+                                                 _fresh_flag):
+        from core.config import RaptorConfig
+        monkeypatch.setattr(RaptorConfig, "CODEQL_DB_DIR", tmp_path / "dbs")
+        monkeypatch.setattr(RaptorConfig, "CODEQL_DB_AUTO_CLEANUP", True)
+        with patch.object(DatabaseManager, "_detect_codeql_cli",
+                          return_value="/usr/bin/codeql"), \
+             patch.object(DatabaseManager, "cleanup_old_databases",
+                          side_effect=OSError("disk went away")):
+            mgr = DatabaseManager()
+        assert mgr.codeql_cli == "/usr/bin/codeql"

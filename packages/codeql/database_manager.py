@@ -12,31 +12,30 @@ import os
 import re
 import shutil
 import subprocess
-
 import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
 
 # Add parent directory to path for imports
 # packages/codeql/database_manager.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
-from core.json import load_json, save_json
+from core.build.build_detector import BuildSystem
 from core.config import RaptorConfig
-from core.hash import sha256_string
-from core.logging import get_logger
+from core.git import get_safe_git_env
+
 # Per-invocation git overrides for target-repo invocations.
 # See `core.git.clone.safe_git_command` for the threat model
 # (CVE-2024-32002 family: hostile per-repo .git/config).
 from core.git.clone import safe_git_command
-from core.git import get_safe_git_env
+from core.hash import sha256_string
+from core.json import load_json, save_json
+from core.logging import get_logger
 from core.sandbox import SandboxSetupError
-from core.build.build_detector import BuildSystem
 from packages.codeql.tunables import CodeQLTunables
 
 logger = get_logger()
@@ -120,7 +119,7 @@ class DatabaseMetadata:
     file_count: int
     success: bool
     duration_seconds: float
-    errors: List[str]
+    errors: list[str]
     database_path: str
 
     def to_dict(self):
@@ -137,9 +136,9 @@ class DatabaseResult:
     """Result of database creation."""
     success: bool
     language: str
-    database_path: Optional[Path]
-    metadata: Optional[DatabaseMetadata]
-    errors: List[str]
+    database_path: Path | None
+    metadata: DatabaseMetadata | None
+    errors: list[str]
     duration_seconds: float
     cached: bool = False  # Was this from cache?
 
@@ -156,7 +155,11 @@ class DatabaseManager:
     - Automatic cleanup of old databases
     """
 
-    def __init__(self, db_root: Optional[Path] = None, codeql_cli: Optional[str] = None):
+    # Auto-cleanup runs at most once per process (the tree walk is
+    # pointless to repeat for every manager a run constructs).
+    _auto_cleanup_done = False
+
+    def __init__(self, db_root: Path | None = None, codeql_cli: str | None = None):
         """
         Initialize database manager.
 
@@ -175,13 +178,31 @@ class DatabaseManager:
         logger.info("Database manager initialized: %s", self.db_root)
         logger.info("CodeQL CLI: %s", self.codeql_cli)
 
+        # CODEQL_DB_AUTO_CLEANUP: the read side (get_cached_database)
+        # already refuses databases older than CODEQL_DB_CACHE_DAYS, so
+        # everything past the threshold is disk the cache will never
+        # serve again — reclaim it here. Only for the DEFAULT root: a
+        # caller-supplied db_root (tests, ad-hoc tooling) manages its
+        # own lifecycle. Best-effort — a cleanup failure must never
+        # block the run.
+        if (db_root is None
+                and getattr(RaptorConfig, "CODEQL_DB_AUTO_CLEANUP", False)
+                and not DatabaseManager._auto_cleanup_done):
+            DatabaseManager._auto_cleanup_done = True
+            try:
+                self.cleanup_old_databases(
+                    days=getattr(RaptorConfig, "CODEQL_DB_CACHE_DAYS", 7),
+                )
+            except Exception as exc:  # noqa: BLE001 — reclaim is optional
+                logger.debug("auto-cleanup of old databases failed: %s", exc)
+
     def _sandbox_tool_paths(self) -> list:
         """Mount-ns bind dirs needed for codeql to run. See QueryRunner
         equivalent — same rationale (codeql install root rarely lives
         in /usr/bin)."""
         return [str(Path(self.codeql_cli).resolve().parent)]
 
-    def _detect_codeql_cli(self) -> Optional[str]:
+    def _detect_codeql_cli(self) -> str | None:
         """Detect CodeQL CLI path.
 
         `os.access(path, X_OK)` instead of bare `Path.exists()`. Pre-fix
@@ -205,7 +226,7 @@ class DatabaseManager:
 
         return None
 
-    def get_codeql_version(self) -> Optional[str]:
+    def get_codeql_version(self) -> str | None:
         """Get CodeQL version.
 
         Returns the dotted-version number (e.g. ``"2.16.4"``) extracted
@@ -234,6 +255,7 @@ class DatabaseManager:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                check=False,
                 env=RaptorConfig.get_safe_env(),
             )
             if result.returncode == 0:
@@ -248,7 +270,7 @@ class DatabaseManager:
                 # operators still see SOMETHING in logs/banners.
                 return result.stdout.strip().split('\n')[0] or None
             return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
             logger.warning("Failed to get CodeQL version: %s", e)
             return None
 
@@ -315,6 +337,7 @@ class DatabaseManager:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                check=False,
                 env=get_safe_git_env(),
             )
             if result.returncode == 0:
@@ -368,7 +391,7 @@ class DatabaseManager:
         hasher.update(str(repo_path).encode("utf-8", errors="surrogateescape"))
 
         try:
-            collected: List[Path] = []
+            collected: list[Path] = []
             for dirpath, dirnames, filenames in os.walk(
                 repo_path, followlinks=False,
             ):
@@ -392,7 +415,7 @@ class DatabaseManager:
                         hasher.update(str(file_path.stat().st_size).encode())
                     except OSError:
                         pass
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
             logger.debug("Error hashing repository: %s", e)
 
         return hasher.hexdigest()[:16]
@@ -405,7 +428,7 @@ class DatabaseManager:
         """Get metadata file path."""
         return self.db_root / repo_hash / f"{language}-metadata.json"
 
-    def load_metadata(self, repo_hash: str, language: str) -> Optional[DatabaseMetadata]:
+    def load_metadata(self, repo_hash: str, language: str) -> DatabaseMetadata | None:
         """Load database metadata from disk."""
         metadata_path = self.get_metadata_path(repo_hash, language)
         if not metadata_path.exists():
@@ -416,7 +439,7 @@ class DatabaseManager:
             return None
         try:
             return DatabaseMetadata.from_dict(data)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
             logger.warning("Failed to load metadata: %s", e)
             return None
 
@@ -427,7 +450,7 @@ class DatabaseManager:
 
         try:
             save_json(metadata_path, metadata.to_dict())
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
             logger.error("Failed to save metadata: %s", e)
 
     def get_cached_database(
@@ -435,7 +458,7 @@ class DatabaseManager:
         repo_path: Path,
         language: str,
         max_age_days: int = 7
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """
         Check if valid cached database exists.
 
@@ -470,7 +493,7 @@ class DatabaseManager:
             if age > timedelta(days=max_age_days):
                 logger.debug("Cached database too old: %s days", age.days)
                 return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
             logger.debug("Failed to parse database age: %s", e)
             return None
 
@@ -656,9 +679,9 @@ class DatabaseManager:
         self,
         repo_path: Path,
         language: str,
-        build_system: Optional[BuildSystem] = None,
+        build_system: BuildSystem | None = None,
         force: bool = False,
-        audit_run_dir: Optional[Path] = None,
+        audit_run_dir: Path | None = None,
         traced_build: bool = False,
     ) -> DatabaseResult:
         """
@@ -718,10 +741,10 @@ class DatabaseManager:
                 database_path=None,
                 metadata=None,
                 errors=[
-                    "target repo has unsafe CodeQL pack config — refusing "
-                    "to invoke `codeql database create`. Re-run with "
-                    "--trust-repo to override after auditing the printed "
-                    "findings."
+                    ("target repo has unsafe CodeQL pack config — refusing "
+                     "to invoke `codeql database create`. Re-run with "
+                     "--trust-repo to override after auditing the printed "
+                     "findings.")
                 ],
                 duration_seconds=time.time() - start_time,
                 cached=False,
@@ -874,10 +897,10 @@ class DatabaseManager:
                 database_path=None,
                 metadata=None,
                 errors=[
-                    f"working_dir {working_dir!r} lacks execute permission "
-                    f"(POSIX dir-exec). Common cause: noexec mount on the "
-                    f"build area. Re-mount with exec, or move the build "
-                    f"into a directory that has it (e.g. $HOME)."
+                    (f"working_dir {working_dir!r} lacks execute permission "
+                     f"(POSIX dir-exec). Common cause: noexec mount on the "
+                     f"build area. Re-mount with exec, or move the build "
+                     f"into a directory that has it (e.g. $HOME).")
                 ],
                 duration_seconds=time.time() - start_time,
                 cached=False,
@@ -1194,8 +1217,8 @@ class DatabaseManager:
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
 
-        except Exception as e:
-            errors.append(f"Unexpected error: {str(e)}")
+        except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
+            errors.append(f"Unexpected error: {e!s}")
             logger.error("✗ Database creation failed with exception: %s", e)
 
             return DatabaseResult(
@@ -1239,12 +1262,12 @@ class DatabaseManager:
     def create_databases_parallel(
         self,
         repo_path: Path,
-        language_build_map: Dict[str, Optional[BuildSystem]],
+        language_build_map: dict[str, BuildSystem | None],
         force: bool = False,
-        max_workers: Optional[int] = None,
-        audit_run_dir: Optional[Path] = None,
+        max_workers: int | None = None,
+        audit_run_dir: Path | None = None,
         traced_languages: "set | None" = None,
-    ) -> Dict[str, DatabaseResult]:
+    ) -> dict[str, DatabaseResult]:
         """
         Create multiple databases in parallel.
 
@@ -1297,7 +1320,7 @@ class DatabaseManager:
                         logger.info("✓ %s database completed", lang)
                     else:
                         logger.error("✗ %s database failed", lang)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
                     logger.error("✗ %s database raised exception: %s", lang, e)
                     results[lang] = DatabaseResult(
                         success=False,
@@ -1379,10 +1402,10 @@ class DatabaseManager:
                 count = peek_total_entries(src_zip)
                 return count if count is not None else 0
             return 0
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort; never fail the run
             return 0
 
-    def cleanup_old_databases(self, days: int = 7, dry_run: bool = False) -> List[str]:
+    def cleanup_old_databases(self, days: int = 7, dry_run: bool = False) -> list[str]:
         """
         Clean up databases older than specified days.
 
@@ -1393,7 +1416,10 @@ class DatabaseManager:
         Returns:
             List of deleted database paths
         """
-        logger.info("Cleaning up databases older than %s days...", days)
+        # Debug, not info: the auto-cleanup path runs this on every
+        # process start and it's usually a no-op — the per-deletion
+        # lines below surface actual reclaims at INFO.
+        logger.debug("Cleaning up databases older than %s days...", days)
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         deleted = []
 
@@ -1444,10 +1470,13 @@ class DatabaseManager:
                             else:
                                 logger.info("Would delete: %s", db_path)
                             deleted.append(str(db_path))
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
                     logger.warning("Error processing %s: %s", metadata_file, e)
 
-        logger.info("Cleaned up %d databases", len(deleted))
+        if deleted:
+            logger.info("Cleaned up %d databases", len(deleted))
+        else:
+            logger.debug("Cleaned up 0 databases")
         return deleted
 
 

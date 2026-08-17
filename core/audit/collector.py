@@ -141,6 +141,14 @@ def append_journal_for_outcome(
         verdict_rationale = review_result.get("verdict_rationale") or None
         counter_hypothesis = review_result.get("counter_hypothesis") or None
 
+    # Reduced-context and reused verdicts are journaled with their
+    # provenance so cross-run verdict reuse can (a) refuse to treat a
+    # reduced-context verdict as durable coverage and (b) keep a
+    # chain of reuses pointing at the run that actually reviewed.
+    context_reduced = bool(getattr(outcome, "context_reduced", False)) or None
+    reused = bool(getattr(outcome, "reused", False)) or None
+    reused_from_run = (getattr(outcome, "reused_from_run", "") or None) if reused else None
+
     entry = ReviewJournalEntry(
         ts=now_iso(),
         run_id=run_id,
@@ -164,6 +172,9 @@ def append_journal_for_outcome(
         duration_s=getattr(outcome, "duration_s", None) or None,
         verdict_rationale=verdict_rationale,
         counter_hypothesis=counter_hypothesis,
+        context_reduced=context_reduced,
+        reused=reused,
+        reused_from_run=reused_from_run,
         producer=producer,
     )
     try:

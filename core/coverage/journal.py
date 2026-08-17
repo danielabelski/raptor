@@ -141,6 +141,18 @@ class ReviewJournalEntry:
     # the drift instead of hiding it behind an inherited
     # ``source_hash``.
     source_drifted: bool | None = None
+    # ``context_reduced``: verdict produced by the reduced-context
+    # timeout retry (heaviest context blocks stripped). Recorded so
+    # cross-run verdict reuse can refuse to import a lower-confidence
+    # verdict as durable coverage.
+    context_reduced: bool | None = None
+    # ``reused`` / ``reused_from_run``: this entry was imported from a
+    # prior run's verdict (source hash unchanged) rather than produced
+    # by a live review. ``reused_from_run`` always names the ORIGINAL
+    # producing run, so chains of reuse keep pointing at the run that
+    # actually did the review.
+    reused: bool | None = None
+    reused_from_run: str | None = None
     # ``producer``: which tool produced this entry — ``audit`` or
     # ``agentic``. Enables reliable ``import_journal`` tool-label
     # mapping without inferring from ``run_id`` string patterns.
@@ -313,6 +325,9 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         validate_verdict=raw.get("validate_verdict"),
         validate_reason=raw.get("validate_reason"),
         source_drifted=raw.get("source_drifted"),
+        context_reduced=raw.get("context_reduced"),
+        reused=raw.get("reused"),
+        reused_from_run=raw.get("reused_from_run"),
         producer=raw.get("producer"),
         schema_version=version,
     )

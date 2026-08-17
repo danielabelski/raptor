@@ -229,6 +229,14 @@ class OrchestratorConfig:
     # ``llm_client``: that attribute would switch on the executor's
     # batch-glance dispatch (see executor._get_batch_review_fn).
     llm_budget_client: Optional[Any] = None
+    # Cross-run verdict reuse: when True (default), prior-run journal
+    # entries whose source_hash still matches the current source are
+    # imported as $0 ``reused`` outcomes instead of being silently
+    # suppressed (findings re-enter mechanical sweeps). False
+    # (--no-verdict-reuse) restores the plain hash-aware fold:
+    # unchanged reviewed functions are suppressed, nothing imported.
+    # ``force=True`` bypasses both (everything re-reviews).
+    verdict_reuse: bool = True
     # Monotonic deadline for the run (start + max_seconds), stamped by
     # ``run_orchestrator``. Verification tools with long per-query
     # timeouts (Joern) clamp to the remaining budget so one stuck
@@ -266,6 +274,11 @@ class ReviewOutcome:
     # context stripped). Deepen re-reviews such outcomes at full
     # context.
     context_reduced: bool = False
+    # True when this verdict was imported from a prior run's journal
+    # entry (matching source hash) instead of a live review.
+    # ``reused_from_run`` names the ORIGINAL producing run.
+    reused: bool = False
+    reused_from_run: str = ""
     verification_tier: str = "speculative"
     tools_dispatched: Optional[set] = field(default=None, repr=False)
     semantic_confidence: str = ""
@@ -351,6 +364,10 @@ class OrchestratorResult:
     suspicious: int = 0
     clean: int = 0
     errors: int = 0
+    # Prior-run verdicts imported via cross-run verdict reuse (source
+    # hash unchanged). Counted separately from ``reviewed`` — no LLM
+    # call happened for them this run.
+    reused_from_prior: int = 0
     # Spend attributed to completed review calls (outcome-carrying).
     total_cost_usd: float = 0.0
     # Spend consumed by attempts that raised (timeouts, retries, budget
@@ -2252,6 +2269,20 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         if config.out_dir and (Path(config.out_dir) / ".raptor-run.json").exists()
         else None
     )
+    # Cross-run verdict reuse: compute_gaps fills this with
+    # hash-verified, reuse-eligible prior-run journal entries; they
+    # are imported as $0 outcomes just before the review loop.
+    reuse_candidates: Dict[str, Any] = {}
+    _reuse_enabled = (
+        getattr(config, "verdict_reuse", True)
+        and not config.force
+        and _project_dir is not None
+    )
+    _primary_model = (
+        config.models[0]
+        if config.models and config.models[0] != "default"
+        else None
+    )
     gaps = compute_gaps(
         checklist,
         [] if config.force else coverage_records,
@@ -2262,6 +2293,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         out_dir=None if config.force else config.out_dir,
         project_dir=None if config.force else _project_dir,
         include_kinds=getattr(config, "include_kinds", None),
+        reuse_sink=reuse_candidates if _reuse_enabled else None,
+        current_model=_primary_model,
     )
 
     _joern_last_activity = [time.monotonic()]
@@ -2685,6 +2718,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "widely_used_keys": widely_used_keys,
         "call_edges": call_edges,
         "tool_capabilities": tool_capabilities,
+        "reuse_candidates": reuse_candidates,
     }
 
 
@@ -2765,6 +2799,7 @@ def _run_audit_body(
         config.project_sinks = _prep["project_sinks"]
     joern_future = _prep["joern_future"]
     _joern_last_activity = _prep["joern_last_activity"]
+    reuse_candidates = _prep.get("reuse_candidates") or {}
     iris_taint_specs = _prep["iris_taint_specs"]
     prior_constraints = _prep["prior_constraints"]
     gaps = _prep["gaps"]
@@ -3259,6 +3294,30 @@ def _run_audit_body(
     # --- Main executor pass ---
     graph = TaskGraph.from_workqueue(workqueue, call_edges)
     reviewed_outcomes = _LockedOutcomes()
+
+    # --- Cross-run verdict reuse: import prior verdicts at $0 ---
+    # Before the executor so reused outcomes are visible to chain
+    # findings / dependent-context lookups the same way live reviews
+    # are. Best-effort: a reuse failure must never cost the run.
+    if reuse_candidates:
+        try:
+            from .verdict_reuse import import_reused_verdicts
+
+            import_reused_verdicts(
+                reuse_candidates,
+                config,
+                result,
+                collector=collector,
+                sarif_cache=sarif_cache,
+                evidence_index=evidence_index,
+                joern_server=joern_server,
+                reviewed_outcomes=reviewed_outcomes,
+            )
+        except Exception:
+            logger.warning(
+                "verdict reuse import failed — continuing without "
+                "imported prior verdicts", exc_info=True,
+            )
 
     # --- Shared concurrency throttle ---
     # A single AdaptiveThrottle gates all LLM calls across Thread A
@@ -7013,11 +7072,17 @@ def _tally_outcome(
     outcome: ReviewOutcome,
     *,
     append: bool = True,
+    reused: bool = False,
 ) -> None:
     with result._lock:
         if append:
             result.outcomes.append(outcome)
-        result.reviewed += 1
+        if reused:
+            # Imported prior verdict — counted distinctly, not as a
+            # review this run performed.
+            result.reused_from_prior += 1
+        else:
+            result.reviewed += 1
         result.total_cost_usd += outcome.cost_usd
         if outcome.status == "finding":
             result.findings += 1

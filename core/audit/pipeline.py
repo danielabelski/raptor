@@ -92,6 +92,10 @@ class AuditPipelineOpts:
     # trust marker, else off. Resolved via
     # core.project.trust.resolve_dynamic_validation at config build.
     dynamic_validation: bool | None = None
+    # Cross-run verdict reuse (--no-verdict-reuse to disable): import
+    # prior-run verdicts for functions whose source hash is unchanged
+    # instead of silently suppressing them.
+    verdict_reuse: bool = True
 
 
 
@@ -168,6 +172,7 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         mode=opts.mode,
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
+        verdict_reuse=opts.verdict_reuse,
         llm_budget_client=client,
     )
 
@@ -437,6 +442,7 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
         mode=ReviewMode.SECURITY,
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
+        verdict_reuse=opts.verdict_reuse,
         llm_budget_client=client,
     )
 

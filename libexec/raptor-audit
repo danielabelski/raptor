@@ -1267,6 +1267,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         # inside the pipeline; default off).
         dynamic_validation=(False if args.no_dynamic
                             else (True if args.dynamic else None)),
+        verdict_reuse=not args.no_verdict_reuse,
     )
 
     try:
@@ -1289,6 +1290,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Audit complete in {duration_str}: {result.reviewed} reviewed, "
           f"{result.findings} findings, {result.suspicious} suspicious, "
           f"{result.clean} clean, {result.errors} errors", flush=True)
+    reused = getattr(result, "reused_from_prior", 0)
+    if reused:
+        print(f"{reused} reused from prior runs (source unchanged, $0)",
+              flush=True)
     from core.audit.cost_tracker import format_cost_summary
     cost_line = format_cost_summary(result)
     if cost_line:
@@ -1603,6 +1608,12 @@ def main() -> int:
                             "overriding both --dynamic and the active "
                             "project's 'dynamic' trust marker "
                             "(raptor project trust dynamic)")
+    p_run.add_argument("--no-verdict-reuse", action="store_true",
+                       help="Disable cross-run verdict reuse (importing "
+                            "prior-run journal verdicts for functions "
+                            "whose source is unchanged); unchanged "
+                            "reviewed functions are then silently "
+                            "suppressed as before")
     from core.analysis.binary_oracle_cli import add_binary_args
     add_binary_args(p_run, include_edges=False)
 

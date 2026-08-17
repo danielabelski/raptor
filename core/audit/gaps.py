@@ -62,6 +62,8 @@ def compute_gaps(
     out_dir: Path | None = None,
     project_dir: Path | None = None,
     include_kinds: set | None = None,
+    reuse_sink: dict | None = None,
+    current_model: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compute the list of unreviewed functions.
 
@@ -94,6 +96,16 @@ def compute_gaps(
             store's ``import_journal`` at run-completion is the
             durable path but only fires at END, not at gap-
             computation time.
+        reuse_sink: When a dict is passed, cross-run verdict reuse is
+            enabled: hash-verified, reuse-eligible project-index
+            entries are placed into it (``file:function`` → entry)
+            in addition to being folded into coverage, so the caller
+            can import the prior verdicts as $0 outcomes. See
+            ``_fold_project_index``.
+        current_model: Explicit model name for this run (None when
+            running on the default/session model). Used by the reuse
+            eligibility screen — a verdict recorded under a
+            different model is re-reviewed, not imported.
 
     Returns:
         List of gap dicts sorted by priority, each containing:
@@ -111,7 +123,9 @@ def compute_gaps(
     # and the target path let the fold re-hash each journaled function
     # and drop prior-run coverage whose source has since changed.
     target_path_str = checklist.get("target_path", "")
+    entry_point_sinks = _build_sink_reachability(context_map)
     current_spans: dict[str, tuple] = {}
+    items_by_key: dict[str, tuple] = {}
     for file_info in checklist.get("files", []):
         fp = file_info.get("path", "")
         if not fp:
@@ -131,15 +145,39 @@ def compute_gaps(
                 # First occurrence wins for same-named items — matches
                 # _consume_covered_key's one-suppression-per-key rule.
                 current_spans.setdefault(f"{fp}:{name}", (ls, le))
+                items_by_key.setdefault(f"{fp}:{name}", (item, fp))
+
+    def _current_strategies(key: str) -> list | None:
+        """CURRENT strategy inference for a checklist item, computed
+        on demand for the reuse eligibility screen only (cheap
+        metadata munging, but there is no reason to run it for every
+        item on every run). Same inputs as the gap-building loop
+        below, so the comparison against the journaled strategy set
+        is apples-to-apples. None when the item is unknown."""
+        found = items_by_key.get(key)
+        if found is None:
+            return None
+        item, fp = found
+        try:
+            return sorted(strategies_from_item(
+                item, fp,
+                reachable_sinks=entry_point_sinks.get(key),
+            ))
+        except Exception:
+            logger.debug("strategy inference failed for %s", key, exc_info=True)
+            return None
+
     _fold_journal_into_covered(
         covered_functions,
         out_dir,
         project_dir,
         target_path=Path(target_path_str) if target_path_str else None,
         current_spans=current_spans,
+        reuse_sink=reuse_sink,
+        current_strategies_fn=_current_strategies,
+        current_model=current_model,
     )
     file_tool_coverage = _build_file_tool_coverage(coverage_records)
-    entry_point_sinks = _build_sink_reachability(context_map)
     entry_point_set = extract_context_map_set(context_map, "entry_points")
     if not entry_point_set:
         entry_point_set = _derive_entry_points(checklist)
@@ -768,6 +806,9 @@ def _fold_journal_into_covered(
     *,
     target_path: Path | None = None,
     current_spans: dict[str, tuple] | None = None,
+    reuse_sink: dict | None = None,
+    current_strategies_fn=None,
+    current_model: str | None = None,
 ) -> None:
     """Fold review-journal entries into the covered-function set so
     LLM-reviewed functions suppress gaps mid-run.
@@ -809,6 +850,9 @@ def _fold_journal_into_covered(
                 covered, project_dir,
                 target_path=target_path,
                 current_spans=current_spans or {},
+                reuse_sink=reuse_sink,
+                current_strategies_fn=current_strategies_fn,
+                current_model=current_model,
             )
         except Exception:
             logger.warning(
@@ -818,12 +862,56 @@ def _fold_journal_into_covered(
             )
 
 
+def _reuse_ineligibility(
+    entry,
+    key: str,
+    *,
+    current_strategies_fn,
+    current_model: str | None,
+) -> str | None:
+    """Why a hash-verified prior entry may NOT be imported as a
+    reused verdict. ``None`` when it is eligible.
+
+    Keys checked (what the journal actually records):
+
+    * verdict — ``error`` entries never reach here (filtered by the
+      fold); everything else (clean/dormant/finding/suspicious) is a
+      real verdict and eligible in principle.
+    * ``context_reduced`` — the prior verdict came from the reduced-
+      context timeout retry: lower-confidence by design, so it is
+      re-reviewed rather than imported.
+    * model — when THIS run pins an explicit model and the entry
+      records one, they must match; a verdict from a different model
+      is not this run's verdict. Runs on the default/session model
+      cannot compare (no stable name) and skip the check.
+    * strategies — the journal records the strategy set the review
+      was briefed with; if the CURRENT strategy inference for the
+      function differs (new sink reachability, changed metadata, a
+      strategy landing), the review context materially changed and
+      the entry is re-reviewed. Entries without recorded strategies
+      (non-gap review paths) only match a currently-empty set.
+    """
+    if getattr(entry, "context_reduced", None):
+        return "context_reduced verdict"
+    entry_model = getattr(entry, "model", None)
+    if current_model and entry_model and entry_model != current_model:
+        return f"model changed ({entry_model} → {current_model})"
+    if current_strategies_fn is not None:
+        current = current_strategies_fn(key)
+        if current is not None and sorted(entry.strategies or []) != sorted(current):
+            return "strategy set changed"
+    return None
+
+
 def _fold_project_index(
     covered: set,
     project_dir: Path,
     *,
     target_path: Path | None,
     current_spans: dict[str, tuple],
+    reuse_sink: dict | None = None,
+    current_strategies_fn=None,
+    current_model: str | None = None,
 ) -> None:
     """Fold the project journal index into ``covered``, hash-aware.
 
@@ -851,6 +939,18 @@ def _fold_project_index(
     Hashes are compared on their common prefix so shorter historical
     prefixes still match their full-length recomputation. Files are
     read once each (batched via ``core.staleness.hash_spans``).
+
+    Verdict reuse (``reuse_sink`` is a dict): hash-VERIFIED entries
+    are additionally screened by :func:`_reuse_ineligibility`.
+    Eligible entries are both folded into ``covered`` AND placed in
+    ``reuse_sink`` (key → entry) so the orchestrator imports the
+    prior verdict as a $0 outcome for this run. Ineligible-but-
+    verified entries (reduced-context verdict, model or strategy
+    change) are NOT covered — they resurface for a real re-review.
+    With ``reuse_sink=None`` (reuse disabled) verified entries keep
+    the plain fold behaviour: suppressed, nothing imported.
+    Unverifiable entries are never placed in the sink — reuse
+    requires positive hash evidence.
     """
     from .journal import load_index
 
@@ -871,6 +971,7 @@ def _fold_project_index(
     from core.staleness import hash_spans
 
     stale = 0
+    reuse_blocked = 0
     for file_path, items in to_verify.items():
         resolved = safe_join(Path(target_path), file_path)
         if resolved is None or not resolved.is_file():
@@ -888,6 +989,21 @@ def _fold_project_index(
                     key, stored, current,
                 )
                 continue
+            if reuse_sink is not None:
+                reason = _reuse_ineligibility(
+                    entry, key,
+                    current_strategies_fn=current_strategies_fn,
+                    current_model=current_model,
+                )
+                if reason is not None:
+                    reuse_blocked += 1
+                    logger.debug(
+                        "journal-fold: %s hash-verified but not "
+                        "reusable (%s) — resurfacing for re-review",
+                        key, reason,
+                    )
+                    continue
+                reuse_sink[key] = entry
             covered.add(key)
 
     if stale:
@@ -895,6 +1011,13 @@ def _fold_project_index(
             "journal-fold: %d prior-run review(s) stale (source "
             "changed) — resurfacing as gaps for re-review",
             stale,
+        )
+    if reuse_blocked:
+        logger.info(
+            "journal-fold: %d hash-verified prior review(s) not "
+            "reusable (reduced-context / model / strategy change) — "
+            "resurfacing for re-review",
+            reuse_blocked,
         )
 
 

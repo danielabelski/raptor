@@ -24,7 +24,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,7 @@ def _fetch_source(repo_key: str, sha: str) -> Path:
     """Fetch a pinned source tree.  Returns the local path."""
     dest = FIXTURES_DIR / repo_key
     from core.config import RaptorConfig
+    from core.git import safe_git_command, safe_git_readonly_command
     safe_env = RaptorConfig.get_safe_env()
     if dest.is_dir():
         git_dir = dest / ".git"
@@ -86,16 +87,18 @@ def _fetch_source(repo_key: str, sha: str) -> Path:
             return dest
 
         result = subprocess.run(
-            ["git", "-C", str(dest), "rev-parse", "HEAD"],
+            safe_git_readonly_command("-C", str(dest), "rev-parse", "HEAD"),
             capture_output=True, text=True, timeout=30, env=safe_env,
+            check=False,
         )
         current = result.stdout.strip()
 
         # For tag/branch refs, resolve to commit hash for comparison
         if not _is_hex_sha(sha):
             verify = subprocess.run(
-                ["git", "-C", str(dest), "rev-parse", sha],
+                safe_git_readonly_command("-C", str(dest), "rev-parse", sha),
                 capture_output=True, text=True, timeout=30, env=safe_env,
+                check=False,
             )
             if verify.returncode == 0 and verify.stdout.strip() == current:
                 return dest
@@ -109,19 +112,19 @@ def _fetch_source(repo_key: str, sha: str) -> Path:
         # bare hex SHAs work with the direct form.
         if _is_hex_sha(sha):
             subprocess.run(
-                ["git", "-C", str(dest), "fetch", "--depth", "1",
-                 "origin", sha],
+                safe_git_command("-C", str(dest), "fetch", "--depth", "1",
+                                 "origin", sha),
                 check=True, capture_output=True, timeout=120, env=safe_env,
             )
         else:
             subprocess.run(
-                ["git", "-C", str(dest), "fetch", "origin",
-                 "tag", sha, "--depth", "1"],
+                safe_git_command("-C", str(dest), "fetch", "origin",
+                                 "tag", sha, "--depth", "1"),
                 check=True, capture_output=True, timeout=120, env=safe_env,
             )
 
         subprocess.run(
-            ["git", "-C", str(dest), "checkout", sha],
+            safe_git_command("-C", str(dest), "checkout", sha),
             check=True, capture_output=True, timeout=30, env=safe_env,
         )
         return dest
@@ -134,12 +137,12 @@ def _fetch_source(repo_key: str, sha: str) -> Path:
 
 
 def _resolve_source_dirs(
-    labels: List[Any],
+    labels: list[Any],
     *,
     do_fetch: bool = False,
-) -> Dict[str, Path]:
+) -> dict[str, Path]:
     """Resolve and optionally fetch source directories for all labels."""
-    repos: Dict[str, str] = {}
+    repos: dict[str, str] = {}
     for label in labels:
         key = label.source.repo
         if key not in repos:
@@ -184,18 +187,18 @@ def _count_source_files(path: Path, limit: int = QUICK_FILE_LIMIT + 1) -> int:
 
 
 def _build_excerpt_tree(
-    labels: List[Any],
-    source_dirs: Dict[str, Path],
-) -> Dict[str, Path]:
+    labels: list[Any],
+    source_dirs: dict[str, Path],
+) -> dict[str, Path]:
     """Build minimal source trees containing only labelled files.
 
     Returns a mapping repo_key -> temp directory.  Caller must clean up.
     """
-    by_repo: Dict[str, set] = {}
+    by_repo: dict[str, set] = {}
     for label in labels:
         by_repo.setdefault(label.source.repo, set()).add(label.source.file)
 
-    excerpt_dirs: Dict[str, Path] = {}
+    excerpt_dirs: dict[str, Path] = {}
     for repo_key, files in by_repo.items():
         src_dir = source_dirs.get(repo_key)
         if src_dir is None or not src_dir.is_dir():
@@ -218,15 +221,15 @@ def _build_excerpt_tree(
 
 
 def _filter_quick_repos(
-    labels: List[Any],
-    source_dirs: Dict[str, Path],
-) -> Tuple[List[Any], List[str]]:
+    labels: list[Any],
+    source_dirs: dict[str, Path],
+) -> tuple[list[Any], list[str]]:
     """Remove labels from repos exceeding QUICK_FILE_LIMIT.
 
     Returns (filtered_labels, skipped_repo_keys).
     """
-    repo_ok: Dict[str, bool] = {}
-    skipped: List[str] = []
+    repo_ok: dict[str, bool] = {}
+    skipped: list[str] = []
 
     for label in labels:
         repo = label.source.repo
@@ -252,9 +255,9 @@ def _filter_quick_repos(
 
 
 def _verify_labels(
-    labels: List[Any],
-    source_dirs: Dict[str, Path],
-) -> List[str]:
+    labels: list[Any],
+    source_dirs: dict[str, Path],
+) -> list[str]:
     """Verify that labeled functions exist in fetched sources."""
     errors = []
     for label in labels:
@@ -283,7 +286,7 @@ def _build_checklist(
 
         build_inventory(str(target_dir), str(out_dir))
         return True
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort corpus prep step
         print(f"  checklist build failed: {exc}", file=sys.stderr)
         return False
 
@@ -319,7 +322,7 @@ def _stop_shared_joern(srv):
         logger.debug("shared Joern server stop failed", exc_info=True)
 
 
-def _load_inventoried_functions(audit_dir: Optional[Path]) -> set:
+def _load_inventoried_functions(audit_dir: Path | None) -> set:
     """Return {(file, function_name)} for every function in the checklist."""
     if audit_dir is None:
         return set()
@@ -341,16 +344,16 @@ def _load_inventoried_functions(audit_dir: Optional[Path]) -> set:
 
 
 def _run_audit(
-    labels: List[Any],
-    source_dirs: Dict[str, Path],
+    labels: list[Any],
+    source_dirs: dict[str, Path],
     *,
     model: str = "",
-    out_dir: Optional[Path] = None,
-    full_source_dirs: Optional[Dict[str, Path]] = None,
-    mode: Optional[str] = None,
-    joern_server: Optional[Any] = None,
+    out_dir: Path | None = None,
+    full_source_dirs: dict[str, Path] | None = None,
+    mode: str | None = None,
+    joern_server: Any | None = None,
     max_workers: int = 0,
-) -> Tuple[List[Dict[str, Any]], List[Path]]:
+) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run /audit's orchestrator against labeled functions.
 
     Returns (results, run_dirs) — results is a list of per-function
@@ -365,7 +368,7 @@ def _run_audit(
     except ImportError:
         pass
 
-    by_repo: Dict[str, list] = {}
+    by_repo: dict[str, list] = {}
     for label in labels:
         by_repo.setdefault(label.source.repo, []).append(label)
 
@@ -377,7 +380,7 @@ def _run_audit(
     )
 
     results = []
-    run_dirs: List[Path] = []
+    run_dirs: list[Path] = []
     try:
         for repo_key, repo_labels in by_repo.items():
             src_dir = source_dirs.get(repo_key)
@@ -519,10 +522,14 @@ def _status_matches(
 
 # Ensemble constants and algorithms imported from pipeline.py (single source
 # of truth — W8 unification).
-from core.audit.pipeline import (  # noqa: E402
+from core.audit.pipeline import (
     STATUS_RANK as _STATUS_RANK,
+)
+from core.audit.pipeline import (
     _has_any_mechanical_evidence,
     _is_verification_evidence,
+)
+from core.audit.pipeline import (
     dampen_file_pileup as _dampen_file_pileup_generic,
 )
 
@@ -540,15 +547,15 @@ def _dampen_file_pileup_dicts(results: list) -> int:
 
 def _run_audit_on_target(
     target_dir: Path,
-    labels: List[Any],
+    labels: list[Any],
     *,
     model: str = "",
-    out_dir: Optional[Path] = None,
-    joern_server: Optional[Any] = None,
-    study_root: Optional[Path] = None,
-    mode: Optional[str] = None,
+    out_dir: Path | None = None,
+    joern_server: Any | None = None,
+    study_root: Path | None = None,
+    mode: str | None = None,
     max_workers: int = 0,
-) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Path]]:
+) -> tuple[dict[str, Any], dict[str, Any], Path | None]:
     """Run /audit orchestrator on a target (in-process).
 
     Returns (outcomes_by_function_id, bare_key_entries, audit_output_dir).
@@ -615,14 +622,14 @@ def _run_audit_on_target(
         run_audit_pipeline(pipeline_opts)
         rc = 0
     except Exception:
-        logger.error("Audit pipeline failed", exc_info=True)
+        logger.exception("Audit pipeline failed")
         rc = 1
 
     wall_s = time.monotonic() - t0
     print(f"  Audit finished in {wall_s:.0f}s (rc={rc})", flush=True)
 
-    outcomes_by_id: Dict[str, Dict[str, Any]] = {}
-    bare_key_entries: Dict[str, Dict[str, Any]] = {}
+    outcomes_by_id: dict[str, dict[str, Any]] = {}
+    bare_key_entries: dict[str, dict[str, Any]] = {}
     log_path = out_dir / ".audit-log.jsonl"
     if log_path.exists():
         with open(log_path) as f:
@@ -652,7 +659,7 @@ def _run_audit_on_target(
 def _extract_source(
     source_dir: Path,
     label: Any,
-) -> Optional[str]:
+) -> str | None:
     """Read the labeled function's source lines from a fixture directory."""
     src_file = source_dir / label.source.file
     if not src_file.is_file():
@@ -667,8 +674,8 @@ def _build_probe_context(
     label: Any,
     source: str,
     *,
-    domain_model_dir: Optional[Path] = None,
-) -> Dict[str, Any]:
+    domain_model_dir: Path | None = None,
+) -> dict[str, Any]:
     """Build a minimal context dict for format_context_for_prompt.
 
     Mirrors the real audit pipeline's context slice but without call
@@ -692,7 +699,7 @@ def _build_probe_context(
         else label.function_id
     )
 
-    ctx: Dict[str, Any] = {
+    ctx: dict[str, Any] = {
         "file": file_path,
         "function": func_name,
         "line_start": label.source.line_start,
@@ -722,20 +729,20 @@ def _build_probe_context(
             rpr = check_race_protection(source)
             if rpr.protected:
                 ctx["race_protected"] = rpr.reasoning
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — optional enrichment only
             pass
 
     return ctx
 
 
 def _run_probe(
-    labels: List[Any],
-    source_dirs: Dict[str, Path],
+    labels: list[Any],
+    source_dirs: dict[str, Path],
     *,
     model: str = "",
     max_tokens: int = 8192,
-    domain_model_dir: Optional[Path] = None,
-) -> List[Dict[str, Any]]:
+    domain_model_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     """Run lightweight LLM probes against labeled functions.
 
     Uses the same system prompt, strategy primers, and review schema as
@@ -752,11 +759,12 @@ def _run_probe(
     model's RPM limit and backs off on 429s.
     """
     import threading
+
     from core.audit.context import format_context_for_prompt
-    from core.audit.llm_review import REVIEW_SCHEMA, _DEFAULT_SYSTEM_PROMPT
+    from core.audit.llm_review import _DEFAULT_SYSTEM_PROMPT, REVIEW_SCHEMA
     from core.audit.strategy import infer_strategies, primers_for_strategies
     from core.llm.client import LLMClient
-    from core.llm.concurrency import run_parallel, derive_max_workers
+    from core.llm.concurrency import derive_max_workers, run_parallel
     from core.llm.log_quiet import quiet_noisy_loggers
 
     quiet_noisy_loggers()
@@ -785,8 +793,8 @@ def _run_probe(
     }
 
     # --- Phase 1: prep (serial, cheap) ---
-    work_items: List[Optional[Dict[str, Any]]] = []
-    early_results: Dict[int, Dict[str, Any]] = {}
+    work_items: list[dict[str, Any] | None] = []
+    early_results: dict[int, dict[str, Any]] = {}
     total = len(labels)
 
     for i, label in enumerate(labels):
@@ -871,9 +879,9 @@ def _run_probe(
     progress_lock = threading.Lock()
     progress_counter = [0]
 
-    def _probe_one(item: Dict[str, Any]) -> Dict[str, Any]:
+    def _probe_one(item: dict[str, Any]) -> dict[str, Any]:
         label = item["label"]
-        kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
+        kwargs: dict[str, Any] = {"max_tokens": max_tokens}
         if model_config is not None:
             kwargs["model_config"] = model_config
         else:
@@ -890,7 +898,7 @@ def _run_probe(
             result = response.result if hasattr(response, "result") else {}
             cost = response.cost if hasattr(response, "cost") else 0.0
             cached = getattr(response, "cached", False)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — per-label probe isolation
             logger.error("probe failed for %s: %s", label.function_id, exc)
             result = {"status": "error"}
             cost = 0.0
@@ -948,7 +956,7 @@ def _run_probe(
     )
 
     # --- Phase 3: merge and order ---
-    result_by_idx: Dict[int, Dict[str, Any]] = dict(early_results)
+    result_by_idx: dict[int, dict[str, Any]] = dict(early_results)
     for r in llm_results:
         if r is not None:
             result_by_idx[r.pop("idx")] = r
@@ -961,7 +969,7 @@ def _run_probe(
 
 
 def _record_scorecard(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     model: str,
 ) -> None:
     """Record probe results into the model scorecard.
@@ -1003,11 +1011,11 @@ def _record_scorecard(
 
 
 def _print_cross_model_summary(
-    results: List[Dict[str, Any]],
-    models: List[str],
+    results: list[dict[str, Any]],
+    models: list[str],
 ) -> None:
     """Print a matrix showing per-function verdicts across models."""
-    by_func: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    by_func: dict[str, dict[str, dict[str, Any]]] = {}
     for r in results:
         fid = r["function_id"]
         mdl = r.get("model", "") or "default"
@@ -1076,10 +1084,10 @@ def _print_cross_model_summary(
 
 
 def _write_results(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     output: Path,
     *,
-    meta: Dict[str, Any] | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     """Write results to a JSON file.
 
@@ -1096,7 +1104,7 @@ def _write_results(
         f.write("\n")
 
 
-def _format_detail_table(results: List[Dict[str, Any]]) -> str:
+def _format_detail_table(results: list[dict[str, Any]]) -> str:
     """Format per-function detail table."""
     lines = []
     lines.append(f"{'Function':<45} {'Expected':<10} {'Actual':<12} "
@@ -1120,7 +1128,7 @@ def _format_detail_table(results: List[Dict[str, Any]]) -> str:
 
 
 def _format_summary(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     wall_s: float,
     model: str,
 ) -> str:
@@ -1181,8 +1189,8 @@ def _format_summary(
 
 
 def _save_debug(
-    results: List[Dict[str, Any]],
-    run_dirs: List[Path],
+    results: list[dict[str, Any]],
+    run_dirs: list[Path],
     output_path: Path,
 ) -> None:
     """Save LLM reasoning alongside results for diagnosis.
@@ -1193,7 +1201,7 @@ def _save_debug(
     """
     debug_path = output_path.with_suffix(".debug.jsonl")
 
-    journal_entries: Dict[str, Dict[str, Any]] = {}
+    journal_entries: dict[str, dict[str, Any]] = {}
     for d in run_dirs:
         jpath = d / "review-journal.jsonl"
         if not jpath.exists():
@@ -1238,7 +1246,7 @@ def _checkpoint_write(path: Path, data: Any) -> None:
     tmp.rename(path)
 
 
-def _checkpoint_read(path: Path) -> Optional[Any]:
+def _checkpoint_read(path: Path) -> Any | None:
     """Read a checkpoint if it exists, else None."""
     if not path.exists():
         return None
@@ -1250,13 +1258,13 @@ def _checkpoint_read(path: Path) -> Optional[Any]:
 
 
 def _run_ensemble_audit(
-    labels: List[Any],
-    source_dirs: Dict[str, Path],
+    labels: list[Any],
+    source_dirs: dict[str, Path],
     *,
     model: str = "",
-    out_dir: Optional[Path] = None,
-    full_source_dirs: Optional[Dict[str, Path]] = None,
-) -> Tuple[List[Dict[str, Any]], List[Path]]:
+    out_dir: Path | None = None,
+    full_source_dirs: dict[str, Path] | None = None,
+) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run dual-mode ensemble: security + bug_first, merge, Phase 2 + 2b.
 
     Improvements over naive sequential:
@@ -1289,7 +1297,7 @@ def _run_ensemble_audit(
     print(f"  Ensemble concurrency: {full_workers} workers per pass",
           flush=True)
 
-    run_dirs: List[Path] = []
+    run_dirs: list[Path] = []
 
     try:
         # --- Pass 1: security mode, full workers ---
@@ -1339,11 +1347,9 @@ def _run_ensemble_audit(
                 if r.get("evidence_tool", ""):
                     return True
                 counter = (r.get("counter_hypothesis") or "").lower()
-                if len(counter) >= 30 and any(
+                return len(counter) >= 30 and any(
                     kw in counter for kw in _counter_vuln_kw
-                ):
-                    return True
-                return False
+                )
 
             pass2_ids = {r["function_id"] for r in sec_results
                          if _needs_pass2(r)}
@@ -1396,7 +1402,7 @@ def _run_ensemble_audit(
         bf_by_id = {r["function_id"]: r for r in bf_results}
         all_ids = set(sec_by_id) | set(bf_by_id)
 
-        merged_results: List[Dict[str, Any]] = []
+        merged_results: list[dict[str, Any]] = []
         sec_only_wins = 0
         bf_only_wins = 0
         agree_count = 0
@@ -1484,7 +1490,7 @@ def _run_ensemble_audit(
             phase2_cost = _run_phase2_classify(findings, model=model)
             print(f"  Phase 2 cost: ${phase2_cost:.4f}", flush=True)
         except Exception:
-            logger.error("Phase 2 classification failed", exc_info=True)
+            logger.exception("Phase 2 classification failed")
             print("  Phase 2 classification failed (continuing)", flush=True)
 
         # Phase 2 quality-finding suppression: demote non-security quality
@@ -1538,23 +1544,23 @@ def _run_ensemble_audit(
             else:
                 print("  No chains confirmed", flush=True)
         except Exception:
-            logger.error("Phase 2b chain detection failed", exc_info=True)
+            logger.exception("Phase 2b chain detection failed")
             print("  Phase 2b failed (continuing)", flush=True)
 
     return merged_results, run_dirs
 
 
 def _run_phase2_classify(
-    findings: List[Dict[str, Any]],
+    findings: list[dict[str, Any]],
     *,
     model: str = "",
 ) -> float:
     """Run Phase 2 security classification on merged findings."""
-    from core.llm.client import LLMClient
     from core.audit.security_classifier import CLASSIFICATION_SCHEMA
+    from core.llm.client import LLMClient
 
     client = LLMClient()
-    kwargs: Dict[str, Any] = {"task_type": "audit"}
+    kwargs: dict[str, Any] = {"task_type": "audit"}
     if model:
         try:
             mc = client.config.config_for_model(model)
@@ -1602,22 +1608,22 @@ def _run_phase2_classify(
 
 
 def _run_phase2b_chains(
-    quality_findings: List[Dict[str, Any]],
-    all_results: List[Dict[str, Any]],
+    quality_findings: list[dict[str, Any]],
+    all_results: list[dict[str, Any]],
     *,
-    out_dir: Optional[Path] = None,
+    out_dir: Path | None = None,
     model: str = "",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Run Phase 2b chain detection on quality findings.
 
     Builds a call graph from the audit log entries and looks for
     connected quality-bug pairs.
     """
-    from core.llm.client import LLMClient
     from core.audit.chain_detector import CHAIN_SCHEMA
+    from core.llm.client import LLMClient
 
     client = LLMClient()
-    kwargs: Dict[str, Any] = {"task_type": "audit"}
+    kwargs: dict[str, Any] = {"task_type": "audit"}
     if model:
         try:
             mc = client.config.config_for_model(model)
@@ -1626,7 +1632,7 @@ def _run_phase2b_chains(
             pass
 
     # Build adjacency from audit log caller/callee data
-    graph: Dict[str, set] = {}
+    graph: dict[str, set] = {}
     for r in all_results:
         fid = r["function_id"]
         neighbours = graph.setdefault(fid, set())
@@ -1700,7 +1706,7 @@ def _run_phase2b_chains(
     return chains
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run /audit calibration corpus",
     )

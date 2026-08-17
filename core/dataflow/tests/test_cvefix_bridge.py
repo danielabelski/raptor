@@ -176,6 +176,72 @@ def test_git_diff_other_files_empty_when_only_sink_touched(monkeypatch, tmp_path
     assert out == ""
 
 
+def test_git_diff_argv_carries_safety_pins(monkeypatch, tmp_path: Path):
+    """The diff runs against a cloned CVE repo — hostile .git/config
+    must be neutralised by the strict read-only pins, and the diff
+    must disable external drivers explicitly."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+
+        class R:
+            returncode = 0
+            stdout = "+ guarded\n"
+        return R()
+
+    monkeypatch.setattr(cvefix_bridge.subprocess, "run", fake_run)
+    cvefix_bridge._git_diff(tmp_path, "p", "f", "src/a.py")
+    cvefix_bridge._git_touched_files(tmp_path, "p", "f")
+
+    assert len(calls) == 2
+    for argv in calls:
+        assert argv[0] == "git"
+        assert "core.hooksPath=/dev/null" in argv
+        assert "core.fsmonitor=" in argv
+        assert "protocol.allow=never" in argv
+        assert "core.sshCommand=false" in argv
+        assert "diff.external=" in argv
+        # diff.external= fails loudly on diffs that forgot to disable
+        # external drivers — every diff here must opt out explicitly.
+        assert "--no-ext-diff" in argv
+
+
+def test_git_diff_still_works_under_pins(tmp_path: Path):
+    """Functional: the strict pins + --no-ext-diff must not break a
+    plain commit..commit diff on a real repository."""
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+
+    def git(*args):
+        sp.run(["git", "-C", str(repo), "-c", "user.name=t",
+                "-c", "user.email=t@t", *args],
+               check=True, capture_output=True, env=env)
+
+    git("init", "-q")
+    (repo / "a.py").write_text("x = 1\n")
+    git("add", "a.py")
+    git("commit", "-qm", "one")
+    parent = sp.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, env=env,
+                    check=True).stdout.strip()
+    (repo / "a.py").write_text("if ok:\n    x = 1\n")
+    git("add", "a.py")
+    git("commit", "-qm", "two")
+    fix = sp.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                 capture_output=True, text=True, env=env,
+                 check=True).stdout.strip()
+
+    diff = cvefix_bridge._git_diff(repo, parent, fix, "a.py")
+    assert "if ok" in diff
+    touched = cvefix_bridge._git_touched_files(repo, parent, fix)
+    assert touched == ["a.py"]
+
+
 def test_git_touched_files_returns_empty_on_subprocess_fail(monkeypatch, tmp_path: Path):
     """Failure isolation: if `git diff --name-only` errors, callers
     silently fall back to sink-file-only context (the original behaviour),
@@ -241,7 +307,7 @@ def test_synthesize_one_happy_path_returns_sound_query(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(cvefix_bridge, "_extract_proposal", lambda *a, **k: (prop, "a.py", 3))
     monkeypatch.setattr(cvefix_bridge, "run_synthesis_loop",
                         lambda *a, **k: SynthResult(query_ql="SOUND_QL", after_count=0, before_count=1))
-    status, fid, backend, sq, detail = cvefix_bridge.synthesize_one(
+    status, fid, backend, sq, _detail = cvefix_bridge.synthesize_one(
         _pair(), work_dir=tmp_path / "w", proposer=lambda *a: "")
     assert status == "sound" and fid == "CVE-X:CWE-89:a.py:3"
     assert backend == "codeql" and sq == "SOUND_QL"
@@ -366,8 +432,7 @@ def _tier0_setup(monkeypatch, *, tier0_result):
 def test_synthesize_one_tier0_short_circuits_sound(monkeypatch, tmp_path: Path):
     """Tier 0 SOUND -> backend=smt, artifact in barrier_query, no before-DB
     build (the whole point of the free first-pass)."""
-    from core.dataflow.smt_barrier import (Tier0Result, Tier0Status,
-                                            ValidatorSpec)
+    from core.dataflow.smt_barrier import Tier0Result, Tier0Status, ValidatorSpec
     spec = ValidatorSpec("charset", "x", "A-Za-z0-9", "if not re.match(...)", 0)
     t0 = Tier0Result(
         Tier0Status.SOUND, "UNSAT: no string in [A-Za-z0-9]+ can contain '/'",
@@ -375,7 +440,7 @@ def test_synthesize_one_tier0_short_circuits_sound(monkeypatch, tmp_path: Path):
         extras={"validator_line": 3, "var_name": "x"})
     builds, _ = _tier0_setup(monkeypatch, tier0_result=t0)
     pair = _pair(cwe="CWE-22")
-    status, fid, backend, bq, detail = cvefix_bridge.synthesize_one(
+    status, _fid, backend, bq, detail = cvefix_bridge.synthesize_one(
         pair, work_dir=tmp_path / "w", proposer=lambda *a: "RAISES_IF_CALLED")
     assert status == "sound"
     assert backend == "smt"
@@ -390,7 +455,7 @@ def test_synthesize_one_tier0_not_applicable_falls_through(monkeypatch, tmp_path
                      "no recognised charset/regex validator in fix diff")
     builds, _ = _tier0_setup(monkeypatch, tier0_result=t0)
     pair = _pair(cwe="CWE-22")
-    status, fid, backend, bq, detail = cvefix_bridge.synthesize_one(
+    status, _fid, backend, bq, _detail = cvefix_bridge.synthesize_one(
         pair, work_dir=tmp_path / "w", proposer=lambda *a: "")
     assert status == "sound" and backend == "codeql" and bq == "TIER2_QL"
     # Tier 0 fell through -> before-DB WAS built
@@ -398,8 +463,7 @@ def test_synthesize_one_tier0_not_applicable_falls_through(monkeypatch, tmp_path
 
 
 def test_synthesize_one_tier0_declined_falls_through(monkeypatch, tmp_path: Path):
-    from core.dataflow.smt_barrier import (Tier0Result, Tier0Status,
-                                            ValidatorSpec)
+    from core.dataflow.smt_barrier import Tier0Result, Tier0Status, ValidatorSpec
     spec = ValidatorSpec("charset", "x", "A-Za-z0-9_./", "if not...", 0)
     t0 = Tier0Result(
         Tier0Status.DECLINED,

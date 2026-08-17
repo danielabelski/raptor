@@ -1769,13 +1769,21 @@ Examples:
                 "GIT_CONFIG_SYSTEM": "/dev/null",
             })
             # Disable hooks and filters — a malicious .gitattributes filter
-            # directive would otherwise execute arbitrary commands during git add
-            git_safe = ["-c", "core.hooksPath=/dev/null",
-                        "-c", "filter.lfs.clean=true",
-                        "-c", "filter.lfs.smudge=true",
-                        "-c", "filter.lfs.process=true",
-                        "-c", "user.name=raptor",
-                        "-c", "user.email=raptor@local"]
+            # directive would otherwise execute arbitrary commands during
+            # git add. The canonical per-invocation pins live in
+            # core.git._SAFE_GIT_OVERRIDES (hooksPath, diff.external,
+            # gpg.*, askPass, fsmonitor, credential.helper, ...) — build
+            # the argv via safe_git_command so this site stops drifting
+            # behind core's list, and layer the site-specific extras
+            # (LFS filter neutralisation + identity for the snapshot
+            # commit) on top. git honours the LAST -c for a key, so the
+            # extras win where they overlap.
+            from core.git import safe_git_command as _safe_git_command
+            git_extra = ["-c", "filter.lfs.clean=true",
+                         "-c", "filter.lfs.smudge=true",
+                         "-c", "filter.lfs.process=true",
+                         "-c", "user.name=raptor",
+                         "-c", "user.email=raptor@local"]
             # Suppress per-call sandbox INFO lines for internal git
             # housekeeping — the operator already sees the "Creating a
             # temporary copy" message; 3 repeated sandbox lines are noise.
@@ -1787,13 +1795,14 @@ Examples:
             _sb_log.setLevel(_logging.WARNING)
             try:
                 result = sandbox_run(
-                    ["git"] + git_safe + ["init"], block_network=True,
+                    _safe_git_command(*git_extra, "init"), block_network=True,
                     cwd=temp_repo, capture_output=True, text=True, timeout=30,
                     env=env, env_caller_filtered=True,
                 )
                 if result.returncode == 0:
                     add_result = sandbox_run(
-                        ["git"] + git_safe + ["add", "."], block_network=True,
+                        _safe_git_command(*git_extra, "add", "."),
+                        block_network=True,
                         cwd=temp_repo, capture_output=True, text=True, timeout=60,
                         env=env, env_caller_filtered=True,
                     )
@@ -1801,7 +1810,9 @@ Examples:
                         result = add_result
                     else:
                         commit_result = sandbox_run(
-                            ["git"] + git_safe + ["commit", "-m", "RAPTOR scan snapshot"],
+                            _safe_git_command(
+                                *git_extra, "commit", "-m",
+                                "RAPTOR scan snapshot"),
                             block_network=True,
                             cwd=temp_repo, capture_output=True, text=True, timeout=60,
                             env=env, env_caller_filtered=True,

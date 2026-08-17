@@ -528,7 +528,9 @@ def infer_codeql_build_from_sage_recall_row(
     over the decision fields (kind, repo key, outcome, build command,
     languages). Rows without a valid token still yield ``outcome`` /
     ``languages`` as hints, but never a replayable command — an
-    unverified row must not produce a BuildSystem.
+    unverified row must not produce a BuildSystem. The parsed command
+    is instead surfaced as ``unverified_build_command`` so the consumer
+    can show it to the operator as a hint (never execute it).
     """
     if not row:
         return {}
@@ -557,6 +559,8 @@ def infer_codeql_build_from_sage_recall_row(
             }
             if _row_mac_ok("codeql_build", fields, token):
                 out["build_command"] = cmd
+            else:
+                out["unverified_build_command"] = cmd
 
     return out
 

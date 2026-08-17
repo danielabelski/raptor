@@ -251,6 +251,15 @@ class CodeQLAgent:
                     " (languages: %s)",
                     sage_build_cmd, sage_build_langs or "unknown",
                 )
+            elif hint.get("unverified_build_command"):
+                # Row failed MAC verification (or predates the row-MAC
+                # mechanism) — never auto-execute it. Surface it once
+                # so the operator can opt in explicitly.
+                logger.warning(
+                    "SAGE suggests build command %s (unverified) — "
+                    "pass --build-command to use it",
+                    hint["unverified_build_command"],
+                )
         except Exception:  # noqa: BLE001, S110 — SAGE recall is best-effort
             pass
 

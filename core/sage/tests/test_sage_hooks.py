@@ -224,6 +224,28 @@ class TestInferCodeQLBuild(unittest.TestCase):
         self.assertEqual(hint["outcome"], "success")
         self.assertEqual(hint["languages"], "cpp")
         self.assertNotIn("build_command", hint)
+        # Demoted, not dropped: the command survives as an
+        # operator-visible hint only.
+        self.assertEqual(
+            hint["unverified_build_command"],
+            "cmake -B build && cmake --build build")
+
+    def test_failed_mac_verification_demotes_to_unverified(self):
+        """A stamped row whose token fails verification never yields a
+        replayable command — only the unverified operator hint."""
+        from core.sage.hooks import infer_codeql_build_from_sage_recall_row
+        row = _stamped_codeql_row(languages="cpp", cmd="make all")
+        with patch("core.sage.rowmac.verify", return_value=False):
+            hint = infer_codeql_build_from_sage_recall_row(row)
+        self.assertNotIn("build_command", hint)
+        self.assertEqual(hint["unverified_build_command"], "make all")
+
+    def test_verified_row_has_no_unverified_key(self):
+        from core.sage.hooks import infer_codeql_build_from_sage_recall_row
+        row = _stamped_codeql_row(languages="cpp", cmd="make all")
+        hint = infer_codeql_build_from_sage_recall_row(row)
+        self.assertEqual(hint["build_command"], "make all")
+        self.assertNotIn("unverified_build_command", hint)
 
     def test_no_command_on_failure(self):
         from core.sage.hooks import infer_codeql_build_from_sage_recall_row

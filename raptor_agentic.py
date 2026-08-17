@@ -1191,6 +1191,28 @@ Examples:
     )
     parser.add_argument("--no-visualizations", action="store_true", help="Disable dataflow visualizations for CodeQL findings")
 
+    # Compiler-analyzer scan channel (forwarded to the scanner subprocess
+    # like --traced-build is forwarded to the codeql agent).
+    parser.add_argument(
+        "--compiler-scan", action="store_true",
+        help="Run the compiler-analyzer scan channel during the scan phase: "
+             "gcc -fanalyzer / clang --analyze per C/C++ translation unit, "
+             "diagnostics become findings for dedup/analysis. Sandboxed, "
+             "network blocked, no build system — no repo code executes. "
+             "Off by default (operator opt-in); rides the Semgrep scan "
+             "stage, so it is skipped under --codeql-only.",
+    )
+    parser.add_argument(
+        "--no-compiler-scan", action="store_true",
+        help="Explicitly disable the compiler-analyzer scan stage. Takes "
+             "precedence over --compiler-scan.",
+    )
+    parser.add_argument(
+        "--compiler-scan-max-tus", type=int, default=None, metavar="N",
+        help="Cap the number of translation units the compiler-analyzer "
+             "scan compiles (default 2000). Skipped TUs are reported "
+             "loudly, never silently truncated.",
+    )
     # Reachability gating control
     parser.add_argument(
         "--allow-unreachable",
@@ -2070,6 +2092,17 @@ Examples:
             "--out", str(out_dir / "scan"),
             *sandbox_passthrough,
         ]
+        # Compiler-analyzer channel rides the scanner subprocess —
+        # forwarded verbatim (same pattern as --traced-build on the
+        # codeql agent). --no wins over --on at the scanner too, but
+        # resolve here so the child's argv reflects the decision.
+        if args.compiler_scan and not args.no_compiler_scan:
+            semgrep_cmd.append("--compiler-scan")
+            if args.compiler_scan_max_tus is not None:
+                semgrep_cmd.extend([
+                    "--compiler-scan-max-tus",
+                    str(args.compiler_scan_max_tus),
+                ])
         logger.debug("Running: Scanning code with Semgrep")
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         # ``semgrep_cmd`` is a list of RAPTOR-constructed argv;

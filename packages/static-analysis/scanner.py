@@ -1593,6 +1593,79 @@ def run_cocci(
     return [str(sarif_path)]
 
 
+# ---------------------------------------------------------------------------
+# Compiler-analyzer scan (gcc -fanalyzer / clang --analyze) — opt-in
+# ---------------------------------------------------------------------------
+
+
+def _load_compiler_scan():
+    """Load the compiler_scan sibling module via importlib.
+
+    ``static-analysis`` is hyphenated → not importable as a Python
+    package; same call-time importlib convention as ``_proxy_hosts``.
+    Registered in ``sys.modules`` (dataclass processing resolves the
+    defining module there) and memoised across calls.
+    """
+    import importlib.util as _importlib_util
+    name = "static_analysis_compiler_scan"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = Path(__file__).parent / "compiler_scan.py"
+    spec = _importlib_util.spec_from_file_location(name, path)
+    mod = _importlib_util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def run_compiler_scan_stage(
+    repo_path: Path,
+    out_dir: Path,
+    max_tus: int | None = None,
+) -> list[str]:
+    """Run the compiler-analyzer scan channel and emit ``compiler.sarif``.
+
+    Same channel as core.audit.compiler_sweep, opposite direction: the
+    compiler's static analyzers run per-TU across the whole target and
+    their diagnostics become scan findings for the dedup/analysis
+    pipeline. Sandboxed, network-blocked, no build system — no repo
+    code executes (see packages/static-analysis/compiler_scan.py).
+
+    Auto-skipped (with a debug log) when the target has no C/C++
+    source. A refused run (sandbox unavailable, no analyzer toolchain)
+    is reported LOUDLY on stderr — never a silent empty result.
+
+    Returns the list of SARIF paths emitted — same shape as
+    ``run_codeql`` / ``run_cocci`` so the caller's ``sarif_inputs``
+    union works without special cases.
+    """
+    if not _repo_has_c_cpp_source(repo_path):
+        logger.debug("compiler-scan: target has no C/C++ source; skipping")
+        return []
+
+    cs = _load_compiler_scan()
+    kwargs = {} if max_tus is None else {"max_tus": max_tus}
+    result = cs.scan_target(repo_path, out_dir=out_dir, **kwargs)
+
+    if not result.ok:
+        print(
+            f"⚠️  compiler-scan did not run: {result.reason}",
+            file=sys.stderr,
+        )
+        return []
+
+    sarif_path = out_dir / "compiler.sarif"
+    save_json(sarif_path, cs.to_sarif(result))
+
+    summary = result.summary_line()
+    logger.info("%s; SARIF at %s", summary, sarif_path)
+    if result.tus_skipped_cap or result.tus_failed:
+        # Cap skips and failed TUs must reach the operator without
+        # log-level spelunking — same posture as the failed-pack line.
+        print(f"⚠️  {summary}", file=sys.stderr)
+    return [str(sarif_path)]
+
+
 def _sarif_has_findings(sarif_path: Path) -> bool:
     """Return True iff the SARIF file contains at least one result.
 
@@ -1870,6 +1943,29 @@ def main():
              "lock imbalance, unchecked returns) Semgrep doesn't model "
              "AST-level. Auto-skips silently when the prerequisites aren't "
              "met; this flag is for the explicit-opt-out case in scripts.",
+    )
+    ap.add_argument(
+        "--compiler-scan", action="store_true",
+        dest="compiler_scan",
+        help="Run the compiler-analyzer scan channel: gcc -fanalyzer / "
+             "clang --analyze per C/C++ translation unit, diagnostics become "
+             "scan findings alongside Semgrep/CodeQL. Sandboxed, network "
+             "blocked, no build system — no repo code executes. Off by "
+             "default (operator opt-in).",
+    )
+    ap.add_argument(
+        "--no-compiler-scan", action="store_true",
+        dest="no_compiler_scan",
+        help="Explicitly disable the compiler-analyzer scan stage. Takes "
+             "precedence over --compiler-scan; script-friendly opt-out if "
+             "defaults change in future.",
+    )
+    ap.add_argument(
+        "--compiler-scan-max-tus", type=int, default=None, metavar="N",
+        dest="compiler_scan_max_tus",
+        help="Cap the number of translation units the compiler-analyzer "
+             "scan compiles (default 2000). Skipped TUs are reported "
+             "loudly, never silently truncated.",
     )
     ap.add_argument(
         "--languages",
@@ -2178,8 +2274,20 @@ def main():
         if not args.no_cocci:
             cocci_sarifs = run_cocci(repo_path, out_dir)
 
+        # Compiler-analyzer stage (opt-in). Same channel as /audit's
+        # compiler_sweep, opposite direction — per-TU gcc -fanalyzer /
+        # clang --analyze diagnostics become scan findings. --no wins
+        # over --on, mirroring the codeql flag pair.
+        compiler_sarifs = []
+        if args.compiler_scan and not args.no_compiler_scan:
+            compiler_sarifs = run_compiler_scan_stage(
+                repo_path, out_dir, max_tus=args.compiler_scan_max_tus,
+            )
+
         # Merge SARIFs if more than one
-        sarif_inputs = semgrep_sarifs + codeql_sarifs + cocci_sarifs
+        sarif_inputs = (
+            semgrep_sarifs + codeql_sarifs + cocci_sarifs + compiler_sarifs
+        )
         merged = out_dir / "combined.sarif"
         exclude_globs = args.exclude_dir
         excluded_count = 0

@@ -8,9 +8,10 @@ matches.
 
 Per the audit design doc (Mode 2): every confirmed hypothesis
 potentially yields a reusable checker. The variants surfaced here are
-candidate findings — the next ``/agentic`` run can analyse them with
-full context, and the synthesised rule itself is saved on disk for
-future ``/scan`` runs (KNighter's permanent-rule pattern).
+candidate findings — the SAME run analyses a bounded number of them via
+:func:`load_variant_candidates` (with the originating hypothesis as
+context), and the synthesised rule itself is saved on disk for future
+``/scan`` runs (KNighter's permanent-rule pattern).
 
 Best-effort: any exception is logged at DEBUG and swallowed so a
 synthesis failure cannot break the analysis loop. The caller's
@@ -27,6 +28,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 CHECKER_MATCHES_FILE = "checker-matches.jsonl"
+
+# Same-run variant reviews are bounded: each candidate costs a full
+# LLM analysis call on top of the synthesis spend that produced it.
+MAX_VARIANT_REVIEWS_PER_RUN = 10
 
 
 def _llm_callable_from_client(
@@ -448,6 +453,10 @@ def _record_matches(
             "rule_id": result.rule.rule_id,
             "engine": result.rule.engine,
             "rationale": result.rule.rationale or "",
+            # Originating hypothesis (the seed finding's analysis
+            # reasoning) — carried so the same-run variant review can
+            # present it as context. Bounded: prior-LLM prose.
+            "seed_reasoning": (getattr(seed, "reasoning", "") or "")[:500],
             "triage": triage_status,
         }
         try:
@@ -462,3 +471,136 @@ def _record_matches(
                 exc_info=True,
             )
     return written
+
+
+def load_variant_candidates(
+    out_dir: Path,
+    *,
+    checklist: dict[str, Any] | None,
+    repo_root: Path,
+    exclude_keys: set[tuple[str, str]] | frozenset = frozenset(),
+    max_candidates: int = MAX_VARIANT_REVIEWS_PER_RUN,
+) -> list[dict[str, Any]]:
+    """Read ``checker-matches.jsonl`` back as reviewable finding dicts.
+
+    The same-run consumer of the variant matches: each entry is
+    converted to a ``VulnerabilityContext``-shaped finding dict,
+    resolved to its enclosing function via the inventory checklist.
+    Unresolvable sites are dropped (no context slice to review), the
+    seed's own function and ``exclude_keys`` (functions this run
+    already analysed) are skipped, duplicates collapse per function,
+    and the result is bounded by ``max_candidates``.
+
+    Provenance is marked on each candidate: ``tool`` is
+    ``checker-synthesis``, ``metadata.from_synthesis`` is True, and the
+    seed finding / rule identity ride along. The originating hypothesis
+    (rule rationale + seed reasoning, both prior-LLM prose over
+    attacker-visible source) is returned under ``synthesis_context`` —
+    the caller must wrap it in an ``UntrustedBlock`` before it reaches
+    a prompt.
+    """
+    matches_path = Path(out_dir) / CHECKER_MATCHES_FILE
+    if not matches_path.is_file():
+        return []
+
+    try:
+        from core.inventory.lookup import lookup_function
+    except ImportError:
+        logger.debug("inventory lookup unavailable", exc_info=True)
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set(exclude_keys)
+    try:
+        lines = matches_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        logger.debug("checker-matches read failed", exc_info=True)
+        return []
+
+    for raw in lines:
+        if len(candidates) >= max_candidates:
+            break
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("triage") in ("false_positive", "skipped"):
+            continue
+        file_path = rec.get("file") or ""
+        try:
+            line_no = int(rec.get("line") or 0)
+        except (TypeError, ValueError):
+            line_no = 0
+        if not file_path or line_no <= 0:
+            continue
+
+        func = None
+        try:
+            func = lookup_function(
+                checklist or {}, file_path, line_no,
+                repo_root=str(repo_root),
+            )
+        except (ValueError, TypeError, OSError):
+            func = None
+        if not func or not func.get("name"):
+            continue
+        name = func["name"]
+
+        key = (file_path, name)
+        if key in seen:
+            continue
+        # The synthesised rule matching its own seed is confirmation,
+        # not a variant.
+        if (rec.get("seed_file"), rec.get("seed_function")) == key:
+            continue
+        seen.add(key)
+
+        context_parts = []
+        rationale = (rec.get("rationale") or "").strip()
+        if rationale:
+            context_parts.append(f"Checker rule rationale: {rationale}")
+        seed_reasoning = (rec.get("seed_reasoning") or "").strip()
+        if seed_reasoning:
+            context_parts.append(
+                "Originating hypothesis (analysis of the confirmed "
+                f"seed finding): {seed_reasoning}"
+            )
+
+        candidates.append(
+            {
+                "finding_id": (
+                    f"synthesis-variant:{rec.get('rule_id', '')}:"
+                    f"{file_path}:{line_no}"
+                ),
+                "rule_id": rec.get("rule_id") or "synthesized-variant",
+                "file": file_path,
+                "startLine": line_no,
+                "endLine": line_no,
+                "snippet": rec.get("snippet") or "",
+                "message": (
+                    "Codebase-wide variant match from a checker "
+                    "synthesized off the confirmed finding "
+                    f"{rec.get('seed_file', '?')}:"
+                    f"{rec.get('seed_function', '?')}"
+                ),
+                "level": "warning",
+                "cwe_id": rec.get("cwe"),
+                "tool": "checker-synthesis",
+                "metadata": {
+                    "name": name,
+                    "from_synthesis": True,
+                    "seed_file": rec.get("seed_file"),
+                    "seed_function": rec.get("seed_function"),
+                    "synthesis_rule_id": rec.get("rule_id"),
+                    "synthesis_engine": rec.get("engine"),
+                    "synthesis_triage": rec.get("triage"),
+                },
+                "synthesis_context": "\n".join(context_parts),
+            }
+        )
+    return candidates

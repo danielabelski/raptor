@@ -1024,7 +1024,18 @@ class AutonomousSecurityAgentV2:
             logger.error("✗ Dataflow validation failed: %s", e)
             return {}
 
-    def analyze_vulnerability(self, vuln: VulnerabilityContext) -> bool:
+    def analyze_vulnerability(
+        self,
+        vuln: VulnerabilityContext,
+        extra_context_blocks: tuple = (),
+    ) -> bool:
+        """Run LLM analysis on one finding.
+
+        ``extra_context_blocks`` is an optional tuple of
+        ``UntrustedBlock`` objects appended to the prompt envelope —
+        used by the variant-review pass to carry the originating
+        hypothesis of the synthesised checker's seed finding.
+        """
         is_prep = isinstance(self.llm, ClaudeCodeProvider)
 
         if is_prep:
@@ -1106,6 +1117,7 @@ class AutonomousSecurityAgentV2:
                 extra_blocks.append(tm_block)
         except Exception as exc:  # noqa: BLE001
             logger.debug("threat_model_untrusted_block failed: %s", exc)
+        extra_blocks.extend(extra_context_blocks)
 
         bundle = build_analysis_prompt_bundle(
             rule_id=vuln.rule_id,
@@ -2304,6 +2316,84 @@ class AutonomousSecurityAgentV2:
         ``process_findings`` stays brief."""
         return resolve_prefer_globs(operator_globs, self.repo_path)
 
+    def _review_variant_matches(
+        self,
+        checklist: dict[str, Any] | None,
+        *,
+        exclude_keys: set | frozenset = frozenset(),
+        emit_journal: bool = True,
+    ) -> dict[str, Any]:
+        """Analyse checker-synthesis variant matches in the same run.
+
+        Reads ``checker-matches.jsonl`` back as bounded, checklist-
+        resolved candidate findings and pushes each through
+        ``analyze_vulnerability`` with the originating hypothesis
+        wrapped in an ``UntrustedBlock``. Provenance is marked on the
+        finding (``tool=checker-synthesis``,
+        ``metadata.from_synthesis``). Best-effort per candidate.
+        """
+        stats: dict[str, Any] = {
+            "candidates": 0,
+            "analyzed": 0,
+            "exploitable": 0,
+            "journal_entries": 0,
+            "results": [],
+        }
+        from packages.llm_analysis.checker_followup import (
+            load_variant_candidates,
+        )
+
+        candidates = load_variant_candidates(
+            self.out_dir,
+            checklist=checklist,
+            repo_root=self.repo_path,
+            exclude_keys=exclude_keys,
+        )
+        stats["candidates"] = len(candidates)
+        if not candidates:
+            return stats
+        logger.info(
+            "Variant review pass: %d candidate(s) from synthesized "
+            "checkers",
+            len(candidates),
+        )
+
+        for finding in candidates:
+            try:
+                context_text = finding.pop("synthesis_context", "")
+                vuln = VulnerabilityContext(finding, self.repo_path)
+                blocks: tuple = ()
+                if context_text:
+                    from core.security.prompt_envelope import (
+                        UntrustedBlock,
+                    )
+                    blocks = (
+                        UntrustedBlock(
+                            content=context_text,
+                            kind="synthesis-variant-context",
+                            origin="checker-synthesis",
+                        ),
+                    )
+                if not self.analyze_vulnerability(
+                    vuln, extra_context_blocks=blocks,
+                ):
+                    continue
+                stats["analyzed"] += 1
+                if vuln.exploitable:
+                    stats["exploitable"] += 1
+                if emit_journal and self._emit_journal_entry(
+                    vuln, checklist,
+                ):
+                    stats["journal_entries"] += 1
+                stats["results"].append(vuln.to_dict())
+            except Exception:
+                logger.warning(
+                    "variant review error for %s",
+                    finding.get("finding_id", "?"),
+                    exc_info=True,
+                )
+        return stats
+
     def process_findings(
         self, sarif_paths: list[str] | None = None,
         findings_path: str | None = None,
@@ -2977,6 +3067,40 @@ class AutonomousSecurityAgentV2:
         # is per-process; release it as soon as the loop is done.
         self._stop_guard_dominance_server()
 
+        # Same-run variant analysis (Mode 2 second pass): the checker
+        # rules synthesised above swept the codebase and recorded
+        # variant matches — analyse a bounded number of them NOW, with
+        # the originating hypothesis as context, instead of leaving
+        # the file for a hypothetical next run. Best-effort.
+        variant_review_stats: dict[str, Any] = {
+            "candidates": 0, "analyzed": 0, "exploitable": 0,
+        }
+        if (
+            variant_matches > 0
+            and getattr(self, "synthesise_checkers", True)
+            and not isinstance(self.llm, ClaudeCodeProvider)
+        ):
+            try:
+                analyzed_keys = {
+                    (
+                        f.get("file") or f.get("file_path") or "",
+                        (f.get("metadata") or {}).get("name") or "",
+                    )
+                    for f in unique_findings
+                }
+                variant_review_stats = self._review_variant_matches(
+                    checklist,
+                    exclude_keys=analyzed_keys,
+                    emit_journal=emit_journal,
+                )
+                results.extend(variant_review_stats.pop("results", []))
+                exploitable += variant_review_stats.get("exploitable", 0)
+                journal_entries_emitted += variant_review_stats.get(
+                    "journal_entries", 0,
+                )
+            except Exception:
+                logger.warning("variant review pass error", exc_info=True)
+
         execution_time = time.time() - start_time
 
         # Get LLM stats from client (aggregates all provider stats)
@@ -2999,6 +3123,11 @@ class AutonomousSecurityAgentV2:
             "false_positives_caught": false_positives_found,
             "journal_entries_emitted": journal_entries_emitted,
             "variant_matches": variant_matches,
+            "variant_reviews": {
+                "candidates": variant_review_stats.get("candidates", 0),
+                "analyzed": variant_review_stats.get("analyzed", 0),
+                "exploitable": variant_review_stats.get("exploitable", 0),
+            },
             "fixture_detection_metrics": {
                 "prep_outcomes": fixture_prep_outcomes,
                 "skipped_llm_calls": fixture_skipped_llm_calls,
@@ -3057,6 +3186,13 @@ class AutonomousSecurityAgentV2:
                     "✓ Checker-synthesised variants: %d (in %s)",
                     variant_matches,
                     self.out_dir / 'checker-matches.jsonl',
+                )
+            if variant_review_stats.get("analyzed", 0) > 0:
+                logger.info(
+                    "✓ Variant matches analysed this run: %d "
+                    "(%d exploitable)",
+                    variant_review_stats["analyzed"],
+                    variant_review_stats["exploitable"],
                 )
             if fixture_skipped_llm_calls > 0:
                 logger.info(

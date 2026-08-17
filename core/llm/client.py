@@ -405,6 +405,41 @@ def _is_daily_quota_error(error: Exception) -> bool:
     )
 
 
+# Timeout-class failures get at most ONE retry (the initial attempt
+# plus one more). A timed-out call already consumed its full per-call
+# timeout (600s on the claudecode transport); re-dispatching the same
+# oversized prompt up to max_retries times mostly re-buys the same
+# timeout at full wall-clock and token cost. Parse and 429 failures
+# keep the standard max_retries budget — they are cheap and genuinely
+# transient. The orchestrator layers ONE further reduced-context
+# retry on top (see core.audit.orchestrator timeout recovery).
+_TIMEOUT_RETRY_CAP = 1
+
+
+def is_timeout_error(error: Exception) -> bool:
+    """Classify timeout-class failures distinctly from other
+    retryables.
+
+    Covers ``TimeoutError`` (and subclasses), SDK exception types
+    carrying ``Timeout`` in their name (``APITimeoutError``,
+    ``ReadTimeout``, ``subprocess.TimeoutExpired``), and message-based
+    detection for wrapped errors (the claudecode transport raises
+    ``RuntimeError("claude -p timed out after Ns")``).
+
+    Quota/rate-limit errors are excluded — a 429 with "retry in ..."
+    text is a quota signal, not a timeout, and keeps its own retry
+    policy.
+    """
+    if _is_quota_error(error):
+        return False
+    if isinstance(error, TimeoutError):
+        return True
+    if "Timeout" in type(error).__name__:
+        return True
+    error_str = str(error).lower()
+    return "timed out" in error_str or "timeout" in error_str
+
+
 def _is_retryable_error(error: Exception) -> bool:
     """Check if an error is transient and worth retrying.
 
@@ -1618,6 +1653,7 @@ class LLMClient:
 
                 logger.debug("Trying model: %s/%s", model.provider, model.model_name)
 
+                timeout_failures = 0
                 for attempt in range(self.config.max_retries):
                     try:
                         if attempt > 0:
@@ -1754,6 +1790,17 @@ class LLMClient:
                         if not _is_retryable_error(e):
                             logger.info("Non-retryable error — skipping remaining retries for %s/%s", model.provider, model.model_name)
                             break
+
+                        if is_timeout_error(e):
+                            timeout_failures += 1
+                            if timeout_failures > _TIMEOUT_RETRY_CAP:
+                                logger.info(
+                                    "Timeout retry cap (%d) reached for "
+                                    "%s/%s — skipping remaining retries",
+                                    _TIMEOUT_RETRY_CAP,
+                                    model.provider, model.model_name,
+                                )
+                                break
 
                         if attempt < self.config.max_retries - 1:
                             delay = min(self.config.retry_delay * (2 ** attempt), 30)
@@ -1966,6 +2013,7 @@ class LLMClient:
                 if model.provider.lower() == "ollama":
                     logger.warning("Local model — exploit PoCs may be unreliable")
 
+                timeout_failures = 0
                 for attempt in range(self.config.max_retries):
                     try:
                         if attempt > 0:
@@ -2128,6 +2176,17 @@ class LLMClient:
                         if not _is_retryable_error(e):
                             logger.info("Non-retryable error — skipping remaining retries for %s/%s", model.provider, model.model_name)
                             break
+
+                        if is_timeout_error(e):
+                            timeout_failures += 1
+                            if timeout_failures > _TIMEOUT_RETRY_CAP:
+                                logger.info(
+                                    "Timeout retry cap (%d) reached for "
+                                    "%s/%s — skipping remaining retries",
+                                    _TIMEOUT_RETRY_CAP,
+                                    model.provider, model.model_name,
+                                )
+                                break
 
                         if attempt < self.config.max_retries - 1:
                             delay = min(self.config.retry_delay * (2 ** attempt), 30)

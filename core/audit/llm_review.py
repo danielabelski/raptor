@@ -1098,6 +1098,17 @@ def make_review_fn(
         else:
             kwargs["task_type"] = task_type
 
+        # Per-call timeout cap (timeout-recovery retries set this on
+        # the context). Providers that support per-call timeouts (the
+        # claudecode transport) honour ``timeout_s``; others build
+        # their request kwargs explicitly and ignore it.
+        _timeout_cap = ctx.get("timeout_s")
+        if _timeout_cap:
+            try:
+                kwargs["timeout_s"] = int(_timeout_cap)
+            except (TypeError, ValueError):
+                pass
+
         active_schema = deepen_schema if ctx.get("deepen") else first_pass_schema
 
         try:

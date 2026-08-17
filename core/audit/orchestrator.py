@@ -248,6 +248,11 @@ class ReviewOutcome:
     review_result: Optional[Dict[str, Any]] = None
     line: int = 0
     error_class: str = ""
+    # True when this verdict was produced by the reduced-context
+    # timeout retry (block analysis / sibling / type-constraint
+    # context stripped). Deepen re-reviews such outcomes at full
+    # context.
+    context_reduced: bool = False
     verification_tier: str = "speculative"
     tools_dispatched: Optional[set] = field(default=None, repr=False)
     semantic_confidence: str = ""
@@ -1310,7 +1315,16 @@ def review_one_function(
                 gap["name"],
                 exc,
             )
-            outcome = _error_outcome(gap, exc)
+            if _classify_error(exc) == "timeout" and not _check_budget(
+                config, start_time, result,
+            ):
+                # First timeout for this function: one immediate
+                # retry with reduced context and a capped timeout.
+                outcome = _timeout_reduced_retry(
+                    gap, ctx, exc, review_fn, config,
+                )
+            else:
+                outcome = _error_outcome(gap, exc)
 
     outcome.line = gap.get("line_start", 0)
     result.cost_tracker.record_call(
@@ -5924,6 +5938,11 @@ def _multi_pass_review(
     )
 
 
+# ``timeout`` is deliberately NOT in the recoverable set: a timed-out
+# review already got its single reduced-context retry inline (see
+# ``_timeout_reduced_retry``), and the end-of-run pass re-dispatching
+# the same oversized prompt at full context would mostly re-buy the
+# same timeout — the timeout retry policy caps retries at one.
 _RECOVERABLE_ERROR_CLASSES = frozenset({"json_parse", "truncation", "api_error"})
 
 
@@ -5939,6 +5958,12 @@ def _classify_error(exc: Exception) -> str:
         return "json_parse"
     if type(exc).__name__ == "ValidationError":
         return "json_parse"
+    try:
+        from core.llm.client import is_timeout_error
+        if is_timeout_error(exc):
+            return "timeout"
+    except ImportError:
+        pass
     if any(
         k in msg
         for k in (
@@ -5976,6 +6001,64 @@ _TRUNCATION_STRIP_KEYS = frozenset(
         "type_constraints",
     }
 )
+
+# Ceiling for the single reduced-context retry after a review call
+# times out. The stripped prompt is substantially smaller, so a call
+# that can succeed at all completes well inside this; a call that
+# can't must not re-buy the transport's full 600s timeout.
+_TIMEOUT_RETRY_TIMEOUT_S = 300
+
+
+def _timeout_reduced_retry(
+    gap: dict,
+    ctx: dict,
+    exc: Exception,
+    review_fn: Callable,
+    config: OrchestratorConfig,
+) -> ReviewOutcome:
+    """Single reduced-context retry after a review call timed out.
+
+    Reuses the truncation-recovery strip set (block analysis, sibling
+    negative-space, type constraints — the bulkiest optional context
+    blocks) and caps the retry's per-call timeout at
+    ``_TIMEOUT_RETRY_TIMEOUT_S``. A successful retry is tagged
+    ``context_reduced=True`` so deepen re-reviews the function at
+    full context later in the run; a failed retry degrades to the
+    original timeout error outcome. This is the ONE permitted
+    timeout retry at the orchestrator layer — the end-of-run error
+    retry pass deliberately skips timeout-class outcomes.
+    """
+    logger.warning(
+        "review timed out for %s:%s — retrying once with reduced "
+        "context (timeout capped at %ds)",
+        gap["file"],
+        gap["name"],
+        _TIMEOUT_RETRY_TIMEOUT_S,
+    )
+    for key in _TRUNCATION_STRIP_KEYS:
+        ctx.pop(key, None)
+    ctx["error_retry"] = True
+    ctx["timeout_s"] = _TIMEOUT_RETRY_TIMEOUT_S
+    try:
+        outcome = review_fn(ctx, config)
+    except Exception as retry_exc:
+        from core.llm.client import is_budget_exceeded_error
+
+        if is_budget_exceeded_error(retry_exc):
+            raise
+        logger.warning(
+            "reduced-context retry failed for %s:%s: %s",
+            gap["file"],
+            gap["name"],
+            retry_exc,
+        )
+        # Report the ORIGINAL timeout: its classification drives the
+        # (deliberate) exclusion from the end-of-run retry pass.
+        return _error_outcome(gap, exc)
+    outcome.context_reduced = True
+    if outcome.review_result is not None:
+        outcome.review_result["context_reduced"] = True
+    return outcome
 
 
 def _retry_error_outcomes(
@@ -9415,6 +9498,19 @@ def _deepen_suspicious(
         and (o.review_result or {}).get("body")
         and not o.body.startswith("[gate violation:")
     ]
+    # Reduced-context verdicts (timeout strip-retry) are re-reviewed
+    # at full context regardless of status: a "clean" formed without
+    # block analysis / sibling / type-constraint context is exactly
+    # the verdict most likely to have missed something. Suspicious
+    # reduced outcomes are already in the list above.
+    _selected = {id(o) for o in suspicious}
+    suspicious.extend(
+        o
+        for o in result.outcomes
+        if o.context_reduced
+        and o.status == "clean"
+        and id(o) not in _selected
+    )
     if not suspicious:
         return result
 
@@ -9434,7 +9530,14 @@ def _deepen_suspicious(
             continue
         if hyp:
             seen_hypotheses[key] = hyp
-        if sloc < _MIN_SLOC_FOR_DEEPEN and not has_evidence:
+        if (
+            sloc < _MIN_SLOC_FOR_DEEPEN
+            and not has_evidence
+            and not o.context_reduced
+        ):
+            # Reduced-context outcomes bypass the SLOC gate: the
+            # whole point of the tag is a guaranteed full-context
+            # re-review.
             continue
         targets.append((o, gap))
 
@@ -9558,10 +9661,17 @@ def _deepen_suspicious(
         # Accept the deepen verdict when it's non-clean, OR when
         # the clean came from a structured demotion (all-refuted or
         # rationale-consistency) rather than a bare LLM flip-flop.
+        # A reduced-context prior is never dominated: a full-context
+        # clean genuinely supersedes a clean formed with stripped
+        # context (and clears the context_reduced tag).
         _rr = outcome.review_result or {}
-        _deepen_dominated = outcome.status == "clean" and not (
-            _rr.get("all_refuted_demotion")
-            or _rr.get("rationale_consistency_demotion")
+        _deepen_dominated = (
+            outcome.status == "clean"
+            and not prior_outcome.context_reduced
+            and not (
+                _rr.get("all_refuted_demotion")
+                or _rr.get("rationale_consistency_demotion")
+            )
         )
 
         if _deepen_dominated:

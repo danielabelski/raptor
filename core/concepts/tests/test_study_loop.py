@@ -33,7 +33,7 @@ def _run_loop(args: list[str], env_extra: dict | None = None) -> subprocess.Comp
     env["_RAPTOR_TRUSTED"] = "1"
     if env_extra:
         env.update(env_extra)
-    return subprocess.run(
+    return subprocess.run(  # noqa: PLW1510 - callers assert on returncode
         [sys.executable, STUDY_LOOP] + args,
         env=env,
         capture_output=True,
@@ -100,7 +100,7 @@ class TestReadingListDrain:
             import types
             mod = types.ModuleType("study_loop")
             mod.__file__ = STUDY_LOOP
-            exec(
+            exec(  # noqa: S102 - loads the libexec script under test
                 compile(
                     Path(STUDY_LOOP).read_text(encoding="utf-8"),
                     STUDY_LOOP, "exec",
@@ -310,3 +310,37 @@ class TestStoreInSage:
             json.dumps(dm), encoding="utf-8")
         with patch.dict("sys.modules", {"core.sage.hooks": None}):
             _loop._store_in_sage(tmp_path, "/repos/myproj")
+
+
+class TestUnresolvableExcludedFromDrain:
+    """The standalone study-loop driver must not drain or resolve
+    items the consumer marked unresolvable — they were attempted and
+    cannot be answered from the source."""
+
+    def _write_rl(self, tmp_path):
+        rl = {"items": [
+            {"id": "rl-1", "question": "Does `alive_fn` check bounds?",
+             "resolved": False, "resolution": "identifier"},
+            {"id": "rl-2", "question": "Does `dead_fn` retry?",
+             "resolved": False, "unresolvable": True,
+             "unresolvable_reason": "monkey-patched",
+             "resolution": "identifier"},
+        ]}
+        (tmp_path / "reading-list.json").write_text(json.dumps(rl))
+
+    def test_pending_excludes_unresolvable(self, tmp_path):
+        self._write_rl(tmp_path)
+        pending = _loop._load_pending_reading_list(tmp_path)
+        assert [i["id"] for i in pending] == ["rl-1"]
+
+    def test_mark_resolved_skips_unresolvable(self, tmp_path):
+        self._write_rl(tmp_path)
+        n = _loop._mark_items_resolved(
+            tmp_path, ["alive_fn", "dead_fn"], [],
+        )
+        assert n == 1
+        data = json.loads((tmp_path / "reading-list.json").read_text())
+        by_id = {i["id"]: i for i in data["items"]}
+        assert by_id["rl-1"]["resolved"]
+        assert not by_id["rl-2"].get("resolved")
+        assert by_id["rl-2"]["unresolvable"]

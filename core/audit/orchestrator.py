@@ -494,6 +494,9 @@ class OrchestratorResult:
     # detection-role channels (no single receipt was high-precision,
     # but the combined posterior crossed the promote threshold).
     aggregation_promoted: int = 0
+    # Glance-suspicious outcomes escalated to a full individual review
+    # instead of committing the 500-token guess (capped per run).
+    glance_escalated: int = 0
     refinement_rounds: int = 0
     clean_checks: int = 0
     clean_check_rescues: int = 0

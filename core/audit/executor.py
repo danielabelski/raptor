@@ -170,7 +170,7 @@ def run_executor_sync(
         glance_batch.clear()
         return False
 
-    from .orchestrator import is_shutdown_requested, _update_run_progress
+    from .orchestrator import _update_run_progress, is_shutdown_requested
     last_checkpoint = time.monotonic()
 
     while graph.pending > 0:
@@ -394,7 +394,7 @@ async def _run_async_body(
 ) -> ExecutorStats:
     """Inner body of the async executor, separated so _run_async can
     wrap it in try/finally for throttle cleanup."""
-    from .orchestrator import is_shutdown_requested, _update_run_progress
+    from .orchestrator import _update_run_progress, is_shutdown_requested
 
     stats = ExecutorStats()
     wall_start = time.monotonic()
@@ -724,6 +724,54 @@ async def _run_async_body(
 
 _GLANCE_BATCH_SIZE = 10
 
+# Per-run cap on glance-suspicious escalations to full individual
+# review. The glance prompt biases toward clean, so suspicious rates
+# are low — the cap bounds the worst case (a model that flags
+# everything) without starving the common one.
+_MAX_GLANCE_ESCALATIONS_PER_RUN = 20
+
+
+def _escalate_glance_suspicious(task: Any, shared: Any, result: Any) -> bool:
+    """Reserve a full individual review for a glance-suspicious function.
+
+    A batch-glance "suspicious" is a ~500-token guess — the model's own
+    "this looks wrong" signal — that previously committed directly and
+    was never investigated (deepen requires a review body, sweeps fire
+    on findings). Escalation upgrades the function's triage bucket to
+    INVESTIGATE (so the re-review gets a full context budget), marks
+    the gap ``force_review``, and counts against the per-run cap.
+
+    Returns True when the caller should run the full review instead of
+    committing the glance outcome; False when the cap is exhausted
+    (the glance outcome then commits as before — nothing is lost).
+    """
+    with result._lock:
+        if result.glance_escalated >= _MAX_GLANCE_ESCALATIONS_PER_RUN:
+            return False
+        result.glance_escalated += 1
+
+    try:
+        from .triage import TOKEN_BUDGETS, TriageBucket, TriageResult
+
+        triage_results = getattr(shared, "triage_results", None)
+        if triage_results is not None:
+            prior = triage_results.get(task.key)
+            reasons = tuple(getattr(prior, "reasons", ()) or ())
+            triage_results[task.key] = TriageResult(
+                bucket=TriageBucket.INVESTIGATE,
+                reasons=reasons + (
+                    "glance flagged suspicious — escalated to full review",
+                ),
+                token_budget=TOKEN_BUDGETS[TriageBucket.INVESTIGATE],
+                priority_score=getattr(prior, "priority_score", 0.0),
+            )
+    except Exception:
+        logger.debug(
+            "triage upgrade failed for %s", task.key, exc_info=True,
+        )
+    task.gap["force_review"] = True
+    return True
+
 
 def _is_glance(task: Any, shared: Any) -> bool:
     """True when the task is classified as GLANCE by the triage pass."""
@@ -794,7 +842,7 @@ def _process_glance_batch(
 
     try:
         outcomes = batch_review_fn(contexts, config)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any batch failure falls back to individual reviews
         logger.warning("batch glance failed, falling back: %s", exc)
         outcomes = None
 
@@ -802,6 +850,51 @@ def _process_glance_batch(
         if outcomes and i < len(outcomes) and outcomes[i].status != "error":
             outcome = outcomes[i]
             outcome.line = task.gap.get("line_start", 0)
+
+            # ── Glance-suspicious escalation ──────────────────────
+            # The model's "this looks wrong" from a 500-token glance is
+            # a lead, not a verdict — route it through a FULL
+            # individual review instead of committing the guess. The
+            # glance outcome is discarded (its verdict is replaced by
+            # the full review) but its LLM spend stays on the ledger.
+            if (
+                outcome.status == "suspicious"
+                and _escalate_glance_suspicious(task, shared, result)
+            ):
+                if outcome.cost_usd:
+                    with result._lock:
+                        result.total_cost_usd += outcome.cost_usd
+                logger.info(
+                    "glance flagged %s:%s suspicious — escalating to "
+                    "full individual review",
+                    outcome.file, outcome.function,
+                )
+                try:
+                    review_one_fn(
+                        task.gap, shared, config, review_fn, result,
+                        joern_server=joern_server,
+                        audit_log=audit_log,
+                        workqueue=workqueue,
+                        reviewed_set=reviewed_set,
+                        start_time=start_time,
+                        layer_disagreements=layer_disagreements,
+                        on_progress=on_progress,
+                        review_idx=review_idx + i,
+                        total=total,
+                        collector=collector,
+                        graph=graph,
+                        reviewed_outcomes=reviewed_outcomes,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, RuntimeError) and is_budget_exceeded_error(exc):
+                        raise
+                    logger.warning(
+                        "glance escalation review failed for %s:%s",
+                        task.gap.get("file", "?"),
+                        task.gap.get("name", "?"),
+                        exc_info=True,
+                    )
+                continue
 
             # ── Refutation gates (glance batch) ───────────────────
             if outcome.status in ("finding", "suspicious"):

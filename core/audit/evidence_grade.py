@@ -91,8 +91,14 @@ VALID_EVIDENCE_TOOLS: frozenset = frozenset({
     "dark_verify:confirmed", "dark_verify:refuted",
 })
 
+# NOTE: "triage" is deliberately NOT a tool namespace. The triage
+# stamps ("triage:batch" from the glance batcher, "triage:classifier"
+# from the skip classifier) record which LLM/mechanical shortcut
+# produced the verdict — they are provenance, not verification. A
+# 500-token batch glance blessed as tool evidence used to short-circuit
+# refutation gates, the G2 finding gate, and the promotion alarm.
 _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
-    "prefilter", "critique", "sweep", "sarif_cache", "triage",
+    "prefilter", "critique", "sweep", "sarif_cache",
     "dynamic", "frida", "dark_verify", "precondition",
 })
 

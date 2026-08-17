@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.audit.evidence_grade import (
     VALID_EVIDENCE_TOOLS,
@@ -128,20 +128,20 @@ class FakeEvidenceRecord:
     file: str = "a.c"
     function: str = "f"
     sink_unreachable: bool = False
-    taint_approx: Optional[Any] = None
-    taint_summary: Optional[Any] = None
-    joern_flows: List[Any] = field(default_factory=list)
-    imported_joern_flows: List[Any] = field(default_factory=list)
-    joern_unguarded_sinks: List[Any] = field(default_factory=list)
-    codeql_alerts: List[Any] = field(default_factory=list)
-    semgrep_hits: List[Any] = field(default_factory=list)
-    negative_space: List[Any] = field(default_factory=list)
-    binary_sink_edges: List[Any] = field(default_factory=list)
+    taint_approx: Any | None = None
+    taint_summary: Any | None = None
+    joern_flows: list[Any] = field(default_factory=list)
+    imported_joern_flows: list[Any] = field(default_factory=list)
+    joern_unguarded_sinks: list[Any] = field(default_factory=list)
+    codeql_alerts: list[Any] = field(default_factory=list)
+    semgrep_hits: list[Any] = field(default_factory=list)
+    negative_space: list[Any] = field(default_factory=list)
+    binary_sink_edges: list[Any] = field(default_factory=list)
 
 
 @dataclass
 class FakeTaintApprox:
-    dangerous_flows: Dict[int, list] = field(default_factory=dict)
+    dangerous_flows: dict[int, list] = field(default_factory=dict)
     has_opaque_flow: bool = False
     params: list = field(default_factory=list)
 
@@ -346,13 +346,21 @@ class TestIsToolEvidence:
         assert is_tool_evidence("dynamic:sanitizer")
         assert is_tool_evidence("frida:runtime")
         assert is_tool_evidence("dark_verify:confirmed")
-        assert is_tool_evidence("triage:classifier")
 
     def test_llm_hallucinations_rejected(self):
         assert not is_tool_evidence("Semgrep")
         assert not is_tool_evidence("CodeQL")
         assert not is_tool_evidence("llm")
         assert not is_tool_evidence("llm-claimed:codeql")
+
+    def test_triage_stamps_are_provenance_not_tool_evidence(self):
+        # A 500-token batch glance (or the skip classifier) records
+        # which shortcut produced the verdict — it never ran a tool.
+        # Blessing it used to short-circuit refutation gates, the G2
+        # finding gate, and the promotion alarm.
+        assert not is_tool_evidence("triage:batch")
+        assert not is_tool_evidence("triage:classifier")
+        assert not is_tool_evidence("semgrep+triage:batch")
 
     def test_plus_joined_multi_tool_accepted(self):
         assert is_tool_evidence("semgrep+joern")

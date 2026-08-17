@@ -123,6 +123,17 @@ class TestInferredChainSeeding:
             "core.audit.orchestrator._read_raw_source",
             lambda *a, **kw: "int f(int x) { return x + 1; }",
         )
+        # The chain-less suspicious outcome falls through to on-demand
+        # verification-rule synthesis, which builds a REAL LLMClient —
+        # on a host with `claude` on PATH that spawned live `claude -p`
+        # subprocesses (1 call + 3 retries) from this unit test: paid
+        # calls on connected hosts, multi-minute hangs on hosts without
+        # a route. Stub it like TestOnDemandHookInPromoteSuspicious
+        # does; this test only asserts the inferred-CWE seeding.
+        monkeypatch.setattr(
+            "core.audit.checker_synthesis.synthesize_verification_rule",
+            lambda *a, **kw: None,
+        )
         _promote_suspicious(result, config)
         assert seeded_cwes == ["CWE-190"]
         assert outcome.review_result["cwe_inferred"] == "CWE-190"

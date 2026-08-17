@@ -90,8 +90,9 @@ _DEFAULT_MAX_AGE_H = 24.0
 
 # Per-process JSONL audit logs under RaptorConfig.LOG_DIR. One file per
 # process and no rotation, so test suites alone mint hundreds per day.
+# OPT-IN, unlike the tmp sweep: logs are audit data with forensic value,
+# and deleting audit data must be an operator decision, not a default.
 _LOG_MAX_AGE_ENV = "RAPTOR_LOG_REAP_MAX_AGE_D"
-_DEFAULT_LOG_AGE_D = 14.0
 
 # Failed/cancelled run dirs (reap_stale_runs). Completed runs are
 # results and are never age-reaped.
@@ -365,7 +366,7 @@ def _run_age_seconds(meta: dict, st: os.stat_result, now: float) -> float:
 
 
 def reap_stale_logs(now: float | None = None) -> list[Path]:
-    """Remove per-process audit logs older than the age floor.
+    """Remove per-process audit logs older than the operator's age floor.
 
     ``core.logging`` writes one ``raptor_<epoch>_pid<pid>_<ns>.jsonl``
     per process into ``RaptorConfig.LOG_DIR`` with no rotation, so the
@@ -373,7 +374,9 @@ def reap_stale_logs(now: float | None = None) -> list[Path]:
     live process keeps its file's mtime fresh, so an age gate alone is
     a safe liveness proxy here.
 
-    Set ``RAPTOR_LOG_REAP_MAX_AGE_D=0`` to disable (default 14 days).
+    DISABLED unless the operator opts in: these files are the audit
+    trail, and audit data is only deleted on explicit instruction —
+    set ``RAPTOR_LOG_REAP_MAX_AGE_D=<days>`` (e.g. 14) to enable.
     Best-effort by contract — never raises.
     """
     try:
@@ -385,14 +388,13 @@ def reap_stale_logs(now: float | None = None) -> list[Path]:
 
 def _reap_logs(now: float | None) -> list[Path]:
     raw = os.environ.get(_LOG_MAX_AGE_ENV, "")
-    if raw:
-        try:
-            days = float(raw)
-        except ValueError:
-            logger.debug("ignoring non-numeric %s=%r", _LOG_MAX_AGE_ENV, raw)
-            days = _DEFAULT_LOG_AGE_D
-    else:
-        days = _DEFAULT_LOG_AGE_D
+    if not raw:
+        return []  # opt-in only — never delete audit data by default
+    try:
+        days = float(raw)
+    except ValueError:
+        logger.debug("ignoring non-numeric %s=%r", _LOG_MAX_AGE_ENV, raw)
+        return []
     if days <= 0:
         return []
     max_age = days * 86400.0

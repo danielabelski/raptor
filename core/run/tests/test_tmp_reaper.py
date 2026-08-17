@@ -183,6 +183,8 @@ class TestConfigAndSafety:
 
 
 class TestLogReaping:
+    """Log reaping is OPT-IN: audit-trail files are never deleted
+    unless the operator sets RAPTOR_LOG_REAP_MAX_AGE_D."""
 
     @pytest.fixture
     def log_dir(self, tmp_path, monkeypatch):
@@ -199,27 +201,44 @@ class TestLogReaping:
         os.utime(f, (t, t))
         return f
 
-    def test_old_log_reaped_fresh_kept(self, log_dir):
+    def test_default_deletes_nothing(self, log_dir):
+        # No env set → audit data untouched no matter how old.
+        ancient = self._log(log_dir, "raptor_1_pid1_1.jsonl", 400 * 86400)
+        assert reap_stale_logs() == []
+        assert ancient.is_file()
+
+    def test_opt_in_reaps_old_keeps_fresh(self, log_dir, monkeypatch):
+        monkeypatch.setenv("RAPTOR_LOG_REAP_MAX_AGE_D", "14")
         old = self._log(log_dir, "raptor_1_pid1_1.jsonl", 15 * 86400)
         fresh = self._log(log_dir, "raptor_2_pid2_2.jsonl", 86400)
         assert reap_stale_logs() == [old]
         assert not old.exists()
         assert fresh.is_file()
 
-    def test_non_log_files_kept(self, log_dir):
+    def test_non_log_files_kept(self, log_dir, monkeypatch):
+        monkeypatch.setenv("RAPTOR_LOG_REAP_MAX_AGE_D", "14")
         other = self._log(log_dir, "notes.txt", 30 * 86400)
         assert reap_stale_logs() == []
         assert other.is_file()
 
-    def test_env_zero_disables(self, log_dir, monkeypatch):
+    def test_env_zero_stays_disabled(self, log_dir, monkeypatch):
         old = self._log(log_dir, "raptor_1_pid1_1.jsonl", 30 * 86400)
         monkeypatch.setenv("RAPTOR_LOG_REAP_MAX_AGE_D", "0")
+        assert reap_stale_logs() == []
+        assert old.is_file()
+
+    def test_non_numeric_env_deletes_nothing(self, log_dir, monkeypatch):
+        # Unlike the tmp sweep (worthless artifacts → fall back to the
+        # default), a garbled opt-in for AUDIT DATA must not delete.
+        old = self._log(log_dir, "raptor_1_pid1_1.jsonl", 400 * 86400)
+        monkeypatch.setenv("RAPTOR_LOG_REAP_MAX_AGE_D", "fortnight")
         assert reap_stale_logs() == []
         assert old.is_file()
 
     def test_missing_log_dir_is_noop(self, tmp_path, monkeypatch):
         from core.config import RaptorConfig
         monkeypatch.setattr(RaptorConfig, "LOG_DIR", tmp_path / "absent")
+        monkeypatch.setenv("RAPTOR_LOG_REAP_MAX_AGE_D", "14")
         assert reap_stale_logs() == []
 
 

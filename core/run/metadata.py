@@ -238,8 +238,9 @@ def start_run(output_dir: Path, command: str,
 
     # Sweep temp artifacts orphaned by earlier hard-killed runs — their
     # atexit/exit-path cleanups never fire on SIGKILL/OOM/SIGTERM —
-    # aged-out per-process audit logs (one file per process, no
-    # rotation), and aged-out failed/cancelled sibling run dirs
+    # aged-out per-process audit logs (opt-in via
+    # RAPTOR_LOG_REAP_MAX_AGE_D; audit data is never deleted by
+    # default), and aged-out failed/cancelled sibling run dirs
     # (completed runs are results and are never age-reaped).
     from core.run.tmp_reaper import (
         reap_stale_logs,

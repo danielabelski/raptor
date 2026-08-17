@@ -812,7 +812,7 @@ RACE_HYPOTHESIS_KW = (
     "deadlock", "livelock",
 )
 
-RACE_EVIDENCE_WHITELIST = (
+RACE_EVIDENCE_ALLOWLIST = (
     "smt:", "coccinelle:", "semgrep:", "codeql:", "joern:",
     "sarif:", "prefilter:lock", "prefilter:race",
 )
@@ -825,7 +825,7 @@ def is_speculative_race(item) -> bool:
         return False
 
     ev = _get_evidence(item)
-    return not (ev and any(ev.startswith(p) for p in RACE_EVIDENCE_WHITELIST))
+    return not (ev and any(ev.startswith(p) for p in RACE_EVIDENCE_ALLOWLIST))
 
 
 def apply_speculative_race_gate(outcomes) -> int:

@@ -667,7 +667,7 @@ def _collect_source_files(
 
     file_list: list[Path] = []
     pruned_dirs: list[dict[str, Any]] = []
-    # Hidden-dir whitelist: pre-fix the blanket `d.startswith('.')`
+    # Hidden-dir allowlist: pre-fix the blanket `d.startswith('.')`
     # check pruned EVERY dot-dir, including ones that legitimately
     # carry analysable security-relevant source. Concrete misses:
     #
@@ -684,7 +684,7 @@ def _collect_source_files(
     # `.vscode/`, `.gradle/`, etc.) remain pruned — they're either
     # VCS metadata, tool caches, or editor state with no security
     # value.
-    _HIDDEN_DIR_WHITELIST = frozenset({
+    _HIDDEN_DIR_ALLOWLIST = frozenset({
         ".github",
         ".gitlab",
         ".gitlab-ci",
@@ -694,7 +694,7 @@ def _collect_source_files(
         # that matches a DEFAULT_EXCLUDES dir-shaped pattern.
         kept_dirs = []
         for d in dirs:
-            if d.startswith('.') and d not in _HIDDEN_DIR_WHITELIST:
+            if d.startswith('.') and d not in _HIDDEN_DIR_ALLOWLIST:
                 continue
             if (Path(root) / d).is_symlink():
                 continue

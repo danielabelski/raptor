@@ -55,15 +55,15 @@ Env:
 
 Exit codes:
 - r2's returncode on successful invocation
-- 2 on argv whitelist refusal
+- 2 on argv allowlist refusal
 - 3 on missing env or sandbox-setup failure
 """
 
 from __future__ import annotations
-import faulthandler
-import subprocess
 
+import faulthandler
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -83,7 +83,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (libexec convention) ───────────────
-import os  # noqa: E402
+import os
+
 # Inline before any RAPTOR import (matches raptor-run-sandboxed,
 # raptor-binary) so a malicious PYTHONPATH can't hijack
 # core.* imports before the check fires. This script is invoked
@@ -104,7 +105,7 @@ if not (os.environ.get("CLAUDECODE")
 # parents[1] is the RAPTOR install dir. core/sandbox lives there.
 _RAPTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_DIR))
-import core.startup.process_init  # noqa: E402,F401
+import core.startup.process_init  # noqa: F401
 
 
 def _die(msg: str, code: int = _RC_WRAPPER_SANDBOX_FAILED) -> None:
@@ -120,16 +121,16 @@ def _die(msg: str, code: int = _RC_WRAPPER_SANDBOX_FAILED) -> None:
 # existing "-N" (in case the caller already set it; we'd add it
 # anyway in the prepend below).
 #
-# COUPLING NOTE: this whitelist is intentionally narrow — it matches
+# COUPLING NOTE: this allowlist is intentionally narrow — it matches
 # what packages/binary_analysis/radare2_understand.py passes today
 # (`flags=["-2"]`) plus r2pipe's own spawn-time additions. If a future
 # r2pipe version adds a NEW default flag we don't know about, the
 # wrapper will refuse with `_die("refused argv (flag not in
-# whitelist...)")` and the operator will see a clear diagnostic. Add
+# allowlist...)")` and the operator will see a clear diagnostic. Add
 # the new flag here AFTER confirming it doesn't enable a shell escape
 # or change r2's analysis posture. Likewise for any new flag that
 # radare2_understand wants to pass — must be reviewed for safety and
-# explicitly whitelisted here.
+# explicitly allowlisted here.
 _ALLOWED_FLAGS = frozenset({"-2", "-q0", "-N"})
 
 
@@ -174,11 +175,11 @@ def _parse_and_validate_argv(argv: list[str]) -> tuple[list[str], str]:
         _die(f"refused: binary not found or not a regular file: {binary!r}",
              code=_RC_WRAPPER_BINARY_MISSING)
 
-    # Validate every flag is in the whitelist.
+    # Validate every flag is in the allowlist.
     for f in flags:
         if f not in _ALLOWED_FLAGS:
             _die(
-                f"refused argv (flag not in whitelist "
+                f"refused argv (flag not in allowlist "
                 f"{sorted(_ALLOWED_FLAGS)}): {f!r}",
                 code=_RC_WRAPPER_ARGV_REFUSED,
             )
@@ -217,7 +218,7 @@ if not target_dir:
 # normally and stack correctly on top of the per-ns mounts. So we pass
 # target_dir through unmodified and let mount_ns make the decision.
 
-from core.sandbox import sandbox  # noqa: E402
+from core.sandbox import sandbox
 
 try:
     with sandbox(

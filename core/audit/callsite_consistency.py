@@ -169,7 +169,33 @@ def _callee_name_ts(call_node, lang: str, src: bytes) -> Optional[str]:
     return text
 
 
-def _is_discarded_ts(call_node) -> bool:
+# Go assignment forms whose left-hand side can be the blank
+# identifier.  `_ = f()` (and `_, _ = g()`) is an explicit discard of
+# the return value — the classic CWE-252 shape — yet structurally it
+# is an assignment, so the parent-walk below would classify it as
+# captured without the blank-LHS check.
+_GO_ASSIGN_TYPES = ("assignment_statement", "short_var_declaration")
+
+
+def _is_blank_discard_assignment(assign_node, src: bytes) -> bool:
+    """True when every LHS identifier is the Go blank identifier ``_``.
+
+    ``v, _ := f()`` partially captures and stays captured; only an
+    all-blank LHS (``_ = f()``, ``_, _ = g()``) is a discard.
+    """
+    left = assign_node.child_by_field_name("left")
+    if left is None or left.type != "expression_list":
+        return False
+    idents = [c for c in left.children if c.is_named]
+    if not idents:
+        return False
+    return all(
+        c.type == "identifier" and _node_text(c, src) == "_"
+        for c in idents
+    )
+
+
+def _is_discarded_ts(call_node, src: bytes) -> bool:
     """Check if a call's return value is discarded."""
     node = call_node
     while node.parent:
@@ -178,6 +204,9 @@ def _is_discarded_ts(call_node) -> bool:
 
         if ptype == "expression_statement":
             return True
+
+        if ptype in _GO_ASSIGN_TYPES:
+            return _is_blank_discard_assignment(parent, src)
 
         if ptype in ("expression_list", "parenthesized_expression"):
             node = parent
@@ -236,7 +265,7 @@ def _extract_callsites_ts(
             line=_node_line(node),
             callee=callee,
             enclosing_function=func_name,
-            discarded=_is_discarded_ts(node),
+            discarded=_is_discarded_ts(node, src),
         ))
 
     return sites
@@ -276,6 +305,14 @@ _STMT_ONLY_LINE_RE = re.compile(
     r"^\s*(\w+(?:\.\w+)*)\s*\(",
 )
 
+# Go blank-identifier assignment: `_ = f()`, `_, _ = g()`.  An
+# explicit discard, not a capture — mirrors _is_blank_discard_assignment
+# on the tree-sitter path.  Anchored to an all-blank LHS so `v, _ = f()`
+# still counts as captured.
+_GO_BLANK_ASSIGN_RE = re.compile(
+    r"^\s*_\s*(?:,\s*_\s*)*=[^=]"
+)
+
 
 def _extract_callsites_regex(
     file_path: str, source: str,
@@ -295,6 +332,10 @@ def _extract_callsites_regex(
 
         stripped = line.lstrip()
         # Determine if this line captures or discards return values
+        is_blank_discard = (
+            file_path.endswith(".go")
+            and bool(_GO_BLANK_ASSIGN_RE.match(stripped))
+        )
         is_assign = bool(_ASSIGN_LINE_RE.match(stripped))
         is_return = bool(_RETURN_LINE_RE.match(stripped))
         is_cond = bool(_COND_LINE_RE.match(stripped))
@@ -306,7 +347,9 @@ def _extract_callsites_regex(
             if callee in _KEYWORDS or len(callee) < 2:
                 continue
 
-            if is_assign or is_return or is_cond:
+            if is_blank_discard:
+                discarded = True
+            elif is_assign or is_return or is_cond:
                 discarded = False
             elif is_stmt_only:
                 discarded = True

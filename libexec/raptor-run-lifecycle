@@ -25,7 +25,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
@@ -37,10 +38,9 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: E402,F401
-
-from core.run.output import get_output_dir, TargetMismatchError
-from core.run.metadata import start_run, complete_run, fail_run
+import core.startup.process_init  # noqa: F401
+from core.run.metadata import complete_run, fail_run, start_run
+from core.run.output import TargetMismatchError, get_output_dir
 
 
 def _merge_journal_index(out_dir: Path) -> None:
@@ -67,7 +67,7 @@ def _merge_journal_index(out_dir: Path) -> None:
         if merged:
             print(f"  journal: {merged} entries merged into project index",
                   file=sys.stderr)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — merge is best-effort
         print(f"  journal merge skipped: {exc}", file=sys.stderr)
 
 
@@ -118,11 +118,9 @@ def main():
                  "to start when scorecard estimate exceeds the cap",
         )
         # `sys.argv[2:]` so the `start` subcommand isn't re-parsed.
-        try:
-            args = parser.parse_args(sys.argv[2:])
-        except SystemExit:
-            # argparse already printed a clean usage message to stderr.
-            raise
+        # On bad args argparse raises SystemExit after printing a
+        # clean usage message to stderr.
+        args = parser.parse_args(sys.argv[2:])
 
         # `--target` takes precedence over the positional form so a
         # script that explicitly passes `--target X` always wins.
@@ -142,40 +140,18 @@ def main():
 
         # Pre-flight cost gate (scorecard-derived). When
         # --max-cost-usd is set, compare against the scorecard
-        # estimate. Goes to stderr so stdout stays single-line
-        # OUTPUT_DIR= for callers that parse it.
+        # estimate. Shared implementation lives in raptor.py so the
+        # two entry points cannot drift; the estimate line goes to
+        # stderr so stdout stays single-line OUTPUT_DIR= for callers
+        # that parse it.
         if args.max_cost_usd is not None and target_path:
             try:
-                from core.run.target_types import load as _load_catalog
-                from core.run.estimator import (
-                    estimate_from_scorecard, format_estimate,
-                )
-                from core.llm.model_data import PROVIDER_DEFAULT_MODELS
-                _entry = _load_catalog(Path(target_path))
-                _n = _entry.typical_findings_count if _entry else 0
-                if _n > 0:
-                    _model = PROVIDER_DEFAULT_MODELS.get("anthropic", "")
-                    _est = estimate_from_scorecard(_model, _n)
-                    if _est is not None:
-                        _line = format_estimate(_est)
-                        if _line:
-                            sys.stderr.write(_line + "\n")
-                        if _est.cost_high > args.max_cost_usd:
-                            sys.stderr.write(
-                                f"✗ Pre-flight cost gate: scorecard "
-                                f"estimate upper bound "
-                                f"(${_est.cost_high:.2f}) exceeds "
-                                f"--max-cost-usd cap "
-                                f"(${args.max_cost_usd:.2f}). "
-                                f"Raise the cap or re-run without "
-                                f"--max-cost-usd.\n"
-                            )
-                            try:
-                                fail_run(out_dir,
-                                         "pre-flight cost gate exceeded")
-                            except Exception:  # noqa: BLE001
-                                pass
-                            sys.exit(1)
+                from raptor import _preflight_cost_gate
+                if _preflight_cost_gate(
+                    str(target_path), args.max_cost_usd, out_dir,
+                    estimate_stream=sys.stderr,
+                ):
+                    sys.exit(1)
             except SystemExit:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -207,7 +183,7 @@ def main():
             # every fresh /audit entry from the just-finished run.
             _merge_journal_index(Path(sys.argv[2]))
             complete_run(Path(sys.argv[2]), manifest=manifest)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
@@ -218,7 +194,7 @@ def main():
         message = sys.argv[3] if len(sys.argv) > 3 else "unknown error"
         try:
             fail_run(Path(sys.argv[2]), message)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
@@ -229,7 +205,7 @@ def main():
         try:
             from core.run.metadata import cancel_run
             cancel_run(Path(sys.argv[2]))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 

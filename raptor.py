@@ -140,6 +140,8 @@ def _preflight_cost_gate(
     target: str | None,
     max_cost_usd: float,
     out_dir: Path,
+    *,
+    estimate_stream=None,
 ) -> bool:
     """Pre-flight cost gate: refuse to start when the scorecard-
     derived estimate exceeds the operator's declared budget.
@@ -150,6 +152,11 @@ def _preflight_cost_gate(
 
     When no scorecard data is available the gate does not fire —
     the runtime cap still enforces during execution.
+
+    ``estimate_stream`` routes the informational estimate line
+    (default stdout). libexec/raptor-run-lifecycle passes stderr so
+    its stdout stays single-line ``OUTPUT_DIR=`` for parsers; the
+    shared implementation keeps the two entry points from drifting.
     """
     try:
         from core.llm.model_data import PROVIDER_DEFAULT_MODELS
@@ -170,7 +177,7 @@ def _preflight_cost_gate(
         return False
     est_line = format_estimate(est)
     if est_line:
-        print(est_line, flush=True)
+        print(est_line, file=estimate_stream or sys.stdout, flush=True)
     if est.cost_high > max_cost_usd:
         print(
             f"✗ Pre-flight cost gate: scorecard estimate "

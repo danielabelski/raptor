@@ -32,7 +32,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = Path.home() / ".raptor" / "cache" / "cc-probe.json"
+# RAPTOR_CC_PROBE_CACHE overrides the on-disk probe-cache location so
+# tests and sandboxed runs can isolate it: the cached model identity
+# feeds every LLMConfig construction via _resolve_claudecode_model, so
+# a warm operator cache must be pinnable away from hermetic runs.
+_CACHE_PATH = Path(
+    os.environ.get("RAPTOR_CC_PROBE_CACHE")
+    or Path.home() / ".raptor" / "cache" / "cc-probe.json"
+)
 _CACHE_TTL_S = 24 * 3600
 _PROBE_TIMEOUT_S = 120
 _PROBE_BUDGET_USD = "0.25"

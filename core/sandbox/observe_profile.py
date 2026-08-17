@@ -333,9 +333,9 @@ def _iter_records(path: Path) -> Iterable[dict]:
     symlink to ``/etc/passwd`` BEFORE audit engages, and a vanilla
     ``open()`` would follow it and feed unrelated content to the
     JSON parser. ``O_NOFOLLOW`` makes the open fail with ELOOP on
-    a symlink. The tracer's write side uses the same flag (+ a
-    dirfd cached at first write); we mirror it on the read side
-    so the two ends agree on the trust contract.
+    a symlink. The tracer's write side uses the same flag (see
+    ``tracer._write_record``); we mirror it on the read side so
+    the two ends agree on the trust contract.
     """
     import os as _os
     try:

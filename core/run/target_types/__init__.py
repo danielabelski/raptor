@@ -326,8 +326,9 @@ def detect(target_path: Path) -> List[Tuple[CatalogEntry, float]]:
 
 def load(target_path: Path) -> Optional[CatalogEntry]:
     """Pick the best-matching catalog entry for ``target_path``.
-    Returns None when nothing scored above 0 — caller falls back
-    to the ``generic`` entry or operator prompt."""
+    Returns the best-scoring entry, else the ``generic`` entry when
+    nothing scored above 0, else None when no generic entry exists
+    (caller prompts the operator)."""
     ranked = detect(target_path)
     if not ranked:
         # Fall back to ``generic`` when present — operator gets a

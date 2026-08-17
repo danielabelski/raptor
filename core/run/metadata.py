@@ -254,6 +254,12 @@ def _metadata_lock(meta_path: Path):
     concurrent ``_update_status`` writers (a run's own completion racing
     a sweep's ``fail_run``, or parallel workers updating ``extra``)
     last-writer-wins and one update is silently dropped.
+
+    The ``.lock`` file is deliberately left behind (one zero-byte
+    sibling per run dir): unlinking after unlock races — another
+    process may already hold an fd to the old inode while a third
+    creates a fresh file at the path, splitting lockers across two
+    inodes and silently breaking mutual exclusion.
     """
     if not _HAS_FCNTL:
         yield

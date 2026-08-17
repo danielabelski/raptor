@@ -111,7 +111,8 @@ def get_output_dir(command: str, target_name: str = "",
 
     Priority:
     1. explicit_out (from --out argument) — used as-is, no project check
-    2. Active project (.active symlink, then env var) — timestamped subdir
+    2. Active project (.active symlink — the single source of truth,
+       no env-var fallback) — timestamped subdir
     3. Default: RaptorConfig.get_out_dir() with command prefix + timestamp
 
     Args:

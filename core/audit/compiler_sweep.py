@@ -41,6 +41,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.run.scratch import scratch_dir
+
 from ._util import safe_join
 from .sweep import SweepResult
 
@@ -641,11 +643,7 @@ def run_compiler_analyzer_sweep(
     include_flags = [f"-I{d}" for d in include_dirs]
 
     scratch_root = str(out_dir) if out_dir else None
-    if scratch_root:
-        os.makedirs(scratch_root, exist_ok=True)
-    workdir = Path(tempfile.mkdtemp(prefix="compiler_sweep_", dir=scratch_root))
-
-    try:
+    with scratch_dir("compiler_sweep_", dir=scratch_root) as workdir:
         if gcc is not None:
             gcc_path, mode = gcc
             compiler_name = "gcc"
@@ -822,5 +820,3 @@ def run_compiler_analyzer_sweep(
         )
         result.raw_output = raw
         return result
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)

@@ -22,10 +22,9 @@ unit-testable with stubs (no LLM, no CodeQL).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
-import shutil
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +35,7 @@ from core.dataflow.codeql_augmented_run import (
     analyze,
 )
 from core.llm.coerce import extract_fenced_code
+from core.run.scratch import scratch_dir
 
 # sink-class -> (customizations module, module name exposing Source/Sink/Sanitizer).
 # Python: each module imports Concepts/RemoteFlowSources/BarrierGuards and
@@ -1258,12 +1258,13 @@ def main(argv: list | None = None) -> int:
     p.add_argument("--work-dir", type=Path, default=None)
     args = p.parse_args(argv)
 
-    work_dir = args.work_dir
-    created_tmp = work_dir is None
-    if created_tmp:
-        work_dir = Path(tempfile.mkdtemp(prefix="trust-synth-work-"))
-
-    try:
+    # Caller-supplied --work-dir is never deleted; otherwise a scratch
+    # dir (auto-registered with the tmp reaper) is removed on exit.
+    if args.work_dir is not None:
+        work_ctx = contextlib.nullcontext(args.work_dir)
+    else:
+        work_ctx = scratch_dir("trust-synth-work-")
+    with work_ctx as work_dir:
         proposal = BarrierProposal(
             sink_class=args.sink_class, finding_id=args.finding_id, language=args.language,
             sink_snippet=args.sink, source_context=args.source_file.read_text(encoding="utf-8"),
@@ -1282,9 +1283,6 @@ def main(argv: list | None = None) -> int:
               f"(after={res.after_count}, before={res.before_count})", file=sys.stderr)
         print(res.query_ql)
         return 0 if res.is_sound else 2
-    finally:
-        if created_tmp:
-            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

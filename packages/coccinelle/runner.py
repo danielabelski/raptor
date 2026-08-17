@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from core.config import RaptorConfig
+from core.run.scratch import scratch_dir
 from core.run.toolprobe import probe
 
 from .models import SpatchMatch, SpatchResult
@@ -359,104 +360,101 @@ def run_rule(
     # per-file working copies (cocci-output-*, cocci_small_output-*)
     # in the temp dir and only removes them on clean exit — a timeout
     # kill or spatch crash strands them (observed: ~200 files from one
-    # interrupted sweep). It honours TMPDIR, so point each invocation
-    # at its own dir and delete it unconditionally in the finally.
-    _scratch_dir = tempfile.mkdtemp(prefix="raptor-cocci-tmp-")
-    run_env["TMPDIR"] = _scratch_dir
-    runner = subprocess_runner or _sandboxed_run
+    # interrupted sweep). It honours TMPDIR, so scratch_dir points each
+    # invocation at its own dir (TMPDIR exported into run_env) and
+    # removes it on exit — including whatever a killed spatch left.
+    with scratch_dir("raptor-cocci-tmp-", env=run_env):
+        runner = subprocess_runner or _sandboxed_run
 
-    start = time.monotonic()
-    # `cwd=target.parent if file else target if dir`. spatch
-    # resolves #include paths relative to its CWD when paths
-    # are not absolute. Pre-fix the runner inherited the
-    # parent process's CWD (typically the RAPTOR repo root,
-    # not the target's directory), so:
-    #   * Headers in the target's own tree found via relative
-    #     #include were missed (spatch couldn't resolve
-    #     `#include "foo.h"` because it looked in
-    #     RAPTOR-root not target-root).
-    #   * SmPL `<+...+>` patterns spanning multiple translation
-    #     units silently failed to match across includes.
-    # Setting cwd= to the target's directory fixes both — the
-    # path semantics now match what spatch expects when invoked
-    # by hand from the target repo.
-    if target.is_file():
-        spatch_cwd = target.parent
-    elif target.is_dir():
-        spatch_cwd = target
-    else:
-        spatch_cwd = None
-    try:
+        start = time.monotonic()
+        # `cwd=target.parent if file else target if dir`. spatch
+        # resolves #include paths relative to its CWD when paths
+        # are not absolute. Pre-fix the runner inherited the
+        # parent process's CWD (typically the RAPTOR repo root,
+        # not the target's directory), so:
+        #   * Headers in the target's own tree found via relative
+        #     #include were missed (spatch couldn't resolve
+        #     `#include "foo.h"` because it looked in
+        #     RAPTOR-root not target-root).
+        #   * SmPL `<+...+>` patterns spanning multiple translation
+        #     units silently failed to match across includes.
+        # Setting cwd= to the target's directory fixes both — the
+        # path semantics now match what spatch expects when invoked
+        # by hand from the target repo.
+        if target.is_file():
+            spatch_cwd = target.parent
+        elif target.is_dir():
+            spatch_cwd = target
+        else:
+            spatch_cwd = None
         try:
-            proc = runner(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=run_env,
-                cwd=str(spatch_cwd) if spatch_cwd is not None else None,
-            )
-        except subprocess.TimeoutExpired as exc:
-            # Capture partial output before giving up. spatch on
-            # large repos sometimes runs past the timeout AFTER
-            # producing partial results — pre-fix we threw away
-            # everything (returned only "Timeout" error). Now we
-            # parse whatever it managed to emit before the timeout
-            # so operators see those matches in the report
-            # alongside the timeout warning.
-            partial_stdout = exc.stdout if isinstance(exc.stdout, str) else (
-                exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
-            )
-            partial_stderr = exc.stderr if isinstance(exc.stderr, str) else (
-                exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
-            )
-            partial_matches = _dedup_matches(
-                _parse_results(partial_stdout, rule_name)
-                + _parse_results(partial_stderr, rule_name)
-            )
-            return SpatchResult(
-                rule=rule_name, rule_path=str(rule),
-                matches=partial_matches,
-                errors=[f"Timeout after {timeout}s (partial output captured)"],
-                returncode=-1,
-            )
-        except OSError as e:
-            return SpatchResult(
-                rule=rule_name, rule_path=str(rule),
-                errors=[str(e)],
-                returncode=-1,
-            )
-        elapsed = int((time.monotonic() - start) * 1000)
-
-        matches = _dedup_matches(
-            _parse_results(proc.stdout, rule_name) + _parse_results(proc.stderr, rule_name)
-        )
-        errors = _parse_errors(proc.stderr)
-
-        files_examined = _collect_files_examined(target, {m.file for m in matches})
-
-        return SpatchResult(
-            rule=rule_name,
-            rule_path=str(rule),
-            matches=matches,
-            files_examined=files_examined,
-            errors=errors,
-            elapsed_ms=elapsed,
-            returncode=proc.returncode,
-        )
-    finally:
-        # Clean up the harnessed-rule tempfile. Covers timeout
-        # (early return), OSError (early return), and normal-exit
-        # paths uniformly. Best-effort; an already-unlinked file
-        # or permission flake doesn't affect the result.
-        if harnessed_rule_path is not None:
             try:
-                harnessed_rule_path.unlink()
-            except OSError:
-                pass
-        # And spatch's scratch dir — includes whatever a killed
-        # spatch left behind.
-        shutil.rmtree(_scratch_dir, ignore_errors=True)
+                proc = runner(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=run_env,
+                    cwd=str(spatch_cwd) if spatch_cwd is not None else None,
+                )
+            except subprocess.TimeoutExpired as exc:
+                # Capture partial output before giving up. spatch on
+                # large repos sometimes runs past the timeout AFTER
+                # producing partial results — pre-fix we threw away
+                # everything (returned only "Timeout" error). Now we
+                # parse whatever it managed to emit before the timeout
+                # so operators see those matches in the report
+                # alongside the timeout warning.
+                partial_stdout = exc.stdout if isinstance(exc.stdout, str) else (
+                    exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
+                )
+                partial_stderr = exc.stderr if isinstance(exc.stderr, str) else (
+                    exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+                )
+                partial_matches = _dedup_matches(
+                    _parse_results(partial_stdout, rule_name)
+                    + _parse_results(partial_stderr, rule_name)
+                )
+                return SpatchResult(
+                    rule=rule_name, rule_path=str(rule),
+                    matches=partial_matches,
+                    errors=[f"Timeout after {timeout}s (partial output captured)"],
+                    returncode=-1,
+                )
+            except OSError as e:
+                return SpatchResult(
+                    rule=rule_name, rule_path=str(rule),
+                    errors=[str(e)],
+                    returncode=-1,
+                )
+            elapsed = int((time.monotonic() - start) * 1000)
+
+            matches = _dedup_matches(
+                _parse_results(proc.stdout, rule_name) + _parse_results(proc.stderr, rule_name)
+            )
+            errors = _parse_errors(proc.stderr)
+
+            files_examined = _collect_files_examined(target, {m.file for m in matches})
+
+            return SpatchResult(
+                rule=rule_name,
+                rule_path=str(rule),
+                matches=matches,
+                files_examined=files_examined,
+                errors=errors,
+                elapsed_ms=elapsed,
+                returncode=proc.returncode,
+            )
+        finally:
+            # Clean up the harnessed-rule tempfile. Covers timeout
+            # (early return), OSError (early return), and normal-exit
+            # paths uniformly. Best-effort; an already-unlinked file
+            # or permission flake doesn't affect the result.
+            if harnessed_rule_path is not None:
+                try:
+                    harnessed_rule_path.unlink()
+                except OSError:
+                    pass
 
 
 def run_rules(
@@ -612,100 +610,96 @@ def run_rules_batched(
 
     run_env = dict(env) if env is not None else RaptorConfig.get_safe_env()
     # Same private-TMPDIR scratch as run_rule — see the comment there.
-    _scratch_dir = tempfile.mkdtemp(prefix="raptor-cocci-tmp-")
-    run_env["TMPDIR"] = _scratch_dir
-    runner = subprocess_runner or _sandboxed_run
+    with scratch_dir("raptor-cocci-tmp-", env=run_env):
+        runner = subprocess_runner or _sandboxed_run
 
-    if target.is_file():
-        spatch_cwd = target.parent
-    elif target.is_dir():
-        spatch_cwd = target
-    else:
-        spatch_cwd = None
+        if target.is_file():
+            spatch_cwd = target.parent
+        elif target.is_dir():
+            spatch_cwd = target
+        else:
+            spatch_cwd = None
 
-    start = time.monotonic()
-    try:
+        start = time.monotonic()
         try:
-            proc = runner(
-                cmd, capture_output=True, text=True,
-                timeout=timeout, env=run_env,
-                cwd=str(spatch_cwd) if spatch_cwd else None,
-            )
-        except subprocess.TimeoutExpired as exc:
-            partial_stdout = exc.stdout if isinstance(
-                exc.stdout, str,
-            ) else (
-                exc.stdout.decode("utf-8", errors="replace")
-                if exc.stdout else ""
-            )
-            partial_stderr = exc.stderr if isinstance(
-                exc.stderr, str,
-            ) else (
-                exc.stderr.decode("utf-8", errors="replace")
-                if exc.stderr else ""
-            )
+            try:
+                proc = runner(
+                    cmd, capture_output=True, text=True,
+                    timeout=timeout, env=run_env,
+                    cwd=str(spatch_cwd) if spatch_cwd else None,
+                )
+            except subprocess.TimeoutExpired as exc:
+                partial_stdout = exc.stdout if isinstance(
+                    exc.stdout, str,
+                ) else (
+                    exc.stdout.decode("utf-8", errors="replace")
+                    if exc.stdout else ""
+                )
+                partial_stderr = exc.stderr if isinstance(
+                    exc.stderr, str,
+                ) else (
+                    exc.stderr.decode("utf-8", errors="replace")
+                    if exc.stderr else ""
+                )
+                all_matches = _dedup_matches(
+                    _parse_results(partial_stdout, "batch")
+                    + _parse_results(partial_stderr, "batch"),
+                )
+                by_rule: dict[str, list[SpatchMatch]] = {
+                    s: [] for s in rule_stems
+                }
+                for m in all_matches:
+                    if m.rule in by_rule:
+                        by_rule[m.rule].append(m)
+                out = {
+                    s: SpatchResult(
+                        rule=s, matches=by_rule.get(s, []),
+                        errors=[f"Batch timeout after {timeout}s"],
+                        returncode=-1,
+                    )
+                    for s in rule_stems
+                }
+                out.update(refused)
+                return out
+            except OSError as e:
+                out = {
+                    s: SpatchResult(
+                        rule=s, errors=[str(e)], returncode=-1,
+                    )
+                    for s in rule_stems
+                }
+                out.update(refused)
+                return out
+
+            elapsed = int((time.monotonic() - start) * 1000)
             all_matches = _dedup_matches(
-                _parse_results(partial_stdout, "batch")
-                + _parse_results(partial_stderr, "batch"),
+                _parse_results(proc.stdout, "batch")
+                + _parse_results(proc.stderr, "batch"),
             )
-            by_rule: dict[str, list[SpatchMatch]] = {
-                s: [] for s in rule_stems
-            }
+            errors = _parse_errors(proc.stderr)
+
+            by_rule = {s: [] for s in rule_stems}
             for m in all_matches:
                 if m.rule in by_rule:
                     by_rule[m.rule].append(m)
+
             out = {
                 s: SpatchResult(
-                    rule=s, matches=by_rule.get(s, []),
-                    errors=[f"Batch timeout after {timeout}s"],
-                    returncode=-1,
+                    rule=s, rule_path=str(r),
+                    matches=by_rule.get(s, []),
+                    errors=errors,
+                    elapsed_ms=elapsed,
+                    returncode=proc.returncode,
                 )
-                for s in rule_stems
+                for s, r in zip(rule_stems, batched_rules)
             }
             out.update(refused)
             return out
-        except OSError as e:
-            out = {
-                s: SpatchResult(
-                    rule=s, errors=[str(e)], returncode=-1,
-                )
-                for s in rule_stems
-            }
-            out.update(refused)
-            return out
-
-        elapsed = int((time.monotonic() - start) * 1000)
-        all_matches = _dedup_matches(
-            _parse_results(proc.stdout, "batch")
-            + _parse_results(proc.stderr, "batch"),
-        )
-        errors = _parse_errors(proc.stderr)
-
-        by_rule = {s: [] for s in rule_stems}
-        for m in all_matches:
-            if m.rule in by_rule:
-                by_rule[m.rule].append(m)
-
-        out = {
-            s: SpatchResult(
-                rule=s, rule_path=str(r),
-                matches=by_rule.get(s, []),
-                errors=errors,
-                elapsed_ms=elapsed,
-                returncode=proc.returncode,
-            )
-            for s, r in zip(rule_stems, batched_rules)
-        }
-        out.update(refused)
-        return out
-    finally:
-        try:
-            Path(tmp_name).unlink()
-        except OSError:
-            pass
-        # spatch's scratch dir — includes whatever a killed spatch
-        # left behind.
-        shutil.rmtree(_scratch_dir, ignore_errors=True)
+        finally:
+            try:
+                Path(tmp_name).unlink()
+            except OSError:
+                pass
 
 
 def _dedup_matches(matches: list[SpatchMatch]) -> list[SpatchMatch]:

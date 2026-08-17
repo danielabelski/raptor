@@ -88,15 +88,21 @@ def neutral_cwd() -> str:
     ``tempfile.gettempdir()`` because /tmp is world-writable: another
     local user could plant ``/tmp/.claude`` hooks the child would
     execute. Lazily created once per process, removed at exit.
+
+    Process-lifetime scratch: created through core.run.scratch (the
+    one way to make a temp work area — mkdtemp is 0700 by contract),
+    held open on an ExitStack that atexit closes.
     """
     import os
     global _neutral_cwd
     if _neutral_cwd is None or not os.path.isdir(_neutral_cwd):
         import atexit
-        import shutil
-        import tempfile
-        _neutral_cwd = tempfile.mkdtemp(prefix="raptor-cc-cwd-")
-        atexit.register(shutil.rmtree, _neutral_cwd, ignore_errors=True)
+        import contextlib
+
+        from core.run.scratch import scratch_dir
+        stack = contextlib.ExitStack()
+        _neutral_cwd = str(stack.enter_context(scratch_dir("raptor-cc-cwd-")))
+        atexit.register(stack.close)
     return _neutral_cwd
 
 

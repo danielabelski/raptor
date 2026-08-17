@@ -47,12 +47,13 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from core.run.scratch import scratch_dir
 
 from ._util import safe_join
 from .compiler_sweep import _derive_include_dirs
@@ -463,11 +464,7 @@ def expand_translation_unit(
     macro_flags = _macro_flags(macro_config)
 
     scratch_root = str(out_dir) if out_dir else None
-    if scratch_root:
-        os.makedirs(scratch_root, exist_ok=True)
-    workdir = Path(tempfile.mkdtemp(prefix="preproc_view_", dir=scratch_root))
-
-    try:
+    with scratch_dir("preproc_view_", dir=scratch_root) as workdir:
         out_file = workdir / "expanded.i"
         cmd = [
             *pre, *macro_flags, *include_flags,
@@ -545,8 +542,6 @@ def expand_translation_unit(
             line_map=line_map,
             tool=Path(pre[0]).name,
         )
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

@@ -42,10 +42,8 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +69,7 @@ from core.audit.compiler_sweep import (
     _parse_gcc_sarif,
 )
 from core.inventory.exclusions import DEFAULT_EXCLUDES, should_exclude
+from core.run.scratch import scratch_dir
 
 logger = logging.getLogger(__name__)
 
@@ -254,8 +253,7 @@ def analyze_tu(
         f"-I{d}" for d in _derive_include_dirs(target_path, full_path.parent)
     ]
 
-    workdir = Path(tempfile.mkdtemp(prefix="compiler_scan_", dir=scratch_root))
-    try:
+    with scratch_dir("compiler_scan_", dir=scratch_root) as workdir:
         if gcc is not None:
             gcc_path, mode = gcc
             compiler_name = "gcc"
@@ -346,8 +344,6 @@ def analyze_tu(
         return TuDiagnostics(
             rel_path, ok=True, compiler=compiler_name, diagnostics=kept,
         )
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

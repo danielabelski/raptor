@@ -935,10 +935,54 @@ def _in_atomic_write_fn(mod: Module, lineno: int) -> bool:
     return False
 
 
+# Locator-function idiom: the artifact literal only builds a candidate
+# path (candidates = [run_dir / "x.json"]); the actual open/parse sits
+# several lines below, outside the +/-2-line window, so the occurrence
+# classifies as a bare mention and the writer looks write-only.  Three
+# guards keep this surgical:
+#   - strong read hints only — exists()/glob-style probes are NOT
+#     enough, or every writer's overwrite guard would count as a reader;
+#   - innermost enclosing function, capped at LOCATOR_FN_MAX_LINES —
+#     locator/loader helpers are small; a mention inside a hundreds-of-
+#     lines pipeline function that happens to read OTHER files (path
+#     echoes, report path listings) must not count;
+#   - the function must not also write the same artifact — a writer
+#     that prints its output path is not that artifact's reader.
+STRONG_READ_HINTS = re.compile(
+    r"read_text|read_bytes|json\.loads?\b|read_json|load_json|from_file")
+LOCATOR_FN_MAX_LINES = 60
+
+
+def _innermost_fn(mod: Module, lineno: int):
+    """Innermost FuncDef containing *lineno*, or None at module level."""
+    inner = None
+    for fd in mod.funcs:
+        if fd.lineno <= lineno <= (fd.end_lineno or fd.lineno) \
+                and (inner is None or fd.lineno > inner.lineno):
+            inner = fd
+    return inner
+
+
+def _locator_reads(mod: Module, lineno: int, write_linenos) -> bool:
+    """True when the mention at *lineno* sits in a small parsing helper
+    that does not itself write the artifact."""
+    fd = _innermost_fn(mod, lineno)
+    if fd is None:
+        return False
+    end = fd.end_lineno or fd.lineno
+    if end - fd.lineno + 1 > LOCATOR_FN_MAX_LINES:
+        return False
+    if any(fd.lineno <= wl <= end for wl in write_linenos):
+        return False
+    body = "\n".join(mod.lines[fd.lineno - 1: end])
+    return bool(STRONG_READ_HINTS.search(body))
+
+
 def find_artifacts(idx: RepoIndex):
     sup = Counter()
     occ = defaultdict(list)     # basename -> [(path, line_no, cls)]
     for mod in idx.module_list:
+        raw = []
         for node in ast.walk(mod.tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 v = node.value.strip()
@@ -956,14 +1000,29 @@ def find_artifacts(idx: RepoIndex):
                     cls = "read"
                 else:
                     cls = "mention"
-                occ[base].append((str(mod.path), node.lineno, cls, is_test))
-                if cls != "write" and _in_atomic_write_fn(mod, node.lineno):
-                    # The literal names the DESTINATION of a
-                    # tempfile-then-rename write; the accumulate-guard
-                    # window classified it read/mention. Record the
-                    # write as well — the occurrence is both.
-                    occ[base].append(
-                        (str(mod.path), node.lineno, "write", is_test))
+                raw.append((base, node.lineno, cls, is_test))
+        write_lines = defaultdict(list)     # base -> write-classified linenos
+        for base, lineno, cls, _t in raw:
+            if cls == "write":
+                write_lines[base].append(lineno)
+        for base, lineno, cls, is_test in raw:
+            occ[base].append((str(mod.path), lineno, cls, is_test))
+            if cls != "write" and _in_atomic_write_fn(mod, lineno):
+                # The literal names the DESTINATION of a
+                # tempfile-then-rename write; the accumulate-guard
+                # window classified it read/mention. Record the
+                # write as well — the occurrence is both.
+                occ[base].append(
+                    (str(mod.path), lineno, "write", is_test))
+            if cls == "mention" and _locator_reads(mod, lineno,
+                                                   write_lines[base]):
+                # The literal builds a candidate path inside a small
+                # parsing helper; the open/parse sits below the window.
+                # Record the read as well (the mention is kept, so this
+                # can only suppress a write-only report, never mint an
+                # orphan-reader finding).
+                occ[base].append(
+                    (str(mod.path), lineno, "read", is_test))
     # non-python corpus: shell readers (jq, cat) & docs
     for p, text in idx.text_files:
         for i, line in enumerate(text.splitlines(), 1):

@@ -475,6 +475,113 @@ class TestEnvVarConsumptionRealism:
         assert "EXT_TOOL_INPUT" not in orphans
 
 
+class TestLocatorFunctionIdiom:
+    _WRITER = (
+        "import json\n"
+        "\n"
+        "\n"
+        "def emit(out_dir, sinks):\n"
+        "    with open(out_dir / 'found-sinks.json', 'w') as f:\n"
+        "        json.dump(sinks, f)\n"
+    )
+
+    def _findings(self, detector, root):
+        idx = _index(detector, root)
+        findings, _sup = detector.find_artifacts(idx)
+        return [f for f in findings if f["name"] == "found-sinks.json"]
+
+    def test_candidate_list_reader_suppresses_write_only(
+        self, detector, tmp_path,
+    ):
+        """The artifact literal only builds a candidate path; the parse
+        happens lines below, outside the +/-2 window — the function-level
+        strong-read scan must still count it as a reader."""
+        pkg = tmp_path / "core" / "foo"
+        pkg.mkdir(parents=True)
+        (pkg / "writer.py").write_text(self._WRITER, encoding="utf-8")
+        (pkg / "locator.py").write_text(
+            "import json\n"
+            "\n"
+            "\n"
+            "def find_sinks(run_dir, siblings):\n"
+            "    candidates = [run_dir / 'found-sinks.json']\n"
+            "    for sib in siblings:\n"
+            "        candidates.append(sib / 'found-sinks.json')\n"
+            "    for path in candidates:\n"
+            "        try:\n"
+            "            if not path.is_file():\n"
+            "                continue\n"
+            "            return json.loads(path.read_text())\n"
+            "        except (OSError, ValueError):\n"
+            "            continue\n"
+            "    return None\n",
+            encoding="utf-8",
+        )
+        assert not self._findings(detector, tmp_path)
+
+    def test_mention_in_non_reading_fn_stays_write_only(
+        self, detector, tmp_path,
+    ):
+        pkg = tmp_path / "core" / "foo"
+        pkg.mkdir(parents=True)
+        (pkg / "writer.py").write_text(self._WRITER, encoding="utf-8")
+        (pkg / "banner.py").write_text(
+            "def describe(run_dir):\n"
+            "    label = str(run_dir / 'found-sinks.json')\n"
+            "    return 'sink catalog at ' + label\n",
+            encoding="utf-8",
+        )
+        found = self._findings(detector, tmp_path)
+        assert found and found[0]["kind"] == "write_only_artifact"
+
+    def test_writer_echoing_its_output_path_stays_write_only(
+        self, detector, tmp_path,
+    ):
+        """A writer that prints where it wrote (and reads OTHER files in
+        the same function) is not that artifact's reader."""
+        pkg = tmp_path / "core" / "foo"
+        pkg.mkdir(parents=True)
+        (pkg / "writer.py").write_text(
+            "import json\n"
+            "\n"
+            "\n"
+            "def validate(manifest, out_dir):\n"
+            "    data = json.loads(manifest.read_text())\n"
+            "    with open(out_dir / 'found-sinks.json', 'w') as f:\n"
+            "        json.dump(data, f)\n"
+            "\n"
+            "    print('detail: ' + str(out_dir / 'found-sinks.json'))\n",
+            encoding="utf-8",
+        )
+        found = self._findings(detector, tmp_path)
+        assert found and found[0]["kind"] == "write_only_artifact"
+
+    def test_mention_in_large_pipeline_fn_stays_write_only(
+        self, detector, tmp_path,
+    ):
+        """A path listing inside a hundreds-of-lines pipeline function
+        that reads unrelated files must not count as a reader."""
+        pkg = tmp_path / "core" / "foo"
+        pkg.mkdir(parents=True)
+        (pkg / "writer.py").write_text(self._WRITER, encoding="utf-8")
+        filler = "".join(
+            f"    step_{i} = {i}\n" for i in range(80)
+        )
+        (pkg / "pipeline.py").write_text(
+            "import json\n"
+            "\n"
+            "\n"
+            "def run_all(out_dir, cfg_path):\n"
+            "    cfg = json.loads(cfg_path.read_text())\n"
+            + filler +
+            "    outputs = [str(out_dir / 'found-sinks.json')]\n"
+            "    return cfg, outputs\n",
+            encoding="utf-8",
+        )
+        found = self._findings(detector, tmp_path)
+        assert found and found[0]["kind"] == "write_only_artifact"
+
+
 class TestAtomicWriteIdiom:
     def test_tempfile_rename_writer_is_not_orphan_reader(
         self, detector, tmp_path,

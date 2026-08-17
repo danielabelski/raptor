@@ -313,6 +313,8 @@ The `/annotate` command attaches free-form prose to individual functions, stored
 
 **Status enum:** `clean` (reviewed, no concern) / `suspicious` (real bug, not exploitable) / `finding` (exploitable) / `dormant` (unreachable / dead code) / `error`.
 
+**Provenance:** every add/edit stamps the invocation context (`tty=<which std fds were TTYs>`, `provenance=interactive-tty|non-tty`); `source` defaults to `human` when any std fd is a TTY, else `agent`. Readers grant human-grade weight (Reflexion veto, operator-tier FP primers, durable coverage evidence, IRIS spec promotion) only to `source=human` notes with an interactive-TTY stamp (or legacy pre-stamp notes). Never pass `--source human` from non-interactive calls — the non-tty stamp contradicts it and readers demote such notes to hint tier.
+
 **Staleness:** Annotations stamped with `--lines N-M` carry a `metadata.hash` short prefix of the function's source. `/annotate stale` re-computes and lists annotations whose source has drifted.
 
 **Operator workflow:**
@@ -404,7 +406,7 @@ The verdict flows through the existing reachability chokepoint: /codeql + /agent
 - `/project binary list` / `remove` / `clear` — manage the persisted list.
 
 **Audit trail**:
-- `suppressions.jsonl` is written to the run's output directory whenever the chokepoint hard-suppresses a finding. One JSON record per suppression with `finding_id`, `rule_id`, `file_path`, `line`, `function`, `verdict`, `reason`. Query with `jq -c . suppressions.jsonl`. Both /agentic and /codeql write to the same file shape.
+- `suppressions.jsonl` is written to the run's output directory whenever the chokepoint hard-suppresses a finding. One JSON record per suppression with `finding_id`, `rule_id`, `file_path`, `line`, `function`, `verdict`, `reason`, `dropped` (`false` marks records for findings that survived to the LLM; consumers must tolerate extra keys). Query with `jq -c . suppressions.jsonl`. /agentic, /codeql, and /audit (oracle-earned triage skips) write the same file shape.
 - The classifier's per-finding analysis record also carries `analysis.reachability_suppression: true` + `analysis.reachability_verdict: <verdict>` for per-finding inspection.
 
 **Defenses against hostile / wrong-binary scenarios**:

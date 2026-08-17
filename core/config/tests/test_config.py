@@ -495,3 +495,121 @@ class TestGetLlmEnvPreservesProxy:
                         {"GIT_CONFIG_GLOBAL": "/home/op/.evil-gitconfig"}):
             env = RaptorConfig.get_safe_env()
             assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+
+
+class TestGetLlmEnvRoutingFamily:
+    """LLM transport-routing family carried by ``get_llm_env()``.
+
+    Pre-fix, ``get_llm_env()`` stripped ``CLAUDE_CODE_USE_BEDROCK``,
+    ``CLAUDE_CODE_USE_MANTLE``, ``ANTHROPIC_MODEL``, ``AWS_PROFILE``
+    and ``AWS_REGION`` (none were in SAFE_ENV_ALLOWLIST or
+    LLM_API_KEY_VARS), so every spawned LLM child lost the operator's
+    backend selection: minimal ``{"provider": "bedrock"}`` entries
+    could not backfill from the Claude Code install, the SigV4 chain
+    lost its profile/region pins, and claudecode-fallback ``claude -p``
+    grandchildren silently flipped from the operator's Bedrock backend
+    to the direct API — HTTP 400 on Bedrock-shaped model ids.
+    """
+
+    _FAMILY = {
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_USE_MANTLE": "1",
+        "ANTHROPIC_MODEL": "us.anthropic.claude-opus-4-8-v1:0",
+        "AWS_PROFILE": "llm-signing",
+        "AWS_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "AWS_SHARED_CREDENTIALS_FILE": "/home/op/.aws/alt-credentials",
+        "AWS_CONFIG_FILE": "/home/op/.aws/alt-config",
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "CLAUDE_CODE_USE_FOUNDRY": "1",
+        "ANTHROPIC_SMALL_FAST_MODEL": "anthropic.claude-haiku-4-5",
+        "ANTHROPIC_BASE_URL": "https://proxy.example/v1",
+    }
+
+    def test_family_carried_junk_stripped(self):
+        """Ambient containing the family + junk: family present, junk
+        stripped, allowlist discipline intact."""
+        injected = {
+            **self._FAMILY,
+            # Junk that must NOT flow: unrelated var, AWS-prefixed
+            # var outside the explicit list (proves no blanket AWS_
+            # prefix), and a shell-eval vector.
+            "TOTALLY_UNRELATED_VAR": "junk",
+            "AWS_VAULT": "some-vault-profile",
+            "BASH_ENV": "/tmp/evil.sh",
+        }
+        with patch.dict(os.environ, injected):
+            env = RaptorConfig.get_llm_env()
+            for var, val in self._FAMILY.items():
+                assert env.get(var) == val, f"{var} missing from get_llm_env()"
+            assert "TOTALLY_UNRELATED_VAR" not in env
+            assert "AWS_VAULT" not in env
+            assert "BASH_ENV" not in env
+
+    def test_raptor_prefix_families_carried(self):
+        """RAPTOR_BEDROCK_* / RAPTOR_CC_* operator knobs flow; the
+        dispatcher route vars are NOT blanket-inherited (a socket
+        path without its token FD is a broken route — only
+        spawn_worker may set the pair)."""
+        injected = {
+            "RAPTOR_BEDROCK_MODEL": "anthropic.claude-opus-4-8",
+            "RAPTOR_BEDROCK_PROFILE": "bedrock-signing",
+            "RAPTOR_BEDROCK_REGION": "us-east-1",
+            "RAPTOR_BEDROCK_API": "mantle",
+            "RAPTOR_CC_MODEL": "opus",
+            "RAPTOR_CC_EFFORT": "high",
+        }
+        with patch.dict(os.environ, {**injected,
+                                     "RAPTOR_LLM_SOCKET": "/tmp/d.sock",
+                                     "RAPTOR_LLM_TOKEN_FD": "7"}):
+            env = RaptorConfig.get_llm_env()
+            for var, val in injected.items():
+                assert env.get(var) == val, f"{var} missing from get_llm_env()"
+            assert "RAPTOR_LLM_SOCKET" not in env
+            assert "RAPTOR_LLM_TOKEN_FD" not in env
+
+    def test_no_family_vars_invented(self):
+        scrubbed = {
+            k: v for k, v in os.environ.items()
+            if k not in RaptorConfig.LLM_ROUTING_ENV_VARS
+            and not k.startswith(RaptorConfig.LLM_ROUTING_ENV_PREFIXES)
+        }
+        with patch.dict(os.environ, scrubbed, clear=True):
+            env = RaptorConfig.get_llm_env()
+            for var in RaptorConfig.LLM_ROUTING_ENV_VARS:
+                assert var not in env
+
+    def test_bedrock_bearer_flows_in_llm_env_only(self):
+        """AWS_BEARER_TOKEN_BEDROCK is a credential: LLM children get
+        it (selection signal + auth), untrusted-code envs never do."""
+        with patch.dict(os.environ,
+                        {"AWS_BEARER_TOKEN_BEDROCK": "bearer-test-value"}):
+            assert RaptorConfig.get_llm_env().get(
+                "AWS_BEARER_TOKEN_BEDROCK") == "bearer-test-value"
+            assert "AWS_BEARER_TOKEN_BEDROCK" not in RaptorConfig.get_safe_env()
+
+    def test_get_safe_env_posture_unchanged(self):
+        """The general sanitisation posture is intact: none of the
+        routing family leaks into get_safe_env() (untrusted-code
+        subprocesses must not learn the operator's LLM topology)."""
+        with patch.dict(os.environ, self._FAMILY):
+            env = RaptorConfig.get_safe_env()
+            for var in self._FAMILY:
+                assert var not in env, f"{var} leaked into get_safe_env()"
+
+    def test_family_disjoint_from_dangerous_vars(self):
+        """strict_env paths re-strip DANGEROUS_ENV_VARS — the routing
+        family must stay disjoint so the two mechanisms never fight
+        (guards future drift in either list)."""
+        overlap = set(RaptorConfig.LLM_ROUTING_ENV_VARS) & set(
+            RaptorConfig.DANGEROUS_ENV_VARS)
+        assert not overlap
+        for var in RaptorConfig.DANGEROUS_ENV_VARS:
+            assert not var.startswith(RaptorConfig.LLM_ROUTING_ENV_PREFIXES)
+
+    def test_raptor_dir_pin_unaffected(self):
+        """RAPTOR_DIR pinning at the same chokepoint survives the
+        family overlay (no name collision; SET value wins)."""
+        with patch.dict(os.environ, self._FAMILY):
+            env = RaptorConfig.get_llm_env()
+            assert env.get("RAPTOR_DIR") == str(RaptorConfig.REPO_ROOT)

@@ -68,6 +68,14 @@ def spawn_worker(
     else:
         from core.config import RaptorConfig
         base_env = RaptorConfig.get_safe_env(preserve_proxy=True)
+        # Transport-routing family (CLAUDE_CODE_USE_*, ANTHROPIC_MODEL,
+        # AWS profile/region NAMES, RAPTOR_BEDROCK_*/RAPTOR_CC_*) —
+        # workers resolve their models.json entries locally, and a
+        # minimal Bedrock entry backfills surface/model from these.
+        # Names and flags only: credential isolation is preserved
+        # (the dispatcher still injects the actual secrets at request
+        # time from its in-memory store).
+        base_env.update(RaptorConfig.llm_routing_env())
     base_env["RAPTOR_LLM_SOCKET"] = socket_path
     base_env["RAPTOR_LLM_TOKEN_FD"] = str(token_fd)
 

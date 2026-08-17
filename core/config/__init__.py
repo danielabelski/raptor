@@ -877,15 +877,111 @@ class RaptorConfig:
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
         "GOOGLE_APPLICATION_CREDENTIALS",  # GCP service account JSON path
+        # Bedrock's AWS-recommended bearer credential. A selection
+        # signal AND a secret: children that resolve models locally
+        # (mode scripts, the audit pipeline) starve on Bedrock entry
+        # resolution without it. Same posture as the AWS access keys
+        # above — LLM children only, never untrusted subprocesses.
+        "AWS_BEARER_TOKEN_BEDROCK",
     )
+
+    # LLM transport/backend ROUTING env vars — selection flags and
+    # names, not secrets (credentials stay in LLM_API_KEY_VARS; the
+    # profile-based AWS chain reads the actual keys from the profile
+    # files that AWS_PROFILE / AWS_SHARED_CREDENTIALS_FILE merely
+    # name). Intentionally NOT in SAFE_ENV_ALLOWLIST: untrusted-code
+    # subprocesses have no business knowing the operator's LLM
+    # topology, and RAPTOR's own LLM children get them layered on by
+    # get_llm_env() / spawn_worker(). Without this family, every
+    # spawned LLM child lost the operator's backend selection:
+    # a minimal {"provider": "bedrock"} models.json entry could not
+    # backfill surface/model from the Claude Code install
+    # (_cc_bedrock_topology reads CLAUDE_CODE_USE_BEDROCK), the
+    # dispatcher's SigV4 chain lost its profile/region pins, and the
+    # claudecode fallback's `claude -p` child silently flipped from
+    # the operator's Bedrock backend to the direct API — where a
+    # Bedrock-shaped model id is a guaranteed HTTP 400.
+    LLM_ROUTING_ENV_VARS = (
+        # Claude Code backend selection — read by core.llm.config
+        # (_cc_bedrock_topology backfill), core.llm.cc_adapter
+        # (cc_subprocess_env AWS gate), core.llm.cc_proxy_hosts
+        # (egress profile), core.llm.cc_probe (cache signature), and
+        # by the `claude` CLI itself in grandchildren.
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_MANTLE",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        # Anthropic model mapping / endpoint — the CC-topology model
+        # backfill (gated on CLAUDE_CODE_USE_BEDROCK) and the `claude`
+        # CLI's own session-default resolution. The direct-API SDK
+        # path never reads ANTHROPIC_MODEL (verified: the only
+        # in-repo functional read is inside _cc_bedrock_topology,
+        # which returns early unless CLAUDE_CODE_USE_BEDROCK is set),
+        # so carrying it cannot re-route direct-API children.
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "ANTHROPIC_BASE_URL",
+        # AWS signing-chain names — profile/region/config-file
+        # LOCATIONS, not credentials. Read by the dispatcher's SigV4
+        # auth chain, detection.bedrock_sigv4_intent, and egress
+        # host derivation. Needed: a child that cannot see them
+        # resolves a different (usually empty) signing chain than
+        # the parent that selected the provider.
+        "AWS_PROFILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        # Nice-to-have (nonstandard installs only): honour custom
+        # shared-credentials/config locations so botocore's chain in
+        # the child matches the parent's.
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_CONFIG_FILE",
+    )
+
+    # RAPTOR's own LLM operator knobs, carried as prefix families
+    # (same pattern as cc_adapter's _CC_BACKEND_ENV_PREFIXES: new
+    # knobs in these namespaces keep working without call-site
+    # churn). RAPTOR_BEDROCK_* are the explicit Bedrock opt-in
+    # signals (MODEL / PROFILE / REGION / API) plus operational knobs
+    # (MAX_WORKERS / PREFLIGHT_CACHE); RAPTOR_CC_* are the claudecode
+    # transport knobs (MODEL / PIN_MODEL / EFFORT / FALLBACK_MODEL /
+    # BUDGET_USD / PROBE_CACHE). NOT RAPTOR_LLM_: the dispatcher
+    # route (RAPTOR_LLM_SOCKET + RAPTOR_LLM_TOKEN_FD) is per-child
+    # state that only spawn_worker may set — a blanket-inherited
+    # socket path without its token FD is a broken route.
+    LLM_ROUTING_ENV_PREFIXES = (
+        "RAPTOR_BEDROCK_",
+        "RAPTOR_CC_",
+    )
+
+    @staticmethod
+    def llm_routing_env() -> dict:
+        """The LLM routing family present in the real environment.
+
+        Names and selection flags only — no credentials (those are
+        ``LLM_API_KEY_VARS``, layered separately by ``get_llm_env``).
+        Overlay this onto a sanitised base env at every seam that
+        spawns one of RAPTOR's OWN LLM-calling children
+        (``get_llm_env`` does it automatically; ``spawn_worker``
+        applies it to its default baseline). Never overlay onto an
+        env destined for untrusted target code.
+        """
+        env = {}
+        for var in RaptorConfig.LLM_ROUTING_ENV_VARS:
+            val = os.environ.get(var)
+            if val:
+                env[var] = val
+        for name, val in os.environ.items():
+            if name.startswith(RaptorConfig.LLM_ROUTING_ENV_PREFIXES) and val:
+                env[name] = val
+        return env
 
     @staticmethod
     def get_llm_env(
         *,
         include_python_user_base: bool = False,
     ) -> dict:
-        """Return get_safe_env() plus any LLM API keys present in the
-        real environment.
+        """Return get_safe_env() plus any LLM API keys and the LLM
+        transport-routing family present in the real environment.
 
         Use this for spawning RAPTOR's own analysis scripts that may call
         LLM providers.  Do NOT use for untrusted-code subprocesses.
@@ -925,6 +1021,14 @@ class RaptorConfig:
             val = os.environ.get(var)
             if val:
                 env[var] = val
+        # Transport/backend routing family (CLAUDE_CODE_USE_*,
+        # ANTHROPIC_MODEL, AWS profile/region names, RAPTOR_BEDROCK_*/
+        # RAPTOR_CC_* knobs). Applied AFTER get_safe_env so the
+        # documented LLM-env additions never depend on allowlist
+        # ordering; none of the names are in DANGEROUS_ENV_VARS, and
+        # RAPTOR_DIR pinning (inside get_safe_env) is untouched —
+        # the family shares no names with the pinned var.
+        env.update(RaptorConfig.llm_routing_env())
         return env
 
     @staticmethod

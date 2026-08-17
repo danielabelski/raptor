@@ -1550,8 +1550,12 @@ class LLMClient:
         attempt hits the budget check, so an unconditional ERROR
         printed the identical line once per doomed call.
         """
+        # getattr: tests build clients via ``__new__`` without the
+        # constructor-initialised flag.
         emit = (
-            logger.debug if self._budget_exceeded_logged else logger.error
+            logger.debug
+            if getattr(self, "_budget_exceeded_logged", False)
+            else logger.error
         )
         self._budget_exceeded_logged = True
         emit(
@@ -1610,7 +1614,10 @@ class LLMClient:
             return 0.0
         estimate = 0.0
         with self._stats_lock:
-            hist = self._call_cost_history.get(call_class)
+            # getattr: tests build clients via ``__new__`` without the
+            # constructor-initialised history dict.
+            hist_map = getattr(self, "_call_cost_history", None)
+            hist = hist_map.get(call_class) if hist_map else None
             if hist and hist[0] > 0:
                 estimate = hist[1] / hist[0]
         if estimate <= 0.0:
@@ -1643,8 +1650,13 @@ class LLMClient:
         """Record one completed call's actual cost for ``call_class``
         so subsequent reservations track observed reality."""
         with self._stats_lock:
-            n, total = self._call_cost_history.get(call_class, (0, 0.0))
-            self._call_cost_history[call_class] = (
+            hist_map = getattr(self, "_call_cost_history", None)
+            if hist_map is None:
+                # Clients built via ``__new__`` (test helpers) skip the
+                # constructor — lazily create the history dict.
+                hist_map = self._call_cost_history = {}
+            n, total = hist_map.get(call_class, (0, 0.0))
+            hist_map[call_class] = (
                 n + 1, total + max(0.0, float(cost or 0.0)),
             )
 

@@ -12,7 +12,6 @@ skipif so the suite degrades gracefully on hosts without it.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -34,6 +33,7 @@ from core.audit.git_oracle import (
 )
 from core.audit.sweep import SweepResult
 from core.git.clone import safe_git_readonly_command
+from core.testing import git_run, init_scratch_repo
 
 HAVE_GIT = shutil.which("git") is not None
 
@@ -65,38 +65,14 @@ def sandbox_spy(monkeypatch):
     return calls
 
 
-def _git(repo: Path, *args: str) -> None:
-    """Hermetic git for FIXTURE SETUP (RAPTOR-authored content only)."""
-    env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": str(repo.parent),
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-        "GIT_CONFIG_SYSTEM": "/dev/null",
-    }
-    subprocess.run(
-        [
-            "git", "-C", str(repo),
-            "-c", "user.name=fixture",
-            "-c", "user.email=fixture@example.invalid",
-            "-c", "commit.gpgsign=false",
-            *args,
-        ],
-        check=True, capture_output=True, env=env,
-    )
+# Hermetic git for FIXTURE SETUP (RAPTOR-authored content only) —
+# shared scaffolding from core.testing.
+_git = git_run
 
 
 def _make_repo(tmp_path: Path) -> Path:
     """A local clone with security-relevant and irrelevant history."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(
-        ["git", "init", "-q", str(repo)],
-        check=True, capture_output=True,
-        env={"PATH": os.environ.get("PATH", ""),
-             "HOME": str(tmp_path),
-             "GIT_CONFIG_GLOBAL": "/dev/null",
-             "GIT_CONFIG_SYSTEM": "/dev/null"},
-    )
+    repo = init_scratch_repo(tmp_path)
     src = repo / "src.c"
     lines = [f"int line_{i};" for i in range(1, 11)]
     src.write_text("\n".join(lines) + "\n")

@@ -14,99 +14,19 @@ calls, then exercises the cache via the real public API
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-from core.llm.client import LLMClient
-from core.llm.config import LLMConfig, ModelConfig
+from core.testing import (
+    FakeStructuredProvider,
+    install_provider,
+    make_test_client,
+)
 
-
-class _FakeProvider:
-    """Stand-in provider whose ``generate_structured`` returns a canned
-    result and counts invocations."""
-
-    def __init__(self, result: dict[str, Any], raw: str = "raw-stub"):
-        self.result = result
-        self.raw = raw
-        self.calls = 0
-        self.total_cost = 0.0
-        self.total_tokens = 0
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.call_count = 0
-        self.total_duration = 0.0
-
-    def generate_structured(
-        self, prompt: str, schema: dict[str, Any],
-        system_prompt: str | None = None,
-        **kwargs,
-    ) -> tuple[dict[str, Any], str]:
-        self.calls += 1
-        # Capture last-call kwargs so tests can assert plumbing
-        # (batch 331). Mimic what real providers do: bump
-        # cost/tokens so the client records non-zero deltas.
-        # Cache hits should bypass this entirely.
-        self.last_kwargs = dict(kwargs)
-        self.total_cost += 0.001
-        self.total_tokens += 100
-        return self.result, self.raw
-
-
-def _client(
-    tmp_path: Path, *,
-    enable_caching: bool = True,
-    cache_ttl_seconds: float | None = None,
-    cache_max_entries: int | None = None,
-) -> LLMClient:
-    """Build a minimally-configured LLMClient backed by a single fake
-    provider keyed under the primary_model identity. Skips the real
-    constructor's health-check + provider creation paths so we can run
-    without API keys."""
-    cfg = LLMConfig.__new__(LLMConfig)
-    cfg.primary_model = ModelConfig(
-        provider="anthropic",
-        model_name="test-primary",
-        max_context=200000,
-        api_key="not-used",
-    )
-    cfg.fallback_models = []
-    cfg.specialized_models = {}
-    cfg.enable_fallback = False
-    cfg.max_retries = 1
-    cfg.retry_delay = 0.0
-    cfg.retry_delay_remote = 0.0
-    cfg.enable_caching = enable_caching
-    cfg.cache_dir = tmp_path / "llm_cache"
-    cfg.cache_ttl_seconds = cache_ttl_seconds
-    cfg.cache_max_entries = cache_max_entries
-    cfg.enable_cost_tracking = False
-    cfg.max_cost_per_scan = 100.0
-    cfg.scorecard_enabled = False  # avoid latent class-default pollution if a future code path consults scorecard
-
-    if enable_caching:
-        cfg.cache_dir.mkdir(parents=True, exist_ok=True)
-
-    client = LLMClient.__new__(LLMClient)
-    import threading
-    from collections import OrderedDict
-    client.config = cfg
-    client.providers = {}
-    client.total_cost = 0.0
-    client.request_count = 0
-    client.cache_hits = 0
-    client.task_type_costs = {}
-    client._daily_quota_exhausted = set()
-    client._stats_lock = threading.RLock()
-    client._key_locks = OrderedDict()
-    client._key_locks_guard = threading.Lock()
-    client._key_locks_cap = 4096
-    return client
-
-
-def _install_provider(client: LLMClient, provider: _FakeProvider) -> None:
-    """Wire a fake provider into ``client.providers`` under the key
-    that ``_get_provider`` looks up."""
-    pm = client.config.primary_model
-    client.providers[f"{pm.provider}:{pm.model_name}"] = provider
+# Shared scaffolding (core/testing) under this suite's historical
+# local names — the definitions used to live here and had already
+# been copy-drifted into sibling suites.
+_FakeProvider = FakeStructuredProvider
+_client = make_test_client
+_install_provider = install_provider
 
 
 # ---------------------------------------------------------------------------

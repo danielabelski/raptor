@@ -16,19 +16,16 @@ retry / fallback / error path.
 
 from __future__ import annotations
 
-import threading
-from collections import OrderedDict
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from core.llm.client import LLMClient
-from core.llm.config import LLMConfig, ModelConfig
 from core.llm.response_validation import (
     SchemaUnknownFieldError,
     unknown_response_fields,
 )
+from core.testing import FakeStructuredProvider, install_provider, make_test_client
 
 # ---------------------------------------------------------------------------
 # Unit: unknown_response_fields
@@ -101,72 +98,18 @@ def test_exempt_freeform_registry_documented():
 # ---------------------------------------------------------------------------
 
 
-class _FakeProvider:
-    """Provider stub returning a canned structured result."""
-
-    def __init__(self, result: Any, raw: str = "raw-stub"):
-        self.result = result
-        self.raw = raw
-        self.calls = 0
-        self.total_cost = 0.0
-        self.total_tokens = 0
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.call_count = 0
-        self.total_duration = 0.0
-
-    def generate_structured(self, prompt, schema, system_prompt=None, **kwargs):
-        self.calls += 1
-        self.total_cost += 0.001
-        self.total_tokens += 100
-        return self.result, self.raw
+# Shared scaffolding (core/testing) under this suite's historical
+# local names. This suite's client keeps max_retries=2 — the retry
+# path is part of what the schema-floor wiring exercises.
+_FakeProvider = FakeStructuredProvider
+_install = install_provider
 
 
 def _client(tmp_path: Path, *, enable_caching: bool = True) -> LLMClient:
-    """Minimal LLMClient without API keys (mirrors
-    test_structured_response_cache.py)."""
-    cfg = LLMConfig.__new__(LLMConfig)
-    cfg.primary_model = ModelConfig(
-        provider="anthropic",
-        model_name="test-primary",
-        max_context=200000,
-        api_key="not-used",
+    """Minimal LLMClient without API keys (shared builder)."""
+    return make_test_client(
+        tmp_path, enable_caching=enable_caching, max_retries=2,
     )
-    cfg.fallback_models = []
-    cfg.specialized_models = {}
-    cfg.enable_fallback = False
-    cfg.max_retries = 2
-    cfg.retry_delay = 0.0
-    cfg.retry_delay_remote = 0.0
-    cfg.enable_caching = enable_caching
-    cfg.cache_dir = tmp_path / "llm_cache"
-    cfg.cache_ttl_seconds = None
-    cfg.cache_max_entries = None
-    cfg.enable_cost_tracking = False
-    cfg.max_cost_per_scan = 100.0
-    cfg.scorecard_enabled = False
-
-    if enable_caching:
-        cfg.cache_dir.mkdir(parents=True, exist_ok=True)
-
-    client = LLMClient.__new__(LLMClient)
-    client.config = cfg
-    client.providers = {}
-    client.total_cost = 0.0
-    client.request_count = 0
-    client.cache_hits = 0
-    client.task_type_costs = {}
-    client._daily_quota_exhausted = set()
-    client._stats_lock = threading.RLock()
-    client._key_locks = OrderedDict()
-    client._key_locks_guard = threading.Lock()
-    client._key_locks_cap = 4096
-    return client
-
-
-def _install(client: LLMClient, provider: _FakeProvider) -> None:
-    pm = client.config.primary_model
-    client.providers[f"{pm.provider}:{pm.model_name}"] = provider
 
 
 _SCHEMA = {"type": "object", "properties": {"verdict": {"type": "string"}}}

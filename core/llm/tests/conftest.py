@@ -19,16 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-_PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy")
-
-# Pin OLLAMA_HOST to the documented default so these tests are hermetic
-# against a developer's ambient env. A dev running Ollama exports the
-# canonical schemeless ``OLLAMA_HOST=127.0.0.1:11434`` (or a remote
-# host), which otherwise leaks into LLMClient/detection and makes the
-# suite's outcome host-dependent. A test that genuinely exercises a
-# specific host overrides this with its own ``monkeypatch.setenv``,
-# which runs after this autouse setup and wins.
-_DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+from core.testing import reset_llm_egress_state
 
 
 @pytest.fixture(autouse=True)
@@ -52,41 +43,18 @@ def _reset_llm_egress_state(monkeypatch):
     """Reset egress module flag, clear proxy env vars, and pin
     OLLAMA_HOST for every test in this directory.
 
-    The env mutations go through ``monkeypatch`` — the SAME
-    function-scoped instance the tests themselves use — so setup
-    deletions, per-test setenv calls, and the egress module's direct
-    ``os.environ`` writes to these vars all unwind on one undo stack,
-    back to the operator's real values.
-
-    Pre-fix this popped the vars manually before AND after each test,
-    with two consequences on mandatory-egress-proxy hosts:
-      * the operator's real proxy env was erased for the remainder of
-        the pytest process — every later suite in the same run that
-        legitimately honours proxy env (e.g. the semgrep registry
-        reachability probe in packages/static-analysis) dialed
-        direct, got blocked, and failed. Cross-suite pollution that
-        only reproduced in combined runs on proxied hosts.
-      * a manual save/restore can't fix it: another autouse fixture
-        (``_isolate_scorecard``) instantiates ``monkeypatch`` before
-        this fixture, so ``monkeypatch.undo()`` runs AFTER our
-        teardown and re-applies "var was absent" over the restore.
-        Sharing the undo stack sidesteps the ordering entirely."""
-    from core.llm import egress
-    egress._reset_for_tests()
-    for var in _PROXY_VARS:
-        # Two-step so an undo entry exists even when the var is
-        # ABSENT from the real env: delenv(raising=False) on a
-        # missing var records nothing, and the egress module's
-        # direct os.environ writes during a test would then survive
-        # undo and leak process-wide. setenv first guarantees a
-        # recorded old-value (absent), delenv leaves the var unset
-        # for the test; undo unwinds both and lands on the original
-        # state either way.
-        monkeypatch.setenv(var, "")
-        monkeypatch.delenv(var)
-    monkeypatch.setenv("OLLAMA_HOST", _DEFAULT_OLLAMA_HOST)
-    yield
-    egress._reset_for_tests()
+    Shared body: :func:`core.testing.reset_llm_egress_state` — its
+    docstring carries the hard-won mechanics (single monkeypatch undo
+    stack; the setenv→delenv two-step for vars absent from the real
+    env). This directory's history is why those mechanics exist: the
+    manual pop-before-and-after version erased the operator's real
+    proxy env for the remainder of the pytest process on
+    mandatory-egress-proxy hosts, and a save/restore could not fix it
+    because ``_isolate_scorecard``'s monkeypatch instantiates first
+    and undoes after ours. The shared body also scrubs the FULL
+    8-var proxy family (this copy had drifted to 4, leaving
+    HTTP_PROXY/ALL_PROXY leaks possible)."""
+    yield from reset_llm_egress_state(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

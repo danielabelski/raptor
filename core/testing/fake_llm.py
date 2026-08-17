@@ -1,0 +1,135 @@
+"""Fake LLM provider + minimal client builder for tests.
+
+Consolidates the ``_FakeProvider`` / ``_client(tmp_path)`` scaffolding
+that ``core/llm`` test suites (and their copies in packages/) each
+re-spelled. The builder intentionally bypasses ``LLMClient.__init__``
+(no API keys, no provider autodetection, no egress side effects) —
+when the client's private construction changes, THIS is the one place
+test scaffolding follows it.
+"""
+
+from __future__ import annotations
+
+import threading
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any
+
+from core.llm.client import LLMClient
+from core.llm.config import LLMConfig, ModelConfig
+
+
+class FakeStructuredProvider:
+    """Provider-level stub whose ``generate_structured`` returns a
+    canned ``(result, raw)`` pair, counts invocations, captures the
+    last call's kwargs, and bumps the usage counters ``LLMClient``
+    diffs (so tests observe non-zero cost/token deltas; cache hits
+    bypass the provider entirely and leave the counters alone).
+
+    Signature notes (the drift this fake ends): ``generate_structured``
+    accepts positional-or-keyword ``prompt``/``schema`` and MUST take
+    ``**kwargs`` — the real client forwards per-call options like
+    ``temperature`` and ``task_type``, and copies without ``**kwargs``
+    TypeError at runtime.
+    """
+
+    def __init__(self, result: Any, raw: str = "raw-stub", *,
+                 cost_per_call: float = 0.001,
+                 tokens_per_call: int = 100):
+        self.result = result
+        self.raw = raw
+        self.calls = 0
+        self.last_kwargs: dict[str, Any] = {}
+        self._cost_per_call = cost_per_call
+        self._tokens_per_call = tokens_per_call
+        # Full usage-counter block the client diffs before/after a
+        # call (superset of what the drifted copies carried).
+        self.total_cost = 0.0
+        self.total_tokens = 0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.call_count = 0
+        self.total_duration = 0.0
+        self.total_cache_read_tokens = 0
+        self.total_cache_write_tokens = 0
+
+    def generate_structured(
+        self, prompt: str, schema: dict[str, Any],
+        system_prompt: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[Any, str]:
+        self.calls += 1
+        self.last_kwargs = dict(kwargs)
+        self.total_cost += self._cost_per_call
+        self.total_tokens += self._tokens_per_call
+        return self.result, self.raw
+
+
+def make_test_client(
+    tmp_path: Path,
+    *,
+    enable_caching: bool = True,
+    cache_ttl_seconds: float | None = None,
+    cache_max_entries: int | None = None,
+    max_retries: int = 1,
+) -> LLMClient:
+    """Build a minimally-configured ``LLMClient`` backed by nothing.
+
+    Skips the real constructor's health-check + provider-creation +
+    egress paths so suites run without API keys or network. Pair with
+    :func:`install_provider` to wire a fake under the primary-model
+    key.
+    """
+    cfg = LLMConfig.__new__(LLMConfig)
+    cfg.primary_model = ModelConfig(
+        provider="anthropic",
+        model_name="test-primary",
+        max_context=200000,
+        api_key="not-used",
+    )
+    cfg.fallback_models = []
+    cfg.specialized_models = {}
+    cfg.enable_fallback = False
+    cfg.max_retries = max_retries
+    cfg.retry_delay = 0.0
+    cfg.retry_delay_remote = 0.0
+    cfg.enable_caching = enable_caching
+    cfg.cache_dir = tmp_path / "llm_cache"
+    cfg.cache_ttl_seconds = cache_ttl_seconds
+    cfg.cache_max_entries = cache_max_entries
+    cfg.enable_cost_tracking = False
+    cfg.max_cost_per_scan = 100.0
+    # Avoid latent class-default pollution if a future code path
+    # consults the scorecard.
+    cfg.scorecard_enabled = False
+
+    if enable_caching:
+        cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    client = LLMClient.__new__(LLMClient)
+    client.config = cfg
+    client.providers = {}
+    client.total_cost = 0.0
+    client.request_count = 0
+    client.cache_hits = 0
+    client.task_type_costs = {}
+    client._daily_quota_exhausted = set()
+    client._stats_lock = threading.RLock()
+    client._key_locks = OrderedDict()
+    client._key_locks_guard = threading.Lock()
+    client._key_locks_cap = 4096
+    return client
+
+
+def install_provider(client: LLMClient, provider: Any) -> None:
+    """Wire *provider* into ``client.providers`` under the key that
+    ``_get_provider`` looks up for the primary model."""
+    pm = client.config.primary_model
+    client.providers[f"{pm.provider}:{pm.model_name}"] = provider
+
+
+__all__ = [
+    "FakeStructuredProvider",
+    "install_provider",
+    "make_test_client",
+]

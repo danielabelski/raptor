@@ -11,7 +11,6 @@ tmp_path; the sandbox chokepoint is spied and executes git directly.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,6 +28,7 @@ from core.audit.fix_history import (
     parse_show_diff,
     regression_gaps,
 )
+from core.testing import git_run, init_scratch_repo
 
 HAVE_GIT = shutil.which("git") is not None
 needs_git = pytest.mark.skipif(not HAVE_GIT, reason="git not installed")
@@ -52,37 +52,10 @@ def sandbox_spy(monkeypatch):
     return calls
 
 
-def _git(repo: Path, *args: str) -> None:
-    env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": str(repo.parent),
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-        "GIT_CONFIG_SYSTEM": "/dev/null",
-    }
-    subprocess.run(
-        [
-            "git", "-C", str(repo),
-            "-c", "user.name=fixture",
-            "-c", "user.email=fixture@example.invalid",
-            "-c", "commit.gpgsign=false",
-            *args,
-        ],
-        check=True, capture_output=True, env=env,
-    )
-
-
-def _init_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(
-        ["git", "init", "-q", str(repo)],
-        check=True, capture_output=True,
-        env={"PATH": os.environ.get("PATH", ""),
-             "HOME": str(tmp_path),
-             "GIT_CONFIG_GLOBAL": "/dev/null",
-             "GIT_CONFIG_SYSTEM": "/dev/null"},
-    )
-    return repo
+# Hermetic git fixture helpers — shared scaffolding from core.testing
+# (this file used to carry byte-for-byte copies of test_git_oracle's).
+_git = git_run
+_init_repo = init_scratch_repo
 
 
 VULN_HANDLER = (

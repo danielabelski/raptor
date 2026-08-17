@@ -1429,9 +1429,23 @@ class TestGateEnforcement:
         assert result.findings == 0
         assert result.suspicious == 0
 
-    def test_finding_with_llm_evidence_demoted_by_gate(self, tmp_path: Path):
-        """G2: finding with evidence_tool='llm' gets demoted to suspicious."""
+    def test_finding_with_llm_evidence_demoted_by_gate(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        """G2: finding with evidence_tool='llm' gets demoted to
+        suspicious, then mechanically resolved (clean/dark) by
+        _resolve_gate_demoted."""
         target, out = _setup_target(tmp_path)
+
+        # Hermetic: on hosts with a live LLM transport, the dark-verify
+        # pass builds its own LLMClient, synthesizes a witness for the
+        # gate-demoted outcome, and can re-promote it to finding —
+        # making the assertions depend on a real model's verdict (and
+        # billing real money per test run).
+        import core.audit.orchestrator as _orch
+        monkeypatch.setattr(
+            _orch, "_run_dark_verification", lambda *a, **kw: None,
+        )
 
         def review_fn(ctx, config):
             return ReviewOutcome(
@@ -1447,6 +1461,9 @@ class TestGateEnforcement:
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False,
             batch_sloc_threshold=0,
+            # Hermetic: see TestSuspiciousPromotion — the Joern-gated
+            # suspicious demotion must not decide this test's outcome.
+            joern_overrides={"enabled": False},
         )
         result = run_orchestrator(config, review_fn)
         assert result.findings == 0
@@ -1503,6 +1520,10 @@ class TestGateEnforcement:
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False,
             batch_sloc_threshold=0,
+            # Hermetic: with a live Joern server the suspicious-demotion
+            # gate rewrites the G1-demoted verdict to clean, and the
+            # log loses both markers this test asserts on.
+            joern_overrides={"enabled": False},
         )
         run_orchestrator(config, review_fn)
 
@@ -1553,6 +1574,11 @@ class TestSuspiciousPromotion:
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=True, batch_sloc_threshold=0,
+            # Hermetic: with Joern installed, the suspicious-demotion
+            # gate (suspicious + no verification evidence -> clean)
+            # would flip the stubbed verdict before the sweep promotes
+            # it, making the assertions host-dependent.
+            joern_overrides={"enabled": False},
         )
         result = run_orchestrator(config, review_fn)
         assert result.sweep_promoted >= 1
@@ -2976,6 +3002,11 @@ class TestDeepenSuspicious:
             deepen_suspicious=True,
             max_refinements=0,
             sweep_validate_findings=False,
+            # Hermetic: the suspicious-demotion gate only runs with a
+            # live Joern server and would demote the evidence-less
+            # stub verdict to clean, making the assertions
+            # host-dependent (deepen dispatch / suspicious tally).
+            joern_overrides={"enabled": False},
         )
         result = run_orchestrator(config, review_fn)
 
@@ -3024,6 +3055,11 @@ class TestDeepenSuspicious:
             deepen_suspicious=True,
             max_refinements=0,
             sweep_validate_findings=False,
+            # Hermetic: the suspicious-demotion gate only runs with a
+            # live Joern server and would demote the evidence-less
+            # stub verdict to clean, making the assertions
+            # host-dependent (deepen dispatch / suspicious tally).
+            joern_overrides={"enabled": False},
         )
         result = run_orchestrator(config, review_fn)
 
@@ -3068,6 +3104,8 @@ class TestDeepenSuspicious:
             budget=10, batch_sloc_threshold=0,
             deepen_suspicious=False,
             max_refinements=0,
+            # Hermetic: see test_suspicious_gets_deepened.
+            joern_overrides={"enabled": False},
         )
         result = run_orchestrator(config, review_fn)
 

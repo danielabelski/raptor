@@ -890,17 +890,29 @@ class BuildDetector:
                 cc_failures = self._dry_run(script_path, language=language)
                 if cc_failures is None:
                     logger.info("  CC retry didn't run — keeping heuristic")
+                    # The script on disk currently contains the UNMEASURED
+                    # CC flags — restore the heuristic script so the build
+                    # command matches what the log just promised.
+                    self._write_build_script(
+                        script_path, build_dir,
+                        source_files, compiler, include_flags, define_flags,
+                    )
                 else:
                     cc_ok = len(source_files) - len(cc_failures)
                     if cc_ok > heuristic_ok:
                         logger.info("  CC improved: %d → %d compiled", heuristic_ok, cc_ok)
                         build_type = "synthesised-cc"
+                        # Keep the CC-flag script already on disk — it just
+                        # measured better. Pre-fix this branch fell through
+                        # to an unconditional heuristic rewrite, discarding
+                        # the improvement while build_type still claimed
+                        # "synthesised-cc".
                     else:
                         logger.info("  CC didn't improve, using heuristic")
-                    self._write_build_script(
-                        script_path, build_dir,
-                        source_files, compiler, include_flags, define_flags,
-                    )
+                        self._write_build_script(
+                            script_path, build_dir,
+                            source_files, compiler, include_flags, define_flags,
+                        )
                     confidence = 0.5
             else:
                 confidence = 0.5

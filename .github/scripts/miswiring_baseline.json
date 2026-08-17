@@ -1,801 +1,804 @@
 {
- "_comment": "Accepted miswiring-detector findings. Keys are class:kind:file:symbol (no line numbers). Add an entry ONLY with a note explaining why the finding is accepted; prefer fixing. check_miswiring.py fails CI on any finding not listed here and warns on stale entries.",
- "version": 1,
- "entries": {
-  "artifacts:orphan_reader::*-metadata.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::*.label.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::*.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::*.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::*.yaml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::*.yml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::*_exploit_context.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::*exploit*context*.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::.raptor.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::README.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::c.*.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::c.p.*.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::codeql-database.yml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::codeql-pack.lock.yml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::coverage-*.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::coverage-audit.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::coverage-codeql.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::coverage-semgrep.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::exploit-context.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::flow.jsonl": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::flow.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::inventory.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::joern-flows.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::layer0-findings.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::manifest.yml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::pnpm-workspace.yaml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::raptor-audit-cfg-*.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::raptor-project.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::raptor_*.jsonl": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::requirements*.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::suppressions.jsonl": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::.project.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::.stdout.log": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::_dataflow_instructions.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::_exploit_context.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::_gdb_commands.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::_lldb_commands.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::_lldb_err.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::_lldb_fallback.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::_lldb_out.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::adversarial-matrix.json": {
-   "note": "operator-facing run artifact from --adversarial (adversarial_test.write_matrix); surfaced when the atomic-write idiom became visible to the writer classifier"
-  },
-  "artifacts:write_only_artifact::agentic-report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::aggregation.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::annotations.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::annotations.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::audit-report.json": {
-   "note": "operator-facing summary report; read by the /audit command instructions (.claude/commands/audit.md), not by production code; surfaced when the atomic-write idiom became visible to the writer classifier"
-  },
-  "artifacts:write_only_artifact::audit-report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::autonomous_summary.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::baseline-delta.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::baseline-delta.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::bench_report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::binary-analysis-report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::boost-evidence.jsonl": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::bug-chains.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::candidates.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::candidates.post-apply.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::capability_report.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::cascade.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::changes.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::changes.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::changes.pr-comment.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::cocci.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::compiled-invariants.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::compiler.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::correlation.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::cost-breakdown.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::crashes_for_validation.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::crawl_results.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::dark-verify-results.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::defense-telemetry.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::delta.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::delta.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::disagreements.json": {
-   "note": "operator-facing layer-resolution audit trail (layer_resolution.write_disagreements); surfaced when the atomic-write idiom became visible to the writer classifier"
-  },
-  "artifacts:write_only_artifact::expanded_semgrep.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::exploitation-report.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::findings.jsonl": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::fix-history.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::frida-report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::fuzzing_plan.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::fuzzing_report.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::generated-corpus.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::graduated.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::harness-report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::harness-spec.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::hash-pin.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::imported-normalized.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::iris-taint-specs-refined.json": {
-   "note": "written by the audit orchestrator after iris_refine_loop; still unread: the promoted-spec readers in /validate//understand//agentic consume the project store (<project>/iris-specs/specs.json via core.iris.api), which only promote_spec_on_annotation writes — the refine loop's caller-persist step (core.iris.store.save_specs merge of refined specs) is unwired, and auto-persisting LLM-refined sanitiser specs into untiered suppression-direction readers (get_project_sanitisers) needs an evidence-tier gate first; artifact doubles as operator-facing run output"
-  },
-  "artifacts:write_only_artifact::mechanical-findings.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::merged.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::observation-status.json": {
-   "note": "operator-facing layer-resolution audit trail; surfaced when the atomic-write idiom became visible to the writer classifier"
-  },
-  "artifacts:write_only_artifact::oracle_summary.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::phase2-classifications.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::pipeline-summary.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::post-loop-findings.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::pr-comment.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::provenance.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::raptor_agentic_report.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::recon.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::results.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::sage_precall_validation.json": {
-   "note": "write side of the /validate SAGE precall: raptor-validation-helper stage 0 dumps recall_context_for_validation() output; no reader — the /validate skill instructions never reference it, and the parallel agentic precall chain (sage_precall_scan.json reader + --sage-precall forwarding) was removed (test_agentic_dead_plumbing pins it out); wire a stage reader or drop the dump"
-  },
-  "artifacts:write_only_artifact::sarif_merge.stderr.log": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::scan-manifest.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::seed-corpus.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::selected-findings.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::stderr.log": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::stdout.log": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::study-report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::summary.txt": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::threat-model-candidates.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::threat-model-drift.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::threat-model-lint.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::threat-model-report.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::threats.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::tier-diagnostics.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::triage-summary.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::triage.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::upgrade-impact.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::validate-against.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::validation-error.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::validation.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::verification.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::web_scan_report.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "dead:dead_class:core/audit/degradation.py:ToolTier": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_class:packages/exploit_feasibility/constants.py:AddressSpace": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_class:packages/exploit_feasibility/constants.py:FormatWriteLimits": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_class:packages/exploit_feasibility/constants.py:GadgetSearch": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_class:packages/exploit_feasibility/constants.py:TargetPriority": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_class:packages/sca/models.py:RiskMetadata": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/analysis/lifecycle_collector.py:collect_read_site": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/analysis/lifecycle_collector.py:collect_write_site": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/analysis/taint_approx.py:format_transitive_taint": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/_util.py:extract_sink_sets": {
-   "note": "kept: its paired artifact discovered-sinks.json gained a reader (core/orchestration/context_map_sinks imports audit discovered sinks into the /understand map) without consuming this helper; still zero-reference — wire into the sink-catalog flow or drop, owner decision pending"
-  },
-  "dead:dead_function:core/audit/_util.py:safe_joern_name": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/checker_library.py:checker_from_synthesis": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/checker_library.py:graduate_checkers": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/checker_library.py:load_library": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/frida_observe.py:collect_observed_functions": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/llm_review.py:call_llm_for_rule_refinement": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/llm_summaries.py:run_llm_summary_pass": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/orchestrator.py:request_shutdown": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/sibling_analysis.py:identify_paired_operations": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/sibling_analysis.py:identify_parallel_loops": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/struct_accessor_index.py:build_index_from_joern": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/iris/api.py:load_project_assumptions": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/sandbox/host.py:one_shot_call": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:packages/checker_synthesis/synthesise.py:_validate_cocci_body": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:packages/diagram/sanitize.py:detect_id_collisions": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_binary_exploitability": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_system_exploitability": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_function:packages/exploit_feasibility/cache.py:clear_caches": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_function:packages/exploit_feasibility/config.py:reset_config": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_function:packages/exploit_feasibility/errors.py:reset_error_collector": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_function:packages/exploit_feasibility/schema.py:validate_context_file": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_function:packages/source_intel/discovery.py:alias_is_curated": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:core/audit/checker_library.py:CheckerLibrary.active_checkers": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:core/concepts/reading_list.py:ReadingList.merge_from": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:core/logging/__init__.py:RaptorLogger.log_security_event": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.generate_mutated_seed": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.learn_from_crash": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.optimize_corpus": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/exploit_validator.py:ExploitValidator.quick_syntax_check": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.adapt_fuzzing_strategy": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.should_continue_towards_goal": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.update_goal_progress": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/planner.py:FuzzingPlanner.should_continue_fuzzing": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/autonomous/planner.py:FuzzingState.is_finding_crashes": {
-   "note": "kept: pending work — autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
-  },
-  "dead:dead_method:packages/checker_synthesis/library.py:RuleLibrary.active_entries": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/codeql/language_detector.py:LanguageDetector.get_primary_language": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/exploit_feasibility/analyzer.py:FeasibilityAnalyzer.quick_check": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/context.py:BinaryContext.rank_write_targets": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_binary_error": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_parse_error": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_permission_error": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_tool_failed": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_tool_timeout": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.get_by_category": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.get_by_component": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.has_critical": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.has_errors": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/exploit_context.py:ExploitContext.get_with_meta": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/mitigations.py:GlibcMitigations.get_mitigations_for_vuln": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/mitigations.py:KernelMitigations.get_mitigations_for_vuln": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.is_kernel": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.mitigation_analysis_relevant": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.needs_remote_enumeration": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/targets.py:BinarySpecificAnalysis.get_targets_for_technique": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/vuln_types.py:ExploitabilityVerdict.human_readable": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.is_enabling": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.is_memory_corruption": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_format_string_analysis": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_heap_analysis": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_stack_analysis": {
-   "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
-  },
-  "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.add_seeds": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.create_from_directory": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/fuzzing/telemetry.py:FuzzingTelemetry.record_payload_failure": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/joern/server.py:JoernServer.run_taint_queries_batch": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/source_intel/analyze.py:SourceIntelResult.function_attrs": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/source_intel/analyze.py:SourceIntelResult.function_has_kind": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/web/client.py:WebClient.get_cookies": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/web/client.py:WebClient.set_auth": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/web/client.py:WebClient.set_bearer_token": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "plumbing:orphan_config_field:core/analysis/typestate.py:ForbiddenTransition.from_state": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/analysis/typestate.py:ForbiddenTransition.to_state": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateModel.valid_ops": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateTransition.from_state": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateTransition.to_state": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateViolation.current_state": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateViolation.required_states": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/block_review.py:ComplexityProfile.branch_nodes": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/block_review.py:ComplexityProfile.total_nodes": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/capabilities.py:AuditCapabilities.nm": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/condition_cpg.py:ExposureContext.http_method": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/condition_cpg.py:ExposureContext.requires_permission": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/contracts.py:ContractViolation.violated_precondition": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/dispatch_table.py:DispatchMember.table_field": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/expanded_semgrep.py:ExpandedTu.scratch_rel": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/frida_observe.py:FridaObservation.timestamp_ms": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/intra_function.py:IntraFunctionAsymmetry.deviant_block": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/intra_function.py:IntraFunctionAsymmetry.majority_pattern": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/prompt_defence.py:ScanResult.sanitised_count": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/propagation.py:ConfidenceDemotion.source_functions": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/propagation.py:PropagationResult.callers_filtered": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/shared_state.py:SharedState.contract_pair_index": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/shared_state.py:SharedState.iris_bypass_by_func": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/spec_inference.py:PreconditionVerification.unknown_sites": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/spec_inference.py:PreconditionVerification.violated_sites": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/struct_accessor_index.py:AccessorRecord.access_type": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/type_confusion.py:TypeConfusionFinding.deser_function": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/binary/elf.py:_SectionHeader.sh_link": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/coverage/clean.py:CleanConsequence.coverage_files": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/dataflow/smt_barrier.py:ValidatorSpec.diff_line_offset": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/inventory/sink_discovery.py:UnreachableVerdict.narrowed_classes": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/llm/dispatcher/server.py:_TokenRecord.issued_at": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:DawidSkeneResult.class_prior": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:DawidSkeneResult.fixed_class_rate": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:FindingPosterior.posterior_log_odds": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/llm/tool_use/types.py:TurnStarted.input_token_estimate": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/oci/sbom.py:InstalledPackage.source_layer_digest": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/autonomous/exploit_validator.py:ValidationResult.runtime_errors": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.goal_progress": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.strategies_tried": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/codeql/autonomous_analyzer.py:AutonomousAnalysisResult.refinement_iterations": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/codeql/autonomous_analyzer.py:AutonomousAnalysisResult.total_duration_seconds": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/cve_diff/cve_diff/pipeline.py:PipelineResult.agent_result": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/exploit_feasibility/mitigations.py:KernelMitigations.exec_shield": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/exploit_feasibility/primitives.py:ConfidenceScore.base_reliability": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/exploit_feasibility/profiles.py:TargetProfile.confidence_notes": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/exploit_feasibility/under_mitigations.py:ProfileVerdict.profile_description": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/exploitability_validation/orchestrator.py:PipelineConfig.stage_b_max_attempts": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/exploitability_validation/orchestrator.py:PipelineConfig.stage_b_proximity_threshold": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/fuzzing/harness_generator.py:HarnessSpec.extra_includes": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/fuzzing/harness_generator.py:HarnessSpec.setup_code": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/fuzzing/harness_generator.py:HarnessSpec.teardown_code": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/fuzzing/orchestrator.py:CampaignPlan.cmd_preview": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/joern/lang_config.py:LangProfile.heap_mb_per_10k_sloc": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/joern/lang_config.py:LangProfile.joern_parse_language": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/joern/models.py:JoernResult.dark_methods": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/harden.py:HardenCandidate.cve_cleared": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.call_site_count": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.max_tree_depth": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.transitive_count": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.unique_maintainers_in_tree": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/strategy_eval/models.py:ABResult.sample_id": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference — genuinely unconsumed; reserved plumbing pending wiring or removal"
+  "_comment": "Accepted miswiring-detector findings. Keys are class:kind:file:symbol (no line numbers). Add an entry ONLY with a note explaining why the finding is accepted; prefer fixing. check_miswiring.py fails CI on any finding not listed here and warns on stale entries.",
+  "version": 1,
+  "entries": {
+    "artifacts:orphan_reader::*-metadata.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::*.label.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::*.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::*.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::*.yaml": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::*.yml": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::*_exploit_context.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::*exploit*context*.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::.raptor.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::README.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::c.*.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::c.p.*.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::codeql-database.yml": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::codeql-pack.lock.yml": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::codeql.log": {
+      "note": "externally produced input: written by the CodeQL CLI in the run dir, read by the audit log-inspection path"
+    },
+    "artifacts:orphan_reader::coverage-*.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::coverage-audit.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::coverage-codeql.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::coverage-semgrep.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::exploit-context.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::flow.jsonl": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::flow.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::inventory.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::joern-flows.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::layer0-findings.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::lifecycle.log": {
+      "note": "externally produced input: written by libexec/raptor-run-lifecycle (shell), read by run tooling"
+    },
+    "artifacts:orphan_reader::manifest.yml": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::pnpm-workspace.yaml": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::raptor-audit-cfg-*.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::raptor-project.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::raptor_*.jsonl": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:orphan_reader::requirements*.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::.project.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::.stdout.log": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::_dataflow_instructions.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::_exploit_context.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::_gdb_commands.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::_lldb_commands.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::_lldb_err.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::_lldb_fallback.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::_lldb_out.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::adversarial-matrix.json": {
+      "note": "operator-facing run artifact from --adversarial (adversarial_test.write_matrix); surfaced when the atomic-write idiom became visible to the writer classifier"
+    },
+    "artifacts:write_only_artifact::agentic-report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::aggregation.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::annotations.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::annotations.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::audit-report.json": {
+      "note": "operator-facing summary report; read by the /audit command instructions (.claude/commands/audit.md), not by production code; surfaced when the atomic-write idiom became visible to the writer classifier"
+    },
+    "artifacts:write_only_artifact::audit-report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::autonomous_summary.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::baseline-delta.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::baseline-delta.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::bench_report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::binary-analysis-report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::boost-evidence.jsonl": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::bug-chains.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::candidates.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::candidates.post-apply.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::capability_report.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::cascade.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::changes.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::changes.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::changes.pr-comment.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::cocci.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::compiled-invariants.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::compiler.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::correlation.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::cost-breakdown.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::crashes_for_validation.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::crawl_results.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::dark-verify-results.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::defense-telemetry.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::delta.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::delta.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::disagreements.json": {
+      "note": "operator-facing layer-resolution audit trail (layer_resolution.write_disagreements); surfaced when the atomic-write idiom became visible to the writer classifier"
+    },
+    "artifacts:write_only_artifact::expanded_semgrep.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::exploitation-report.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::findings.jsonl": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::fix-history.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::frida-report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::fuzzing_plan.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::fuzzing_report.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::generated-corpus.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::graduated.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::harness-report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::harness-spec.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::hash-pin.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::iris-taint-specs-refined.json": {
+      "note": "written by the audit orchestrator after iris_refine_loop; still unread: the promoted-spec readers in /validate//understand//agentic consume the project store (<project>/iris-specs/specs.json via core.iris.api), which only promote_spec_on_annotation writes \u2014 the refine loop's caller-persist step (core.iris.store.save_specs merge of refined specs) is unwired, and auto-persisting LLM-refined sanitiser specs into untiered suppression-direction readers (get_project_sanitisers) needs an evidence-tier gate first; artifact doubles as operator-facing run output"
+    },
+    "artifacts:write_only_artifact::mechanical-findings.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::merged.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::observation-status.json": {
+      "note": "operator-facing layer-resolution audit trail; surfaced when the atomic-write idiom became visible to the writer classifier"
+    },
+    "artifacts:write_only_artifact::oracle_summary.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::phase2-classifications.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::pipeline-summary.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::post-loop-findings.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::pr-comment.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::provenance.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::recon.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::results.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::return-census.json": {
+      "note": "operator-facing receipt from the consistency channel (return-usage census); read by /review workflows, no in-repo production reader yet"
+    },
+    "artifacts:write_only_artifact::rule.yml": {
+      "note": "generated Semgrep rule artifact for operator inspection / external semgrep invocation"
+    },
+    "artifacts:write_only_artifact::sage_precall_validation.json": {
+      "note": "write side of the /validate SAGE precall: raptor-validation-helper stage 0 dumps recall_context_for_validation() output; no reader \u2014 the /validate skill instructions never reference it, and the parallel agentic precall chain (sage_precall_scan.json reader + --sage-precall forwarding) was removed (test_agentic_dead_plumbing pins it out); wire a stage reader or drop the dump"
+    },
+    "artifacts:write_only_artifact::sarif_merge.stderr.log": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::scan-manifest.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::seed-corpus.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::selected-findings.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::stderr.log": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::stdout.log": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::study-report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::summary.txt": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::threat-model-candidates.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::threat-model-drift.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::threat-model-lint.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::threat-model-report.md": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::threats.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::tier-diagnostics.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::triage-summary.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::triage.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::upgrade-impact.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::validate-against.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::validation-error.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::validation.sarif": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::verification.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "artifacts:write_only_artifact::web_scan_report.json": {
+      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+    },
+    "dead:dead_class:core/audit/degradation.py:ToolTier": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_class:core/logging/tests/test_security_event.py:MethodEmissionTest": {
+      "note": "unittest.TestCase collected by the pytest unittest plugin regardless of python_classes naming; not dead"
+    },
+    "dead:dead_class:core/logging/tests/test_security_event.py:ModuleFunctionTest": {
+      "note": "unittest.TestCase collected by the pytest unittest plugin regardless of python_classes naming; not dead"
+    },
+    "dead:dead_class:packages/exploit_feasibility/constants.py:AddressSpace": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_class:packages/exploit_feasibility/constants.py:FormatWriteLimits": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_class:packages/exploit_feasibility/constants.py:GadgetSearch": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_class:packages/exploit_feasibility/constants.py:TargetPriority": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_class:packages/sca/models.py:RiskMetadata": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/analysis/lifecycle_collector.py:collect_read_site": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/analysis/lifecycle_collector.py:collect_write_site": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/analysis/taint_approx.py:format_transitive_taint": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/_util.py:extract_sink_sets": {
+      "note": "kept: its paired artifact discovered-sinks.json gained a reader (core/orchestration/context_map_sinks imports audit discovered sinks into the /understand map) without consuming this helper; still zero-reference \u2014 wire into the sink-catalog flow or drop, owner decision pending"
+    },
+    "dead:dead_function:core/audit/_util.py:safe_joern_name": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/callsite_consistency.py:_find_deviations": {
+      "note": "superseded by the consistency channel's census adjudicator (consistency_verify); deletion deferred to the next dead-code sweep"
+    },
+    "dead:dead_function:core/audit/checker_library.py:checker_from_synthesis": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/checker_library.py:graduate_checkers": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/checker_library.py:load_library": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/frida_observe.py:collect_observed_functions": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/llm_review.py:call_llm_for_rule_refinement": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/orchestrator.py:request_shutdown": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/audit/struct_accessor_index.py:build_index_from_joern": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/iris/api.py:load_project_assumptions": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:core/sandbox/host.py:one_shot_call": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:packages/checker_synthesis/synthesise.py:_validate_cocci_body": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:packages/diagram/sanitize.py:detect_id_collisions": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_binary_exploitability": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_system_exploitability": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_function:packages/exploit_feasibility/cache.py:clear_caches": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_function:packages/exploit_feasibility/config.py:reset_config": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_function:packages/exploit_feasibility/errors.py:reset_error_collector": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_function:packages/exploit_feasibility/schema.py:validate_context_file": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_function:packages/source_intel/discovery.py:alias_is_curated": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:core/audit/checker_library.py:CheckerLibrary.active_checkers": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:core/audit/tests/test_return_census.py:TestCpgUsage._fake_server_rows": {
+      "note": "test scaffolding kept for the planned CPG-backed census cases; harmless"
+    },
+    "dead:dead_method:core/concepts/reading_list.py:ReadingList.merge_from": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.generate_mutated_seed": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.learn_from_crash": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.optimize_corpus": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/exploit_validator.py:ExploitValidator.quick_syntax_check": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.adapt_fuzzing_strategy": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.should_continue_towards_goal": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.update_goal_progress": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/planner.py:FuzzingPlanner.should_continue_fuzzing": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/autonomous/planner.py:FuzzingState.is_finding_crashes": {
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+    },
+    "dead:dead_method:packages/checker_synthesis/library.py:RuleLibrary.active_entries": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/codeql/language_detector.py:LanguageDetector.get_primary_language": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/exploit_feasibility/analyzer.py:FeasibilityAnalyzer.quick_check": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/context.py:BinaryContext.rank_write_targets": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_binary_error": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_parse_error": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_permission_error": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_tool_failed": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_tool_timeout": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.get_by_category": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.get_by_component": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.has_critical": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.has_errors": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/exploit_context.py:ExploitContext.get_with_meta": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/mitigations.py:GlibcMitigations.get_mitigations_for_vuln": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/mitigations.py:KernelMitigations.get_mitigations_for_vuln": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.is_kernel": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.mitigation_analysis_relevant": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.needs_remote_enumeration": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/targets.py:BinarySpecificAnalysis.get_targets_for_technique": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/vuln_types.py:ExploitabilityVerdict.human_readable": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.is_enabling": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.is_memory_corruption": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_format_string_analysis": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_heap_analysis": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_stack_analysis": {
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
+    },
+    "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.add_seeds": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.create_from_directory": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/fuzzing/telemetry.py:FuzzingTelemetry.record_payload_failure": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/joern/server.py:JoernServer.run_taint_queries_batch": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/source_intel/analyze.py:SourceIntelResult.function_attrs": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/source_intel/analyze.py:SourceIntelResult.function_has_kind": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/web/client.py:WebClient.get_cookies": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/web/client.py:WebClient.set_auth": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/web/client.py:WebClient.set_bearer_token": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
+      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+    },
+    "plumbing:orphan_config_field:core/analysis/typestate.py:ForbiddenTransition.from_state": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/analysis/typestate.py:ForbiddenTransition.to_state": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateModel.valid_ops": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateTransition.from_state": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateTransition.to_state": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateViolation.current_state": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/analysis/typestate.py:TypeStateViolation.required_states": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/block_review.py:ComplexityProfile.branch_nodes": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/block_review.py:ComplexityProfile.total_nodes": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/capabilities.py:AuditCapabilities.nm": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/condition_cpg.py:ExposureContext.http_method": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/condition_cpg.py:ExposureContext.requires_permission": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/contracts.py:ContractViolation.violated_precondition": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/expanded_semgrep.py:ExpandedTu.scratch_rel": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/fail_open_roles.py:SecurityFlag.safe_when": {
+      "note": "pending wiring: safe_when is the fail-open channel's planned per-flag suppression predicate"
+    },
+    "plumbing:orphan_config_field:core/audit/frida_observe.py:FridaObservation.timestamp_ms": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/intra_function.py:IntraFunctionAsymmetry.deviant_block": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/intra_function.py:IntraFunctionAsymmetry.majority_pattern": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/prompt_defence.py:ScanResult.sanitised_count": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/propagation.py:ConfidenceDemotion.source_functions": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/propagation.py:PropagationResult.callers_filtered": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/shared_state.py:SharedState.contract_pair_index": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/shared_state.py:SharedState.iris_bypass_by_func": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/spec_inference.py:PreconditionVerification.unknown_sites": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/spec_inference.py:PreconditionVerification.violated_sites": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/struct_accessor_index.py:AccessorRecord.access_type": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/audit/type_confusion.py:TypeConfusionFinding.deser_function": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/binary/elf.py:_SectionHeader.sh_link": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/coverage/clean.py:CleanConsequence.coverage_files": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/dataflow/smt_barrier.py:ValidatorSpec.diff_line_offset": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/inventory/sink_discovery.py:UnreachableVerdict.narrowed_classes": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/llm/dispatcher/server.py:_TokenRecord.issued_at": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:DawidSkeneResult.class_prior": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:DawidSkeneResult.fixed_class_rate": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:FindingPosterior.posterior_log_odds": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/llm/tool_use/types.py:TurnStarted.input_token_estimate": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:core/oci/sbom.py:InstalledPackage.source_layer_digest": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/autonomous/exploit_validator.py:ValidationResult.runtime_errors": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.goal_progress": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.strategies_tried": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/codeql/autonomous_analyzer.py:AutonomousAnalysisResult.refinement_iterations": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/codeql/autonomous_analyzer.py:AutonomousAnalysisResult.total_duration_seconds": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/cve_diff/cve_diff/pipeline.py:PipelineResult.agent_result": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/exploit_feasibility/mitigations.py:KernelMitigations.exec_shield": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/exploit_feasibility/primitives.py:ConfidenceScore.base_reliability": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/exploit_feasibility/profiles.py:TargetProfile.confidence_notes": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/exploit_feasibility/under_mitigations.py:ProfileVerdict.profile_description": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/exploitability_validation/orchestrator.py:PipelineConfig.stage_b_max_attempts": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/exploitability_validation/orchestrator.py:PipelineConfig.stage_b_proximity_threshold": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/fuzzing/harness_generator.py:HarnessSpec.extra_includes": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/fuzzing/harness_generator.py:HarnessSpec.setup_code": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/fuzzing/harness_generator.py:HarnessSpec.teardown_code": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/fuzzing/orchestrator.py:CampaignPlan.cmd_preview": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/joern/lang_config.py:LangProfile.heap_mb_per_10k_sloc": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/joern/lang_config.py:LangProfile.joern_parse_language": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/joern/models.py:JoernResult.dark_methods": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/sca/harden.py:HardenCandidate.cve_cleared": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.call_site_count": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.max_tree_depth": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.transitive_count": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.unique_maintainers_in_tree": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    },
+    "plumbing:orphan_config_field:packages/strategy_eval/models.py:ABResult.sample_id": {
+      "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+    }
   }
- }
 }

@@ -2319,7 +2319,10 @@ Examples:
                     "abandoning communicate (FDs may leak)"
                 )
             rc = -1
-            print("✗ Semgrep scan timed out (30m)", file=sys.stderr)
+            print(
+                f"✗ Semgrep scan timed out ({args.phase_timeout}s)",
+                file=sys.stderr,
+            )
             logger.error("Semgrep scan timed out")
             # Surface the timeout in the agentic-run summary even when
             # CodeQL also runs. Pre-fix the `if not run_codeql:
@@ -2336,7 +2339,10 @@ Examples:
                 from core.json import save_json as _save_json
                 _save_json(
                     out_dir / ".semgrep_timeout",
-                    {"timed_out_at_seconds": 1800, "stage": "semgrep"},
+                    {
+                        "timed_out_at_seconds": args.phase_timeout,
+                        "stage": "semgrep",
+                    },
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("failed to write semgrep timeout marker: %s", e)
@@ -2411,7 +2417,10 @@ Examples:
                     "abandoning communicate (FDs may leak)"
                 )
             rc = -1
-            print("✗ CodeQL scan timed out (30m)", file=sys.stderr)
+            print(
+                f"✗ CodeQL scan timed out ({args.phase_timeout}s)",
+                file=sys.stderr,
+            )
             logger.error("CodeQL scan timed out")
 
         if rc == SANDBOX_ENGAGE_EXIT_CODE:

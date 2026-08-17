@@ -136,6 +136,7 @@ def _flush_all_scorecards() -> None:
         _SCORECARD_FLUSH_CLIENTS.clear()
     total: dict[str, Any] = {
         "calls": 0, "cost_usd": 0.0, "latency_ms_sum": 0, "models": {},
+        "paid_test_ctxs": set(),
     }
     flushed_any = False
     for client in clients:
@@ -160,6 +161,7 @@ def _flush_all_scorecards() -> None:
             total["models"][alias] = (
                 total["models"].get(alias, 0) + int(calls or 0)
             )
+        total["paid_test_ctxs"].update(stats.get("paid_test_ctxs") or ())
     if flushed_any:
         _print_scorecard_summary(total)
 
@@ -215,6 +217,16 @@ def _print_scorecard_summary(stats: dict[str, Any]) -> None:
             f"`raptor-llm-scorecard` for details",
             file=_sys.stderr,
         )
+        # A paid call under pytest is a live-API leak from an unstubbed
+        # test — name the tests so the operator can fix them instead of
+        # bisecting suites.
+        _ctxs = stats.get("paid_test_ctxs") or ()
+        if _ctxs and "pytest" in _sys.modules:
+            print(
+                "scorecard: paid call(s) fired from test(s): "
+                + "; ".join(sorted(_ctxs)),
+                file=_sys.stderr,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.debug("scorecard summary print failed: %s", exc)
 
@@ -961,6 +973,22 @@ class LLMClient:
                 cur["output_tokens"] += int(output_tokens or 0)
                 cur["latency_ms_sum"] += ms
                 cur["latency_ms_max"] = max(cur["latency_ms_max"], ms)
+                # Live-API-leak attribution: a PAID call under pytest is
+                # flagged by the run-end scorecard line, but the flag
+                # alone cannot say WHICH test fired it (observed as an
+                # unattributable one-shot $0.27 session-default call
+                # during a combined suite run; PYTEST_CURRENT_TEST is
+                # unset by the time the atexit flush runs). Capture the
+                # test id at record time; the aggregated flush prints
+                # the culprits.
+                if cost and float(cost) > 0.0:
+                    import os as _os_mod
+                    _test_ctx = _os_mod.environ.get("PYTEST_CURRENT_TEST")
+                    if _test_ctx:
+                        ctxs = getattr(self, "_paid_test_ctxs", None)
+                        if ctxs is None:
+                            ctxs = self._paid_test_ctxs = set()
+                        ctxs.add(_test_ctx.split(" (")[0])
         except Exception as exc:  # noqa: BLE001
             logger.debug("_record_usage failed: %s", exc)
 
@@ -1116,6 +1144,8 @@ class LLMClient:
                 "cost_usd": tot_cost,
                 "latency_ms_sum": tot_lat_ms,
                 "models": {a: int(v["calls"]) for a, v in agg.items()},
+                "paid_test_ctxs": sorted(
+                    getattr(self, "_paid_test_ctxs", None) or ()),
             }
             if emit_summary:
                 _print_scorecard_summary(stats)

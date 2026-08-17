@@ -70,6 +70,9 @@ class TestFlushReturnsStats:
         assert stats == {
             "calls": 3, "cost_usd": 0.5, "latency_ms_sum": 300,
             "models": {"haiku": 3},
+            # No PYTEST_CURRENT_TEST captured for these synthetic
+            # records — the paid-call attribution list is empty.
+            "paid_test_ctxs": [],
         }
         # The scorecard write still happened (no data loss).
         assert c._scorecard.register_uses.called

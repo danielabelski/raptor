@@ -2665,6 +2665,32 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         new_functions=new_fn_keys or None,
     )
 
+    # Fix-history mining: the target's past security fixes become
+    # variant hunts + regression hypotheses (bounded; sandboxed
+    # read-only git; never raises). Merged before the budget cap so
+    # boosted/injected gaps compete for review slots.
+    try:
+        from .fix_history import apply_fix_history
+
+        _n_gaps_before = len(gaps)
+        gaps = apply_fix_history(
+            gaps, checklist, config.target_path, out_dir=config.out_dir,
+        )
+        if len(gaps) != _n_gaps_before or any(
+            g.get("from_fix_history") for g in gaps
+        ):
+            gaps.sort(
+                key=lambda g: (
+                    g["priority"],
+                    -(g.get("priority_score") or 0),
+                    -g.get("sloc", 0),
+                    g["file"],
+                    g["name"],
+                )
+            )
+    except Exception:
+        logger.debug("fix-history enrichment failed", exc_info=True)
+
     if config.budget and config.budget > 0:
         # Records the dropped tail in not-attempted.json so the run
         # summary reports it as "not attempted (budget)" instead of

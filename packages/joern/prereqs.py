@@ -6,8 +6,8 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
 
+from core.run.toolprobe import probe
 
 _JOERN_NAMES = ("joern", "joern-cli")
 _JOERN_PARSE_BIN = "joern-parse"
@@ -17,14 +17,14 @@ _JOERN_PARSE_BIN = "joern-parse"
 MIN_JOERN_VERSION = (4, 0, 458)
 MIN_JAVA_VERSION = 11
 
-_resolved_joern: Optional[str] = None
+_resolved_joern: str | None = None
 _joern_resolved: bool = False
 
-_resolved_joern_parse: Optional[str] = None
+_resolved_joern_parse: str | None = None
 _joern_parse_resolved: bool = False
 
 
-def _joern_path() -> Optional[str]:
+def _joern_path() -> str | None:
     global _resolved_joern, _joern_resolved
     if not _joern_resolved:
         for name in _JOERN_NAMES:
@@ -35,7 +35,7 @@ def _joern_path() -> Optional[str]:
     return _resolved_joern
 
 
-def _joern_parse_path() -> Optional[str]:
+def _joern_parse_path() -> str | None:
     global _resolved_joern_parse, _joern_parse_resolved
     if not _joern_parse_resolved:
         _resolved_joern_parse = shutil.which(_JOERN_PARSE_BIN)
@@ -61,7 +61,7 @@ def is_available() -> bool:
     )
 
 
-def _version_from_dist(joern: str) -> Optional[str]:
+def _version_from_dist(joern: str) -> str | None:
     """Read the version from the distribution's own jar names.
 
     Recent joern releases dropped the ``--version`` flag, and scraping
@@ -80,7 +80,7 @@ def _version_from_dist(joern: str) -> Optional[str]:
     return None
 
 
-def version() -> Optional[str]:
+def version() -> str | None:
     """Return the joern version string, or None if unavailable."""
     if not is_available():
         return None
@@ -92,6 +92,7 @@ def version() -> Optional[str]:
         proc = subprocess.run(
             [_joern_path() or "joern", "--version"],
             capture_output=True, text=True, timeout=30,
+            check=False,
             env=RaptorConfig.get_safe_env(),
         )
         # joern >= 4.x has no --version flag: it launches the REPL, which
@@ -111,7 +112,7 @@ def version() -> Optional[str]:
         return None
 
 
-def version_tuple() -> Optional[Tuple[int, ...]]:
+def version_tuple() -> tuple[int, ...] | None:
     """Parse major.minor.patch from the joern version string.
 
     Patch defaults to 0 when absent so comparisons against the
@@ -132,33 +133,28 @@ def meets_min_version() -> bool:
     return vt is not None and vt >= MIN_JOERN_VERSION
 
 
-def _java_version() -> Optional[int]:
-    """Return the major Java version, or None."""
-    java = shutil.which("java")
-    if not java:
+def _java_version() -> int | None:
+    """Return the major Java version, or None.
+
+    Probes via core.run.toolprobe (sanitised env, resolved-path
+    exec). java prints its version to stderr — scan both streams.
+    """
+    info = probe("java", args=("-version",), timeout=10)
+    if info is None:
         return None
-    try:
-        from core.config import RaptorConfig
-        proc = subprocess.run(
-            [java, "-version"],
-            capture_output=True, text=True, timeout=10,
-            env=RaptorConfig.get_safe_env(),
-        )
-        combined = proc.stdout + proc.stderr
-        m = re.search(r'"(\d+)(?:\.(\d+))?', combined)
-        if m:
-            major = int(m.group(1))
-            if major == 1 and m.group(2):
-                return int(m.group(2))
-            return major
-        return None
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    combined = info.stdout + info.stderr
+    m = re.search(r'"(\d+)(?:\.(\d+))?', combined)
+    if m:
+        major = int(m.group(1))
+        if major == 1 and m.group(2):
+            return int(m.group(2))
+        return major
+    return None
 
 
-def check_prereqs() -> List[str]:
+def check_prereqs() -> list[str]:
     """Return list of missing prerequisites (empty = all met)."""
-    missing: List[str] = []
+    missing: list[str] = []
 
     if _joern_path() is None:
         missing.append("joern-cli not found on PATH")

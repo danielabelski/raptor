@@ -17,6 +17,7 @@ from core.binary.inspect import readelf as _readelf
 from core.config import RaptorConfig
 from core.hash import sha256_string
 from core.logging import get_logger
+from core.run.toolprobe import probe
 from core.sandbox import run as _sandbox_run
 from core.sandbox import run_trusted as _run_trusted
 
@@ -147,28 +148,25 @@ class CrashAnalyser:
         except (OSError, subprocess.SubprocessError):
             binary_type = ""
 
-        # For macOS binaries (Mach-O), prefer LLDB
+        # For macOS binaries (Mach-O), prefer LLDB. Version probes go
+        # through core.run.toolprobe (sanitised env, resolved-path
+        # exec, never raises).
         if system == "darwin" or "mach-o" in binary_type:
             logger.info("Detected macOS/Mach-O binary, trying LLDB. Binary type: %s...", binary_type[:100])
-            try:
-                result = _run_trusted(["lldb", "--version"], capture_output=True, text=True, timeout=5)
-                logger.info("LLDB version check result: %s, stdout: %s, stderr: %s", result.returncode, (result.stdout or '')[:100], (result.stderr or '')[:100])
-                if result.returncode == 0:
-                    logger.info("Using LLDB debugger for macOS/Mach-O binary")
-                    return "lldb"
-            except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the analysis
-                logger.warning("LLDB version check failed: %s", e)
+            info = probe("lldb", timeout=5)
+            if info is not None:
+                logger.info("LLDB version check result: %s, stdout: %s, stderr: %s", info.returncode, info.stdout[:100], info.stderr[:100])
+            if info is not None and info.returncode == 0:
+                logger.info("Using LLDB debugger for macOS/Mach-O binary")
+                return "lldb"
             logger.warning("LLDB not available for macOS binary, this may not work well")
-        
+
         # Default to gdb for Linux/Windows or if LLDB fails
-        try:
-            result = _run_trusted(["gdb", "--version"], capture_output=True, text=True, timeout=2)
-            if result.returncode == 0:
-                logger.info("Using GDB debugger")
-                return "gdb"
-        except (OSError, subprocess.SubprocessError):
-            pass
-            
+        info = probe("gdb", timeout=2)
+        if info is not None and info.returncode == 0:
+            logger.info("Using GDB debugger")
+            return "gdb"
+
         raise RuntimeError("No suitable debugger found (gdb or lldb)")
 
     def _check_tool_availability(self) -> dict[str, bool]:
@@ -184,16 +182,8 @@ class CrashAnalyser:
         
         available = {}
         for tool in tools:
-            try:
-                result = _run_trusted(
-                    [tool, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                available[tool] = result.returncode == 0
-            except (OSError, subprocess.SubprocessError):
-                available[tool] = False
+            info = probe(tool, timeout=2)
+            available[tool] = info is not None and info.returncode == 0
                 
         # Log availability
         available_tools = [tool for tool, avail in available.items() if avail]

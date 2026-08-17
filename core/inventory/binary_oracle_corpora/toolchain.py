@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
-import subprocess
+
+from core.run.toolprobe import probe
 
 logger = logging.getLogger(__name__)
 
@@ -37,20 +37,16 @@ logger = logging.getLogger(__name__)
 def _probe(cmd: list) -> str | None:
     """Run ``cmd`` and return its first-line stdout/stderr (most tools
     print version on either stream). Returns ``None`` if the tool is
-    absent or errors out — the corpus driver decides whether to fail."""
-    if not shutil.which(cmd[0]):
+    absent or errors out — the corpus driver decides whether to fail.
+
+    Delegates to core.run.toolprobe (sanitised env, resolved-path
+    exec); ``ToolInfo.first_line`` is exactly the stdout-else-stderr
+    convention this helper hand-rolled."""
+    info = probe(cmd[0], args=tuple(cmd[1:]), timeout=10)
+    if info is None:
         return None
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            check=False, timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    text = (proc.stdout or proc.stderr or "").strip()
-    if not text:
-        return None
-    return text.splitlines()[0].strip()
+    line = info.first_line
+    return line.strip() if line else None
 
 
 def record_toolchain(

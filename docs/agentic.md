@@ -203,16 +203,11 @@ oracle runs unfiltered.
 | `--binary <path>` | Explicit debug binary (repeatable for hybrid targets).  Bypasses the git-tracked filter and suppresses auto-detect. |
 | `--binary-auto` | Louder auto-detect with `--target-kind` support |
 | `--binary-edges` | Extract call edges via r2 to rescue functions the source graph thought were dead.  Slow (~10--30s per binary, then cached). |
+| `--no-binary-oracle` | Disable binary-oracle filtering entirely for this run.  Use for library-only targets, runs where every finding should stay unfiltered, or build-mismatch over-suppression.  Overrides `--binary`/`--binary-auto` with a warning if combined. |
 | `--allow-unreachable` | Admit findings on functions marked `NOT_CALLED` (for CTF challenges, vendor snippets, deliberate dead-code review) |
 
 Persistent per-project binaries set via `/project binary add` are picked up
 automatically.
-
-> **Note:** `--no-binary-oracle` is not currently wired into the `/agentic`
-> argument parser -- the code references it via `getattr` with a default of
-> `False`.  To run unfiltered, either target code with no locally-built binary
-> or use `--binary` to pin exactly which binary feeds the oracle.
-> `--no-binary-oracle` works on `/codeql`.
 
 
 ## Output

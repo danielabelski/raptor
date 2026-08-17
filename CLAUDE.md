@@ -382,7 +382,7 @@ Two places Z3 is used — both degrade gracefully when absent:
 
 ## BINARY-ORACLE REACHABILITY
 
-Default behaviour (no flags): /agentic and /codeql auto-detect debug binaries under common build dirs, filter to **locally-built only** (untracked by git — committed binaries are dropped as unverified provenance), and use them to suppress dead-code findings. Pass `--no-binary-oracle` to opt out (accepted by /codeql and /audit; /agentic does not currently expose the flag). When `--binary <path>` is passed explicitly, RAPTOR joins the source inventory with the debug binary via DWARF + nm and annotates each native (C/C++/Rust/Go) function with a per-binary verdict:
+Default behaviour (no flags): /agentic and /codeql auto-detect debug binaries under common build dirs, filter to **locally-built only** (untracked by git — committed binaries are dropped as unverified provenance), and use them to suppress dead-code findings. Pass `--no-binary-oracle` to opt out. When `--binary <path>` is passed explicitly, RAPTOR joins the source inventory with the debug binary via DWARF + nm and annotates each native (C/C++/Rust/Go) function with a per-binary verdict:
 
 - `symbol_present` / `inlined` / `folded` — the function survived compilation in some form
 - `absent` — the compiler / linker removed it from the analysed binary
@@ -395,7 +395,7 @@ The verdict flows through the existing reachability chokepoint: /codeql + /agent
 - (default, no flags) — auto-detect runs, filters to locally-built binaries (git-untracked) only, soft hint when nothing found.
 - `--binary <path>` — pass an explicit debug binary. Repeatable for hybrid targets. Path validated at parse time. Bypasses the git-tracked filter (operator asserts trust). Suppresses default auto-detect.
 - `--binary-auto` — same auto-detect + git-filter logic as the default-on path, but with a louder "nothing found" message. Honours `--target-kind`. Warns when the result cap (8) is reached. Auto-detected dirs: `build/`, `target/release/`, `cmake-build-*/`, `bazel-bin/`, `builddir/`, `Debug/`, `Release/`, `out/`, `dist/`, `bin/`, Rust `target/<triple>/release` cross-target globs, and the source root.
-- `--no-binary-oracle` — disable binary-oracle filtering entirely for this run (on the commands that expose it: /codeql, /audit). Use for library-only targets with no main binary, runs where you want every finding unfiltered for review, or when a build mismatch is causing over-suppression. Overrides `--binary` / `--binary-auto` with a stderr warning if combined.
+- `--no-binary-oracle` — disable binary-oracle filtering entirely for this run. Use for library-only targets with no main binary, runs where you want every finding unfiltered for review, or when a build mismatch is causing over-suppression. Overrides `--binary` / `--binary-auto` with a stderr warning if combined.
 - `--binary-edges` — Inc 2b Tier 1/2: extract direct call edges + vtable resolution via r2 (single-invocation script-file mode; cached per-build-id with cross-target collision check). Slow (~10-30s per binary, then cached). Required for the `binary_call_edge` REACHABLE promote witness (rescues functions the source-graph thought were dead).
 - For `--target-kind=hybrid` deployments (library + application both shipped), declare MULTIPLE binaries — a function is `absent` only when EVERY declared binary lacks it. Tier-weighted combine: when full-DWARF and symbol-only disagree, full-DWARF wins (`alive-in-any` rule only applies same-tier).
 

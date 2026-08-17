@@ -121,6 +121,7 @@ patches.
 | `--binary <path>` | Explicit debug binary for reachability filtering (repeatable) |
 | `--binary-auto` | Auto-detect locally-built binaries |
 | `--binary-edges` | Extract call edges and vtable resolution via r2 |
+| `--no-binary-oracle` | Disable binary-oracle filtering |
 | `--target-kind {auto,library,hybrid,application}` | Target kind for binary oracle |
 | `--allow-unreachable` | Do not suppress unreachable findings |
 | `--check-mitigations` | Run binary mitigation checks |

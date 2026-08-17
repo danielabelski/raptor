@@ -260,7 +260,13 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
 
 def verify_merge(merged_findings: list, source_findings_count: int,
                  unique_count: int) -> bool:
-    """Verify merged count >= expected deduplicated count.
+    """Sanity-check the merged findings count from both directions.
+
+    Every unique key must survive the merge (``>= unique_count``) and
+    dedup can only ever reduce, never invent, findings
+    (``<= source_findings_count``). Pre-fix the source count was an
+    unused parameter, so the docstring's promise to verify against the
+    total across all source runs was never exercised.
 
     Args:
         merged_findings: The merged findings list.
@@ -270,7 +276,7 @@ def verify_merge(merged_findings: list, source_findings_count: int,
     Returns:
         True if the merge looks valid.
     """
-    return len(merged_findings) >= unique_count
+    return unique_count <= len(merged_findings) <= source_findings_count
 
 
 def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
@@ -425,9 +431,12 @@ def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
         "artefacts_preserved": artefacts_preserved,
     }
 
+    # Documented convention (_finding_key docstring): "N findings (M
+    # vulns)". Pre-fix the override relabelled the LOGICAL-vuln count
+    # as "findings", contradicting the actual merged count.
     findings_label = f"{len(merged)} findings"
     if vuln_count != len(merged):
-        findings_label = f"{vuln_count} findings"
+        findings_label = f"{len(merged)} findings ({vuln_count} vulns)"
 
     logger.info(
         f"Merged {len(run_dirs)} runs: {findings_label}, "

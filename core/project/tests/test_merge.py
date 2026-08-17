@@ -268,6 +268,14 @@ class TestVerifyMerge(unittest.TestCase):
         merged = [{"id": "F-001", "file": "a.c", "function": "main", "line": 10}]
         self.assertFalse(verify_merge(merged, 5, 3))
 
+    def test_more_than_source_total_fails(self):
+        """Dedup can only reduce — a merge that 'invents' findings beyond
+        the source total is invalid. Regression: source_findings_count
+        was an unused parameter, so this bound was never checked."""
+        merged = [{"id": f"F-{i:03d}"} for i in range(4)]
+        self.assertFalse(verify_merge(merged, 3, 3))
+        self.assertTrue(verify_merge(merged, 4, 4))
+
 
 class TestMergeRuns(unittest.TestCase):
 

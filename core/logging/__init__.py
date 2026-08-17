@@ -377,12 +377,51 @@ class RaptorLogger:
     def log_security_event(
         self, event_type: str, message: str, **kwargs: Any
     ) -> None:
-        """Log security-relevant event."""
-        self.warning(
-            f"SECURITY: {event_type} - {message}",
-            event_type=event_type,
-            **kwargs,
-        )
+        """Log security-relevant event.
+
+        Observability stream, not a control: emitters call this on
+        rejection / denial / fail-closed paths whose behaviour is
+        already decided. The call must therefore NEVER raise — a
+        broken sink (unwritable audit file, closed stderr, handler
+        misconfiguration) must not turn a working rejection into a
+        crash. Same rationale as ``_drop_separator_records``'s
+        malformed-record guard.
+
+        Payload hygiene contract for emitters: ``message`` and
+        ``kwargs`` carry the event type and path / URL / context
+        IDENTIFIERS only — never environment values, key material,
+        or other secrets. Callers logging URLs must redact userinfo
+        first (``core.security.redaction``).
+        """
+        try:
+            self.warning(
+                f"SECURITY: {event_type} - {message}",
+                event_type=event_type,
+                **kwargs,
+            )
+        except Exception:  # noqa: BLE001, S110 — observability must never break the emitter
+            pass
+
+
+def log_security_event(event_type: str, message: str, **kwargs: Any) -> None:
+    """Module-level convenience for :meth:`RaptorLogger.log_security_event`.
+
+    The security-event stream predates the per-module logger split:
+    when it was introduced, every emitter held the RaptorLogger
+    singleton (``get_logger()``) and called the method directly.
+    Modules have since moved to stdlib per-module loggers
+    (``logging.getLogger(__name__)``), which don't carry the method —
+    this function lets those modules emit without switching logger
+    styles.
+
+    Never raises: on top of the method's own guard, this covers
+    RaptorLogger initialisation failure (e.g. ``LOG_DIR`` cannot be
+    created during bootstrap). Emission is best-effort by design.
+    """
+    try:
+        RaptorLogger().log_security_event(event_type, message, **kwargs)
+    except Exception:  # noqa: BLE001, S110 — observability must never break the emitter
+        pass
 
 
 # Global logger instance

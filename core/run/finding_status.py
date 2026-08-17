@@ -180,8 +180,13 @@ def is_errored(finding: Dict) -> bool:
 def is_terminal(finding: Dict) -> bool:
     """True for any final status (analysed / inconsistent /
     skipped / errored). False only for the in-flight case where no
-    status has been derived yet."""
-    return get_status(finding) in ALL_STATUSES
+    status has been derived yet.
+
+    Deliberately checks the EXPLICIT ``status`` field, not
+    ``get_status``: derive_status always lands in ALL_STATUSES, so
+    routing through get_status made this predicate unconditionally
+    True and the documented in-flight False case unreachable."""
+    return finding.get("status") in ALL_STATUSES
 
 
 __all__ = [

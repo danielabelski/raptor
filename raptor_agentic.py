@@ -19,6 +19,7 @@ import contextlib
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -905,6 +906,60 @@ def _run_fuzz_validation_smoke(findings_path: Path, target: Path, out_dir: Path)
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
     }
+
+
+class _PipeDrainer:
+    """Concurrently drain a child's stdout/stderr PIPEs into memory.
+
+    The Semgrep and CodeQL scanner children are spawned in parallel with
+    PIPE streams. Draining them sequentially (communicate() on one, then
+    the other) let the not-yet-drained child block in write() once its
+    output exceeded the OS pipe buffer (~64KB), silently serializing the
+    "parallel" phase and skewing its timeout budget. One reader thread
+    per stream keeps both children draining while the parent waits.
+    """
+
+    def __init__(self, proc: subprocess.Popen):
+        self._proc = proc
+        self._chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        self._threads: list[threading.Thread] = []
+        for name in ("stdout", "stderr"):
+            stream = getattr(proc, name)
+            if stream is None:
+                continue
+            t = threading.Thread(
+                target=self._read,
+                args=(stream, self._chunks[name]),
+                name=f"pipe-drain-{name}",
+                daemon=True,
+            )
+            t.start()
+            self._threads.append(t)
+
+    @staticmethod
+    def _read(stream, chunks: list[str]) -> None:
+        try:
+            # Incremental line reads (not readlines()/list()) so a
+            # killed child's partial output is kept up to the error.
+            for line in stream:
+                chunks.append(line)  # noqa: PERF402 — incremental drain, not a copy
+        except (OSError, ValueError):
+            # Pipe closed under us (child killed) — keep what we have.
+            pass
+
+    def collect(self, timeout: float | None = None) -> tuple[str, str]:
+        """Wait for child exit and return (stdout, stderr).
+
+        Raises subprocess.TimeoutExpired like communicate(); safe to
+        call again after killing the child.
+        """
+        self._proc.wait(timeout=timeout)
+        for t in self._threads:
+            t.join(timeout=10)
+        return (
+            "".join(self._chunks["stdout"]),
+            "".join(self._chunks["stderr"]),
+        )
 
 
 def _safe_int(value) -> int:
@@ -2105,6 +2160,8 @@ Examples:
     codeql_cmd = None
     semgrep_proc = None
     codeql_proc = None
+    semgrep_drain = None
+    codeql_drain = None
 
     # Propagate sandbox CLI flags to the scanner subprocesses. Without
     # this, `python raptor.py agentic --audit` would set audit mode in
@@ -2174,6 +2231,9 @@ Examples:
             ),
             start_new_session=True,  # See main-Popen comment.
         )
+        # Drain immediately — see _PipeDrainer: without concurrent
+        # readers the sibling child deadlocks on a full pipe.
+        semgrep_drain = _PipeDrainer(semgrep_proc)
 
     if run_codeql:
         print("\n[*] Running CodeQL analysis...")
@@ -2232,13 +2292,14 @@ Examples:
             env=RaptorConfig.get_safe_env(preserve_proxy=True),
             start_new_session=True,  # See main-Popen comment.
         )
+        codeql_drain = _PipeDrainer(codeql_proc)
 
     # ---- Collect Semgrep results ----
     if semgrep_proc:
         try:
             # ``args.phase_timeout`` 0 → ``None`` = unbounded (operator
             # opt-in for kernel-scale targets via ``--phase-timeout 0``).
-            _semgrep_stdout, _semgrep_stderr = semgrep_proc.communicate(
+            _semgrep_stdout, _semgrep_stderr = semgrep_drain.collect(
                 timeout=(args.phase_timeout or None)
             )
             rc = semgrep_proc.returncode
@@ -2251,7 +2312,7 @@ Examples:
             # FDs; on TimeoutExpired here we abandon the streams
             # (FDs leaked, but the kill has already been sent).
             try:
-                semgrep_proc.communicate(timeout=30)
+                semgrep_drain.collect(timeout=30)
             except subprocess.TimeoutExpired:
                 logger.warning(
                     "Semgrep child did not drain after kill; "
@@ -2335,7 +2396,7 @@ Examples:
     if codeql_proc:
         codeql_stderr = ""
         try:
-            _codeql_stdout, codeql_stderr = codeql_proc.communicate(
+            _codeql_stdout, codeql_stderr = codeql_drain.collect(
                 timeout=(args.phase_timeout or None)
             )
             rc = codeql_proc.returncode
@@ -2343,7 +2404,7 @@ Examples:
             codeql_proc.kill()
             # See Semgrep post-kill drain above for the rationale.
             try:
-                codeql_proc.communicate(timeout=30)
+                codeql_drain.collect(timeout=30)
             except subprocess.TimeoutExpired:
                 logger.warning(
                     "CodeQL child did not drain after kill; "

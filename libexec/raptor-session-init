@@ -89,6 +89,9 @@ def warm_sage_embeddings():
         if not cfg.enabled:
             return
         import subprocess
+        # Child snippet uses the mandated os.environ["RAPTOR_DIR"]
+        # sys.path pattern; identity-linted — keep the line shape.
+        # fmt: off
         subprocess.Popen(
             [sys.executable, "-c",
              "import sys,os;sys.path.insert(0,os.environ['RAPTOR_DIR']);"
@@ -101,6 +104,7 @@ def warm_sage_embeddings():
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        # fmt: on
     except Exception as e:  # noqa: BLE001
         print(f"SAGE warmup launch failed: {e}", file=sys.stderr)
 

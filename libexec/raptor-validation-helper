@@ -1150,7 +1150,68 @@ def _discover_and_match_binaries(workdir, target, data):
         print(f"  {bp}: {', '.join(ids)}")
 
 
-def prepare_E(workdir, target=None):
+def _run_witness_execution(workdir, target, data, dynamic=None):
+    """Stage E witness execution (P9) — dark-verify oracle for /validate.
+
+    Gate: ``core.project.trust.resolve_dynamic_validation`` — explicit
+    ``--dynamic`` / ``--no-dynamic`` wins, else the project's
+    ``dynamic`` trust marker, else off. Witness harnesses run
+    target-derived code, so this is exactly the gate that authorises
+    /audit's dynamic channels; no new execution authority.
+
+    Eligibility, execution, and ruling upgrades live in
+    ``packages.exploitability_validation.witness_stage``. Best-effort:
+    a missing import degrades to a no-op, and any per-finding failure
+    is contained inside the stage.
+    """
+    try:
+        from core.project.trust import resolve_dynamic_validation
+        from packages.exploitability_validation.witness_stage import (
+            eligible_findings,
+            run_witness_stage,
+        )
+    except ImportError:
+        return
+
+    eligible = eligible_findings(data.get("findings", []))
+    if not eligible:
+        return
+
+    if not resolve_dynamic_validation(dynamic):
+        print(
+            f"  Witness execution: {len(eligible)} eligible finding(s) "
+            "skipped — dynamic execution not granted (pass --dynamic or "
+            "set the project 'dynamic' trust marker)"
+        )
+        return
+
+    if not target:
+        print("  Witness execution: no --target provided; skipped",
+              file=sys.stderr)
+        return
+
+    try:
+        from core.llm.client import LLMClient
+        client = LLMClient()
+    except Exception as e:  # noqa: BLE001 — no LLM, no witness specs
+        print(f"  Witness execution: no LLM available ({e}); skipped",
+              file=sys.stderr)
+        return
+
+    def _llm_call(prompt, system):
+        return client.generate(prompt, system_prompt=system or None).content
+
+    stats = run_witness_stage(data, target, llm_call=_llm_call)
+    _save_findings(workdir, data)
+    print(
+        f"  Witness execution: {stats['executed']} executed of "
+        f"{stats['eligible']} eligible — {stats['confirmed']} confirmed, "
+        f"{stats['refuted']} refuted, {stats['inconclusive']} inconclusive, "
+        f"{stats['skipped']} skipped"
+    )
+
+
+def prepare_E(workdir, target=None, dynamic=None):
     _apply_stage_file(workdir, "D")
 
 
@@ -1184,6 +1245,9 @@ def prepare_E(workdir, target=None):
         _discover_and_match_binaries(workdir, target, data)
     else:
         print("  No --target provided, skipping binary discovery")
+
+    # --- Witness execution (dark-verify oracle, gated on dynamic trust) ---
+    _run_witness_execution(workdir, target, data, dynamic=dynamic)
 
 
 # ---------------------------------------------------------------------------
@@ -1687,7 +1751,7 @@ STAGES = {
 def main():
     args = sys.argv[1:]
     if not args or args[0] not in STAGES:
-        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>]", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--dynamic|--no-dynamic] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>]", file=sys.stderr)
         sys.exit(1)
 
     stage = args[0]
@@ -1709,6 +1773,14 @@ def main():
         if idx + 1 < len(args):
             model = args[idx + 1]
     no_bridge = "--no-bridge" in args
+    # Witness-execution gate (stage E): tri-state. None = no explicit
+    # choice (project 'dynamic' trust marker decides); --no-dynamic
+    # wins over --dynamic.
+    dynamic = None
+    if "--no-dynamic" in args:
+        dynamic = False
+    elif "--dynamic" in args:
+        dynamic = True
     findings_path = None
     if "--findings" in args:
         idx = args.index("--findings")
@@ -1757,6 +1829,8 @@ def main():
 
     if stage == "1":
         prepare_1(workdir, target, model=model)
+    elif stage == "E":
+        prepare_E(workdir, target, dynamic=dynamic)
     else:
         STAGES[stage](workdir, target)
 

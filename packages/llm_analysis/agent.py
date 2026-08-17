@@ -290,6 +290,13 @@ class VulnerabilityContext:
         # judge was not invoked (no exploit produced, or
         # ``--no-judge-intent`` opt-out).
         self.intent_match: dict[str, Any] | None = None
+        # Sandboxed-execution oracle for ``exploit_code`` (P9). String
+        # form of ``core.witness.WitnessOutcome`` plus the structured
+        # detail dict (signal / sanitizer / blocked ...). ``None``
+        # means execution was not attempted — gate off, compile
+        # failed, or the oracle errored.
+        self.execute_outcome: str | None = None
+        self.execute_detail: dict[str, Any] = {}
         self.patch_code: str | None = None
         # Mechanical patch-gate annotations for ``patch_code`` —
         # ``GateResult.to_dict()`` from packages.llm_analysis.patch_gate.
@@ -523,6 +530,13 @@ class VulnerabilityContext:
                 result["exploit_compile_errors"] = list(
                     self.exploit_compile_errors
                 )
+            # Execution-oracle verdict (P9). Only emitted when the
+            # sandboxed run actually happened — None encodes "not
+            # attempted" and needs no key.
+            if self.execute_outcome is not None:
+                result["execute_outcome"] = self.execute_outcome
+                if self.execute_detail:
+                    result["execute_detail"] = dict(self.execute_detail)
 
         # Surface the intent-match verdict when present. Only emit
         # when actually populated — None means the judge wasn't
@@ -657,7 +671,10 @@ class AutonomousSecurityAgentV2:
                  verify_exploits: bool = True,
                  judge_intent: bool = True,
                  record_witnesses: bool = True,
-                 use_verified_exemplars: bool = True):
+                 use_verified_exemplars: bool = True,
+                 execute_exploits: bool = False,
+                 execute_timeout: int = 5,
+                 execute_sanitizers: list | None = None):
         self.repo_path = repo_path
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -709,6 +726,19 @@ class AutonomousSecurityAgentV2:
         # prompts are unchanged.
         self.use_verified_exemplars = use_verified_exemplars
         self._verified_outcomes = None  # lazy, collected once per run
+        # P9 execution oracle: compile AND run the LLM-emitted exploit
+        # in the sandbox (same posture as crash-agent's
+        # --execute-exploits and /audit's dark-verify: network blocked,
+        # safe env, sanitizer/signal outcome classified via
+        # core.witness). Default OFF — the CLI resolves the effective
+        # value through core.project.trust.resolve_dynamic_validation
+        # (explicit --execute-exploits / --no-execute-exploits wins,
+        # else the project 'dynamic' trust marker, else off). Never
+        # widens who may execute what: the same trust gate that
+        # authorises /audit's dynamic channels authorises this.
+        self.execute_exploits = execute_exploits
+        self.execute_timeout = execute_timeout
+        self.execute_sanitizers = execute_sanitizers
 
         # Detect LLM availability and choose provider
         availability = detect_llm_availability()
@@ -1559,7 +1589,16 @@ class AutonomousSecurityAgentV2:
                 # "exploit compiled" rates per run. Gated on
                 # ``self.verify_exploits`` so operators with tight
                 # time budgets can opt out via constructor / CLI flag.
-                if self.verify_exploits:
+                # When ``execute_exploits`` is on (dynamic trust
+                # granted), the unified compile-and-execute path runs
+                # instead so the binary is reachable for the sandboxed
+                # run before tempdir cleanup. Execution requires the
+                # compile prerequisite: ``execute_exploits=True,
+                # verify_exploits=False`` falls back to compile-only
+                # semantics (same rule as crash-agent).
+                if self.verify_exploits and self.execute_exploits:
+                    self._compile_and_execute_exploit(vuln, exploit_code)
+                elif self.verify_exploits:
                     self._verify_exploit_compiles(vuln, exploit_code)
 
                 # Intent-match judgement on the (possibly compile-
@@ -1629,6 +1668,58 @@ class AutonomousSecurityAgentV2:
         )
         vuln.exploit_compiled = compiled
         vuln.exploit_compile_errors = errors
+
+    def _compile_and_execute_exploit(
+        self, vuln: VulnerabilityContext, exploit_code: str,
+    ) -> None:
+        """Compile-verify AND sandbox-execute the LLM-emitted exploit.
+
+        The P9 execution oracle for /agentic: same
+        ``exploit_verify.compile_and_execute`` machinery the
+        crash-agent uses (sandboxed run, network blocked, outcome
+        classified via ``core.witness.outcome_from_sandbox_info`` —
+        sanitizer report / crash signal are mechanical observations
+        the LLM cannot fabricate). Threads the outcome onto the
+        finding as ``execute_outcome`` / ``execute_detail``; the
+        witness recorder upgrades the Witness from NOT_RUN to the
+        observed outcome.
+
+        Failures are non-fatal — any error path leaves
+        ``execute_outcome=None`` and behaves like compile-only.
+        """
+        from packages.llm_analysis.exploit_verify import compile_and_execute
+
+        compiled, errors, outcome, detail = compile_and_execute(
+            exploit_code,
+            vuln.file_path,
+            vuln.finding_id,
+            target_binary_path=None,
+            timeout=self.execute_timeout,
+            logger=logger,
+            sanitizers=self.execute_sanitizers,
+        )
+        vuln.exploit_compiled = compiled
+        vuln.exploit_compile_errors = errors
+        if outcome is not None:
+            vuln.execute_outcome = outcome.value
+            vuln.execute_detail = detail
+
+    @staticmethod
+    def _resolve_execute_outcome(value: str | None):
+        """Map the string form on the finding back to WitnessOutcome.
+
+        Same defensive re-lift as the crash-agent's recorder: unknown
+        strings map to ``UNKNOWN`` rather than raising so a future
+        writer of an unrecognised value cannot break the witness
+        record.
+        """
+        if not value:
+            return None
+        from core.witness import WitnessOutcome
+        try:
+            return WitnessOutcome(value)
+        except ValueError:
+            return WitnessOutcome.UNKNOWN
 
     def _judge_exploit_intent(
         self, vuln: VulnerabilityContext, exploit_code: str,
@@ -1783,6 +1874,18 @@ class AutonomousSecurityAgentV2:
                 intent_verdict=intent_verdict,
                 intent_confidence=intent_confidence,
                 target_source_path=target_source_path,
+                # P9: when the execution oracle ran, upgrade the
+                # Witness's observed_outcome from NOT_RUN to the
+                # observed one (same as the crash-agent recorder).
+                # Class-qualified call + getattr so duck-typed agent
+                # stand-ins (tests) and pre-P9 finding shapes keep
+                # working.
+                executed_outcome=(
+                    AutonomousSecurityAgentV2._resolve_execute_outcome(
+                        getattr(vuln, "execute_outcome", None),
+                    )
+                ),
+                executed_detail=getattr(vuln, "execute_detail", None) or None,
             )
             self._witness_store.put(witness, data)
             logger.debug(
@@ -2944,6 +3047,24 @@ def main() -> None:
              "finding (None — verification not attempted).",
     )
     ap.add_argument(
+        "--execute-exploits",
+        action="store_true",
+        help="Run compiled LLM-emitted exploits in the sandbox and "
+             "record the observed outcome (sanitizer report / crash "
+             "signal / clean run) on each finding — the P9 execution "
+             "oracle. Same posture as crash-agent's flag: network "
+             "blocked, safe env, compile prerequisite required. "
+             "Without an explicit flag the project 'dynamic' trust "
+             "marker decides; default off.",
+    )
+    ap.add_argument(
+        "--no-execute-exploits",
+        action="store_true",
+        help="Explicitly disable sandboxed exploit execution for this "
+             "run, overriding the project 'dynamic' trust marker. "
+             "Takes precedence over --execute-exploits.",
+    )
+    ap.add_argument(
         "--no-judge-intent",
         action="store_true",
         help="Skip the intent-match judge on LLM-emitted exploits "
@@ -3070,6 +3191,21 @@ def main() -> None:
         # Collision-prevention via unique_run_suffix — see core/run/output.py.
         out_dir = RaptorConfig.get_out_dir() / f"autonomous_v2_{unique_run_suffix('_')}"
 
+    # P9 execution-oracle gate. Explicit per-run flags win in both
+    # directions; else the project's 'dynamic' trust marker; else off.
+    # This is the SAME gate that authorises /audit's dynamic channels
+    # (core.project.trust) — no new authority is introduced here.
+    _execute_explicit: bool | None = None
+    if args.no_execute_exploits:
+        _execute_explicit = False
+    elif args.execute_exploits:
+        _execute_explicit = True
+    try:
+        from core.project.trust import resolve_dynamic_validation
+        execute_exploits = resolve_dynamic_validation(_execute_explicit)
+    except ImportError:
+        execute_exploits = bool(_execute_explicit)
+
     # When role flags are present, force prep-only then hand off to orchestrator
     prep_only = args.prep_only or _has_role_flags
     agent = AutonomousSecurityAgentV2(
@@ -3083,6 +3219,7 @@ def main() -> None:
         use_verified_exemplars=not args.no_verified_exemplars,
         generate_exploits=not args.no_exploits,
         generate_patches=not args.no_patches,
+        execute_exploits=execute_exploits,
     )
 
     # Load checklist for metadata lookup

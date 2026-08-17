@@ -1220,6 +1220,19 @@ Examples:
         ),
     )
     parser.add_argument("--no-exploits", action="store_true", help="Skip exploit generation")
+    parser.add_argument(
+        "--execute-exploits", action="store_true",
+        help="Run compiled LLM-emitted exploits in the sandbox and record "
+             "the observed outcome (P9 execution oracle). Without an "
+             "explicit flag the project 'dynamic' trust marker decides; "
+             "default off. Forwarded to the analysis subprocess.",
+    )
+    parser.add_argument(
+        "--no-execute-exploits", action="store_true",
+        help="Explicitly disable sandboxed exploit execution, overriding "
+             "the project 'dynamic' trust marker. Takes precedence over "
+             "--execute-exploits.",
+    )
     parser.add_argument("--no-patches", action="store_true", help="Skip patch generation")
     parser.add_argument(
         "--no-journal",
@@ -2880,6 +2893,13 @@ Examples:
             analysis_cmd.append("--no-exploits")
         if args.no_patches:
             analysis_cmd.append("--no-patches")
+        # P9 execution-oracle flags ride the analysis subprocess; the
+        # child resolves them against the project 'dynamic' trust
+        # marker (explicit flag > marker > off).
+        if args.execute_exploits:
+            analysis_cmd.append("--execute-exploits")
+        if args.no_execute_exploits:
+            analysis_cmd.append("--no-execute-exploits")
 
         # Phase 3 preps data; Phase 4 handles LLM work (unless --sequential)
         if (llm_env.claude_code or llm_env.external_llm) and not args.sequential:

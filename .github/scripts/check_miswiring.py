@@ -1372,22 +1372,36 @@ def find_plumbing(idx: RepoIndex):
     # env vars set in-repo but never read in-repo
     env_reads = set()
     env_writes = defaultdict(list)
+    env_write_forms = defaultdict(set)  # name -> {"global", "child_env"}
     envget = re.compile(
         r"(?:os\.environ\.get|os\.getenv|os\.environ\[)\s*\(?\s*[\"']([A-Z][A-Z0-9_]+)[\"']")
     envset_py = re.compile(
         r"os\.environ\[\s*[\"']([A-Z][A-Z0-9_]+)[\"']\s*\]\s*=|"
         r"os\.environ\.setdefault\(\s*[\"']([A-Z][A-Z0-9_]+)[\"']|"
         r"env\[\s*[\"']([A-Z][A-Z0-9_]+)[\"']\s*\]\s*=")
+    # Shell-variable expansion inside Python sources: launchers embed
+    # bash -c wrapper scripts that read the vars they were spawned with
+    # (e.g. exec "$@" > "$RAPTOR_BO_OUT") — those are in-repo readers.
+    shellread = re.compile(r"\$\{?([A-Z][A-Z0-9_]{2,})\b")
     for mod in idx.module_list:
         for m_ in envget.finditer(mod.src):
             env_reads.add(m_.group(1))
+        for m_ in shellread.finditer(mod.src):
+            env_reads.add(m_.group(1))
+        if "tests" in mod.path.parts or mod.path.name.startswith("test_"):
+            # test fixtures set env for the tool under test, not for
+            # production plumbing — same test-skip as the other passes
+            continue
         for m_ in envset_py.finditer(mod.src):
             name = next(g for g in m_.groups() if g)
             env_writes[name].append(str(mod.path))
+            env_write_forms[name].add(
+                "child_env" if m_.group(3) else "global")
     for p, text in idx.text_files:
         if p.suffix == ".sh" or p.suffix == "":
             for m_ in re.finditer(r"export\s+([A-Z][A-Z0-9_]+)=", text):
                 env_writes[m_.group(1)].append(str(p))
+                env_write_forms[m_.group(1)].add("global")
             for m_ in re.finditer(r"\$\{?([A-Z][A-Z0-9_]{2,})\b", text):
                 env_reads.add(m_.group(1))
     WELL_KNOWN = {
@@ -1405,6 +1419,16 @@ def find_plumbing(idx: RepoIndex):
         txt_hits = sum(1 for _, t in idx.text_files if pat.search(t))
         if py_hits + txt_hits > len(set(writers)):
             sup["env_referenced_elsewhere"] += 1
+            continue
+        if env_write_forms.get(name) == {"child_env"}:
+            # written only into a spawned process's env mapping — the
+            # consumer is the external tool; unverifiable in-repo but
+            # not orphaned plumbing.  Reported, not failed.
+            info.append({
+                "kind": "env_var_consumed_externally", "name": name,
+                "writers": sorted(set(writers)),
+                "detail": "set only in a child-process env mapping — "
+                       "consumed by the spawned tool"})
             continue
         findings.append({
             "kind": "orphan_env_var", "name": name,

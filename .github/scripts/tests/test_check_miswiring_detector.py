@@ -398,6 +398,83 @@ class TestSerializationAwareConfigFields:
         assert "QueryResult.dropped_extra" not in consumed
 
 
+def _env_findings(detector, root: Path):
+    idx = _index(detector, root)
+    findings, _sup, info = detector.find_plumbing(idx)
+    orphans = {f["name"] for f in findings if f["kind"] == "orphan_env_var"}
+    external = {i["name"] for i in info
+                if i["kind"] == "env_var_consumed_externally"}
+    return orphans, external
+
+
+class TestEnvVarConsumptionRealism:
+    def test_global_write_never_read_is_orphaned(self, detector, tmp_path):
+        pkg = tmp_path / "core" / "boot"
+        pkg.mkdir(parents=True)
+        (pkg / "setup_env.py").write_text(
+            "import os\n"
+            "\n"
+            "\n"
+            "def prime():\n"
+            "    os.environ.setdefault('RAPTOR_UNREAD_FLAG', '1')\n",
+            encoding="utf-8",
+        )
+        orphans, external = _env_findings(detector, tmp_path)
+        assert "RAPTOR_UNREAD_FLAG" in orphans
+        assert "RAPTOR_UNREAD_FLAG" not in external
+
+    def test_test_fixture_write_is_not_production_plumbing(
+        self, detector, tmp_path,
+    ):
+        pkg = tmp_path / "core" / "boot" / "tests"
+        pkg.mkdir(parents=True)
+        (pkg / "test_env.py").write_text(
+            "def test_tool(run):\n"
+            "    env = {}\n"
+            "    env['TOOL_FIXTURE_DATE'] = '2020-01-01'\n"
+            "    run(env)\n",
+            encoding="utf-8",
+        )
+        orphans, external = _env_findings(detector, tmp_path)
+        assert "TOOL_FIXTURE_DATE" not in orphans
+        assert "TOOL_FIXTURE_DATE" not in external
+
+    def test_embedded_shell_wrapper_read_counts_as_read(
+        self, detector, tmp_path,
+    ):
+        """A bash -c wrapper embedded in Python reads the var the same
+        module exports into the child env (the RAPTOR_BO_OUT idiom)."""
+        pkg = tmp_path / "core" / "boot"
+        pkg.mkdir(parents=True)
+        (pkg / "wrapper.py").write_text(
+            "def run_captured(cmd, out_path, spawn):\n"
+            "    env = {}\n"
+            "    env['RAPTOR_WRAP_OUT'] = out_path\n"
+            "    wrapper = ['bash', '-c', 'exec \"$@\" > \"$RAPTOR_WRAP_OUT\"']\n"
+            "    spawn(wrapper + cmd, env=env)\n",
+            encoding="utf-8",
+        )
+        orphans, external = _env_findings(detector, tmp_path)
+        assert "RAPTOR_WRAP_OUT" not in orphans
+        assert "RAPTOR_WRAP_OUT" not in external
+
+    def test_child_env_only_write_is_consumed_externally(
+        self, detector, tmp_path,
+    ):
+        pkg = tmp_path / "core" / "boot"
+        pkg.mkdir(parents=True)
+        (pkg / "spawn_tool.py").write_text(
+            "def launch(target, spawn):\n"
+            "    env = {}\n"
+            "    env['EXT_TOOL_INPUT'] = target\n"
+            "    spawn(['ext-tool'], env=env)\n",
+            encoding="utf-8",
+        )
+        orphans, external = _env_findings(detector, tmp_path)
+        assert "EXT_TOOL_INPUT" in external
+        assert "EXT_TOOL_INPUT" not in orphans
+
+
 class TestAtomicWriteIdiom:
     def test_tempfile_rename_writer_is_not_orphan_reader(
         self, detector, tmp_path,

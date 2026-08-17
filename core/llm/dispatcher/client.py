@@ -301,15 +301,22 @@ def relay_for_grandchild() -> tuple[str, int]:
 
 
 def make_gemini_base_url(*, socket_path: Optional[str] = None,
-                          token: Optional[str] = None) -> tuple[str, httpx.Client]:
+                          token: Optional[str] = None,
+                          timeout: float | None = None,
+                          ) -> tuple[str, httpx.Client]:
     """Gemini's Python SDK (``google-genai``) doesn't take a custom
     httpx client through its top-level ``Client`` constructor in all
     versions, so callers wire the base URL + httpx client themselves.
 
     Returns a tuple ``(base_url, http_client)`` the caller passes to
     whichever Gemini client wrapper they use. Same socket/token
-    resolution as the other factories.
+    resolution as the other factories, and ``timeout`` (seconds)
+    flows through to the underlying httpx exactly like the
+    Anthropic/OpenAI/Bedrock factories — without it, dispatcher-routed
+    Gemini calls were pinned to the 60s httpx default regardless of
+    the model's configured timeout (thinking calls routinely exceed
+    60s).
     """
     socket_path, token = _resolve_socket_and_token(socket_path, token)
-    http = _make_httpx_client(socket_path, token)
+    http = _make_httpx_client(socket_path, token, timeout=timeout)
     return "http://_/gemini", http

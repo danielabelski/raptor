@@ -2924,7 +2924,12 @@ class GeminiProvider(LLMProvider):
             from core.llm.dispatcher.client import (
                 make_gemini_base_url,
             )
-            base_url, http_client = make_gemini_base_url()
+            # Thread the configured per-model timeout through to the
+            # worker→dispatcher httpx client — Gemini thinking calls
+            # routinely exceed the 60s httpx default it was pinned to.
+            base_url, http_client = make_gemini_base_url(
+                timeout=self.config.timeout,
+            )
             new_client = _genai_module.Client(
                 api_key="dummy-not-used",
                 http_options=HttpOptions(

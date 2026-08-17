@@ -2897,9 +2897,13 @@ Examples:
         # want journal side effects (CI / scratch runs) can suppress.
         if args.no_journal:
             analysis_cmd.append("--no-journal")
-        precall_path = out_dir / "sage_precall_scan.json"
-        if precall_path.exists():
-            analysis_cmd.extend(["--sage-precall", str(precall_path)])
+        # NOTE: an earlier design forwarded a SAGE pre-recall file
+        # (sage_precall_scan.json) to the analysis child here, but no
+        # producer ever wrote the file and the child never accepted
+        # the flag — the forwarding was removed as dead plumbing. If a
+        # scan-time SAGE precall is designed, it needs a producer
+        # (core.sage.hooks recall writing the file before this exec)
+        # and an envelope-disciplined consumer in the analysis agent.
         if args.no_exploits:
             analysis_cmd.append("--no-exploits")
         if args.no_patches:

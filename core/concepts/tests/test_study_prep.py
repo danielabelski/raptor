@@ -1368,7 +1368,7 @@ class TestSignalAugmentation:
         items = prep._build_study_items(
             [], funcs, [], discovered_patterns=patterns,
         )
-        consumer_item = [i for i in items if i.name == "consumer"][0]
+        consumer_item = next(i for i in items if i.name == "consumer")
         assert "my_alloc" in consumer_item.alloc_frees
 
     def test_discovered_lock_augments_lock_sites(self) -> None:
@@ -1394,7 +1394,7 @@ class TestSignalAugmentation:
         items = prep._build_study_items(
             [], funcs, [], discovered_patterns=patterns,
         )
-        safe_item = [i for i in items if i.name == "safe_op"][0]
+        safe_item = next(i for i in items if i.name == "safe_op")
         assert "my_lock" in safe_item.lock_sites
 
 
@@ -1557,7 +1557,7 @@ class TestLoadReadingList:
         ]}
         rl_path = tmp_path / "reading-list.json"
         rl_path.write_text(__import__("json").dumps(rl))
-        idents, concepts = prep._load_reading_list(rl_path)
+        idents, _concepts = prep._load_reading_list(rl_path)
         assert "crypto_register_alg" in idents
 
     def test_skips_resolved_items(self, tmp_path) -> None:
@@ -1911,3 +1911,141 @@ class TestReinjectReferencedTypes:
             [focus, ctx], pre_filter, prep._INFRA_TYPES)
         names = {it.name for it in result}
         assert "deep_type" not in names
+
+
+# ------------------------------------------------------------------
+# Multi-language pass (P37 — study loop beyond C/C++)
+# ------------------------------------------------------------------
+
+
+class TestMultilangPass:
+    def _tree(self, tmp_path) -> None:
+        pkg = tmp_path / "server"
+        pkg.mkdir()
+        (pkg / "header.go").write_text(
+            "package server\n"
+            "\n"
+            "// MaxHeaderLen bounds the header buffer.\n"
+            "const MaxHeaderLen = 512\n"
+            "\n"
+            "// ParseHeader parses one wire header.\n"
+            "func ParseHeader(b []byte) (*Header, error) {\n"
+            "\treturn decodeHeader(b)\n"
+            "}\n",
+        )
+
+    def _reading_list(self, tmp_path, items) -> Path:
+        rl_path = tmp_path / "reading-list.json"
+        rl_path.write_text(json.dumps({"items": items}))
+        return rl_path
+
+    def test_resolves_go_identifiers(self, tmp_path) -> None:
+        self._tree(tmp_path)
+        rl = self._reading_list(tmp_path, [{
+            "id": "rl-1",
+            "question": "Does `ParseHeader` bound the length against MaxHeaderLen?",
+            "source_file": "server/header.go",
+            "source_function": "handleConn",
+            "resolved": False,
+            "resolution": "identifier",
+        }])
+        items, _docs, unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, rl, [], [], c_files_in_scope=False,
+        )
+        names = {it.name for it in items}
+        assert "ParseHeader" in names
+        assert "MaxHeaderLen" in names
+        # handleConn does not exist — honest unresolved record
+        assert any(u["name"] == "handleConn" for u in unresolved)
+
+    def test_unresolved_records_carry_questions(self, tmp_path) -> None:
+        self._tree(tmp_path)
+        q = "Does `missingThing` retry on failure?"
+        rl = self._reading_list(tmp_path, [{
+            "id": "rl-1", "question": q,
+            "source_file": "server/header.go",
+            "resolved": False, "resolution": "identifier",
+        }])
+        _items, _docs, unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, rl, [], [], c_files_in_scope=False,
+        )
+        rec = next(u for u in unresolved if u["name"] == "missingThing")
+        assert q in rec["questions"]
+        assert rec["reason"]
+
+    def test_c_reading_list_items_not_routed_here(self, tmp_path) -> None:
+        self._tree(tmp_path)
+        rl = self._reading_list(tmp_path, [{
+            "id": "rl-1",
+            "question": "Does `skb_put` extend the tailroom?",
+            "source_file": "net/core/skbuff.c",
+            "resolved": False, "resolution": "identifier",
+        }])
+        items, _docs, unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, rl, [], [], c_files_in_scope=True,
+        )
+        assert items == []
+        assert unresolved == []
+
+    def test_unsupported_language_items_skipped(self, tmp_path) -> None:
+        self._tree(tmp_path)
+        rl = self._reading_list(tmp_path, [{
+            "id": "rl-1",
+            "question": "Does `method_missing` proxy to the client?",
+            "source_file": "lib/client.rb",
+            "resolved": False, "resolution": "identifier",
+        }])
+        items, _docs, unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, rl, [], [], c_files_in_scope=False,
+        )
+        assert items == []
+        assert unresolved == []
+
+    def test_resolved_and_unresolvable_items_skipped(self, tmp_path) -> None:
+        self._tree(tmp_path)
+        rl = self._reading_list(tmp_path, [
+            {"id": "rl-1", "question": "Does `ParseHeader` check bounds?",
+             "source_file": "server/header.go",
+             "resolved": True, "resolution": "identifier"},
+            {"id": "rl-2", "question": "Does `MaxHeaderLen` apply?",
+             "source_file": "server/header.go",
+             "resolved": False, "unresolvable": True,
+             "resolution": "identifier"},
+        ])
+        items, _docs, unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, rl, [], [], c_files_in_scope=False,
+        )
+        assert items == []
+        assert unresolved == []
+
+    def test_concept_questions_resolve_docs(self, tmp_path) -> None:
+        self._tree(tmp_path)
+        (tmp_path / "README.md").write_text(
+            "# server\nHeader parsing validates length before decoding "
+            "each frame buffer.\n",
+        )
+        rl = self._reading_list(tmp_path, [{
+            "id": "rl-1",
+            "question": "How does header parsing validate the frame length?",
+            "source_file": "server/header.go",
+            "resolved": False, "resolution": "concept",
+        }])
+        _items, docs, _unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, rl, [], [], c_files_in_scope=False,
+        )
+        assert any(d["file"].endswith("README.md") for d in docs)
+
+    def test_cli_identifiers_used_without_c_files(self, tmp_path) -> None:
+        self._tree(tmp_path)
+        items, _docs, _unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, None, ["ParseHeader"], [],
+            c_files_in_scope=False,
+        )
+        assert any(it.name == "ParseHeader" for it in items)
+
+    def test_no_study_sources_is_noop(self, tmp_path) -> None:
+        (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
+        items, docs, unresolved = prep._multilang_pass(
+            tmp_path, tmp_path, None, ["main"], [], c_files_in_scope=True,
+        )
+        assert (items, docs, unresolved) == ([], [], [])

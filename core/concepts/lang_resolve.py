@@ -172,6 +172,12 @@ _SKIP_DIRS = frozenset({
 })
 
 
+def has_study_sources(root: Path) -> bool:
+    """True when *root* contains at least one non-C study-resolvable
+    source file (vendor dirs excluded)."""
+    return bool(_iter_source_files(Path(root), max_files=1))
+
+
 def _iter_source_files(
     root: Path, *, max_files: int = 4000,
 ) -> list[Path]:
@@ -664,6 +670,86 @@ def resolve_identifiers(
         })
 
     return result
+
+
+# ------------------------------------------------------------------
+# Study-list merge (per-batch consumer dispatch)
+# ------------------------------------------------------------------
+
+def merge_into_study_list(
+    study_list_path: Path,
+    items: list[StudyItem],
+    *,
+    related_docs: list[dict] | None = None,
+    unresolved: list[dict] | None = None,
+) -> int:
+    """Merge resolved items into an existing ``study-list.json``.
+
+    Used by the study consumer to add per-batch multi-language
+    resolutions after study-prep has already run.  Deduplicates on
+    item id and on ``(name, file, line)``.  Returns the number of
+    items actually added.  Creates a minimal skeleton when the file
+    does not exist yet.
+    """
+    import json
+    import os
+    import tempfile
+    from dataclasses import asdict
+
+    path = Path(study_list_path)
+    data: dict = {"target": "", "source_root": "", "items": []}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, json.JSONDecodeError):
+            pass
+    existing = data.setdefault("items", [])
+    seen_ids = {i.get("id") for i in existing if isinstance(i, dict)}
+    seen_keys = {
+        (i.get("name"), i.get("file"), i.get("line"))
+        for i in existing if isinstance(i, dict)
+    }
+    added = 0
+    for item in items:
+        key = (item.name, item.file, item.line)
+        if item.id in seen_ids or key in seen_keys:
+            continue
+        existing.append(asdict(item))
+        seen_ids.add(item.id)
+        seen_keys.add(key)
+        added += 1
+
+    if related_docs:
+        docs = data.setdefault("related_docs", [])
+        doc_files = {d.get("file") for d in docs if isinstance(d, dict)}
+        for d in related_docs:
+            if d.get("file") not in doc_files:
+                docs.append(d)
+                doc_files.add(d.get("file"))
+
+    if unresolved:
+        recs = data.setdefault("unresolved_identifiers", [])
+        rec_names = {r.get("name") for r in recs if isinstance(r, dict)}
+        for r in unresolved:
+            if r.get("name") not in rec_names:
+                recs.append(r)
+                rec_names.add(r.get("name"))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix="study-list-",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        Path(tmp_name).rename(path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return added
 
 
 # ------------------------------------------------------------------

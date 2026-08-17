@@ -2272,6 +2272,18 @@ def _scope_items_for_reading_list(
                     candidate = candidate.strip()
                     if len(candidate) >= 4:
                         target_names.add(candidate)
+        # Non-C question shapes: dotted paths (json.loads), CamelCase
+        # and mixedCase names the snake_case pattern above misses.
+        try:
+            from .lang_resolve import (
+                extract_question_identifiers,
+                identifier_tail,
+            )
+            for name in extract_question_identifiers(question, ctx):
+                target_names.add(name)
+                target_names.add(identifier_tail(name))
+        except Exception:
+            logger.debug("multilang question scoping failed", exc_info=True)
 
     if not target_names and not target_files:
         return items

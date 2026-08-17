@@ -438,3 +438,73 @@ class TestConceptDocs:
 
     def test_no_questions(self, tmp_path: Path) -> None:
         assert resolve_concept_docs(tmp_path, []) == []
+
+
+# ------------------------------------------------------------------
+# Study-list merge
+# ------------------------------------------------------------------
+
+class TestMergeIntoStudyList:
+    def _item(self, name: str, file: str = "a.py", line: int = 1):
+        from core.concepts.model import StudyItem
+        return StudyItem(
+            id=f"python_function_{name}_{file}_{line}",
+            kind="function", name=name, file=file, line=line,
+            definition=f"def {name}(): ...",
+        )
+
+    def test_creates_skeleton_when_missing(self, tmp_path: Path) -> None:
+        import json
+
+        from core.concepts.lang_resolve import merge_into_study_list
+        p = tmp_path / "study-list.json"
+        added = merge_into_study_list(p, [self._item("fn_a")])
+        assert added == 1
+        data = json.loads(p.read_text())
+        assert data["items"][0]["name"] == "fn_a"
+
+    def test_merges_into_existing(self, tmp_path: Path) -> None:
+        import json
+
+        from core.concepts.lang_resolve import merge_into_study_list
+        p = tmp_path / "study-list.json"
+        p.write_text(json.dumps({
+            "target": "/t", "source_root": "/t",
+            "items": [{"id": "c_fn_x", "name": "fn_x",
+                       "file": "x.c", "line": 3}],
+        }))
+        added = merge_into_study_list(p, [self._item("fn_a")])
+        assert added == 1
+        data = json.loads(p.read_text())
+        assert {i["name"] for i in data["items"]} == {"fn_x", "fn_a"}
+        assert data["target"] == "/t"
+
+    def test_dedups_by_id_and_location(self, tmp_path: Path) -> None:
+        from core.concepts.lang_resolve import merge_into_study_list
+        p = tmp_path / "study-list.json"
+        merge_into_study_list(p, [self._item("fn_a")])
+        assert merge_into_study_list(p, [self._item("fn_a")]) == 0
+
+    def test_related_docs_and_unresolved_merged(self, tmp_path: Path) -> None:
+        import json
+
+        from core.concepts.lang_resolve import merge_into_study_list
+        p = tmp_path / "study-list.json"
+        merge_into_study_list(
+            p, [],
+            related_docs=[{"file": "README.md", "reason": "r"}],
+            unresolved=[{"name": "ghost", "reason": "not found",
+                         "questions": ["Does ghost exist?"]}],
+        )
+        data = json.loads(p.read_text())
+        assert data["related_docs"][0]["file"] == "README.md"
+        assert data["unresolved_identifiers"][0]["name"] == "ghost"
+        # merging the same records again does not duplicate
+        merge_into_study_list(
+            p, [],
+            related_docs=[{"file": "README.md", "reason": "r"}],
+            unresolved=[{"name": "ghost", "reason": "not found"}],
+        )
+        data = json.loads(p.read_text())
+        assert len(data["related_docs"]) == 1
+        assert len(data["unresolved_identifiers"]) == 1

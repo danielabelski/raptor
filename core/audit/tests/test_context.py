@@ -2,26 +2,25 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import json
-
 from core.audit.context import (
-    assemble_context,
-    format_context_for_prompt,
-    _read_source,
+    _build_tool_catalog,
+    _build_trust_surface,
+    _enrich_callees_with_source,
     _extract_metadata,
     _extract_sinks,
-    _build_trust_surface,
-    _sink_to_cwe_hint,
-    _load_strategy_exemplars,
-    _load_flow_traces,
-    _find_checklist_item,
-    _find_callers,
-    _enrich_callees_with_source,
-    _resolve_types,
     _extract_type_definition,
-    _build_tool_catalog,
+    _find_callers,
+    _find_checklist_item,
+    _load_flow_traces,
+    _load_strategy_exemplars,
+    _read_source,
+    _resolve_types,
+    _sink_to_cwe_hint,
+    assemble_context,
+    format_context_for_prompt,
 )
 
 

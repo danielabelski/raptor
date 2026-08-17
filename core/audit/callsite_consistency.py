@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Dict, List, Optional, Sequence
 
 from .prompt_defence import sanitise_for_prompt
 
@@ -137,7 +137,7 @@ class CallSiteDeviation:
 # Tree-sitter extraction
 # ---------------------------------------------------------------------------
 
-def _callee_name_ts(call_node, lang: str, src: bytes) -> Optional[str]:
+def _callee_name_ts(call_node, lang: str, src: bytes) -> str | None:
     """Extract the function/method name from a call node."""
     func = call_node.child_by_field_name("function")
     if func is None:
@@ -233,7 +233,7 @@ def _parse_file(source: str, ext: str):
 
 def _extract_callsites_ts(
     file_path: str, source: str,
-) -> Optional[List[CallSite]]:
+) -> list[CallSite] | None:
     """Extract call sites via tree-sitter. Returns None if unavailable."""
     ext = PurePosixPath(file_path).suffix
     tree, lang = _parse_file(source, ext)
@@ -245,7 +245,7 @@ def _extract_callsites_ts(
         return None
 
     src = source.encode("utf-8", errors="replace")
-    sites: List[CallSite] = []
+    sites: list[CallSite] = []
 
     for node in _walk_descendants(tree.root_node):
         if node.type not in call_types:
@@ -316,9 +316,9 @@ _GO_BLANK_ASSIGN_RE = re.compile(
 
 def _extract_callsites_regex(
     file_path: str, source: str,
-) -> List[CallSite]:
+) -> list[CallSite]:
     """Regex fallback for call site extraction."""
-    sites: List[CallSite] = []
+    sites: list[CallSite] = []
     lines = source.splitlines()
     current_func = "<module>"
 
@@ -372,16 +372,16 @@ def _extract_callsites_regex(
 # ---------------------------------------------------------------------------
 
 def _find_deviations(
-    sites: List[CallSite],
+    sites: list[CallSite],
     min_sites: int = MIN_CALL_SITES,
     threshold: float = MAJORITY_THRESHOLD,
-) -> List[CallSiteDeviation]:
+) -> list[CallSiteDeviation]:
     """Find call sites that deviate from the majority pattern."""
-    by_callee: Dict[str, List[CallSite]] = defaultdict(list)
+    by_callee: dict[str, list[CallSite]] = defaultdict(list)
     for site in sites:
         by_callee[site.callee].append(site)
 
-    deviations: List[CallSiteDeviation] = []
+    deviations: list[CallSiteDeviation] = []
 
     for callee, callee_sites in sorted(by_callee.items()):
         if len(callee_sites) < min_sites:
@@ -434,14 +434,14 @@ _CPG_BATCH_SIZE = 25
 def _extract_callsites_cpg(
     joern_server,
     callee_names: frozenset[str],
-) -> List[CallSite]:
+) -> list[CallSite]:
     """Query Joern CPG for cross-file callsite data.
 
     Batches callees into groups to avoid per-callee query overhead that
     can deadlock the JVM under sustained load.  Caps at _CPG_CALLEE_CAP
     callees (prioritised by name length as a proxy for specificity).
     """
-    from .cross_function_verify import _safe_name, _run_query
+    from .cross_function_verify import _run_query, _safe_name
 
     safe_callees = []
     for callee in callee_names:
@@ -460,7 +460,7 @@ def _extract_callsites_cpg(
         )
         safe_callees = safe_callees[:_CPG_CALLEE_CAP]
 
-    sites: List[CallSite] = []
+    sites: list[CallSite] = []
     for batch_start in range(0, len(safe_callees), _CPG_BATCH_SIZE):
         batch = safe_callees[batch_start:batch_start + _CPG_BATCH_SIZE]
         names_scala = ", ".join(f'"{s}"' for _, s in batch)
@@ -501,13 +501,13 @@ def _extract_callsites_cpg(
 
 
 def detect_callsite_deviations(
-    source_texts: Dict[str, str],
+    source_texts: dict[str, str],
     *,
     min_sites: int = MIN_CALL_SITES,
     threshold: float = MAJORITY_THRESHOLD,
-    extra_security_names: Optional[frozenset] = None,
+    extra_security_names: frozenset | None = None,
     joern_server=None,
-) -> List[CallSiteDeviation]:
+) -> list[CallSiteDeviation]:
     """Detect call sites that deviate from the majority return-value handling.
 
     *extra_security_names*: additional callee names considered
@@ -519,7 +519,7 @@ def detect_callsite_deviations(
 
     Returns deviations sorted by (security_relevant desc, confidence desc).
     """
-    all_sites: List[CallSite] = []
+    all_sites: list[CallSite] = []
 
     for file_path, source in source_texts.items():
         ts_sites = _extract_callsites_ts(file_path, source)

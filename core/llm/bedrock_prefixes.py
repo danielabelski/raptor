@@ -85,6 +85,35 @@ def mantle_model_id(model_id: str) -> str:
     return model_id
 
 
+def bedrock_shaped_model_id(model_id: str) -> bool:
+    """True when ``model_id`` is unmistakably a Bedrock id shape:
+    a Bedrock ARN, a bare ``<provider>.<model>`` id, or a regional
+    inference-profile id (``us./eu./au./apac./global.`` + vendor
+    segment).
+
+    The misroute predicate for transport guards: a direct-API or
+    claudecode-on-direct-API path can never serve such an id -- the
+    upstream rejects it with a bare 400.  Deliberately conservative
+    the other way: bare catalog names (``claude-opus-4-8``), the
+    ``session-default`` sentinel, operator aliases, and Vertex ids
+    (``claude-...@date``) are never shaped.
+    """
+    if not model_id:
+        return False
+    if model_id.startswith("arn:aws:bedrock:"):
+        return True
+    prefix = regional_prefix_of(model_id)
+    if prefix:
+        # ``us.<vendor>.<model>`` -- Bedrock-shaped even for vendor
+        # segments without a Family mapping (``amazon.``, ``ai21.``):
+        # the regional prefix + a dotted vendor segment is the
+        # inference-profile grammar, nothing else uses it.
+        body = model_id[len(prefix):]
+        head, dot, rest = body.partition(".")
+        return bool(dot and head and rest)
+    return model_id.startswith(BEDROCK_PROVIDER_SEGMENTS)
+
+
 def prefix_region_mismatch(model_id: str, region: str) -> str | None:
     """Operator-actionable message when ``model_id``'s geographic
     inference-profile prefix cannot be served from ``region``, else
@@ -124,6 +153,7 @@ __all__ = [
     "BEDROCK_REGIONAL_SURCHARGE_PREFIXES",
     "BEDROCK_GLOBAL_PREFIX",
     "BEDROCK_PROVIDER_SEGMENTS",
+    "bedrock_shaped_model_id",
     "mantle_model_id",
     "prefix_region_mismatch",
     "regional_prefix_of",

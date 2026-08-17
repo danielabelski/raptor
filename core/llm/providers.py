@@ -4074,6 +4074,79 @@ class ClaudeCodeLLMProvider(LLMProvider):
         )
 
 
+class ModelTransportMismatchError(RuntimeError):
+    """A model id is provider-shaped for a DIFFERENT transport than
+    the one about to serve it (e.g. a Bedrock inference-profile id on
+    the direct-API / claudecode path).
+
+    Raised at provider CONSTRUCTION, before any request is built:
+    shipping the id upstream yields a bare HTTP 400 with none of the
+    routing context, and burns a billable call on backends that
+    partially process the request.  Non-retryable by design (the
+    message deliberately avoids the transient-error vocabulary
+    ``_is_retryable_error`` matches on), so the fallback chain moves
+    on immediately and the operator sees THIS message, not a generic
+    400.
+    """
+
+
+def _guard_transport_model_shape(
+    config: ModelConfig, *, transport: str,
+) -> None:
+    """Fail loud when ``config.model_name`` cannot be served by
+    ``transport``.
+
+    Covers the observed misroute: resolution falls back from a
+    dispatcher-only Bedrock entry to the claudecode transport (or a
+    direct-API entry borrows a Bedrock id), and ``claude -p --model
+    us.anthropic...`` / the Anthropic SDK then hits the direct API --
+    HTTP 400 with no hint that the id was Bedrock-shaped.
+
+    Never trips on legitimate ids for the transport: bare catalog
+    names, the ``session-default`` sentinel, aliases and Vertex ids
+    are not Bedrock-shaped, and a Bedrock-backed claude CLI
+    (``CLAUDE_CODE_USE_BEDROCK`` set -- the same signal
+    ``cc_subprocess_env`` gates its AWS overlay on; settings.json-only
+    Bedrock setups must export it, documented trade-off) serves
+    Bedrock ids natively.  Custom ``api_base`` endpoints are the
+    operator's own gateway contract and are exempt.
+    """
+    from core.llm.bedrock_prefixes import bedrock_shaped_model_id
+
+    if not bedrock_shaped_model_id(config.model_name):
+        return
+    if transport == "claudecode":
+        if os.environ.get("CLAUDE_CODE_USE_BEDROCK"):
+            return
+        raise ModelTransportMismatchError(
+            f"model id {config.model_name!r} is Bedrock-shaped but is "
+            "routed to the claudecode transport on a NON-Bedrock "
+            "claude CLI (CLAUDE_CODE_USE_BEDROCK is unset) -- "
+            "`claude -p --model` would send it to the direct Anthropic "
+            "API, which rejects Bedrock ids with a bare HTTP 400. "
+            "Remedies: add a models.json entry with \"provider\": "
+            "\"bedrock\" so the RAPTOR dispatcher routes it (SigV4/"
+            "bearer), or export CLAUDE_CODE_USE_BEDROCK=1 if the "
+            "claude CLI really is Bedrock-backed (settings.json-only "
+            "Bedrock installs must export it), or pin a direct-API "
+            "model name instead."
+        )
+    if transport == "anthropic":
+        if config.api_base:
+            # Operator-supplied gateway -- their endpoint, their
+            # id vocabulary.
+            return
+        raise ModelTransportMismatchError(
+            f"model id {config.model_name!r} is Bedrock-shaped but is "
+            "configured on the direct Anthropic API path (provider "
+            "\"anthropic\"), which serves bare claude-* ids only -- "
+            "the request would fail upstream with a bare HTTP 400. "
+            "Remedies: set \"provider\": \"bedrock\" on the "
+            "models.json entry so the RAPTOR dispatcher routes it "
+            "(SigV4/bearer), or use the direct-API model name."
+        )
+
+
 def create_provider(config: ModelConfig) -> LLMProvider:
     """
     Factory function to create appropriate provider.
@@ -4093,10 +4166,13 @@ def create_provider(config: ModelConfig) -> LLMProvider:
         "claudecode-resumable",
         "claude_code_resumable",
         "claude-code-resumable",
+        "claudecode", "claude_code", "claude-code",
     ):
-        return ClaudeCodeLLMProvider(config, resumable=True)
-    if provider in ("claudecode", "claude_code", "claude-code"):
-        return ClaudeCodeLLMProvider(config)
+        _guard_transport_model_shape(config, transport="claudecode")
+        return ClaudeCodeLLMProvider(
+            config,
+            resumable=provider.replace("_", "-").endswith("-resumable"),
+        )
     if provider == "bedrock":
         # AWS Bedrock — routed via the dispatcher's bedrock rule.  Two
         # API surfaces are available; the operator chooses with
@@ -4162,6 +4238,7 @@ def create_provider(config: ModelConfig) -> LLMProvider:
         )
         return provider_instance
     if provider == "anthropic":
+        _guard_transport_model_shape(config, transport="anthropic")
         if ANTHROPIC_SDK_AVAILABLE:
             return AnthropicProvider(config)
         elif OPENAI_SDK_AVAILABLE:

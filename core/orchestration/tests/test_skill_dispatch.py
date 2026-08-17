@@ -316,3 +316,43 @@ class TruncationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrustMarkerPropagationTests(unittest.TestCase):
+    """A4: the CC skill child operates on the operator-approved run and
+    must see the trusted-parent context; an untrusted parent propagates
+    nothing."""
+
+    def _dispatch_kwargs(self, parent_env):
+        captured = {}
+
+        def sandbox(cmd, **kwargs):
+            captured.update(kwargs)
+            return _ok()
+
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            with patch.dict("os.environ", parent_env):
+                result = _run(tmp, run_dir, sandbox=sandbox)
+            self.assertTrue(result.ran)
+        return captured
+
+    def test_dispatch_opts_into_trust_marker_keep(self):
+        captured = self._dispatch_kwargs({"CLAUDECODE": "1"})
+        self.assertIs(captured.get("keep_trust_markers"), True)
+
+    def test_trusted_parent_marker_reaches_child_env(self):
+        captured = self._dispatch_kwargs({"CLAUDECODE": "1"})
+        env = captured.get("env") or {}
+        self.assertEqual(env.get("CLAUDECODE"), "1")
+
+    def test_untrusted_parent_stays_refused(self):
+        # Parent holds neither marker: nothing to propagate — the
+        # child env carries no trust marker and libexec preambles
+        # refuse it exactly as before.
+        captured = self._dispatch_kwargs(
+            {"CLAUDECODE": "", "_RAPTOR_TRUSTED": ""},
+        )
+        env = captured.get("env") or {}
+        self.assertFalse(env.get("CLAUDECODE"))
+        self.assertFalse(env.get("_RAPTOR_TRUSTED"))

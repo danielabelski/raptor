@@ -393,7 +393,10 @@ class RaptorConfig:
         # not see them: run_untrusted()/run_untrusted_networked()
         # strip both from the target-bound env (strip_trust_markers
         # in core/sandbox/context.py), and the pid1 shim strips them
-        # before exec on the unshare path.
+        # before exec on the unshare path. RAPTOR's own Claude Code
+        # skill dispatches opt out via keep_trust_markers=True (see
+        # run_untrusted_networked) — those children drive libexec/
+        # helpers on the operator-approved run and need the marker.
         "_RAPTOR_TRUSTED", "CLAUDECODE",
         # RAPTOR runtime config that downstream subprocesses must
         # honour for the operator's intent to take effect:

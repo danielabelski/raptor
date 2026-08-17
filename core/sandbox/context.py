@@ -1611,6 +1611,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 k: v for k, v in kwargs["env"].items()
                 if k not in ("CLAUDECODE", "_RAPTOR_TRUSTED")
             }
+        if "_RAPTOR_KEEP_TRUST_MARKERS" in _env_for_target:
+            # Internal control flag for the pid1 shim only (see
+            # run_untrusted_networked keep_trust_markers) — the shim
+            # reads it from kwargs["env"] on the unshare path; the
+            # direct-exec paths must not leak it to the child.
+            _env_for_target = {
+                k: v for k, v in _env_for_target.items()
+                if k != "_RAPTOR_KEEP_TRUST_MARKERS"
+            }
 
         # Force FD close at fork. Python defaults close_fds=True on POSIX
         # but we reject explicit overrides — inheriting FDs from RAPTOR
@@ -3192,6 +3201,7 @@ def run_untrusted_networked(
     readable_paths: list | None = None,
     writable_paths: list | None = None,
     fake_home: bool = False,
+    keep_trust_markers: bool = False,
     **kwargs,
 ) -> subprocess.CompletedProcess:
     """Variant of :func:`run_untrusted` that allows hostname-allowlisted
@@ -3225,6 +3235,18 @@ def run_untrusted_networked(
     defaults — DEVNULL stdin, setsid — and its trust-marker hygiene
     (``CLAUDECODE`` / ``_RAPTOR_TRUSTED`` stripped from the child
     env) for the same reasons.
+
+    ``keep_trust_markers=True`` opts OUT of that strip for RAPTOR's
+    own Claude Code skill dispatches (``core.orchestration.
+    skill_dispatch``): the spawned CLI is RAPTOR's trusted binary
+    operating on the same operator-approved run — its whole job is to
+    drive ``libexec/`` helpers whose preamble refuses callers without
+    a marker — and the dispatch is already gated by cc-trust and the
+    rule-of-two before it reaches this helper. The markers only pass
+    through when the PARENT actually holds them (an untrusted parent
+    has nothing to propagate). NEVER set this for commands derived
+    from target-repo content; ``run_untrusted`` deliberately has no
+    such opt-out.
 
     Callers: Claude Code sub-agent dispatch (packages/llm_analysis/
     cc_dispatch.py, core/orchestration/agentic_passes.py,
@@ -3264,6 +3286,18 @@ def run_untrusted_networked(
         kwargs["stdin"] = subprocess.DEVNULL
     if "start_new_session" not in kwargs:
         kwargs["start_new_session"] = True
+    if keep_trust_markers:
+        # The unshare fallback routes the env through the pid1 shim,
+        # which strips both markers unconditionally before exec'ing
+        # the target; the keep flag tells it this child is RAPTOR's
+        # own trusted dispatch. The flag itself never reaches the
+        # child (the shim pops it; the direct paths receive an env
+        # where it is inert and allowlist-stripped one hop later).
+        base_env = kwargs.get("env")
+        if base_env is None:
+            from core.config import RaptorConfig
+            base_env = RaptorConfig.get_safe_env()
+        kwargs["env"] = {**base_env, "_RAPTOR_KEEP_TRUST_MARKERS": "1"}
     return run(
         cmd,
         block_network=False,
@@ -3277,6 +3311,6 @@ def run_untrusted_networked(
         proxy_hosts=list(proxy_hosts),
         allowed_tcp_ports=[443],
         strict_env=True,
-        strip_trust_markers=True,
+        strip_trust_markers=not keep_trust_markers,
         **kwargs,
     )

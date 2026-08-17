@@ -325,7 +325,17 @@ def main() -> int:
             # trust marker authorizes RAPTOR's OWN dispatch scripts (this shim
             # included) and has no business being visible to the sandboxed
             # target. Strip both so nothing _RAPTOR_* crosses into the target.
-            for _m in ("_RAPTOR_DEATH_FD", "_RAPTOR_TRUSTED", "CLAUDECODE"):
+            # Exception: _RAPTOR_KEEP_TRUST_MARKERS (set only by
+            # run_untrusted_networked(keep_trust_markers=True) for RAPTOR's
+            # own Claude Code skill dispatches) keeps the two trust markers
+            # so the child can drive libexec/ helpers; the flag itself and
+            # the death fd are stripped unconditionally.
+            _keep_trust = os.environ.pop("_RAPTOR_KEEP_TRUST_MARKERS", None)
+            _strip = (
+                ("_RAPTOR_DEATH_FD",) if _keep_trust
+                else ("_RAPTOR_DEATH_FD", "_RAPTOR_TRUSTED", "CLAUDECODE")
+            )
+            for _m in _strip:
                 os.environ.pop(_m, None)
             try:
                 os.execvp(target_argv[0], target_argv)

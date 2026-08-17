@@ -164,3 +164,76 @@ def test_sandboxed_child_hits_libexec_refusal(monkeypatch, tmp_path):
     assert "internal dispatch script" in (result.stderr or ""), (
         f"refusal message missing from stderr: {result.stderr!r}"
     )
+
+
+# ─── CC skill-dispatch opt-out (keep_trust_markers) ─────────────────
+
+
+def test_networked_keep_trust_markers_disables_strip(monkeypatch, tmp_path):
+    """RAPTOR's own CC skill dispatch opts out of the marker strip:
+    run() receives strip_trust_markers=False and the shim keep flag."""
+    captured = {}
+    monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _ctx.run_untrusted_networked(
+        ["claude", "-p"],
+        target=str(tmp_path / "target"),
+        output=str(tmp_path / "output"),
+        proxy_hosts=["api.example.com"],
+        env={"PATH": "/usr/bin", "CLAUDECODE": "1"},
+        keep_trust_markers=True,
+    )
+    kwargs = captured["kwargs"]
+    assert kwargs.get("strip_trust_markers") is False
+    env = kwargs.get("env")
+    assert env["CLAUDECODE"] == "1"
+    assert env["_RAPTOR_KEEP_TRUST_MARKERS"] == "1"
+
+
+def test_networked_keep_from_untrusted_parent_propagates_nothing(
+    monkeypatch, tmp_path,
+):
+    """keep_trust_markers only PASSES THROUGH markers the parent
+    holds — an untrusted parent (no marker in its env) propagates
+    nothing, so the child still hits the libexec refusal path."""
+    captured = {}
+    monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _ctx.run_untrusted_networked(
+        ["claude", "-p"],
+        target=str(tmp_path / "target"),
+        output=str(tmp_path / "output"),
+        proxy_hosts=["api.example.com"],
+        env={"PATH": "/usr/bin"},  # untrusted parent: no markers
+        keep_trust_markers=True,
+    )
+    env = captured["kwargs"].get("env")
+    assert "CLAUDECODE" not in env
+    assert "_RAPTOR_TRUSTED" not in env
+
+
+def test_networked_default_keeps_strip_and_no_keep_flag(
+    monkeypatch, tmp_path,
+):
+    captured = {}
+    monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _ctx.run_untrusted_networked(
+        ["echo", "ok"],
+        target=str(tmp_path / "target"),
+        output=str(tmp_path / "output"),
+        proxy_hosts=["api.example.com"],
+        env={"PATH": "/usr/bin", "CLAUDECODE": "1"},
+    )
+    kwargs = captured["kwargs"]
+    assert kwargs.get("strip_trust_markers") is True
+    assert "_RAPTOR_KEEP_TRUST_MARKERS" not in kwargs.get("env", {})
+
+
+def test_run_untrusted_has_no_keep_opt_out(tmp_path):
+    """run_untrusted() (target-derived code) deliberately offers no
+    keep_trust_markers escape hatch."""
+    with pytest.raises(TypeError, match="keep_trust_markers"):
+        _ctx.run_untrusted(
+            ["echo", "ok"],
+            target=str(tmp_path / "target"),
+            output=str(tmp_path / "output"),
+            keep_trust_markers=True,
+        )

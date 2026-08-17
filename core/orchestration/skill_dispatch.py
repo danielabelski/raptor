@@ -398,6 +398,17 @@ def run_skill_dispatch(
                 timeout=timeout_s,
                 target=str(target), output=str(run_dir),
                 env=cc_subprocess_env(),
+                # Trust-marker propagation: this child is RAPTOR's own
+                # claude binary running a skill pass on the same
+                # operator-approved run (gated above by cc-trust +
+                # rule-of-two). Its job is to drive libexec/ helpers
+                # (raptor-validation-helper, raptor-run-lifecycle)
+                # whose preamble refuses callers without CLAUDECODE /
+                # _RAPTOR_TRUSTED — the default marker strip left the
+                # validate post-pass child looking untrusted (rc=1,
+                # A4). A parent that holds no marker propagates
+                # nothing: an untrusted parent stays refused.
+                keep_trust_markers=True,
                 readable_paths=(
                     [str(_RAPTOR_DIR)]
                     + [str(d) for d in context_dirs]

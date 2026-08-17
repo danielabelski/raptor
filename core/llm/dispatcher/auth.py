@@ -163,10 +163,9 @@ class ProviderRule:
     is_configured: Optional[Callable[[], bool]] = None
 
 
-# Sentinel for "AWS signer not yet resolved" — distinct from a resolved
-# value of ``None`` (botocore/creds absent), which is cached so we don't
-# re-attempt botocore resolution on every request.
-_UNRESOLVED = object()
+# The AWS signer cache is a per-profile dict: key absent = not yet
+# resolved; value ``None`` = resolution failed (botocore/creds absent),
+# cached so we don't re-attempt botocore resolution on every request.
 
 
 def _decode_bedrock_bearer_exp(token: str) -> int | None:
@@ -290,14 +289,22 @@ class CredentialStore:
             os.environ.get("RAPTOR_BEDROCK_PROFILE")
             or os.environ.get("AWS_PROFILE")
         )
-        # Resolved (credentials, region, endpoint) tuple, or None once we
-        # know Bedrock isn't usable. ``_UNRESOLVED`` until first lookup.
-        # The lock serialises first-resolution across the threading
+        # Resolved (credentials, region) per signing profile — value is
+        # ``None`` once we know that profile isn't usable; key absent
+        # until first lookup ("" = the ambient/default profile).  The
+        # lock serialises first-resolution across the threading
         # dispatcher's concurrent request handlers — the resolution is
         # idempotent, but the botocore credential-chain probe (which may
-        # hit IMDS) should run once, not once per concurrent first call.
-        self._aws_signer_cache: object = _UNRESOLVED
+        # hit IMDS) should run once per profile, not once per
+        # concurrent first call.
+        self._aws_signer_cache: dict[str, object] = {}
         self._aws_signer_lock = threading.Lock()
+        # Per-model Bedrock signing overrides: model id →
+        # {"profile": ..., "region": ...}.  Seeded from models.json
+        # entries by :func:`seed_from_config`; consulted per request by
+        # the Bedrock rule.  The "" key is the wildcard for model-less
+        # entries.  Names only — never credentials.
+        self._aws_model_overrides: dict[str, dict[str, str]] = {}
         # Bedrock bearer-token expiry timestamp (unix seconds) if the
         # token is a JWT with an ``exp`` claim; ``None`` for opaque
         # long-term API keys (no expiry signal — assume long-lived).
@@ -345,7 +352,51 @@ class CredentialStore:
             self._aws_region = region
         if endpoint is not None:
             self._aws_endpoint = endpoint
-        self._aws_signer_cache = _UNRESOLVED
+        self._aws_signer_cache = {}
+
+    def set_aws_model_override(
+        self, model_id: str, *,
+        profile: str | None = None, region: str | None = None,
+    ) -> None:
+        """Register a per-model Bedrock signing override (both fields
+        are names, never credentials).  ``model_id`` of ``""`` is the
+        wildcard applied when no exact entry matches — the shape a
+        model-less minimal config entry produces."""
+        override: dict[str, str] = {}
+        if profile:
+            override["profile"] = profile
+        if region:
+            override["region"] = region
+        if override:
+            self._aws_model_overrides[model_id] = override
+
+    def aws_override_for_body(self, body: bytes) -> dict[str, str]:
+        """Per-model signing override for the request carried in
+        ``body`` (an Anthropic-Messages JSON document).  Exact model-id
+        match first, then the peeled bare id, then the ``""`` wildcard;
+        ``{}`` when nothing applies.  Body parsing is skipped entirely
+        while no overrides are registered — the common case stays free.
+        """
+        if not self._aws_model_overrides:
+            return {}
+        model = ""
+        try:
+            payload = json.loads(body) if body else {}
+            if isinstance(payload, dict):
+                model = str(payload.get("model") or "")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            model = ""
+        if model and model in self._aws_model_overrides:
+            return self._aws_model_overrides[model]
+        if model:
+            try:
+                from core.security.llm_family import bare_model_id
+                bare = bare_model_id(model)
+            except Exception:  # noqa: BLE001 — override lookup is best-effort
+                bare = ""
+            if bare and bare in self._aws_model_overrides:
+                return self._aws_model_overrides[bare]
+        return self._aws_model_overrides.get("", {})
 
     def bedrock_bearer_exp(self) -> int | None:
         """Return the bearer token's ``exp`` claim (unix seconds) if it
@@ -465,7 +516,9 @@ class CredentialStore:
             return False
         return time.time() + skew_seconds >= exp
 
-    def aws_bedrock_endpoint(self, api: str = "mantle") -> str | None:
+    def aws_bedrock_endpoint(
+        self, api: str = "mantle", *, region: str | None = None,
+    ) -> str | None:
         """Return the Bedrock base URL for the chosen ``api``, or
         ``None`` if no region is known.  Region comes from
         ``AWS_REGION`` / ``AWS_DEFAULT_REGION`` (or :meth:`set_aws`);
@@ -490,41 +543,70 @@ class CredentialStore:
         ``AWS_ENDPOINT_URL_BEDROCK`` overrides the host for both APIs
         — for local-stub testing.  Operators running stubs for both
         APIs simultaneously should run two dispatchers (one per
-        API), each with its own ``AWS_ENDPOINT_URL_BEDROCK``."""
-        if not self._aws_region:
+        API), each with its own ``AWS_ENDPOINT_URL_BEDROCK``.
+
+        ``region`` overrides the ambient region for this call — the
+        per-model ``region`` field routed through the request-time
+        override map."""
+        effective_region = region or self._aws_region
+        if not effective_region:
             return None
         if self._aws_endpoint:
             return self._aws_endpoint
         if api == "runtime":
-            return f"https://bedrock-runtime.{self._aws_region}.amazonaws.com"
-        return f"https://bedrock-mantle.{self._aws_region}.api.aws"
+            return f"https://bedrock-runtime.{effective_region}.amazonaws.com"
+        return f"https://bedrock-mantle.{effective_region}.api.aws"
 
-    def aws_signer(self, api: str = "mantle"):
+    def aws_signer(
+        self, api: str = "mantle", *,
+        profile: str | None = None, region: str | None = None,
+    ):
         """Return ``(credentials, region, endpoint)`` for SigV4 signing
         against the chosen ``api``, or ``None`` when Bedrock isn't
         usable (botocore missing, no resolvable credentials, no region).
-        Credentials + region are resolved once and cached; the endpoint
-        is built per-call so the same dispatcher can route requests to
-        either API surface without a second botocore probe."""
-        if self._aws_signer_cache is _UNRESOLVED:
+        Credentials + region are resolved once per signing profile and
+        cached; the endpoint is built per-call so the same dispatcher
+        can route requests to either API surface (and, with per-model
+        overrides, to different profiles/regions) without a second
+        botocore probe.
+
+        ``profile`` pins the signing profile for this call (per-model
+        ``aws_profile``); ``region`` pins the region.  The region used
+        for signing and the region in the endpoint hostname are always
+        the same value — a signature for one region is invalid against
+        another region's host."""
+        cache_key = profile or self._aws_profile or ""
+        if cache_key not in self._aws_signer_cache:
             with self._aws_signer_lock:
                 # Double-checked: another thread may have resolved it
                 # while we waited on the lock.
-                if self._aws_signer_cache is _UNRESOLVED:
-                    self._aws_signer_cache = self._resolve_aws_credentials()
-        if self._aws_signer_cache is None:
+                if cache_key not in self._aws_signer_cache:
+                    self._aws_signer_cache[cache_key] = (
+                        self._resolve_aws_credentials(profile)
+                    )
+        resolved = self._aws_signer_cache[cache_key]
+        if resolved is None:
             return None
-        credentials, region = self._aws_signer_cache
-        endpoint = self.aws_bedrock_endpoint(api)
+        credentials, resolved_region = resolved
+        effective_region = region or resolved_region
+        if not effective_region:
+            return None
+        endpoint = self.aws_bedrock_endpoint(api, region=effective_region)
         if endpoint is None:
             return None
-        return (credentials, region, endpoint)
+        return (credentials, effective_region, endpoint)
 
-    def _resolve_aws_credentials(self):
+    def _resolve_aws_credentials(self, profile: str | None = None):
         """Resolve ``(credentials, region)`` from botocore.
 
-        Lookup order is tuned so long RAPTOR scans "just work" regardless
-        of how the operator configured AWS:
+        ``profile`` is a per-model pin (models.json ``aws_profile``):
+        when given it replaces the ambient profile for this resolution,
+        and that profile's own configured region (from the shared
+        config file, NOT the ambient env) wins the region slot — the
+        env region serves the box, the pin serves this entry.
+
+        Lookup order otherwise is tuned so long RAPTOR scans "just
+        work" regardless of how the operator configured AWS:
 
         1. If ``AWS_PROFILE`` is set → use botocore's chain with that
            profile.  Profiles backed by SSO, role-assumption, or shared-
@@ -557,18 +639,29 @@ class CredentialStore:
         sk = self._keys.get("aws_secret_access_key")
         st = self._keys.get("aws_session_token")
         region = self._aws_region
+        pinned_profile = profile or self._aws_profile
 
         def _from_chain() -> tuple[object, str | None]:
             try:
                 session = botocore.session.Session(
-                    profile=self._aws_profile,
+                    profile=pinned_profile,
                 )
                 creds = session.get_credentials()
             except Exception:
                 return None, None
             chain_region = None
             try:
-                chain_region = session.get_config_variable("region")
+                if profile:
+                    # Per-model pin: read the profile's OWN region from
+                    # the shared config file.  ``get_config_variable``
+                    # would return the env region first, defeating the
+                    # entry-level pin's precedence over ambient env.
+                    chain_region = (
+                        session.full_config.get("profiles", {})
+                        .get(profile, {}).get("region")
+                    ) or session.get_config_variable("region")
+                else:
+                    chain_region = session.get_config_variable("region")
             except Exception:
                 pass
             return creds, chain_region
@@ -578,7 +671,13 @@ class CredentialStore:
             st or (isinstance(ak, str) and ak.startswith("ASIA"))
         )
 
-        if self._aws_profile or (looks_short_lived and not (ak and sk)):
+        if profile:
+            # Per-model pin: the profile is authoritative for both the
+            # credential and (when it declares one) the region.
+            credentials, chain_region = _from_chain()
+            if chain_region:
+                region = chain_region
+        elif pinned_profile or (looks_short_lived and not (ak and sk)):
             # Case 1 — profile pinned.
             credentials, chain_region = _from_chain()
             if region is None:
@@ -929,8 +1028,17 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
             # doesn't need it).
             upstream_path = "/anthropic" + bedrock_path
             upstream_body = _ensure_anthropic_version(body)
+            # Per-model signing override (models.json aws_profile /
+            # region).  An explicit per-model profile FORCES SigV4 for
+            # this request even when a bearer token exists — the pin
+            # says which identity signs, and a bearer has no identity
+            # choice.  Entries without a pin follow AWS convention:
+            # bearer first, then the ambient chain.
+            override = creds.aws_override_for_body(upstream_body)
+            o_profile = override.get("profile")
+            o_region = override.get("region")
             bearer = creds.get("aws_bearer_token")
-            if bearer:
+            if bearer and not o_profile:
                 if creds.bedrock_bearer_expired():
                     # Pre-flight gate: don't burn a network round trip
                     # if we already know the JWT exp has passed.
@@ -940,7 +1048,9 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
                         "regenerate the token (Bedrock console) or "
                         "switch to a long-term API key.",
                     )
-                endpoint = creds.aws_bedrock_endpoint("mantle")
+                endpoint = creds.aws_bedrock_endpoint(
+                    "mantle", region=o_region,
+                )
                 if endpoint is None:
                     raise BedrockTransformError(
                         503,
@@ -950,7 +1060,9 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
                     bearer, endpoint.rstrip("/"), upstream_path,
                     upstream_body,
                 )
-            signer = creds.aws_signer("mantle")
+            signer = creds.aws_signer(
+                "mantle", profile=o_profile, region=o_region,
+            )
             if signer is None:
                 raise BedrockTransformError(
                     503, "provider not configured: bedrock",
@@ -979,8 +1091,12 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
                 "for /v1/messages/count_tokens and the introspection "
                 "endpoints)",
             )
+        # Same per-model override contract as the Mantle branch above.
+        override = creds.aws_override_for_body(body)
+        o_profile = override.get("profile")
+        o_region = override.get("region")
         bearer = creds.get("aws_bearer_token")
-        if bearer:
+        if bearer and not o_profile:
             if creds.bedrock_bearer_expired():
                 raise BedrockTransformError(
                     401,
@@ -988,14 +1104,16 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
                     "regenerate the token (Bedrock console) or "
                     "switch to a long-term API key.",
                 )
-            endpoint = creds.aws_bedrock_endpoint("runtime")
+            endpoint = creds.aws_bedrock_endpoint("runtime", region=o_region)
             if endpoint is None:
                 raise BedrockTransformError(
                     503,
                     "provider not configured: bedrock (no AWS region)",
                 )
             return _build_bearer_runtime_request(bearer, endpoint, body)
-        signer = creds.aws_signer("runtime")
+        signer = creds.aws_signer(
+            "runtime", profile=o_profile, region=o_region,
+        )
         if signer is None:
             raise BedrockTransformError(
                 503, "provider not configured: bedrock",
@@ -1190,6 +1308,7 @@ def seed_from_config(store: CredentialStore) -> None:
         if not isinstance(entry, dict):
             continue
         provider = entry.get("provider")
+        _seed_bedrock_override(store, entry, provider)
         api_key = entry.get("api_key")
         if not isinstance(provider, str) or not isinstance(api_key, str):
             continue
@@ -1198,3 +1317,46 @@ def seed_from_config(store: CredentialStore) -> None:
         # roles, same key) — first match seeds, rest are no-ops.
         if store.get(provider) is None:
             store.set(provider, api_key)
+
+
+def _seed_bedrock_override(
+    store: CredentialStore, entry: dict, provider: object,
+) -> None:
+    """Register a Bedrock entry's per-model signing pin (``aws_profile``
+    / ``region`` — names, never credentials) on *store*.
+
+    Keys registered: the entry's model id verbatim, its
+    Mantle-normalized form and its bare form — the request-time lookup
+    sees whatever id the worker put in the body, which depends on the
+    surface.  A model-less entry registers the ``""`` wildcard.
+    Best-effort like the rest of config seeding: a malformed entry is
+    skipped silently.
+    """
+    try:
+        model_id = entry.get("model") or ""
+        if provider != "bedrock":
+            if not model_id:
+                return
+            from core.security.llm_family import provider_of
+            if provider or provider_of(str(model_id)) != "bedrock":
+                return
+        aws_profile = entry.get("aws_profile")
+        region = entry.get("region")
+        profile_s = aws_profile if isinstance(aws_profile, str) else None
+        region_s = region if isinstance(region, str) else None
+        if not profile_s and not region_s:
+            return
+        keys = {str(model_id)} if model_id else {""}
+        if model_id:
+            from core.llm.bedrock_prefixes import mantle_model_id
+            from core.security.llm_family import bare_model_id
+            keys.add(mantle_model_id(str(model_id)))
+            keys.add(bare_model_id(str(model_id)))
+        for key in keys:
+            store.set_aws_model_override(
+                key, profile=profile_s, region=region_s,
+            )
+    except Exception as exc:  # noqa: BLE001 — config seeding is best-effort
+        logging.getLogger(__name__).debug(
+            "bedrock override seed skipped: %s", exc,
+        )

@@ -116,6 +116,54 @@ TIER_A_MODULE_PREFIXES: dict[str, str] = {
     "java.security.": "crypto",
 }
 
+# Tier-A security-relevant flag/mode vocabulary — grading input for
+# the consistency programme's flag/mode comparator (§3.7 / §5.1: this
+# registry is the single Tier-A home; the comparator itself is
+# vocabulary-free and detects ANY constant deviation — these entries
+# only grade security relevance). Properties of the platform
+# (POSIX open(2) flags, stdlib TLS kwargs), never of a target.
+# Budget-linted like every other registry here.
+
+@dataclass(frozen=True)
+class SecurityFlag:
+    """One universally security-relevant flag / keyword argument."""
+
+    name: str       # "O_NOFOLLOW" | "verify" | "shell" | ...
+    kind: str       # "bitmask_flag" | "kwarg_bool"
+    role: str       # "fs_isolation" | "tls_verify" | "cmd_injection"
+    safe_when: str  # "present" | "true" | "false"
+    cwe: str        # graded CWE family for the dangerous direction
+
+
+TIER_A_SECURITY_FLAGS: tuple[SecurityFlag, ...] = (
+    SecurityFlag("O_NOFOLLOW", "bitmask_flag", "fs_isolation",
+                 "present", "CWE-59"),
+    SecurityFlag("O_EXCL", "bitmask_flag", "fs_isolation",
+                 "present", "CWE-367"),
+    SecurityFlag("O_CLOEXEC", "bitmask_flag", "fd_hygiene",
+                 "present", "CWE-403"),
+    SecurityFlag("MSG_NOSIGNAL", "bitmask_flag", "signal_safety",
+                 "present", "CWE-248"),
+    SecurityFlag("verify", "kwarg_bool", "tls_verify",
+                 "true", "CWE-295"),
+    SecurityFlag("check_hostname", "kwarg_bool", "tls_verify",
+                 "true", "CWE-295"),
+    SecurityFlag("shell", "kwarg_bool", "cmd_injection",
+                 "false", "CWE-78"),
+)
+
+
+def security_flag_role(name: str) -> SecurityFlag | None:
+    """Grade a flag token / kwarg name against the Tier-A vocabulary.
+
+    Grading only — a miss means "ungraded lead", never "suppressed".
+    """
+    for entry in TIER_A_SECURITY_FLAGS:
+        if entry.name == name:
+            return entry
+    return None
+
+
 # ── Tier C seed exemplars ───────────────────────────────────────────
 # SEED EXEMPLARS — pattern illustrators, not the operating mechanism.
 # Present so the tri-state comparison-shape matcher has documented,
@@ -299,6 +347,27 @@ def registry_budget_violations() -> list[str]:
             f"TIER_A_MODULE_PREFIXES has {len(TIER_A_MODULE_PREFIXES)} "
             f"entries (cap {TIER_A_CATEGORY_CAP})",
         )
+
+    flags_by_role: dict[str, int] = {}
+    for flag in TIER_A_SECURITY_FLAGS:
+        if _LIBRARY_PREFIX_RE.match(flag.name):
+            violations.append(
+                f"TIER_A_SECURITY_FLAGS entry {flag.name!r} matches a "
+                "known library prefix — library vocabulary is Tier C "
+                "(learned)",
+            )
+        if flag.kind not in ("bitmask_flag", "kwarg_bool"):
+            violations.append(
+                f"TIER_A_SECURITY_FLAGS entry {flag.name!r} has "
+                f"unknown kind {flag.kind!r}",
+            )
+        flags_by_role[flag.role] = flags_by_role.get(flag.role, 0) + 1
+    for role, count in sorted(flags_by_role.items()):
+        if count > TIER_A_CATEGORY_CAP:
+            violations.append(
+                f"Tier-A flag role {role!r} has {count} entries "
+                f"(cap {TIER_A_CATEGORY_CAP})",
+            )
 
     seed_by_category: dict[str, int] = {}
     for entry in SEED_EXEMPLARS:

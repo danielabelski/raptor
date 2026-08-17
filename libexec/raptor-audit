@@ -1335,7 +1335,27 @@ def cmd_run(args: argparse.Namespace) -> int:
         lifecycle_args.extend(["--model", model_id])
     subprocess.run(lifecycle_args, capture_output=True, check=False)
 
-    return 0 if result.terminated_by == "complete" else 1
+    return _exit_code_for(result.terminated_by)
+
+
+# Stop reasons that are COMPLETED runs with a stop reason, not errors.
+# A budget/time stop journals its outcomes, writes its report, and the
+# lifecycle above records status=completed — exiting 1 for it made the
+# exit code contradict the lifecycle status. Nonzero is reserved for
+# errors (pipeline exceptions, missing checklist, legacy state). The
+# stop reason itself is on the console ("Terminated: <reason>") and in
+# the run summary.
+_COMPLETED_STOP_REASONS = frozenset({
+    "complete",
+    "llm_budget_exceeded",
+    "max_cost_usd",
+    "max_seconds",
+})
+
+
+def _exit_code_for(terminated_by: str) -> int:
+    """Process exit code for a finished orchestrator run."""
+    return 0 if terminated_by in _COMPLETED_STOP_REASONS else 1
 
 
 def _check_legacy_state(project_dir: Path) -> str | None:

@@ -71,15 +71,25 @@ def spawn_worker(
     base_env["RAPTOR_LLM_SOCKET"] = socket_path
     base_env["RAPTOR_LLM_TOKEN_FD"] = str(token_fd)
 
-    proc = subprocess.Popen(
-        list(cmd),
-        env=base_env,
-        pass_fds=tuple({token_fd, *pass_fds}),
-        **popen_kwargs,
-    )
+    import os
+    try:
+        proc = subprocess.Popen(
+            list(cmd),
+            env=base_env,
+            pass_fds=tuple({token_fd, *pass_fds}),
+            **popen_kwargs,
+        )
+    except BaseException:
+        # Popen failure (missing worker binary, exec-permission
+        # error) — without this, the token pipe's read FD stranded
+        # in the parent for the process lifetime.
+        try:
+            os.close(token_fd)
+        except OSError:
+            pass
+        raise
     # Once Popen has handed the FD to the child, the parent's copy
     # serves no purpose and only delays the pipe's EOF if left open.
-    import os
     try:
         os.close(token_fd)
     except OSError:

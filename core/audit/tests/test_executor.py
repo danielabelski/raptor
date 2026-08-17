@@ -310,6 +310,77 @@ class TestAsyncPath:
         finally:
             _shutdown_event.clear()
 
+    def test_stop_with_pending_glance_and_no_inflight(self, monkeypatch) -> None:
+        """Budget stop while glance tasks are queued and nothing is in
+        flight must exit cleanly, not crash on ``asyncio.wait(set())``.
+
+        Sequence: the lone ready task completes, its post-completion
+        dispatch queues two glance-tier dependents (below batch size),
+        THEN the stop flag flips — the main loop must not await an
+        empty inflight set."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeBucket:
+            value: str
+
+        @dataclass
+        class FakeTriageResult:
+            bucket: FakeBucket
+
+        wq = [
+            _gap("a.py", "base", 0.9),
+            _gap("a.py", "g1", 0.5),
+            _gap("a.py", "g2", 0.5),
+        ]
+        # g1/g2 depend on base: ready only after base completes.
+        edges = [
+            _edge("a.py", "g1", "a.py", "base"),
+            _edge("a.py", "g2", "a.py", "base"),
+        ]
+        graph = TaskGraph.from_workqueue(wq, edges)
+        result = _FakeResult()
+
+        triage = {
+            "a.py:g1:1": FakeTriageResult(FakeBucket("glance")),
+            "a.py:g2:1": FakeTriageResult(FakeBucket("glance")),
+        }
+        shared = MagicMock()
+        shared.triage_results = triage
+
+        def fake_batch_review_fn(contexts, config):
+            raise AssertionError("no batch should run after the stop")
+
+        import core.audit.executor as executor_mod
+        monkeypatch.setattr(executor_mod, "_get_batch_review_fn",
+                            lambda shared, config: fake_batch_review_fn)
+
+        stop = [False]
+
+        real_pop_ready = graph.pop_ready
+        pop_calls = [0]
+
+        def tracking_pop_ready(n):
+            tasks = real_pop_ready(n)
+            pop_calls[0] += 1
+            if pop_calls[0] == 2:
+                # The post-completion dispatch that queues g1/g2 into
+                # glance_pending — flip the stop right after it.
+                stop[0] = True
+            return tasks
+
+        graph.pop_ready = tracking_pop_ready
+
+        stats = run_executor_sync(
+            graph, MagicMock(), shared, MagicMock(), result,
+            ExecutorConfig(max_workers=2),
+            review_one_fn=_mock_review_fn,
+            budget_check=lambda: stop[0],
+        )
+
+        assert stats.budget_stopped
+        assert stats.completed == 1  # only "base"; g1/g2 dropped
+
     def test_parallel_progress_checkpoint(self, tmp_path) -> None:
         import json
         import core.audit.executor as executor_mod

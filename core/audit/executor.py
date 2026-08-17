@@ -585,7 +585,18 @@ async def _run_async_body(
     _dispatch_ready(initial)
 
     while inflight or glance_pending or hold_set:
-        if glance_pending and not _should_stop():
+        if _should_stop():
+            # Stop requested: drop queued glance batches and held
+            # tasks — they stay unreviewed gaps.  Without this the
+            # loop reached ``asyncio.wait()`` with an empty inflight
+            # set (ValueError) whenever a stop fired while glance
+            # tasks were queued and nothing was in flight.
+            glance_pending.clear()
+            hold_set.clear()
+            held_tasks.clear()
+            if not inflight:
+                break
+        elif glance_pending:
             batch = list(glance_pending)
             glance_pending.clear()
             child = asyncio.create_task(_run_batch(batch))

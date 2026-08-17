@@ -71,6 +71,11 @@ _NO_PROXY_OPENER = build_opener(ProxyHandler({}))
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _SCALA_ERROR_MARKERS = ("-- [E", "error:", "Error:")
 
+_RESTARTING_ERROR = (
+    "server restarting after stuck query — failing fast "
+    "(no Joern evidence for this claim)"
+)
+
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
@@ -204,6 +209,10 @@ class JoernServer:
         self._http_client: Any | None = None
         self._last_post_error: str = ""
         self._restart_lock = threading.Lock()
+        # Set while a restart is in progress so concurrent queries
+        # fail fast instead of posting into a dead/booting server
+        # (each such post would block for its full timeout).
+        self._restarting = threading.Event()
         self._workdir: str | None = None
         self._auth_user: str | None = None
         self._auth_password: str | None = None
@@ -422,6 +431,11 @@ class JoernServer:
         except Exception:  # noqa: BLE001 — any failure means not alive
             return False
 
+    @property
+    def restarting(self) -> bool:
+        """True while a restart (stop → boot → CPG reload) is running."""
+        return self._restarting.is_set()
+
     def restart(self) -> bool:
         """Stop, restart, and reload the CPG.
 
@@ -430,14 +444,21 @@ class JoernServer:
         query indefinitely.  Returns True if the server came back and
         the CPG was reloaded successfully.
 
-        Thread-safe: concurrent callers serialise on ``_restart_lock``
-        so only one restart proceeds; the others return True (the
-        server is already fresh).
+        Bounded: exactly ONE restarter proceeds. Concurrent callers
+        fail fast (return False) instead of queueing behind the
+        restart — pre-fix they blocked on ``_restart_lock`` for the
+        full boot + CPG reload (minutes), serialising every worker
+        that had a query time out during the recovery window. Their
+        queries return an error result; the run degrades to
+        "no Joern evidence for this claim" instead of stalling.
         """
         if not self._restart_lock.acquire(blocking=False):
-            # Another thread is already restarting — wait for it.
-            with self._restart_lock:
-                return self._proc is not None and self._cpg_loaded
+            logger.warning(
+                "Joern restart already in progress — failing fast "
+                "instead of queueing behind it",
+            )
+            return False
+        self._restarting.set()
         try:
             cpg_path = self._cpg_path
             logger.info("restarting Joern server (stuck query recovery)")
@@ -451,6 +472,7 @@ class JoernServer:
                 return self.import_cpg(cpg_path)
             return True
         finally:
+            self._restarting.clear()
             self._restart_lock.release()
 
     def import_cpg(self, cpg_path: Path, *, timeout: int = 120) -> bool:
@@ -533,6 +555,16 @@ class JoernServer:
         """Execute a CPGQL query and return parsed results."""
         if timeout is None:
             timeout = self._query_timeout_s
+
+        # Fail fast while a restart is in progress: posting into the
+        # dead/booting server would block for the full query timeout
+        # and every waiter would then queue on the single-threaded
+        # REPL behind the reloading CPG.
+        if self._restarting.is_set():
+            return JoernResult(
+                query=cpgql,
+                errors=[_RESTARTING_ERROR],
+            )
 
         # Fast check: if the server process is dead, fail immediately
         # rather than blocking on a stale HTTP connection.
@@ -783,6 +815,13 @@ class JoernServer:
         """
         if timeout is None:
             timeout = self._query_timeout_s
+
+        # Same fail-fast as ``query()`` — see comment there.
+        if self._restarting.is_set():
+            return JoernResult(
+                query=cpgql,
+                errors=[_RESTARTING_ERROR],
+            )
 
         if self._proc is not None and self._proc.poll() is not None:
             return JoernResult(

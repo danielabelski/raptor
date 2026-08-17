@@ -229,6 +229,11 @@ class OrchestratorConfig:
     # ``llm_client``: that attribute would switch on the executor's
     # batch-glance dispatch (see executor._get_batch_review_fn).
     llm_budget_client: Optional[Any] = None
+    # Monotonic deadline for the run (start + max_seconds), stamped by
+    # ``run_orchestrator``. Verification tools with long per-query
+    # timeouts (Joern) clamp to the remaining budget so one stuck
+    # query can't hold a worker past the run's end.
+    run_deadline_monotonic: float | None = None
 
 
 @dataclass
@@ -511,6 +516,11 @@ def run_orchestrator(
     # helper itself guards against pytest and non-claudecode primaries.
     from core.llm.concurrency import warm_claudecode_probe
     warm_claudecode_probe()
+
+    # Stamp the run deadline so long-timeout verification tools
+    # (Joern) can clamp per-query timeouts to the remaining budget.
+    if config.max_seconds:
+        config.run_deadline_monotonic = start_time + config.max_seconds
 
     result = OrchestratorResult()
     _jt = _joern_tunables(overrides=config.joern_overrides)
@@ -8063,6 +8073,39 @@ def _checklist_line_end(
     return result
 
 
+# Below this remaining-budget floor a Joern verification query is not
+# worth dispatching at all: the REPL round-trip plus parse would eat
+# most of it, and a stuck query would hold the worker past the run's
+# deadline anyway.
+_JOERN_MIN_QUERY_BUDGET_S = 10
+
+
+def _joern_budget_timeout_s(config: OrchestratorConfig) -> int | None:
+    """Per-query Joern timeout clamped to the remaining run budget.
+
+    Returns ``None`` when the run has no deadline (callers use the
+    tunables default), ``0`` when the remaining budget is below
+    ``_JOERN_MIN_QUERY_BUDGET_S`` (callers skip the query), otherwise
+    ``min(default_query_timeout(), remaining)``. Without the clamp a
+    single stuck query near the end of the run holds its worker for
+    the full default timeout (300s), and the single-threaded REPL
+    serialises every other worker's query behind it.
+    """
+    deadline = getattr(config, "run_deadline_monotonic", None)
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining < _JOERN_MIN_QUERY_BUDGET_S:
+        return 0
+    try:
+        # Resolves the tunables default; degrades internally.
+        from .joern_verify import default_query_timeout
+        default = default_query_timeout()
+    except ImportError:
+        default = 300
+    return max(1, min(default, int(remaining)))
+
+
 def _run_tool_chain(
     chain: List[Dict[str, Any]],
     *,
@@ -8408,9 +8451,21 @@ def _run_tool_chain(
                 else:
                     ident, sink = extract_flow_endpoints(hypothesis, sinks)
 
+                jv_timeout = _joern_budget_timeout_s(config)
                 if not ident or not sink or joern_server is None:
                     # No binding (identifier-consistency control) or no
                     # live server — decline, don't guess.
+                    if tier_counters:
+                        _increment_tier_dict(tier_counters, tool_type, "skipped")
+                elif jv_timeout == 0:
+                    # Remaining run budget too small for a Joern
+                    # round-trip — skip rather than hold the worker
+                    # past the run's deadline.
+                    logger.debug(
+                        "tool_chain %s skipped %s:%s — run budget "
+                        "nearly exhausted",
+                        tool_type, file_path, function_name,
+                    )
                     if tier_counters:
                         _increment_tier_dict(tier_counters, tool_type, "skipped")
                 else:
@@ -8422,6 +8477,7 @@ def _run_tool_chain(
                             identifier=ident,
                             sink_call=sink,
                             server=joern_server,
+                            timeout=jv_timeout,
                         )
                     else:
                         jv_result = run_flow_reachability_check(
@@ -8431,6 +8487,7 @@ def _run_tool_chain(
                             source_id=ident,
                             sink_call=sink,
                             server=joern_server,
+                            timeout=jv_timeout,
                         )
                     if jv_result.outcome == "confirmed":
                         confirmed.append(jv_result.rule_id or f"joern:{tool_type}")

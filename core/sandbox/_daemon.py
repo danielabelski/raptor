@@ -257,7 +257,16 @@ def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
         r, _, _ = select.select([fd], [], [], remaining)
         if not r:
             return None
-        return proc.stdout.read1(max_bytes)
+        # Read the raw fd directly. Popen's default-buffered
+        # ``proc.stdout.read1`` pulls a full buffer (8 KiB) from the
+        # kernel and returns at most ``max_bytes`` — the remainder sits
+        # in the Python-level buffer where select() on the raw fd
+        # cannot see it, so the next bounded read stalls a full
+        # ``per_recv_timeout`` (or attributes the bytes to the wrong
+        # step). Nothing else reads through ``proc.stdout`` until the
+        # final ``proc.communicate``, so its buffer stays empty and
+        # mixing fd-level reads here is safe.
+        return os.read(fd, max_bytes)
 
     if isinstance(terminator, int):
         want = terminator

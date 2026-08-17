@@ -144,7 +144,7 @@ def _stamp_file(path: Path, ref: dict[str, Any]) -> int:
         logger.warning("stamp_findings: parse failed %s: %s", path, e)
         return -1
 
-    findings_list, container_kind = _resolve_findings_list(data)
+    findings_list, _container_kind = _resolve_findings_list(data)
     if findings_list is None:
         # Shape we don't recognise — skip silently rather than risk mangling.
         return 0
@@ -170,11 +170,10 @@ def _stamp_file(path: Path, ref: dict[str, Any]) -> int:
     if new_count == 0:
         return 0
 
-    # Re-serialize the SAME container shape we read in.
-    if container_kind == "list":
-        out = json.dumps(data, indent=2, sort_keys=False, default=str) + "\n"
-    else:  # dict-wrapped
-        out = json.dumps(data, indent=2, sort_keys=False, default=str) + "\n"
+    # Re-serialize ``data`` itself — the stamp mutated the findings
+    # list by reference, so the container shape (top-level array vs
+    # dict-wrapped) is preserved without shape-dependent branches.
+    out = json.dumps(data, indent=2, sort_keys=False, default=str) + "\n"
     try:
         from core.atomic_fs import write_text_atomically
         write_text_atomically(path, out)

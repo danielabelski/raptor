@@ -264,12 +264,13 @@ def _suggested_fix(denial_type: str, **details: Any) -> str:
                 f"`--sandbox network-only` or `--sandbox none` to drop "
                 f"Landlock (or move write into target dir)")
     if denial_type == "udp":
-        return ("UDP socket creation blocked by the egress-proxy "
-                "fallback tier's seccomp SOCK_DGRAM deny (host lacks "
-                "netns capability); JVM build tools (gradle) need a "
-                "loopback UDP socket at startup — run on a "
+        return ("UDP/loopback socket use blocked by the sandbox "
+                "network policy (Linux: proxy fallback tier's seccomp "
+                "SOCK_DGRAM deny on netns-incapable hosts; macOS: "
+                "seatbelt network deny); JVM build tools (gradle) need "
+                "a loopback UDP socket at startup — run on a Linux "
                 "netns-capable host where the default proxy tier "
-                "contains UDP topologically instead")
+                "contains UDP topologically, or outside block_network")
     if denial_type == "seccomp":
         profile = details.get("profile")
         if profile == "full":

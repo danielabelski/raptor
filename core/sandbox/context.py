@@ -2596,10 +2596,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                           seccomp_engaged=seccomp_engaged,
                           seccomp_profile=seccomp_profile,
                           degraded_net_deny=_degraded_tcp_deny,
-                          # the SOCK_DGRAM block rides the seccomp
-                          # filter, so it is only live when seccomp is
-                          udp_block_engaged=bool(seccomp_block_udp
-                                                 and seccomp_engaged))
+                          # Linux: the SOCK_DGRAM block rides the
+                          # seccomp filter, so it is only live when
+                          # seccomp is. macOS: seatbelt's blanket
+                          # network deny covers UDP/loopback wholesale.
+                          udp_block_engaged=bool(
+                              (seccomp_block_udp and seccomp_engaged)
+                              or (use_seatbelt
+                                  and (block_network
+                                       or use_egress_proxy))))
 
         return result
 

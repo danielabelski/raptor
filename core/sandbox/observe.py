@@ -41,9 +41,11 @@ _BLOCKED_PATTERNS = [
     ("network", "fatal: unable to access"),
     ("network", "ConnectionError"),
     ("network", "urlopen error"),
-    # UDP-at-startup casualties of the egress-proxy FALLBACK tier
-    # (netns-incapable hosts): seccomp denies AF_INET SOCK_DGRAM
-    # creation there, and JVM build tooling opens a loopback UDP
+    # UDP-at-startup casualties of network policies that deny UDP /
+    # loopback socket use: the Linux egress-proxy FALLBACK tier
+    # (netns-incapable hosts — seccomp denies AF_INET SOCK_DGRAM
+    # creation) and macOS seatbelt's `(deny network*)` (denies UDP and
+    # loopback wholesale). JVM build tooling opens a loopback UDP
     # socket before doing anything (gradle's FileLockContentionHandler
     # / local-IP detection). Precise tool strings; the real gating is
     # udp_block_engaged + rc != 0 in _check_blocked.
@@ -379,18 +381,20 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
                 record_denial(cmd_display, returncode, "write")
         elif category == "udp":
             logger.info(
-                f"Sandbox: UDP socket creation denied during: "
-                f"{cmd_display} (rc={returncode}) — this host has no "
-                f"netns capability, so the egress proxy runs on the "
-                f"fallback tier where seccomp blocks AF_INET SOCK_DGRAM "
-                f"to close DNS/UDP exfil. JVM build tools (gradle) open "
-                f"a loopback UDP socket at startup and cannot run on "
-                f"this tier; on netns-capable hosts the default proxy "
-                f"tier contains UDP topologically and they work."
+                f"Sandbox: UDP/loopback socket use denied during: "
+                f"{cmd_display} (rc={returncode}) — the active network "
+                f"policy denies it (Linux: the egress-proxy fallback "
+                f"tier's seccomp SOCK_DGRAM block on netns-incapable "
+                f"hosts; macOS: seatbelt's blanket network deny). JVM "
+                f"build tools (gradle) need a loopback UDP socket at "
+                f"startup and cannot run under this policy. On Linux "
+                f"netns-capable hosts the default proxy tier contains "
+                f"UDP topologically and they work; on macOS, JVM builds "
+                f"must run outside block_network."
             )
             blocked_evidence.append(
-                "UDP socket creation denied by the proxy fallback "
-                "tier's seccomp block (JVM-startup casualty)"
+                "UDP/loopback socket use denied by the sandbox network "
+                "policy (JVM-startup casualty)"
             )
             record_denial(cmd_display, returncode, "udp")
         elif category == "seccomp":

@@ -425,6 +425,33 @@ def test_seccomp_profile_full_emits_process_info_deny():
     assert "(deny process-info-pidfdinfo (target others))" in p
 
 
+def test_seccomp_profile_full_emits_iokit_deny():
+    """`(deny iokit-open)` rides the full profile: userland driver /
+    device access is the macOS analogue of Linux's blocked
+    device-capability escapes, and the 2026-08-15 probe battery
+    showed the deny is free (clang/make/git/python/venv/tar all
+    pass). The sibling candidate `(deny sysctl-write)` must NOT be
+    emitted — it breaks Apple's linker and ensurepip."""
+    p = seatbelt.build_profile(seccomp_profile="full")
+    assert "(deny iokit-open)" in p
+    assert "sysctl-write" not in p
+
+
+def test_seccomp_profile_full_audit_reports_iokit():
+    """Audit mode observes instead of blocking — iokit-open becomes
+    allow-with-report alongside process-info*."""
+    p = seatbelt.build_profile(seccomp_profile="full", audit_mode=True)
+    assert "(allow iokit-open (with report))" in p
+    assert "(deny iokit-open)" not in p
+
+
+def test_debug_profile_omits_iokit_deny():
+    """debug keeps debugger primitives functional — the introspection
+    hardening set (incl. iokit-open) must not engage."""
+    p = seatbelt.build_profile(seccomp_profile="debug")
+    assert "iokit-open" not in p
+
+
 def test_seccomp_profile_none_string_omits_deny():
     """`seccomp_profile="none"` is the explicit "no syscall filter"
     sentinel — must NOT engage the macOS hardening either."""

@@ -63,8 +63,7 @@ Architectural correspondence:
 from __future__ import annotations
 
 import os
-from typing import Iterable, Optional
-
+from collections.abc import Iterable
 
 # Sandbox kernel extension path — matches the senderImagePath of audit
 # log entries. Defined here so seatbelt_audit can import the same
@@ -74,7 +73,7 @@ SANDBOX_KEXT_SENDER = (
 )
 
 
-def _realpath_or_none(path: Optional[str]) -> Optional[str]:
+def _realpath_or_none(path: str | None) -> str | None:
     """Canonicalize ``path`` via os.path.realpath, or None if path is
     falsy. SBPL's (subpath ...) matches the canonical resolved path
     only — feeding it /var/folders/... when the actual filesystem
@@ -112,19 +111,19 @@ def _quote_sbpl(s: str) -> str:
 
 
 def build_profile(*,
-                  target: Optional[str] = None,
-                  output: Optional[str] = None,
+                  target: str | None = None,
+                  output: str | None = None,
                   block_network: bool = False,
-                  allowed_tcp_ports: Optional[Iterable[int]] = None,
+                  allowed_tcp_ports: Iterable[int] | None = None,
                   use_egress_proxy: bool = False,
-                  proxy_port: Optional[int] = None,
+                  proxy_port: int | None = None,
                   restrict_reads: bool = False,
-                  readable_paths: Optional[Iterable[str]] = None,
-                  writable_paths: Optional[Iterable[str]] = None,
-                  fake_home: bool = False,  # noqa: ARG001 — env-side, profile is unaffected
+                  readable_paths: Iterable[str] | None = None,
+                  writable_paths: Iterable[str] | None = None,
+                  fake_home: bool = False,
                   audit_mode: bool = False,
                   audit_verbose: bool = False,
-                  seccomp_profile: Optional[str] = None,
+                  seccomp_profile: str | None = None,
                   ) -> str:
     """Generate an SBPL profile string from logical sandbox kwargs.
 
@@ -402,9 +401,17 @@ def build_profile(*,
         # via libproc still work).
         if audit_mode:
             parts.append("(allow process-info* (with report))")
+            parts.append("(allow iokit-open (with report))")
         else:
             parts.append("(deny process-info-pidinfo (target others))")
             parts.append("(deny process-info-pidfdinfo (target others))")
+            # iokit-open: userland driver/device access — the macOS
+            # analogue of Linux's blocked device-capability escapes.
+            # Empirically free (2026-08-15 probe battery: clang, make,
+            # git, python, venv, tar all pass under the deny; the
+            # sibling candidate `(deny sysctl-write)` was REJECTED —
+            # it breaks Apple's linker and ensurepip).
+            parts.append("(deny iokit-open)")
 
     # --- Verbose audit (Phase 2c — closest macOS analogue to Linux's
     # SCMP_ACT_TRACE-everywhere strace-style audit). When audit_verbose
@@ -454,6 +461,32 @@ def build_profile(*,
     # reachable). Caller is responsible for setting HTTPS_PROXY in the
     # child env; we just open the kernel-level network policy enough
     # for the loopback proxy connection to work.
+    #
+    # Semantics of `(deny network*)`, empirically verified on macOS
+    # (2026-08-15 probe batteries): it denies loopback connect, TCP
+    # bind/listen, UDP send AND unix-domain-socket connects — all
+    # EPERM. That is STRICTER than the Linux full profile, whose netns
+    # provides a working isolated loopback: loopback-IPC and
+    # UDP-at-startup tools that run fine inside a Linux netns break
+    # here. Known casualties, root-caused and closed as incompatible:
+    #   * gradle (daemon AND no-daemon) — needs a UDP socket and a
+    #     usable local address before any build; a loopback-scoped
+    #     carve (bind/inbound/outbound on localhost, TCP+UDP) was
+    #     probed and still fails (the daemon registers "address:
+    #     null" — its address detection gets EPERM where a Linux netns
+    #     returns ENETUNREACH, and only the latter is handled). JVM
+    #     builds under seatbelt network-deny are unsupported; run them
+    #     outside block_network or on a Linux host.
+    #   * Apple's /usr/bin/java STUB fails outright under the deny
+    #     ("Unable to locate a Java Runtime") while a real JVM
+    #     (JAVA_HOME/Homebrew path) starts fine — JVM callers must
+    #     invoke the real binary, not the stub.
+    # Upside of the same strictness: the docker.sock-class unix-socket
+    # surface is closed by default under block_network, and SBPL can
+    # express address-scoped exceptions (`(remote ip "localhost:P")`,
+    # unix-socket path literals) that Linux Landlock cannot — used
+    # below for the proxy port, available for future per-socket
+    # allowlists.
     block = block_network or use_egress_proxy
     if block:
         parts.append("(deny network*)")

@@ -149,6 +149,28 @@ def _free_loopback_port() -> int:
         s.close()
 
 
+def _connect_with_retry(port: int, deadline_s: float = 5.0) -> socket.socket:
+    """Connect to a just-forked forwarder, retrying while it binds.
+
+    A fixed pre-connect sleep is not hermetic: under full-suite load
+    the forked forwarder can take longer than the sleep to import and
+    bind, and the parent's connect() then fails with ECONNREFUSED.
+    Retry until the deadline instead.
+    """
+    end = time.monotonic() + deadline_s
+    while True:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        try:
+            s.connect(("127.0.0.1", port))
+            return s
+        except OSError:
+            s.close()
+            if time.monotonic() >= end:
+                raise
+            time.sleep(0.05)
+
+
 class TestProxyBridge:
     """TCP-to-Unix forwarder integration."""
 
@@ -232,11 +254,10 @@ class TestProxyBridge:
         os.close(death_r)
 
         try:
-            time.sleep(0.2)  # let forwarder bind
-
             # Connect via TCP → forwarder → unix → echo server → back.
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect(("127.0.0.1", port))
+            # Retries while the forked forwarder starts up and binds — a
+            # fixed sleep is not hermetic under full-suite load.
+            s = _connect_with_retry(port)
             s.sendall(b"hello-bridge")
             s.settimeout(5.0)
             got = s.recv(4096)

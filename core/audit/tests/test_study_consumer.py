@@ -310,15 +310,6 @@ class TestStudyQueueConcepts:
 class TestSuppressionGate:
     """Test the suppression check logic extracted from the executor."""
 
-    def _make_task(self, key, file, name, depends_on=frozenset()):
-        from core.audit.executor import ReviewTask
-        return ReviewTask(
-            key=key,
-            gap={"file": file, "name": name},
-            depends_on=depends_on,
-            priority=1.0,
-        )
-
     def test_suppression_blocks_leaf_with_pending(self):
         from core.audit.task_graph import TaskGraph
 

@@ -962,16 +962,45 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 "network access is NOT restricted for this call."
             )
 
+    # strict is fail-closed: it refuses to run rather than degrade. The
+    # aborts raise SandboxSetupError (not RuntimeError) so (a) the
+    # message carries the host-specific remediation alongside the
+    # explicit-downgrade escape hatch, and (b) the BaseException
+    # propagation + SANDBOX_ENGAGE_EXIT_CODE subprocess convention
+    # apply — a strict abort inside a scanner child surfaces as
+    # "isolation could not engage", never as a silent "0 findings".
     if strict_required:
         if not use_sandbox:
-            raise RuntimeError(
-                "Sandbox profile 'strict' requested, but no platform "
-                "isolation backend is available."
+            from .errors import SandboxSetupError
+            if sys.platform == "darwin":
+                raise SandboxSetupError(
+                    "sandbox profile 'strict' requires the seatbelt "
+                    "backend, but sandbox-exec is unavailable or failed "
+                    "its smoke test on this host",
+                    "verify /usr/bin/sandbox-exec exists and can run a "
+                    "minimal profile; or explicitly choose a profile "
+                    "that degrades gracefully (e.g. `--sandbox full`). "
+                    "RAPTOR will not silently downgrade for you.",
+                )
+            from .probes import ENGAGE_FAIL_INSTRUCTIONS
+            raise SandboxSetupError(
+                "sandbox profile 'strict' requires namespace isolation, "
+                "but user namespaces are unavailable on this host",
+                ENGAGE_FAIL_INSTRUCTIONS + " For profile 'strict' "
+                "specifically, `--sandbox full` is the explicit "
+                "step-down: it degrades to Landlock + seccomp with "
+                "warnings instead of aborting.",
             )
         if sys.platform != "darwin" and (target or output) and not use_mount:
-            raise RuntimeError(
-                "Sandbox profile 'strict' requested with target/output "
-                "isolation, but mount namespaces are unavailable."
+            from .errors import SandboxSetupError
+            from .probes import mount_unavailable_reason
+            condition, fix = mount_unavailable_reason()
+            raise SandboxSetupError(
+                "sandbox profile 'strict' requires mount-namespace "
+                f"isolation for target/output, but {condition}",
+                fix + " Or explicitly choose a profile that degrades "
+                "gracefully (e.g. `--sandbox full`). RAPTOR will not "
+                "silently downgrade for you.",
             )
 
     if effectively_disabled and not state._cli_sandbox_disabled:

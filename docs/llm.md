@@ -159,7 +159,7 @@ Two auth modes:
 | Mode | Environment Variables | Notes |
 |------|----------------------|-------|
 | Bearer token | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION` | Recommended; no SDK dependency |
-| SigV4 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | Uses AWS credential chain (env/profile/SSO/IMDS); signing needs `botocore` (the dispatcher path), while provider auto-detection currently probes for `boto3` — install `boto3` to get both |
+| SigV4 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | Uses AWS credential chain (env/profile/SSO/IMDS); signing and provider auto-detection both need only `botocore` (installing `boto3` also works — it includes `botocore`) |
 
 ### Switching API Surface
 

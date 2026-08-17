@@ -5,7 +5,7 @@ PR #696's review identified that an earlier draft treated bare
 user whose shell happened to export AWS_REGION (a common case).
 The shipped detection gates on the EXPLICIT opt-in signal
 (``AWS_BEARER_TOKEN_BEDROCK``) AND requires a usable path
-(dispatcher or boto3 SDK).
+(dispatcher or botocore SDK).
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ def test_bedrock_bearer_with_dispatcher_marks_external_llm(monkeypatch):
         assert av.external_llm is True
 
 
-def test_bedrock_bearer_with_boto3_marks_external_llm(monkeypatch):
-    """Direct (non-dispatcher) Bedrock — requires boto3 in this
+def test_bedrock_bearer_with_botocore_marks_external_llm(monkeypatch):
+    """Direct (non-dispatcher) Bedrock — requires botocore in this
     process for SigV4 signing."""
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
     monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
@@ -76,7 +76,7 @@ def test_bedrock_bearer_with_boto3_marks_external_llm(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.delenv("CLAUDECODE", raising=False)
-    with patch("core.llm.detection.BOTO3_SDK_AVAILABLE", True), \
+    with patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", True), \
          patch("core.llm.detection.shutil.which", return_value=None), \
          patch("core.llm.detection._get_available_ollama_models",
                return_value=[]), \
@@ -90,7 +90,7 @@ def test_bedrock_bearer_with_boto3_marks_external_llm(monkeypatch):
 def test_bedrock_bearer_without_path_does_not_mark_external_llm(
     monkeypatch,
 ):
-    """Bearer set but neither dispatcher nor boto3 — no usable path,
+    """Bearer set but neither dispatcher nor botocore — no usable path,
     so external_llm stays False (operator gets the warning)."""
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
     monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
@@ -99,7 +99,7 @@ def test_bedrock_bearer_without_path_does_not_mark_external_llm(
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.delenv("CLAUDECODE", raising=False)
-    with patch("core.llm.detection.BOTO3_SDK_AVAILABLE", False), \
+    with patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", False), \
          patch("core.llm.detection.shutil.which", return_value=None), \
          patch("core.llm.detection._get_available_ollama_models",
                return_value=[]), \
@@ -113,7 +113,7 @@ def test_bedrock_bearer_without_path_does_not_mark_external_llm(
 def test_warn_fires_when_bearer_set_but_no_path(monkeypatch):
     """Operator-facing warning when Bedrock opt-in is set but no
     usable path exists.  Verifies the hint message references both
-    boto3 and the dispatcher."""
+    botocore and the dispatcher."""
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
     monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
     seen: list = []
@@ -123,7 +123,7 @@ def test_warn_fires_when_bearer_set_but_no_path(monkeypatch):
         "info":    lambda self, msg, *a, **kw: None,
         "error":   lambda self, msg, *a, **kw: None,
     })()
-    with patch("core.llm.detection.BOTO3_SDK_AVAILABLE", False), \
+    with patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", False), \
          patch("core.llm.detection.logger", fake_logger):
         from core.llm.detection import _warn_unusable_keys
         _warn_unusable_keys()
@@ -132,7 +132,7 @@ def test_warn_fires_when_bearer_set_but_no_path(monkeypatch):
         f"expected Bedrock warning; got {seen!r}"
     )
     msg = bedrock_warnings[0]
-    assert "boto3" in msg
+    assert "botocore" in msg
     assert "dispatcher" in msg or "RAPTOR_LLM_SOCKET" in msg
 
 
@@ -375,7 +375,7 @@ def test_config_has_keyed_models_recognises_bedrock_with_aws_keys(
     monkeypatch,
 ):
     """Operator with AWS access keys + a config-file Bedrock model
-    (no explicit provider field) + boto3 installed gets detected
+    (no explicit provider field) + botocore installed gets detected
     even without the bearer token.  This was the direct-SigV4 gap."""
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
@@ -384,21 +384,21 @@ def test_config_has_keyed_models_recognises_bedrock_with_aws_keys(
     fake_entries = [{"model": "us.anthropic.claude-opus-4-7"}]
     with patch("core.llm.detection._read_config_models",
                return_value=fake_entries), \
-         patch("core.llm.detection.BOTO3_SDK_AVAILABLE", True):
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", True):
         from core.llm.detection import _config_has_keyed_models
         assert _config_has_keyed_models() is True
 
 
 def test_config_has_keyed_models_bedrock_via_dispatcher(monkeypatch):
     """Bedrock config-file entry + dispatcher route → usable even
-    without boto3 in this process (dispatcher signs in the parent)."""
+    without botocore in this process (dispatcher signs in the parent)."""
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token")
     monkeypatch.setenv("RAPTOR_LLM_SOCKET", "/tmp/raptor.sock")
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     fake_entries = [{"model": "global.anthropic.claude-haiku-4-5"}]
     with patch("core.llm.detection._read_config_models",
                return_value=fake_entries), \
-         patch("core.llm.detection.BOTO3_SDK_AVAILABLE", False):
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", False):
         from core.llm.detection import _config_has_keyed_models
         assert _config_has_keyed_models() is True
 
@@ -406,7 +406,7 @@ def test_config_has_keyed_models_bedrock_via_dispatcher(monkeypatch):
 def test_config_has_keyed_models_bedrock_without_path_skipped(
     monkeypatch,
 ):
-    """Bedrock config entry but neither dispatcher nor boto3 → no
+    """Bedrock config entry but neither dispatcher nor botocore → no
     usable path → skipped (operator gets the warning via
     _warn_unusable_keys)."""
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token")
@@ -414,7 +414,7 @@ def test_config_has_keyed_models_bedrock_without_path_skipped(
     fake_entries = [{"model": "us.anthropic.claude-opus-4-7"}]
     with patch("core.llm.detection._read_config_models",
                return_value=fake_entries), \
-         patch("core.llm.detection.BOTO3_SDK_AVAILABLE", False):
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", False):
         from core.llm.detection import _config_has_keyed_models
         assert _config_has_keyed_models() is False
 
@@ -431,7 +431,62 @@ def test_config_has_keyed_models_bare_aws_region_no_fire(monkeypatch):
     fake_entries = [{"model": "us.anthropic.claude-opus-4-7"}]
     with patch("core.llm.detection._read_config_models",
                return_value=fake_entries), \
-         patch("core.llm.detection.BOTO3_SDK_AVAILABLE", True):
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", True):
         from core.llm.detection import _config_has_keyed_models
-        # Path exists (boto3) but no auth signal → not usable
+        # Path exists (botocore) but no auth signal → not usable
         assert _config_has_keyed_models() is False
+
+
+def _reload_detection(monkeypatch, *, hide=()):
+    """Reload core.llm.detection with the named top-level packages
+    hidden from import (simulating an environment without them)."""
+    import importlib
+    import sys
+
+    from core.llm import detection
+
+    hidden = tuple(hide)
+    if hidden:
+        for mod in list(sys.modules):
+            if mod.split(".")[0] in hidden:
+                monkeypatch.delitem(sys.modules, mod, raising=False)
+
+        class _Blocker:
+            @staticmethod
+            def find_spec(name, path=None, target=None):
+                if name.split(".")[0] in hidden:
+                    raise ImportError(f"{name} hidden for test")
+
+        monkeypatch.setattr(sys, "meta_path", [_Blocker()] + sys.meta_path)
+    return importlib.reload(detection)
+
+
+@pytest.fixture
+def _restore_detection_module():
+    """Re-import detection with the real environment after the test."""
+    yield
+    import importlib
+
+    from core.llm import detection
+    importlib.reload(detection)
+
+
+def test_botocore_only_environment_is_detected(
+    monkeypatch, _restore_detection_module,
+):
+    """requirements.txt ships botocore WITHOUT boto3 and the SigV4
+    signer (core/llm/dispatcher/auth.py) imports botocore only —
+    detection must reach the same verdict in that environment.
+    Regression: the probe used to `import boto3`, so a botocore-only
+    install had working signing but failing detection."""
+    mod = _reload_detection(monkeypatch, hide=("boto3",))
+    assert mod.BOTOCORE_SDK_AVAILABLE is True
+
+
+def test_no_botocore_environment_is_not_detected(
+    monkeypatch, _restore_detection_module,
+):
+    """Without botocore (and boto3), the availability probe is False —
+    matching the signer, which cannot work either."""
+    mod = _reload_detection(monkeypatch, hide=("botocore", "boto3"))
+    assert mod.BOTOCORE_SDK_AVAILABLE is False

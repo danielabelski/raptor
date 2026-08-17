@@ -49,11 +49,16 @@ except ImportError as _e:
     GENAI_SDK_AVAILABLE = False
 
 try:
-    import boto3 as _boto3_module  # noqa: F401 — availability probe
-    BOTO3_SDK_AVAILABLE = True
+    # Probe botocore, not boto3: everything RAPTOR needs for Bedrock
+    # SigV4 (the dispatcher's signer in core/llm/dispatcher/auth.py)
+    # imports botocore only, and requirements.txt ships botocore
+    # without boto3. Probing boto3 here made a botocore-only install
+    # fail detection while the actual signing path worked.
+    import botocore as _botocore_module  # noqa: F401 — availability probe
+    BOTOCORE_SDK_AVAILABLE = True
 except ImportError as _e:
-    logger.debug("boto3 SDK probe failed: %s", _e)
-    BOTO3_SDK_AVAILABLE = False
+    logger.debug("botocore SDK probe failed: %s", _e)
+    BOTOCORE_SDK_AVAILABLE = False
 
 
 @dataclass
@@ -562,13 +567,13 @@ def _config_has_keyed_models() -> bool:
                 continue
         elif provider == "bedrock":
             # Bedrock entries are usable via the dispatcher (no SDK
-            # in this process) OR via direct SigV4 (boto3 in this
+            # in this process) OR via direct SigV4 (botocore in this
             # process).  Either path counts.  Without this branch,
             # an operator with AWS credentials + a config-file Bedrock
-            # model + no dispatcher route + boto3 installed would
+            # model + no dispatcher route + botocore installed would
             # fail detection (the May 28 review's "direct-SigV4 gap").
             if not (bool(os.getenv("RAPTOR_LLM_SOCKET"))
-                    or BOTO3_SDK_AVAILABLE):
+                    or BOTOCORE_SDK_AVAILABLE):
                 continue
         else:
             if not OPENAI_SDK_AVAILABLE:
@@ -637,7 +642,7 @@ def detect_llm_availability() -> LLMAvailability:
     # the env signal here.  Without dispatcher AND without botocore
     # there's no usable Bedrock path even if the env signal is present,
     # so we additionally require either ``has_dispatcher_route`` (set
-    # below) OR ``BOTO3_SDK_AVAILABLE`` for ``has_bedrock`` to count.
+    # below) OR ``BOTOCORE_SDK_AVAILABLE`` for ``has_bedrock`` to count.
     # ``has_dispatcher_route`` is computed a few lines down; we wire
     # the join after both are known.
     has_bedrock_signal = bool(os.getenv("AWS_BEARER_TOKEN_BEDROCK"))
@@ -665,7 +670,7 @@ def detect_llm_availability() -> LLMAvailability:
     # process (which the dispatcher checks separately) — both modes
     # only need ``has_dispatcher_route`` here.
     has_bedrock = has_bedrock_signal and (
-        has_dispatcher_route or BOTO3_SDK_AVAILABLE
+        has_dispatcher_route or BOTOCORE_SDK_AVAILABLE
     )
     has_cloud_keys = has_cloud_keys or has_bedrock
 
@@ -729,16 +734,16 @@ def _warn_unusable_keys():
 
     # Bedrock: warn ONLY when the operator has set the explicit
     # AWS_BEARER_TOKEN_BEDROCK opt-in signal AND no usable path is
-    # available (no dispatcher route, no boto3).  Gating on bare
+    # available (no dispatcher route, no botocore).  Gating on bare
     # AWS_REGION here would FP-warn every AWS user who happens to
     # have the env var set for unrelated reasons; that's what we're
     # avoiding by keying off the bearer-token signal.
     if os.getenv("AWS_BEARER_TOKEN_BEDROCK"):
         has_dispatcher_route = bool(os.getenv("RAPTOR_LLM_SOCKET"))
-        if not has_dispatcher_route and not BOTO3_SDK_AVAILABLE:
+        if not has_dispatcher_route and not BOTOCORE_SDK_AVAILABLE:
             logger.warning(
                 "AWS_BEARER_TOKEN_BEDROCK is set but neither the dispatcher "
-                "(RAPTOR_LLM_SOCKET) nor boto3 is available for Bedrock "
-                "calls.  Install boto3 (pip install boto3) or run via the "
-                "RAPTOR dispatcher."
+                "(RAPTOR_LLM_SOCKET) nor botocore is available for Bedrock "
+                "calls.  Install botocore (pip install botocore; boto3 "
+                "also includes it) or run via the RAPTOR dispatcher."
             )

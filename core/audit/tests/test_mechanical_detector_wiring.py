@@ -115,3 +115,46 @@ class TestBlockSiblingWiring:
         assert not any(
             e.get("detector") == "block_sibling" for e in entries
         )
+
+
+class TestDispatchCompletenessWiring:
+    def test_missing_key_reaches_mechanical_findings(self, tmp_path):
+        findings = _run_detectors(
+            tmp_path,
+            {"handlers.py": _DISPATCH_GAP_SRC},
+            [{
+                "file": "handlers.py",
+                "name": "detect_language",
+                "line_start": 8,
+                "line_end": 15,
+            }],
+        )
+        dispatch = [
+            e
+            for entries in findings.values()
+            for e in entries
+            if e.get("detector") == "dispatch_gap"
+        ]
+        assert dispatch, f"no dispatch_gap finding: {findings}"
+        assert any("'rust'" in e["description"] for e in dispatch)
+
+    def test_complete_table_produces_no_dispatch_finding(self, tmp_path):
+        complete = _DISPATCH_GAP_SRC.replace(
+            '    "go": handle_go,\n',
+            '    "go": handle_go,\n    "rust": handle_rust,\n',
+        )
+        findings = _run_detectors(
+            tmp_path,
+            {"handlers.py": complete},
+            [{
+                "file": "handlers.py",
+                "name": "detect_language",
+                "line_start": 9,
+                "line_end": 16,
+            }],
+        )
+        assert not any(
+            e.get("detector") == "dispatch_gap"
+            for entries in findings.values()
+            for e in entries
+        )

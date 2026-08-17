@@ -6600,6 +6600,22 @@ def _run_mechanical_detectors(
         logger.debug("mechanical: block_sibling failed", exc_info=True)
 
     try:
+        from .dispatch_completeness import find_dispatch_gaps
+
+        for dg in find_dispatch_gaps(call_graphs or {}, source_texts):
+            _add(
+                dg.table.file,
+                dg.table.function,
+                "dispatch_gap",
+                dg.table.line,
+                f"dispatch table misses key '{dg.missing_key}' "
+                f"produced at {dg.produced_by} "
+                f"(confidence {dg.confidence})",
+            )
+    except Exception:
+        logger.debug("mechanical: dispatch_completeness failed", exc_info=True)
+
+    try:
         from .transform_sequence import detect_transform_order_violations
 
         for tv in detect_transform_order_violations(source_texts):

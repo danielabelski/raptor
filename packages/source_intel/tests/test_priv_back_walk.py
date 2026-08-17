@@ -86,24 +86,6 @@ def _result_with_caps(*caps):
     return SourceIntelResult(target="/repo", capabilities=tuple(caps))
 
 
-def _patch_walk(facts, *, line_cap_check=True):
-    """Patch helpers the walk depends on. line_cap_check controls
-    whether _line_uses_privileged_cap returns True for any line."""
-    from unittest.mock import patch as _patch
-    return [
-        _patch("packages.coccinelle.prereqs.gather_prereqs",
-               return_value=facts),
-        _patch("packages.source_intel.adapter.gather_prereqs",
-               return_value=facts, create=True),
-        _patch("packages.source_intel.analyze._enclosing_function",
-               side_effect=lambda f, line: facts.enclosing(f, line)
-               if hasattr(facts, "enclosing")
-               else None),
-        _patch("packages.source_intel.adapter._line_uses_privileged_cap",
-               return_value=line_cap_check),
-    ]
-
-
 # ---- _path_is_gated direct tests --------------------------------------
 
 

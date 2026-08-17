@@ -1012,25 +1012,6 @@ def test_helm_chart_without_repository_silently_skipped(
 # Git submodule pins (Phase 3.e)
 # ---------------------------------------------------------------------------
 
-def _gitmodules(tmp_path: Path, url: str, sm_path: str, sha: str) -> Path:
-    """Build a minimal git-repo-shaped target with one
-    submodule recorded at ``sha``. The .gitmodules parser walks
-    the parent's git object DB to find the submodule SHA, so we
-    have to build enough of a git tree for it to find — OR set
-    up a stub. Simpler: bypass the parser's git-resolution by
-    pre-resolving and feeding the parser a fixture."""
-    (tmp_path / ".git").mkdir(exist_ok=True)
-    # Minimal: write .gitmodules + an index entry mock would
-    # require real git surgery. Use the parser internals directly
-    # in tests instead — see test_git_submodule_candidate.
-    gm = tmp_path / ".gitmodules"
-    gm.write_text(
-        f'[submodule "vendor/foo"]\n'
-        f'\tpath = {sm_path}\n'
-        f'\turl = {url}\n'
-    )
-    return gm
-
 
 def test_git_submodule_candidate_via_parser(tmp_path: Path) -> None:
     """The .gitmodules parser resolves submodule SHAs by walking

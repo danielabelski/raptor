@@ -39,7 +39,6 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -332,15 +331,6 @@ class PipResolver:
             f"{qpython} -m venv --without-pip {qvenv} && "
             f"{qvenv}/bin/python -m ensurepip --upgrade >/dev/null && "
         )
-
-    def _cleanup_venv(self, venv_dir: Path) -> None:
-        """Best-effort venv removal. Errors are logged, not raised —
-        leaving a stale venv is preferable to crashing the resolver."""
-        try:
-            shutil.rmtree(venv_dir, ignore_errors=True)
-        except Exception as e:                      # noqa: BLE001
-            logger.debug("sca.pip: venv cleanup failed for %s: %s",
-                         venv_dir, e)
 
     # ----- batched venv pipeline (one venv, N parallel pip-compile) -----
 

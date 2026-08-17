@@ -658,35 +658,3 @@ def _dep_state_nuget(
                 unconditional = True
                 break
     return {"required": unconditional, "extras": extras}
-
-
-def _requires_dist_for_version(
-    pypi_client, name: str, version: str,
-) -> Optional[List[str]]:
-    """Fetch ``requires_dist`` for a SPECIFIC version.
-
-    Prefers ``pypi_client.get_version_metadata(name, version)``
-    when available (the standard PyPIClient surface from
-    Phase-3.f). Falls back to the aggregate ``get_metadata(name)``
-    when only that's available AND its reported version matches —
-    useful for in-memory test stubs that don't implement the
-    per-version method.
-    """
-    if hasattr(pypi_client, "get_version_metadata"):
-        meta = pypi_client.get_version_metadata(name, version)
-        if isinstance(meta, dict):
-            info = meta.get("info") or {}
-            rd = info.get("requires_dist")
-            if isinstance(rd, list):
-                return rd
-    # Fallback for older stubs / clients without the per-version
-    # method: try the aggregate, accept its data only if it
-    # happens to be the version we want.
-    meta = pypi_client.get_metadata(name)
-    if not isinstance(meta, dict):
-        return None
-    info = meta.get("info") or {}
-    if info.get("version") != version:
-        return None
-    rd = info.get("requires_dist")
-    return rd if isinstance(rd, list) else None

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict
 
 from packages.sca.models import Confidence, Dependency, PinStyle
 from packages.sca.supply_chain.gha_sunset import (
@@ -30,10 +29,6 @@ def _action(
         source_kind="gha_uses",
         source_extra={"ref": version},
     )
-
-
-def _stub_sunset(records: Dict[str, list]) -> Dict[str, list]:
-    return records
 
 
 # ---------------------------------------------------------------------------

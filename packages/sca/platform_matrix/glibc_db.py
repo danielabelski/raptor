@@ -139,9 +139,3 @@ def lookup_runner_libc(runner_ref: str) -> Optional[LibcVersion]:
     """Look up libc for a GHA ``runs-on:`` value. Returns None for
     Windows/macOS runners (no libc applicable)."""
     return _RUNNER_LIBC.get(runner_ref)
-
-
-def known_distros() -> Dict[str, LibcVersion]:
-    """Public read-only view of the distro table — used by tests +
-    diagnostic output."""
-    return dict(_DISTRO_LIBC)

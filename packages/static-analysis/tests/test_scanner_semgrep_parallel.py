@@ -15,7 +15,6 @@ hard-codes the registry id would otherwise fail post-#196.
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -50,11 +49,6 @@ semgrep_scan_sequential = _scanner_mod.semgrep_scan_sequential
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _make_sarif_response(findings=None):
-    """Return a (rc, stdout, stderr) tuple with valid minimal SARIF."""
-    runs = [{"results": findings}] if findings else []
-    return (0 if not findings else 1, json.dumps({"runs": runs}), "")
 
 
 def _stub_run_single(name, config, repo_path, out_dir, timeout,

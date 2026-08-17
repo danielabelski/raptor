@@ -193,12 +193,6 @@ _KEY_VALUE_RE = re.compile(
 )
 
 
-def _redirect_target_pattern(target: str) -> str:
-    """Regex source for matching ``$TARGET`` / ``${TARGET}`` /
-    ``"$TARGET"`` / ``"${TARGET}"`` etc."""
-    return rf'"?\$\{{?{target}\}}?"?'
-
-
 def _multi_redirect_target_pattern(targets: Sequence[str]) -> str:
     """Regex source matching ``$NAME`` or ``${!NAME}`` (bash
     variable-indirection) for ANY name in ``targets``.

@@ -87,6 +87,10 @@ class AdaptiveThrottle:
         self._sync_waiters: int = 0
 
         self._event: asyncio.Event | None = None
+        # The loop the event was created on — needed to set the event
+        # thread-safely from worker threads (asyncio.Event is not
+        # thread-safe; see ``_set_event_threadsafe``).
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._condition = threading.Condition(self._lock)
 
         self._registered = False
@@ -156,8 +160,9 @@ class AdaptiveThrottle:
 
         Called from ``acquire()`` (event-loop thread), ``acquire_sync()``
         (worker thread), and property accessors.  When capacity
-        increases, sets the asyncio event (if present) and notifies
-        sync waiters.
+        increases, sets the asyncio event (if present — routed through
+        the owning loop when called off-loop, since ``asyncio.Event``
+        is not thread-safe) and notifies sync waiters.
         """
         if self._effective >= self._max_workers:
             return
@@ -172,9 +177,35 @@ class AdaptiveThrottle:
                     "throttle: cooldown elapsed — concurrency %d → %d",
                     old, self._effective,
                 )
-                if self._event is not None:
-                    self._event.set()
+                self._set_event_threadsafe()
                 self._condition.notify_all()
+
+    def _set_event_threadsafe(self) -> None:
+        """Set the asyncio event from any thread.
+
+        ``asyncio.Event.set()`` is only safe on the event's own loop
+        thread — calling it from an ``acquire_sync`` worker thread or
+        a property accessor could leave async ``acquire()`` waiters
+        unwoken (the foreign-thread ``call_soon`` doesn't wake the
+        selector) or raise under loop debug mode.  Route through
+        ``call_soon_threadsafe`` when off-loop.
+        """
+        event = self._event
+        loop = self._loop
+        if event is None:
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if loop is None or running is loop:
+            event.set()
+            return
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            # Owning loop already closed — it has no waiters left.
+            pass
 
     def _ensure_event(self) -> asyncio.Event:
         """Create the asyncio.Event on first use (must be called from
@@ -183,6 +214,10 @@ class AdaptiveThrottle:
             if self._event is None:
                 self._event = asyncio.Event()
                 self._event.set()
+                try:
+                    self._loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    self._loop = None
             return self._event
 
     @asynccontextmanager

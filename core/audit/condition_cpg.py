@@ -136,13 +136,13 @@ class InterproceduralGuardResult:
 # ---------------------------------------------------------------------------
 
 # These produce CPGQL strings compatible with JoernServer.query().
-# Use cpg.method.fullNameExact() for precise matching (demand_explore.py:53),
-# or cpg.method.name() for substring matching. We use .name() here because
+# Use cpg.method.fullNameExact() for precise matching, or
+# cpg.method.name() for substring matching. We use .name() here because
 # sink_function is often just a bare name without package prefix.
 #
 # Query patterns validated against:
-#   - demand_explore.py QueryType.CALLERS: .caller.fullName.l
-#   - demand_explore.py QueryType.GUARDS: .ast.isControlStructure.condition.code.l
+#   - callers: .caller.fullName.l
+#   - guards:  .ast.isControlStructure.condition.code.l
 #   - packages/joern/runner.py _build_taint_query: reachableByFlows
 
 
@@ -251,7 +251,8 @@ def _build_dominance_query(
 def _build_callers_query(function_name: str) -> Optional[str]:
     """Find all callers of a function.
 
-    Uses .caller (not .callIn) per demand_explore.py:56.
+    Uses .caller (not .callIn) — resolves to the calling METHOD
+    rather than the call site node.
     """
     safe = _safe_name(function_name)
     if safe is None:
@@ -270,7 +271,7 @@ def _build_caller_guards_query(
 ) -> Optional[str]:
     """Find guard conditions enclosing a call site in a caller.
 
-    Pattern from demand_explore.py QueryType.GUARDS:
+    Pattern:
     .ast.isControlStructure.controlStructureType("IF").condition.code.l
     """
     safe = _safe_name(caller_method)

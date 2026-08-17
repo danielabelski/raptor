@@ -51,9 +51,11 @@ from .return_contracts import bind_return_contract
 logger = logging.getLogger(__name__)
 
 DIMENSION_RETURN_CHECK = "return-check"
+DIMENSION_CLEANUP = "cleanup"
 
 RULE_RETURN_CHECK = rule_id(DIMENSION_RETURN_CHECK, detection=False)
 RULE_RETURN_CHECK_MAJORITY = rule_id(DIMENSION_RETURN_CHECK, detection=True)
+RULE_CLEANUP = rule_id(DIMENSION_CLEANUP, detection=False)
 
 # Mechanical-path thresholds (§2.3 — stricter than the lead path).
 VERDICT_MIN_SITES = 4
@@ -465,6 +467,59 @@ def census_verdict(
     )
     result.reachability = _entry_reachability(
         ctx, inventory, deviant.file, deviant.enclosing_function,
+    )
+    return result
+
+
+def cleanup_verdict(
+    deviation: Any,
+    *,
+    context: RoleContext | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> ConsistencyResult:
+    """Adjudicate one cleanup deviation (§3.2).
+
+    Provably wrong without an LLM only when the pair contract is
+    learned AND the binding does not escape the function; ownership
+    transfer is the classic intentional deviation →
+    ``ownership-unresolved``.
+    """
+    ctx = context or RoleContext()
+    pair = deviation.pair
+    if deviation.ownership_transfer:
+        return ConsistencyResult(
+            outcome="inconclusive",
+            reason=(
+                f"{REASON_OWNERSHIP_UNRESOLVED}: "
+                f"{deviation.binding or 'the resource'} acquired via "
+                f"{pair.acquire}() escapes "
+                f"{deviation.enclosing_function} — ownership may "
+                f"transfer to the caller"
+            ),
+            rule_id=RULE_CLEANUP,
+            dimension=DIMENSION_CLEANUP,
+            callee=pair.acquire,
+            peer_evidence=deviation.peer_evidence,
+        )
+    result = ConsistencyResult(
+        outcome="confirmed",
+        reason=(
+            f"{deviation.description} — learned pair "
+            f"{pair.acquire}/{pair.release} ({pair.provenance}), "
+            f"no escape"
+        ),
+        rule_id=RULE_CLEANUP,
+        dimension=DIMENSION_CLEANUP,
+        callee=pair.acquire,
+        peer_evidence=deviation.peer_evidence,
+        contract={
+            "source": pair.source,
+            "provenance": pair.provenance,
+            "grade": "registry",
+        },
+    )
+    result.reachability = _entry_reachability(
+        ctx, inventory, deviation.file, deviation.enclosing_function,
     )
     return result
 

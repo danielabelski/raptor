@@ -189,3 +189,181 @@ class TestTierAFlagRegistryPolicy:
         assert len(mine) == 1
         assert mine[0].security is None
         assert mine[0].cwe == ""
+
+
+# ── error-path cleanup (§3.2) ───────────────────────────────────────
+
+
+_CLEANUP_MODEL = {
+    "paired_operations": [
+        {"acquire": "grab_lock", "release": "drop_lock", "kind": "mutex"},
+    ],
+}
+
+
+def _cleanup_intra_fixture(deviant_returns_holding: bool) -> dict[str, str]:
+    tail = (
+        "    if (c < 0)\n        return -3;\n"
+        if deviant_returns_holding else
+        "    if (c < 0) {\n        drop_lock(lk);\n        return -3;\n    }\n"
+    )
+    src = (
+        "int worker(int a, int b, int c) {\n"
+        "    lock_t *lk = grab_lock();\n"
+        "    if (a < 0) {\n"
+        "        drop_lock(lk);\n"
+        "        return -1;\n"
+        "    }\n"
+        "    if (b < 0) {\n"
+        "        drop_lock(lk);\n"
+        "        return -2;\n"
+        "    }\n"
+        + tail +
+        "    drop_lock(lk);\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    return {"src/worker.c": src}
+
+
+class TestCleanupPairs:
+    def test_pairs_from_domain_model(self):
+        from core.audit.consistency_dimensions import learned_cleanup_pairs
+
+        pairs = learned_cleanup_pairs(_CLEANUP_MODEL)
+        assert len(pairs) == 1
+        assert pairs[0].acquire == "grab_lock"
+        assert pairs[0].release == "drop_lock"
+        assert pairs[0].source == "domain_model"
+        assert pairs[0].provenance == "paired_operations:mutex"
+
+    def test_pairs_from_project_verbs(self):
+        from core.audit.consistency_dimensions import learned_cleanup_pairs
+
+        names = {
+            "begin_transaction", "end_transaction",
+            "begin_session", "end_session",
+            "handle_request",
+        }
+        pairs = learned_cleanup_pairs(None, names)
+        keys = {(p.acquire, p.release) for p in pairs}
+        assert ("begin_transaction", "end_transaction") in keys
+        assert ("begin_session", "end_session") in keys
+        assert all(p.source == "project_verbs" for p in pairs)
+
+    def test_no_learned_input_no_pairs(self):
+        """Vocabulary policy: without a learned surface there are NO
+        pairs — no hardcoded fallback list."""
+        from core.audit.consistency_dimensions import learned_cleanup_pairs
+
+        assert learned_cleanup_pairs(None, None) == []
+        assert learned_cleanup_pairs({}, set()) == []
+
+
+class TestCleanupIntraLeg:
+    def test_deviant_error_path_confirms(self):
+        from core.audit.consistency_dimensions import (
+            detect_cleanup_deviations,
+            learned_cleanup_pairs,
+        )
+        from core.audit.consistency_verify import cleanup_verdict
+
+        pairs = learned_cleanup_pairs(_CLEANUP_MODEL)
+        devs = detect_cleanup_deviations(
+            _cleanup_intra_fixture(True), pairs,
+        )
+        intra = [d for d in devs if d.leg == "intra_path"]
+        assert len(intra) == 1
+        d = intra[0]
+        assert d.enclosing_function == "worker"
+        assert d.n == 4
+        assert d.conforming == 3
+        assert d.binding == "lk"
+        assert not d.ownership_transfer
+        res = cleanup_verdict(d)
+        assert res.outcome == "confirmed"
+        assert res.rule_id == "consistency:cleanup"
+        assert res.contract["grade"] == "registry"
+        pe = res.peer_evidence
+        assert pe.dimension == "cleanup"
+        assert pe.formation == "branch"
+        assert pe.n == 4 and pe.conforming == 3
+
+    def test_conforming_twin_clean(self):
+        from core.audit.consistency_dimensions import (
+            detect_cleanup_deviations,
+            learned_cleanup_pairs,
+        )
+
+        pairs = learned_cleanup_pairs(_CLEANUP_MODEL)
+        devs = detect_cleanup_deviations(
+            _cleanup_intra_fixture(False), pairs,
+        )
+        assert [d for d in devs if d.leg == "intra_path"] == []
+
+
+class TestCleanupCrossLeg:
+    def _cross_fixture(self, *, transfer: bool) -> dict[str, str]:
+        parts = []
+        for i in range(3):
+            parts.append(
+                f"int user_{i}(void) {{\n"
+                f"    res_t *r{i} = grab_lock();\n"
+                f"    use(r{i});\n"
+                f"    drop_lock(r{i});\n"
+                f"    return 0;\n}}\n"
+            )
+        if transfer:
+            parts.append(
+                "res_t *maker(void) {\n"
+                "    res_t *r = grab_lock();\n"
+                "    return r;\n}\n"
+            )
+        else:
+            parts.append(
+                "int leaker(void) {\n"
+                "    res_t *r = grab_lock();\n"
+                "    use(r);\n"
+                "    return 0;\n}\n"
+            )
+        return {"src/users.c": "\n".join(parts)}
+
+    def test_missing_release_confirms(self):
+        from core.audit.consistency_dimensions import (
+            detect_cleanup_deviations,
+            learned_cleanup_pairs,
+        )
+        from core.audit.consistency_verify import cleanup_verdict
+
+        pairs = learned_cleanup_pairs(_CLEANUP_MODEL)
+        devs = detect_cleanup_deviations(
+            self._cross_fixture(transfer=False), pairs,
+        )
+        cross = [d for d in devs if d.leg == "cross_function"]
+        assert len(cross) == 1
+        d = cross[0]
+        assert d.enclosing_function == "leaker"
+        assert d.n == 4 and d.conforming == 3
+        res = cleanup_verdict(d)
+        assert res.outcome == "confirmed"
+
+    def test_ownership_transfer_is_inconclusive(self):
+        from core.audit.consistency_dimensions import (
+            detect_cleanup_deviations,
+            learned_cleanup_pairs,
+        )
+        from core.audit.consistency_verify import (
+            REASON_OWNERSHIP_UNRESOLVED,
+            cleanup_verdict,
+        )
+
+        pairs = learned_cleanup_pairs(_CLEANUP_MODEL)
+        devs = detect_cleanup_deviations(
+            self._cross_fixture(transfer=True), pairs,
+        )
+        cross = [d for d in devs if d.leg == "cross_function"]
+        assert len(cross) == 1
+        assert cross[0].ownership_transfer is True
+        res = cleanup_verdict(cross[0])
+        assert res.outcome == "inconclusive"
+        assert res.reason.startswith(REASON_OWNERSHIP_UNRESOLVED)

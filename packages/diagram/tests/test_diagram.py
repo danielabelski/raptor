@@ -1,17 +1,17 @@
-#!/usr/bin/env python3
 """Tests for the diagram generation package."""
 
 import json
 from pathlib import Path
 
-from ..sanitize import sanitize, sanitize_id
-from ..findings_summary import generate_verdict_pie, generate_type_pie
-from ..context_map import generate as gen_context_map
-from ..flow_trace import generate as gen_flow_trace
+from ..attack_paths import generate as gen_attack_paths
+from ..attack_paths import generate_single
 from ..attack_tree import generate as gen_attack_tree
-from ..attack_paths import generate as gen_attack_paths, generate_single
+from ..context_map import generate as gen_context_map
+from ..findings_summary import generate_type_pie, generate_verdict_pie
+from ..flow_trace import generate as gen_flow_trace
 from ..hypotheses import generate as gen_hypotheses
-from ..renderer import render_directory, render_and_write
+from ..renderer import render_and_write, render_directory
+from ..sanitize import sanitize, sanitize_id
 
 
 def assert_no_mermaid_directive_injection(output: str) -> None:
@@ -711,6 +711,30 @@ class TestForwardReachableBlocks:
         assert any("EP-A" in t for t in titles)
         assert any("EP-B" in t for t in titles)
 
+    def test_titles_with_quote_and_newline_stay_single_line(self):
+        """ep id / host flow raw from the JSON into the section title;
+        both must be sanitised so the title can't span lines or carry
+        raw quotes into the markdown heading."""
+        from packages.diagram.context_map import (
+            generate_forward_reachable_blocks,
+        )
+        fr = {
+            "host": 'evil"\nhost',
+            "internal_count": 1, "external_count": 0,
+            "internal_names": ["src/b.py:g@1"],
+            "external_names": [],
+            "truncated": False,
+        }
+        data = {"entry_points": [
+            self._entry(fr=fr, ep_id='EP-1"\n# injected heading'),
+        ]}
+        title, diagram = generate_forward_reachable_blocks(data)[0]
+        assert "\n" not in title
+        assert '"' not in title
+        assert "EP-1" in title
+        assert "host" in title
+        assert diagram.startswith("flowchart TD")
+
     def test_html_special_chars_in_names_get_sanitised(self):
         """Substrate-emitted identities can contain characters that
         Mermaid would interpret as syntax. Names go through sanitize."""
@@ -769,6 +793,18 @@ class TestFlowTrace:
     def test_empty_steps(self):
         out = gen_flow_trace({"id": "T1", "name": "empty", "steps": []})
         assert "No steps" in out
+
+    def test_empty_steps_trace_id_is_sanitized(self):
+        payload = 'T"]\n    click E javascript:alert(1)'
+        out = gen_flow_trace({"id": payload, "name": "empty", "steps": []})
+        assert_no_mermaid_directive_injection(out)
+        # The whole diagram stays two lines: header + EMPTY node.
+        lines = out.splitlines()
+        assert len(lines) == 2
+        # The quoted label keeps exactly its opening/closing quotes;
+        # the payload's own quote must not survive raw.
+        assert lines[1].count('"') == 2
+        assert 'T"]' not in out
 
     def test_step_chain_edges(self):
         out = gen_flow_trace(FLOW_TRACE_DATA)
@@ -1108,6 +1144,71 @@ class TestAttackPaths:
         assert "P0S1 --> P0S2" in out
 
 
+    def test_heading_fields_are_sanitized_and_single_line(self):
+        payload = 'X"\n## injected heading'
+        out = gen_attack_paths([{
+            "id": payload,
+            "name": payload,
+            "status": payload,
+            "proximity": 9,
+            "steps": [{"step": 1, "type": "entry", "description": "e"}],
+        }])
+        # No line of the rendered markdown may start with the injected heading.
+        assert not any(line.startswith("## injected") for line in out.splitlines())
+        # The raw quote must not survive in the heading line.
+        heading_lines = [line for line in out.splitlines() if line.startswith("#### ")]
+        assert len(heading_lines) == 1
+        assert '"' not in heading_lines[0]
+        assert "Proximity 9/10" in heading_lines[0]
+
+    def test_non_numeric_heading_proximity_coerced_to_zero(self):
+        out = gen_attack_paths([{
+            "id": "PATH-X",
+            "name": "path",
+            "status": "uncertain",
+            "proximity": '9"\nevil',
+            "steps": [{"step": 1, "type": "entry", "description": "e"}],
+        }])
+        assert "Proximity 0/10" in out
+        assert "evil" not in out
+
+    def test_non_numeric_call_count_coerced_to_zero(self):
+        out = generate_single({
+            "id": "PATH-X",
+            "name": "path",
+            "status": "confirmed",
+            "steps": [
+                {
+                    "step": 1,
+                    "type": "entry",
+                    "description": "e",
+                    "runtime_evidence": {
+                        "function_observed": True,
+                        "call_count": '1"]\nevil',
+                    },
+                }
+            ],
+        }, 0)
+        assert "OBSERVED x0" in out
+        assert "evil" not in out
+        assert_no_mermaid_directive_injection(out)
+
+    def test_numeric_string_call_count_still_renders(self):
+        out = generate_single({
+            "id": "PATH-X",
+            "name": "path",
+            "status": "confirmed",
+            "steps": [
+                {
+                    "step": 1,
+                    "type": "entry",
+                    "description": "e",
+                    "runtime_evidence": {"function_observed": True, "call_count": "17"},
+                }
+            ],
+        }, 0)
+        assert "OBSERVED x17" in out
+
     def test_step_type_and_location_are_sanitized(self):
         payload = "X\"]\n    click X javascript:alert(1)\n    Y[\""
         out = generate_single({
@@ -1174,6 +1275,29 @@ class TestRenderer:
         self._make_out_dir(tmp_path, {"flow-trace-EP-001.json": FLOW_TRACE_DATA})
         out = render_directory(tmp_path)
         assert "Flow Trace" in out or "TRACE-001" in out
+
+    def test_flow_trace_heading_payload_stays_single_line(self, tmp_path):
+        """Trace id/name come raw from flow-trace JSON; the diagrams.md
+        heading built from them must stay one line with no raw quotes,
+        and the Mermaid blocks must remain parseable."""
+        payload_id = 'TRACE-X"\n# injected heading'
+        payload_name = 'evil"\nname'
+        data = dict(FLOW_TRACE_DATA)
+        data["id"] = payload_id
+        data["name"] = payload_name
+        self._make_out_dir(tmp_path, {"flow-trace-EP-001.json": data})
+        out = render_directory(tmp_path)
+        # The payload newline must not have opened a fresh heading line.
+        assert not any(line.startswith("# injected") for line in out.splitlines())
+        # Raw payload quotes must not survive in the heading.
+        heading_lines = [line for line in out.splitlines() if line.startswith("### ")]
+        assert heading_lines
+        assert all('"' not in line for line in heading_lines)
+        assert any("TRACE-X" in line and "evil" in line for line in heading_lines)
+        # Mermaid blocks stay well-formed.
+        blocks = extract_mermaid_blocks(out)
+        assert blocks
+        assert all(block.startswith("flowchart TD") for block in blocks)
 
     def test_render_directory_with_attack_tree(self, tmp_path):
         self._make_out_dir(tmp_path, {"attack-tree.json": ATTACK_TREE_DATA})

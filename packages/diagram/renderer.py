@@ -7,12 +7,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from core.json import load_json as _load_json
 
-from . import context_map, flow_trace, attack_tree, attack_paths, hypotheses, findings_summary
-
+from . import (
+    attack_paths,
+    attack_tree,
+    context_map,
+    findings_summary,
+    flow_trace,
+    hypotheses,
+)
+from .sanitize import sanitize as _sanitize
 
 _FLOW_TRACE_GLOB = "flow-trace-*.json"
 
@@ -22,7 +28,7 @@ def _section(title: str, body: str, level: int = 2) -> str:
     return f"{heading} {title}\n\n{body}\n"
 
 
-def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
+def render_directory(out_dir: Path, target: str | None = None) -> str:
     out_dir = Path(out_dir)
     sections: list[str] = []
 
@@ -69,7 +75,7 @@ def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
                 f"```mermaid\n{vtype}\n```"
             )
             sections.append(_section("Findings Summary", body))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             sections.append(_section("Findings Summary", f"> Could not render: {exc}"))
 
     # --- Context map / attack surface ---
@@ -96,7 +102,7 @@ def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
                 fr_blocks = context_map.generate_forward_reachable_blocks(
                     data,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 fr_blocks = []
                 sections.append(_section(
                     f"{title} — Forward Reachability",
@@ -117,7 +123,7 @@ def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
                     "`raptor-enrich-context-map-callgraph`)_\n\n"
                     + "\n".join(sub_sections),
                 ))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             sections.append(_section(title, f"> Could not render `{fname}`: {exc}"))
 
     # --- Flow traces ---
@@ -129,12 +135,17 @@ def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
                 data = _load_json(tf)
                 if data is None:
                     raise ValueError("failed to parse JSON")
-                trace_id = data.get("id", tf.stem)
-                name = data.get("name", trace_id)
+                # `id` / `name` come raw from the flow-trace JSON; route them
+                # through the shared sanitizer so a crafted value can't break
+                # the heading out of its line or the markdown structure.
+                raw_id = data.get("id", tf.stem)
+                trace_id = _sanitize(raw_id)
+                name = _sanitize(data.get("name", raw_id))
                 diagram = flow_trace.generate(data)
                 body = f"_Source: `{tf.name}`_\n\n```mermaid\n{diagram}\n```"
-                trace_sections.append(_section(f"{trace_id}: {name}", body, level=3))
-            except Exception as exc:
+                heading = f"{trace_id}: {name}".replace("\n", " ").replace("\r", " ")
+                trace_sections.append(_section(heading, body, level=3))
+            except Exception as exc:  # noqa: BLE001
                 trace_sections.append(_section(tf.stem, f"> Could not render `{tf.name}`: {exc}", level=3))
         sections.append(_section("Data Flow Traces", "\n".join(trace_sections)))
 
@@ -162,7 +173,7 @@ def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
             )
             body = f"_Source: `attack-tree.json`_{note}\n\n```mermaid\n{diagram}\n```"
             sections.append(_section("Attack Tree", body))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             sections.append(_section("Attack Tree", f"> Could not render `attack-tree.json`: {exc}"))
 
     # --- Hypotheses (separate evidence-chain diagram) ---
@@ -177,7 +188,7 @@ def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
                 diagram = hypotheses.generate(hyp_list)
                 body = f"_Source: `hypotheses.json`_\n\n```mermaid\n{diagram}\n```"
                 sections.append(_section("Hypotheses,Evidence Chain", body))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             sections.append(_section("Hypotheses,Evidence Chain", f"> Could not render `hypotheses.json`: {exc}"))
 
     # --- Attack paths ---
@@ -192,7 +203,7 @@ def render_directory(out_dir: Path, target: Optional[str] = None) -> str:
             if isinstance(data, list) and data:
                 body = "_Source: `attack-paths.json`_\n\n" + attack_paths.generate(data)
                 sections.append(_section("Attack Paths", body))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             sections.append(_section("Attack Paths", f"> Could not render `attack-paths.json`: {exc}"))
 
     if len(sections) <= 1:
@@ -229,7 +240,7 @@ def _load_disproven(path: Path) -> list | None:
     return data if isinstance(data, list) else None
 
 
-def render_and_write(out_dir: Path, target: Optional[str] = None) -> Path:
+def render_and_write(out_dir: Path, target: str | None = None) -> Path:
     content = render_directory(out_dir, target)
     output_path = out_dir / "diagrams.md"
     output_path.write_text(content, encoding="utf-8")

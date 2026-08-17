@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import html
 import re
-
-from core.json import load_json
 from pathlib import Path
 from typing import Any
 
-from .sanitize import sanitize as _sanitize, sanitize_id as _sid
+from core.json import load_json
+
+from .sanitize import sanitize as _sanitize
+from .sanitize import sanitize_id as _sid
 
 _C0_RE = re.compile(r"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -355,8 +356,10 @@ def generate_forward_reachable_blocks(
         diagram = _render_one_entry_forward(ep, fr)
         if not diagram:
             continue
-        ep_id = ep.get("id", "EP-?")
-        host = fr.get("host", "?")
+        # Both values come raw from the context-map JSON; sanitize so a
+        # crafted id/host can't break the section heading out of its line.
+        ep_id = _sanitize(ep.get("id", "EP-?"))
+        host = _sanitize(fr.get("host", "?"))
         title = f"{ep_id}: {host}"
         out.append((title, diagram))
     return out

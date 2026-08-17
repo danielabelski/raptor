@@ -4,12 +4,17 @@ Landlock works without mount namespaces, without privileges, and without
 AppArmor exceptions. It restricts filesystem access via syscall filtering.
 
 ABI levels (kernel):
-- 1 (5.13+)  : basic filesystem write restriction
+- 1 (5.13+)  : basic filesystem write restriction (incl. REMOVE_*)
 - 2 (5.19+)  : + REFER (cross-directory rename/link)
 - 3 (6.2+)   : + TRUNCATE (O_TRUNC on existing files)
-- 4 (6.7+)   : + NET_CONNECT_TCP (TCP allowlist)
+- 4 (6.7+)   : + NET_CONNECT_TCP (TCP allowlist / deny-all fallback)
 - 5 (6.10+)  : + IOCTL_DEV (device ioctl restriction)
 - 6 (6.12+)  : + scoping (signal + abstract Unix socket isolation)
+- 7 (6.15+)  : audit log flags on restrict_self — not used (RAPTOR has
+               its own ptrace/seccomp audit pipeline)
+- 8          : TSYNC (restrict all threads) — not needed (Landlock is
+               always applied in a freshly forked, single-threaded
+               child before exec)
 
 We build the access masks at runtime based on the kernel's ABI, so
 a newer kernel gives more coverage; an older one degrades cleanly.
@@ -333,15 +338,15 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
     # — reads were never restricted (READ_FILE was miscoded as EXECUTE)
     # and MAKE_SYM was never restricted (shifted off the end of the
     # write mask). Verified against the uapi header on kernel 6.x.
-    # EXECUTE, REMOVE_DIR, REMOVE_FILE retained as comments to document
-    # the bit positions even though we don't restrict them (see note
-    # below about unshare and importlib needing remove ops).
+    # EXECUTE retained as a comment-constant to document the bit
+    # position even though we don't restrict it (RAPTOR must exec
+    # arbitrary target build tools).
     EXECUTE = 1 << 0  # noqa: F841 — kernel-ABI doc, not used
     WRITE_FILE = 1 << 1
     READ_FILE = 1 << 2
     READ_DIR = 1 << 3
-    REMOVE_DIR = 1 << 4  # noqa: F841 — kernel-ABI doc, not used
-    REMOVE_FILE = 1 << 5  # noqa: F841 — kernel-ABI doc, not used
+    REMOVE_DIR = 1 << 4
+    REMOVE_FILE = 1 << 5
     MAKE_CHAR = 1 << 6
     MAKE_DIR = 1 << 7
     MAKE_REG = 1 << 8
@@ -353,13 +358,28 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
     TRUNCATE = 1 << 14   # ABI v3+ (kernel 6.2)
     IOCTL_DEV = 1 << 15  # ABI v5+ (kernel 6.10) — ioctl on device files
 
-    # Note: REMOVE_DIR and REMOVE_FILE excluded — unshare needs to remove
-    # namespace dirs, and Python's importlib needs to unlink .pyc cache files
-    # during module loading. Blocking either prevents basic operation.
+    # REMOVE_DIR / REMOVE_FILE are handled: deletion is only permitted
+    # where writing already is (the writable-path grants include the
+    # full write mask). Without them, a sandboxed child could unlink or
+    # rmdir ANYTHING the user's DAC permits — write-integrity without
+    # delete-integrity. An earlier version excluded both, claiming
+    # unshare needs to remove namespace dirs and importlib unlinks
+    # stale .pyc files during import; neither reproduces (2026-08-15):
+    # importlib only unlinks when rewriting a cache file, which already
+    # requires write access we grant on the same paths, and the ns
+    # bootstrap runs before restrict_self. Verified across a 22-workload
+    # toolchain battery (gcc/clang incl. LTO, make clean, cargo clean,
+    # cmake+ninja -t clean, meson, autotools distclean, npm, ccache -C,
+    # go clean -cache, gradle, git gc --prune, venv, tar) plus the full
+    # sandbox suite and binary-oracle e2e — zero regressions; an strace
+    # census showed no tool deletes outside its writable set. Known
+    # benign residual: CPython multiprocessing's sem_unlink in /dev/shm
+    # is denied and leaks a few bytes per run (resource tracker warns
+    # and continues).
     # Build mask based on ABI version to avoid EINVAL on older kernels.
     # Ref: https://tuxownia.pl/en/blog/linux-landlock-sandboxing-without-root/
     def _build_write_mask():
-        mask = (WRITE_FILE | MAKE_CHAR |
+        mask = (WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR |
                 MAKE_DIR | MAKE_REG | MAKE_SOCK | MAKE_FIFO |
                 MAKE_BLOCK | MAKE_SYM)
         if _get_landlock_abi() >= 2:

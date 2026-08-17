@@ -2687,5 +2687,102 @@ class TestDegradedModeTcpDeny(unittest.TestCase):
             run_fn(["true"], degraded_net_deny=False)
 
 
+class TestE2EDeletionRestriction(unittest.TestCase):
+    """REMOVE_FILE/REMOVE_DIR handled: deletion follows write policy.
+
+    Landlock's handled-access model means any bit not in
+    handled_access_fs is unrestricted — before REMOVE_* was handled, a
+    sandboxed child could unlink/rmdir anything the user's DAC
+    permitted while being unable to modify the same files. Deletion
+    must now be denied outside writable paths and permitted inside.
+    """
+
+    def setUp(self):
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+
+    def test_unlink_outside_writable_denied(self):
+        """Two layers can stop the delete: mount-ns leaves $HOME out of
+        the bind tree entirely (rm -f sees ENOENT and exits 0), and
+        Landlock denies REMOVE_FILE (EACCES, rm exits non-zero). Either
+        way the victim must survive; the skip_mount_ns variant below
+        pins the Landlock layer specifically."""
+        victim = Path.home() / ".raptor_remove_test_victim.txt"
+        victim.write_text("do-not-delete\n")
+        try:
+            with TemporaryDirectory() as out:
+                r = sandbox_run(
+                    ["rm", "-f", str(victim)],
+                    target=out, output=out,
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertTrue(victim.exists(),
+                                "victim file was deleted through the sandbox"
+                                f" (rc={r.returncode})")
+        finally:
+            try:
+                victim.unlink()
+            except OSError:
+                pass
+
+    def test_unlink_outside_denied_by_landlock(self):
+        """skip_mount_ns leaves the host fs visible — only Landlock's
+        handled REMOVE_FILE stands between the child and the unlink."""
+        victim = Path.home() / ".raptor_remove_test_victim2.txt"
+        victim.write_text("do-not-delete\n")
+        try:
+            with TemporaryDirectory() as out:
+                r = sandbox_run(
+                    ["rm", "-f", str(victim)],
+                    target=out, output=out,
+                    skip_mount_ns=True,
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertNotEqual(r.returncode, 0,
+                                    "Landlock must deny the unlink")
+                self.assertIn("Permission denied", r.stderr)
+                self.assertTrue(victim.exists())
+        finally:
+            try:
+                victim.unlink()
+            except OSError:
+                pass
+
+    def test_rmdir_outside_writable_denied(self):
+        victim_dir = Path.home() / ".raptor_remove_test_dir"
+        victim_dir.mkdir(exist_ok=True)
+        try:
+            with TemporaryDirectory() as out:
+                r = sandbox_run(
+                    ["rmdir", str(victim_dir)],
+                    target=out, output=out,
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertNotEqual(r.returncode, 0)
+                self.assertTrue(victim_dir.is_dir(),
+                                "victim dir was removed through the sandbox")
+        finally:
+            try:
+                victim_dir.rmdir()
+            except OSError:
+                pass
+
+    def test_delete_inside_writable_allowed(self):
+        """Deletion inside output/ and /tmp keeps working — make clean,
+        cargo clean, tempfile churn all rely on it."""
+        with TemporaryDirectory() as out:
+            inner = Path(out) / "sub"
+            inner.mkdir()
+            (inner / "f.txt").write_text("x")
+            r = sandbox_run(
+                ["bash", "-c",
+                 f"rm {inner}/f.txt && rmdir {inner} && echo DEL-OK"],
+                target=out, output=out,
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr[-200:])
+            self.assertIn("DEL-OK", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

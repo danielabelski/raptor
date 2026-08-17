@@ -397,7 +397,11 @@ def _placeholder_host(target: Path) -> Dependency:
     a coherent declared_in path."""
     return Dependency(
         ecosystem="GitHub Actions",
-        name="<workflow-history>",
+        # Reads as an identifier in report titles ("Workflow unsigned
+        # commit: workflow-commit-history"), not as an unsubstituted
+        # template placeholder — angle brackets leaked verbatim into
+        # operator-facing output.
+        name="workflow-commit-history",
         version=None,
         declared_in=target / ".github",
         scope="main",

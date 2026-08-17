@@ -177,11 +177,20 @@ def expand_missing_transitives(
     # are skipped: they don't have an ecosystem in the cascade-resolver
     # sense (pip / npm / cargo). Inline-extracted deps still join the
     # direct-dep set; they just don't trigger lockfile generation.
+    # Manifests whose parse produced zero direct deps have nothing
+    # to expand — most commonly YAMLs speculatively routed through
+    # the Kubernetes parser (rule files, CI configs) that it
+    # correctly rejected. Without this filter every such file used
+    # to surface a misleading "no cascade resolver registered for
+    # Kubernetes" skip line.
+    _declared_paths = {d.declared_in for d in direct_deps}
     by_eco_dir: dict[tuple[str, Path], list[Manifest]] = {}
     for m in manifests:
         if m.is_lockfile:
             continue
         if m.ecosystem == "Inline":
+            continue
+        if m.path not in _declared_paths:
             continue
         by_eco_dir.setdefault((m.ecosystem, m.path.parent), []).append(m)
 

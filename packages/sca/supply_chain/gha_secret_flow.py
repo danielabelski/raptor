@@ -1190,20 +1190,22 @@ def scan_target(
     workflow_dir = target / ".github" / "workflows"
     if not workflow_dir.is_dir():
         return []
-    dep = _placeholder_dep(target)
     out: list[SecretFlowHit] = []
     for entry in sorted(workflow_dir.iterdir()):
         if entry.is_file() and entry.suffix in (".yml", ".yaml"):
-            out.extend(_scan_workflow(entry, dep))
+            out.extend(_scan_workflow(entry, _placeholder_dep(target, entry.name)))
     return out
 
 
-def _placeholder_dep(target: Path) -> Dependency:
+def _placeholder_dep(target: Path, workflow: str) -> Dependency:
     """Workflow-flow hits don't have a natural dependency-row owner;
-    they target the project itself."""
+    they target the project itself. Name the workflow file so the
+    finding's operator-facing title/name identify WHICH workflow —
+    the literal "<workflow>" placeholder used to leak all the way
+    into report titles."""
     return Dependency(
         ecosystem="GitHub Actions",
-        name="<workflow>",
+        name=workflow,
         version=None,
         declared_in=target,
         scope="main",

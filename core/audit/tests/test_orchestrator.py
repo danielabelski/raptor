@@ -4270,3 +4270,80 @@ class TestUpdateRunProgress:
 
         meta = json.loads(meta_path.read_text())
         assert meta["extra"]["progress"]["completed"] == 7
+
+
+class TestRunCritiqueConcurrency:
+    """_run_critique runs from concurrent review workers: promotions
+    must be applied under the result lock and skipped when another
+    worker already replaced the outcome."""
+
+    @staticmethod
+    def _suspicious(fn="f"):
+        return ReviewOutcome(
+            file="a.c", function=fn, status="suspicious",
+            body="maybe", hypothesis="unbounded memcpy overflow",
+        )
+
+    def _patch_chain(self, monkeypatch, run_tool_chain):
+        import core.audit.orchestrator as orch_mod
+
+        monkeypatch.setattr(
+            orch_mod, "_hypothesis_to_tool_chain",
+            lambda hyp, f, cwe="": ["fake-rule"],
+        )
+        monkeypatch.setattr(
+            orch_mod, "_read_raw_source", lambda *a, **kw: "src",
+        )
+        monkeypatch.setattr(orch_mod, "_run_tool_chain", run_tool_chain)
+        monkeypatch.setattr(orch_mod, "_is_detection_only", lambda t: False)
+        monkeypatch.setattr(
+            orch_mod, "_check_sink_guarded_cached", lambda *a, **kw: None,
+        )
+
+    def test_promotes_confirmed_suspicious(self, monkeypatch, tmp_path):
+        from core.audit.orchestrator import _run_critique
+
+        result = OrchestratorResult(suspicious=1)
+        result.outcomes = [self._suspicious()]
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+
+        self._patch_chain(
+            monkeypatch, lambda *a, **kw: ["semgrep:unbounded-memcpy"],
+        )
+        _run_critique(result, config)
+
+        assert result.outcomes[0].status == "finding"
+        assert result.findings == 1
+        assert result.suspicious == 0
+        assert result.sweep_promoted == 1
+
+    def test_skips_outcome_replaced_during_tool_run(
+        self, monkeypatch, tmp_path,
+    ):
+        """Simulates a concurrent worker replacing the outcome while
+        the tool chain runs: no ValueError, no double-count."""
+        from core.audit.orchestrator import _run_critique
+
+        suspicious = self._suspicious()
+        result = OrchestratorResult(suspicious=1)
+        result.outcomes = [suspicious]
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+
+        replacement = ReviewOutcome(
+            file="a.c", function="f", status="finding",
+            body="[sweep promoted via critique:other]\n\nmaybe",
+            evidence_tool="critique:other",
+        )
+
+        def racing_tool_chain(*a, **kw):
+            # another worker promotes/replaces the same outcome first
+            result.outcomes[0] = replacement
+            return ["semgrep:unbounded-memcpy"]
+
+        self._patch_chain(monkeypatch, racing_tool_chain)
+        _run_critique(result, config)  # must not raise
+
+        assert result.outcomes[0] is replacement
+        assert result.findings == 0  # no double promotion tally
+        assert result.suspicious == 1
+        assert result.sweep_promoted == 0

@@ -9733,11 +9733,21 @@ def _run_critique(
                 )
                 continue
             tool = "+".join(high_prec)
-            idx = result.outcomes.index(outcome)
-            result.outcomes[idx] = _promote_outcome(outcome, f"critique:{tool}")
-            result.sweep_promoted += 1
-            result.suspicious -= 1
-            result.findings += 1
+            # _run_critique runs from concurrent review workers —
+            # mutate outcomes/counters under the result lock (like
+            # _tally_outcome) and skip outcomes another worker already
+            # replaced, so a shared critique_interval boundary cannot
+            # double-promote or lose counter updates.
+            with result._lock:
+                if outcome not in result.outcomes:
+                    continue
+                idx = result.outcomes.index(outcome)
+                result.outcomes[idx] = _promote_outcome(
+                    outcome, f"critique:{tool}",
+                )
+                result.sweep_promoted += 1
+                result.suspicious -= 1
+                result.findings += 1
             logger.info(
                 "critique: promoted %s:%s via %s",
                 outcome.file,

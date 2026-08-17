@@ -737,6 +737,7 @@ def _build_strategy_block(
     file_path: str,
     function: str,
     finding: dict,
+    repo_path: Path | None = None,
 ) -> str:
     """Render CWE-strategy guidance for the IRIS validator prompt.
 
@@ -770,6 +771,8 @@ def _build_strategy_block(
             function_calls_made=tuple(function_calls),
             candidate_cwes=tuple(candidate_cwes),
             max_strategies=3,
+            # Kernel targets get the linux_kernel signal profile.
+            target_path=repo_path,
         )
         if not picked:
             return ""
@@ -840,6 +843,7 @@ def _build_hypothesis(finding: dict, analysis: dict, repo_path: Path):
     # exposure than for SQL injection / XSS.
     strategy_block = _build_strategy_block(
         cwe=cwe, file_path=file_path, function=function, finding=finding,
+        repo_path=repo_path,
     )
     if strategy_block:
         trusted_parts.append(strategy_block)

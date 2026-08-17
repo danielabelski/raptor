@@ -15,12 +15,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-
 from packages.code_understanding.dispatch.trace_dispatch import (
     _build_strategy_block,
     _format_user_message,
 )
-
 
 # ---------------------------------------------------------------------------
 # CWE-id pin via various trace fields
@@ -266,14 +264,17 @@ class TestStrategyBlockDirect:
 
 
 class TestLifecycleDriftReaches:
-    def test_get_dumpable_step_pins_lifecycle_drift(self):
+    def test_get_dumpable_step_pins_lifecycle_drift(self, tmp_path):
         # A trace step calling get_dumpable() surfaces the ``dumpable``
-        # token in the serialised trace, pinning lifecycle_drift.
+        # token in the serialised trace, pinning lifecycle_drift. Its
+        # signal set is kernel vocabulary, so the pin needs the
+        # kernel-marked repo (linux_kernel profile).
+        (tmp_path / "Kconfig").write_text("config FOO\n")
         traces = [{
             "trace_id": "T1",
             "entry": "__ptrace_may_access",
             "steps": [{"function": "get_dumpable"}],
         }]
-        block = _build_strategy_block(traces)
+        block = _build_strategy_block(traces, tmp_path)
         assert "## Strategy: lifecycle_drift" in block
         assert "CVE-2026-46333" in block  # lifecycle_drift exemplar

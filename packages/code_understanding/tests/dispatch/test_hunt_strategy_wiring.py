@@ -11,12 +11,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-
 from packages.code_understanding.dispatch.hunt_dispatch import (
     _build_hunt_strategy_block,
     _format_user_message,
 )
-
 
 # ---------------------------------------------------------------------------
 # CWE-id pin → strategy
@@ -258,11 +256,15 @@ class TestStrategyBlockDirect:
 
 
 class TestLifecycleDriftReaches:
-    def test_dumpable_pattern_pins_lifecycle_drift(self):
+    def test_dumpable_pattern_pins_lifecycle_drift(self, tmp_path):
         # lifecycle_drift has no CWE signal; the ``dumpable`` token in
-        # ``get_dumpable`` is what pins it, exemplar and all.
+        # ``get_dumpable`` is what pins it, exemplar and all. Its
+        # signal set is kernel vocabulary, so the pin needs the
+        # kernel-marked repo (linux_kernel profile).
+        (tmp_path / "Kconfig").write_text("config FOO\n")
         block = _build_hunt_strategy_block(
             "get_dumpable trusted for tasks without an mm",
+            repo_path=tmp_path,
         )
         assert "## Strategy: lifecycle_drift" in block
         assert "CVE-2026-46333" in block  # lifecycle_drift exemplar

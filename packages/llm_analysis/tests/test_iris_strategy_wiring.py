@@ -12,12 +12,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-
 from packages.llm_analysis.dataflow_validation import (
     _build_hypothesis,
     _build_strategy_block,
 )
-
 
 # ---------------------------------------------------------------------------
 # CWE → strategy in validator context
@@ -91,6 +89,9 @@ class TestNoCweFallsThrough:
         assert "## Strategy: general" in h.context
 
     def test_path_signal_fires_even_without_cwe(self, tmp_path):
+        # kernel/locking/ lives in the linux_kernel profile — mark the
+        # repo as a kernel tree so the profile applies.
+        (tmp_path / "Kconfig").write_text("config FOO\n")
         finding = {
             "file_path": "kernel/locking/rwsem.c",
             "start_line": 1,
@@ -187,7 +188,8 @@ class TestStrategyBlockDirect:
         assert "## Strategy: input_handling" in block
         assert "Bug-class lenses for this validation" in block
 
-    def test_picks_up_metadata_calls_and_includes(self):
+    def test_picks_up_metadata_calls_and_includes(self, tmp_path):
+        (tmp_path / "Kconfig").write_text("config FOO\n")
         finding = {
             "metadata": {
                 "calls": ["mutex_lock"],
@@ -196,18 +198,19 @@ class TestStrategyBlockDirect:
         }
         block = _build_strategy_block(
             cwe="", file_path="src/x.c", function="x",
-            finding=finding,
+            finding=finding, repo_path=tmp_path,
         )
         # mutex_lock callee + mutex.h include both pin concurrency.
         assert "## Strategy: concurrency" in block
 
-    def test_fall_through_metadata_aliases(self):
+    def test_fall_through_metadata_aliases(self, tmp_path):
         """Some upstream finding shapes use ``callees`` instead of
         ``calls`` — both should work."""
+        (tmp_path / "Kconfig").write_text("config FOO\n")
         finding = {"metadata": {"callees": ["mutex_lock"]}}
         block = _build_strategy_block(
             cwe="", file_path="src/x.c", function="x",
-            finding=finding,
+            finding=finding, repo_path=tmp_path,
         )
         assert "## Strategy: concurrency" in block
 
@@ -218,13 +221,16 @@ class TestStrategyBlockDirect:
 
 
 class TestLifecycleDriftReaches:
-    def test_get_dumpable_callee_pins_lifecycle_drift(self):
+    def test_get_dumpable_callee_pins_lifecycle_drift(self, tmp_path):
         # No CWE; the get_dumpable() callee + kernel/ptrace.c path pin
-        # lifecycle_drift into the validator's trusted context.
+        # lifecycle_drift into the validator's trusted context. Both
+        # signals are kernel vocabulary (linux_kernel profile).
+        (tmp_path / "Kconfig").write_text("config FOO\n")
         block = _build_strategy_block(
             cwe="", file_path="kernel/ptrace.c",
             function="__ptrace_may_access",
             finding={"metadata": {"calls": ["get_dumpable"]}},
+            repo_path=tmp_path,
         )
         assert "## Strategy: lifecycle_drift" in block
         assert "CVE-2026-46333" in block  # lifecycle_drift exemplar

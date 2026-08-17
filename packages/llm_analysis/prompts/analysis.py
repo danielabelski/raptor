@@ -414,6 +414,7 @@ def _build_strategy_block(
     cwe_id: str | None,
     file_includes: Iterable[str],
     function_calls_made: Iterable[str],
+    repo_path: str | None = None,
 ) -> str:
     """Render the matching CWE-strategy guidance for the analysis prompt.
 
@@ -446,6 +447,10 @@ def _build_strategy_block(
             function_calls_made=tuple(function_calls_made),
             candidate_cwes=tuple(candidate_cwes),
             max_strategies=3,
+            # Kernel targets get the linux_kernel signal profile —
+            # the kernel API signal bulk lives there, not in the
+            # generic strategy YAMLs.
+            target_path=repo_path or None,
         )
         if not picked:
             return ""
@@ -565,6 +570,7 @@ def build_analysis_prompt_bundle(
         cwe_id=cwe_id,
         file_includes=tuple(file_includes),
         function_calls_made=tuple(function_calls_made),
+        repo_path=repo_path,
     )
     if strategy_block:
         system += "\n\n" + strategy_block

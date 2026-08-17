@@ -14,8 +14,7 @@ calls, then exercises the cache via the real public API
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Tuple
-
+from typing import Any
 
 from core.llm.client import LLMClient
 from core.llm.config import LLMConfig, ModelConfig
@@ -25,7 +24,7 @@ class _FakeProvider:
     """Stand-in provider whose ``generate_structured`` returns a canned
     result and counts invocations."""
 
-    def __init__(self, result: Dict[str, Any], raw: str = "raw-stub"):
+    def __init__(self, result: dict[str, Any], raw: str = "raw-stub"):
         self.result = result
         self.raw = raw
         self.calls = 0
@@ -37,10 +36,10 @@ class _FakeProvider:
         self.total_duration = 0.0
 
     def generate_structured(
-        self, prompt: str, schema: Dict[str, Any],
+        self, prompt: str, schema: dict[str, Any],
         system_prompt: str | None = None,
         **kwargs,
-    ) -> Tuple[Dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str]:
         self.calls += 1
         # Capture last-call kwargs so tests can assert plumbing
         # (batch 331). Mimic what real providers do: bump
@@ -499,3 +498,14 @@ def test_eviction_disabled_when_cap_unset(tmp_path: Path) -> None:
 
     files = list(client.config.cache_dir.glob("*.json"))
     assert len(files) == 20
+
+
+def test_cache_cap_defaults_to_bounded():
+    """The config default must bound the cache: unbounded growth is
+    opt-in (cache_max_entries=None), not the default. Pre-fix the
+    default was None and out/llm_cache grew for the life of the
+    install."""
+    from core.llm.config import LLMConfig
+    cfg = LLMConfig()
+    assert cfg.cache_max_entries is not None
+    assert cfg.cache_max_entries > 0

@@ -1190,12 +1190,14 @@ class LLMConfig:
     # TTL. Useful when an upgraded model would now produce different
     # output for a previously-cached prompt.
     cache_ttl_seconds: float | None = None
-    # Optional: cap cache size by number of entries. After each
-    # successful save the oldest files (by mtime) are evicted until at
-    # or under this cap. None = no eviction (cache grows unboundedly).
-    # The directory-walk per save is O(N); fine to ~10k entries, beyond
-    # which a real cache backend would be more appropriate.
-    cache_max_entries: int | None = None
+    # Cap cache size by number of entries. After each successful save
+    # the oldest files (by mtime) are evicted until at or under this
+    # cap. None = no eviction (cache grows unboundedly — the pre-cap
+    # default; out/llm_cache accumulated for the life of the install).
+    # The directory-walk per save is O(N); the 10k default sits at the
+    # documented comfort limit of that walk, beyond which a real cache
+    # backend would be more appropriate.
+    cache_max_entries: int | None = 10_000
     enable_cost_tracking: bool = True
     max_cost_per_scan: float = 10.0  # USD
     # Model scorecard (core/llm/scorecard) — track per-model

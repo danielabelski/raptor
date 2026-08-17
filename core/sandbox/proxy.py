@@ -1742,6 +1742,11 @@ def get_proxy(
                         or _os.environ.get("all_proxy")
                         or _os.environ.get("HTTP_PROXY")
                         or _os.environ.get("http_proxy"))
+            if upstream:
+                from core.security.env_sanitisation import (
+                    normalise_proxy_url,
+                )
+                upstream = normalise_proxy_url(upstream) or None
             no_proxy = (_os.environ.get("NO_PROXY")
                         or _os.environ.get("no_proxy"))
             # bool(env_var) treats any non-empty string as truthy,

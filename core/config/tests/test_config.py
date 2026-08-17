@@ -416,6 +416,25 @@ class TestGetLlmEnvIncludePythonUserBase:
 
 
 
+class TestGetSafeEnvNormalisesProxyUrls:
+    """URL-shaped proxy values are normalised at ingestion (trailing
+    slash breaks strict parsers like the JVM's HttpHost — observed in
+    CodeQL's pack downloader); NO_PROXY is a host list and must pass
+    through byte-for-byte."""
+
+    def test_trailing_slash_stripped(self):
+        injected = {
+            "HTTPS_PROXY": "http://proxy.corp:3128/",
+            "HTTP_PROXY": "http://proxy.corp:3128/",
+            "NO_PROXY": "localhost,127.0.0.1/8,169.254.169.254",
+        }
+        with patch.dict(os.environ, injected):
+            env = RaptorConfig.get_safe_env(preserve_proxy=True)
+            assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
+            assert env["HTTP_PROXY"] == "http://proxy.corp:3128"
+            assert env["NO_PROXY"] == injected["NO_PROXY"]
+
+
 class TestGetLlmEnvPreservesProxy:
     """``get_llm_env()`` must carry the operator's launch-time proxy
     vars through to RAPTOR's own analysis children.

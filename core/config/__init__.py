@@ -797,9 +797,15 @@ class RaptorConfig:
         # through (either allowlisted explicitly or matching a prefix).
         env = strip_env_vars(env, RaptorConfig.DANGEROUS_ENV_VARS)
         if preserve_proxy:
+            from core.security.env_sanitisation import normalise_proxy_url
             for pv in RaptorConfig.PROXY_ENV_VARS:
                 val = os.environ.get(pv)
                 if val is not None:
+                    # URL-shaped values are normalised (trailing slash
+                    # breaks strict parsers like the JVM's HttpHost);
+                    # NO_PROXY is a host list and passes through.
+                    if not pv.upper().startswith("NO_"):
+                        val = normalise_proxy_url(val)
                     env[pv] = val
         # F102: restore PYTHONUSERBASE AFTER the dangerous-var strip
         # for callers that opted in (e.g. semgrep scanner spawn).

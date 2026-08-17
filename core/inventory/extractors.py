@@ -1163,6 +1163,316 @@ class LuaExtractor:
         return None
 
 
+def _hash_brace_end(lines: List[str], start_idx: int,
+                    max_scan: int = 4000) -> Optional[int]:
+    """Find the closing ``}`` for a brace-delimited body starting at
+    ``start_idx`` (0-based) in a ``#``-commented language (Perl, shell).
+
+    String-aware (``"``/``'``) and strips ``#`` line comments outside
+    strings so braces inside comments/strings don't corrupt the depth
+    count. Returns a 1-based line number, or None.
+    """
+    depth = 0
+    found_open = False
+    for i in range(start_idx, min(start_idx + max_scan, len(lines))):
+        line = lines[i]
+        in_str: Optional[str] = None
+        j = 0
+        while j < len(line):
+            ch = line[j]
+            if in_str is not None:
+                if ch == '\\':
+                    j += 2
+                    continue
+                if ch == in_str:
+                    in_str = None
+                j += 1
+                continue
+            if ch in ('"', "'"):
+                in_str = ch
+                j += 1
+                continue
+            if ch == '#':
+                break  # line comment — ignore the rest
+            if ch == '{':
+                depth += 1
+                found_open = True
+            elif ch == '}':
+                depth -= 1
+            if found_open and depth <= 0:
+                return i + 1  # 1-based
+            j += 1
+    return None
+
+
+class PerlExtractor:
+    """Extract Perl subroutines using regex with brace tracking.
+
+    Matches ``sub name { ... }`` (attributes / prototypes tolerated
+    between name and brace). No tree-sitter grammar is wired for Perl;
+    a regex fallback returning names + spans is sufficient for the
+    checklist to carry Perl code as reviewable units.
+    """
+
+    _SUB_RE = re.compile(r'^\s*sub\s+([A-Za-z_]\w*)\b')
+
+    def extract(self, filepath: str, content: str) -> List[FunctionInfo]:
+        functions: List[FunctionInfo] = []
+        seen: set = set()
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            m = self._SUB_RE.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            if name in seen:
+                continue
+            # Forward declarations (``sub name;``) carry no body.
+            rest = line[m.end():].lstrip()
+            if rest.startswith(';'):
+                continue
+            functions.append(FunctionInfo(
+                name=name,
+                line_start=i + 1,
+                line_end=_hash_brace_end(lines, i),
+                signature=f"sub {name}",
+            ))
+            seen.add(name)
+        return functions
+
+
+class ShellExtractor:
+    """Extract shell functions using regex with brace tracking.
+
+    Matches both POSIX ``name() {`` and bash ``function name {`` /
+    ``function name() {`` forms.
+    """
+
+    _POSIX_RE = re.compile(r'^\s*([A-Za-z_][\w.-]*)\s*\(\s*\)\s*\{?')
+    _BASH_RE = re.compile(r'^\s*function\s+([A-Za-z_][\w.-]*)\s*(?:\(\s*\))?\s*\{?')
+
+    def extract(self, filepath: str, content: str) -> List[FunctionInfo]:
+        functions: List[FunctionInfo] = []
+        seen: set = set()
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            m = self._BASH_RE.match(line) or self._POSIX_RE.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            if name in seen:
+                continue
+            functions.append(FunctionInfo(
+                name=name,
+                line_start=i + 1,
+                line_end=_hash_brace_end(lines, i),
+                signature=f"{name}()",
+            ))
+            seen.add(name)
+        return functions
+
+
+class ObjCExtractor:
+    """Extract Objective-C methods (plus plain C functions) using regex.
+
+    Methods: ``- (ret)selector:(T)arg ...`` / ``+ (ret)selector`` — the
+    item name is the first selector token. Plain C functions in the
+    same file are recovered via :class:`CExtractor` (Objective-C is a C
+    superset). Brace tracking reuses the C end-brace walker (``//`` and
+    ``/* */`` comments).
+    """
+
+    _METHOD_RE = re.compile(r'^\s*[-+]\s*\([^)]*\)\s*([A-Za-z_]\w*)')
+
+    def extract(self, filepath: str, content: str) -> List[FunctionInfo]:
+        lines = content.split('\n')
+        functions: List[FunctionInfo] = []
+        seen: set = set()
+        for i, line in enumerate(lines):
+            m = self._METHOD_RE.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            if name in seen:
+                continue
+            # Declarations inside @interface end with ';' before any '{'.
+            end = CExtractor._find_end_brace(lines, i)
+            semi = line.find(';')
+            if semi >= 0 and '{' not in line[:semi]:
+                continue
+            functions.append(FunctionInfo(
+                name=name,
+                line_start=i + 1,
+                line_end=end,
+                signature=line.strip()[:200],
+            ))
+            seen.add(name)
+        # Plain C functions in the same translation unit.
+        method_names = set(seen)
+        for fn in CExtractor().extract(filepath, content):
+            if fn.name not in method_names:
+                functions.append(fn)
+        # C extractor's post-pass already filled its own line_ends.
+        functions.sort(key=lambda f: f.line_start)
+        return functions
+
+
+class AsmExtractor:
+    """Extract assembly routines: column-0 labels as reviewable units.
+
+    A label's span runs to the line before the next label (or EOF).
+    Local labels (``.L*``, numeric) are skipped. Labels declared
+    ``.globl`` / ``.global`` / ``global`` (GAS / NASM) get exported
+    visibility so reachability treats them as entry candidates.
+    """
+
+    _LABEL_RE = re.compile(r'^([A-Za-z_][\w.$]*):')
+    _GLOBL_RE = re.compile(
+        r'(?m)^\s*(?:\.globa?l|global|\.type)\s+([A-Za-z_][\w.$]*)'
+    )
+
+    def extract(self, filepath: str, content: str) -> List[FunctionInfo]:
+        lines = content.split('\n')
+        exported = set(self._GLOBL_RE.findall(content))
+        labels: List[tuple] = []  # (name, 0-based line index)
+        for i, line in enumerate(lines):
+            m = self._LABEL_RE.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            if name.startswith('.L'):
+                continue  # local label — control flow, not a routine
+            labels.append((name, i))
+        functions: List[FunctionInfo] = []
+        seen: set = set()
+        for idx, (name, i) in enumerate(labels):
+            if name in seen:
+                continue
+            end = labels[idx + 1][1] if idx + 1 < len(labels) else len(lines)
+            functions.append(FunctionInfo(
+                name=name,
+                line_start=i + 1,
+                line_end=max(i + 1, end),
+                metadata=FunctionMetadata(
+                    visibility="exported" if name in exported else None,
+                ),
+            ))
+            seen.add(name)
+        return functions
+
+
+class GitHubWorkflowExtractor:
+    """Extract reviewable units from GitHub workflow YAML.
+
+    Jobs (``jobs.<id>``) become items named ``job:<id>``; steps with a
+    ``run:`` script (the command-injection surface — ``${{ }}``
+    interpolation into shell) become nested items named
+    ``job:<id>.step-<n>``. Indentation-based scan, not a YAML parser —
+    workflows are regular enough, and this keeps the extractor
+    dependency-free with exact line spans.
+
+    Non-workflow YAML (no top-level ``jobs:`` block) yields nothing;
+    the inventory builder records those files as excluded instead.
+    """
+
+    _JOBS_RE = re.compile(r'^jobs:\s*(?:#.*)?$')
+    _KEY_RE = re.compile(r'^(\s+)([A-Za-z_][\w.-]*):')
+    _STEPS_RE = re.compile(r'^(\s+)steps:\s*(?:#.*)?$')
+    _STEP_ITEM_RE = re.compile(r'^(\s+)-\s')
+    _RUN_RE = re.compile(r'(?m)^\s+(?:-\s+)?run:')
+
+    def extract(self, filepath: str, content: str) -> List[CodeItem]:
+        lines = content.split('\n')
+        jobs_start = None
+        for i, line in enumerate(lines):
+            if self._JOBS_RE.match(line):
+                jobs_start = i
+                break
+        if jobs_start is None:
+            return []
+
+        # First-level keys under jobs: are the job ids.
+        items: List[CodeItem] = []
+        job_indent = None
+        jobs: List[tuple] = []  # (job_id, 0-based start line)
+        end_of_jobs = len(lines)
+        for i in range(jobs_start + 1, len(lines)):
+            line = lines[i]
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            if not line[0].isspace():
+                end_of_jobs = i  # next top-level key — jobs block over
+                break
+            m = self._KEY_RE.match(line)
+            if not m:
+                continue
+            indent = len(m.group(1))
+            if job_indent is None:
+                job_indent = indent
+            if indent == job_indent:
+                jobs.append((m.group(2), i))
+
+        for idx, (job_id, start) in enumerate(jobs):
+            end = jobs[idx + 1][1] if idx + 1 < len(jobs) else end_of_jobs
+            # Trim trailing blank lines from the span.
+            while end - 1 > start and not lines[end - 1].strip():
+                end -= 1
+            items.append(CodeItem(
+                name=f"job:{job_id}",
+                kind=KIND_FUNCTION,
+                line_start=start + 1,
+                line_end=end,
+            ))
+            items.extend(self._extract_run_steps(lines, job_id, start, end))
+        return items
+
+    def _extract_run_steps(self, lines: List[str], job_id: str,
+                           start: int, end: int) -> List[CodeItem]:
+        """Steps carrying a ``run:`` script within lines[start:end]."""
+        steps: List[tuple] = []  # (0-based start line)
+        step_indent = None
+        in_steps = False
+        for i in range(start + 1, end):
+            line = lines[i]
+            if not line.strip():
+                continue
+            if self._STEPS_RE.match(line):
+                in_steps = True
+                step_indent = None
+                continue
+            if not in_steps:
+                continue
+            m = self._STEP_ITEM_RE.match(line)
+            if m:
+                indent = len(m.group(1))
+                if step_indent is None:
+                    step_indent = indent
+                if indent == step_indent:
+                    steps.append(i)
+
+        out: List[CodeItem] = []
+        for idx, s in enumerate(steps):
+            e = steps[idx + 1] if idx + 1 < len(steps) else end
+            while e - 1 > s and not lines[e - 1].strip():
+                e -= 1
+            block = '\n'.join(lines[s:e])
+            if not self._RUN_RE.search(block):
+                continue
+            out.append(CodeItem(
+                name=f"job:{job_id}.step-{idx + 1}",
+                kind=KIND_FUNCTION,
+                line_start=s + 1,
+                line_end=e,
+            ))
+        return out
+
+
 class GenericExtractor:
     """Generic fallback extractor using common patterns."""
 
@@ -2278,6 +2588,12 @@ _REGEX_EXTRACTORS = {
     'java': JavaExtractor(),
     'go': GoExtractor(),
     'lua': LuaExtractor(),
+    'perl': PerlExtractor(),
+    'shell': ShellExtractor(),
+    'objc': ObjCExtractor(),
+    'asm': AsmExtractor(),
+    'yaml': GitHubWorkflowExtractor(),
+    'inc': GenericExtractor(),
 }
 
 
@@ -2442,8 +2758,10 @@ def extract_items(filepath: str, language: str, content: str,
             if name not in ts_funcs:
                 items.append(rfn)
 
-    # C/C++ macro extraction (regex — tree-sitter doesn't parse preprocessor)
-    if language in ("c", "cpp"):
+    # C/C++/ObjC macro extraction (regex — tree-sitter doesn't parse
+    # the preprocessor; Objective-C is a C superset with the same #define
+    # replication hazard)
+    if language in ("c", "cpp", "objc"):
         items.extend(_extract_macros_regex(content))
 
     return items
@@ -2956,10 +3274,10 @@ def _count_comment_lines_regex(content: str, language: str) -> int:
         stripped = line.strip()
         if not stripped:
             continue
-        if language == "python":
+        if language in ("python", "perl", "shell", "yaml", "ruby"):
             if stripped.startswith("#"):
                 count += 1
-        elif language in ("c", "cpp", "java", "javascript", "typescript", "tsx", "go"):
+        elif language in ("c", "cpp", "objc", "java", "javascript", "typescript", "tsx", "go"):
             # State-machine comment-walk per line so the in_block
             # state tracks every `/*` open and `*/` close on the
             # line, including the `*/ /* still open` shape where a

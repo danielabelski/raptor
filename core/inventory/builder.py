@@ -53,7 +53,12 @@ from .exclusions import (
     match_exclusion_reason,
 )
 from .extractors import compute_interstitial_items, count_sloc, extract_items
-from .languages import LANGUAGE_MAP, detect_language
+from .languages import (
+    LANGUAGE_MAP,
+    RECORD_ONLY_EXTENSIONS,
+    detect_language,
+    refine_language,
+)
 from .module_load_abort import detect_module_load_abort
 from .translation_view import detect_macro_call_targets, preprocess_view
 
@@ -365,6 +370,18 @@ def build_inventory(
                         "%s — skipping (%s: %s)",
                         fp, exc.__class__.__name__, exc,
                     )
+                    # Record it — a skipped file must never be silently
+                    # invisible in the artifact.
+                    try:
+                        rel = str(fp.relative_to(target)
+                                  if target.is_dir() else fp.name)
+                    except ValueError:
+                        rel = str(fp)
+                    excluded_files.append({
+                        "path": rel,
+                        "reason": "processing_error",
+                        "pattern_matched": exc.__class__.__name__,
+                    })
                     skipped += 1
     else:
         for filepath in file_list:
@@ -690,10 +707,40 @@ def _collect_source_files(
             if filepath.is_symlink():
                 continue  # Don't follow symlinks into files outside the repo
             ext = Path(filename).suffix.lower()
-            if ext in extensions:
+            # RECORD_ONLY_EXTENSIONS are source-like files we cannot
+            # parse (parser grammars etc.) — collected so the per-file
+            # pass records them in ``excluded_files`` with a reason
+            # instead of leaving them silently invisible.
+            if ext in extensions or ext in RECORD_ONLY_EXTENSIONS:
                 file_list.append(filepath)
 
     return file_list, pruned_dirs
+
+
+def _is_github_workflow(rel_path: str, content: str) -> bool:
+    """True when a YAML file is a CI workflow with reviewable units.
+
+    Path-based primary signal (anything under ``.github/workflows/``),
+    plus a content check for workflow-shaped YAML found elsewhere
+    (both a trigger block and a ``jobs:`` block at top level — the
+    combination is unique to GitHub workflows among common YAML
+    dialects).
+    """
+    norm = rel_path.replace(os.sep, "/")
+    if ".github/workflows/" in norm or norm.startswith(".github/workflows/"):
+        return True
+    has_jobs = False
+    has_on = False
+    for line in content.split("\n"):
+        if line.startswith("jobs:"):
+            has_jobs = True
+        elif line.startswith(("on:", '"on":', "'on':")):
+            # Quoted spellings included — authors quote the key to
+            # dodge YAML 1.1's on→true boolean coercion.
+            has_on = True
+        if has_jobs and has_on:
+            return True
+    return False
 
 
 _worker_ctx: dict[str, Any] = {}
@@ -763,22 +810,22 @@ def _process_single_file(
     # Detect language
     language = detect_language(str(filepath))
     if not language:
-        # Source-like files we don't parse (assembly, Objective-C,
-        # include fragments, parser grammars) were previously dropped
+        # Source-like files we still don't parse (parser grammars,
+        # inline-include fragments, Solidity) were previously dropped
         # with only a counter — invisible in the artifact. Record them
         # as exclusions so the recall loss is operator-visible; plain
         # non-source files (docs, data) stay silent.
-        if filepath.suffix.lower() in {
-            ".s", ".asm", ".m", ".mm", ".inc", ".inl", ".y", ".l",
-        }:
+        if filepath.suffix.lower() in RECORD_ONLY_EXTENSIONS:
             return {"path": rel_path, "_excluded": True,
                     "_reason": "unsupported_source_extension",
                     "_pattern": filepath.suffix.lower()}
         return None
 
-    # Skip binary files
+    # Skip binary files — recorded, not silent: a source-extension file
+    # with binary content is a skip the operator should see.
     if is_binary_file(filepath):
-        return None
+        return {"path": rel_path, "_excluded": True,
+                "_reason": "binary_content", "_pattern": None}
 
     try:
         try:
@@ -834,6 +881,20 @@ def _process_single_file(
 
         if skip_generated and is_generated_file(content):
             return {"path": rel_path, "_excluded": True, "_reason": "generated_file", "_pattern": None}
+
+        # Content-based routing: .h headers with C++ markers parse as
+        # C++ (class methods / templates otherwise silently drop);
+        # .inc fragments route to php / asm / c by content.
+        language = refine_language(language, str(filepath), content)
+
+        # YAML is in the inventory for GitHub workflow files (jobs /
+        # steps are the reviewable units — workflow injection surface).
+        # Other YAML has no extractable units; record it as excluded
+        # rather than dropping it silently.
+        if language == "yaml" and not _is_github_workflow(rel_path, content):
+            return {"path": rel_path, "_excluded": True,
+                    "_reason": "yaml_without_reviewable_units",
+                    "_pattern": None}
 
         line_count = content.count('\n') + 1
         sha256 = sha256_bytes(raw_bytes)
@@ -1036,6 +1097,10 @@ def _process_single_file(
                 }
         return record
 
-    except Exception:
+    except Exception as exc:
         logger.warning("Failed to process %s", filepath, exc_info=True)
-        return None
+        # Recorded, not silent: the file stays visible in the artifact
+        # with a reason instead of vanishing behind a counter.
+        return {"path": rel_path, "_excluded": True,
+                "_reason": "processing_error",
+                "_pattern": exc.__class__.__name__}

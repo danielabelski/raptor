@@ -16,6 +16,9 @@ import json
 from typing import Any
 
 import pytest
+from cve_diff.agent.loop import AgentConfig, AgentLoop
+from cve_diff.agent.tools import Tool
+from cve_diff.agent.types import AgentContext, AgentOutput, AgentResult, AgentSurrender
 
 from core.llm.tool_use.types import (
     StopReason,
@@ -24,11 +27,6 @@ from core.llm.tool_use.types import (
     ToolResult,
     TurnResponse,
 )
-
-from cve_diff.agent.loop import AgentConfig, AgentLoop
-from cve_diff.agent.tools import Tool
-from cve_diff.agent.types import AgentContext, AgentOutput, AgentResult, AgentSurrender
-
 
 # ---------- fake provider -----------
 
@@ -186,6 +184,7 @@ def test_trajectory_persisted_when_env_var_set(
     trajectory file keyed off the CVE ID. The libexec shim sets this
     automatically from --output-dir for operator runs."""
     import json
+
     from core.trajectories.auto import TRAJECTORY_DIR_ENV
 
     monkeypatch.setenv(TRAJECTORY_DIR_ENV, str(tmp_path))
@@ -218,8 +217,11 @@ def test_partial_trajectory_persisted_on_cost_cap(
     the success path; this test pins the symmetric exception-path
     contract."""
     import json
+
     from core.llm.tool_use.types import (
-        CostBudgetExceeded, Message, TextBlock,
+        CostBudgetExceeded,
+        Message,
+        TextBlock,
     )
     from core.trajectories.auto import TRAJECTORY_DIR_ENV
 
@@ -592,9 +594,9 @@ def test_verified_sha_gate_rejects_unverified_submit(
     rejection_found = False
     for msg in third_call_msgs:
         for block in msg.content:
-            if isinstance(block, ToolResult) and block.is_error:
-                if "submit_rejected" in block.content:
-                    rejection_found = True
+            if (isinstance(block, ToolResult) and block.is_error
+                    and "submit_rejected" in block.content):
+                rejection_found = True
     assert rejection_found, "submit_rejected feedback never sent to the agent"
 
 
@@ -663,7 +665,8 @@ def test_sha_not_found_gate_rejects_404_submit(
 ) -> None:
     monkeypatch.setattr(
         "cve_diff.infra.github_client.commit_exists",
-        lambda slug, sha: False if len(sha) == 40 and sha.startswith("fb4415d8aee6c14") else True,
+        lambda slug, sha: not (
+            len(sha) == 40 and sha.startswith("fb4415d8aee6c14")),
     )
     gh = _gh_tool("curl/curl", "fb4415d8aee6")
     fake = _patch_provider(monkeypatch, [
@@ -693,9 +696,9 @@ def test_sha_not_found_gate_rejects_404_submit(
     rejection_found = False
     for msg in third_call_msgs:
         for block in msg.content:
-            if isinstance(block, ToolResult) and block.is_error:
-                if "sha_not_found" in block.content:
-                    rejection_found = True
+            if (isinstance(block, ToolResult) and block.is_error
+                    and "sha_not_found" in block.content):
+                rejection_found = True
     assert rejection_found, "404 feedback never sent to the agent"
 
 
@@ -736,7 +739,6 @@ def test_sha_not_found_gate_skipped_when_commit_exists_returns_none(
     calls: list[tuple[str, str]] = []
     def _track(slug: str, sha: str):
         calls.append((slug, sha))
-        return None
     monkeypatch.setattr("cve_diff.infra.github_client.commit_exists", _track)
     gh = _gh_tool("acme/widget", "deadbeef0000")
     _patch_provider(monkeypatch, [
@@ -802,7 +804,7 @@ def test_telemetry_not_found_submits_counter(
 ) -> None:
     monkeypatch.setattr(
         "cve_diff.infra.github_client.commit_exists",
-        lambda slug, sha: False if len(sha) == 40 else True,
+        lambda slug, sha: len(sha) != 40,
     )
     gh = _gh_tool("curl/curl", "fb4415d8aee6")
     _patch_provider(monkeypatch, [
@@ -827,3 +829,32 @@ def test_telemetry_not_found_submits_counter(
     assert isinstance(result, AgentOutput)
     assert loop.last_telemetry["not_found_submits"] == 1
     assert loop.last_telemetry["unverified_submits"] == 0
+
+
+# ── pricing delegation ────────────────────────────────────────────────
+
+def test_price_uses_core_model_table_not_stale_fallback():
+    """The loop's fast-path pricing must come from core.llm.model_data —
+    the local class-token table had drifted to 3x the real Opus price
+    (15/75 vs 5/25 per M-token), tripling budget burn accounting."""
+    from cve_diff.agent.loop import _price
+
+    from core.llm.model_data import price_for
+
+    in_per_m, out_per_m = price_for("claude-opus-5")
+    assert (in_per_m, out_per_m) != (0.0, 0.0)
+    got = _price("claude-opus-5", in_t=1_000_000, out_t=0)
+    assert got == pytest.approx(in_per_m)
+    # regression pin: the stale fallback said $15/M for opus input
+    assert got < 10.0
+
+
+def test_price_falls_back_to_class_token_for_unknown_models():
+    from cve_diff.agent.loop import _price
+    got = _price("my-custom-opus-finetune", in_t=1_000_000, out_t=0)
+    assert got == pytest.approx(5.0)
+
+
+def test_price_unknown_model_is_zero():
+    from cve_diff.agent.loop import _price
+    assert _price("totally-unknown-model", in_t=1000, out_t=1000) == 0.0

@@ -15,8 +15,15 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+
+from cve_diff.agent import source_classes
+from cve_diff.agent.tools import Tool
+from cve_diff.agent.types import AgentContext, AgentOutput, AgentResult, AgentSurrender
+from cve_diff.infra import github_client
+from cve_diff.llm.client import MODEL_PRICES
 
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
@@ -31,13 +38,7 @@ from core.llm.tool_use.types import (
     ToolDef,
     TurnCompleted,
 )
-
-from cve_diff.agent import source_classes
-from cve_diff.agent.tools import Tool
-from cve_diff.agent.types import AgentContext, AgentOutput, AgentResult, AgentSurrender
 from core.url_patterns import SHA_DISPLAY_LEN, extract_github_slug
-from cve_diff.infra import github_client
-from cve_diff.llm.client import MODEL_PRICES
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,16 +84,25 @@ def _price(
     cache_create_t: int = 0,
     cache_read_t: int = 0,
 ) -> float:
-    key = model_id.lower()
-    for token, (in_per_M, out_per_M) in MODEL_PRICES.items():
-        if token in key:
-            return (
-                in_t * in_per_M
-                + out_t * out_per_M
-                + cache_create_t * in_per_M * 1.25
-                + cache_read_t * in_per_M * 0.1
-            ) / 1_000_000
-    return 0.0
+    # Authoritative per-model pricing first; the class-token table is
+    # only a fallback for bare aliases price_for can't resolve.
+    from core.llm.model_data import price_for
+
+    in_per_M, out_per_M = price_for(model_id, default=(0.0, 0.0))
+    if (in_per_M, out_per_M) == (0.0, 0.0):
+        key = model_id.lower()
+        for token, (tok_in, tok_out) in MODEL_PRICES.items():
+            if token in key:
+                in_per_M, out_per_M = tok_in, tok_out
+                break
+        else:
+            return 0.0
+    return (
+        in_t * in_per_M
+        + out_t * out_per_M
+        + cache_create_t * in_per_M * 1.25
+        + cache_read_t * in_per_M * 0.1
+    ) / 1_000_000
 
 
 @dataclass
@@ -340,7 +350,7 @@ class AgentLoop:
                 timeout=int(self.timeout_s),
             )
             provider = create_provider(model_config)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — surrender, never crash the loop
             return self._finalize(
                 AgentSurrender(reason="client_init_failed", detail=str(exc)[:200]),
                 0, 0.0, time.monotonic() - start, tuple(tool_call_log),
@@ -384,7 +394,8 @@ class AgentLoop:
         # the point of termination. No-op unless RAPTOR_TRAJECTORY_DIR
         # is set.
         from core.trajectories.auto import (
-            persist_from_loop_result, persist_partial_from_exception,
+            persist_from_loop_result,
+            persist_partial_from_exception,
         )
         _traj_run_id = f"cve-diff-{ctx.cve_id}"
         try:
@@ -424,7 +435,7 @@ class AgentLoop:
                 unverified_submits=unverified_submits,
                 not_found_submits=not_found_submits,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — surrender, never crash the loop
             reason = gate_hard_stop_reason[0] or "llm_error"
             return self._finalize(
                 AgentSurrender(reason=reason, detail=str(exc)[:200]),

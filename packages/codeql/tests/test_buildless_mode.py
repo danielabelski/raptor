@@ -56,7 +56,7 @@ def _run_create(db_manager, tmp_path, *, language, build_system=None,
         return r
 
     db_path = tmp_path / "db"
-    with patch('subprocess.run', side_effect=fake_run), \
+    with patch('core.sandbox.run', side_effect=fake_run), \
          patch.object(db_manager, 'get_codeql_version', return_value=version), \
          patch.object(db_manager, '_count_database_files', return_value=0), \
          patch.object(db_manager, 'save_metadata'), \

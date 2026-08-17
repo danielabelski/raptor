@@ -171,7 +171,14 @@ class DatabaseManager:
         self.db_root.mkdir(parents=True, exist_ok=True)
 
         # Detect CodeQL CLI
-        self.codeql_cli = codeql_cli or self._detect_codeql_cli()
+        _cli = codeql_cli or self._detect_codeql_cli()
+        # Resolve symlinks (pip/user installs land a ~/.local/bin
+        # symlink pointing at the real distribution). The sandbox
+        # bind-mounts the RESOLVED parent dir (_sandbox_tool_paths),
+        # so invoking via the symlink path would fail the mount-ns
+        # visibility check and silently degrade the whole DB build
+        # to the Landlock-only fallback.
+        self.codeql_cli = os.path.realpath(_cli) if _cli else _cli
         if not self.codeql_cli:
             raise RuntimeError("CodeQL CLI not found. Set CODEQL_CLI environment variable or install CodeQL.")
 
@@ -559,6 +566,24 @@ class DatabaseManager:
         intentional — both serve uniqueness, not timezone consistency.
         """
         return f"{canonical.name}.stale.{time.time_ns()}.{os.getpid()}"
+
+    @staticmethod
+    def _salvage_creation_log(staging_path: Path, tail_bytes: int = 8192) -> str:
+        """Return the tail of the newest CodeQL creation log, or "".
+
+        ``codeql database create`` writes ``log/database-create-*.log``
+        inside the (staging) database dir; on failure that file holds
+        the extractor's real error while the CLI stderr only names the
+        failing build step.
+        """
+        try:
+            logs = sorted((staging_path / "log").glob("database-create-*.log"))
+            if not logs:
+                return ""
+            data = logs[-1].read_bytes()
+            return data[-tail_bytes:].decode("utf-8", errors="replace")
+        except OSError:
+            return ""
 
     def _gc_stale_markers(self, repo_dir: Path, max_age_seconds: int = 3600) -> None:
         """Best-effort cleanup of `.stale.*` and `.staging-*` markers older
@@ -993,6 +1018,16 @@ class DatabaseManager:
                 cwd=working_dir,
                 env=env,
                 env_caller_filtered=True,
+                # target/output engage the mount namespace: without them
+                # sanitise_host_fingerprint silently no-ops (identity
+                # surfaces stay host-real) and the seccomp filter keeps
+                # AF_UNIX blocked, which kills Python >= 3.14 extractors
+                # (multiprocessing forkserver needs a unix socket).
+                # target = source tree (read), output = staging DB (rw);
+                # the DB parent dir rides along so codeql's lock files
+                # next to the staging dir stay writable.
+                target=str(repo_path),
+                output=str(staging_path.parent),
                 tool_paths=self._sandbox_tool_paths(),
                 # Audit JSONL home (only used when --audit is engaged).
                 # Decoupled from output= because the build subprocess
@@ -1032,12 +1067,32 @@ class DatabaseManager:
                     errors.append(result.stderr[:1000])  # Truncate long errors
                 logger.error("✗ Database creation failed for %s", language)
                 logger.error((result.stderr or "")[:500])
-                # Cleanup partial staging on build failure — no point keeping
-                # broken DBs around to confuse future cache lookups (they
-                # never reach canonical anyway since promote is gated on
-                # success, but the staging dir would otherwise linger
-                # until _gc_stale_markers picks it up).
-                shutil.rmtree(staging_path, ignore_errors=True)
+                # Surface the extractor's own log before cleanup: the
+                # CLI's stderr carries only "autobuild failed" while the
+                # actual traceback (missing interpreter, denied syscall,
+                # build-tool error) lands in the staging DB's log dir.
+                # Losing it turned every creation failure into a manual
+                # re-run under a debugger.
+                _diag = self._salvage_creation_log(staging_path)
+                if _diag:
+                    errors.append(_diag[:2000])
+                    logger.error("extractor log tail:\n%s", _diag[:2000])
+                # Preserve the full staging dir for inspection under a
+                # name the stale-marker GC already reaps (1h TTL), so
+                # diagnostics survive without accumulating: keep only
+                # the newest failed dir per cache slot.
+                _failed = staging_path.parent / (
+                    f".staging-failed-{language}"
+                )
+                shutil.rmtree(_failed, ignore_errors=True)
+                try:
+                    staging_path.rename(_failed)
+                    logger.error(
+                        "failed staging preserved for inspection at %s "
+                        "(auto-cleaned after 1h)", _failed,
+                    )
+                except OSError:
+                    shutil.rmtree(staging_path, ignore_errors=True)
                 final_path = None
                 did_promote = False
                 used_cached = False

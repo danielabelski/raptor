@@ -80,7 +80,7 @@ def _run_create(db_manager, tmp_path, command, language="javascript"):
         return r
 
     db_path = tmp_path / "db"
-    with patch('subprocess.run', side_effect=fake_run), \
+    with patch('core.sandbox.run', side_effect=fake_run), \
          patch.object(db_manager, '_count_database_files', return_value=0), \
          patch.object(db_manager, 'save_metadata'), \
          patch.object(db_manager, 'get_cached_database', return_value=None), \
@@ -143,7 +143,7 @@ class TestBuildScript:
             return r
 
         db_path = tmp_path / "db"
-        with patch('subprocess.run', side_effect=fake_run), \
+        with patch('core.sandbox.run', side_effect=fake_run), \
              patch.object(db_manager, '_count_database_files', return_value=0), \
              patch.object(db_manager, 'save_metadata'), \
              patch.object(db_manager, 'get_cached_database', return_value=None), \
@@ -158,7 +158,7 @@ class TestBuildScript:
                          env_vars={}, confidence=1.0, detected_files=[])
 
         db_path = tmp_path / "db"
-        with patch('subprocess.run', side_effect=sp.TimeoutExpired("cmd", 60)), \
+        with patch('core.sandbox.run', side_effect=sp.TimeoutExpired("cmd", 60)), \
              patch.object(db_manager, 'get_cached_database', return_value=None), \
              patch.object(db_manager, 'compute_repo_hash', return_value='abc'), \
              patch.object(db_manager, 'get_database_dir', return_value=db_path):
@@ -180,7 +180,7 @@ class TestBuildScript:
             return r
 
         db_path = tmp_path / "db"
-        with patch('subprocess.run', side_effect=fake_run), \
+        with patch('core.sandbox.run', side_effect=fake_run), \
              patch.object(db_manager, '_count_database_files', return_value=0), \
              patch.object(db_manager, 'save_metadata'), \
              patch.object(db_manager, 'get_cached_database', return_value=None), \
@@ -409,7 +409,12 @@ class TestStagingPromote:
 
         assert result.success is False
         assert not canonical.exists(), "failed build must not promote"
-        assert not list(canonical.parent.glob(".staging-*")), "staging cleanup"
+        # Failure preserves ONE inspectable dir under a GC-reaped
+        # name; live (per-pid) staging dirs must all be gone.
+        leftovers = list(canonical.parent.glob(".staging-*"))
+        assert leftovers == [canonical.parent / ".staging-failed-python"], (
+            f"staging cleanup: {leftovers}"
+        )
 
 
 class TestStaleMarkerGC:

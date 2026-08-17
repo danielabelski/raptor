@@ -6,6 +6,7 @@ Executes CodeQL queries and suites against databases,
 producing SARIF output for vulnerability analysis.
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -187,7 +188,12 @@ class QueryRunner:
             codeql_cli: Path to CodeQL CLI (auto-detected if None)
         """
         import shutil
-        self.codeql_cli = codeql_cli or shutil.which("codeql")
+        _cli = codeql_cli or shutil.which("codeql")
+        # Realpath for the same reason as DatabaseManager: the sandbox
+        # binds the resolved install root; a ~/.local/bin symlink as
+        # cmd[0] would push every query run onto the Landlock-only
+        # fallback path.
+        self.codeql_cli = os.path.realpath(_cli) if _cli else _cli
         if not self.codeql_cli:
             raise RuntimeError("CodeQL CLI not found")
 

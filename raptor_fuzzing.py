@@ -45,6 +45,33 @@ from packages.autonomous import (
 logger = get_logger()
 
 
+def _clamp_parallel(requested: int) -> int:
+    """Apply the tuning.json ceiling that the --parallel help promises.
+
+    Clamps the operator's value to get_tuning().max_fuzz_parallel with a
+    loud warning; falls back to the requested value when tuning is
+    unavailable so fuzzing never fails just because the ceiling could
+    not be read.
+    """
+    try:
+        from core.tuning import get_tuning
+        ceiling = get_tuning().max_fuzz_parallel
+    except Exception as e:  # noqa: BLE001 — ceiling is advisory, never fatal
+        logger.debug("tuning ceiling unavailable: %s", e)
+        return requested
+    if requested > ceiling:
+        print(
+            f"⚠️  --parallel {requested} exceeds the tuning.json ceiling "
+            f"(max_fuzz_parallel={ceiling}); clamping to {ceiling}",
+            file=sys.stderr,
+        )
+        logger.warning(
+            "--parallel %d clamped to tuning ceiling %d", requested, ceiling
+        )
+        return ceiling
+    return requested
+
+
 def main() -> None:
     # So much more needed here but this is a start for us. :-)
     ap = argparse.ArgumentParser(
@@ -536,7 +563,7 @@ Examples:
 
         num_crashes, crashes_dir = afl_runner.run_fuzzing(
             duration=args.duration,
-            parallel_jobs=args.parallel,
+            parallel_jobs=_clamp_parallel(args.parallel),
             timeout_ms=args.timeout,
             max_crashes=args.max_crashes,
         )

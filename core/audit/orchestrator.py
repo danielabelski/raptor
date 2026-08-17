@@ -432,6 +432,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "cwe_inference": TierCounters(),
         "precondition_promotion": TierCounters(),
         "synthesis_on_demand": TierCounters(),
+        "adapter_aggregation": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
         "joern_guard": TierCounters(),
@@ -489,6 +490,10 @@ class OrchestratorResult:
     # On-demand synthesis attempts for chain-less suspicious hypotheses
     # (each attempt costs an LLM call; capped per run).
     ondemand_synthesized: int = 0
+    # Promotions earned by Bayesian aggregation of independent
+    # detection-role channels (no single receipt was high-precision,
+    # but the combined posterior crossed the promote threshold).
+    aggregation_promoted: int = 0
     refinement_rounds: int = 0
     clean_checks: int = 0
     clean_check_rescues: int = 0
@@ -9474,6 +9479,33 @@ def _sweep_validate(
             if high_prec:
                 tool_label = "+".join(high_prec)
                 return _stamp_evidence(outcome, tool_label)
+            # Bayesian multi-channel aggregation: independent
+            # detection-role channels agreeing on the hypothesis can
+            # jointly cross the confirm threshold even though no single
+            # receipt is perfect.
+            agg_channels, post_mean = _aggregate_channel_confirmations(
+                confirmed,
+            )
+            if agg_channels:
+                if tier_counters:
+                    _increment_tier_dict(
+                        tier_counters, "adapter_aggregation", "confirmed",
+                    )
+                _record_aggregated_promotion(
+                    outcome, agg_channels, post_mean, confirmed,
+                )
+                logger.info(
+                    "sweep validated %s:%s via aggregated channels %s "
+                    "(posterior %.2f > %.2f)",
+                    outcome.file, outcome.function,
+                    "+".join(agg_channels), post_mean,
+                    _AGGREGATION_CONFIRM_THRESHOLD,
+                )
+                return _stamp_evidence(outcome, "+".join(confirmed))
+            if tier_counters:
+                _increment_tier_dict(
+                    tier_counters, "adapter_aggregation", "inconclusive",
+                )
     finally:
         if _decomp_tmp_dir is not None:
             import shutil
@@ -11585,6 +11617,41 @@ def _promote_suspicious(
                 if not _is_detection_only(t)
             ]
             if not high_prec:
+                # Bayesian multi-channel aggregation: independent
+                # detection-role channels agreeing on the hypothesis
+                # can jointly cross the promote threshold even though
+                # no single receipt is perfect.
+                agg_channels, post_mean = _aggregate_channel_confirmations(
+                    confirmed,
+                )
+                if agg_channels and _check_sink_guarded_cached(
+                        outcome.function, joern_server) != "guarded":
+                    tool = "+".join(confirmed)
+                    promoted = _promote_outcome(outcome, tool)
+                    _record_aggregated_promotion(
+                        promoted, agg_channels, post_mean, confirmed,
+                    )
+                    result.outcomes[i] = promoted
+                    result.sweep_promoted += 1
+                    result.aggregation_promoted += 1
+                    result.suspicious -= 1
+                    result.findings += 1
+                    _increment_tier_dict(
+                        result.tier_counters, "adapter_aggregation",
+                        "confirmed",
+                    )
+                    logger.info(
+                        "sweep promoted %s:%s via aggregated channels %s "
+                        "(posterior %.2f > %.2f)",
+                        outcome.file, outcome.function,
+                        "+".join(agg_channels), post_mean,
+                        _AGGREGATION_CONFIRM_THRESHOLD,
+                    )
+                    continue
+                _increment_tier_dict(
+                    result.tier_counters, "adapter_aggregation",
+                    "inconclusive",
+                )
                 logger.info(
                     "sweep promotion blocked %s:%s — only detection-role "
                     "rules (%s)",
@@ -11884,6 +11951,79 @@ def _promote_suspicious_preconditions(
             "via %s",
             outcome.file, outcome.function, tool,
         )
+
+
+# Conservative default threshold for Bayesian multi-channel
+# aggregation at the promote decision. Against the uniform Beta(1,1)
+# prior, one confirming channel gives posterior mean 2/3 (below the
+# threshold — a single detection-role receipt still cannot promote),
+# two independent channels give 3/4 (above). I.e. two independent
+# medium-confidence channels stand in for one perfect receipt.
+_AGGREGATION_CONFIRM_THRESHOLD = 0.7
+
+
+def _aggregate_channel_confirmations(
+    confirmed: list[str],
+) -> tuple[list[str], float]:
+    """Bayesian aggregation of detection-role confirmations.
+
+    A single detection-role confirmation is too imprecise to promote
+    without LLM agreement — but N INDEPENDENT channels agreeing on the
+    same hypothesis is a different quantity of evidence, and the
+    first-wins promote decision used to discard it. Each DISTINCT
+    channel namespace (coccinelle, smt, ...) contributes one Bernoulli
+    confirmation to a Beta(1,1) posterior via the shipped
+    ``packages.hypothesis_validation.posterior`` machinery; same-engine
+    receipts collapse to one observation (two detection rules from one
+    engine are correlated, not independent).
+
+    The caller is expected to have established that every entry in
+    ``confirmed`` is detection-role (the high-precision receipts
+    promote directly and never reach this path).
+
+    Returns ``(channels, posterior_mean)`` — ``channels`` is the sorted
+    distinct namespaces when the combined posterior mean crosses
+    ``_AGGREGATION_CONFIRM_THRESHOLD``, else an empty list.
+    """
+    namespaces = sorted({
+        t.split(":")[0] for t in confirmed if t
+    })
+    if len(namespaces) < 2:
+        return [], 0.0
+    try:
+        from packages.hypothesis_validation.posterior import (
+            UNIFORM_PRIOR,
+            update,
+            verdict_from_posterior,
+        )
+    except ImportError:
+        return [], 0.0
+    p = UNIFORM_PRIOR
+    for _ns in namespaces:
+        p = update(p, confirms=True)
+    verdict = verdict_from_posterior(
+        p, confirm_threshold=_AGGREGATION_CONFIRM_THRESHOLD,
+    )
+    if verdict == "confirmed":
+        return namespaces, p.mean
+    return [], p.mean
+
+
+def _record_aggregated_promotion(
+    outcome: ReviewOutcome,
+    channels: list[str],
+    posterior_mean: float,
+    confirmed: list[str],
+) -> None:
+    """Stamp the aggregation receipt onto the review result."""
+    if outcome.review_result is None:
+        return
+    outcome.review_result["aggregated_promotion"] = {
+        "channels": channels,
+        "posterior_mean": round(posterior_mean, 4),
+        "threshold": _AGGREGATION_CONFIRM_THRESHOLD,
+        "receipts": list(confirmed),
+    }
 
 
 def _is_detection_only(tool_id: str) -> bool:

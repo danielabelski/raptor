@@ -13,6 +13,7 @@ Uses ``packages.semgrep.runner.run_rule``,
 
 from __future__ import annotations
 
+import contextlib
 import json as _json
 import logging
 import os
@@ -21,9 +22,10 @@ import re as _re
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from ._util import is_valid_identifier, safe_join
 
@@ -79,7 +81,7 @@ class SarifCache:
     it checks here first — a cache hit returns the pre-existing matches
     without spawning a subprocess.
     """
-    _by_file: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    _by_file: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     hit_count: int = 0
     miss_count: int = 0
     _counter_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -92,7 +94,7 @@ class SarifCache:
 
     def lookup(
         self, file_path: str, line_start: int = 0, line_end: int = 0,
-    ) -> Optional[List[Dict[str, Any]]]:
+    ) -> list[dict[str, Any]] | None:
         """Return SARIF results overlapping the given file and line range.
 
         Returns None on cache miss (file not in any prior SARIF).
@@ -116,7 +118,7 @@ class SarifCache:
         ]
 
     @classmethod
-    def from_directory(cls, out_dir: Path) -> "SarifCache":
+    def from_directory(cls, out_dir: Path) -> SarifCache:
         """Load all .sarif files from out_dir/scan/."""
         cache = cls()
         scan_dir = out_dir / "scan"
@@ -160,16 +162,14 @@ def _normalize_sarif_path(uri_or_path: str) -> str:
     insertion keys regardless of how the caller spells the path.
     """
     p = uri_or_path
-    if p.startswith("file://"):
-        p = p[len("file://"):]
+    p = p.removeprefix("file://")
     p = p.lstrip("/")
-    if p.startswith("./"):
-        p = p[2:]
+    p = p.removeprefix("./")
     return p.replace("\\", "/")
 
 
 def _sarif_result_in_range(
-    result: Dict[str, Any], line_start: int, line_end: int,
+    result: dict[str, Any], line_start: int, line_end: int,
 ) -> bool:
     locs = result.get("locations") or [{}]
     loc = locs[0] if locs else {}
@@ -183,7 +183,7 @@ def _sarif_result_in_range(
 
 
 def _match_in_range(
-    match: Dict[str, Any], line_start: int, line_end: int,
+    match: dict[str, Any], line_start: int, line_end: int,
 ) -> bool:
     """Return True if a match dict falls within the function line range.
 
@@ -201,7 +201,7 @@ def _match_in_range(
 
 def _check_path_containment(
     target_path: Path, file_path: str, tool: str,
-) -> Optional[SweepResult]:
+) -> SweepResult | None:
     """Return an error SweepResult if file_path escapes target_path."""
     if safe_join(target_path, file_path) is None:
         return SweepResult(
@@ -220,14 +220,14 @@ class SweepResult:
     file_path: str
     function_name: str
     outcome: str  # confirmed | refuted | error | inconclusive
-    matches: List[Dict[str, Any]] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-    rule_id: Optional[str] = None
-    raw_output: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None
+    matches: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    rule_id: str | None = None
+    raw_output: str | None = None
+    details: dict[str, Any] | None = None
 
-    def to_log_entry(self) -> Dict[str, Any]:
-        entry: Dict[str, Any] = {
+    def to_log_entry(self) -> dict[str, Any]:
+        entry: dict[str, Any] = {
             "action": "sweep",
             "key": f"{self.file_path}:{self.function_name}",
             "file": self.file_path,
@@ -294,7 +294,7 @@ def run_semgrep_sweep(
         )
 
     try:
-        from packages.semgrep.runner import run_rule, is_available
+        from packages.semgrep.runner import is_available, run_rule
 
         if not is_available():
             return SweepResult(
@@ -385,7 +385,7 @@ def run_semgrep_sweep(
             errors=result.errors,
             details={"reason": capped_reason} if capped_reason else None,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return SweepResult(
             tool="semgrep",
             file_path=file_path,
@@ -544,9 +544,9 @@ def run_coccinelle_sweep(
     file_path: str,
     function_name: str,
     cocci_rule: str,
-    defines: Optional[Dict[str, str]] = None,
-    line_start: Optional[int] = None,
-    line_end: Optional[int] = None,
+    defines: dict[str, str] | None = None,
+    line_start: int | None = None,
+    line_end: int | None = None,
     domain_vocab: Any = None,
 ) -> SweepResult:
     """Run a Coccinelle rule against a single C file.
@@ -576,7 +576,7 @@ def run_coccinelle_sweep(
         )
 
     try:
-        from packages.coccinelle.runner import run_rule, is_available
+        from packages.coccinelle.runner import is_available, run_rule
 
         if not is_available():
             return SweepResult(
@@ -590,13 +590,11 @@ def run_coccinelle_sweep(
         effective_rule = cocci_rule
         _rendered_tmp = None
         if domain_vocab is not None:
-            try:
+            with contextlib.suppress(Exception):
                 from engine.coccinelle.vocab_renderer import render as _render_cocci
                 _rendered_tmp = _render_cocci(Path(cocci_rule), domain_vocab)
                 if _rendered_tmp is not None:
                     effective_rule = str(_rendered_tmp)
-            except Exception:
-                pass
 
         try:
             result = run_rule(
@@ -604,6 +602,9 @@ def run_coccinelle_sweep(
                 effective_rule,
                 defines=defines or {},
                 timeout=120,
+                # In-repo engine/coccinelle rules via cwe_dispatch
+                # (code trust) — @script:python blocks are trusted.
+                allow_scripting=True,
             )
         finally:
             if _rendered_tmp is not None:
@@ -632,7 +633,7 @@ def run_coccinelle_sweep(
             rule_id=cocci_rule,
             errors=result.errors if hasattr(result, "errors") else [],
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return SweepResult(
             tool="coccinelle",
             file_path=file_path,
@@ -725,7 +726,7 @@ def run_smt_sweep(
     file_path: str,
     function_name: str,
     verb: str,
-    smt_args: Dict[str, Any],
+    smt_args: dict[str, Any],
 ) -> SweepResult:
     """Run an SMT verb shim and classify the result.
 
@@ -773,8 +774,8 @@ def run_smt_sweep(
                 function_name=function_name,
                 outcome="error",
                 errors=[
-                    f"invalid smt_args key {key!r}: "
-                    "must be alphanumeric/underscore/hyphen"
+                    (f"invalid smt_args key {key!r}: "
+                     "must be alphanumeric/underscore/hyphen")
                 ],
             )
         flag = f"--{key}"
@@ -803,6 +804,7 @@ def run_smt_sweep(
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
             env=safe_env,
         )
         raw = proc.stdout.strip()
@@ -865,7 +867,7 @@ def run_smt_sweep(
             errors=["SMT solver timed out (60s)"],
             rule_id=f"smt:{verb}",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return SweepResult(
             tool="smt",
             file_path=file_path,
@@ -949,14 +951,13 @@ def _smt_verb_in_subprocess(
         proc = subprocess.run(
             [sys.executable, "-c", _SMT_VERB_CHILD_SCRIPT],
             input=payload, capture_output=True, timeout=timeout,
+            check=False,
         )
         if proc.returncode == 0:
-            try:
+            with contextlib.suppress(Exception):
                 sr = pickle.loads(proc.stdout)
                 if isinstance(sr, SweepResult):
                     return sr
-            except Exception:
-                pass
         logger.warning(
             "SMT subprocess exited %d for %s:%s verb=%s",
             proc.returncode, file_path, function_name, verb,
@@ -1296,7 +1297,7 @@ def _run_smt_verb_inner(
             rule_id=f"smt:{verb}",
             raw_output=_json.dumps(result),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return SweepResult(
             tool="smt", file_path=file_path,
             function_name=function_name, outcome="error",
@@ -1489,7 +1490,7 @@ def _extract_arith_operator(hypothesis: str) -> str:
     return "+"
 
 
-def _extract_ptr_operand(hypothesis: str) -> Optional[str]:
+def _extract_ptr_operand(hypothesis: str) -> str | None:
     """Extract pointer name from hypothesis like 'NULL pointer dereference of ptr'."""
     import re
     m = re.search(r"[`'\"]?(\w+)[`'\"]?\s+(?:is\s+)?(?:null|NULL)", hypothesis)
@@ -1634,7 +1635,7 @@ def run_codeql_sweep(
     file_path: str,
     function_name: str,
     query_path: str,
-    database_path: Optional[str] = None,
+    database_path: str | None = None,
     line_start: int = 0,
     line_end: int = 0,
 ) -> SweepResult:
@@ -1736,7 +1737,7 @@ def run_codeql_sweep(
             outcome="error",
             errors=["core.dataflow.codeql_augmented_run not available"],
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return SweepResult(
             tool="codeql",
             file_path=file_path,
@@ -1783,7 +1784,7 @@ def run_consistency_check(
         )
 
     try:
-        from packages.coccinelle.runner import run_rule, is_available
+        from packages.coccinelle.runner import is_available, run_rule
 
         if not is_available():
             return SweepResult(
@@ -1797,13 +1798,11 @@ def run_consistency_check(
         effective_rule = cocci_rule
         _rendered_tmp = None
         if domain_vocab is not None:
-            try:
+            with contextlib.suppress(Exception):
                 from engine.coccinelle.vocab_renderer import render as _render_cocci
                 _rendered_tmp = _render_cocci(Path(cocci_rule), domain_vocab)
                 if _rendered_tmp is not None:
                     effective_rule = str(_rendered_tmp)
-            except Exception:
-                pass
 
         try:
             result = run_rule(
@@ -1811,6 +1810,9 @@ def run_consistency_check(
                 effective_rule,
                 defines={"func": function_name},
                 timeout=300,
+                # In-repo engine/coccinelle rules via cwe_dispatch
+                # (code trust) — @script:python blocks are trusted.
+                allow_scripting=True,
             )
         finally:
             if _rendered_tmp is not None:
@@ -1840,7 +1842,7 @@ def run_consistency_check(
             outcome="error",
             errors=["coccinelle package not available"],
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return SweepResult(
             tool="coccinelle_consistency",
             file_path="<codebase>",
@@ -1925,7 +1927,7 @@ def run_joern_sweep(
         from packages.joern.lang_config import detect_language, profile_for
         _lang = detect_language(file_path)
         _depth = profile_for(_lang).max_call_depth_targeted
-    except Exception:
+    except Exception:  # noqa: BLE001
         _depth = 2
 
     flows = run_taint_query(
@@ -1960,13 +1962,13 @@ def run_joern_sweep(
 def run_joern_pre_sweep(
     target_path: Path,
     checklist: dict,
-    cache_dir: Optional[Path] = None,
-    on_progress: Optional[Callable] = None,
+    cache_dir: Path | None = None,
+    on_progress: Callable | None = None,
     stall_timeout: int = 600,
     query_timeout: int = 300,
-    heap_mb: Optional[int] = None,
+    heap_mb: int | None = None,
     server=None,
-) -> Dict[str, list]:
+) -> dict[str, list]:
     """Run standard taint queries before the LLM loop.
 
     Builds the CPG once and runs the standard_sinks.sc query.
@@ -2007,7 +2009,7 @@ def run_joern_pre_sweep(
         if result.errors:
             logger.warning("joern pre-sweep errors: %s", result.errors)
 
-        flows_by_key: Dict[str, list] = {}
+        flows_by_key: dict[str, list] = {}
         for flow in result.flows:
             if flow.steps:
                 step_file = flow.steps[0].file
@@ -2035,7 +2037,7 @@ def run_joern_pre_sweep(
         if result.errors:
             logger.warning("joern pre-sweep errors: %s", result.errors)
 
-        flows_by_key: Dict[str, list] = {}
+        flows_by_key: dict[str, list] = {}
         for flow in result.flows:
             if flow.steps:
                 step_file = flow.steps[0].file
@@ -2050,7 +2052,7 @@ def run_joern_pre_sweep(
         cleanup_cpg(cpg)
 
 
-_MECHANICAL_CHECK_PATTERNS: Dict[str, str] = {
+_MECHANICAL_CHECK_PATTERNS: dict[str, str] = {
     "unchecked return": (
         "$X = $FUNC(...);\n"
         "...\n"
@@ -2072,7 +2074,7 @@ _MECHANICAL_CHECK_PATTERNS: Dict[str, str] = {
 }
 
 
-def mechanical_check_to_semgrep(check: str) -> Optional[str]:
+def mechanical_check_to_semgrep(check: str) -> str | None:
     """Map a mechanical_check string to a Semgrep pattern.
 
     Returns the pattern string if the check maps to a known shape,

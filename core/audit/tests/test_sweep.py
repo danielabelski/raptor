@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -10,9 +11,9 @@ from core.audit.sweep import (
     SarifCache,
     SweepResult,
     mechanical_check_to_semgrep,
+    run_codeql_sweep,
     run_consistency_check,
     run_smt_sweep,
-    run_codeql_sweep,
 )
 
 
@@ -250,13 +251,14 @@ class TestConsistencyCheck:
 
     def test_no_findings_means_refuted(self, monkeypatch, tmp_path: Path):
         """When coccinelle finds no inconsistencies, outcome is refuted."""
-        import types
         import sys
+        import types
 
         class FakeResult:
-            matches = []
+            matches: ClassVar[list] = []
 
-        def fake_run_rule(target, rule, *, defines=None, timeout=300):
+        def fake_run_rule(target, rule, *, defines=None, timeout=300,
+                          allow_scripting=False):
             return FakeResult()
 
         def fake_is_available():
@@ -277,13 +279,14 @@ class TestConsistencyCheck:
 
     def test_findings_means_confirmed(self, monkeypatch, tmp_path: Path):
         """When coccinelle finds inconsistencies, outcome is confirmed."""
-        import types
         import sys
+        import types
 
         class FakeResult:
-            matches = [{"file": "src/a.c", "line": 10}]
+            matches: ClassVar[list] = [{"file": "src/a.c", "line": 10}]
 
-        def fake_run_rule(target, rule, *, defines=None, timeout=300):
+        def fake_run_rule(target, rule, *, defines=None, timeout=300,
+                          allow_scripting=False):
             return FakeResult()
 
         def fake_is_available():
@@ -304,15 +307,16 @@ class TestConsistencyCheck:
 
     def test_passes_function_name_as_define(self, monkeypatch, tmp_path: Path):
         """Verifies function_name is passed as -D func=<name>."""
-        import types
         import sys
+        import types
 
         captured_defines = {}
 
         class FakeResult:
-            matches = []
+            matches: ClassVar[list] = []
 
-        def fake_run_rule(target, rule, *, defines=None, timeout=300):
+        def fake_run_rule(target, rule, *, defines=None, timeout=300,
+                          allow_scripting=False):
             captured_defines.update(defines or {})
             return FakeResult()
 
@@ -443,7 +447,7 @@ class TestExtractOverflowToOobOperands:
     def test_stop_words_not_matched(self):
         from core.audit.sweep import _extract_overflow_to_oob_operands
         h = "The loop writes buf[write_pos] where write_pos derives from total_records and elem_size without an overflow check"
-        count, elem, index = _extract_overflow_to_oob_operands(h, "")
+        count, _elem, index = _extract_overflow_to_oob_operands(h, "")
         assert count != "and"
         assert index != "writes"
         if count is not None:
@@ -463,13 +467,13 @@ class TestExtractOverflowToOobOperands:
         from core.audit.sweep import _extract_overflow_to_oob_operands
         h = "the multiplication overflows and buf_offset indexes past the buffer"
         src = "int nelem = get_count();"
-        count, elem, index = _extract_overflow_to_oob_operands(h, src)
+        count, _elem, _index = _extract_overflow_to_oob_operands(h, src)
         assert count == "nelem"
 
     def test_default_elem_size(self):
         from core.audit.sweep import _extract_overflow_to_oob_operands
         h = "num_items multiplied by something overflows, write_offset used as index"
-        count, elem, index = _extract_overflow_to_oob_operands(h, "")
+        _count, elem, _index = _extract_overflow_to_oob_operands(h, "")
         assert elem == "4"
 
 
@@ -569,7 +573,7 @@ class TestRunJoernPreSweep:
         from core.audit.sweep import run_joern_pre_sweep
 
         try:
-            import packages.joern.prereqs as prereqs
+            from packages.joern import prereqs
             monkeypatch.setattr(prereqs, "is_available", lambda: False)
         except ImportError:
             pass

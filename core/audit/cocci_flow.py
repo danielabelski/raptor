@@ -554,6 +554,9 @@ def run_flow_cocci_sweep(
                 Path(tmp_name),
                 no_includes=True,
                 timeout=timeout,
+                # In-repo flow templates (code trust) — their rendered
+                # @script:python reporting blocks are trusted.
+                allow_scripting=True,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to outcome=error, never crash
             return SweepResult(

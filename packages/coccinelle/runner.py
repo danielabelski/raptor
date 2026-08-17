@@ -6,6 +6,13 @@ rules to emit structured COCCIRESULT lines on stdout that we parse here.
 For rules that already contain their own Python scripting (human-authored
 static rules), we parse their output directly. For rules without scripting,
 we wrap them with a reporting harness.
+
+Trust posture: rules with their own scripting blocks execute code inside
+spatch, so they only run when the caller passes ``allow_scripting=True``
+(reserved for in-repo, code-trust rules). Untrusted / LLM-synthesised
+rules keep the default False and are refused with a structured error;
+they rely on the injected harness instead. The default subprocess runner
+routes spatch through core.sandbox with network blocked.
 """
 
 import json
@@ -46,6 +53,74 @@ _COCCI_POS_VAR_DENY = frozenset({
     "compile", "globals", "locals", "vars", "getattr", "setattr",
     "hasattr", "delattr",
 })
+
+# SmPL scripting-block headers. `@script:python@`, `@script:ocaml@`,
+# `@initialize:python@`, and `@finalize:python@` blocks execute code
+# inside the spatch process — an LLM-synthesised or otherwise untrusted
+# rule carrying one is a code-execution vector, not a pattern. The
+# matcher anchors on the rule-header syntax (line-start `@`, optional
+# whitespace, keyword, `:`), so a comment merely *mentioning*
+# "@script:python" does not trip it. RAPTOR's own reporting harness is
+# appended by _inject_harness AFTER the gate and is exempt by
+# construction.
+_SCRIPT_BLOCK_RE = re.compile(
+    r"^[ \t]*@[ \t]*(?:script|initialize|finalize)[ \t]*:",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# Structured-refusal message shared by run_rule / run_rules_batched.
+_SCRIPT_BLOCK_REFUSAL = (
+    "Rule contains a scripting block (@script:/@initialize:/@finalize:) "
+    "and allow_scripting=False — refused before spatch invocation. "
+    "Scripting blocks execute code inside spatch; pass "
+    "allow_scripting=True only for in-repo, code-trust rules."
+)
+
+
+def contains_script_block(rule_text: str) -> bool:
+    """True when ``rule_text`` declares an SmPL scripting block
+    (``@script:``, ``@initialize:``, or ``@finalize:`` rule header).
+
+    Shared gate: the runner refuses such rules unless the caller
+    passes ``allow_scripting=True``, and checker synthesis uses the
+    same predicate to reject LLM-emitted rules before they are
+    persisted to disk.
+    """
+    return bool(_SCRIPT_BLOCK_RE.search(rule_text))
+
+
+def _sandboxed_run(cmd, **kwargs):
+    """Default subprocess runner: spatch inside core.sandbox with
+    network blocked.
+
+    Mirrors packages/codeql/query_runner.py: the rule text may carry
+    embedded scripting (trusted in-repo rules, or the harness we
+    inject), so the process gets no network and the standard sandbox
+    filesystem posture. ``tool_paths`` exposes the spatch install dir
+    so mount-ns mode keeps the binary visible when it is not under
+    /usr/bin. Sandbox layers degrade internally when unavailable;
+    a SandboxSetupError propagates — fail loud, never mask as a
+    benign result. Callers that pass an explicit ``subprocess_runner``
+    bypass this entirely (tests use stubs; adapters bring their own
+    sandbox wrapper).
+    """
+    from core.sandbox import run as sandbox_run
+
+    sp = _spatch_path()
+    tool_paths = [str(Path(sp).resolve().parent)] if sp else None
+    # env_caller_filtered: every caller in this module derives its env
+    # from get_safe_env() (plus the private scratch TMPDIR), so the
+    # sandbox's "unfiltered caller env" warning does not apply — and
+    # would otherwise fire once per spatch invocation.
+    kwargs.setdefault("env_caller_filtered", True)
+    return sandbox_run(
+        cmd,
+        block_network=True,
+        tool_paths=tool_paths,
+        caller_label="coccinelle-runner",
+        **kwargs,
+    )
+
 
 # Resolve `spatch` ONCE per process via shutil.which and cache the
 # absolute path. Pre-fix every subprocess call passed the bare
@@ -148,6 +223,7 @@ def run_rule(
     env: dict[str, str] | None = None,
     defines: dict[str, str] | None = None,
     subprocess_runner=None,
+    allow_scripting: bool = False,
 ) -> SpatchResult:
     """Run a single Coccinelle rule against a target.
 
@@ -159,12 +235,21 @@ def run_rule(
         timeout: Per-rule timeout in seconds.
         env: Subprocess environment (use get_safe_env() for untrusted targets).
         defines: Virtual identifier bindings passed as -D key=value.
-        subprocess_runner: Optional callable replacing subprocess.run. Must
-            accept the same kwargs (capture_output, text, timeout, env,
-            input) and return an object with returncode/stdout/stderr.
-            Defaults to subprocess.run. Used by callers that need to
-            engage a sandbox (e.g. core.sandbox.run) without reimplementing
-            the spatch invocation logic.
+        subprocess_runner: Optional callable replacing the default sandboxed
+            runner. Must accept the same kwargs (capture_output, text,
+            timeout, env, input) and return an object with
+            returncode/stdout/stderr. Defaults to ``_sandboxed_run``
+            (core.sandbox with network blocked). Callers that need a
+            different isolation posture pass their own wrapper; tests
+            pass stubs.
+        allow_scripting: When False (default), a rule declaring an SmPL
+            scripting block (``@script:`` / ``@initialize:`` /
+            ``@finalize:``) is refused with a structured error before any
+            tempfile write or spatch invocation — those blocks execute
+            code inside spatch. Pass True only for in-repo, code-trust
+            rules (engine/coccinelle shipped rules, cocci_flow templates).
+            RAPTOR's own injected reporting harness is added after this
+            gate and is exempt by construction.
 
     Returns:
         SpatchResult with matches parsed from COCCIRESULT lines.
@@ -208,6 +293,16 @@ def run_rule(
         )
 
     rule_text = rule.read_text(encoding="utf-8")
+
+    # Scripting gate — refuse before any tempfile write or spatch
+    # invocation. See contains_script_block / allow_scripting docs.
+    if not allow_scripting and contains_script_block(rule_text):
+        return SpatchResult(
+            rule=rule_name, rule_path=str(rule),
+            errors=[_SCRIPT_BLOCK_REFUSAL],
+            returncode=-1,
+        )
+
     needs_harness = RESULT_PREFIX not in rule_text and "script:python" not in rule_text
 
     # If the rule needs harness injection, the modified text has to
@@ -276,7 +371,7 @@ def run_rule(
     # at its own dir and delete it unconditionally in the finally.
     _scratch_dir = tempfile.mkdtemp(prefix="raptor-cocci-tmp-")
     run_env["TMPDIR"] = _scratch_dir
-    runner = subprocess_runner or subprocess.run
+    runner = subprocess_runner or _sandboxed_run
 
     start = time.monotonic()
     # `cwd=target.parent if file else target if dir`. spatch
@@ -382,8 +477,12 @@ def run_rules(
     env: dict[str, str] | None = None,
     defines: dict[str, str] | None = None,
     subprocess_runner=None,
+    allow_scripting: bool = False,
 ) -> list[SpatchResult]:
     """Run all .cocci rules in a directory against a target.
+
+    ``allow_scripting`` is forwarded to run_rule — pass True only for
+    in-repo, code-trust rule directories.
 
     Returns one SpatchResult per rule, in filename order.
     """
@@ -414,6 +513,7 @@ def run_rules(
             env=env,
             defines=defines,
             subprocess_runner=subprocess_runner,
+            allow_scripting=allow_scripting,
         )
         results.append(result)
 
@@ -427,13 +527,18 @@ def run_rules_batched(
     timeout: int = 300,
     env: dict[str, str] | None = None,
     subprocess_runner=None,
+    allow_scripting: bool = False,
 ) -> dict[str, SpatchResult]:
     """Run multiple .cocci rules in a single spatch invocation.
 
     Concatenates rule files into one temp file so spatch parses the C
     AST once.  Results are demultiplexed by the ``rule`` field in each
     COCCIRESULT line.  Rules that already contain @script:python@ blocks
-    emitting COCCIRESULT are required (all engine/coccinelle/rules/ do).
+    emitting COCCIRESULT are required (all engine/coccinelle/rules/ do),
+    so batch callers running the shipped rule set must pass
+    ``allow_scripting=True``. With the default False, any rule declaring
+    a scripting block gets a structured refusal result (no execution);
+    the remaining rules still run.
 
     Returns a dict keyed by rule stem name → SpatchResult.
     Falls back to per-rule run_rule when only one rule is given.
@@ -445,6 +550,7 @@ def run_rules_batched(
         result = run_rule(
             target, rules[0], timeout=timeout,
             env=env, subprocess_runner=subprocess_runner,
+            allow_scripting=allow_scripting,
         )
         return {rules[0].stem: result}
 
@@ -460,10 +566,25 @@ def run_rules_batched(
 
     parts = []
     rule_stems = []
+    batched_rules = []
+    refused: dict[str, SpatchResult] = {}
     for r in rules:
         text = r.read_text(encoding="utf-8")
+        # Scripting gate — same policy as run_rule, applied before the
+        # batch tempfile is written. Refused rules never reach spatch.
+        if not allow_scripting and contains_script_block(text):
+            refused[r.stem] = SpatchResult(
+                rule=r.stem, rule_path=str(r),
+                errors=[_SCRIPT_BLOCK_REFUSAL],
+                returncode=-1,
+            )
+            continue
         parts.append(f"// --- begin {r.stem} ---\n{text}\n")
         rule_stems.append(r.stem)
+        batched_rules.append(r)
+
+    if not rule_stems:
+        return refused
 
     combined = "\n".join(parts)
 
@@ -479,13 +600,15 @@ def run_rules_batched(
             Path(tmp_name).unlink()
         except OSError:
             pass
-        return {
+        out = {
             s: SpatchResult(
                 rule=s, errors=["failed to write batch file"],
                 returncode=-1,
             )
             for s in rule_stems
         }
+        out.update(refused)
+        return out
 
     target = Path(target)
     cmd = [_spatch_path() or _SPATCH_BIN, "--sp-file", str(tmp_path)]
@@ -499,7 +622,7 @@ def run_rules_batched(
     # Same private-TMPDIR scratch as run_rule — see the comment there.
     _scratch_dir = tempfile.mkdtemp(prefix="raptor-cocci-tmp-")
     run_env["TMPDIR"] = _scratch_dir
-    runner = subprocess_runner or subprocess.run
+    runner = subprocess_runner or _sandboxed_run
 
     if target.is_file():
         spatch_cwd = target.parent
@@ -539,7 +662,7 @@ def run_rules_batched(
             for m in all_matches:
                 if m.rule in by_rule:
                     by_rule[m.rule].append(m)
-            return {
+            out = {
                 s: SpatchResult(
                     rule=s, matches=by_rule.get(s, []),
                     errors=[f"Batch timeout after {timeout}s"],
@@ -547,13 +670,17 @@ def run_rules_batched(
                 )
                 for s in rule_stems
             }
+            out.update(refused)
+            return out
         except OSError as e:
-            return {
+            out = {
                 s: SpatchResult(
                     rule=s, errors=[str(e)], returncode=-1,
                 )
                 for s in rule_stems
             }
+            out.update(refused)
+            return out
 
         elapsed = int((time.monotonic() - start) * 1000)
         all_matches = _dedup_matches(
@@ -567,7 +694,7 @@ def run_rules_batched(
             if m.rule in by_rule:
                 by_rule[m.rule].append(m)
 
-        return {
+        out = {
             s: SpatchResult(
                 rule=s, rule_path=str(r),
                 matches=by_rule.get(s, []),
@@ -575,8 +702,10 @@ def run_rules_batched(
                 elapsed_ms=elapsed,
                 returncode=proc.returncode,
             )
-            for s, r in zip(rule_stems, rules)
+            for s, r in zip(rule_stems, batched_rules)
         }
+        out.update(refused)
+        return out
     finally:
         try:
             Path(tmp_name).unlink()

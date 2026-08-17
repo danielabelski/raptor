@@ -15,9 +15,10 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Protocol
 
 from core.atomic_fs import write_text_atomically
+from packages.coccinelle.runner import contains_script_block
 
 from .languages import detect_engine, fallback_engine
 from .models import (
@@ -61,7 +62,7 @@ _SEED_SNIPPET_MAX_BYTES = 8_192
 _RULE_TOO_LOOSE_THRESHOLD = 200
 
 
-def _validate_seed_path(file_path: str) -> Optional[str]:
+def _validate_seed_path(file_path: str) -> str | None:
     """Reject seed file paths that could escape ``repo_root`` or
     that would refer to an absolute location. Mirrors the defence
     in ``core.annotations`` — caller-supplied path that we then
@@ -81,7 +82,7 @@ def _validate_seed_path(file_path: str) -> Optional[str]:
     return None
 
 
-def _validate_rule_body(body: str) -> Optional[str]:
+def _validate_rule_body(body: str) -> str | None:
     """Reject rule bodies with control chars, oversized lines, or
     known-invalid syntax.  Returns an error string on rejection, or
     None if OK."""
@@ -114,7 +115,7 @@ def _fixup_cocci_body(body: str) -> str:
     return _INVALID_WHEN_RE.sub("", body)
 
 
-def _validate_cocci_body(body: str) -> Optional[str]:
+def _validate_cocci_body(body: str) -> str | None:
     """Catch known-invalid Coccinelle syntax before invoking spatch.
     Returns an error string on rejection, or None if OK."""
     if re.search(r"when\s*!=\s*if\s*\(", body):
@@ -122,6 +123,29 @@ def _validate_cocci_body(body: str) -> Optional[str]:
             "invalid SmPL: 'when != if (...)' — when clauses cannot "
             "negate compound statements; use 'when != E == NULL' or "
             "'when != !E' instead"
+        )
+    return None
+
+
+def _reject_cocci_scripting(body: str) -> str | None:
+    """Refuse Coccinelle rule bodies that declare scripting blocks.
+
+    ``@script:`` / ``@initialize:`` / ``@finalize:`` blocks execute
+    code inside spatch — an LLM-synthesised rule carrying one is a
+    code-execution vector and must never be persisted to the checkers
+    library. Shares the runner's matcher (contains_script_block) so
+    the gate here and the runner's refusal agree on what counts as a
+    scripting block. RAPTOR injects its own COCCIRESULT reporting
+    harness at run time; rules need only declarative SmPL.
+
+    Returns an error string on rejection, or None if OK.
+    """
+    if contains_script_block(body):
+        return (
+            "rule body declares a scripting block (@script:/"
+            "@initialize:/@finalize:) — LLM-synthesised rules must be "
+            "declarative SmPL only; RAPTOR injects the reporting "
+            "harness itself"
         )
     return None
 
@@ -137,8 +161,8 @@ class LLMCallable(Protocol):
     """
 
     def __call__(
-        self, prompt: str, schema: Dict[str, Any], system_prompt: str,
-    ) -> Optional[Dict[str, Any]]:
+        self, prompt: str, schema: dict[str, Any], system_prompt: str,
+    ) -> dict[str, Any] | None:
         ...
 
 
@@ -189,7 +213,7 @@ def _write_rule(
 
 def _run_semgrep(
     rule_path: Path, target: Path,
-) -> Tuple[List[Match], List[str]]:
+) -> tuple[list[Match], list[str]]:
     """Run a Semgrep rule against ``target`` (file or directory).
     Returns ``(matches, errors)``.
 
@@ -199,7 +223,7 @@ def _run_semgrep(
     """
     from packages.semgrep.runner import run_rule
     result = run_rule(target, str(rule_path))
-    matches: List[Match] = []
+    matches: list[Match] = []
     target_resolved = target.resolve()
     for f in result.findings or []:
         # SemgrepFinding has attribute access — file, line, etc.
@@ -214,16 +238,16 @@ def _run_semgrep(
         except (ValueError, OSError):
             rel = path
         matches.append(Match(file=rel, line=line, snippet=""))
-    errors: List[str] = list(result.errors or [])
+    errors: list[str] = list(result.errors or [])
     return matches, errors
 
 
 def _run_coccinelle(
     rule_path: Path, target: Path,
-) -> Tuple[List[Match], List[str]]:
+) -> tuple[list[Match], list[str]]:
     from packages.coccinelle.runner import run_rule
     result = run_rule(target, rule_path)
-    matches: List[Match] = []
+    matches: list[Match] = []
     for m in getattr(result, "matches", []) or []:
         # SpatchMatch shape — access defensively.
         path = getattr(m, "file", "") or getattr(m, "path", "") or ""
@@ -242,7 +266,7 @@ def _run_coccinelle(
 
 def _run_engine(
     rule: SynthesisedRule, rule_path: Path, target: Path,
-) -> Tuple[List[Match], List[str]]:
+) -> tuple[list[Match], list[str]]:
     """Dispatch to engine adapter, swallowing any unexpected
     exception (ImportError if scanner package not installed,
     runtime errors from the runner) into the returned ``errors``
@@ -253,7 +277,7 @@ def _run_engine(
         if rule.engine == "coccinelle":
             return _run_coccinelle(rule_path, target)
         return [], [f"unsupported engine: {rule.engine!r}"]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return [], [f"{rule.engine} adapter error: {e}"]
 
 
@@ -265,8 +289,8 @@ def _run_engine(
 def _propose_rule(
     seed: SeedBug, engine: str, attempt: int, llm: LLMCallable,
     retry_feedback: str = "",
-    prior_fps: Tuple[Match, ...] = (),
-) -> Tuple[Optional[SynthesisedRule], Optional[str]]:
+    prior_fps: tuple[Match, ...] = (),
+) -> tuple[SynthesisedRule | None, str | None]:
     """Single LLM round-trip producing one candidate rule.
     Returns ``(rule, error)``; exactly one is set."""
     prompt = build_synthesis_prompt(
@@ -277,7 +301,7 @@ def _propose_rule(
     try:
         data = llm(prompt, SYNTHESIS_SCHEMA,
                    synthesis_system_for_engine(engine))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return None, f"llm error: {e}"
     if not isinstance(data, dict):
         return None, "llm returned non-dict response"
@@ -298,6 +322,11 @@ def _propose_rule(
         return None, body_err
     if engine == "coccinelle":
         body = _fixup_cocci_body(body)
+        script_err = _reject_cocci_scripting(body)
+        if script_err:
+            # Rejected before _write_rule — a scripted rule never
+            # reaches the library on disk.
+            return None, script_err
     return SynthesisedRule(
         engine=engine,
         rule_id=_make_rule_id(seed, attempt),
@@ -311,7 +340,7 @@ def _propose_rule(
 
 def _positive_control(
     seed: SeedBug, rule_path: Path, repo_root: Path, engine: str,
-) -> Tuple[bool, List[str]]:
+) -> tuple[bool, list[str]]:
     """Run rule on the seed's source file alone; require at least
     one match within the seed's line range."""
     seed_file = repo_root / seed.file
@@ -334,14 +363,14 @@ def _fixture_ext(seed: SeedBug, engine: str) -> str:
 
 def _dual_control(
     rule: SynthesisedRule, rule_path: Path, engine: str, ext: str,
-) -> Tuple[bool, List[str]]:
+) -> tuple[bool, list[str]]:
     """Run the rule against LLM-generated positive and negative test
     fixtures. Both must be present; the rule must match the positive
     and must NOT match the negative."""
     if not rule.test_positive or not rule.test_negative:
         return False, ["dual control: LLM did not emit test fixtures"]
 
-    errors: List[str] = []
+    errors: list[str] = []
     dummy = SynthesisedRule(engine=engine, rule_id="probe", body="")
 
     with tempfile.TemporaryDirectory(prefix="raptor_dc_") as tmp:
@@ -485,14 +514,14 @@ def _is_seed_match(seed: SeedBug, m: Match) -> bool:
 
 
 def _triage(
-    seed: SeedBug, rule: SynthesisedRule, matches: List[Match],
+    seed: SeedBug, rule: SynthesisedRule, matches: list[Match],
     llm: LLMCallable, max_calls: int,
-) -> Tuple[List[MatchTriage], List[str]]:
+) -> tuple[list[MatchTriage], list[str]]:
     """LLM-classify each match. Bounded by ``max_calls`` to cap cost.
     Matches beyond the budget are recorded with ``status='skipped'``.
     """
-    out: List[MatchTriage] = []
-    errors: List[str] = []
+    out: list[MatchTriage] = []
+    errors: list[str] = []
     for i, m in enumerate(matches):
         if i >= max_calls:
             out.append(MatchTriage(
@@ -503,7 +532,7 @@ def _triage(
         prompt = build_triage_prompt(seed, rule, m)
         try:
             data = llm(prompt, TRIAGE_SCHEMA, TRIAGE_SYSTEM)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             errors.append(f"triage llm error for {m.file}:{m.line}: {e}")
             out.append(MatchTriage(
                 match=m, status="uncertain",
@@ -539,7 +568,7 @@ def synthesise_and_run(
     max_matches: int = 50,
     triage_each: bool = False,
     max_triage_calls: int = 50,
-    prior_fps: Tuple[Match, ...] = (),
+    prior_fps: tuple[Match, ...] = (),
 ) -> CheckerSynthesisResult:
     """End-to-end: propose → validate → run → optionally triage.
 
@@ -585,8 +614,8 @@ def synthesise_and_run(
         engines_to_try.append(alt)
 
     result = CheckerSynthesisResult(seed=seed)
-    rule: Optional[SynthesisedRule] = None
-    rule_path: Optional[Path] = None
+    rule: SynthesisedRule | None = None
+    rule_path: Path | None = None
 
     for engine in engines_to_try:
         if rule is not None:
@@ -740,7 +769,7 @@ def synthesise_and_run(
 # ---------------------------------------------------------------------------
 
 
-def _fp_rate(result: CheckerSynthesisResult) -> Optional[float]:
+def _fp_rate(result: CheckerSynthesisResult) -> float | None:
     """Fraction of triaged matches classified as false positive.
 
     Returns None when the rate can't be computed (no triage,
@@ -807,9 +836,9 @@ def synthesise_with_refinement(
             errors=["max_iterations must be > 0"],
         )
 
-    prior_fps: List[Match] = []
-    best: Optional[CheckerSynthesisResult] = None
-    best_rate: Optional[float] = None
+    prior_fps: list[Match] = []
+    best: CheckerSynthesisResult | None = None
+    best_rate: float | None = None
 
     for iteration in range(max_iterations):
         result = synthesise_and_run(

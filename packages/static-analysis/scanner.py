@@ -1559,6 +1559,9 @@ def run_cocci(
         rules_dir=effective_rules_dir,
         timeout_per_rule=timeout,
         no_includes=True,  # operator targets are untrusted
+        # In-repo shipped engine/coccinelle rules (code trust) — their
+        # @script:python reporting blocks are trusted.
+        allow_scripting=True,
     )
 
     sarif_doc = results_to_sarif(results, repo_path)

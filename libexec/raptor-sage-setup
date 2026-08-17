@@ -14,6 +14,11 @@
 #   9. Smoke-test the MCP wrapper.
 #  10. Capture the server's boot payload and record it as operator-authorized
 #      (.sage/boot-payload.authorized).
+#  11. Generate the per-install row-MAC key if absent — authenticates SAGE
+#      rows consumed mechanically (core/sage/rowmac.py). Lives at
+#      $XDG_DATA_HOME/raptor/rowmac.key (default ~/.local/share/raptor/)
+#      so no sandbox-readable target tree contains it. Never removed by
+#      uninstall; deleting it is the operator's reset.
 #
 # Uninstall (--uninstall):
 #   1. docker compose down (data volumes preserved).
@@ -167,6 +172,12 @@ SETTINGS_LOCAL="$RAPTOR_DIR/.claude/settings.local.json"
 SAGE_URL="http://localhost:8090"
 # Lives under .sage/ — already gitignored, per-machine SAGE state.
 AUTHORIZED_PAYLOAD="$RAPTOR_DIR/.sage/boot-payload.authorized"
+# Per-install HMAC key for mechanically consumed SAGE rows
+# (core/sage/rowmac.py). Deliberately OUTSIDE the repo tree — several
+# sandbox profiles grant children repo-root read, and a sandboxed
+# target that could read an in-repo key could mint valid row MACs.
+# Must resolve identically to core/sage/rowmac.py:_key_path().
+ROWMAC_KEY="${XDG_DATA_HOME:-$HOME/.local/share}/raptor/rowmac.key"
 
 # ─── proxy hygiene ──────────────────────────────────────────
 # In proxied environments (HTTP_PROXY/HTTPS_PROXY set) every localhost
@@ -820,6 +831,37 @@ authorize_boot_payload() {
     echo "  Surfaces: initialize.instructions, sage_inception.message"
 }
 
+ensure_rowmac_key() {
+    # Generate the per-install row-MAC key used by core/sage/rowmac.py
+    # to authenticate SAGE rows that drive mechanical decisions.
+    # 32 random bytes, directory 0700, file 0600. An existing key is
+    # never touched: there is no rotation — previously stamped rows must
+    # keep verifying, and deleting the key is the operator's explicit
+    # reset (existing rows demote to hints and re-earn their status).
+    # The library also creates this lazily on first store, so setup
+    # order does not matter; this just front-loads it.
+    if [ -f "$ROWMAC_KEY" ]; then
+        echo "SAGE row-MAC key already present: $ROWMAC_KEY"
+        return 0
+    fi
+    mkdir -p "$(dirname "$ROWMAC_KEY")"
+    chmod 700 "$(dirname "$ROWMAC_KEY")"
+    local tmp
+    tmp=$(mktemp "$(dirname "$ROWMAC_KEY")/.tmp.rowmac.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
+    chmod 600 "$tmp"
+    head -c 32 /dev/urandom > "$tmp"
+    # ln (not mv) so publication is exclusive: if the library's lazy
+    # O_EXCL create won the race between the -f check above and here,
+    # that key wins and the tmp copy is discarded — a clobbering mv
+    # would orphan any tokens already minted with the other key.
+    if ln "$tmp" "$ROWMAC_KEY" 2>/dev/null; then
+        echo "Generated SAGE row-MAC key: $ROWMAC_KEY"
+    else
+        echo "SAGE row-MAC key already present: $ROWMAC_KEY"
+    fi
+    rm -f "$tmp"
+}
+
 remove_mcp_entry() {
     [ -f "$MCP" ] || return 0
     # Same same-fs mktemp pattern as generate_mcp_entry.
@@ -1093,6 +1135,7 @@ install_sage() {
     enable_sage_env
     smoke_test_mcp
     authorize_boot_payload
+    ensure_rowmac_key
     grant_mcp_permissions
     echo
     echo "SAGE is up. Restart Claude Code so it picks up the MCP registration."

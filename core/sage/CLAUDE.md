@@ -81,6 +81,8 @@ flag. No prompt injection (recalled text dropped into an LLM prompt).
 | `store_study_concepts` / `recall_concepts_for_study` | Cross-project concept skip: skip LLM when per-evidence hashes match current source | `raptor-concepts-{key}` |
 | `store_teach_concepts` / `recall_concepts_for_teach` | Teach caching: store structured concepts from teach, recall for TEACH-0 skip gate | `raptor-concepts-{key}` |
 
+Rows written by these hooks are MAC-stamped (`core/sage/rowmac.py`, key at `$XDG_DATA_HOME/raptor/rowmac.key`, default `~/.local/share/raptor/rowmac.key` — kept outside every sandbox-readable tree); recall verifies the token over the decision fields before any mechanical effect — rows that fail verification (legacy pre-MAC, federated, or tampered) are hints only.
+
 ## When to use
 
 - **When scanning (SCA):** `recall_context_for_sca` fires pre-analysis; `store_sca_outcomes` fires post-analysis.

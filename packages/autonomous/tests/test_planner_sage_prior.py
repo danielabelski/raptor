@@ -2,14 +2,61 @@
 """FuzzingPlanner + SAGE mechanical prior integration."""
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from packages.autonomous.planner import FuzzingPlanner, FuzzingState
 
 
+def _stamped_strategy_row(strategy_id, confidence=0.9):
+    """Build a strategy-outcome row the way core.sage.hooks stores it,
+    including the row-MAC token that authorises mechanical flag use."""
+    from core.sage import rowmac
+    from core.sage.hooks import _afl_flags_from_text
+
+    content = (
+        f"Fuzzing strategy outcome for repo demo: "
+        f"strategy {strategy_id}, binary fingerprint abc123, "
+        f"duration 300s, executions 100000, unique crashes 2, "
+        f"hangs 0, exploitable crashes 1."
+    )
+    fields = {
+        "kind": "afl_flags",
+        "strategy": strategy_id,
+        "fingerprint": "abc123",
+        "flags": " ".join(_afl_flags_from_text(content)),
+    }
+    return {"content": rowmac.stamp(content, fields), "confidence": confidence}
+
+
 class TestPlannerSageMechanicalPrior(unittest.TestCase):
+    def setUp(self):
+        # Keep the row-MAC key out of the checkout's .sage/ state.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "core.sage.rowmac._key_path",
+            return_value=Path(self._tmp.name) / "rowmac.key",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_high_confidence_mopt_appends_extra_flags(self):
+        rows = [_stamped_strategy_row("mopt-havoc")]
+        planner = FuzzingPlanner(
+            memory=None,
+            sage_strategy_rows=rows,
+        )
+        state = FuzzingState(start_time=0.0, current_time=1.0)
+        with mock.patch.dict(os.environ, {"RAPTOR_SAGE_AFL_PRIOR": "1"}, clear=False):
+            strat = planner.select_fuzzing_strategy(state)
+        self.assertIn("-L", strat.get("extra_flags", []))
+        self.assertIn("0", strat.get("extra_flags", []))
+
+    def test_unstamped_row_appends_no_flags(self):
+        """Rows without a valid row MAC never become argv flags."""
         rows = [
             {"content": "AFL++ MOpt mode worked best on similar binaries", "confidence": 0.9},
         ]
@@ -20,8 +67,7 @@ class TestPlannerSageMechanicalPrior(unittest.TestCase):
         state = FuzzingState(start_time=0.0, current_time=1.0)
         with mock.patch.dict(os.environ, {"RAPTOR_SAGE_AFL_PRIOR": "1"}, clear=False):
             strat = planner.select_fuzzing_strategy(state)
-        self.assertIn("-L", strat.get("extra_flags", []))
-        self.assertIn("0", strat.get("extra_flags", []))
+        self.assertNotIn("-L", strat.get("extra_flags", []))
 
     def test_respects_disable_env(self):
         rows = [{"content": "enable MOpt", "confidence": 0.99}]

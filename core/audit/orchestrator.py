@@ -6283,6 +6283,24 @@ def _multi_pass_review(
                 else None
             )
 
+            # Calibrated merge inputs: the run client's scorecard store
+            # (per-model per-decision-class reliability) and /validate-
+            # derived priors from the journal. Both optional — without
+            # them the adapter keeps the prefer-positive rule.
+            scorecard = None
+            priors_by_class = None
+            try:
+                _sc_client = config.llm_client or config.llm_budget_client
+                if _sc_client is not None and hasattr(_sc_client, "scorecard"):
+                    scorecard = _sc_client.scorecard()
+                if scorecard is not None:
+                    from .calibrated_merge import priors_from_journal
+                    priors_by_class = priors_from_journal(config.out_dir)
+            except Exception:
+                logger.debug(
+                    "calibrated-merge input wiring failed", exc_info=True,
+                )
+
             mr_result = run_audit_multi_review(
                 file_path=file_path,
                 function_name=function_name,
@@ -6291,6 +6309,8 @@ def _multi_pass_review(
                 review_fn=adapted_review_fn,
                 refute_fn=refute_fn,
                 cost_gate=cost_gate,
+                scorecard=scorecard,
+                priors_by_class=priors_by_class,
             )
 
             if not mr_result.items:

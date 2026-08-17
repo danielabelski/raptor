@@ -2523,10 +2523,19 @@ class TestToolChain:
 
     def test_chain_empty_for_unmatched(self):
         chain = _hypothesis_to_tool_chain(
-            "the function trusts its calling context",
+            "the function has unusual formatting and long lines",
             "shm.c",
         )
         assert chain == []
+
+    def test_caller_context_hypotheses_dispatch_boundary_channel(self):
+        # Caller-contract shapes are no longer chain-less: the
+        # api-boundary channel adjudicates them at the call sites.
+        chain = _hypothesis_to_tool_chain(
+            "the function trusts its calling context",
+            "shm.c",
+        )
+        assert [e["type"] for e in chain] == ["api_boundary"]
 
     def test_chain_single_tool(self):
         chain = _hypothesis_to_tool_chain(

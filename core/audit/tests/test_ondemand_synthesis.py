@@ -18,6 +18,16 @@ class _FakeLLMClient:
     def __init__(self):
         self.total_cost = 0.0
         self.model_name = "stub-model"
+        # Mirrors LLMClient's per-class cost history — synthesis cost
+        # attribution reads the checker_synthesis class delta (the
+        # shared budget client's total_cost moves with every
+        # concurrent call class).
+        self._call_cost_history: dict = {}
+
+    def note(self, cost, call_class="checker_synthesis"):
+        n, total = self._call_cost_history.get(call_class, (0, 0.0))
+        self._call_cost_history[call_class] = (n + 1, total + cost)
+        self.total_cost += cost
 
 
 def _fake_llm_pair(monkeypatch, cost_per_call=0.05):
@@ -25,7 +35,7 @@ def _fake_llm_pair(monkeypatch, cost_per_call=0.05):
     client = _FakeLLMClient()
 
     def _callable(prompt, schema, system_prompt):
-        client.total_cost += cost_per_call
+        client.note(cost_per_call)
 
     monkeypatch.setattr(
         "core.audit.checker_synthesis._build_llm_callable",
@@ -56,7 +66,7 @@ def _cs_result(
 def _stub_synthesise(monkeypatch, cs, client=None, cost=0.05):
     def _run(seed, **kwargs):
         if client is not None:
-            client.total_cost += cost
+            client.note(cost)
         return cs
 
     monkeypatch.setattr(

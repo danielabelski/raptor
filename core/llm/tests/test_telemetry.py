@@ -98,7 +98,7 @@ def _model(provider: str, name: str) -> ModelConfig:
 
 def _client(max_retries: int = 3) -> LLMClient:
     return LLMClient(LLMConfig(
-        primary_model=_model("anthropic", "primary"),
+        primary_model=_model("anthropic", "primary-stub"),
         fallback_models=[], enable_caching=False,
         max_retries=max_retries, enable_fallback=False,
     ))
@@ -234,7 +234,7 @@ class TestClientEmission:
         sink = TelemetrySink(tmp_path / "t.jsonl")
         set_sink(sink)
         client = LLMClient(LLMConfig(
-            primary_model=_model("anthropic", "primary"),
+            primary_model=_model("anthropic", "primary-stub"),
             fallback_models=[], enable_caching=True,
             max_retries=1, enable_fallback=False,
         ))
@@ -251,3 +251,24 @@ class TestClientEmission:
         assert len(recs) == 2
         assert recs[0]["disposition"] == "ok"
         assert recs[1]["disposition"] == "cache_hit"
+
+
+class TestPaidCallAttributionStubExemption:
+    """The live-API-leak attribution must flag nonzero-cost calls from
+    unstubbed tests, but not from *-stub aliases — the repo convention
+    for mocked providers whose fake responses carry cost because cost
+    plumbing is the thing under test."""
+
+    def _record(self, alias, monkeypatch):
+        client = _client()
+        monkeypatch.setenv(
+            "PYTEST_CURRENT_TEST", "fake_test.py::test_x (call)")
+        client._record_usage(alias, cost=0.10, tokens=10)
+        return getattr(client, "_paid_test_ctxs", None)
+
+    def test_stub_alias_not_attributed(self, monkeypatch):
+        assert self._record("primary-stub", monkeypatch) is None
+
+    def test_non_stub_alias_attributed(self, monkeypatch):
+        ctxs = self._record("gemini-2.5-pro", monkeypatch)
+        assert ctxs == {"fake_test.py::test_x"}

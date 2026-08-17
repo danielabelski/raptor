@@ -1069,7 +1069,16 @@ class LLMClient:
                 # unset by the time the atexit flush runs). Capture the
                 # test id at record time; the aggregated flush prints
                 # the culprits.
-                if cost and float(cost) > 0.0:
+                # ``*-stub`` aliases are the repo convention for
+                # deliberately mocked providers whose fake responses
+                # carry nonzero cost because cost PLUMBING is what the
+                # test exercises (telemetry, scorecard aggregation) —
+                # those are stubbed by construction, not leaks. A real
+                # paid model aliased "-stub" in models.json would be an
+                # operator's own misdirection; the detector trusts the
+                # operator's alias vocabulary.
+                if (cost and float(cost) > 0.0
+                        and not str(alias).endswith("-stub")):
                     import os as _os_mod
                     _test_ctx = _os_mod.environ.get("PYTEST_CURRENT_TEST")
                     if _test_ctx:

@@ -74,16 +74,52 @@ _MAX_SOURCE_CHARS = 8000
 _MAX_FUNCTIONS = 80
 
 
+def _edge_endpoints(edge: dict[str, Any]) -> tuple[str, str] | None:
+    """Parse one context-map call edge into ``(caller_key, callee_key)``.
+
+    Mirrors the orchestrator's topo-ordering parse: edges carry either
+    split fields (``caller_file`` + ``caller``, ``callee_file`` +
+    ``callee``) or combined ``"file:function"`` strings; a callee with
+    no file defaults to the caller's file (same-TU call).
+    """
+    caller_file = edge.get("caller_file", "")
+    caller_func = edge.get("caller", "")
+    if not caller_file and ":" in caller_func:
+        caller_file, _, caller_func = caller_func.partition(":")
+        caller_func = caller_func.split("(")[0].strip()
+    if not caller_file or not caller_func:
+        return None
+    callee_raw = edge.get("callee", "")
+    callee_file = edge.get("callee_file", "")
+    callee_name = callee_raw
+    if not callee_file and ":" in callee_raw:
+        callee_file, _, callee_name = callee_raw.partition(":")
+        callee_name = callee_name.split("(")[0].strip()
+    if not callee_file:
+        callee_file = caller_file
+    if not callee_name:
+        return None
+    return f"{caller_file}:{caller_func}", f"{callee_file}:{callee_name}"
+
+
 def identify_summary_candidates(
     workqueue: list[dict[str, Any]],
     taint_summary_results: dict[str, Any] | None,
     checklist: dict[str, Any] | None,
+    *,
+    call_edges: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Find functions that need LLM summaries.
 
     A function is a candidate when:
     1. It has callers or callees in the work queue (connected).
     2. It does not already have a mechanical summary.
+
+    Connectivity comes from two sources: a gap's own ``callees`` field
+    (legacy shape) and, when provided, the context map's ``call_edges``
+    — today's workqueue gaps carry no ``callees`` field, so without
+    the edges every function looks disconnected and the pass finds
+    zero candidates.
     """
     if not workqueue:
         return []
@@ -107,6 +143,15 @@ def identify_summary_candidates(
                 key = f"{gap['file']}:{gap['name']}"
                 connected.add(key)
                 connected.add(ce_key)
+
+    for edge in call_edges or []:
+        endpoints = _edge_endpoints(edge)
+        if endpoints is None:
+            continue
+        caller_key, callee_key = endpoints
+        if caller_key in queue_keys and callee_key in queue_keys:
+            connected.add(caller_key)
+            connected.add(callee_key)
 
     candidates = []
     for key in connected:

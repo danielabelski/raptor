@@ -305,6 +305,12 @@ class OrchestratorConfig:
     # unchanged reviewed functions are suppressed, nothing imported.
     # ``force=True`` bypasses both (everything re-reviews).
     verdict_reuse: bool = True
+    # Opt-in (--pre-scan): when NO scan SARIF exists — neither this
+    # run's scan/ dir nor any fresh sibling run — run one bounded
+    # semgrep baseline pass over the scoped target with RAPTOR's
+    # local rule library, so the SARIF corroboration channels have
+    # something to corroborate against.
+    pre_scan: bool = False
     # Review scheduling with >1 worker: "cost" (default) dispatches
     # predicted-longest reviews first (LPT makespan packing);
     # "priority" keeps the highest-priority-first order (better
@@ -2190,6 +2196,42 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     sarif_cache = SarifCache.from_directory(config.out_dir)
 
+    # Cross-run SARIF reuse: prior /scan and /agentic runs in the same
+    # project left SARIF one directory over — import it (bounded,
+    # freshness-gated) so corroboration channels see it.
+    try:
+        from .sweep import import_sibling_sarif
+
+        _sibling_results = import_sibling_sarif(
+            sarif_cache, config.out_dir, config.target_path,
+        )
+        if _sibling_results:
+            logger.info(
+                "sarif_cache: imported %d results from prior scan runs",
+                _sibling_results,
+            )
+    except Exception:
+        logger.debug("sibling SARIF import failed", exc_info=True)
+
+    # Opt-in bounded baseline pass when nothing exists to corroborate
+    # against.
+    if config.pre_scan and not sarif_cache:
+        try:
+            from .pre_scan import run_baseline_pre_scan
+
+            if run_baseline_pre_scan(
+                config.target_path,
+                config.out_dir,
+                scope=(
+                    config.scope
+                    if isinstance(config.scope, list)
+                    else ([config.scope] if config.scope else None)
+                ),
+            ):
+                sarif_cache = SarifCache.from_directory(config.out_dir)
+        except Exception:
+            logger.debug("baseline pre-scan failed", exc_info=True)
+
     if config.codeql_db_path and not sarif_cache:
         _codeql_pre_sweep_raw(config.codeql_db_path, config.out_dir, sarif_cache)
 
@@ -2591,6 +2633,23 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         config.out_dir, target_path=config.target_path
     )
 
+    # Prior sibling-scan hits: a scanner already flagged these
+    # functions in an earlier run — boost them for review.
+    prior_scan_keys: set[str] = set()
+    if sarif_cache:
+        try:
+            for _gap in gaps:
+                hits = sarif_cache.lookup(
+                    _gap["file"],
+                    _gap.get("line_start", 0),
+                    _gap.get("line_end") or 0,
+                )
+                if hits and any(h.get("_sarif_sibling") for h in hits):
+                    prior_scan_keys.add(f"{_gap['file']}:{_gap['name']}")
+        except Exception:
+            logger.debug("prior-scan-hit key scan failed", exc_info=True)
+            prior_scan_keys = set()
+
     gaps = score_functions(
         gaps,
         context_map=context_map,
@@ -2600,6 +2659,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         tool_failures=tool_failures,
         fuzz_coverage=fuzz_cov_files,
         fuzz_function_coverage=fuzz_coverage,
+        prior_scan_hit_keys=prior_scan_keys or None,
         strategy_weights=strat_weights,
         binary_bridge=binary_bridge_early,
         new_functions=new_fn_keys or None,

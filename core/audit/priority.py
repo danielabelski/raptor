@@ -45,6 +45,7 @@ SCORE_CALLEE_OF_ENTRY = 3
 SCORE_EXPORTED = 2
 SCORE_PARTIAL_TOOL_COVERAGE = 2
 SCORE_NOT_FUZZED = 2
+SCORE_PRIOR_SCAN_HIT = 3
 SCORE_FUZZ_UNREACHED = 3
 SCORE_FUZZ_REACHED_CLEAN = -1
 SCORE_UNCHECKED_FLOW = 2
@@ -81,6 +82,7 @@ def score_functions(
     tool_failures: set[str] | None = None,
     fuzz_coverage: set[str] | None = None,
     fuzz_function_coverage: dict[str, Any] | None = None,
+    prior_scan_hit_keys: set[str] | None = None,
     new_functions: set[str] | None = None,
     threat_model: dict[str, Any] | None = None,
     open_constraint_keys: set[str] | None = None,
@@ -106,6 +108,10 @@ def score_functions(
             reached get SCORE_FUZZ_UNREACHED; functions reached with
             substantial iterations and zero crashes get the mild
             SCORE_FUZZ_REACHED_CLEAN demotion.
+        prior_scan_hit_keys: file:function keys with SARIF hits from a
+            prior sibling scan run. Gets SCORE_PRIOR_SCAN_HIT — a
+            scanner already flagged something here and no reviewer has
+            looked yet.
         new_functions: Set of file:function keys from inventory diff
             (added or modified functions). Gets SCORE_NEW_CODE.
         threat_model: Parsed threat model dict.  When it carries a
@@ -194,6 +200,9 @@ def score_functions(
                     # only — fuzzing finds shallow bugs, not logic
                     # ones.
                     score += SCORE_FUZZ_REACHED_CLEAN
+
+        if prior_scan_hit_keys and key in prior_scan_hit_keys:
+            score += SCORE_PRIOR_SCAN_HIT
 
         visibility = (gap.get("metadata") or {}).get("visibility", "")
         if visibility in _EXPORTED_VISIBILITY:

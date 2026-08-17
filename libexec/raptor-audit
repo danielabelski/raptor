@@ -1285,6 +1285,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         dynamic_validation=(False if args.no_dynamic
                             else (True if args.dynamic else None)),
         verdict_reuse=not args.no_verdict_reuse,
+        pre_scan=args.pre_scan,
         schedule=args.schedule,
         on_demand_synthesis=not args.no_on_demand_synthesis,
     )
@@ -1668,6 +1669,12 @@ def main() -> int:
                             "suspicious hypotheses whose CWE has no "
                             "tool-chain dispatch entry (synthesis is "
                             "LLM-cost bearing; capped per run)")
+    p_run.add_argument("--pre-scan", action="store_true",
+                       help="When no scan SARIF exists (this run or a "
+                            "fresh sibling run), run one bounded semgrep "
+                            "baseline pass over the scoped target with "
+                            "RAPTOR's local rule library so SARIF "
+                            "corroboration channels have data")
     p_run.add_argument("--schedule", choices=["cost", "priority"],
                        default="cost",
                        help="Parallel review ordering: 'cost' packs "

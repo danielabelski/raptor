@@ -126,24 +126,7 @@ class SarifCache:
             return cache
 
         for sarif_file in scan_dir.glob("*.sarif"):
-            try:
-                data = _json.loads(sarif_file.read_text())
-            except (OSError, _json.JSONDecodeError):
-                continue
-            for run in data.get("runs", []):
-                tool_name = (
-                    run.get("tool", {}).get("driver", {}).get("name", "")
-                ).lower()
-                is_codeql = "codeql" in tool_name
-                for result in run.get("results", []):
-                    locs = result.get("locations") or [{}]
-                    loc = locs[0] if locs else {}
-                    phys = loc.get("physicalLocation", {})
-                    uri = phys.get("artifactLocation", {}).get("uri", "")
-                    normalized = _normalize_sarif_path(uri)
-                    if normalized:
-                        result["_sarif_source"] = "codeql" if is_codeql else "semgrep"
-                        cache._by_file.setdefault(normalized, []).append(result)
+            _ingest_sarif_file(cache, sarif_file)
 
         total = sum(len(v) for v in cache._by_file.values())
         if total:
@@ -152,6 +135,234 @@ class SarifCache:
                 total, len(cache._by_file),
             )
         return cache
+
+
+def _annotate_sarif_result(
+    result: dict[str, Any],
+    *,
+    run_label: str = "",
+) -> None:
+    """Attach flat convenience keys + provenance to a raw SARIF result.
+
+    The evidence formatters read ``rule_id`` / ``line``; raw SARIF
+    carries ``ruleId`` and nested locations, so cache-fed hits used to
+    render as "unknown at line 0". ``_sarif_cwe`` uses the existing
+    rule_id→CWE inference; ``_sarif_sibling`` marks results imported
+    from a prior run's SARIF.
+    """
+    if run_label:
+        result["_sarif_sibling"] = run_label
+    rule_id = result.get("ruleId") or ""
+    if rule_id and not result.get("rule_id"):
+        result["rule_id"] = rule_id
+    locs = result.get("locations") or [{}]
+    loc = locs[0] if locs else {}
+    region = loc.get("physicalLocation", {}).get("region", {})
+    if not result.get("line"):
+        result["line"] = region.get("startLine", 0)
+    msg = result.get("message")
+    msg_text = msg.get("text", "") if isinstance(msg, dict) else str(msg or "")
+    if isinstance(msg, dict):
+        # Flatten for the evidence prose formatter (_safe_text expects
+        # str; the raw SARIF message object crashed it).
+        result["message"] = msg_text
+    if rule_id and "_sarif_cwe" not in result:
+        try:
+            # The existing rule_id→CWE inference (vuln-type reverse map
+            # + message patterns) — shared with the SARIF importer.
+            from core.sarif.import_normalizer import _infer_cwe
+
+            cwe = _infer_cwe(rule_id, msg_text[:500])
+            if cwe:
+                result["_sarif_cwe"] = cwe
+        except Exception:
+            logger.debug("sarif cwe inference failed", exc_info=True)
+
+
+def _ingest_sarif_file(
+    cache: SarifCache,
+    sarif_file: Path,
+    *,
+    run_label: str = "",
+    freshness: Callable[[str], bool] | None = None,
+) -> int:
+    """Parse one SARIF file into the cache. Returns results ingested.
+
+    ``freshness`` (normalized file path → bool) gates each result:
+    sibling-run imports drop results for files that changed since the
+    producing scan (line drift makes stale SARIF actively harmful).
+    """
+    try:
+        data = _json.loads(sarif_file.read_text())
+    except (OSError, _json.JSONDecodeError):
+        return 0
+    ingested = 0
+    fresh_memo: dict[str, bool] = {}
+    for run in data.get("runs", []):
+        tool_name = (
+            run.get("tool", {}).get("driver", {}).get("name", "")
+        ).lower()
+        is_codeql = "codeql" in tool_name
+        for result in run.get("results", []):
+            locs = result.get("locations") or [{}]
+            loc = locs[0] if locs else {}
+            phys = loc.get("physicalLocation", {})
+            uri = phys.get("artifactLocation", {}).get("uri", "")
+            normalized = _normalize_sarif_path(uri)
+            if not normalized:
+                continue
+            if freshness is not None:
+                if normalized not in fresh_memo:
+                    fresh_memo[normalized] = bool(freshness(normalized))
+                if not fresh_memo[normalized]:
+                    continue
+            result["_sarif_source"] = "codeql" if is_codeql else "semgrep"
+            _annotate_sarif_result(result, run_label=run_label)
+            cache._by_file.setdefault(normalized, []).append(result)
+            ingested += 1
+    return ingested
+
+
+# Sibling SARIF import bounds: prior runs go stale as the target
+# drifts, and every extra run is more lookup noise.
+SIBLING_SARIF_MAX_RUNS = 3
+SIBLING_SARIF_MAX_AGE_DAYS = 30
+
+
+def _load_checklist_hashes(run_dir: Path) -> dict[str, str]:
+    """{relative_path: sha256} from a sibling run's checklist.json.
+
+    Same shape understand_bridge gates on; empty when the run carries
+    no checklist (plain /scan runs).
+    """
+    path = run_dir / "checklist.json"
+    if not path.is_file():
+        return {}
+    try:
+        checklist = _json.loads(path.read_text())
+    except (OSError, _json.JSONDecodeError):
+        return {}
+    out: dict[str, str] = {}
+    for f in checklist.get("files", []):
+        if not isinstance(f, dict):
+            continue
+        p, sha = f.get("path"), f.get("sha256")
+        if isinstance(p, str) and isinstance(sha, str) and p and sha:
+            out[_normalize_sarif_path(p)] = sha
+    return out
+
+
+def _sibling_freshness_gate(
+    target_path: Path,
+    recorded_hashes: dict[str, str],
+    sarif_mtime: float,
+    disk_hash_cache: dict[str, str | None],
+) -> Callable[[str], bool]:
+    """Per-file freshness check for one sibling SARIF artifact.
+
+    Hash-gated when the producing run recorded per-file SHA-256
+    (checklist.json, understand_bridge's pattern); mtime-gated
+    otherwise (target file unchanged since the SARIF was written).
+    Paths escaping the target are never fresh.
+    """
+    target_resolved = Path(target_path).resolve()
+
+    def _fresh(normalized: str) -> bool:
+        full = target_resolved / normalized
+        try:
+            full.resolve().relative_to(target_resolved)
+        except (ValueError, OSError):
+            return False
+        recorded = recorded_hashes.get(normalized)
+        if recorded:
+            if normalized not in disk_hash_cache:
+                try:
+                    from core.hash import sha256_file
+
+                    disk_hash_cache[normalized] = sha256_file(full)
+                except Exception:
+                    logger.debug(
+                        "hash for %s failed", normalized, exc_info=True,
+                    )
+                    disk_hash_cache[normalized] = None
+            return disk_hash_cache[normalized] == recorded
+        try:
+            return full.stat().st_mtime <= sarif_mtime
+        except OSError:
+            return False
+
+    return _fresh
+
+
+def import_sibling_sarif(
+    cache: SarifCache,
+    out_dir: Path,
+    target_path: Path,
+    *,
+    max_runs: int = SIBLING_SARIF_MAX_RUNS,
+    max_age_days: int = SIBLING_SARIF_MAX_AGE_DAYS,
+    now: float | None = None,
+) -> int:
+    """Merge prior scan runs' SARIF into the cache, freshness-gated.
+
+    In project mode every command gets its own run dir, so /audit
+    never saw the SARIF a prior /scan or /agentic run produced.
+    Discovers sibling run dirs for the same target (the
+    ``sibling_run_dirs`` lookup already used for coverage artifacts),
+    reads SARIF from both layouts (``<run>/scan/*.sarif`` for
+    /agentic, ``<run>/*.sarif`` top-level for /scan), bounded by age
+    and run count, newest runs first. Every result is freshness-gated
+    per file. Returns the number of results imported.
+    """
+    import time as _time
+
+    from .joern_backend import sibling_run_dirs
+
+    siblings = sibling_run_dirs(out_dir, target_path=target_path)
+    if not siblings:
+        return 0
+    now = now if now is not None else _time.time()
+
+    candidates: list[tuple[float, Path, list[Path]]] = []
+    for d in siblings:
+        run_dir = Path(d)
+        files: list[Path] = []
+        scan_dir = run_dir / "scan"
+        if scan_dir.is_dir():
+            files.extend(sorted(scan_dir.glob("*.sarif")))
+        files.extend(sorted(run_dir.glob("*.sarif")))
+        if not files:
+            continue
+        try:
+            newest = max(f.stat().st_mtime for f in files)
+        except OSError:
+            continue
+        if now - newest > max_age_days * 86400:
+            continue
+        candidates.append((newest, run_dir, files))
+
+    candidates.sort(key=lambda t: t[0], reverse=True)
+
+    imported = 0
+    disk_hash_cache: dict[str, str | None] = {}
+    for _newest, run_dir, files in candidates[:max_runs]:
+        recorded_hashes = _load_checklist_hashes(run_dir)
+        for sarif_file in files:
+            try:
+                sarif_mtime = sarif_file.stat().st_mtime
+            except OSError:
+                continue
+            gate = _sibling_freshness_gate(
+                target_path, recorded_hashes, sarif_mtime,
+                disk_hash_cache,
+            )
+            imported += _ingest_sarif_file(
+                cache,
+                sarif_file,
+                run_label=run_dir.name,
+                freshness=gate,
+            )
+    return imported
 
 
 def _normalize_sarif_path(uri_or_path: str) -> str:

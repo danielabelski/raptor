@@ -143,6 +143,13 @@ def build_graded_finding(
     if ts_viol and ts_viol.get("violation_kind"):
         finding["typestate_violation"] = ts_viol
 
+    # File pile-up dampening audit trail (see pipeline.dampen_file_pileup):
+    # the demotion/collapse record travels with the exported finding so
+    # the operator can see WHY a status was softened.
+    dampening = review_result.get("file_dampening")
+    if dampening:
+        finding["file_dampening"] = dampening
+
     discovery_sources = []
     if evidence_record is not None:
         if getattr(evidence_record, "joern_flows", None):

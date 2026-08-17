@@ -5,7 +5,7 @@ and callee-contract propagation (#6).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 import pytest
 
@@ -32,11 +32,11 @@ class _MockOutcome:
     cost_usd: float = 0.01
     model: str = "test"
     duration_s: float = 1.0
-    review_result: Optional[Dict[str, Any]] = None
+    review_result: dict[str, Any] | None = None
     line: int = 0
-    hypotheses: Optional[list] = None
+    hypotheses: list | None = None
     verification_tier: str = "speculative"
-    tools_dispatched: Optional[set] = field(default=None, repr=False)
+    tools_dispatched: set | None = field(default=None, repr=False)
     _propagated: bool = field(default=False, repr=False)
     error_class: str = ""
 
@@ -152,25 +152,26 @@ class TestFilePileupDampening:
             _MockOutcome(
                 file="a.c", function="f1",
                 status="finding",
-                hypothesis="integer overflow in the main calculation path",
+                hypothesis="integer overflow in the size calculation",
             ),
             _MockOutcome(
                 file="a.c", function="f2",
                 status="finding",
-                hypothesis="integer overflow",
+                hypothesis="integer overflow in size calculation",
             ),
             _MockOutcome(
                 file="a.c", function="f3",
                 status="suspicious",
-                hypothesis="integer overflow maybe",
+                hypothesis="integer overflow in size calculation maybe",
             ),
         ]
         _dampen_file_pileup(outcomes)
-        # f1 has longest hypothesis + finding status → kept as finding
+        # f1 has most-specific hypothesis + finding status → kept
         assert outcomes[0].status == "finding"
-        # f2 demoted finding→suspicious, f3 demoted suspicious→clean
+        # f2 demoted finding→suspicious; f3 collapsed but NEVER
+        # demoted to clean (softened dampening)
         assert outcomes[1].status == "suspicious"
-        assert outcomes[2].status == "clean"
+        assert outcomes[2].status == "suspicious"
 
 
 # ── #4: bug class extraction ────────────────────────────────────────
@@ -452,11 +453,13 @@ class TestClassAgnosticDampening:
             for i in range(5)
         ]
         dampened = _dampen_file_pileup(outcomes)
-        # Same-class fires first: 5 integer → keep 1, demote 4
-        # finding→suspicious for strongest non-kept, suspicious→clean for rest
+        # Near-duplicate collapse fires first: 5 identical hypotheses →
+        # keep 1, demote 4 finding→suspicious; the file cap must not
+        # demote the same outcomes again.
         assert dampened == 4
         finding_count = sum(1 for o in outcomes if o.status == "finding")
         assert finding_count == 1
+        assert all(o.status != "clean" for o in outcomes)
 
     def test_agnostic_preserves_evidence_backed(self):
         """Evidence-backed findings are never touched by agnostic tier."""
@@ -489,8 +492,13 @@ class TestHeavyPileupDampening:
         assert finding_count <= 1
         assert dampened >= 5
 
-    def test_suspicious_pile_demoted_to_clean(self):
-        """Suspicious pile-ups get demoted to clean, not left as suspicious."""
+    def test_suspicious_pile_never_demoted_to_clean(self):
+        """Suspicious pile-ups are collapsed/marked but NEVER silenced.
+
+        Vulnerability density is heavy-tailed — the legacy file with
+        many genuine issues is where audits earn their keep, so the
+        softened dampener never demotes suspicious outcomes to clean.
+        """
         outcomes = [
             _MockOutcome(
                 file="big.c", function=f"f{i}", status="suspicious",
@@ -499,8 +507,7 @@ class TestHeavyPileupDampening:
             for i in range(7)
         ]
         _dampen_file_pileup(outcomes)
-        clean_count = sum(1 for o in outcomes if o.status == "clean")
-        assert clean_count >= 5  # at most 2 survive (agnostic keep=2)
+        assert all(o.status == "suspicious" for o in outcomes)
 
     def test_evidence_backed_survives_heavy(self):
         """Tool-backed findings survive even in heavy pile-up."""
@@ -515,6 +522,222 @@ class TestHeavyPileupDampening:
         _dampen_file_pileup(outcomes)
         # f0 has evidence → never touched
         assert outcomes[0].status == "finding"
+
+
+# ── P29: softened dampening + audit trail ───────────────────────────
+
+
+class TestSoftenedDampening:
+    def test_same_class_distinct_hypotheses_not_collapsed(self):
+        """Three DIFFERENT real overflows no longer collapse to one.
+
+        The old coarse keyword-class grouping demoted two of these;
+        near-duplicate collapse keeps all three distinct hypotheses.
+        """
+        outcomes = [
+            _MockOutcome(
+                file="a.c", function="f1", status="finding",
+                hypothesis="integer overflow in width * height multiplication",
+            ),
+            _MockOutcome(
+                file="a.c", function="f2", status="finding",
+                hypothesis="unchecked length allows heap buffer overflow via memcpy",
+            ),
+            _MockOutcome(
+                file="a.c", function="f3", status="finding",
+                hypothesis="refcount wraparound after repeated acquire calls",
+            ),
+        ]
+        assert _dampen_file_pileup(outcomes) == 0
+        assert all(o.status == "finding" for o in outcomes)
+
+    def test_heavy_pileup_never_demotes_to_clean(self):
+        """>=6 evidence-free findings demote at most one step."""
+        outcomes = [
+            _MockOutcome(
+                file="big.c", function=f"f{i}", status="finding",
+                hypothesis=f"completely distinct bug shape number{i} "
+                           f"variant{i * 7} path{i * 13}",
+            )
+            for i in range(8)
+        ]
+        dampened = _dampen_file_pileup(outcomes)
+        assert dampened >= 5
+        assert all(o.status in ("finding", "suspicious") for o in outcomes)
+        assert any(o.status == "finding" for o in outcomes)
+
+    def test_marker_and_record_stamped(self):
+        from core.audit.pipeline import DAMPENING_MARKER, dampen_file_pileup
+
+        outcomes = [
+            _MockOutcome(
+                file="a.c", function=f"f{i}", status="finding",
+                hypothesis="integer overflow in size calculation",
+            )
+            for i in range(3)
+        ]
+        records: list = []
+        dampened = dampen_file_pileup(outcomes, records=records)
+        assert dampened == 2
+        assert len(records) == 2
+        rec = records[0]
+        assert rec["file"] == "a.c"
+        assert rec["tier"] == "near_duplicate"
+        assert rec["from_status"] == "finding"
+        assert rec["to_status"] == "suspicious"
+        assert rec["group_size"] == 3
+        assert rec["kept_function"]
+        demoted = [o for o in outcomes if o.status == "suspicious"]
+        assert len(demoted) == 2
+        for o in demoted:
+            assert DAMPENING_MARKER in o.hypothesis
+            assert o.review_result["file_dampening"]["tier"] == "near_duplicate"
+
+    def test_suspicious_collapse_marked_not_demoted(self):
+        from core.audit.pipeline import DAMPENING_MARKER, dampen_file_pileup
+
+        outcomes = [
+            _MockOutcome(
+                file="a.c", function=f"f{i}", status="suspicious",
+                hypothesis="race condition on shared counter increment",
+            )
+            for i in range(3)
+        ]
+        records: list = []
+        dampened = dampen_file_pileup(outcomes, records=records)
+        # No status change — but the collapse is recorded and marked.
+        assert dampened == 0
+        assert len(records) == 2
+        assert all(o.status == "suspicious" for o in outcomes)
+        assert sum(DAMPENING_MARKER in o.hypothesis for o in outcomes) == 2
+
+    def test_file_cap_records_tier(self):
+        from core.audit.pipeline import dampen_file_pileup
+
+        outcomes = [
+            _MockOutcome(
+                file="a.c", function=f"f{i}", status="finding",
+                hypothesis=f"distinct issue kind{i} in area{i * 11} "
+                           f"mechanism{i * 3}",
+            )
+            for i in range(4)
+        ]
+        records: list = []
+        dampened = dampen_file_pileup(outcomes, records=records)
+        assert dampened == 2
+        assert all(r["tier"] == "file_cap" for r in records)
+
+
+class TestDampenPreExportHook:
+    def _result(self, outcomes):
+        class _R:
+            pass
+
+        r = _R()
+        r.outcomes = outcomes
+        r.findings = sum(1 for o in outcomes if o.status == "finding")
+        r.suspicious = sum(1 for o in outcomes if o.status == "suspicious")
+        return r
+
+    def _config(self, out_dir):
+        class _C:
+            pass
+
+        c = _C()
+        c.out_dir = out_dir
+        return c
+
+    def test_hook_writes_audit_log_and_recounts(self, tmp_path):
+        import json
+
+        from core.audit.pipeline import DAMPENING_LOG, dampen_pileup_pre_export
+
+        outcomes = [
+            _MockOutcome(
+                file="a.c", function=f"f{i}", status="finding",
+                hypothesis="integer overflow in size calculation",
+            )
+            for i in range(3)
+        ]
+        result = self._result(outcomes)
+        config = self._config(tmp_path)
+
+        dampen_pileup_pre_export(result, config)
+
+        assert result.findings == 1
+        assert result.suspicious == 2
+        log = tmp_path / DAMPENING_LOG
+        assert log.is_file()
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        assert len(rows) == 2
+        assert all(r["tier"] == "near_duplicate" for r in rows)
+
+    def test_hook_noop_without_pileup(self, tmp_path):
+        from core.audit.pipeline import DAMPENING_LOG, dampen_pileup_pre_export
+
+        outcomes = [
+            _MockOutcome(file="a.c", function="f1", status="finding",
+                         hypothesis="single real bug"),
+        ]
+        result = self._result(outcomes)
+        config = self._config(tmp_path)
+        dampen_pileup_pre_export(result, config)
+        assert result.findings == 1
+        assert not (tmp_path / DAMPENING_LOG).exists()
+
+    def test_ensemble_wires_hook_into_config(self, monkeypatch, tmp_path):
+        """run_ensemble_pipeline registers the dampener as a pre-export
+        hook instead of dampening post-hoc (after the export ran)."""
+        import core.audit.llm_review as llm_review_mod
+        import core.audit.orchestrator as orch_mod
+        import core.audit.pipeline as pipeline_mod
+        from core.audit.pipeline import AuditPipelineOpts, run_ensemble_pipeline
+
+        captured = {}
+
+        def _fake_run_orchestrator(config, review_fn, on_progress=None,
+                                   prep_cache=None):
+            captured["config"] = config
+
+            class _R:
+                def __init__(self):
+                    self.outcomes = []
+                    self.findings = 0
+                    self.suspicious = 0
+                    self.total_duration_s = 0.0
+
+            return _R()
+
+        monkeypatch.setattr(
+            pipeline_mod, "_make_llm_client",
+            lambda opts: (object(), ["default"], None),
+        )
+        monkeypatch.setattr(
+            llm_review_mod, "make_review_fn",
+            lambda *a, **k: (lambda ctx, config: None),
+        )
+        monkeypatch.setattr(
+            orch_mod, "run_orchestrator", _fake_run_orchestrator,
+        )
+
+        opts = AuditPipelineOpts(target_path=tmp_path, out_dir=tmp_path)
+        run_ensemble_pipeline(opts)
+
+        hooks = captured["config"].pre_export_hooks
+        assert hooks == [pipeline_mod.dampen_pileup_pre_export]
+
+    def test_orchestrator_runs_hooks_before_export(self):
+        """Ordering regression guard: the pre-export hook loop sits
+        before the journal correction pass and the graded export."""
+        import inspect
+
+        import core.audit.orchestrator as orch_mod
+
+        src = inspect.getsource(orch_mod)
+        hook_pos = src.index("config.pre_export_hooks or ()")
+        rejournal_pos = src.index("_rejournal_final_statuses(result, config)")
+        export_pos = src.index("graded = export_findings(")
+        assert hook_pos < rejournal_pos < export_pos
 
 
 # ── Speculative-race gate ──────────────────────────────────────────
@@ -770,9 +993,7 @@ class TestCalleeContractEvidenceGate:
         _NON_MECHANICAL = ("prefilter:", "llm-claimed:")
 
         def _should_propagate(co_evidence: str) -> bool:
-            if not co_evidence or co_evidence.startswith(_NON_MECHANICAL):
-                return False
-            return True
+            return bool(co_evidence) and not co_evidence.startswith(_NON_MECHANICAL)
 
         assert _should_propagate("semgrep:rule1") is True
         assert _should_propagate("joern:flow1") is True
@@ -816,8 +1037,8 @@ class TestBugFixes:
 
     def test_status_rank_aligned(self):
         """_STATUS_RANK should agree between pipeline.py and run_corpus.py."""
-        from core.audit.pipeline import _STATUS_RANK as pipeline_rank
         from core.audit.corpus.run_corpus import _STATUS_RANK as corpus_rank
+        from core.audit.pipeline import _STATUS_RANK as pipeline_rank
 
         assert pipeline_rank == corpus_rank
 
@@ -1078,8 +1299,8 @@ err:
 
 class TestW8Unification:
     def test_status_rank_imported_not_duplicated(self):
-        from core.audit.pipeline import STATUS_RANK
         from core.audit.corpus.run_corpus import _STATUS_RANK
+        from core.audit.pipeline import STATUS_RANK
 
         assert _STATUS_RANK is STATUS_RANK
 
@@ -1158,6 +1379,7 @@ class TestRuleRole:
 
     def test_real_resource_leak_is_detection(self):
         import os
+
         from core.audit.sweep import get_rule_role
         rule = os.path.join(
             os.environ.get("RAPTOR_DIR", "."),
@@ -1167,6 +1389,7 @@ class TestRuleRole:
 
     def test_real_use_after_free_is_verification(self):
         import os
+
         from core.audit.sweep import get_rule_role
         rule = os.path.join(
             os.environ.get("RAPTOR_DIR", "."),

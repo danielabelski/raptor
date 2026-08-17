@@ -463,6 +463,11 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
     config = _build_orchestrator_config(
         opts, client, models, ReviewMode.SECURITY,
     )
+    # File-level pile-up dampening runs as a pre-export hook INSIDE the
+    # orchestrator so the journal correction pass, findings-graded.json
+    # and the summary counters all see the same (dampened) statuses.
+    # Running it post-hoc here left the export disagreeing with stats.
+    config.pre_export_hooks = [dampen_pileup_pre_export]
 
     result = run_orchestrator(
         config, ensemble_review_fn, on_progress=opts.on_progress,
@@ -474,21 +479,6 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
     )
 
     result.total_duration_s = time.monotonic() - t0
-
-    dampened = _dampen_file_pileup(result.outcomes)
-    if dampened:
-        logger.info(
-            "file-level dampening: demoted %d pile-up findings", dampened,
-        )
-
-    any_gate = dampened
-    if any_gate:
-        result.findings = sum(
-            1 for o in result.outcomes if o.status == "finding"
-        )
-        result.suspicious = sum(
-            1 for o in result.outcomes if o.status == "suspicious"
-        )
 
     return result
 
@@ -540,90 +530,208 @@ _FILE_HEAVY_THRESHOLD = FILE_HEAVY_THRESHOLD
 _FILE_HEAVY_KEEP = FILE_HEAVY_KEEP
 
 
-def dampen_file_pileup(outcomes) -> int:
-    """Demote evidence-free pile-up findings.
+NEAR_DUP_JACCARD = 0.6
+DAMPENING_MARKER = "[file-dampening]"
+DAMPENING_LOG = "dampening-log.jsonl"
+
+
+def _hypothesis_tokens(item) -> frozenset:
+    import re
+
+    return frozenset(re.findall(r"[a-z0-9_]+", _get_hypothesis(item).lower()))
+
+
+def _near_duplicate(a: frozenset, b: frozenset) -> bool:
+    """Token-Jaccard near-duplicate check between two hypotheses."""
+    if not a or not b:
+        return False
+    union = len(a | b)
+    return union > 0 and (len(a & b) / union) >= NEAR_DUP_JACCARD
+
+
+def _get_function(item):
+    if isinstance(item, dict):
+        fid = item.get("function_id", "")
+        if ":" in fid:
+            return fid.rsplit(":", 1)[1]
+        return item.get("function", "")
+    return getattr(item, "function", "")
+
+
+def _mark_dampened(item, info: dict) -> None:
+    """Stamp a body marker + structured record on a dampened outcome."""
+    hyp = _get_hypothesis(item)
+    if DAMPENING_MARKER not in hyp:
+        _set(item, "hypothesis", value=(hyp + " " + DAMPENING_MARKER).strip())
+    if isinstance(item, dict):
+        item["file_dampening"] = info
+        return
+    rr = getattr(item, "review_result", None)
+    if isinstance(rr, dict):
+        rr["file_dampening"] = info
+    else:
+        with contextlib.suppress(Exception):
+            item.review_result = {"file_dampening": info}
+
+
+def dampen_file_pileup(outcomes, records: list | None = None) -> int:
+    """Soften evidence-free pile-up findings — never demote to clean.
 
     Works on both ReviewOutcome objects and plain dicts.
 
-    Three tiers:
-    1. Same-class: >=3 findings in the same file sharing a bug class
-       and none having mechanical evidence -> keep strongest, demote rest
-       (finding→suspicious, suspicious→clean).
-    2. Class-agnostic: >=4 evidence-free findings in the same file
-       (regardless of class) -> keep top 2, demote rest
-       (finding→suspicious, suspicious→clean).
-    3. Heavy pile-up: >=6 evidence-free findings in the same file ->
-       demote ALL excess beyond top 1 to clean outright.
+    Vulnerability density is heavy-tailed: the one legacy file with six
+    genuine issues is where audits earn their keep, so demotion is at
+    most one step (finding→suspicious) and ``suspicious`` outcomes are
+    never silenced to ``clean``.
 
-    Tool-backed findings are never demoted.
+    Two tiers:
+    1. Near-duplicate collapse: >=3 evidence-free suspicious/finding
+       outcomes in the same file whose hypotheses are near-duplicates
+       (token Jaccard >= NEAR_DUP_JACCARD) -> keep strongest, demote
+       finding-status rest to suspicious. Suspicious members keep
+       their status but are marked as collapsed into the survivor.
+    2. File-level cap: >=4 evidence-free findings in the same file ->
+       keep top 2 (top 1 at >=6 heavy pile-up), demote the excess
+       finding→suspicious.
+
+    Tool-backed findings are never demoted. Every affected outcome
+    gets a ``[file-dampening]`` hypothesis/body marker plus a
+    structured ``file_dampening`` record, and — when ``records`` is
+    supplied — an audit-trail row appended to it.
+
+    Returns the number of status DEMOTIONS (marker-only collapses of
+    suspicious siblings are recorded but not counted).
     """
     from collections import defaultdict
+
+    if records is None:
+        records = []
 
     def _has_mechanical(i):
         ev = _get_evidence(outcomes[i])
         return ev and not ev.startswith(NON_MECHANICAL)
 
+    tokens = {}
+
     def _rank_key(i):
         return (
             STATUS_RANK.get(_get_status(outcomes[i]), 0),
+            len(tokens.get(i, ())),
             len(_get_hypothesis(outcomes[i])),
         )
 
-    already_dampened: set[int] = set()
-    dampened = 0
+    def _dampen(idx, tier, group_size, kept_idx):
+        cur = _get_status(outcomes[idx])
+        new = "suspicious" if cur == "finding" else cur
+        info = {
+            "tier": tier,
+            "from_status": cur,
+            "to_status": new,
+            "group_size": group_size,
+            "kept_function": _get_function(outcomes[kept_idx]),
+        }
+        if new != cur:
+            _set_status(outcomes[idx], new)
+        _mark_dampened(outcomes[idx], info)
+        records.append(
+            {
+                "file": _get_file(outcomes[idx]),
+                "function": _get_function(outcomes[idx]),
+                "hypothesis": _get_hypothesis(outcomes[idx]),
+                **info,
+            }
+        )
+        return 1 if new != cur else 0
 
-    # --- Tier 1: same-class dampening ---
-    class_groups: dict[tuple, list[int]] = defaultdict(list)
-    for i, o in enumerate(outcomes):
-        if _get_status(o) in ("suspicious", "finding"):
-            bc = extract_bug_class(o)
-            class_groups[(_get_file(o), bc)].append(i)
-
-    for indices in class_groups.values():
-        if len(indices) < FILE_CLASS_THRESHOLD:
-            continue
-        if any(_has_mechanical(i) for i in indices):
-            continue
-        ranked = sorted(indices, key=_rank_key, reverse=True)
-        for idx in ranked[1:]:
-            cur = _get_status(outcomes[idx])
-            if cur == "finding":
-                _set_status(outcomes[idx], "suspicious")
-                already_dampened.add(idx)
-                dampened += 1
-            elif cur == "suspicious":
-                _set_status(outcomes[idx], "clean")
-                already_dampened.add(idx)
-                dampened += 1
-
-    # --- Tier 2: class-agnostic file-level cap ---
+    # Evidence-free suspicious/finding outcomes per file.
     file_groups: dict[str, list[int]] = defaultdict(list)
     for i, o in enumerate(outcomes):
         if _get_status(o) in ("suspicious", "finding") and not _has_mechanical(i):
             file_groups[_get_file(o)].append(i)
+            tokens[i] = _hypothesis_tokens(o)
 
+    already_dampened: set[int] = set()
+    dampened = 0
+
+    # --- Tier 1: near-duplicate hypothesis collapse ---
+    for indices in file_groups.values():
+        # Greedy clustering: an outcome joins the first cluster with a
+        # near-duplicate member.
+        clusters: list[list[int]] = []
+        for i in indices:
+            for cluster in clusters:
+                if any(_near_duplicate(tokens[i], tokens[j]) for j in cluster):
+                    cluster.append(i)
+                    break
+            else:
+                clusters.append([i])
+
+        for cluster in clusters:
+            if len(cluster) < FILE_CLASS_THRESHOLD:
+                continue
+            ranked = sorted(cluster, key=_rank_key, reverse=True)
+            for idx in ranked[1:]:
+                dampened += _dampen(
+                    idx, "near_duplicate", len(cluster), ranked[0],
+                )
+                already_dampened.add(idx)
+
+    # --- Tier 2: file-level cap on evidence-free findings ---
     for indices in file_groups.values():
         if len(indices) < FILE_AGNOSTIC_THRESHOLD:
             continue
         ranked = sorted(indices, key=_rank_key, reverse=True)
-        keep = FILE_AGNOSTIC_KEEP
         heavy = len(indices) >= FILE_HEAVY_THRESHOLD
-        if heavy:
-            keep = FILE_HEAVY_KEEP
+        keep = FILE_HEAVY_KEEP if heavy else FILE_AGNOSTIC_KEEP
+        tier = "file_cap_heavy" if heavy else "file_cap"
         for idx in ranked[keep:]:
             if idx in already_dampened:
                 continue
-            cur = _get_status(outcomes[idx])
-            if cur == "finding":
-                _set_status(outcomes[idx], "suspicious" if not heavy else "clean")
-                dampened += 1
-            elif cur == "suspicious":
-                _set_status(outcomes[idx], "clean")
-                dampened += 1
+            if _get_status(outcomes[idx]) != "finding":
+                continue
+            dampened += _dampen(idx, tier, len(indices), ranked[0])
+            already_dampened.add(idx)
 
     return dampened
 
 _dampen_file_pileup = dampen_file_pileup
+
+
+def dampen_pileup_pre_export(result, config) -> None:
+    """Pre-export hook: dampen pile-ups and write the audit trail.
+
+    Runs inside the orchestrator BEFORE the journal correction pass
+    and the graded findings export, so journal, export and summary
+    counters all agree on the dampened statuses. One JSONL row per
+    affected finding lands in ``<out_dir>/dampening-log.jsonl``.
+    """
+    import json
+
+    records: list[dict] = []
+    dampened = dampen_file_pileup(result.outcomes, records=records)
+
+    out_dir = getattr(config, "out_dir", None)
+    if records and out_dir:
+        try:
+            path = Path(out_dir) / DAMPENING_LOG
+            with path.open("a", encoding="utf-8") as fh:
+                for rec in records:
+                    fh.write(json.dumps(rec, sort_keys=True) + "\n")
+        except Exception:
+            logger.debug("dampening audit log write failed", exc_info=True)
+
+    if dampened:
+        logger.info(
+            "file-level dampening: demoted %d pile-up findings "
+            "(%d marked; see %s)",
+            dampened, len(records), DAMPENING_LOG,
+        )
+        result.findings = sum(
+            1 for o in result.outcomes if o.status == "finding"
+        )
+        result.suspicious = sum(
+            1 for o in result.outcomes if o.status == "suspicious"
+        )
 
 
 # -- Counter-hypothesis veto -----------------------------------------------

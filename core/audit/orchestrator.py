@@ -323,6 +323,12 @@ class OrchestratorConfig:
     # "priority" keeps the highest-priority-first order (better
     # time-to-first-finding). Serial runs always use priority order.
     schedule: str = "cost"
+    # Outcome-level post-processing hooks — ``hook(result, config)`` —
+    # invoked after resolution but BEFORE the journal correction pass
+    # and the graded findings export, so any status change they make
+    # is reflected consistently in journal, export, and summary
+    # counters (e.g. the ensemble pipeline's file-pile-up dampener).
+    pre_export_hooks: list | None = None
     # Monotonic deadline for the run (start + max_seconds), stamped by
     # ``run_orchestrator``. Verification tools with long per-query
     # timeouts (Joern) clamp to the remaining budget so one stuck
@@ -5467,6 +5473,16 @@ def _run_audit_body(
             logger.info(diag_text)
     except Exception:
         logger.debug("tier diagnostics output failed", exc_info=True)
+
+    # Pre-export hooks: outcome-level post-processing (e.g. the ensemble
+    # pipeline's file-pile-up dampener) runs BEFORE the journal
+    # correction pass and the graded export so stats, journal and
+    # findings-graded.json all agree on the final statuses.
+    for _hook in (config.pre_export_hooks or ()):
+        try:
+            _hook(result, config)
+        except Exception:
+            logger.debug("pre-export hook failed", exc_info=True)
 
     # Journal entries were committed mid-loop, pre-resolution — append
     # corrective entries so the journal reflects final statuses (dark

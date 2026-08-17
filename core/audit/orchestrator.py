@@ -13501,6 +13501,69 @@ def _run_critique(
 _MIN_SLOC_FOR_DEEPEN = 20
 
 
+def _collect_reviews_until_budget(
+    prepared: list,
+    do_review: Callable,
+    should_stop: Callable[[], bool],
+    max_workers: int,
+    *,
+    phase_label: str,
+) -> list:
+    """Dispatch *prepared* re-review items, harvesting EVERY completed
+    call even when the budget cap fires mid-flight.
+
+    Shared driver for the re-review phases (deepen, disagreement,
+    iterative, joern-enriched, study-enriched). Contract:
+
+    - single worker: ``should_stop`` gates BEFORE each dispatch — a
+      call that would breach the cap is simply never made;
+    - parallel: results are harvested as futures complete, and the
+      budget check runs AFTER each harvest. When it fires, futures
+      still PENDING are cancelled (never dispatched, nothing spent),
+      but every call already dispatched — completed or in flight — is
+      collected and flows into the caller's booking/journal loop. The
+      money is spent and the text is paid for; pre-fix the check ran
+      before the harvest and ``break`` threw away completed-at/after-
+      cap results ($10.25 of finished deepen re-reviews discarded,
+      journal-less, in the final comparison audit).
+    """
+    if max_workers <= 1:
+        collected = []
+        for item in prepared:
+            if should_stop():
+                break
+            collected.append(do_review(item))
+        return collected
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    collected = []
+    stopped = False
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_item = {
+            pool.submit(do_review, item): item for item in prepared
+        }
+        for fut in as_completed(future_to_item):
+            # Harvest first: a future yielded here has finished (or
+            # was cancelled while pending). Cancelled == never
+            # dispatched — the only class that may be dropped.
+            if not fut.cancelled():
+                collected.append(fut.result())
+            if stopped:
+                continue
+            if should_stop():
+                stopped = True
+                cancelled = sum(1 for f in future_to_item if f.cancel())
+                if cancelled:
+                    logger.info(
+                        "%s: budget exhausted — %d pending re-review(s) "
+                        "cancelled before dispatch; already-dispatched "
+                        "calls are booked and journaled as they complete",
+                        phase_label, cancelled,
+                    )
+    return collected
+
+
 def _prior_hypotheses_for(outcome: ReviewOutcome) -> list[dict[str, Any]]:
     """Prior-pass hypothesis array for re-review context injection.
 
@@ -13663,26 +13726,13 @@ def _deepen_suspicious(
         except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
-    if effective_workers <= 1:
-        raw_results = []
-        for item in prepared:
-            if _check_budget(config, start_time, result):
-                break
-            raw_results.append(_do_review(item))
-    else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        raw_results = []
-        with ThreadPoolExecutor(max_workers=effective_workers) as pool:
-            future_to_item = {
-                pool.submit(_do_review, item): item for item in prepared
-            }
-            for fut in as_completed(future_to_item):
-                if _check_budget(config, start_time, result):
-                    for f in future_to_item:
-                        f.cancel()
-                    break
-                raw_results.append(fut.result())
+    raw_results = _collect_reviews_until_budget(
+        prepared,
+        _do_review,
+        lambda: _check_budget(config, start_time, result),
+        effective_workers,
+        phase_label="deepen",
+    )
 
     # --- Process results (always in main thread) ---
     idx_to_prepared = {item[0]: item for item in prepared}
@@ -13906,26 +13956,13 @@ def _re_review_disagreements(
         except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
-    if effective_workers <= 1:
-        raw_results = []
-        for item in prepared:
-            if _check_budget(config, start_time, result):
-                break
-            raw_results.append(_do_review(item))
-    else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        raw_results = []
-        with ThreadPoolExecutor(max_workers=effective_workers) as pool:
-            future_to_item = {
-                pool.submit(_do_review, item): item for item in prepared
-            }
-            for fut in as_completed(future_to_item):
-                if _check_budget(config, start_time, result):
-                    for f in future_to_item:
-                        f.cancel()
-                    break
-                raw_results.append(fut.result())
+    raw_results = _collect_reviews_until_budget(
+        prepared,
+        _do_review,
+        lambda: _check_budget(config, start_time, result),
+        effective_workers,
+        phase_label="disagreement re-review",
+    )
 
     re_reviewed = 0
     for idx, outcome, exc in sorted(raw_results, key=lambda r: r[0]):
@@ -14143,26 +14180,13 @@ def _iterative_re_review(
             except Exception as review_exc:  # noqa: BLE001
                 return (idx, None, review_exc)
 
-        if effective_workers <= 1:
-            raw_results = []
-            for item in prepared:
-                if _check_budget(config, start_time, result):
-                    break
-                raw_results.append(_do_review(item))
-        else:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            raw_results = []
-            with ThreadPoolExecutor(max_workers=effective_workers) as pool:
-                future_to_item = {
-                    pool.submit(_do_review, item): item for item in prepared
-                }
-                for fut in as_completed(future_to_item):
-                    if _check_budget(config, start_time, result):
-                        for f in future_to_item:
-                            f.cancel()
-                        break
-                    raw_results.append(fut.result())
+        raw_results = _collect_reviews_until_budget(
+            prepared,
+            _do_review,
+            lambda: _check_budget(config, start_time, result),
+            effective_workers,
+            phase_label="iterative re-review",
+        )
 
         # --- Process results in main thread ---
         idx_to_prepared = {item[0]: item for item in prepared}
@@ -17868,26 +17892,13 @@ def _re_review_joern_enriched(
         except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
-    if effective_workers <= 1:
-        raw_results = []
-        for item in prepared:
-            if _check_budget(config, start_time, result):
-                break
-            raw_results.append(_do_review(item))
-    else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        raw_results = []
-        with ThreadPoolExecutor(max_workers=effective_workers) as pool:
-            future_to_item = {
-                pool.submit(_do_review, item): item for item in prepared
-            }
-            for fut in as_completed(future_to_item):
-                if _check_budget(config, start_time, result):
-                    for f in future_to_item:
-                        f.cancel()
-                    break
-                raw_results.append(fut.result())
+    raw_results = _collect_reviews_until_budget(
+        prepared,
+        _do_review,
+        lambda: _check_budget(config, start_time, result),
+        effective_workers,
+        phase_label="joern re-review",
+    )
 
     # --- Process results in main thread ---
     idx_to_prepared = {item[0]: item for item in prepared}
@@ -18282,26 +18293,13 @@ def _re_review_study_enriched(
         except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
-    if effective_workers <= 1:
-        raw_results = []
-        for item in prepared:
-            if _check_budget(config, start_time, result):
-                break
-            raw_results.append(_do_review(item))
-    else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        raw_results = []
-        with ThreadPoolExecutor(max_workers=effective_workers) as pool:
-            future_to_item = {
-                pool.submit(_do_review, item): item for item in prepared
-            }
-            for fut in as_completed(future_to_item):
-                if _check_budget(config, start_time, result):
-                    for f in future_to_item:
-                        f.cancel()
-                    break
-                raw_results.append(fut.result())
+    raw_results = _collect_reviews_until_budget(
+        prepared,
+        _do_review,
+        lambda: _check_budget(config, start_time, result),
+        effective_workers,
+        phase_label="study re-review",
+    )
 
     # --- Process results in main thread ---
     idx_to_prepared = {item[0]: item for item in prepared}

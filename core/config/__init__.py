@@ -832,6 +832,12 @@ class RaptorConfig:
         # (preserve_proxy) instead. Sites that predate this chokepoint
         # via get_git_env() are unaffected (same values).
         env.update(RaptorConfig.GIT_ENV_VARS)
+        # RAPTOR_DIR is allowlisted above so children can derive tool
+        # paths — but the AMBIENT value may point at a different
+        # checkout (multi-checkout operators). Pin it to THIS tree so
+        # RAPTOR's own Python children never import another tree's
+        # modules (see pin_raptor_dir).
+        pin_raptor_dir(env)
         return env
 
     # LLM provider API-key env vars.  These are intentionally NOT in
@@ -943,6 +949,62 @@ class RaptorConfig:
         ]
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+
+
+# Ambient RAPTOR_DIR values whose override has already been announced
+# (one line per distinct value per process, not one per spawn — a
+# single audit run spawns dozens of SMT/Z3 children).
+_RAPTOR_DIR_OVERRIDE_NOTICED: set = set()
+
+
+def pin_raptor_dir(env) -> dict:
+    """Hard-set ``RAPTOR_DIR`` in *env* to THIS tree's root; return *env*.
+
+    ``RAPTOR_DIR`` tells RAPTOR's own Python children which tree to
+    import ``core.*`` from (the mandated child bootstrap is
+    ``sys.path.insert(0, os.environ['RAPTOR_DIR'])``). The ambient
+    value is whatever the launching shell exported — operators running
+    multiple checkouts routinely have it pointing at a DIFFERENT tree,
+    and a child that inherits it silently imports the other tree's
+    modules (observed: every SMT probe of an audit run exited 1 with
+    ``TypeError: _run_smt_verb_inner() got an unexpected keyword
+    argument`` because the child imported a stale checkout's
+    ``core.audit.sweep``). Children of THIS process must import THIS
+    tree, so the value is SET — never ``setdefault``'d — with a
+    one-line notice the first time a differing ambient value is
+    replaced: running multiple checkouts is normal; silently importing
+    the wrong tree's modules is not.
+    """
+    import logging
+
+    own = str(RaptorConfig.REPO_ROOT)
+    ambient = env.get("RAPTOR_DIR")
+    if ambient and ambient != own and ambient not in _RAPTOR_DIR_OVERRIDE_NOTICED:
+        differs = True
+        try:
+            differs = Path(ambient).resolve() != RaptorConfig.REPO_ROOT
+        except OSError:
+            pass
+        if differs:
+            _RAPTOR_DIR_OVERRIDE_NOTICED.add(ambient)
+            logging.getLogger(__name__).info(
+                "RAPTOR_DIR override: ambient value %s points at a "
+                "different checkout — children of this process import "
+                "from %s",
+                ambient, own,
+            )
+    env["RAPTOR_DIR"] = own
+    return env
+
+
+def pin_raptor_dir_in_environ() -> None:
+    """Pin ``os.environ['RAPTOR_DIR']`` to this tree's root.
+
+    Launcher-side chokepoint (libexec preambles, e2e scripts): every
+    child that inherits ``os.environ`` afterwards — including the
+    ``python3 -c`` SMT/Z3 probe children — imports this tree.
+    """
+    pin_raptor_dir(os.environ)
 
 
 # Convenience aliases for backward compatibility

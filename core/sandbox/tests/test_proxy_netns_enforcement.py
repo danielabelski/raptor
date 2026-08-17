@@ -16,7 +16,9 @@ from unittest import mock
 import pytest
 
 RAPTOR_DIR = Path(__file__).resolve().parents[3]
-os.environ.setdefault("RAPTOR_DIR", str(RAPTOR_DIR))
+# Hard-SET (never setdefault): the code under test derives paths from
+# RAPTOR_DIR; an ambient value for another checkout must not win.
+os.environ["RAPTOR_DIR"] = str(RAPTOR_DIR)
 if str(RAPTOR_DIR) not in sys.path:
     sys.path.insert(0, str(RAPTOR_DIR))
 

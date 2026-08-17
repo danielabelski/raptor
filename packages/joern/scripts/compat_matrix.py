@@ -58,16 +58,21 @@ from pathlib import Path
 #   parents[3] = repo root
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
-os.environ.setdefault("RAPTOR_DIR", str(REPO))
+# Hard-SET (never setdefault): children of this tree must import this
+# tree even when the launching shell exported RAPTOR_DIR for another
+# checkout (see core.config.pin_raptor_dir).
+from core.config import pin_raptor_dir_in_environ
+
+pin_raptor_dir_in_environ()
 
 _RELEASES_API = "https://api.github.com/repos/joernio/joern/releases"
 # Newer releases ship per-platform archives; older ones (v4.0.458
 # through ~v4.0.5xx) ship a single platform-independent joern-cli.zip.
 _DOWNLOAD_URLS = (
-    "https://github.com/joernio/joern/releases/download/"
-    "{tag}/joern-cli-linux-{arch}.zip",
-    "https://github.com/joernio/joern/releases/download/"
-    "{tag}/joern-cli.zip",
+    ("https://github.com/joernio/joern/releases/download/"
+     "{tag}/joern-cli-linux-{arch}.zip"),
+    ("https://github.com/joernio/joern/releases/download/"
+     "{tag}/joern-cli.zip"),
 )
 # A real release archive is ~1.7 GB; anything tiny is an error page.
 _MIN_ARCHIVE_BYTES = 100_000_000
@@ -207,7 +212,7 @@ def run_e2e(joern_dir: str) -> dict:
         if srv is not None:
             try:
                 srv.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 — best-effort teardown
                 pass
         shutil.rmtree(fixture_dir, ignore_errors=True)
         shutil.rmtree(cpg_dir, ignore_errors=True)
@@ -224,6 +229,7 @@ def _run_e2e_subprocess(joern_dir: Path) -> dict:
         [sys.executable, str(Path(__file__).resolve()),
          "--e2e", str(joern_dir)],
         capture_output=True, text=True, timeout=_E2E_TIMEOUT_S,
+        check=False,
     )
     for line in proc.stdout.splitlines():
         if line.startswith("E2E_RESULT|"):

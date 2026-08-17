@@ -15,6 +15,7 @@ A guard `if (n < 4096)` doesn't prevent overflow into a 256-byte buffer.
 from __future__ import annotations
 
 import logging
+import os
 import pickle
 import re
 import subprocess
@@ -502,6 +503,7 @@ def _try_z3_path_feasibility(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:
@@ -619,6 +621,7 @@ def _try_z3_signed_mismatch(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:
@@ -806,6 +809,20 @@ _Z3_CHILD_SCRIPT_V2 = (
 )
 
 
+def _z3_child_env() -> dict:
+    """Env for the Z3 probe child with RAPTOR_DIR pinned to THIS tree.
+
+    The child bootstraps ``sys.path`` from ``RAPTOR_DIR``; an ambient
+    value from the launching shell can point at a different checkout,
+    making the child import the OTHER tree's ``core.audit.
+    condition_smt`` (cross-checkout skew: wrong dispatch signatures,
+    silent behavioural drift). Same chokepoint rule as
+    ``core.audit.sweep.smt_child_env``.
+    """
+    from core.config import pin_raptor_dir
+    return pin_raptor_dir(dict(os.environ))
+
+
 def _z3_in_subprocess(
     constraints: list[BoundsConstraint],
     buffer_size: int | None,
@@ -825,6 +842,7 @@ def _z3_in_subprocess(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT],
             input=payload, capture_output=True, timeout=timeout,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:
@@ -1600,6 +1618,7 @@ def _try_z3_auth_bypass(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:
@@ -1944,6 +1963,7 @@ def _try_z3_lock_discipline(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:
@@ -2391,6 +2411,7 @@ def _try_z3_resource_leak(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:
@@ -3013,6 +3034,7 @@ def _try_z3_integer_narrowing(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:
@@ -4293,6 +4315,7 @@ def disprove_integer_overflow(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
             check=False,
+            env=_z3_child_env(),
         )
         if proc.returncode == 0:
             try:

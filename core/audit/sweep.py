@@ -1342,6 +1342,20 @@ _SMT_VERB_CHILD_SCRIPT = (
 )
 
 
+def smt_child_env() -> dict:
+    """Env for SMT/Z3 probe children with RAPTOR_DIR pinned to THIS tree.
+
+    The child bootstraps ``sys.path`` from ``RAPTOR_DIR``; an ambient
+    value inherited from the launching shell can point at a different
+    checkout, making the child import the OTHER tree's modules
+    (observed: ``TypeError: _run_smt_verb_inner() got an unexpected
+    keyword argument 'target_path'`` — every SMT probe of a run exit
+    1 because a stale checkout's ``core.audit.sweep`` was imported).
+    """
+    from core.config import pin_raptor_dir
+    return pin_raptor_dir(dict(os.environ))
+
+
 def _smt_verb_in_subprocess(
     *,
     file_path: str,
@@ -1370,7 +1384,7 @@ def _smt_verb_in_subprocess(
         proc = subprocess.run(
             [sys.executable, "-c", _SMT_VERB_CHILD_SCRIPT],
             input=payload, capture_output=True, timeout=timeout,
-            check=False,
+            check=False, env=smt_child_env(),
         )
         if proc.returncode == 0:
             with contextlib.suppress(Exception):

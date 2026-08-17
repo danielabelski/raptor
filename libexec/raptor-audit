@@ -48,8 +48,14 @@ if not (os.environ.get("CLAUDECODE")
 
 _RAPTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_DIR))
-os.environ.setdefault("RAPTOR_DIR", str(_RAPTOR_DIR))
 import core.startup.process_init  # noqa: E402,F401
+
+# Hard-SET (never setdefault) so an ambient RAPTOR_DIR exported by the
+# launching shell for a DIFFERENT checkout cannot steer this run's
+# Python children into importing the other tree's modules (A2:
+# every SMT probe TypeError'd on a stale checkout's core.audit.sweep).
+from core.config import pin_raptor_dir_in_environ  # noqa: E402
+pin_raptor_dir_in_environ()
 
 
 def cmd_gaps(args: argparse.Namespace) -> int:

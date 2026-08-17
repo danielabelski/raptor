@@ -33,13 +33,18 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Literal, Set, Tuple
+from typing import Any, Literal
 
 from core.analysis.binary_oracle import (
     _qualified_from_demangled,
     _strip_impl_block_brackets,  # noqa: F401  (re-export for tests)
     _strip_rust_crate_hash,
 )
+from core.inventory.binary_oracle_corpora._sandbox_exec import (
+    run_build_step,
+    run_tool,
+)
+
 from .snappy import (
     _LLVM_COV_CANDIDATES,
     _LLVM_PROFDATA_CANDIDATES,
@@ -61,7 +66,7 @@ class _RegexRustDriver:
         "instrument-coverage; first Rust corpus.")
     mode: Literal["gcov"] = "gcov"
 
-    def prepare(self, work_dir: Path) -> Dict[str, Any]:
+    def prepare(self, work_dir: Path) -> dict[str, Any]:
         work_dir = work_dir.resolve()
         tag_dir = work_dir / REGEX_TAG
         sentinel = tag_dir / "sentinel.ok"
@@ -123,15 +128,27 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
     # Rust release profile strips DWARF + LLVM coverage instrumentation
     # by default; restore both via RUSTFLAGS. Single codegen unit so the
     # binary's DWARF references are stable across re-runs.
-    env = {
-        **os.environ,
+    build_env = {
         "RUSTFLAGS": ("-C instrument-coverage -C debuginfo=2 "
                       "-C codegen-units=1 -C lto=off"),
         "CARGO_TARGET_DIR": str(target_dir),
     }
-    subprocess.run(
+    # cargo executes the fetched crate's build machinery (build.rs,
+    # proc-macros) — sandboxed like every other fetched build system.
+    # network=True: this is the declared package-manager fetch step
+    # (crates.io); CARGO_HOME rides along when the operator has one so
+    # the registry cache/toolchain shims keep working, and its dirs
+    # need write scope for the registry download.
+    import os as _os
+    cargo_writables = [target_dir]
+    cargo_home = _os.environ.get("CARGO_HOME",
+                                 str(Path.home() / ".cargo"))
+    build_env["CARGO_HOME"] = cargo_home
+    cargo_writables.append(Path(cargo_home))
+    run_build_step(
         ["cargo", "build", "--release", "--tests"],
-        cwd=src, env=env, check=True, timeout=1800,
+        cwd=src, extra_env=build_env, network=True,
+        writable_paths=cargo_writables, timeout=1800,
     )
 
     candidates = sorted((target_dir / "release" / "deps").glob("regex-*"))
@@ -144,10 +161,13 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
             f"regex-rust: no test binary built at {target_dir}/release/deps/")
 
     profraw_pattern = str(tag_dir / "cov-%p-%m.profraw")
-    test_env = {**env, "LLVM_PROFILE_FILE": profraw_pattern}
-    subprocess.run(
+    # The built test binary is untrusted-origin code — run it inside
+    # the sandbox (network removed, writes confined to tag_dir).
+    run_build_step(
         [str(test_bin), "--test-threads=1"],
-        cwd=tag_dir, env=test_env, check=True, timeout=600,
+        cwd=tag_dir,
+        extra_env={**build_env, "LLVM_PROFILE_FILE": profraw_pattern},
+        timeout=600,
     )
 
     profraw = list(tag_dir.glob("cov-*.profraw"))
@@ -157,10 +177,10 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
             f"instrumentation may be broken")
 
     profdata_tool = _resolve(_LLVM_PROFDATA_CANDIDATES)
-    subprocess.run(
+    run_tool(
         [profdata_tool, "merge", "-sparse", *(str(p) for p in profraw),
          "-o", str(profdata)],
-        check=True, timeout=120,
+        timeout=120,
     )
 
     shutil.rmtree(src, ignore_errors=True)
@@ -181,25 +201,23 @@ _strip_crate_hash = _strip_rust_crate_hash
 # re-exported above for any external importer of this driver.
 
 
-def _build_demangle_map(binary: Path) -> Dict[str, str]:
+def _build_demangle_map(binary: Path) -> dict[str, str]:
     """Return mangled → demangled for every text symbol in the binary.
     ``nm --demangle`` (libiberty) handles BOTH Rust v0 (``_RNv...``)
     and legacy (``_ZN...17h<hash>E``) — c++filt's auto mode only
     handles v0, so we prefer the nm-derived map. Returns ``{}`` if
     nm fails."""
-    out_mangled = subprocess.run(
-        ["nm", str(binary)],
-        capture_output=True, text=True, check=False, timeout=60,
+    out_mangled = run_tool(
+        ["nm", str(binary)], check=False, timeout=60,
     ).stdout
-    out_demangled = subprocess.run(
-        ["nm", "--demangle", str(binary)],
-        capture_output=True, text=True, check=False, timeout=60,
+    out_demangled = run_tool(
+        ["nm", "--demangle", str(binary)], check=False, timeout=60,
     ).stdout
     mangled = [line.split(None, 2) for line in out_mangled.splitlines()
                if line.strip()]
     demangled = [line.split(None, 2) for line in out_demangled.splitlines()
                  if line.strip()]
-    mapping: Dict[str, str] = {}
+    mapping: dict[str, str] = {}
     for m, d in zip(mangled, demangled, strict=True):
         if len(m) >= 3 and len(d) >= 3 and m[1] == d[1] and m[1] in "tTwW":
             mapping[m[2]] = d[2]
@@ -208,14 +226,14 @@ def _build_demangle_map(binary: Path) -> Dict[str, str]:
 
 def _liveness_from_llvm_cov(
     binary: Path, profdata: Path,
-) -> Tuple[Set[str], Set[str]]:
+) -> tuple[set[str], set[str]]:
     """Run ``llvm-cov export`` → JSON, demangle Rust names via nm-map
     (covers v0 + legacy) with c++filt as fallback, reduce to qualified-
     no-args form, filter to regex's surface."""
     cov_tool = _resolve(_LLVM_COV_CANDIDATES)
-    proc = subprocess.run(
+    proc = run_tool(
         [cov_tool, "export", f"--instr-profile={profdata}", str(binary)],
-        capture_output=True, text=True, check=False, timeout=300,
+        check=False, timeout=300,
     )
     if proc.returncode != 0 or not proc.stdout:
         logger.warning("regex-rust: llvm-cov export failed: %s",
@@ -234,8 +252,8 @@ def _liveness_from_llvm_cov(
     fns = blocks[0].get("functions") or []
     demangle_map = _build_demangle_map(binary)
 
-    live: Set[str] = set()
-    candidates: Set[str] = set()
+    live: set[str] = set()
+    candidates: set[str] = set()
     for fn in fns:
         mangled = fn.get("name") or ""
         if not mangled:
@@ -245,9 +263,9 @@ def _liveness_from_llvm_cov(
         demangled = demangle_map.get(mangled)
         if demangled is None:
             try:
-                proc = subprocess.run(
-                    ["c++filt"], input=mangled, capture_output=True,
-                    text=True, check=False, timeout=5,
+                proc = run_tool(
+                    ["c++filt"], input_text=mangled,
+                    check=False, timeout=5,
                 )
                 demangled = proc.stdout.strip() or mangled
             except (OSError, subprocess.TimeoutExpired):

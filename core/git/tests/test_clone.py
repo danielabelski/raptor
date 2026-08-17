@@ -715,3 +715,78 @@ def test_signature_probe_overrides_take_precedence() -> None:
     real = [i for i, v in enumerate(cmd)
             if v.startswith("gpg.program=") and v != "gpg.program=true"]
     assert real and real[0] > neutral
+
+
+class TestSafeGitCommandExecutes:
+    """Execute git THROUGH the safety overrides against a real repo.
+
+    The string-level assertions above can't catch a config pin that git
+    interprets differently than intended (the empty ``diff.external=``
+    value means "run this command", not "disabled" — which is why diff
+    callers must pass --no-ext-diff and why forgetting it fails loudly).
+    These tests pin both halves of that contract with a live git.
+    """
+
+    @staticmethod
+    def _two_commit_repo(tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def g(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                capture_output=True, text=True, check=True,
+            )
+
+        g("init", "-q")
+        g("config", "user.email", "t@example.com")
+        g("config", "user.name", "T")
+        (repo / "a.txt").write_text("one\n")
+        g("add", "a.txt")
+        g("commit", "-q", "-m", "c1")
+        (repo / "a.txt").write_text("two\n")
+        g("add", "a.txt")
+        g("commit", "-q", "-m", "c2")
+        return repo
+
+    def test_diff_with_no_ext_diff_succeeds(self, tmp_path: Path) -> None:
+        from core.git.clone import safe_git_command
+        repo = self._two_commit_repo(tmp_path)
+        proc = subprocess.run(
+            safe_git_command(
+                "-C", str(repo), "diff", "--no-ext-diff",
+                "HEAD~1..HEAD",
+            ),
+            capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "-one" in proc.stdout and "+two" in proc.stdout
+
+    def test_diff_without_no_ext_diff_fails_loudly(
+        self, tmp_path: Path,
+    ) -> None:
+        # The deliberate trap: a diff caller that forgot --no-ext-diff
+        # must fail closed, not silently honour a repo-named driver.
+        from core.git.clone import safe_git_command
+        repo = self._two_commit_repo(tmp_path)
+        proc = subprocess.run(
+            safe_git_command("-C", str(repo), "diff", "HEAD~1..HEAD"),
+            capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode != 0
+        assert "external diff" in proc.stderr or "cannot run" in proc.stderr
+
+    def test_status_probe_shape_succeeds(self, tmp_path: Path) -> None:
+        # The refresh-free provenance probe shape stays green end-to-end.
+        from core.git.clone import safe_git_command
+        repo = self._two_commit_repo(tmp_path)
+        for args in (
+            ("rev-parse", "HEAD"),
+            ("diff-index", "--no-ext-diff", "HEAD"),
+            ("ls-files", "--others", "--exclude-standard"),
+        ):
+            proc = subprocess.run(
+                safe_git_command("-C", str(repo), *args),
+                capture_output=True, text=True, check=False,
+            )
+            assert proc.returncode == 0, (args, proc.stderr)

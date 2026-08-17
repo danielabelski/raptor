@@ -11,9 +11,13 @@ import subprocess
 
 from core.sandbox import run as _sandbox_run, run_trusted as _run_trusted, SandboxSetupError
 # _run_trusted: read-only tools (strings, --help checks) — no namespace overhead.
-# Full sandbox for afl-fuzz / afl-showmap (execute untrusted binary): network
-# block + Landlock (target=output=self.output_dir — AFL reads and writes the
-# same corpus/queue/crash directories).
+# Full sandbox for afl-showmap (execute untrusted binary): network block +
+# Landlock (target=output=self.output_dir — AFL reads and writes the same
+# corpus/queue/crash directories).
+# afl-fuzz itself is NOT sandboxed: the long-lived campaign runs via a plain
+# subprocess.Popen with only a sanitised environment (get_safe_env()) and
+# pdeathsig — the untrusted target executes outside the sandbox layer during
+# fuzzing.
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -580,18 +584,12 @@ class AFLRunner:
                     break
 
         finally:
-            # Stop all AFL instances. Use communicate(timeout=5)
-            # NOT wait(timeout=5) — pre-fix `proc.wait()` could
-            # deadlock indefinitely if AFL had buffered output in
-            # the stderr PIPE that no one had drained (stdout is
-            # DEVNULL post-batch-450; stderr is still PIPE for
-            # diagnostic capture). On SIGTERM AFL writes a
-            # shutdown banner + final stats to stderr — for
-            # campaigns that ran long enough to fill 64KB of
-            # stderr, wait() blocked forever waiting for the
-            # process to exit while the process blocked forever
-            # waiting for stderr-pipe space. communicate() drains
-            # the pipe and waits in a single thread-safe call.
+            # Stop all AFL instances. Both stdout and stderr are
+            # redirected to per-instance log files (see the Popen
+            # above), so there is no pipe to drain and no deadlock
+            # risk; communicate(timeout=...) here is equivalent to
+            # wait(timeout=...) and is kept for uniformity with the
+            # historical call shape.
             logger.info("Stopping AFL instances...")
             for entry in processes:
                 name = entry["name"]

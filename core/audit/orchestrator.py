@@ -8631,6 +8631,10 @@ def _run_tool_chain(
         tool_type = entry["type"]
         tool_cfg = entry["config"]
 
+        # Wall-clock bracket for tier diagnostics: tier-diagnostics
+        # wall_time_s was declared on TierCounters but never
+        # accumulated anywhere, so every report showed 0.0.
+        _tier_t0 = time.monotonic()
         try:
             if tool_type == "semgrep":
                 if sarif_cache is not None:
@@ -9038,6 +9042,14 @@ def _run_tool_chain(
                 function_name,
                 exc,
             )
+        finally:
+            if tier_counters:
+                _increment_tier_dict(
+                    tier_counters,
+                    tool_type,
+                    "wall_time_s",
+                    time.monotonic() - _tier_t0,
+                )
 
     return confirmed
 

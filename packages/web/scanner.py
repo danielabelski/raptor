@@ -350,7 +350,12 @@ def main():
         logger.info("=" * 70)
         logger.info("Vulnerabilities found: %s", results['total_vulnerabilities'])
 
-        return 0 if results['total_vulnerabilities'] == 0 else 1
+        # A completed scan is a success regardless of how many vulnerabilities
+        # it found — the findings live in web_scan_report.json. The raptor.py
+        # lifecycle wrapper treats any non-zero exit as a failed run, so
+        # exiting 1 on findings would record every successful vuln-finding
+        # scan as status=failed.
+        return 0
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Scan interrupted by user", file=sys.stderr)

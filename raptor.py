@@ -238,7 +238,7 @@ def _rewrite_target_arg(args: list, old: str, new: str) -> list:
 # same archive). Re-exported here under the old private name
 # for backward compatibility with anything in this module that
 # still references _safe_cache_name.
-from core.archive import safe_cache_name as _safe_cache_name
+from core.archive import safe_cache_name as _safe_cache_name  # noqa: E402
 
 
 def _unpack_archive_target(target: str, args: list, out_dir: Path):
@@ -579,6 +579,24 @@ def _get_or_start_dispatcher():
             import logging as _logging
             _logging.getLogger(__name__).warning(
                 "[Bedrock] %s", _bedrock_warning,
+            )
+        # Entitlement preflight: one cached 1-token probe per configured
+        # Bedrock (model, surface, region, profile) combination, so an
+        # un-entitled model surfaces as an actionable line NOW instead
+        # of an AccessDenied mid-run.  Advisory — never blocks startup.
+        try:
+            from core.llm.bedrock_preflight import (
+                preflight_configured_bedrock,
+            )
+            for _bedrock_warning in preflight_configured_bedrock(creds):
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "[Bedrock] %s", _bedrock_warning,
+                )
+        except Exception as _pf_exc:  # noqa: BLE001 — advisory only
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "bedrock preflight skipped: %s", _pf_exc,
             )
         _active_dispatcher = LLMDispatcher(
             run_id=f"raptor-{uuid.uuid4().hex[:8]}",

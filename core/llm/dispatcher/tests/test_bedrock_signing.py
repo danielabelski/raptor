@@ -905,10 +905,13 @@ def test_credential_store_opaque_bearer_never_expired():
     assert store.bedrock_bearer_expired() is False
 
 
-def test_dispatcher_rejects_expired_bearer_preflight(tmp_path):
-    """Mantle path with an expired JWT bearer fails fast (401 + clear
-    operator guidance) BEFORE any network call.  Saves the round trip
-    and surfaces an actionable error instead of opaque AWS 401."""
+def test_dispatcher_rejects_expired_bearer_preflight(tmp_path, monkeypatch):
+    """Mantle path with an expired JWT bearer AND no resolvable SigV4
+    chain fails fast (401 + clear operator guidance) BEFORE any
+    network call.  Saves the round trip and surfaces an actionable
+    error instead of opaque AWS 401.  (With a resolvable chain the
+    dispatcher falls back to SigV4 instead — covered by
+    ``test_expired_bearer_falls_back_to_sigv4``.)"""
     import time as _t
     past = int(_t.time()) - 60
     store = CredentialStore()
@@ -916,6 +919,9 @@ def test_dispatcher_rejects_expired_bearer_preflight(tmp_path):
         bearer_token=_make_jwt_with_exp(past),
         region=_REGION,
         endpoint="https://example.invalid",
+    )
+    monkeypatch.setattr(
+        store, "_resolve_aws_credentials", lambda profile=None: None,
     )
     d = LLMDispatcher(
         run_id="bedrock-expired-mantle",
@@ -1349,3 +1355,61 @@ def test_per_model_profile_forces_sigv4_over_bearer(upstream, tmp_path):
     auth = req["headers"]["authorization"]
     assert auth.startswith("AWS4-HMAC-SHA256 "), auth
     assert f"Credential={_FAKE_AK}/" in auth
+
+
+@needs_botocore
+def test_expired_bearer_falls_back_to_sigv4(upstream, tmp_path):
+    """An expired JWT bearer with a resolvable SigV4 chain signs with
+    the chain (one warning) instead of hard-401ing while healthy
+    credentials sit unused."""
+    import time as _t
+    endpoint, captured = upstream
+    store = _bedrock_store(endpoint)
+    store.set_aws(bearer_token=_make_jwt_with_exp(int(_t.time()) - 60))
+    d = LLMDispatcher(
+        run_id="bedrock-expired-bearer-fallback",
+        audit_path=tmp_path / "audit.jsonl",
+        creds=store,
+    )
+    try:
+        resp = _post_bedrock(
+            d,
+            {"model": _MODEL, "max_tokens": 8,
+             "messages": [{"role": "user", "content": "ping"}]},
+            path="/bedrock/mantle/v1/messages",
+        )
+        assert resp.status_code == 200
+    finally:
+        d.shutdown()
+    auth = captured()["headers"]["authorization"]
+    assert auth.startswith("AWS4-HMAC-SHA256 "), auth
+
+
+def test_expired_bearer_without_chain_still_401s(tmp_path, monkeypatch):
+    """No resolvable chain → the expired bearer keeps its hard 401
+    with the rotation guidance."""
+    import time as _t
+    store = CredentialStore()
+    store.set_aws(
+        bearer_token=_make_jwt_with_exp(int(_t.time()) - 60),
+        region=_REGION,
+    )
+    monkeypatch.setattr(
+        store, "_resolve_aws_credentials", lambda profile=None: None,
+    )
+    d = LLMDispatcher(
+        run_id="bedrock-expired-bearer-hard",
+        audit_path=tmp_path / "audit.jsonl",
+        creds=store,
+    )
+    try:
+        resp = _post_bedrock(
+            d,
+            {"model": _MODEL, "max_tokens": 8,
+             "messages": [{"role": "user", "content": "ping"}]},
+            path="/bedrock/mantle/v1/messages",
+        )
+        assert resp.status_code == 401
+        assert "expired" in resp.text
+    finally:
+        d.shutdown()

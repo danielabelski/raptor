@@ -257,6 +257,41 @@ def run_multi_model(
 # ---------------------------------------------------------------------------
 
 
+def _warn_same_weights(names: Sequence[str]) -> None:
+    """Warn when two panel entries peel to the same underlying model.
+
+    Distinct model_name values can be the SAME weights reached over
+    two transports — a bare Bedrock id (``anthropic.claude-x``), its
+    regionally-prefixed form (``us.anthropic.claude-x``) and the
+    direct-API name (``claude-x``) all resolve to one model.  The
+    duplicate-name check above can't see that, and treating the pair
+    as independent opinions silently inflates consensus confidence.
+    Warning, not error: same-weights panels are legitimate for
+    transport A/B comparisons — the operator just shouldn't read the
+    agreement as diversity.
+    """
+    try:
+        from core.security.llm_family import bare_model_id
+    except Exception:  # noqa: BLE001 — advisory only
+        return
+    peeled: dict[str, list[str]] = {}
+    for name in names:
+        try:
+            bare = bare_model_id(name)
+        except Exception:  # noqa: BLE001 — advisory only
+            continue
+        if bare:
+            peeled.setdefault(bare, []).append(name)
+    for bare, group in sorted(peeled.items()):
+        if len(group) > 1:
+            logger.warning(
+                "multi-model panel: %s all resolve to the same "
+                "underlying model (%s) — their agreement is transport "
+                "consistency, not independent consensus",
+                group, bare,
+            )
+
+
 def _validate_inputs(
     task: TaskFn,
     models: Sequence[ModelHandle],
@@ -287,6 +322,7 @@ def _validate_inputs(
     dupes = sorted(name for name, c in counts.items() if c > 1)
     if dupes:
         raise ValueError(f"duplicate model_name(s): {dupes}")
+    _warn_same_weights(names)
     for i, r in enumerate(reviewers):
         if not isinstance(r, Reviewer):
             raise TypeError(

@@ -738,6 +738,24 @@ def _ensure_anthropic_version(body: bytes) -> bytes:
     return json.dumps(payload).encode("utf-8")
 
 
+_expired_bearer_warned = False
+
+
+def _warn_expired_bearer_fallback() -> None:
+    """One warning per process when an expired bearer is bypassed in
+    favour of a resolvable SigV4 chain — the operator should rotate or
+    drop the dead token, but the run keeps working meanwhile."""
+    global _expired_bearer_warned
+    if _expired_bearer_warned:
+        return
+    _expired_bearer_warned = True
+    _log.warning(
+        "AWS_BEARER_TOKEN_BEDROCK has expired but SigV4 credentials "
+        "resolve — signing with the credential chain instead. Rotate "
+        "or unset the dead bearer token.",
+    )
+
+
 def _build_bearer_mantle_request(
     bearer_token: str, endpoint: str, path: str, body: bytes,
 ) -> PreparedRequest:
@@ -1038,16 +1056,22 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
             o_profile = override.get("profile")
             o_region = override.get("region")
             bearer = creds.get("aws_bearer_token")
-            if bearer and not o_profile:
-                if creds.bedrock_bearer_expired():
-                    # Pre-flight gate: don't burn a network round trip
-                    # if we already know the JWT exp has passed.
+            if bearer and not o_profile and creds.bedrock_bearer_expired():
+                # Expired JWT: fall back to SigV4 when the chain can
+                # sign (warn once) instead of failing while healthy
+                # credentials sit unused; hard 401 only when there is
+                # no signer either.
+                if creds.aws_signer("mantle", region=o_region) is not None:
+                    _warn_expired_bearer_fallback()
+                    bearer = None
+                else:
                     raise BedrockTransformError(
                         401,
                         "AWS_BEARER_TOKEN_BEDROCK has expired; "
                         "regenerate the token (Bedrock console) or "
                         "switch to a long-term API key.",
                     )
+            if bearer and not o_profile:
                 endpoint = creds.aws_bedrock_endpoint(
                     "mantle", region=o_region,
                 )
@@ -1096,14 +1120,20 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
         o_profile = override.get("profile")
         o_region = override.get("region")
         bearer = creds.get("aws_bearer_token")
-        if bearer and not o_profile:
-            if creds.bedrock_bearer_expired():
+        if bearer and not o_profile and creds.bedrock_bearer_expired():
+            # Same expired-bearer fallback contract as the Mantle
+            # branch above.
+            if creds.aws_signer("runtime", region=o_region) is not None:
+                _warn_expired_bearer_fallback()
+                bearer = None
+            else:
                 raise BedrockTransformError(
                     401,
                     "AWS_BEARER_TOKEN_BEDROCK has expired; "
                     "regenerate the token (Bedrock console) or "
                     "switch to a long-term API key.",
                 )
+        if bearer and not o_profile:
             endpoint = creds.aws_bedrock_endpoint("runtime", region=o_region)
             if endpoint is None:
                 raise BedrockTransformError(

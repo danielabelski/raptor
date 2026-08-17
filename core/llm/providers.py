@@ -4136,6 +4136,16 @@ def create_provider(config: ModelConfig) -> LLMProvider:
             provider_instance.instructor_client = instructor.from_anthropic(
                 provider_instance.client,
             )
+        if api == "runtime":
+            # InvokeModel has no SSE surface; the dispatcher rejects
+            # ``stream`` with a 400 mid-run. Surface the capability
+            # limit at construction time so a streaming consumer's
+            # failure isn't the first hint.
+            logger.warning(
+                "Bedrock runtime surface is non-streaming (InvokeModel)"
+                " — streaming consumers will get a 400; use "
+                "bedrock_api=mantle for SSE streaming",
+            )
         logger.debug(
             "Bedrock provider: routing via dispatcher /bedrock/%s", api,
         )

@@ -52,6 +52,43 @@ def _claudecode_worker_cap() -> int:
     return max(1, min(cap, MAX_WORKERS_CAP))
 
 
+# Concurrency ceiling when the primary model routes via Bedrock.
+# RPM-derived counts assume the account's quota belongs to this run;
+# on Bedrock the quota is per-account-per-region and SHARED — most
+# visibly with the operator's own interactive Claude Code session on
+# the same account, which a 32-worker analysis burst can 429-starve.
+# ``RAPTOR_BEDROCK_MAX_WORKERS`` overrides; ``tuning.json``'s
+# ``max_llm_workers`` still beats both.
+BEDROCK_MAX_WORKERS_DEFAULT = 8
+
+
+def _bedrock_worker_cap() -> int:
+    import os
+    raw = os.environ.get("RAPTOR_BEDROCK_MAX_WORKERS", "")
+    try:
+        cap = int(raw) if raw else BEDROCK_MAX_WORKERS_DEFAULT
+    except ValueError:
+        logger.warning(
+            "RAPTOR_BEDROCK_MAX_WORKERS=%r is not an integer — using %d",
+            raw, BEDROCK_MAX_WORKERS_DEFAULT,
+        )
+        cap = BEDROCK_MAX_WORKERS_DEFAULT
+    return max(1, min(cap, MAX_WORKERS_CAP))
+
+
+def _is_bedrock_primary(model: str) -> bool:
+    """True when *model* is served by the Bedrock provider — same
+    detection shape as :func:`_is_claudecode_primary`."""
+    try:
+        from core.llm.config import _get_default_primary_model
+        mc = _get_default_primary_model()
+    except Exception:  # noqa: BLE001 — config probing is best-effort
+        return False
+    if mc is None or mc.provider != "bedrock":
+        return False
+    return model in ("default", mc.model_name)
+
+
 def _is_claudecode_primary(model: str) -> bool:
     """True when *model* is served by the claudecode transport.
 
@@ -105,6 +142,11 @@ def derive_max_workers(model: str) -> int:
     workers = max(1, min(rpm // 2, MAX_WORKERS_CAP))
     if _is_claudecode_primary(model):
         workers = min(workers, _claudecode_worker_cap())
+    if _is_bedrock_primary(model):
+        # Bedrock quota is per-account-per-region and shared (most
+        # visibly with the operator's live Claude Code session) —
+        # RPM headroom alone over-provisions.
+        workers = min(workers, _bedrock_worker_cap())
     return workers
 
 

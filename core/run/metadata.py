@@ -6,12 +6,12 @@ produced it, when, and whether it succeeded. Tools use start_run/complete_run/fa
 
 import contextlib
 import json
+import logging
 import os
 import re
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.json import load_json, save_json
 
@@ -60,7 +60,7 @@ _PREFIX_MAP = {
 }
 
 
-def _find_claude_ancestor() -> Optional[int]:
+def _find_claude_ancestor() -> int | None:
     """Walk the process tree to find the nearest 'claude' ancestor PID.
 
     Returns the PID of the claude process, or None if not found.
@@ -92,7 +92,7 @@ def _find_claude_ancestor() -> Optional[int]:
     return None
 
 
-def _read_comm_ps(pid: int) -> Optional[str]:
+def _read_comm_ps(pid: int) -> str | None:
     """Read process name via ps(1) — portable fallback for non-Linux."""
     import subprocess
     try:
@@ -148,7 +148,7 @@ def _read_ppid_ps(pid: int) -> int:
         ) from exc
 
 
-def _get_session_pid() -> Optional[int]:
+def _get_session_pid() -> int | None:
     """Get the PID of the Claude Code session process.
 
     Walks the ancestor tree to find the 'claude' process rather than
@@ -211,9 +211,9 @@ def _pid_alive(pid: int) -> bool:
 
 
 def start_run(output_dir: Path, command: str,
-              extra: Optional[Dict[str, Any]] = None,
-              target: Optional[str] = None,
-              target_identity: Optional[Dict[str, Any]] = None) -> Path:
+              extra: dict[str, Any] | None = None,
+              target: str | None = None,
+              target_identity: dict[str, Any] | None = None) -> Path:
     """Write initial .raptor-run.json with status=running.
 
     Call this at the start of a command. Returns the output_dir (for chaining).
@@ -235,6 +235,14 @@ def start_run(output_dir: Path, command: str,
     # Clean up abandoned runs: same session, same command type, still "running"
     if session_pid is not None:
         _cleanup_abandoned(output_dir.parent, command, session_pid)
+
+    # Sweep temp artifacts orphaned by earlier hard-killed runs — their
+    # atexit/exit-path cleanups never fire on SIGKILL/OOM/SIGTERM — and
+    # aged-out per-process audit logs (one file per process, no rotation).
+    from core.run.tmp_reaper import reap_stale_logs, reap_stale_tmp
+
+    reap_stale_tmp()
+    reap_stale_logs()
 
     # Seal the provenance manifest NOW, before any analysis runs. The
     # source-control snapshot in particular must be taken here — the tree
@@ -512,11 +520,14 @@ def _finalize_sandbox_summary(output_dir: Path) -> None:
     the lifecycle. The active-run state is always cleared in finally.
     """
     # Lazy import to keep core.sandbox out of metadata import time.
-    from core.sandbox.summary import (
-        summarize_and_write, set_active_run_dir, get_active_run_dir,
-        SUMMARY_FILE,
-    )
     import logging
+
+    from core.sandbox.summary import (
+        SUMMARY_FILE,
+        get_active_run_dir,
+        set_active_run_dir,
+        summarize_and_write,
+    )
     log = logging.getLogger(__name__)
     try:
         result = summarize_and_write(output_dir)
@@ -529,7 +540,7 @@ def _finalize_sandbox_summary(output_dir: Path) -> None:
                 result.get("total_denials", 0),
                 output_dir / SUMMARY_FILE,
             )
-    except Exception:  # noqa: BLE001 — never fail lifecycle on summary error
+    except Exception:
         # Debug-only log so a developer can find swallowed exceptions
         # when investigating "why is my summary missing?". INFO would be
         # too noisy if the failure is recurrent.
@@ -568,8 +579,8 @@ def _finalize_sandbox_summary(output_dir: Path) -> None:
 #    file. Misleading.
 # Finalizing first preserves the data; status update is just the signal.
 
-def complete_run(output_dir: Path, extra: Optional[Dict[str, Any]] = None,
-                 manifest: Optional[Dict[str, Any]] = None) -> None:
+def complete_run(output_dir: Path, extra: dict[str, Any] | None = None,
+                 manifest: dict[str, Any] | None = None) -> None:
     """Update .raptor-run.json to status=completed.
 
     ``manifest`` merges end-of-run provenance into the manifest sealed at
@@ -611,7 +622,7 @@ def _stamp_findings_provenance(output_dir: Path) -> None:
     try:
         from core.run.findings import stamp_findings_in_run
         stamp_findings_in_run(Path(output_dir))
-    except Exception:  # noqa: BLE001 — never fail lifecycle on a stamping error
+    except Exception:
         logging.getLogger(__name__).debug(
             "_stamp_findings_provenance failed for %s", output_dir, exc_info=True
         )
@@ -636,7 +647,7 @@ def _convert_reads_manifest(output_dir: Path) -> None:
         record = build_from_manifest(Path(output_dir), "read")
         if record:
             write_record(Path(output_dir), record, tool_name="read")
-    except Exception:  # noqa: BLE001 — never fail lifecycle on a coverage write
+    except Exception:
         logging.getLogger(__name__).debug(
             "_convert_reads_manifest failed for %s", output_dir, exc_info=True
         )
@@ -663,12 +674,14 @@ def _snapshot_run_coverage(output_dir: Path) -> None:
         checklist_path = proj / "checklist.json"
         if not checklist_path.exists():
             return                       # standalone run — no durable project store
-        from core.json import load_json
-        from core.coverage.store import CoverageStore, coverage_store_lock
         from core.coverage.importer import (
-            _inventory_paths, import_journal, import_run_dir,
+            _inventory_paths,
+            import_journal,
+            import_run_dir,
             import_run_findings,
         )
+        from core.coverage.store import CoverageStore, coverage_store_lock
+        from core.json import load_json
 
         checklist = load_json(checklist_path)
         if not checklist:
@@ -688,12 +701,12 @@ def _snapshot_run_coverage(output_dir: Path) -> None:
             # returning ``audit`` / ``agentic`` labels unchanged.
             import_journal(store, proj, checklist)
             store.save()
-    except Exception:  # noqa: BLE001 — never fail lifecycle on a snapshot error
+    except Exception:
         log.debug("_snapshot_run_coverage failed for %s", output_dir, exc_info=True)
 
 
-def fail_run(output_dir: Path, error: Optional[str] = None,
-             extra: Optional[Dict[str, Any]] = None,
+def fail_run(output_dir: Path, error: str | None = None,
+             extra: dict[str, Any] | None = None,
              record_timing: bool = True) -> None:
     """Update .raptor-run.json to status=failed."""
     extra = extra or {}
@@ -703,7 +716,7 @@ def fail_run(output_dir: Path, error: Optional[str] = None,
     _update_status(output_dir, STATUS_FAILED, extra, record_timing=record_timing)
 
 
-def cancel_run(output_dir: Path, extra: Optional[Dict[str, Any]] = None) -> None:
+def cancel_run(output_dir: Path, extra: dict[str, Any] | None = None) -> None:
     """Update .raptor-run.json to status=cancelled."""
     _finalize_sandbox_summary(output_dir)
     _update_status(output_dir, STATUS_CANCELLED, extra)
@@ -711,8 +724,8 @@ def cancel_run(output_dir: Path, extra: Optional[Dict[str, Any]] = None) -> None
 
 @contextlib.contextmanager
 def tracked_run(output_dir: Path, command: str,
-                extra: Optional[Dict[str, Any]] = None,
-                target: Optional[str] = None):
+                extra: dict[str, Any] | None = None,
+                target: str | None = None):
     """Context manager for run lifecycle. Writes metadata automatically.
 
     Usage:
@@ -739,7 +752,7 @@ def tracked_run(output_dir: Path, command: str,
         raise
 
 
-def load_run_metadata(run_dir: Path) -> Optional[Dict[str, Any]]:
+def load_run_metadata(run_dir: Path) -> dict[str, Any] | None:
     """Load .raptor-run.json from a run directory. Returns None if missing."""
     return load_json(run_dir / RUN_METADATA_FILE)
 
@@ -781,10 +794,7 @@ def is_run_directory(path: Path, *, strict: bool = True) -> bool:
 
     typical_files = {"findings.json", "checklist.json", "scan_metrics.json",
                      "orchestrated_report.json", "validation-report.md"}
-    if any((path / f).exists() for f in typical_files):
-        return True
-
-    return False
+    return any((path / f).exists() for f in typical_files)
 
 
 def infer_command_type(run_dir: Path) -> str:
@@ -847,9 +857,9 @@ _TERMINAL_STATUSES = frozenset({STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLE
 
 
 def _update_status(output_dir: Path, status: str,
-                   extra: Optional[Dict[str, Any]] = None,
+                   extra: dict[str, Any] | None = None,
                    record_timing: bool = True,
-                   manifest: Optional[Dict[str, Any]] = None) -> None:
+                   manifest: dict[str, Any] | None = None) -> None:
     """Update the status field in .raptor-run.json.
 
     When record_timing is True (default), also records end_timestamp and
@@ -876,7 +886,8 @@ def _update_status(output_dir: Path, status: str,
     if metadata is None:
         raise FileNotFoundError(f"No {RUN_METADATA_FILE} in {output_dir} — call start_run() first")
     if not isinstance(metadata, dict):
-        raise ValueError(f"Malformed {RUN_METADATA_FILE} in {output_dir} — expected JSON object")
+        raise ValueError(  # noqa: TRY004 — data validity, not argument type; callers catch ValueError
+            f"Malformed {RUN_METADATA_FILE} in {output_dir} — expected JSON object")
     current = metadata.get("status")
     if current in _TERMINAL_STATUSES and current != status:
         logger.warning(
@@ -917,7 +928,7 @@ def _update_status(output_dir: Path, status: str,
     save_json(path, metadata)
 
 
-def _apply_standard_provenance(metadata: Dict[str, Any], output_dir: Path) -> None:
+def _apply_standard_provenance(metadata: dict[str, Any], output_dir: Path) -> None:
     """Fill the manifest with the standard end-of-run provenance the lifecycle
     derives itself — engine versions + ``deterministically_reproducible`` — so
     EVERY completion path enriches uniformly without per-command wiring.
@@ -937,7 +948,7 @@ def _apply_standard_provenance(metadata: Dict[str, Any], output_dir: Path) -> No
         existing.setdefault(key, value)
 
 
-def parse_timestamp_from_name(name: str) -> Optional[str]:
+def parse_timestamp_from_name(name: str) -> str | None:
     """Try to extract an ISO timestamp from a directory name.
 
     Matches patterns like:

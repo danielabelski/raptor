@@ -250,6 +250,14 @@ class ReviewOutcome:
     cost_usd: float = 0.0
     model: str = ""
     duration_s: float = 0.0
+    # Token usage of the review call(s) behind this outcome, when the
+    # transport surfaces it. Feeds cost-breakdown.json's per-phase
+    # token columns (previously always 0 on the claudecode transport)
+    # and the prompt-cache hit-rate measurement.
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     review_result: Optional[Dict[str, Any]] = None
     line: int = 0
     error_class: str = ""
@@ -543,6 +551,21 @@ def run_orchestrator(
             and hasattr(joern_server, "_proc")
             and joern_server._proc is None
         )
+    # Per-call LLM telemetry: one JSONL record per provider round-trip
+    # (call class, duration, tokens, cache read/write counters,
+    # timeout/retry disposition) in the run directory. Diagnostics
+    # only — installation failure must never block the run.
+    _telemetry_sink = None
+    try:
+        from core.llm.telemetry import TELEMETRY_FILENAME, TelemetrySink, set_sink
+        if config.out_dir:
+            _telemetry_sink = TelemetrySink(
+                Path(config.out_dir) / TELEMETRY_FILENAME,
+            )
+            set_sink(_telemetry_sink)
+    except Exception:
+        logger.debug("llm telemetry sink install failed", exc_info=True)
+
     try:
         return _run_audit_body(
             config,
@@ -555,6 +578,16 @@ def run_orchestrator(
             prep_cache=prep_cache,
         )
     finally:
+        if _telemetry_sink is not None:
+            try:
+                from core.llm.telemetry import set_sink
+                set_sink(None)
+                if _telemetry_sink.total_records:
+                    logger.info(_telemetry_sink.summary_line())
+            except Exception:
+                logger.debug(
+                    "llm telemetry summary failed", exc_info=True,
+                )
         from core.analysis.reach_audit import set_joern_server
 
         set_joern_server(None)
@@ -1340,6 +1373,10 @@ def review_one_function(
     result.cost_tracker.record_call(
         "review",
         cost_usd=outcome.cost_usd,
+        tokens_in=getattr(outcome, "tokens_in", 0),
+        tokens_out=getattr(outcome, "tokens_out", 0),
+        cache_read_tokens=getattr(outcome, "cache_read_tokens", 0),
+        cache_write_tokens=getattr(outcome, "cache_write_tokens", 0),
         wall_time_s=time.monotonic() - review_start,
     )
 

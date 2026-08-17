@@ -136,6 +136,8 @@ def make_batch_review_fn(
         # failure.
         from .llm_review import SHORT_CALL_TIMEOUT_S
         kwargs["timeout_s"] = SHORT_CALL_TIMEOUT_S
+        # Telemetry label: distinguish batched glances from full reviews.
+        kwargs["call_class"] = "glance_batch"
 
         try:
             response = llm_client.generate(

@@ -156,6 +156,7 @@ def run_llm_summary_pass(
             system_prompt=_SUMMARY_SYSTEM_PROMPT,
             task_type="audit",
             timeout_s=SHORT_CALL_TIMEOUT_S,
+            call_class="summary",
         )
         text = response.text if hasattr(response, "text") else str(response)
         summary = _parse_summary_response(text, function_name, file_path)

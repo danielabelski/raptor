@@ -1097,7 +1097,15 @@ def make_review_fn(
             result = {"status": "error", "body": "empty LLM response"}
         cost = response.cost if hasattr(response, "cost") else 0.0
         model = response.model if hasattr(response, "model") else ""
-        return result, cost, model
+        usage = {
+            "tokens_in": getattr(response, "input_tokens", 0) or 0,
+            "tokens_out": getattr(response, "output_tokens", 0) or 0,
+            "cache_read_tokens": getattr(
+                response, "cache_read_tokens", 0) or 0,
+            "cache_write_tokens": getattr(
+                response, "cache_write_tokens", 0) or 0,
+        }
+        return result, cost, model, usage
 
     def review_fn(
         ctx: dict[str, Any],
@@ -1125,6 +1133,8 @@ def make_review_fn(
         # (timeout_retry_cap=0) and fails straight through to the
         # orchestrator's recovery.
         kwargs["timeout_retry_cap"] = 0
+        # Telemetry label: which call class spent the time/money.
+        kwargs["call_class"] = "review"
 
         # Per-call timeout cap (timeout-recovery retries set this on
         # the context). Providers that support per-call timeouts (the
@@ -1144,7 +1154,7 @@ def make_review_fn(
         active_schema = deepen_schema if ctx.get("deepen") else first_pass_schema
 
         try:
-            result, cost, resolved_model = _single_pass(
+            result, cost, resolved_model, usage = _single_pass(
                 prompt, active_schema, kwargs,
             )
         except Exception as exc:
@@ -1229,6 +1239,10 @@ def make_review_fn(
             cost_usd=cost,
             model=resolved_model,
             duration_s=duration,
+            tokens_in=usage["tokens_in"],
+            tokens_out=usage["tokens_out"],
+            cache_read_tokens=usage["cache_read_tokens"],
+            cache_write_tokens=usage["cache_write_tokens"],
             review_result=result,
         )
 

@@ -125,24 +125,46 @@ def merge_outcomes(original: Any, refined: Any) -> Any:
     - If refined promotes from suspicious to finding, use refined
     - If refined demotes from finding to clean, keep original (don't regress)
     - Otherwise use refined
+
+    Whichever verdict wins, the surviving outcome carries the SUMMED
+    cost / duration / token usage of both rounds. The merge picks a
+    verdict, not a bill — replacing the ledger fields silently dropped
+    every earlier refinement round's spend from the journal and
+    cost-breakdown (one measured run under-reported by $5.27, which
+    then surfaced as an unexplained budget death).
     """
     from .evidence_grade import is_tool_evidence
     refined_tool = getattr(refined, "evidence_tool", "") or ""
     original_tool = getattr(original, "evidence_tool", "") or ""
 
+    def _summed(winner: Any) -> Any:
+        for attr in (
+            "cost_usd", "duration_s", "tokens_in", "tokens_out",
+            "cache_read_tokens", "cache_write_tokens",
+        ):
+            total = (
+                (getattr(original, attr, 0) or 0)
+                + (getattr(refined, attr, 0) or 0)
+            )
+            try:
+                setattr(winner, attr, total)
+            except AttributeError:
+                pass  # duck-typed outcome without the field
+        return winner
+
     if is_tool_evidence(refined_tool):
-        return refined
+        return _summed(refined)
 
     orig_status = getattr(original, "status", "")
     ref_status = getattr(refined, "status", "")
 
     if orig_status == "finding" and ref_status == "clean":
-        return original
+        return _summed(original)
 
     if ref_status == "finding" and not refined_tool and original_tool:
         refined.evidence_tool = original_tool
 
-    return refined
+    return _summed(refined)
 
 
 def should_clean_check(

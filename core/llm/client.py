@@ -441,6 +441,28 @@ def _resolve_timeout_retry_cap(raw: Any) -> int:
     return cap if cap >= 0 else _TIMEOUT_RETRY_CAP
 
 
+def _failure_disposition(error: Exception) -> str:
+    """Telemetry label for a failed attempt: how the retry policy saw
+    it. Ordering matters — quota beats the message-based timeout
+    match, mirroring ``is_timeout_error``'s own exclusion."""
+    if _is_quota_error(error):
+        return "quota"
+    if is_timeout_error(error):
+        return "timeout"
+    if _is_retryable_error(error):
+        return "retryable"
+    return "fatal"
+
+
+def _safe_counter(obj: Any, name: str) -> int:
+    """Read an int counter attribute defensively (0 on anything that
+    is not int-coercible — e.g. MagicMock providers in tests)."""
+    try:
+        return int(getattr(obj, name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def is_timeout_error(error: Exception) -> bool:
     """Classify timeout-class failures distinctly from other
     retryables.
@@ -1566,6 +1588,12 @@ class LLMClient:
         timeout_retry_cap = _resolve_timeout_retry_cap(
             kwargs.pop('timeout_retry_cap', None),
         )
+        # Telemetry label — which call class spent the time/money.
+        # Popped before cache-key computation (labels must not split
+        # cache entries); defaults to the task_type when unset.
+        call_class = str(
+            kwargs.pop('call_class', None) or task_type or "unclassified",
+        )
         if not model_config:
             if task_type:
                 model_config = self.config.get_model_for_task(task_type)
@@ -1621,6 +1649,16 @@ class LLMClient:
                 with self._stats_lock:
                     self.request_count += 1
                     self.cache_hits += 1
+                from core.llm.telemetry import emit as _t_emit
+                _t_emit(
+                    event="call",
+                    disposition="cache_hit",
+                    call_class=call_class,
+                    provider=model_config.provider.lower(),
+                    model=model_config.model_name,
+                    cost_usd=0.0,
+                    duration_s=0.0,
+                )
                 return LLMResponse(
                     content=cached_content,
                     model=model_config.model_name,
@@ -1686,6 +1724,7 @@ class LLMClient:
 
                 timeout_failures = 0
                 for attempt in range(self.config.max_retries):
+                    attempt_start = time.monotonic()
                     try:
                         if attempt > 0:
                             # DEBUG, not INFO: the prior attempt's
@@ -1758,6 +1797,25 @@ class LLMClient:
                             duration_s=duration,
                         )
 
+                        from core.llm.telemetry import emit as _t_emit
+                        _t_emit(
+                            event="call",
+                            disposition="ok",
+                            call_class=call_class,
+                            provider=model.provider.lower(),
+                            model=model.model_name,
+                            attempt=attempt + 1,
+                            timeout_retries=timeout_failures,
+                            duration_s=round(duration, 3),
+                            cost_usd=response.cost,
+                            tokens_in=getattr(response, "input_tokens", 0),
+                            tokens_out=getattr(response, "output_tokens", 0),
+                            cache_read_tokens=getattr(
+                                response, "cache_read_tokens", 0),
+                            cache_write_tokens=getattr(
+                                response, "cache_write_tokens", 0),
+                        )
+
                         logger.debug("Generation successful: %s/%s (tokens: %s, cost: $%.4f, duration: %.1fs)", model.provider, model.model_name, response.tokens_used, response.cost, duration)
 
                         return response
@@ -1816,6 +1874,19 @@ class LLMClient:
                             "Attempt %d/%d failed for %s/%s: %s",
                             attempt + 1, self.config.max_retries,
                             model.provider, model.model_name, _safe_e,
+                        )
+
+                        from core.llm.telemetry import emit as _t_emit
+                        _t_emit(
+                            event="attempt_failed",
+                            disposition=_failure_disposition(e),
+                            call_class=call_class,
+                            provider=model.provider.lower(),
+                            model=model.model_name,
+                            attempt=attempt + 1,
+                            duration_s=round(
+                                time.monotonic() - attempt_start, 3),
+                            error=_safe_e[:200],
                         )
 
                         if not _is_retryable_error(e):
@@ -1939,6 +2010,10 @@ class LLMClient:
         timeout_retry_cap = _resolve_timeout_retry_cap(
             kwargs.pop('timeout_retry_cap', None),
         )
+        # Telemetry label — see ``generate``.
+        call_class = str(
+            kwargs.pop('call_class', None) or task_type or "unclassified",
+        )
         if not model_config:
             if task_type:
                 model_config = self.config.get_model_for_task(task_type)
@@ -1999,6 +2074,17 @@ class LLMClient:
                 with self._stats_lock:
                     self.request_count += 1
                     self.cache_hits += 1
+                from core.llm.telemetry import emit as _t_emit
+                _t_emit(
+                    event="call",
+                    disposition="cache_hit",
+                    call_class=call_class,
+                    provider=model_config.provider.lower(),
+                    model=model_config.model_name,
+                    structured=True,
+                    cost_usd=0.0,
+                    duration_s=0.0,
+                )
                 return StructuredResponse(
                     result=cached_result,
                     raw=cached_raw,
@@ -2050,6 +2136,7 @@ class LLMClient:
 
                 timeout_failures = 0
                 for attempt in range(self.config.max_retries):
+                    attempt_start = time.monotonic()
                     try:
                         if attempt > 0:
                             # DEBUG, not INFO — see ``generate`` above
@@ -2071,6 +2158,19 @@ class LLMClient:
                         # Capture cost before call
                         cost_before = provider.total_cost
                         tokens_before = provider.total_tokens
+                        # Token-split + prompt-cache counters, diffed
+                        # after the call. Providers return a bare
+                        # (result, raw) tuple on some paths, so the
+                        # per-call usage has to come from the
+                        # aggregate counters track_usage maintains.
+                        in_before = _safe_counter(
+                            provider, "total_input_tokens")
+                        out_before = _safe_counter(
+                            provider, "total_output_tokens")
+                        cread_before = _safe_counter(
+                            provider, "total_cache_read_tokens")
+                        cwrite_before = _safe_counter(
+                            provider, "total_cache_write_tokens")
 
                         # monotonic() — wall clock can jump under NTP/DST.
                         t_start = time.monotonic()
@@ -2100,6 +2200,22 @@ class LLMClient:
                         # Calculate cost delta
                         cost_delta = provider.total_cost - cost_before
                         tokens_delta = provider.total_tokens - tokens_before
+                        in_delta = max(
+                            0, _safe_counter(
+                                provider, "total_input_tokens",
+                            ) - in_before)
+                        out_delta = max(
+                            0, _safe_counter(
+                                provider, "total_output_tokens",
+                            ) - out_before)
+                        cread_delta = max(
+                            0, _safe_counter(
+                                provider, "total_cache_read_tokens",
+                            ) - cread_before)
+                        cwrite_delta = max(
+                            0, _safe_counter(
+                                provider, "total_cache_write_tokens",
+                            ) - cwrite_before)
 
                         # Reconcile reservation → actual. Skip the
                         # reservation cancel when cost-tracking is
@@ -2129,6 +2245,10 @@ class LLMClient:
                             provider=model.provider,
                             duration=duration,
                             resolved_model=resolved,
+                            input_tokens=in_delta,
+                            output_tokens=out_delta,
+                            cache_read_tokens=cread_delta,
+                            cache_write_tokens=cwrite_delta,
                         )
                         self._record_fired_model(
                             model.provider, model.model_name, resolved,
@@ -2138,7 +2258,26 @@ class LLMClient:
                             model.model_name,
                             cost=cost_delta,
                             tokens=tokens_delta,
+                            input_tokens=in_delta,
+                            output_tokens=out_delta,
                             duration_s=duration,
+                        )
+                        from core.llm.telemetry import emit as _t_emit
+                        _t_emit(
+                            event="call",
+                            disposition="ok",
+                            call_class=call_class,
+                            provider=model.provider.lower(),
+                            model=model.model_name,
+                            structured=True,
+                            attempt=attempt + 1,
+                            timeout_retries=timeout_failures,
+                            duration_s=round(duration, 3),
+                            cost_usd=cost_delta,
+                            tokens_in=in_delta,
+                            tokens_out=out_delta,
+                            cache_read_tokens=cread_delta,
+                            cache_write_tokens=cwrite_delta,
                         )
                         # Schema reliability signal — the response parsed and
                         # matched the schema (otherwise we'd be in the except
@@ -2206,6 +2345,20 @@ class LLMClient:
                         logger.warning(
                             "Structured generation attempt %d failed: %s",
                             attempt + 1, _safe_e,
+                        )
+
+                        from core.llm.telemetry import emit as _t_emit
+                        _t_emit(
+                            event="attempt_failed",
+                            disposition=_failure_disposition(e),
+                            call_class=call_class,
+                            provider=model.provider.lower(),
+                            model=model.model_name,
+                            structured=True,
+                            attempt=attempt + 1,
+                            duration_s=round(
+                                time.monotonic() - attempt_start, 3),
+                            error=_safe_e[:200],
                         )
 
                         if not _is_retryable_error(e):

@@ -177,6 +177,14 @@ class StructuredResponse:
     provider: str = ""
     duration: float = 0.0
     cached: bool = False
+    # Token split + prompt-cache counters. Populated by LLMClient from
+    # per-call provider-counter deltas (the provider tracks totals via
+    # track_usage; the client diffs before/after the call), so they
+    # are best-effort: 0 when the provider surfaces no usage data.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     # Concrete model snapshot the provider served (see LLMResponse.resolved_model).
     resolved_model: str | None = None
 
@@ -3444,6 +3452,11 @@ class ClaudeCodeLLMProvider(LLMProvider):
             resolved_model=resolved,
             input_tokens=sr.input_tokens,
             output_tokens=sr.output_tokens,
+            # Surface the per-call prompt-cache counters on the
+            # response itself (not only the provider aggregate) so the
+            # client's per-call telemetry can report cache hit rates.
+            cache_read_tokens=sr.cache_read_tokens,
+            cache_write_tokens=sr.cache_creation_tokens,
             duration=duration,
         )
 
@@ -3555,6 +3568,10 @@ class ClaudeCodeLLMProvider(LLMProvider):
             model=sr.model or self.config.model_name,
             provider="claudecode",
             duration=duration,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
+            cache_read_tokens=sr.cache_read_tokens,
+            cache_write_tokens=sr.cache_creation_tokens,
         )
 
     def supports_tool_use(self) -> bool: return True

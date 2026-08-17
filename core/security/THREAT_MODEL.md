@@ -68,6 +68,25 @@ LLM-driven sub-agents on hostile source must set it explicitly.
 `run_untrusted()` and `run_untrusted_networked()` set `restrict_reads=True`
 by default for this reason; ad-hoc `sandbox_run()` callers do not.
 
+**Accepted residual — inbound TCP in Landlock-only mode.** When
+`block_network=True` degrades to Landlock-only, outbound TCP is denied
+by the Landlock connect fallback (`degraded_net_deny`, ABI v4+), but a
+sandboxed child can still **bind and listen** on any port, and — with
+no network namespace to isolate it — that listener is reachable from
+the host (and from wherever the host's firewall admits). This is a
+deliberate design decision, not a gap in the fallback: Landlock's
+`BIND_TCP` right is intentionally unhandled everywhere because
+sandboxed tools and targets routinely bind sockets they never need
+reachable (JVM tooling, test harnesses, target binaries whose startup
+opens a listener), and on every non-degraded host the netns makes
+those binds harmless — restricting bind would buy nothing there and
+break workloads. The residual channel requires an external party to
+connect IN (a far weaker primitive than egress exfiltration, which
+stays closed), exists only on hosts where user namespaces are
+unavailable, and is bounded by the host firewall. Landlock ≤ ABI 8
+offers no inbound/accept right that could close it without
+restricting bind.
+
 #### I2-(b). Downstream consumers treat LLM-derived artefacts as adversarial.
 
 A prompt-injected LLM can produce a structurally-valid JSON output that

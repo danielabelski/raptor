@@ -453,6 +453,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "sink_unreach": TierCounters(),
         "taint_approx": TierCounters(),
         "taint_summary": TierCounters(),
+        "llm_summary": TierCounters(),
         "semgrep": TierCounters(),
         "joern": TierCounters(),
         "codeql": TierCounters(),
@@ -4337,10 +4338,83 @@ def _run_audit_body(
         batched_count,
     )
 
-    # Pre-loop LLM summary pass removed: the workqueue is topo-sorted
-    # (callees before callers), so callee summaries are produced by the
-    # main review loop via summary_from_review_result() before the
-    # caller is reviewed. This saves up to 80 LLM calls.
+    # --- Pre-loop LLM summary pass: callee context for reviews -------
+    # The topo sort orders callees before callers, but that alone does
+    # NOT guarantee a callee's summary exists when its caller is
+    # reviewed: parallel workers review caller and callee concurrently,
+    # subsystem grouping re-orders the queue after the sort, and
+    # languages with no mechanical summariser (C/C++) never produce
+    # one at all. Connected-but-unsummarized functions get a focused
+    # LLM summary here, merged into taint_summary_results so the
+    # callee-summary lookup in review_one_function finds it.
+    # Budget-gated: spend routes through config.llm_budget_client
+    # (call class "summary" — reservation-gated per call, booked into
+    # the phase ledger by _reconcile_cost_ledgers); without a budget
+    # client the pass is skipped rather than spending outside the cap.
+    if config.llm_budget_client is None:
+        logger.info(
+            "llm_summary_pass: skipped — no budget client on this run",
+        )
+        _increment_tier_dict(result.tier_counters, "llm_summary", "skipped")
+    else:
+        try:
+            from .llm_summaries import (
+                identify_summary_candidates,
+                run_llm_summary_pass,
+            )
+
+            _summ_t0 = time.monotonic()
+            summary_candidates = identify_summary_candidates(
+                workqueue,
+                taint_summary_results,
+                checklist,
+                call_edges=call_edges,
+            )
+            if not summary_candidates:
+                # Loud-once no-op: a silent zero here is
+                # indistinguishable from the pass never running.
+                logger.info(
+                    "llm_summary_pass: 0 candidates — every connected "
+                    "workqueue function already has a mechanical summary",
+                )
+                _increment_tier_dict(
+                    result.tier_counters, "llm_summary", "skipped",
+                )
+            else:
+                llm_summaries = run_llm_summary_pass(
+                    summary_candidates,
+                    config.target_path,
+                    config,
+                )
+                if taint_summary_results is None:
+                    taint_summary_results = {}
+                merged = 0
+                for sk, sv in llm_summaries.items():
+                    if sk not in taint_summary_results:
+                        taint_summary_results[sk] = sv
+                        merged += 1
+                failed = len(summary_candidates) - len(llm_summaries)
+                logger.info(
+                    "llm_summary_pass: %d candidates → %d summaries "
+                    "merged (%d failed/empty)",
+                    len(summary_candidates), merged, failed,
+                )
+                if merged:
+                    _increment_tier_dict(
+                        result.tier_counters, "llm_summary",
+                        "confirmed", merged,
+                    )
+                if failed > 0:
+                    _increment_tier_dict(
+                        result.tier_counters, "llm_summary",
+                        "errors", failed,
+                    )
+                _increment_tier_dict(
+                    result.tier_counters, "llm_summary", "wall_time_s",
+                    time.monotonic() - _summ_t0,
+                )
+        except Exception:
+            logger.warning("pre-loop LLM summary pass failed", exc_info=True)
 
     constraints = prior_constraints
 

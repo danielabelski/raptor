@@ -66,7 +66,7 @@ from .constraints import (
     save_constraints,
 )
 from .context import assemble_context
-from .cost_tracker import CostTracker
+from .cost_tracker import PhaseCostLedger
 from .diagnostics import (
     format_tier_diagnostics,
     write_tier_diagnostics,
@@ -561,7 +561,7 @@ class OrchestratorResult:
     tier_counters: dict[str, TierCounters] = field(
         default_factory=_make_tier_counters,
     )
-    cost_tracker: CostTracker = field(default_factory=CostTracker)
+    cost_tracker: PhaseCostLedger = field(default_factory=PhaseCostLedger)
     _lock: _threading.Lock = field(
         default_factory=_threading.Lock,
         repr=False,

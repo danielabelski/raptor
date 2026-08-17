@@ -1081,7 +1081,7 @@ def orchestrate(
     # AnalysisTask (above)  → Stages A-D: is this real? how exploitable?
     # DataflowValidation    → IRIS: refute hallucinated dataflow claims
     # CrossFamilyCheckTask  → Re-check suspicious responses via different family
-    # RetryTask             → Stage F: self-consistency check + retry
+    # RetryTask             → Stage F: self-contradiction check + retry
     # ConsensusTask         → Second model votes (if configured)
     # ExploitTask/PatchTask → Generate code (only for final-verdict exploitable)
     # GroupAnalysisTask     → Cross-finding patterns
@@ -1131,14 +1131,14 @@ def orchestrate(
                 results_by_id, cost_tracker, max_parallel,
             )
 
-    # Snapshot verdicts before Stage F so the self-consistency
+    # Snapshot verdicts before Stage F so the self-contradiction
     # producer can detect flips (RetryTask overwrites in place).
     verdicts_pre_retry: dict[str, bool] = {}
     for fid, r in results_by_id.items():
         if isinstance(r, dict) and "error" not in r:
             verdicts_pre_retry[fid] = bool(r.get("is_exploitable", False))
 
-    # Stage F: self-consistency check + retry contradictions and low confidence
+    # Stage F: self-contradiction check + retry contradictions and low confidence
     dispatch_task(
         RetryTask(results_by_id=results_by_id, profile=profile), findings,
         dispatch_fn, role_resolution, results_by_id, cost_tracker, max_parallel,
@@ -1982,10 +1982,10 @@ def _detect_multi_model_collapse(
     return collapsed
 
 
-def _check_self_consistency(results_by_id: dict[str, dict]) -> None:
-    """Delegate to validation.check_self_consistency."""
-    from packages.llm_analysis.validation import check_self_consistency
-    check_self_consistency(results_by_id)
+def _check_self_contradiction(results_by_id: dict[str, dict]) -> None:
+    """Delegate to validation.check_self_contradiction."""
+    from packages.llm_analysis.validation import check_self_contradiction
+    check_self_contradiction(results_by_id)
 
 
 def _gate_inline_patch(

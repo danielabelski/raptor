@@ -4035,7 +4035,7 @@ def _build_dataflow_validation_report_section(dv):
 def _postprocess_findings(results):
     """Post-process LLM results: compute CVSS scores, infer CWE, check consistency."""
     from packages.cvss import score_finding
-    from packages.llm_analysis.validation import check_self_consistency
+    from packages.llm_analysis.validation import check_self_contradiction
 
     for r in results:
         if "error" in r:
@@ -4052,7 +4052,7 @@ def _postprocess_findings(results):
 
     # Flag self-contradictory findings (reasoning vs verdict mismatch)
     by_id = {r.get("finding_id", f"idx-{i}"): r for i, r in enumerate(results) if "error" not in r}
-    check_self_consistency(by_id)
+    check_self_contradiction(by_id)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.audit.cost_tracker import CostTracker, format_cost_summary
+from core.audit.cost_tracker import PhaseCostLedger, format_cost_summary
 from core.audit.orchestrator import (
     OrchestratorResult,
     ReviewOutcome,
@@ -24,7 +24,7 @@ from core.audit.orchestrator import (
 
 class TestFailedAttemptLedger:
     def test_failed_attempts_tracked_per_phase(self):
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=2.82)
         ct.record_failed_attempt("review", cost_usd=5.26)
 
@@ -39,7 +39,7 @@ class TestFailedAttemptLedger:
         assert d["phases"]["review"]["failed_attempts_cost_usd"] == 5.26
 
     def test_reconciliation_arithmetic_closes(self):
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=2.82)
         ct.record_failed_attempt("review", cost_usd=4.0)
         ct.set_total_spend(8.08)  # the client ledger
@@ -63,7 +63,7 @@ class TestFailedAttemptLedger:
         ) < 1e-3
 
     def test_client_ledger_cannot_hide_tracked_spend(self):
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=3.0)
         ct.set_total_spend(1.0)  # stale / partial snapshot
         assert ct.total_spend_usd == 3.0
@@ -72,7 +72,7 @@ class TestFailedAttemptLedger:
     def test_clean_run_keeps_legacy_shape(self):
         """No failed attempts + no client ledger → no new totals keys
         (consumers of the old cost-breakdown.json shape unaffected)."""
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=0.5)
         totals = ct.to_dict()["totals"]
         assert "failed_attempts_cost_usd" not in totals
@@ -84,7 +84,7 @@ class TestFailedAttemptLedger:
         # unattributed successful spend — a real run printed
         # "failed/timed-out=$9.57" for four successful calls while
         # telemetry showed zero failures. The label must not lie.
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=2.82)
         ct.set_total_spend(8.08)
         s = ct.summary()
@@ -93,7 +93,7 @@ class TestFailedAttemptLedger:
         assert "unattributed=$5.26" in s
 
     def test_summary_line_splits_failed_from_unattributed(self):
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=2.0)
         ct.record_failed_attempt("review", cost_usd=1.0)
         ct.set_total_spend(4.0)
@@ -108,7 +108,7 @@ class TestClassBooking:
     $36.85 — audit+iris class spend missing from the summary ledger."""
 
     def test_books_unphased_classes(self):
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=27.28)
         booked = ct.book_unbooked_classes({
             "review": (9, 27.28),        # outcome-booked — skipped
@@ -126,7 +126,7 @@ class TestClassBooking:
         # checker_synthesis / study spend is booked at source into a
         # phase of the same name — booking the class again would
         # double-count.
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("checker_synthesis", cost_usd=0.8)
         ct.record_call("study", cost_usd=2.0)
         booked = ct.book_unbooked_classes({
@@ -138,7 +138,7 @@ class TestClassBooking:
         assert abs(ct.phases["checker_synthesis"].cost_usd - 0.8) < 1e-9
 
     def test_skips_empty_classes(self):
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         assert ct.book_unbooked_classes({"idle": (0, 0.0)}) == {}
         assert "idle" not in ct.phases
 
@@ -146,7 +146,7 @@ class TestClassBooking:
         # The observed run: successful support-class spend printed as
         # "failed/timed-out=$9.57". Booked classes print under their
         # own names and the residual is zero.
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=27.28)
         ct.book_unbooked_classes({"iris": (4, 9.57)})
         ct.set_total_spend(36.85)
@@ -161,7 +161,7 @@ class TestClassBooking:
         # Classes outside the budget-client ledger (standalone
         # LLMClient instances) still count: tracked > injected ledger
         # → total_spend follows the tracked sum.
-        ct = CostTracker()
+        ct = PhaseCostLedger()
         ct.record_call("review", cost_usd=27.28)
         ct.book_unbooked_classes({
             "iris": (4, 9.57),

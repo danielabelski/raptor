@@ -16,7 +16,7 @@ money, all "true" for different ledgers):
   vanished from every report while still counting against the cap.
 * ``totals.total_spend_usd`` — the authoritative LLM-client ledger
   (everything above plus anything not attributable to a phase),
-  injected via :meth:`CostTracker.set_total_spend` at run end. Any
+  injected via :meth:`PhaseCostLedger.set_total_spend` at run end. Any
   residual is surfaced as ``totals.unattributed_cost_usd`` so the
   arithmetic always closes: total_spend = cost + failed + unattributed.
 """
@@ -64,7 +64,7 @@ class PhaseCost:
 
 
 @dataclass
-class CostTracker:
+class PhaseCostLedger:
     """Accumulates per-phase cost for an audit run."""
 
     phases: dict[str, PhaseCost] = field(default_factory=dict)

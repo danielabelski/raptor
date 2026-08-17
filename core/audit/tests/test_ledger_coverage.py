@@ -20,7 +20,7 @@ import time
 import types
 from pathlib import Path
 
-from core.audit.cost_tracker import CostTracker
+from core.audit.cost_tracker import PhaseCostLedger
 from core.audit.orchestrator import (
     OrchestratorConfig,
     OrchestratorResult,
@@ -209,7 +209,7 @@ class TestTelemetryReplayReconciliation:
         llm_telemetry.set_sink(sink)
         try:
             client = _StubBudgetClient(cap=40.0)
-            tracker = CostTracker()
+            tracker = PhaseCostLedger()
 
             # All classes flow through the shared client now.
             for c in self.FIRST_CALLS:
@@ -266,7 +266,7 @@ class TestTelemetryReplayReconciliation:
         llm_telemetry.set_sink(sink)
         try:
             client = _StubBudgetClient(cap=40.0)
-            tracker = CostTracker()
+            tracker = PhaseCostLedger()
             for c in self.FIRST_CALLS:
                 self._record(sink, "review", c)
                 client._note("review", c)

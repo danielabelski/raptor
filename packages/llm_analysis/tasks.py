@@ -1043,9 +1043,9 @@ class GroupAnalysisTask(DispatchTask):
 
 
 class RetryTask(AnalysisTask):
-    """Stage F: self-consistency check + retry contradictions and low confidence.
+    """Stage F: self-contradiction check + retry contradictions and low confidence.
 
-    Runs _check_self_consistency to flag contradictions, then selects findings
+    Runs _check_self_contradiction to flag contradictions, then selects findings
     that are self-contradictory OR have ambiguous scores (0.3-0.7).
 
     For contradictions: provides feedback context ("you said X but marked Y").
@@ -1063,9 +1063,9 @@ class RetryTask(AnalysisTask):
         self.results_by_id = results_by_id or {}
 
     def select_items(self, findings, prior_results):
-        # Run self-consistency check to flag contradictions
-        from packages.llm_analysis.orchestrator import _check_self_consistency
-        _check_self_consistency(prior_results)
+        # Run self-contradiction check to flag contradictions
+        from packages.llm_analysis.orchestrator import _check_self_contradiction
+        _check_self_contradiction(prior_results)
 
         selected = []
         for f in findings:
@@ -1181,7 +1181,7 @@ class RetryTask(AnalysisTask):
                 # telemetry), `_quality` (response validation),
                 # `cross_family_check` (CrossFamilyCheckTask
                 # verdict + checker_model + trigger),
-                # `contradictions` (self-consistency check
+                # `contradictions` (self-contradiction check
                 # output). Downstream consumers (judge,
                 # consensus, reporting) lost the audit trail
                 # for any finding that hit the retry loop.

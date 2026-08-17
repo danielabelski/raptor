@@ -15,7 +15,7 @@ from packages.llm_analysis.cc_dispatch import (
 from packages.llm_analysis.orchestrator import (
     CUTOFF_SKIP_CONSENSUS,
     CostTracker,
-    _check_self_consistency,
+    _check_self_contradiction,
     _merge_results,
     _structural_grouping,
     orchestrate,
@@ -867,7 +867,7 @@ class TestSelfConsistency:
                 "reasoning": "This is a false positive because the input is sanitised.",
             }
         }
-        _check_self_consistency(results)
+        _check_self_contradiction(results)
         assert results["f-001"]["self_contradictory"] is True
 
     def test_flags_not_exploitable_contradiction(self):
@@ -878,7 +878,7 @@ class TestSelfConsistency:
                 "reasoning": "The code is safe and cannot be exploited in practice.",
             }
         }
-        _check_self_consistency(results)
+        _check_self_contradiction(results)
         assert results["f-001"]["self_contradictory"] is True
 
     def test_no_flag_when_consistent(self):
@@ -889,7 +889,7 @@ class TestSelfConsistency:
                 "reasoning": "Buffer overflow with attacker-controlled input, trivially exploitable.",
             }
         }
-        _check_self_consistency(results)
+        _check_self_contradiction(results)
         assert "self_contradictory" not in results["f-001"]
 
     def test_no_flag_when_not_exploitable_consistent(self):
@@ -900,14 +900,14 @@ class TestSelfConsistency:
                 "reasoning": "This is a false positive, the code is unreachable.",
             }
         }
-        _check_self_consistency(results)
+        _check_self_contradiction(results)
         assert "self_contradictory" not in results["f-001"]
 
     def test_skips_errors(self):
         results = {
             "f-001": {"error": "timeout"},
         }
-        _check_self_consistency(results)
+        _check_self_contradiction(results)
         assert "self_contradictory" not in results["f-001"]
 
     def test_skips_empty_reasoning(self):
@@ -918,7 +918,7 @@ class TestSelfConsistency:
                 "reasoning": "",
             }
         }
-        _check_self_consistency(results)
+        _check_self_contradiction(results)
         assert "self_contradictory" not in results["f-001"]
 
 

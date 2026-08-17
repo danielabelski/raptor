@@ -800,7 +800,10 @@ def _replay_fuzz_crashes(*, binary_path: Path, crash_files: list[Path], out_dir:
 
 
 def _collect_crash_files(crashes_dir: Path) -> list[Path]:
-    if not str(crashes_dir) or not crashes_dir.exists():
+    # Path("") stringifies to "." — `not str(crashes_dir)` can never be
+    # true, and falling through would scan the CWD (the RAPTOR repo
+    # dir) for crash files. Treat both spellings as "no crashes dir".
+    if str(crashes_dir) in ("", ".") or not crashes_dir.exists():
         return []
     prefixes = ("crash-", "timeout-", "oom-", "id:")
     return sorted(
@@ -3240,7 +3243,19 @@ Examples:
                                 f"{crash_outputs['findings']}"
                             )
                         except Exception as e:  # noqa: BLE001
-                            logger.debug("Crash → validate handoff failed: %s", e)
+                            # Mirror the outer fuzz-phase handler: at the
+                            # default INFO console level a debug-only log
+                            # made a failed triage look like a silent
+                            # no-op right after the "Triaging N fuzz
+                            # crashes..." progress line.
+                            logger.warning(
+                                "Crash → validate handoff failed: %s", e
+                            )
+                            print(
+                                f"\n  ✗ Crash triage / validation handoff "
+                                f"failed: {e}",
+                                file=sys.stderr,
+                            )
             except Exception as e:
                 logger.exception("Fuzz phase failed: %s", e)  # noqa: TRY401
                 print(f"\n  ✗ Fuzz phase error: {e}", file=sys.stderr)

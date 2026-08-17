@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 
 from core.json import save_json
-from raptor_agentic import _build_fuzz_phase_summary, _collect_crash_files, _run_fuzz_validation_smoke
+from raptor_agentic import (
+    _build_fuzz_phase_summary,
+    _collect_crash_files,
+    _run_fuzz_validation_smoke,
+)
 
 
 class TestAgenticFuzzHelpers(unittest.TestCase):
@@ -71,3 +75,40 @@ class TestCollectCrashFilesEmptyPath(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCollectCrashFilesCwdSafety(unittest.TestCase):
+    """Path('') stringifies to '.' — the empty-path guard must not fall
+    through to scanning the current working directory for crash files."""
+
+    def test_empty_path_never_scans_cwd(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "crash-0001").write_bytes(b"x")
+            old_cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                assert _collect_crash_files(Path("")) == []
+            finally:
+                os.chdir(old_cwd)
+
+
+class TestCrashHandoffErrorVisibility(unittest.TestCase):
+    """A failed crash triage/validation handoff must be operator-visible.
+
+    Regression: the handler swallowed all exceptions at DEBUG right
+    after printing 'Triaging N fuzz crashes...', so at the default INFO
+    console level a failed triage looked like a silent no-op.
+    """
+
+    def test_handoff_handler_warns_and_prints(self):
+        src = (Path(__file__).resolve().parents[3] / "raptor_agentic.py"
+               ).read_text(encoding="utf-8")
+        self.assertNotIn(
+            'logger.debug("Crash → validate handoff failed', src,
+        )
+        self.assertIn(
+            '"Crash → validate handoff failed: %s", e', src,
+        )
+        self.assertIn("Crash triage / validation handoff", src)

@@ -422,6 +422,41 @@ class TestBufferSnapshot:
         finally:
             proxy.stop()
 
+    def test_finalize_tunnel_event_updates_under_buffer_lock(
+        self, reset_proxy,
+    ):
+        """The close-time in-place event mutation must hold
+        _buffer_lock so unregister_sandbox's `{**e}` copy (also under
+        the lock) can never observe a half-applied update (bytes_c2u
+        new, duration stale). Pre-fix _serve_tunnel's finally called
+        event.update() lockless on the asyncio thread."""
+        proxy = proxy_mod.EgressProxy(allowed_hosts={"x"})
+        try:
+            observed = {}
+
+            class _Event(dict):
+                def update(self, *a, **kw):
+                    observed["locked"] = proxy._buffer_lock.locked()
+                    super().update(*a, **kw)
+
+            token = proxy.register_sandbox(caller_label="a")
+            ev = _Event(host="h", port=1, result="allowed",
+                        bytes_c2u=0, bytes_u2c=0, duration=0.0)
+            proxy._record(ev)
+            proxy._finalize_tunnel_event(
+                ev, result="allowed", reason=None,
+                bytes_c2u=10, bytes_u2c=20, duration=1.5,
+            )
+            assert observed.get("locked") is True, (
+                "close-time event mutation ran without _buffer_lock"
+            )
+            events = proxy.unregister_sandbox(token)
+            assert events[0]["bytes_c2u"] == 10
+            assert events[0]["bytes_u2c"] == 20
+            assert events[0]["duration"] == 1.5
+        finally:
+            proxy.stop()
+
     def test_concurrent_record_and_register(self, reset_proxy):
         """Hammer _record from many threads concurrently with
         register/unregister churn — must not raise (no dict-mutated-

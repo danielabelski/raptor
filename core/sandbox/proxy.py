@@ -780,14 +780,32 @@ class EgressProxy:
             # counters not yet. Operators reading the audit trail saw
             # nonsensical inconsistencies they had to filter out.
             #
-            # Move the copy inside the lock. The recorder's mutate
-            # path also takes `_buffer_lock` (see `_record`), so the
-            # spread now happens with the recorder serialised out.
+            # Move the copy inside the lock. The one post-record
+            # mutate path — the close-time counters/duration update in
+            # `_serve_tunnel`'s finally — goes through
+            # `_finalize_tunnel_event`, which also takes
+            # `_buffer_lock`, so the spread happens with the mutator
+            # serialised out. (`_record` itself stays lock-free — it
+            # only APPENDS references; it never mutates event fields.)
             # Cost: a few extra microseconds per event in unregister;
             # benefit: consistent snapshots in the audit trail.
             if label is not None:
                 return [{**e, "caller": label} for e in events]
             return [dict(e) for e in events]
+
+    def _finalize_tunnel_event(self, event: dict, **fields) -> None:
+        """Apply the close-time in-place update (byte counters,
+        duration, outcome) to an already-recorded event.
+
+        MUST hold ``_buffer_lock``: ``unregister_sandbox`` copies the
+        buffered events under that lock precisely so a concurrent
+        mutation can't be observed half-applied (bytes_c2u updated,
+        duration stale). This runs once per tunnel CLOSE — not the
+        hot path — so the lock cost is irrelevant; without it the
+        torn-snapshot race the unregister comment describes is back.
+        """
+        with self._buffer_lock:
+            event.update(**fields)
 
     def _record(self, event: dict) -> None:
         """Fan a tunnel event into every registered sandbox's buffer.
@@ -1601,10 +1619,13 @@ class EgressProxy:
             # and outcome. Ring buffer holds a reference; consumers who
             # called events_since() between establishment and close will
             # see the in-progress state (result="allowed", bytes=0) and
-            # those calling after close see the final state.
-            event.update(result=result, reason=reason,
-                         bytes_c2u=total["c2u"], bytes_u2c=total["u2c"],
-                         duration=time.monotonic() - t_start)
+            # those calling after close see the final state. Serialised
+            # against unregister_sandbox's copy via _buffer_lock — see
+            # _finalize_tunnel_event.
+            self._finalize_tunnel_event(
+                event, result=result, reason=reason,
+                bytes_c2u=total["c2u"], bytes_u2c=total["u2c"],
+                duration=time.monotonic() - t_start)
             if not self._stopping:
                 logger.debug(
                     "egress proxy: CLOSE %s:%s (c2u=%s u2c=%s)",

@@ -10,10 +10,12 @@ Sibling types:
   - peer_functions:   functions doing the same job (renderers,
                       validators, parsers) identified by naming
                       pattern or call-graph position
-  - parallel_loops:   loops over different collections that should
-                      apply the same checks
   - paired_operations: sanitizer/encoder pairs that should be
                        symmetric (encode on input ↔ decode on output)
+
+Peer-group *formation* lives in ``core.analysis.peer_groups`` (the
+layered L0–L6 resolver); this module supplies the group/path data
+model and the comparators.
 
 Safety properties compared across siblings:
   - sanitizer_used:       which sanitizer function (identity, name)
@@ -43,7 +45,6 @@ from typing import Any
 class SiblingType(str, Enum):
     ERROR_VS_NORMAL = "error_vs_normal"
     PEER_FUNCTIONS = "peer_functions"
-    PARALLEL_LOOPS = "parallel_loops"
     PAIRED_OPERATIONS = "paired_operations"
 
 
@@ -334,135 +335,6 @@ def identify_error_branches(
         description=f"Error vs normal branches in {function_name}",
         siblings=siblings,
     )
-
-
-_LOOP_PATTERNS = [
-    re.compile(r"\bfor\s*\(.*\bin\b", re.IGNORECASE),
-    re.compile(r"\bfor\s*\(.*\bof\b", re.IGNORECASE),
-    re.compile(r"\bfor\s+\w+\s+in\b", re.IGNORECASE),
-    re.compile(r"\.(?:forEach|map|filter|reduce|each|for_each)\s*\(", re.IGNORECASE),
-    re.compile(r"\bfor\s*\(.*;.*;", re.IGNORECASE),
-    re.compile(r"\bwhile\s*\(", re.IGNORECASE),
-]
-
-_COLLECTION_ACCESS = re.compile(
-    r"(?:(\w+)\s*\[|\bget\s*\(\s*(\w+)\b|\.(\w+)\s*\.\s*(?:forEach|map|filter|each|for_each))",
-    re.IGNORECASE,
-)
-
-
-def identify_parallel_loops(
-    functions: list[dict[str, Any]],
-) -> list[SiblingGroup]:
-    """Group functions that iterate over different collections with similar checks.
-
-    Parallel loops that process different collections in sibling fashion
-    (e.g. validate_users loops over users, validate_orders loops over orders)
-    should apply consistent security checks.
-    """
-    loop_funcs: list[dict[str, Any]] = []
-    for func in functions:
-        source = func.get("source", "")
-        if not source:
-            continue
-        if any(p.search(source) for p in _LOOP_PATTERNS):
-            loop_funcs.append(func)
-
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for func in loop_funcs:
-        name = func.get("name", "")
-        for pattern in _PEER_NAME_GROUPS:
-            m = pattern.match(name)
-            if m:
-                verb = m.group(1).lower()
-                key = f"{verb}_loop_group"
-                groups.setdefault(key, []).append(func)
-                break
-
-    result = []
-    for key, members in groups.items():
-        if len(members) < 2:
-            continue
-        result.append(SiblingGroup(
-            group_id=key,
-            sibling_type=SiblingType.PARALLEL_LOOPS,
-            description=f"Parallel loops: {key}",
-            siblings=[
-                SiblingPath(
-                    label=m.get("name", ""),
-                    file=m.get("file", ""),
-                    function=m.get("name", ""),
-                    line=m.get("line", 0),
-                )
-                for m in members
-            ],
-        ))
-    return result
-
-
-_PAIR_PATTERNS = [
-    (re.compile(r"^(\w+?)_(?:encode|encrypt|serialize|marshal|pack|compress)$", re.IGNORECASE),
-     re.compile(r"^(\w+?)_(?:decode|decrypt|deserialize|unmarshal|unpack|decompress)$", re.IGNORECASE)),
-    (re.compile(r"^(?:encode|encrypt|serialize|marshal|pack|compress)_(\w+)$", re.IGNORECASE),
-     re.compile(r"^(?:decode|decrypt|deserialize|unmarshal|unpack|decompress)_(\w+)$", re.IGNORECASE)),
-    (re.compile(r"^(\w+?)_(?:sanitize|sanitise|escape|clean)_input$", re.IGNORECASE),
-     re.compile(r"^(\w+?)_(?:sanitize|sanitise|escape|clean)_output$", re.IGNORECASE)),
-]
-
-
-def identify_paired_operations(
-    functions: list[dict[str, Any]],
-) -> list[SiblingGroup]:
-    """Find paired encode/decode, encrypt/decrypt, sanitize-input/sanitize-output functions.
-
-    Paired operations should be symmetric: if encode escapes certain
-    characters, decode must handle the same set.
-    """
-    func_by_name: dict[str, dict[str, Any]] = {
-        f.get("name", ""): f for f in functions if f.get("name")
-    }
-
-    result = []
-    paired_names: set[str] = set()
-
-    for fwd_pat, rev_pat in _PAIR_PATTERNS:
-        forward: dict[str, dict[str, Any]] = {}
-        reverse: dict[str, dict[str, Any]] = {}
-
-        for name, func in func_by_name.items():
-            m = fwd_pat.match(name)
-            if m:
-                forward[m.group(1).lower()] = func
-            m = rev_pat.match(name)
-            if m:
-                reverse[m.group(1).lower()] = func
-
-        for prefix, fwd in forward.items():
-            if prefix in reverse:
-                rev = reverse[prefix]
-                fwd_name = fwd.get("name", "")
-                rev_name = rev.get("name", "")
-                if fwd_name in paired_names or rev_name in paired_names:
-                    continue
-                paired_names.add(fwd_name)
-                paired_names.add(rev_name)
-                result.append(SiblingGroup(
-                    group_id=f"pair:{prefix}",
-                    sibling_type=SiblingType.PAIRED_OPERATIONS,
-                    description=f"Paired operations: {fwd_name} ↔ {rev_name}",
-                    siblings=[
-                        SiblingPath(
-                            label=fwd_name, file=fwd.get("file", ""),
-                            function=fwd_name, line=fwd.get("line", 0),
-                        ),
-                        SiblingPath(
-                            label=rev_name, file=rev.get("file", ""),
-                            function=rev_name, line=rev.get("line", 0),
-                        ),
-                    ],
-                ))
-
-    return result
 
 
 # ── Sanitizer strength comparison ──────────────────────────────────

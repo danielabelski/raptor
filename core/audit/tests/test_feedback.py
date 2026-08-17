@@ -795,3 +795,124 @@ class TestConfirmedBeatsDisproven:
         assert result["downgraded"] == 1
         assert _latest_journal_verdict(
             audit_out, "src/a.c", "fn_a") == "clean"
+
+
+class TestValidateFeedbackScorecardProducer:
+    """The Reflexion importer is the live producer of audit:<CWE>
+    reliability cells (2d): each processed finding with a prior model
+    verdict and a concrete /validate verdict yields one
+    VALIDATE_FEEDBACK record."""
+
+    def _seed(self, out_dir: Path, verdict: str = "finding") -> None:
+        entry = ReviewJournalEntry(
+            ts=now_iso(),
+            run_id="test",
+            file="src/a.c",
+            function="f",
+            verdict=verdict,
+            source_hash="",
+            body="prior body",
+            model="claude-test-1",
+            cwe="CWE-787",
+        )
+        append_entry(out_dir, entry)
+
+    def _import(self, tmp_path: Path, ruling_status: str,
+                monkeypatch) -> list:
+        captured: list = []
+
+        def _capture(records, scorecard=None):
+            captured.extend(records)
+            return len(records)
+
+        monkeypatch.setattr(
+            "core.llm.scorecard.validate_feedback."
+            "record_validate_feedback_outcomes",
+            _capture,
+        )
+        ann = tmp_path / "annotations"
+        ann.mkdir(exist_ok=True)
+        report = tmp_path / "findings.json"
+        report.write_text(json.dumps({
+            "findings": [{
+                "file": "src/a.c", "function": "f",
+                "cwe_id": "CWE-787",
+                "ruling": {"status": ruling_status,
+                           "reason": "traced the path"},
+            }],
+        }))
+        import_validation_results(
+            validation_report=report,
+            annotations_dir=ann,
+            audit_out_dir=tmp_path,
+        )
+        return captured
+
+    def test_confirmed_finding_records_correct_signal(
+            self, tmp_path: Path, monkeypatch):
+        self._seed(tmp_path, verdict="finding")
+        records = self._import(tmp_path, "exploitable", monkeypatch)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["model"] == "claude-test-1"
+        assert rec["cwe"] == "CWE-787"
+        assert rec["prior_verdict"] == "finding"
+        assert rec["validate_verdict"] == "confirmed"
+
+    def test_disproven_finding_records_signal(
+            self, tmp_path: Path, monkeypatch):
+        self._seed(tmp_path, verdict="finding")
+        records = self._import(tmp_path, "ruled_out", monkeypatch)
+        assert len(records) == 1
+        assert records[0]["validate_verdict"] == "disproven"
+
+    def test_no_prior_model_records_nothing(
+            self, tmp_path: Path, monkeypatch):
+        # Journal entry without a model attribution — no cell to train.
+        entry = ReviewJournalEntry(
+            ts=now_iso(), run_id="test", file="src/a.c", function="f",
+            verdict="finding", source_hash="", body="",
+        )
+        append_entry(tmp_path, entry)
+        records = self._import(tmp_path, "exploitable", monkeypatch)
+        assert records == []
+
+    def test_decoy_disproval_not_recorded(self, tmp_path: Path,
+                                          monkeypatch):
+        # /validate disproved a finding whose CWE doesn't match the
+        # journal entry — the transition is vetoed AND no reliability
+        # event fires (the disproven finding isn't the model's claim).
+        entry = ReviewJournalEntry(
+            ts=now_iso(), run_id="test", file="src/a.c", function="f",
+            verdict="finding", source_hash="", body="",
+            model="claude-test-1", cwe="CWE-787", line_start=10,
+        )
+        append_entry(tmp_path, entry)
+        captured: list = []
+
+        def _capture(records, scorecard=None):
+            captured.extend(records)
+            return len(records)
+
+        monkeypatch.setattr(
+            "core.llm.scorecard.validate_feedback."
+            "record_validate_feedback_outcomes",
+            _capture,
+        )
+        ann = tmp_path / "annotations"
+        ann.mkdir(exist_ok=True)
+        report = tmp_path / "findings.json"
+        report.write_text(json.dumps({
+            "findings": [{
+                "file": "src/a.c", "function": "f",
+                "cwe_id": "CWE-89",   # different CWE — decoy
+                "line": 999,
+                "ruling": {"status": "ruled_out"},
+            }],
+        }))
+        import_validation_results(
+            validation_report=report,
+            annotations_dir=ann,
+            audit_out_dir=tmp_path,
+        )
+        assert captured == []

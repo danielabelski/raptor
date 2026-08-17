@@ -189,6 +189,24 @@ class EventType:
     # weight models on study reliability. Producer: the audit study
     # consumer's agreement gate.
     STUDY_QUESTION = "study_question"
+    # Offline audit-corpus probe against labelled ground truth.
+    # ``correct`` = the model's verdict matched the corpus label.
+    # Producer: ``core.audit.corpus.run_corpus._record_scorecard``
+    # under ``audit:<bug_class>`` cells. (That producer referenced
+    # this constant before it existed — the AttributeError was
+    # swallowed by its best-effort catch, so corpus runs recorded
+    # nothing.)
+    CORPUS_GROUND_TRUTH = "corpus_ground_truth"
+    # /validate came back on a prior audit LLM verdict via the
+    # Reflexion feedback importer. ``correct`` = the model's journal
+    # verdict agreed with /validate's conclusion (positive verdict
+    # confirmed, or clean verdict not contradicted); ``incorrect`` =
+    # /validate disproved a positive verdict or confirmed a finding
+    # the model called clean. Producer:
+    # :mod:`core.llm.scorecard.validate_feedback`, wired from
+    # ``core.audit.feedback.import_validation_results`` — the live
+    # writer of ``audit:<CWE>`` cells (the corpus harness is offline).
+    VALIDATE_FEEDBACK = "validate_feedback"
 
 
 ALL_EVENT_TYPES: tuple[str, ...] = (
@@ -206,6 +224,8 @@ ALL_EVENT_TYPES: tuple[str, ...] = (
     EventType.SELF_CONSISTENCY,
     EventType.DATAFLOW_VALIDATION,
     EventType.STUDY_QUESTION,
+    EventType.CORPUS_GROUND_TRUTH,
+    EventType.VALIDATE_FEEDBACK,
 )
 
 
@@ -490,7 +510,10 @@ class ModelScorecard:
         with self._with_lock() as data:
             cell = self._ensure_cell(data, model, decision_class)
             now_iso = _now_iso()
-            bucket = cell["events"][event_type].setdefault(
+            # setdefault on the event-type key too: cells persisted
+            # before an event type existed lack its key (the schema
+            # migration only backfills known-at-migration types).
+            bucket = cell["events"].setdefault(event_type, {}).setdefault(
                 bucket_key(now_iso), {"correct": 0, "incorrect": 0}
             )
             bucket[outcome] += 1

@@ -64,6 +64,10 @@ RELIABILITY_EVENT_TYPES = frozenset({
     "operator_feedback",
     "dataflow_validation",
     "cross_family_check",
+    # The two audit:<CWE> producers: the offline corpus harness and
+    # the live /validate Reflexion feedback importer.
+    "corpus_ground_truth",
+    "validate_feedback",
 })
 
 # A reliability cell must carry at least this many adjudicated events

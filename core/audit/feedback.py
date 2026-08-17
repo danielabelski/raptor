@@ -123,6 +123,12 @@ def import_validation_results(
     # can appear in one report).
     confirmed_keys: set = set()
 
+    # Reliability records for the VALIDATE_FEEDBACK scorecard producer
+    # — the live writer of audit:<CWE> cells (see
+    # core/llm/scorecard/validate_feedback.py). Collected in the loop,
+    # recorded once at the end; never blocks the import.
+    scorecard_records: list[dict[str, Any]] = []
+
     for finding in findings:
         file_path = finding.get("file", "")
         function_name = finding.get("function", "")
@@ -182,6 +188,7 @@ def import_validation_results(
         # verdict for the same function within this import — a
         # disproven decoy (different CWE/line, or processed after a
         # confirmed sibling) must not erase real feedback.
+        decoy_vetoed = False
         if transition.get("new_status") == "clean":
             if key in confirmed_keys:
                 transition = {
@@ -203,6 +210,7 @@ def import_validation_results(
                         f"{audit_status!r}"
                     ),
                 }
+                decoy_vetoed = True
         if validate_verdict == "confirmed":
             confirmed_keys.add(key)
 
@@ -266,11 +274,36 @@ def import_validation_results(
         counts["updated"] += 1
         counts[transition["kind"]] += 1
 
+        # Reliability event for the model that made the prior claim.
+        # Decoy-vetoed disprovals carry no signal about THIS verdict
+        # (the disproven finding wasn't the one the journal records).
+        prior_model = prior_entry.model if prior_entry else None
+        if prior_model and not decoy_vetoed:
+            scorecard_records.append({
+                "model": prior_model,
+                "cwe": prior_entry.cwe if prior_entry else None,
+                "prior_verdict": audit_status,
+                "validate_verdict": validate_verdict,
+                "file": file_path,
+                "function": function_name,
+                "reason": reason,
+            })
+
         if audit_out_dir:
             _update_audit_state(
                 audit_out_dir, file_path, function_name,
                 transition, validate_verdict, reason,
             )
+
+    if scorecard_records:
+        try:
+            from core.llm.scorecard.validate_feedback import (
+                record_validate_feedback_outcomes,
+            )
+            record_validate_feedback_outcomes(scorecard_records)
+        except Exception:
+            logger.debug("validate-feedback scorecard recording failed",
+                         exc_info=True)
 
     return counts
 

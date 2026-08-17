@@ -221,7 +221,7 @@ approval before execution.
 | crash-analysis-agent | Read, Write, Edit, Bash, Grep, Glob, Task | Y | Y | N | 2 | needs-tightening |
 | crash-report-fetcher-agent | Read, Write, WebFetch | Y | N | Y | 2 | needs-tightening |
 | oss-investigator-gh-archive-agent | Bash, Read, Write | Y | N | Y | 2 | needs-tightening |
-| offsec-specialist | all tools | Y | Y | Y | 3 | needs-HITL |
+| offsec-specialist | all tools | Y | Y | Y | 3 | needs-HITL (mechanically enforced) |
 | oss-investigator-github-agent | Bash, Read, Write, WebFetch | Y | Y | Y | 3 | needs-HITL |
 
 **Verdicts:**
@@ -232,7 +232,17 @@ approval before execution.
 - **needs-tightening** (13 agents) -- Rule of Two score of 2; tool
   access could be narrowed.
 - **needs-HITL** (2 agents) -- Rule of Two score of 3 (all three axes);
-  requires human-in-the-loop approval.
+  requires human-in-the-loop approval. For `offsec-specialist` this is
+  mechanically enforced, not just documented: the agent name is
+  registered in `core.security.rule_of_two.HITL_REQUIRED_AGENTS`, any
+  future programmatic dispatcher must call
+  `require_human_for_agent_dispatch()` (which refuses headless
+  sessions -- an effective sandbox does not substitute for the human,
+  since containment cannot sever enough legs from an inherently
+  three-legged job), and an inventory test
+  (`core/security/tests/test_hitl_dispatch_inventory.py`) fails on any
+  reference to the agent name in `libexec/`, `core/`, `packages/`, or
+  `raptor.py` outside allowlisted non-dispatch files.
 
 The `crash-report-fetcher-agent` row scores A+C without B: its only
 write is `bug-report.json` — a single artifact that is
@@ -307,7 +317,10 @@ when the workspace is trusted.
    silently included). `offsec-specialist` deliberately remains
    all-tools: its job inherently spans untrusted input, exploitation
    tooling, and network reach, so it stays in the needs-HITL class
-   rather than pretending a narrower list fits.
+   rather than pretending a narrower list fits. The HITL requirement
+   is mechanically anchored via the `rule_of_two` dispatch gate and
+   the dispatch-inventory test (see the needs-HITL verdict note
+   above).
 
 5. **Network reach in the crash-analysis pipeline** --
    ADDRESSED: `crash-analysis-agent` no longer carries

@@ -49,6 +49,7 @@ import os
 import select
 import subprocess
 import sys
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -61,6 +62,11 @@ logger = logging.getLogger(__name__)
 # SETOPTIONS dance is microseconds on a healthy host; allow 5s
 # to absorb pathological scheduler stalls (CI under heavy load).
 _TRACER_READY_TIMEOUT_S = 5.0
+
+# How long the stdio drain loop waits in one select() before
+# re-checking that the target is still alive. Idle ticks are NOT
+# treated as EOF — see _drain_pipes_until_eof.
+_DRAIN_IDLE_POLL_S = 30.0
 
 # Linux prctl(2) constants for PR_SET_PTRACER. Not in stdlib;
 # duplicated here from the kernel headers.
@@ -235,6 +241,75 @@ def _read_to_eof(fd: int, max_bytes: int = 16 * 1024 * 1024) -> bytes:
         chunks.append(chunk)
         total += len(chunk)
     return b"".join(chunks)
+
+
+def _drain_pipes_until_eof(
+    fds: Iterable[int],
+    target_pid: int,
+    deadline: float | None = None,
+) -> dict[int, bytes]:
+    """Drain pipe fds until EOF on all of them, without deadlocking.
+
+    A select() timeout is NOT EOF: the child may legitimately stay
+    silent longer than one poll interval (long compile step, fuzz
+    target between findings). Breaking on mere silence loses every
+    later byte AND — when the caller passed ``timeout=None`` —
+    deadlocks the parent/child pair: the parent proceeds to a
+    blocking ``waitpid`` with the pipes never read again, while the
+    child blocks writing to a full pipe buffer.
+
+    On each idle tick we instead check whether the target is still
+    alive via ``waitid(..., WNOWAIT)`` — which does NOT reap, so the
+    caller's own ``waitpid`` still observes the exit status.
+    Draining stops when:
+
+      * EOF is seen on every fd (normal case), or
+      * ``deadline`` expires (caller kills the child and raises), or
+      * the target has exited and the pipes have gone silent — a
+        stray grandchild inherited the write end; don't wait for
+        its EOF forever.
+
+    Returns ``{fd: collected_bytes}``.
+    """
+    bufs: dict[int, list[bytes]] = {fd: [] for fd in fds}
+    fds_open = set(bufs)
+    target_exited = False
+    while fds_open:
+        if target_exited:
+            # Final sweep: consume whatever is already buffered in
+            # the pipes, but don't block for more.
+            wait = 0.0
+        else:
+            wait = _DRAIN_IDLE_POLL_S
+            if deadline is not None:
+                wait = min(wait, max(0.0, deadline - time.monotonic()))
+        ready, _, _ = select.select(list(fds_open), [], [], wait)
+        if not ready:
+            if target_exited:
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            try:
+                res = os.waitid(
+                    os.P_PID, target_pid,
+                    os.WEXITED | os.WNOHANG | os.WNOWAIT,
+                )
+            except (ChildProcessError, OSError):
+                break
+            if res is not None:
+                target_exited = True
+            continue
+        for fd in ready:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                fds_open.discard(fd)
+                continue
+            if chunk:
+                bufs[fd].append(chunk)
+            else:
+                fds_open.discard(fd)
+    return {fd: b"".join(chunks) for fd, chunks in bufs.items()}
 
 
 def run_landlock_audit(
@@ -568,23 +643,19 @@ def run_landlock_audit(
             p_go_w = -1
 
         # Drain both stdio pipes concurrently to avoid deadlock when
-        # the child fills one pipe buffer while we block reading the other.
+        # the child fills one pipe buffer while we block reading the
+        # other. The deadline is computed HERE so the caller's timeout
+        # bounds the whole drain+wait, not just the post-drain wait.
+        deadline = (
+            time.monotonic() + timeout if timeout is not None else None
+        )
         stdout_bytes = stderr_bytes = b""
         if capture_output:
-            bufs = {out_r: [], err_r: []}
-            fds_open = {out_r, err_r}
-            while fds_open:
-                ready, _, _ = select.select(list(fds_open), [], [], 30.0)
-                if not ready:
-                    break
-                for fd in ready:
-                    chunk = os.read(fd, 65536)
-                    if chunk:
-                        bufs[fd].append(chunk)
-                    else:
-                        fds_open.discard(fd)
-            stdout_bytes = b"".join(bufs[out_r])
-            stderr_bytes = b"".join(bufs[err_r])
+            drained = _drain_pipes_until_eof(
+                (out_r, err_r), target_pid, deadline,
+            )
+            stdout_bytes = drained[out_r]
+            stderr_bytes = drained[err_r]
             _close_safely(out_r)
             out_r = -1
             _close_safely(err_r)
@@ -592,9 +663,7 @@ def run_landlock_audit(
 
         # waitpid the target.
         target_rc = -1
-        if timeout is not None:
-            import time
-            deadline = time.monotonic() + timeout
+        if deadline is not None:
             while time.monotonic() < deadline:
                 try:
                     done, status = os.waitpid(target_pid, os.WNOHANG)

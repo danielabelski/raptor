@@ -1661,17 +1661,6 @@ def _bridge_audit_output(out_dir, target=None):
         print(f"  Audit bridge: enriched {enriched_steps} attack-path steps with callee contracts")
 
 
-def prepare_bridge(workdir, target=None):
-    """Import /understand output into the validate run."""
-    from core.json import load_json
-    checklist = load_json(Path(workdir) / "checklist.json")
-    if not checklist:
-        print("ERROR: checklist.json not found — run raptor-build-checklist first",
-              file=sys.stderr)
-        sys.exit(1)
-    _bridge_understand_output(Path(workdir), checklist, target)
-
-
 def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
               sanitizer_cut_mode=None, sanitizer_cut_parity_log=None,
               findings_path=None):

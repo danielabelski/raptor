@@ -680,17 +680,17 @@ class ProjectManager:
         # Update project
         project.name = new_name
 
-        # Save new, delete old.
+        # Save new, delete old — with EXPLICIT error reporting.
         # Pre-fix the unlink used `missing_ok=True` which silently
         # swallowed every OSError including PermissionError. If the
         # save_json succeeded but the unlink failed, the project
         # ended up existing under BOTH names with no signal to the
         # operator — every subsequent list/load saw two entries
-        # for what was supposed to be one project. Use os.replace
-        # to atomically move old → new, then re-write with updated
-        # content. Falls back to save+unlink with EXPLICIT error
-        # reporting if replace isn't atomic on the platform (cross-
-        # filesystem rename).
+        # for what was supposed to be one project. The new file is
+        # written first (it becomes the source of truth), then the
+        # old file is removed; FileNotFoundError is fine (already
+        # gone), any other OSError is logged loudly and re-raised so
+        # the operator knows the old file needs manual cleanup.
         save_json(new_file, project.to_dict())
         old_file = self.projects_dir / f"{old_name}.json"
         try:

@@ -193,7 +193,11 @@ def query_for(repo_language: str, cwe: str) -> str | None:
 @dataclass(frozen=True)
 class WalkResult:
     fix_hash: str
-    status: str               # ok | fetch_fail | build_fail | analyze_fail | no_query
+    # ok | fetch_fail | build_fail | analyze_fail | no_query, plus two
+    # statuses persisted into the same walk_results.status column by
+    # other writers: "error" (walk()'s process_pair crash handler) and
+    # "ok_built" (promote_misses' autobuild-recovered rows).
+    status: str
     before_count: int = -1
     after_count: int = -1
 
@@ -541,10 +545,16 @@ def walk(
             log(f"  [{n + 1}/{len(todo)}] {pair.cve_id} {pair.cwe} {pair.repo_language} "
                 f"{pair.repo_url.split('github.com/')[-1]}: {tag} "
                 f"before={res.before_count} after={res.after_count}")
+        # status IN ('ok','ok_built'): re-running walk() over a db that
+        # promote_misses already upgraded must keep counting the
+        # promoted yielders — they are 'ok' rows whose autobuild retry
+        # recovered a result, not a different outcome class.
         summary = dict(con.execute(
             "SELECT 'total', count(*) FROM walk_results UNION ALL "
-            "SELECT 'yield', count(*) FROM walk_results WHERE status='ok' AND before_count>0 UNION ALL "
-            "SELECT 'fp_candidate', count(*) FROM walk_results WHERE status='ok' AND after_count>0"
+            "SELECT 'yield', count(*) FROM walk_results "
+            "WHERE status IN ('ok','ok_built') AND before_count>0 UNION ALL "
+            "SELECT 'fp_candidate', count(*) FROM walk_results "
+            "WHERE status IN ('ok','ok_built') AND after_count>0"
         ).fetchall())
     finally:
         con.close()

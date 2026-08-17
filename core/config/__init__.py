@@ -335,11 +335,13 @@ class RaptorConfig:
     # then imported the consumer module saw the wrong value with no
     # diagnostic.
     #
-    # Implement as a descriptor so both `RaptorConfig.OLLAMA_HOST`
-    # (class access; the existing call pattern across `core/llm/`)
-    # and `RaptorConfig().OLLAMA_HOST` (instance access; rare but
-    # supported) re-read the env var on every access. `__get__` is
-    # invoked for both class and instance reads.
+    # Implement as a descriptor so `RaptorConfig.OLLAMA_HOST` (class
+    # access; the existing call pattern across `core/llm/`) re-reads
+    # the env var on every access — a plain class attribute would
+    # freeze the value at import time. Instance access is impossible
+    # by design: RaptorConfig.__init__ raises TypeError (class-level
+    # namespace, never instantiated), so the descriptor only ever
+    # serves class reads.
     class _OllamaHostDescriptor:
         def __get__(self, obj, objtype=None):
             return os.getenv("OLLAMA_HOST", "http://localhost:11434")

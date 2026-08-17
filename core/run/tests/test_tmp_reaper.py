@@ -44,6 +44,7 @@ class TestDirReaping:
             _make_old_dir(tmp_root, "raptor_auto_abc123"),
             _make_old_dir(tmp_root, "raptor_git_frk_abc1"),
             _make_old_dir(tmp_root, "raptor_decomp_abc123"),
+            _make_old_dir(tmp_root, "raptor-cocci-tmp-abc123"),
         ]
         reaped = reap_stale_tmp()
         assert sorted(reaped) == sorted(dirs)
@@ -127,7 +128,10 @@ class TestFileReaping:
     def test_stale_sweep_yaml_and_joern_script_reaped(self, tmp_root):
         files = []
         for name in ("audit_sweep_ab12cd34.yaml", "wrapped-script42.sc",
-                     "raptor-audit-cfg-ab12cd34.json"):
+                     "raptor-audit-cfg-ab12cd34.json",
+                     "raptor-cocci-ab12cd34.cocci",
+                     "cocci-output-3-abc123-file.c",
+                     "cocci_small_output-3-abc123-file.c"):
             f = tmp_root / name
             f.write_text("rules: []\n")
             os.utime(f, (_OLD, _OLD))

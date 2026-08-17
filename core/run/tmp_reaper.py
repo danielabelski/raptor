@@ -22,6 +22,11 @@ temp dir and clean them up on exit:
     ``finally``)
   - ``raptor-audit-cfg-*.json`` — sandbox audit-config tempfiles
     (:mod:`core.sandbox._spawn`; unlinked in lifecycle + own sweep)
+  - ``raptor-cocci-tmp-*/`` and ``raptor-cocci-*.cocci`` — spatch
+    scratch dir and harnessed rule files
+    (``packages/coccinelle/runner.py``; cleaned in its finally)
+  - ``cocci-output-*`` / ``cocci_small_output-*`` — spatch's own
+    per-file working copies, stranded when spatch is killed
   - ``wrapped-script*.sc``      — written by the Joern JVM launcher
     itself next to our workspace dirs
 
@@ -73,6 +78,10 @@ _DIR_PREFIXES = (
     "raptor_auto_",
     "raptor_git_",
     "raptor_decomp_",
+    # Per-invocation spatch scratch (packages/coccinelle/runner.py);
+    # rmtree'd in the runner's finally, so survival past the floor
+    # means the whole RAPTOR process died mid-sweep.
+    "raptor-cocci-tmp-",
     # CPython multiprocessing's own resource dir — leaks when a process
     # (e.g. a sandboxed child we SIGKILL) dies without cleanup.
     "pymp-",
@@ -82,7 +91,14 @@ _DIR_PREFIXES = (
 _FILE_PATTERNS = (
     ("audit_sweep_", ".yaml"),
     ("raptor-audit-cfg-", ".json"),
+    ("raptor-cocci-", ".cocci"),
     ("wrapped-script", ".sc"),
+    # spatch's own per-file working copies. Normally confined to the
+    # private scratch dir above; these top-level patterns catch strays
+    # from spatch invocations that predate the scoped TMPDIR (or any
+    # tool invoking spatch without one). Empty suffix = prefix match.
+    ("cocci-output-", ""),
+    ("cocci_small_output-", ""),
 )
 
 _MAX_AGE_ENV = "RAPTOR_TMP_REAP_MAX_AGE_H"

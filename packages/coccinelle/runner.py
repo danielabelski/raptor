@@ -16,7 +16,6 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from core.config import RaptorConfig
 
@@ -62,9 +61,9 @@ _COCCI_POS_VAR_DENY = frozenset({
 #     mid-run, an upstream tool that mutates os.environ) could
 #     swap out spatch. Cache locks in the resolved path discovered
 #     at first probe.
-_resolved_spatch: Optional[str] = None
+_resolved_spatch: str | None = None
 _spatch_resolved: bool = False  # True once we've cached (None or path).
-def _spatch_path() -> Optional[str]:
+def _spatch_path() -> str | None:
     global _resolved_spatch, _spatch_resolved
     if not _spatch_resolved:
         _resolved_spatch = shutil.which(_SPATCH_BIN)
@@ -102,14 +101,14 @@ def is_available() -> bool:
 MIN_SPATCH_VERSION = (1, 3)
 
 
-def version() -> Optional[str]:
+def version() -> str | None:
     """Return the spatch version string, or None if unavailable."""
     if not is_available():
         return None
     try:
         proc = subprocess.run(
             [_spatch_path() or _SPATCH_BIN, "--version"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         )
         for line in proc.stdout.splitlines():
             if line.startswith("spatch version"):
@@ -119,7 +118,7 @@ def version() -> Optional[str]:
         return None
 
 
-def version_tuple() -> Optional[tuple]:
+def version_tuple() -> tuple | None:
     """Parse the leading ``major.minor`` of the spatch version into an
     int tuple (e.g. ``"1.3 compiled with ..."`` → ``(1, 3)``), or None if
     spatch is unavailable / the version string can't be parsed."""
@@ -143,11 +142,11 @@ def run_rule(
     target: Path,
     rule: Path,
     *,
-    include_dirs: Optional[List[Path]] = None,
+    include_dirs: list[Path] | None = None,
     no_includes: bool = False,
     timeout: int = 300,
-    env: Optional[Dict[str, str]] = None,
-    defines: Optional[Dict[str, str]] = None,
+    env: dict[str, str] | None = None,
+    defines: dict[str, str] | None = None,
     subprocess_runner=None,
 ) -> SpatchResult:
     """Run a single Coccinelle rule against a target.
@@ -220,7 +219,7 @@ def run_rule(
     # code before the first rule". The only reliable invocation is
     # a real path. Write the harnessed text to a tempfile and pass
     # its path; cleanup in ``finally`` covers timeout / error paths.
-    harnessed_rule_path: Optional[Path] = None
+    harnessed_rule_path: Path | None = None
     if needs_harness:
         injected = _inject_harness(rule_text, rule_name)
         if injected != rule_text:
@@ -269,6 +268,14 @@ def run_rule(
             cmd.extend(["-D", f"{k}={v}"])
 
     run_env = dict(env) if env is not None else RaptorConfig.get_safe_env()
+    # Private scratch for spatch's own temp files. spatch materialises
+    # per-file working copies (cocci-output-*, cocci_small_output-*)
+    # in the temp dir and only removes them on clean exit — a timeout
+    # kill or spatch crash strands them (observed: ~200 files from one
+    # interrupted sweep). It honours TMPDIR, so point each invocation
+    # at its own dir and delete it unconditionally in the finally.
+    _scratch_dir = tempfile.mkdtemp(prefix="raptor-cocci-tmp-")
+    run_env["TMPDIR"] = _scratch_dir
     runner = subprocess_runner or subprocess.run
 
     start = time.monotonic()
@@ -360,19 +367,22 @@ def run_rule(
                 harnessed_rule_path.unlink()
             except OSError:
                 pass
+        # And spatch's scratch dir — includes whatever a killed
+        # spatch left behind.
+        shutil.rmtree(_scratch_dir, ignore_errors=True)
 
 
 def run_rules(
     target: Path,
     rules_dir: Path,
     *,
-    include_dirs: Optional[List[Path]] = None,
+    include_dirs: list[Path] | None = None,
     no_includes: bool = False,
     timeout_per_rule: int = 300,
-    env: Optional[Dict[str, str]] = None,
-    defines: Optional[Dict[str, str]] = None,
+    env: dict[str, str] | None = None,
+    defines: dict[str, str] | None = None,
     subprocess_runner=None,
-) -> List[SpatchResult]:
+) -> list[SpatchResult]:
     """Run all .cocci rules in a directory against a target.
 
     Returns one SpatchResult per rule, in filename order.
@@ -412,12 +422,12 @@ def run_rules(
 
 def run_rules_batched(
     target: Path,
-    rules: List[Path],
+    rules: list[Path],
     *,
     timeout: int = 300,
-    env: Optional[Dict[str, str]] = None,
+    env: dict[str, str] | None = None,
     subprocess_runner=None,
-) -> Dict[str, SpatchResult]:
+) -> dict[str, SpatchResult]:
     """Run multiple .cocci rules in a single spatch invocation.
 
     Concatenates rule files into one temp file so spatch parses the C
@@ -486,6 +496,9 @@ def run_rules_batched(
     cmd.append("--very-quiet")
 
     run_env = dict(env) if env is not None else RaptorConfig.get_safe_env()
+    # Same private-TMPDIR scratch as run_rule — see the comment there.
+    _scratch_dir = tempfile.mkdtemp(prefix="raptor-cocci-tmp-")
+    run_env["TMPDIR"] = _scratch_dir
     runner = subprocess_runner or subprocess.run
 
     if target.is_file():
@@ -520,7 +533,7 @@ def run_rules_batched(
                 _parse_results(partial_stdout, "batch")
                 + _parse_results(partial_stderr, "batch"),
             )
-            by_rule: Dict[str, List[SpatchMatch]] = {
+            by_rule: dict[str, list[SpatchMatch]] = {
                 s: [] for s in rule_stems
             }
             for m in all_matches:
@@ -569,9 +582,12 @@ def run_rules_batched(
             Path(tmp_name).unlink()
         except OSError:
             pass
+        # spatch's scratch dir — includes whatever a killed spatch
+        # left behind.
+        shutil.rmtree(_scratch_dir, ignore_errors=True)
 
 
-def _dedup_matches(matches: List[SpatchMatch]) -> List[SpatchMatch]:
+def _dedup_matches(matches: list[SpatchMatch]) -> list[SpatchMatch]:
     """Remove duplicate matches (same file+line+col+rule+message),
     preserving order.
 
@@ -594,7 +610,7 @@ def _dedup_matches(matches: List[SpatchMatch]) -> List[SpatchMatch]:
     return result
 
 
-def _collect_files_examined(target: Path, match_files: set) -> List[str]:
+def _collect_files_examined(target: Path, match_files: set) -> list[str]:
     """Build files_examined from the target path plus any match files.
 
     spatch has no machine-readable log of which files it processed, so we
@@ -722,7 +738,7 @@ for _p in {pos_var}:
     return rule_text + harness
 
 
-def _parse_results(output: str, rule_name: str) -> List[SpatchMatch]:
+def _parse_results(output: str, rule_name: str) -> list[SpatchMatch]:
     """Parse COCCIRESULT lines from spatch stdout or stderr."""
     matches = []
     for line in output.splitlines():
@@ -755,7 +771,7 @@ _ERROR_PATTERNS = (
 )
 
 
-def _parse_errors(stderr: str) -> List[str]:
+def _parse_errors(stderr: str) -> list[str]:
     """Extract error messages from spatch stderr, ignoring info lines."""
     errors = []
     for line in stderr.splitlines():

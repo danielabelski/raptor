@@ -5,29 +5,29 @@ import os
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from packages.coccinelle.models import SpatchMatch
 from packages.coccinelle.runner import (
+    MIN_SPATCH_VERSION,
+    RESULT_PREFIX,
+    _collect_files_examined,
+    _dedup_matches,
+    _inject_harness,
+    _parse_errors,
+    _parse_results,
+    is_available,
+    meets_min_version,
     run_rule,
     run_rules,
     run_rules_batched,
-    is_available,
     version,
     version_tuple,
-    meets_min_version,
-    MIN_SPATCH_VERSION,
-    _parse_results,
-    _parse_errors,
-    _inject_harness,
-    _collect_files_examined,
-    _dedup_matches,
-    RESULT_PREFIX,
 )
-from packages.coccinelle.models import SpatchMatch
 
 
 class TestAvailability:
@@ -408,7 +408,7 @@ class TestHarnessTempfilePath:
             "tempfile should be cleaned up by the time subprocess.run "
             "returns to the caller (we're inside the patched runner, "
             "which captured the path; runner's finally cleans up)"
-        ) or True  # noqa
+        )
         # Fed via input= would be a regression — passing a path to
         # an existing file means input= must NOT be set.
         assert captured["input"] is None, (
@@ -904,3 +904,54 @@ class TestShippedRulesIntegration:
         )
         assert result.returncode == 0
         assert result.match_count == 0
+
+
+class TestSpatchScratchTmpdir:
+    """spatch materialises per-file working copies (cocci-output-*,
+    cocci_small_output-*) in TMPDIR and only removes them on clean
+    exit — a timeout kill stranded ~200 of them per interrupted sweep.
+    The runner gives every invocation a private scratch TMPDIR and
+    removes it unconditionally."""
+
+    def _run_and_capture_env(self, tmp_path, *, boom=False):
+        import subprocess as _sp
+        rule = tmp_path / "r.cocci"
+        rule.write_text(
+            "@r@\nexpression e1, e2;\nposition p;\n@@\nstrcpy@p(e1, e2)\n"
+        )
+        target = tmp_path / "x.c"
+        target.write_text("void f() {}\n")
+        captured = {}
+
+        def _fake(cmd, **kwargs):
+            captured["env"] = kwargs.get("env") or {}
+            # Simulate spatch stranding a working copy in TMPDIR.
+            scratch = captured["env"].get("TMPDIR")
+            if scratch:
+                (Path(scratch) / "cocci-output-1-abc-x.c").write_text("x")
+            if boom:
+                raise _sp.TimeoutExpired(cmd, 1)
+            return MagicMock(stdout="", stderr="", returncode=0)
+
+        with patch(
+            "packages.coccinelle.runner.is_available", return_value=True,
+        ), patch("subprocess.run", side_effect=_fake):
+            run_rule(target, rule, env=dict(os.environ))
+        return captured
+
+    def test_private_tmpdir_passed_and_removed(self, tmp_path):
+        captured = self._run_and_capture_env(tmp_path)
+        scratch = captured["env"].get("TMPDIR", "")
+        assert "raptor-cocci-tmp-" in scratch, (
+            "spatch not given a private scratch TMPDIR"
+        )
+        assert not Path(scratch).exists(), (
+            "scratch dir (with spatch's stranded working copy) survived"
+        )
+
+    def test_scratch_removed_even_on_timeout(self, tmp_path):
+        captured = self._run_and_capture_env(tmp_path, boom=True)
+        scratch = captured["env"].get("TMPDIR", "")
+        assert scratch and not Path(scratch).exists(), (
+            "timeout path leaked the scratch dir"
+        )

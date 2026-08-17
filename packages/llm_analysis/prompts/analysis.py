@@ -13,20 +13,21 @@ engine.
 """
 
 import logging
-from typing import Any, Dict, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from core.security.prompt_envelope import (  # noqa: E402
+from core.security.prompt_defense_profiles import CONSERVATIVE
+from core.security.prompt_envelope import (
     ModelDefenseProfile,
     PromptBundle,
     TaintedString,
     UntrustedBlock,
     build_prompt,
 )
-from core.security.prompt_defense_profiles import CONSERVATIVE  # noqa: E402
 
-from .schemas import ANALYSIS_SCHEMA, DATAFLOW_SCHEMA_FIELDS  # noqa: E402
+from .schemas import ANALYSIS_SCHEMA, DATAFLOW_SCHEMA_FIELDS
 
 _ANALYSIS_BLOCK_PRIORITIES: dict[str, int] = {
     "vulnerable-code": 0,
@@ -40,6 +41,8 @@ _ANALYSIS_BLOCK_PRIORITIES: dict[str, int] = {
     "ast-view": 1,
     "surrounding-context": 1,
     "source-intel-evidence": 1,
+    "flow-trace-context": 2,
+    "caller-call-sites": 2,
     "verified-exemplars": 2,
     "sage-historical-context": 3,
 }
@@ -282,7 +285,7 @@ be used if the FUNCTION BODY ITSELF (not its containing \
 scope) is provably unreachable under all inputs."""
 
 
-def build_analysis_schema(has_dataflow: bool = False) -> Dict[str, str]:
+def build_analysis_schema(has_dataflow: bool = False) -> dict[str, str]:
     """Build the analysis schema, optionally including dataflow fields."""
     schema = dict(ANALYSIS_SCHEMA)
     if has_dataflow:
@@ -290,7 +293,7 @@ def build_analysis_schema(has_dataflow: bool = False) -> Dict[str, str]:
     return schema
 
 
-def _format_metadata_for_block(metadata: Dict[str, Any]) -> str:
+def _format_metadata_for_block(metadata: dict[str, Any]) -> str:
     """Format inventory metadata as plain text for embedding in an untrusted block."""
     parts = []
     if metadata.get("class_name"):
@@ -313,7 +316,7 @@ def _format_metadata_for_block(metadata: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _format_reachability_block(metadata: Dict[str, Any]) -> str:
+def _format_reachability_block(metadata: dict[str, Any]) -> str:
     """Render reachability evidence — fires whenever ANY reachability
     signal is present on the function.
 
@@ -408,7 +411,7 @@ def _build_strategy_block(
     *,
     file_path: str,
     function_name: str,
-    cwe_id: Optional[str],
+    cwe_id: str | None,
     file_includes: Iterable[str],
     function_calls_made: Iterable[str],
 ) -> str:
@@ -427,7 +430,7 @@ def _build_strategy_block(
             pick_strategies,
             render_strategies,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 — substrate probe, never fatal
         # Substrate not present (older deployments); skip silently.
         return ""
 
@@ -467,7 +470,7 @@ def _build_strategy_block(
 def _build_verified_exemplar_block(
     *,
     rule_id: str,
-    cwe_id: Optional[str],
+    cwe_id: str | None,
     file_path: str,
     verified_outcomes: Iterable[Any],
 ) -> str:
@@ -486,7 +489,7 @@ def _build_verified_exemplar_block(
         return ""
     try:
         from core.labeled_attempts.view import render_verified_exemplars
-    except Exception:
+    except Exception:  # noqa: BLE001 — substrate probe, never fatal
         return ""  # substrate absent (older deployment) — skip silently
     try:
         finding = {"id": rule_id, "cwe_id": cwe_id, "file": file_path}
@@ -507,18 +510,18 @@ def build_analysis_prompt_bundle(
     code: str = "",
     surrounding_context: str = "",
     has_dataflow: bool = False,
-    dataflow_source: Optional[Dict[str, Any]] = None,
-    dataflow_sink: Optional[Dict[str, Any]] = None,
-    dataflow_steps: Optional[list] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    repo_path: Optional[str] = None,
-    profile: Optional[ModelDefenseProfile] = None,
+    dataflow_source: dict[str, Any] | None = None,
+    dataflow_sink: dict[str, Any] | None = None,
+    dataflow_steps: list | None = None,
+    metadata: dict[str, Any] | None = None,
+    repo_path: str | None = None,
+    profile: ModelDefenseProfile | None = None,
     extra_blocks: tuple[UntrustedBlock, ...] = (),
-    cwe_id: Optional[str] = None,
-    function_name: Optional[str] = None,
+    cwe_id: str | None = None,
+    function_name: str | None = None,
     file_includes: Iterable[str] = (),
     function_calls_made: Iterable[str] = (),
-    ast_view: Optional[Dict[str, Any]] = None,
+    ast_view: dict[str, Any] | None = None,
     allow_unreachable: bool = False,
     verified_outcomes: Iterable[Any] = (),
     budget_tokens: int = 0,
@@ -758,11 +761,11 @@ def build_dataflow_validation_bundle(
     *,
     rule_id: str,
     message: str,
-    dataflow_source: Dict[str, Any],
-    dataflow_sink: Dict[str, Any],
-    dataflow_steps: Optional[list] = None,
-    sanitizers_found: Optional[list] = None,
-    profile: Optional[ModelDefenseProfile] = None,
+    dataflow_source: dict[str, Any],
+    dataflow_sink: dict[str, Any],
+    dataflow_steps: list | None = None,
+    sanitizers_found: list | None = None,
+    profile: ModelDefenseProfile | None = None,
 ) -> PromptBundle:
     """Build a prompt bundle for deep dataflow validation.
 
@@ -848,9 +851,9 @@ def build_dataflow_validation_bundle(
 
 
 def build_analysis_prompt_bundle_from_finding(
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     *,
-    profile: Optional[ModelDefenseProfile] = None,
+    profile: ModelDefenseProfile | None = None,
     extra_blocks: tuple[UntrustedBlock, ...] = (),
     allow_unreachable: bool = False,
     budget_tokens: int = 0,
@@ -865,6 +868,19 @@ def build_analysis_prompt_bundle_from_finding(
     """
     dataflow = finding.get("dataflow", {})
     metadata = finding.get("metadata") or {}
+    # Flow-trace + caller call-site context (prepared once per run via
+    # flow_context_inject.prepare_flow_context). Best-effort: findings
+    # off any traced flow / without caller data add nothing.
+    try:
+        from packages.llm_analysis.flow_context_inject import (
+            context_blocks_for_finding,
+        )
+
+        extra_blocks = tuple(extra_blocks) + context_blocks_for_finding(
+            finding,
+        )
+    except Exception:
+        logger.debug("flow-context injection failed", exc_info=True)
     return build_analysis_prompt_bundle(
         rule_id=finding.get("rule_id", "unknown"),
         level=finding.get("level", "warning"),
@@ -917,9 +933,9 @@ _AST_VIEW_MAX_RETURNS = 10
 
 
 def _render_ast_view_block(
-    ast_view: Dict[str, Any],
+    ast_view: dict[str, Any],
     *,
-    file_path_override: Optional[str] = None,
+    file_path_override: str | None = None,
 ) -> str:
     """Render an ``ast_view`` dict (from ``core.ast.view().to_dict()``)
     as a compact text summary for inclusion in the analysis prompt.
@@ -981,7 +997,7 @@ def _render_ast_view_block(
         # Deduplicate by callee name; record hit counts. ``chain``
         # is the ordered name components (``["obj", "method"]`` for
         # ``obj.method()``); render the dotted form.
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         order: list = []
         for c in calls:
             chain = c.get("chain") or []

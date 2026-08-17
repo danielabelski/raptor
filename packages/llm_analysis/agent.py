@@ -1117,6 +1117,20 @@ class AutonomousSecurityAgentV2:
                 extra_blocks.append(tm_block)
         except Exception as exc:  # noqa: BLE001
             logger.debug("threat_model_untrusted_block failed: %s", exc)
+        # Flow-trace + caller call-site context (cached per repo by
+        # flow_context_inject.prepare_flow_context). () when the
+        # finding is off every traced flow and has no caller data.
+        try:
+            from packages.llm_analysis.flow_context_inject import (
+                context_blocks_for_finding,
+            )
+            extra_blocks.extend(context_blocks_for_finding({
+                "repo_path": str(vuln.repo_path),
+                "file_path": vuln.file_path,
+                "metadata": meta,
+            }))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("flow-context injection failed: %s", exc)
         extra_blocks.extend(extra_context_blocks)
 
         bundle = build_analysis_prompt_bundle(

@@ -614,6 +614,19 @@ def orchestrate(
     except Exception as e:  # noqa: BLE001
         logger.debug("source_intel pre-seed failed (%s); continuing", e)
 
+    # Pre-seed flow traces (via the understand bridge's three-tier
+    # discovery, anchored at this run's out_dir) + the checklist for
+    # per-finding flow-trace / caller-call-site prompt context.
+    try:
+        from packages.llm_analysis.flow_context_inject import (
+            prepare_flow_context,
+        )
+        prepare_flow_context(
+            repo_path, checklist=checklist, run_dir=out_dir,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("flow-context pre-seed failed (%s); continuing", e)
+
     if max_findings > 0 and len(findings) > max_findings:
         logger.info("Capping at %d findings (of %d)", max_findings, len(findings))
         findings = findings[:max_findings]

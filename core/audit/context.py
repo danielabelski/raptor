@@ -1847,6 +1847,33 @@ def _enrich_callees_with_source(
             total_lines += end - start
 
 
+def collect_caller_call_sites(
+    inventory: dict[str, Any] | None,
+    file_path: str,
+    function_name: str,
+    target_path: Path,
+    *,
+    max_callers: int = 10,
+    context_lines: int = 1,
+    context_map: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Public seam: 1-hop callers with call-site snippets attached.
+
+    Combines the caller lookup with call-site enrichment so other
+    pipelines (e.g. /agentic's per-finding prompt injection) can reuse
+    the audit-side extractor without reaching into private helpers.
+    Returns ``[{file, name, line_start, call_site?}]`` (bounded).
+    """
+    callers = _find_callers(
+        inventory, file_path, function_name, context_map=context_map,
+    )[:max_callers]
+    if callers:
+        _enrich_callers_with_call_sites(
+            callers, target_path, function_name, context_lines,
+        )
+    return callers
+
+
 def _find_callers(
     inventory: dict[str, Any] | None,
     file_path: str,

@@ -137,8 +137,8 @@ def main() -> int:
         sys.stdout.write(text)
         return 0
 
-    from core.atomic_fs import atomic_write_text
-    atomic_write_text(context_map_path, text)
+    from core.atomic_fs import write_text_atomically
+    write_text_atomically(context_map_path, text)
     n_sinks = len(cm.get("sinks") or [])
     enriched = sum(
         1 for s in (cm.get("sinks") or [])

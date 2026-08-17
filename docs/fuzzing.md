@@ -34,7 +34,8 @@ The primary engine on Linux.  RAPTOR wraps `afl-fuzz` with support for:
   deterministic mutation stage.  Off by default for faster startup.
   API-level only.
 - **Parallel instances** (`--parallel N`): runs N AFL++ instances (one main,
-  N-1 secondary) for faster coverage.
+  N-1 secondary) for faster coverage.  N is clamped to the `tuning.json`
+  `max_fuzz_parallel` ceiling with a warning.
 
 For best results, compile the target with AFL instrumentation
 (`afl-clang-fast` or `afl-clang-lto`) and AddressSanitizer
@@ -132,7 +133,7 @@ python3 raptor.py fuzz --binary <path> [flags]
 | `--binary <path>` | *required* | Path to binary to fuzz |
 | `--corpus <dir>` | built-in / autonomous | Seed corpus directory |
 | `--duration <secs>` | 3600 | Fuzzing duration in seconds |
-| `--parallel <N>` | 1 | Number of parallel AFL++ instances |
+| `--parallel <N>` | 1 | Number of parallel AFL++ instances (clamped to the `tuning.json` `max_fuzz_parallel` ceiling) |
 | `--max-crashes <N>` | 10 | Maximum crashes to analyse |
 | `--timeout <ms>` | 1000 | Per-execution timeout in milliseconds |
 | `--out <dir>` | auto | Output directory |
@@ -344,6 +345,8 @@ out/fuzz_<binary>_<timestamp>/
       queue/                  -- Interesting inputs (coverage)
       fuzzer_stats            -- AFL++ statistics
     secondaryNN/              -- Parallel instance results
+    merged_crashes/           -- All instances' crashes (hardlinked) when a
+                                 secondary found any; analysis reads this dir
   analysis/
     crash_*.json              -- Per-crash LLM analysis
     exploits/

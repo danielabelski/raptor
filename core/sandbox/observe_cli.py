@@ -29,12 +29,16 @@ Exit codes:
   - 64 (EX_USAGE) for arg-parse failures
   - 70 (EX_SOFTWARE) when observe-mode fails to engage (e.g. ptrace
     blocked) — operator can re-run on a host where it works.
+  - 124 when the command exceeded ``--timeout`` and was killed
+    (same convention as timeout(1)); any observe records captured
+    before the kill are still rendered.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -42,6 +46,7 @@ from pathlib import Path
 
 _USAGE_EX = 64       # EX_USAGE — bad argv
 _SOFTWARE_EX = 70    # EX_SOFTWARE — observe didn't engage
+_TIMEOUT_EX = 124    # command exceeded --timeout (timeout(1) convention)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -122,7 +127,7 @@ def _resolve_run_dir(args: argparse.Namespace,
 
 
 def _format_summary(profile, *, run_dir: Path, kept: bool,
-                    return_code: int) -> str:
+                    return_code: int | None) -> str:
     """Pretty multi-line summary for the default (non-JSON) mode.
 
     Counts + first-N path samples per category. Avoids dumping every
@@ -186,7 +191,7 @@ def _connect_target_to_dict(target) -> dict:
 
 
 def _profile_to_json(profile, *, run_dir: Path, kept: bool,
-                     return_code: int) -> str:
+                     return_code: int | None) -> str:
     """JSON output mode — full profile + meta. Stable schema for tooling."""
     payload = {
         "return_code": return_code,
@@ -243,6 +248,8 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
         # human-readable mode let the binary's output pass through —
         # operators reading the summary like seeing what the probe
         # actually produced.
+        timed_out = False
+        return_code: int | None = None
         try:
             result = sandbox_run(
                 cmd,
@@ -253,9 +260,21 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
                 text=False,
                 timeout=args.timeout,
             )
+            return_code = result.returncode
         except FileNotFoundError as exc:
             sys.stderr.write(f"raptor-sandbox-observe: {exc}\n")
             return _USAGE_EX
+        except subprocess.TimeoutExpired:
+            # A first-class CLI flag must produce a diagnostic, not a
+            # Python traceback. Render whatever observe records landed
+            # before the kill — a partial profile is still useful.
+            timed_out = True
+            sys.stderr.write(
+                f"raptor-sandbox-observe: command did not finish "
+                f"within --timeout {args.timeout}s and was killed; "
+                f"rendering observe records captured before the "
+                f"kill.\n"
+            )
 
         # When the operator did not pass --out / --keep AND no observe
         # records landed, surface a clear error rather than silently
@@ -266,6 +285,10 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
             run_dir, ".sandbox-observe.jsonl",
         )
         if not observe_log.exists():
+            if timed_out:
+                # The kill explains the missing log — don't pile the
+                # (misleading) degraded-audit diagnostic on top.
+                return _TIMEOUT_EX
             sys.stderr.write(
                 "raptor-sandbox-observe: observe log not produced — "
                 "audit-mode likely degraded silently. Check that "
@@ -289,17 +312,19 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
         if args.json_output:
             sys.stdout.write(_profile_to_json(
                 profile, run_dir=run_dir, kept=kept,
-                return_code=result.returncode,
+                return_code=return_code,
             ) + "\n")
         else:
             sys.stdout.write(_format_summary(
                 profile, run_dir=run_dir, kept=kept,
-                return_code=result.returncode,
+                return_code=return_code,
             ) + "\n")
 
+        if timed_out:
+            return _TIMEOUT_EX
         # Forward the spawned command's exit code as our own — caller
         # composes naturally with shell pipelines that check $?.
-        return result.returncode
+        return return_code
 
 
 if __name__ == "__main__":

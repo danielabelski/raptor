@@ -235,6 +235,61 @@ class TestCliDispatch:
         assert rc == 70
         assert "observe log not produced" in err
 
+    def test_timeout_returns_124_with_diagnostic_not_traceback(self):
+        """``--timeout`` expiry must produce a one-line diagnostic and
+        exit 124 (timeout(1) convention). Pre-fix the TimeoutExpired
+        escaped _cli_main as an unhandled traceback."""
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd=list(cmd), timeout=kwargs.get("timeout"),
+            )
+
+        with patch("core.sandbox.run", side_effect=fake_run), \
+             patch(
+                 "core.sandbox.parse_observe_log",
+                 return_value=_sample_profile(),
+             ):
+            buf_out = io.StringIO()
+            buf_err = io.StringIO()
+            with patch("sys.stdout", buf_out), \
+                 patch("sys.stderr", buf_err):
+                rc = _cli_main(
+                    ["--timeout", "1", "--", "/usr/bin/sleep", "5"],
+                )
+        assert rc == 124
+        assert "did not finish" in buf_err.getvalue()
+        assert "Traceback" not in buf_err.getvalue()
+
+    def test_timeout_renders_partial_observe_log(self):
+        """Records captured before the kill are still rendered —
+        a partial profile beats none — with return_code null."""
+
+        def fake_run(cmd, **kwargs):
+            run_dir = Path(kwargs["output"])
+            (run_dir / ".sandbox-observe.jsonl").write_text("{}\n")
+            raise subprocess.TimeoutExpired(
+                cmd=list(cmd), timeout=kwargs.get("timeout"),
+            )
+
+        with patch("core.sandbox.run", side_effect=fake_run), \
+             patch(
+                 "core.sandbox.parse_observe_log",
+                 return_value=_sample_profile(),
+             ):
+            buf_out = io.StringIO()
+            buf_err = io.StringIO()
+            with patch("sys.stdout", buf_out), \
+                 patch("sys.stderr", buf_err):
+                rc = _cli_main(
+                    ["--json", "--timeout", "1",
+                     "--", "/usr/bin/sleep", "5"],
+                )
+        assert rc == 124
+        loaded = json.loads(buf_out.getvalue())
+        assert loaded["return_code"] is None
+        assert "paths_read" in loaded
+
     def test_keep_flag_preserves_run_dir(self, tmp_path):
         # --keep: even with no --out, the run_dir should survive
         # _cli_main exit. We can't easily inspect tempdir survival

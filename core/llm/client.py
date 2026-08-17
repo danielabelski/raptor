@@ -212,7 +212,8 @@ def _atexit_flush_scorecards() -> None:
         clients = list(_SCORECARD_FLUSH_CLIENTS)
         _SCORECARD_FLUSH_CLIENTS.clear()
     total: dict[str, Any] = {
-        "calls": 0, "cost_usd": 0.0, "latency_ms_sum": 0, "models": {},
+        "calls": 0, "cost_usd": 0.0, "stub_cost_usd": 0.0,
+        "latency_ms_sum": 0, "models": {},
         "paid_test_ctxs": set(),
     }
     for client in clients:
@@ -236,8 +237,11 @@ def _atexit_flush_scorecards() -> None:
             total["models"][alias] = (
                 total["models"].get(alias, 0) + int(n or 0)
             )
-        for metrics in usage.values():
-            total["cost_usd"] += float(metrics.get("cost_usd") or 0.0)
+        for alias, metrics in usage.items():
+            cost = float(metrics.get("cost_usd") or 0.0)
+            total["cost_usd"] += cost
+            if str(alias).endswith("-stub"):
+                total["stub_cost_usd"] += cost
             total["latency_ms_sum"] += int(
                 metrics.get("latency_ms_sum") or 0)
         total["paid_test_ctxs"].update(ctxs)
@@ -253,7 +257,8 @@ def _flush_all_scorecards() -> None:
         clients = list(_SCORECARD_FLUSH_CLIENTS)
         _SCORECARD_FLUSH_CLIENTS.clear()
     total: dict[str, Any] = {
-        "calls": 0, "cost_usd": 0.0, "latency_ms_sum": 0, "models": {},
+        "calls": 0, "cost_usd": 0.0, "stub_cost_usd": 0.0,
+        "latency_ms_sum": 0, "models": {},
         "paid_test_ctxs": set(),
     }
     flushed_any = False
@@ -274,6 +279,7 @@ def _flush_all_scorecards() -> None:
         flushed_any = True
         total["calls"] += int(stats.get("calls") or 0)
         total["cost_usd"] += float(stats.get("cost_usd") or 0.0)
+        total["stub_cost_usd"] += float(stats.get("stub_cost_usd") or 0.0)
         total["latency_ms_sum"] += int(stats.get("latency_ms_sum") or 0)
         for alias, calls in (stats.get("models") or {}).items():
             total["models"][alias] = (
@@ -312,7 +318,15 @@ def _print_scorecard_summary(stats: dict[str, Any]) -> None:
         # run in ``atexit`` handlers at interpreter shutdown,
         # after pytest has already unset the per-test env var.
         # sys.modules entry persists for the process lifetime.
-        if "pytest" in _sys.modules and tot_cost == 0.0:
+        # ``*-stub`` alias costs are deliberately fake (cost-plumbing
+        # tests) — excluded from the leak gate so a suite exercising
+        # budget accounting doesn't read as live-API spend.  Real paid
+        # calls can't hide behind this: the paid-ctx capture in
+        # ``_record_usage`` skips ``*-stub`` aliases with the same
+        # convention, so any non-stub cost keeps the line (and the
+        # culprit-test attribution below) fully loud.
+        stub_cost = float(stats.get("stub_cost_usd") or 0.0)
+        if "pytest" in _sys.modules and (tot_cost - stub_cost) <= 0.0:
             return
         if _os.environ.get("RAPTOR_LLM_QUIET"):
             return
@@ -1338,6 +1352,7 @@ class LLMClient:
             uses = []
             tot_calls = 0
             tot_cost = 0.0
+            stub_cost = 0.0
             tot_lat_ms = 0
             for a, v in agg.items():
                 m = usage_metrics.get(a, {})
@@ -1346,6 +1361,13 @@ class LLMClient:
                 lat_sum = int(m.get("latency_ms_sum") or 0)
                 tot_calls += calls
                 tot_cost += cost
+                # ``*-stub`` aliases carry deliberately fake nonzero
+                # costs (cost-plumbing tests) — tracked separately so
+                # the pytest noise gate can treat them as zero without
+                # hiding real spend.  Same convention as the
+                # paid-test-ctx capture in ``_record_usage``.
+                if str(a).endswith("-stub"):
+                    stub_cost += cost
                 tot_lat_ms += lat_sum
                 uses.append({
                     "model": a, "decision_class": "_usage",
@@ -1377,6 +1399,7 @@ class LLMClient:
             stats: dict[str, Any] = {
                 "calls": tot_calls,
                 "cost_usd": tot_cost,
+                "stub_cost_usd": stub_cost,
                 "latency_ms_sum": tot_lat_ms,
                 "models": {a: int(v["calls"]) for a, v in agg.items()},
                 "paid_test_ctxs": sorted(

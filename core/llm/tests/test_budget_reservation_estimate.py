@@ -46,7 +46,7 @@ class _StubProvider:
             time.sleep(self.delay_s)
         return LLMResponse(
             content="ok",
-            model="stub-model",
+            model="reservation-stub",
             provider="anthropic",
             tokens_used=10,
             cost=self.cost,
@@ -58,7 +58,7 @@ def _client(*, cap: float, cost: float = 4.0, delay_s: float = 0.0,
             tracking: bool = True):
     config = LLMConfig(
         primary_model=ModelConfig(
-            provider="anthropic", model_name="stub-model", api_key="k",
+            provider="anthropic", model_name="reservation-stub", api_key="k",
         ),
         enable_caching=False,
         enable_fallback=False,

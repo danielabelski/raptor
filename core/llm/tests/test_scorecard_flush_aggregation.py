@@ -69,6 +69,9 @@ class TestFlushReturnsStats:
         stats = c.flush_usage_to_scorecard(emit_summary=False)
         assert stats == {
             "calls": 3, "cost_usd": 0.5, "latency_ms_sum": 300,
+            # Non-stub alias → nothing counted as deliberately-fake
+            # stub cost.
+            "stub_cost_usd": 0.0,
             "models": {"haiku": 3},
             # No PYTEST_CURRENT_TEST captured for these synthetic
             # records — the paid-call attribution list is empty.

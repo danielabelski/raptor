@@ -35,6 +35,7 @@ from core.dataflow.codeql_augmented_run import (
     RunnerFn,
     analyze,
 )
+from core.llm.coerce import extract_fenced_code
 
 # sink-class -> (customizations module, module name exposing Source/Sink/Sanitizer).
 # Python: each module imports Concepts/RemoteFlowSources/BarrierGuards and
@@ -1176,19 +1177,9 @@ def _build_prompt(
 
 
 def _extract_ql(reply: str) -> str:
-    """Pull the QL predicate out of a model reply, tolerating markdown fences."""
-    text = (reply or "").strip()
-    if "```" in text:
-        # take the first fenced block's body
-        block = text.split("```", 2)[1]
-        if "\n" in block:  # drop an optional language tag on the fence line
-            block = block.split("\n", 1)[1]
-        else:
-            # single-line block with no newline — strip leading language tag
-            import re as _re
-            block = _re.sub(r"^[A-Za-z]+\s*", "", block)
-        text = block.strip()
-    return text
+    """Pull the QL predicate out of a model reply, tolerating markdown
+    fences. Delegates to the shared first-block extractor."""
+    return extract_fenced_code(reply)
 
 
 def make_llm_proposer(complete: Completer) -> BarrierProposer:

@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from core.llm.coerce import structured_result
+
 logger = logging.getLogger(__name__)
 
 CHAIN_SCHEMA = {
@@ -240,7 +242,7 @@ def evaluate_chains(
                 system_prompt=system_prompt,
                 **kwargs,
             )
-            result = response.result if hasattr(response, "result") else response[0]
+            result = structured_result(response, default={})
         except Exception:
             logger.warning(
                 "chain evaluation failed for %s:%s + %s:%s",

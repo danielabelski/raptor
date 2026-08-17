@@ -193,6 +193,12 @@ class StructuredResponse:
         """Allow unpacking as 2-tuple for backwards compatibility."""
         return iter((self.result, self.raw))
 
+    def as_pair(self) -> tuple[dict[str, Any], str]:
+        """Explicit ``(result, raw)`` unwrap — the same pair the
+        2-tuple compatibility unpack yields, without relying on
+        ``__iter__`` at the call site."""
+        return (self.result, self.raw)
+
 
 def extract_resolved_model(raw: Any) -> str | None:
     """Best-effort: the concrete model id from a provider SDK response object.

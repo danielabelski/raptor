@@ -40,9 +40,9 @@ from __future__ import annotations
 
 import json
 import re as _re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
 
 from core.dataflow import known_safe_calls
 from core.dataflow.smt_barrier import (
@@ -52,12 +52,14 @@ from core.dataflow.smt_barrier import (
     _function_containing,
     _python_chain_reaches_sink,
     _same_function_in_order,
-    extract_validator as _mechanical_extract,
     prove_neutralizes,
     substitution_dominates_sink,
     validator_dominates_sink,
 )
-
+from core.dataflow.smt_barrier import (
+    extract_validator as _mechanical_extract,
+)
+from core.llm.coerce import extract_fenced_code
 
 # A bare-minimum LLM completer signature, compatible with the existing
 # ``Completer`` alias in barrier_synth (system_prompt, user_prompt) -> str.
@@ -113,20 +115,11 @@ def _build_user_prompt(fix_diff: str, sink_class: str, language: str) -> str:
     )
 
 
-def _parse_llm_output(raw: str) -> Optional[_LLMSpec]:
+def _parse_llm_output(raw: str) -> _LLMSpec | None:
     """Parse the LLM's reply into a structured spec.  Tolerates markdown
     fences (despite the prompt forbidding them).  Returns None on parse
     failure — the orchestrator then DECLINES."""
-    text = (raw or "").strip()
-    if "```" in text:
-        # extract first fenced block body
-        try:
-            block = text.split("```", 2)[1]
-            if "\n" in block:
-                block = block.split("\n", 1)[1]
-            text = block.strip().rstrip("`").strip()
-        except IndexError:
-            return None
+    text = extract_fenced_code(raw)
     try:
         data = json.loads(text)
     except (ValueError, json.JSONDecodeError):
@@ -142,7 +135,7 @@ def _parse_llm_output(raw: str) -> Optional[_LLMSpec]:
             forbidden=str(data.get("forbidden", "")),
             library_call=str(data.get("library_call", "")),
         )
-    except Exception:                                       # pragma: no cover
+    except Exception:  # noqa: BLE001 — hostile JSON values; never raise here
         return None
 
 
@@ -162,7 +155,7 @@ def _validator_line_in_diff(fix_diff: str, claimed_line: str) -> bool:
 
 def _mechanical_recheck_charset_kind(
     spec: _LLMSpec, language: str,
-) -> Optional[ValidatorSpec]:
+) -> ValidatorSpec | None:
     """Run the existing mechanical extractor on the LLM-named source
     line and confirm it agrees with the LLM's claimed kind + charset
     (or forbidden).  Returns the mechanical ValidatorSpec on agreement,
@@ -185,7 +178,7 @@ def _mechanical_recheck_charset_kind(
 
 def _find_best_validator_line(
     source_text: str, claimed_line_text: str, sink_line: int, language: str,
-) -> Optional[int]:
+) -> int | None:
     """Locate the validator's line number in the post-fix source.
 
     When the LLM's ``validator_source_line`` appears MULTIPLE times in
@@ -292,13 +285,13 @@ def _try_known_safe_call(
         tree = ast.parse(source_text) if language == "python" else None
     except SyntaxError:
         tree = None
-    if tree is not None:
-        if not _same_function_in_order(tree, validator_line, sink_line):
-            return Tier0Result(
-                Tier0Status.NOT_APPLICABLE,
-                f"safe-call at line {validator_line} not in same function "
-                f"as sink at line {sink_line}",
-            )
+    if tree is not None and not _same_function_in_order(
+            tree, validator_line, sink_line):
+        return Tier0Result(
+            Tier0Status.NOT_APPLICABLE,
+            f"safe-call at line {validator_line} not in same function "
+            f"as sink at line {sink_line}",
+        )
     # Chain check — only Python has an AST chain tracker for now.  For
     # non-Python we conservatively require the LLM's variable_name to
     # appear textually at the sink line.
@@ -320,13 +313,13 @@ def _try_known_safe_call(
             f"variable {spec.variable_name!r} sanitized by "
             f"{entry.library_call} does not reach the sink line",
         )
-    if language == "python" and tree is not None and spec.variable_name:
-        if _validator_in_branch(tree, validator_line, sink_line):
-            return Tier0Result(
-                Tier0Status.NOT_APPLICABLE,
-                f"safe-call at line {validator_line} does not dominate "
-                f"sink (conditional branch)",
-            )
+    if (language == "python" and tree is not None and spec.variable_name
+            and _validator_in_branch(tree, validator_line, sink_line)):
+        return Tier0Result(
+            Tier0Status.NOT_APPLICABLE,
+            f"safe-call at line {validator_line} does not dominate "
+            f"sink (conditional branch)",
+        )
     artifact = f"library:{entry.library_call}@{sink_uri}:{validator_line}"
     return Tier0Result(
         Tier0Status.SOUND,
@@ -355,7 +348,7 @@ def try_tier1b(
     user_prompt = _build_user_prompt(fix_diff, sink_class, language)
     try:
         raw = complete(_SYSTEM_PROMPT, user_prompt)
-    except Exception as exc:                                # pragma: no cover
+    except Exception as exc:  # noqa: BLE001 — any LLM failure = DECLINE
         return Tier0Result(
             Tier0Status.NOT_APPLICABLE,
             f"Tier 1B LLM call failed: {type(exc).__name__}: {exc}",

@@ -20,6 +20,8 @@ import logging
 import re
 from pathlib import Path
 
+from core.llm.coerce import structured_result
+
 from .receipts import TIER_MECHANICAL, verify_receipt
 
 logger = logging.getLogger(__name__)
@@ -158,9 +160,7 @@ def verify_flip_answer(
             system_prompt=_GATE_SYSTEM_PROMPT,
             task_type="study",
         )
-        result = (
-            response.result if hasattr(response, "result") else response[0]
-        )
+        result = structured_result(response)
     except Exception:
         logger.warning(
             "answer-gate: verification call failed — quarantining "

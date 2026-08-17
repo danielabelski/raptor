@@ -95,6 +95,11 @@ CONSISTENCY_CWES = frozenset({
     "CWE-252", "CWE-393", "CWE-467", "CWE-131", "CWE-732", "CWE-276",
     "CWE-295", "CWE-401", "CWE-415", "CWE-416", "CWE-459", "CWE-667",
     "CWE-193", "CWE-862",
+    # Uninitialised-resource family: the census adjudicates the
+    # peer-majority leg ("every other caller of getpeername checks the
+    # returned length; this one doesn't") that fed the family's first
+    # promoted finding.
+    "CWE-908",
 })
 
 # Hypothesis shapes asserting a peer-majority deviation. Plain

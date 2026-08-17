@@ -152,6 +152,23 @@ def is_caller_contract_hypothesis(text: str) -> bool:
     return bool(text) and bool(_CALLER_CONTRACT_RE.search(text))
 
 
+# CWE families dispatched to this channel from the CWE fallback chain
+# (orchestrator._cwe_fallback_chain), independent of hypothesis shape.
+# CWE-345 (insufficient verification of data authenticity) is
+# caller-obligation shaped: "the consumer must verify origin /
+# signature / integrity before passing the data in" is exactly the
+# asserted-obligation-at-call-sites question this channel answers.
+API_BOUNDARY_CWES = frozenset({"CWE-345"})
+
+
+def api_boundary_applicable(cwe: str) -> bool:
+    """True when the CWE belongs to the boundary-obligation family."""
+    norm = (cwe or "").upper().strip()
+    if norm and not norm.startswith("CWE-"):
+        norm = f"CWE-{norm}"
+    return norm in API_BOUNDARY_CWES
+
+
 # ── contract extraction ─────────────────────────────────────────────
 
 

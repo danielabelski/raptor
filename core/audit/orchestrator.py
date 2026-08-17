@@ -11632,6 +11632,17 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
             chain.append({"type": "fail_open", "config": {}})
 
     try:
+        from .api_boundary import api_boundary_applicable
+    except ImportError:
+        pass
+    else:
+        # Authenticity / boundary-obligation family (API_BOUNDARY_CWES
+        # — CWE-345): the channel checks the asserted caller obligation
+        # at every in-repo call site. Pure static analysis, cheap.
+        if api_boundary_applicable(cwe):
+            chain.append({"type": "api_boundary", "config": {}})
+
+    try:
         from .consistency_verify import consistency_applicable
     except ImportError:
         pass

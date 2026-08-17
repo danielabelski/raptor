@@ -63,6 +63,11 @@ FLOW_CWES = frozenset({
     # CWE-130: length-parameter inconsistency — the recv-length →
     # parse/copy flow question (sinks come from cwe_dispatch).
     "CWE-130",
+    # CWE-908: uninitialised-resource disclosure — the uninitialised
+    # object → copy-out sink flow question (sinks from cwe_dispatch;
+    # the joern live-query receipts on this family's promoted finding
+    # were exactly these memcpy flows).
+    "CWE-908",
     # P10 web families: source→sink reachability is verification-grade
     # for all of these (sinks come from cwe_dispatch).
     "CWE-22", "CWE-23", "CWE-502", "CWE-918", "CWE-611", "CWE-601",

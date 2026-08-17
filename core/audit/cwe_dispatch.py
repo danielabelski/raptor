@@ -369,6 +369,51 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # Use of uninitialised resource — the family of the programme's
+    # first suspicious→finding conversion (truncated getpeername left
+    # an uninitialised BIO_ADDR tail that memcpy copied out to the
+    # caller). Wired to the channels that did the promotion work:
+    # joern taint to the copy-out sinks (plus the joern_flow channel,
+    # see joern_verify.FLOW_CWES), the consistency census
+    # (consistency_verify.CONSISTENCY_CWES), and the CodeQL
+    # uninitialised-local query. The precondition sweep
+    # (caller_sanitizes / function_reaches_sink) runs from the
+    # review's preconditions and is CWE-independent by design.
+    "CWE-908": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": "cpp/uninitialized-local",
+        "sinks": ["memcpy", "memmove", "bcopy", "copy_to_user",
+                  "put_user", "write", "send", "sendto", "sendmsg"],
+    },
+    # Loop with unreachable exit condition — the loop-bound family.
+    # The SMT overflow verb covers the classic mechanism (counter
+    # wrap / non-advancing bound arithmetic keeps the exit condition
+    # unreachable); the compiler channel probes with the analyzer's
+    # infinite-loop diagnostics (confirm-only, see
+    # compiler_sweep.COMPILER_CWE_MAP).
+    "CWE-835": {
+        "smt": "check-overflow",
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
+    # Insufficient verification of data authenticity — the
+    # authenticity family. No static dataflow channel can adjudicate;
+    # the role-bound channels are the verifiers: fail_open (a
+    # verification role whose failure/absence lets data through —
+    # fail_open_verify.FAIL_OPEN_CWES) and the api-boundary
+    # obligation check (the caller-side "must verify before passing"
+    # contract — api_boundary.API_BOUNDARY_CWES).
+    "CWE-345": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
     # Uninitialised variable
     "CWE-457": {
         "smt": None,
@@ -439,6 +484,21 @@ _HYPOTHESIS_CWE_MAP = [
       r"(?:error|return value|\berr\b)"), "CWE-252"),
     ((r"(?:return\s+value|result|\berr\b).{0,40}"
       r"(?:ignor|discard|not\s+checked|unchecked)"), "CWE-252"),
+    # Midpoint-D1 long-tail families (appended: first-match-wins, so
+    # pre-existing behaviour is unchanged). No CWE-908 keyword row:
+    # every realistic uninitialised-resource phrasing contains
+    # "uninitialized", which the earlier CWE-457 row already claims —
+    # and CWE-457 carries a full dispatch entry, so the claim is
+    # still mechanically tested. CWE-908 dispatch fires from the
+    # review's own cwe field.
+    ((r"infinite\s+loop|loop.{0,30}(?:never|unreachable|cannot)"
+      r".{0,15}(?:exit|terminat)|unbounded\s+loop|endless\s+loop"),
+     "CWE-835"),
+    ((r"authentic(?:ity)?.{0,40}(?:not|un|insufficient|missing|no)\w*"
+      r".{0,15}(?:verif|check|validat)|(?:unverified|unauthenticated)"
+      r".{0,25}(?:data|origin|source|message|payload|signature)|"
+      r"signature.{0,25}(?:not|never|un)\w*.{0,10}(?:verif|check)"),
+     "CWE-345"),
 ]
 
 _HYPOTHESIS_CWE_RE = None

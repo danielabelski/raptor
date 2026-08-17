@@ -124,6 +124,13 @@ INCONCLUSIVE_REASONS = frozenset({
 # use case appears (design §15.2).
 FAIL_OPEN_CWES = frozenset({
     "CWE-703", "CWE-636", "CWE-391", "CWE-390", "CWE-252", "CWE-248",
+    # Authenticity family: "insufficient verification of data
+    # authenticity" is a verification role whose failure or absence
+    # lets the data through — exactly the role x permissive-outcome x
+    # fallibility question this channel adjudicates. The api-boundary
+    # channel covers the caller-obligation leg (see
+    # api_boundary.API_BOUNDARY_CWES).
+    "CWE-345",
 })
 
 # Hypothesis shapes that assert a fail-open / swallowed-error defect.

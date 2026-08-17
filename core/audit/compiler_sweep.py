@@ -170,6 +170,20 @@ COMPILER_CWE_MAP: dict[str, FamilySpec] = {
         clang_message_re="",
         reliable=False,
     ),
+    # Loop with unreachable exit condition: the analyzer's
+    # infinite-loop diagnostic (gcc >= 14) and clang's -Wloop-analysis
+    # (loop variable not updated / suspicious condition) fire only on
+    # locally-provable shapes — confirm-only (silence proves nothing
+    # about data-dependent loop bounds).
+    "CWE-835": FamilySpec(
+        gcc_ids=("-Wanalyzer-infinite-loop",),
+        gcc_flags=(),
+        clang_engine="warning",
+        clang_ids=("-Wloop-analysis",),
+        clang_flags=("-Wloop-analysis",),
+        clang_message_re="",
+        reliable=False,
+    ),
     "CWE-457": FamilySpec(
         gcc_ids=("-Wanalyzer-use-of-uninitialized-value",),
         gcc_flags=(),

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,11 @@ class CallbackLifetimeResult:
     free_line: int = 0
     cancel_missing: bool = False
     rcu_kfree_mismatch: bool = False
-    violations: List[CallbackLifetimeViolation] = field(default_factory=list)
+    violations: list[CallbackLifetimeViolation] = field(default_factory=list)
     reasoning: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "violation_found": self.violation_found,
             "reasoning": self.reasoning,
         }
@@ -72,23 +72,52 @@ class CallbackLifetimeResult:
         return d
 
 
+# Single authority for the async-callback API names used by BOTH
+# detector tiers. The Tier 1 regexes and the Tier 2 Joern query
+# alternations are derived from these tuples — edit here, both tiers
+# follow (they used to be two hand-copied literals that could drift).
+_REGISTER_NAMES = (
+    "timer_setup", "setup_timer", "INIT_WORK", "INIT_DELAYED_WORK",
+    "init_waitqueue_func_entry", "tasklet_init",
+    "hrtimer_init", "mod_timer", "add_timer",
+    "schedule_work", "schedule_delayed_work", "queue_work",
+)
+
+_CANCEL_NAMES = (
+    "del_timer_sync", "del_timer", "timer_delete_sync",
+    "cancel_work_sync", "cancel_delayed_work_sync", "flush_work",
+    "flush_delayed_work", "tasklet_kill", "hrtimer_cancel",
+    "cancel_work", "remove_wait_queue",
+)
+
+_FREE_NAMES = (
+    "kfree", "vfree", "kvfree", "kfree_rcu", "kfree_sensitive",
+    "free", "devm_kfree",
+)
+
+# Tier 2 (Joern) subsets — the exclusions preserve the original
+# embedded query literals: waitqueue registration lacks the
+# (member, callback) argument shape the register query destructures;
+# "free" is too generic for a whole-CPG name query and kfree_rcu is
+# the safe variant (its presence is what sub-pattern 6c *wants*).
+_JOERN_REGISTER_NAMES = tuple(
+    n for n in _REGISTER_NAMES if n != "init_waitqueue_func_entry"
+)
+_JOERN_CANCEL_NAMES = _CANCEL_NAMES
+_JOERN_FREE_NAMES = tuple(
+    n for n in _FREE_NAMES if n not in ("free", "kfree_rcu")
+)
+
 _REGISTER_RE = re.compile(
-    r"\b(timer_setup|setup_timer|INIT_WORK|INIT_DELAYED_WORK|"
-    r"init_waitqueue_func_entry|tasklet_init|"
-    r"hrtimer_init|mod_timer|add_timer|"
-    r"schedule_work|schedule_delayed_work|queue_work)\s*\("
+    r"\b(" + "|".join(_REGISTER_NAMES) + r")\s*\("
 )
 
 _CANCEL_RE = re.compile(
-    r"\b(del_timer_sync|del_timer|timer_delete_sync|"
-    r"cancel_work_sync|cancel_delayed_work_sync|flush_work|"
-    r"flush_delayed_work|tasklet_kill|hrtimer_cancel|"
-    r"cancel_work|remove_wait_queue)\s*\("
+    r"\b(" + "|".join(_CANCEL_NAMES) + r")\s*\("
 )
 
 _FREE_RE = re.compile(
-    r"\b(kfree|vfree|kvfree|kfree_rcu|kfree_sensitive|"
-    r"free|devm_kfree)\s*\("
+    r"\b(" + "|".join(_FREE_NAMES) + r")\s*\("
 )
 
 _RCU_DEREF_RE = re.compile(
@@ -109,8 +138,8 @@ def check_callback_lifetime_local(source: str) -> CallbackLifetimeResult:
 
     lines = source.split("\n")
 
-    registrations: List[int] = []
-    frees: List[int] = []
+    registrations: list[int] = []
+    frees: list[int] = []
     cancels: set[int] = set()
 
     for i, line in enumerate(lines):
@@ -148,9 +177,9 @@ def check_callback_lifetime_local(source: str) -> CallbackLifetimeResult:
     return CallbackLifetimeResult(reasoning="no callback lifetime issues")
 
 
-def _check_rcu_kfree(lines: List[str]) -> Optional[CallbackLifetimeResult]:
+def _check_rcu_kfree(lines: list[str]) -> CallbackLifetimeResult | None:
     """Sub-pattern 6c: kfree on RCU-dereferenced variable."""
-    rcu_vars: Dict[str, int] = {}
+    rcu_vars: dict[str, int] = {}
     for i, line in enumerate(lines):
         m = _RCU_DEREF_RE.search(line)
         if m:
@@ -178,7 +207,7 @@ def _check_rcu_kfree(lines: List[str]) -> Optional[CallbackLifetimeResult]:
     return None
 
 
-def _extract_struct_var(member_expr: str) -> Optional[str]:
+def _extract_struct_var(member_expr: str) -> str | None:
     """Extract struct variable name from &foo->timer expression."""
     m = _STRUCT_VAR_RE.search(member_expr)
     return m.group(1) if m else None
@@ -193,18 +222,9 @@ def check_callback_lifetime_cross(
     from .safety_contract import assert_boost_only
     assert_boost_only("callback_lifetime")
 
-    reg_names = (
-        "timer_setup|setup_timer|INIT_WORK|INIT_DELAYED_WORK|"
-        "tasklet_init|hrtimer_init|mod_timer|add_timer|"
-        "schedule_work|schedule_delayed_work|queue_work"
-    )
-    cancel_names = (
-        "del_timer_sync|del_timer|timer_delete_sync|"
-        "cancel_work_sync|cancel_delayed_work_sync|flush_work|"
-        "flush_delayed_work|tasklet_kill|hrtimer_cancel|"
-        "cancel_work|remove_wait_queue"
-    )
-    free_names = "kfree|vfree|kvfree|kfree_sensitive|devm_kfree"
+    reg_names = "|".join(_JOERN_REGISTER_NAMES)
+    cancel_names = "|".join(_JOERN_CANCEL_NAMES)
+    free_names = "|".join(_JOERN_FREE_NAMES)
 
     escaped_file = file_path.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -226,7 +246,7 @@ def check_callback_lifetime_cross(
     if not registrations:
         return CallbackLifetimeResult(reasoning="no callback registrations")
 
-    violations: List[CallbackLifetimeViolation] = []
+    violations: list[CallbackLifetimeViolation] = []
     for entry in registrations:
         if not isinstance(entry, (list, tuple)) or len(entry) < 4:
             continue
@@ -247,6 +267,9 @@ def check_callback_lifetime_cross(
         try:
             free_sites = joern.query(free_query)
         except Exception:
+            logger.debug(
+                "callback_lifetime: Joern free query failed", exc_info=True,
+            )
             continue
 
         for free_entry in (free_sites or []):
@@ -267,6 +290,10 @@ def check_callback_lifetime_cross(
             try:
                 cancels = joern.query(cancel_query)
             except Exception:
+                logger.debug(
+                    "callback_lifetime: Joern cancel query failed",
+                    exc_info=True,
+                )
                 cancels = None
 
             if not cancels:

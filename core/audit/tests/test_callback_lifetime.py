@@ -1,11 +1,11 @@
 """Tests for callback_lifetime — Lever 6 callback-context awareness."""
 
 from core.audit.callback_lifetime import (
-    check_callback_lifetime_local,
-    _check_rcu_kfree,
-    _extract_struct_var,
     CallbackLifetimeResult,
     CallbackLifetimeViolation,
+    _check_rcu_kfree,
+    _extract_struct_var,
+    check_callback_lifetime_local,
 )
 
 
@@ -214,3 +214,56 @@ class TestCallbackLifetimeResultToDict:
         assert len(d["violations"]) == 1
         assert d["violations"][0]["register_func"] == "init"
         assert d["violations"][0]["free_func"] == "release"
+
+
+class TestSingleSourcedNameAuthority:
+    """Drift guard: both tiers derive from the same name tuples.
+
+    The Tier 2 Joern query used to hand-copy the Tier 1 regex
+    alternations as string literals; these pins keep the derived
+    forms identical to the (verified-equivalent) originals so an
+    edit to one tier cannot silently diverge from the other.
+    """
+
+    def test_tier1_regexes_derive_from_authority(self):
+        from core.audit import callback_lifetime as cl
+
+        for name in cl._REGISTER_NAMES:
+            assert cl._REGISTER_RE.search(f"{name}(&f->w, cb);")
+        for name in cl._CANCEL_NAMES:
+            assert cl._CANCEL_RE.search(f"{name}(&f->w);")
+        for name in cl._FREE_NAMES:
+            assert cl._FREE_RE.search(f"{name}(f);")
+
+    def test_joern_subsets_are_authority_subsets(self):
+        from core.audit import callback_lifetime as cl
+
+        assert set(cl._JOERN_REGISTER_NAMES) <= set(cl._REGISTER_NAMES)
+        assert set(cl._JOERN_CANCEL_NAMES) <= set(cl._CANCEL_NAMES)
+        assert set(cl._JOERN_FREE_NAMES) <= set(cl._FREE_NAMES)
+        # Documented exclusions, nothing else.
+        assert set(cl._REGISTER_NAMES) - set(cl._JOERN_REGISTER_NAMES) == {
+            "init_waitqueue_func_entry",
+        }
+        assert set(cl._CANCEL_NAMES) == set(cl._JOERN_CANCEL_NAMES)
+        assert set(cl._FREE_NAMES) - set(cl._JOERN_FREE_NAMES) == {
+            "free", "kfree_rcu",
+        }
+
+    def test_joern_alternations_match_pre_split_literals(self):
+        from core.audit import callback_lifetime as cl
+
+        assert "|".join(cl._JOERN_REGISTER_NAMES) == (
+            "timer_setup|setup_timer|INIT_WORK|INIT_DELAYED_WORK|"
+            "tasklet_init|hrtimer_init|mod_timer|add_timer|"
+            "schedule_work|schedule_delayed_work|queue_work"
+        )
+        assert "|".join(cl._JOERN_CANCEL_NAMES) == (
+            "del_timer_sync|del_timer|timer_delete_sync|"
+            "cancel_work_sync|cancel_delayed_work_sync|flush_work|"
+            "flush_delayed_work|tasklet_kill|hrtimer_cancel|"
+            "cancel_work|remove_wait_queue"
+        )
+        assert "|".join(cl._JOERN_FREE_NAMES) == (
+            "kfree|vfree|kvfree|kfree_sensitive|devm_kfree"
+        )

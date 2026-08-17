@@ -242,6 +242,11 @@ class OrchestratorConfig:
     # unchanged reviewed functions are suppressed, nothing imported.
     # ``force=True`` bypasses both (everything re-reviews).
     verdict_reuse: bool = True
+    # Review scheduling with >1 worker: "cost" (default) dispatches
+    # predicted-longest reviews first (LPT makespan packing);
+    # "priority" keeps the highest-priority-first order (better
+    # time-to-first-finding). Serial runs always use priority order.
+    schedule: str = "cost"
     # Monotonic deadline for the run (start + max_seconds), stamped by
     # ``run_orchestrator``. Verification tools with long per-query
     # timeouts (Joern) clamp to the remaining budget so one stuck
@@ -2727,6 +2732,37 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     }
 
 
+def _review_duration_hints(
+    workqueue: list[dict[str, Any]],
+    triage_results: dict[str, Any] | None,
+) -> dict[str, float]:
+    """Predicted relative review duration per task key (LPT input).
+
+    Review duration correlates with context size, which is known at
+    dispatch: the triage token budget is the coarse per-class signal
+    (glance 500 / investigate 6k / deep-dive 50k — an order of
+    magnitude apart, matching the observed 62-317s per-call spread),
+    and SLOC orders functions within a class. The value is a relative
+    rank, not seconds — only the ordering matters to the scheduler.
+    """
+    hints: dict[str, float] = {}
+    for gap in workqueue:
+        key = f"{gap['file']}:{gap['name']}:{gap.get('line_start', 0)}"
+        budget = 0
+        if triage_results:
+            tr = triage_results.get(key) or triage_results.get(
+                f"{gap['file']}:{gap['name']}",
+            )
+            budget = getattr(tr, "token_budget", 0) or 0
+        sloc = gap.get("sloc") or 0
+        if not sloc:
+            ls, le = gap.get("line_start") or 0, gap.get("line_end") or 0
+            if le and ls and le >= ls:
+                sloc = le - ls + 1
+        hints[key] = float(budget + sloc)
+    return hints
+
+
 def _run_audit_body(
     config,
     review_fn,
@@ -3297,7 +3333,20 @@ def _run_audit_body(
             shared.reviewed_before_joern.append(gap)
 
     # --- Main executor pass ---
-    graph = TaskGraph.from_workqueue(workqueue, call_edges)
+    # Schedule: with >1 worker, most-expensive-first (LPT) packing
+    # shrinks the makespan; serial runs keep priority order, where
+    # time-to-first-finding is what matters. config.schedule
+    # ("priority") opts parallel runs back into finding-first order.
+    _schedule = getattr(config, "schedule", "cost")
+    if resolved_workers <= 1:
+        _schedule = "priority"
+    graph = TaskGraph.from_workqueue(
+        workqueue,
+        call_edges,
+        max_workers=resolved_workers,
+        duration_hints=_review_duration_hints(workqueue, triage_results),
+        schedule=_schedule,
+    )
     reviewed_outcomes = _LockedOutcomes()
 
     # --- Cross-run verdict reuse: import prior verdicts at $0 ---

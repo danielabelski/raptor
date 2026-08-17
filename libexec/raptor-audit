@@ -1268,6 +1268,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         dynamic_validation=(False if args.no_dynamic
                             else (True if args.dynamic else None)),
         verdict_reuse=not args.no_verdict_reuse,
+        schedule=args.schedule,
     )
 
     try:
@@ -1614,6 +1615,14 @@ def main() -> int:
                             "whose source is unchanged); unchanged "
                             "reviewed functions are then silently "
                             "suppressed as before")
+    p_run.add_argument("--schedule", choices=["cost", "priority"],
+                       default="cost",
+                       help="Parallel review ordering: 'cost' packs "
+                            "predicted-longest reviews first (shortest "
+                            "wall time), 'priority' reviews the most "
+                            "promising functions first (fastest first "
+                            "finding). Serial runs always use priority "
+                            "order")
     from core.analysis.binary_oracle_cli import add_binary_args
     add_binary_args(p_run, include_edges=False)
 

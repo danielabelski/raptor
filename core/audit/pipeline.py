@@ -96,6 +96,9 @@ class AuditPipelineOpts:
     # prior-run verdicts for functions whose source hash is unchanged
     # instead of silently suppressing them.
     verdict_reuse: bool = True
+    # Parallel review scheduling: "cost" = most-expensive-first
+    # makespan packing (default), "priority" = time-to-first-finding.
+    schedule: str = "cost"
 
 
 
@@ -173,6 +176,7 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
+        schedule=opts.schedule,
         llm_budget_client=client,
         llm_client=client,
     )
@@ -444,6 +448,7 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
+        schedule=opts.schedule,
         llm_budget_client=client,
         llm_client=client,
     )

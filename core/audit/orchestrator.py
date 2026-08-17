@@ -2388,6 +2388,18 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         if config.models and config.models[0] != "default"
         else None
     )
+    # New/changed-code signal: materialise inventory-diff.json (vs the
+    # previous run's checklist) so compute_gaps' tier boost and
+    # score_functions' SCORE_NEW_CODE both see it. Best-effort — a
+    # first run has no previous inventory and gets an empty set.
+    new_fn_keys: set | None = None
+    try:
+        from .priority import ensure_inventory_diff
+        new_fn_keys = ensure_inventory_diff(
+            config.out_dir, checklist, target_path=config.target_path,
+        )
+    except Exception:
+        logger.debug("inventory-diff materialisation failed", exc_info=True)
     gaps = compute_gaps(
         checklist,
         [] if config.force else coverage_records,
@@ -2514,6 +2526,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         fuzz_coverage=fuzz_cov_files,
         strategy_weights=strat_weights,
         binary_bridge=binary_bridge_early,
+        new_functions=new_fn_keys or None,
     )
 
     if config.budget and config.budget > 0:

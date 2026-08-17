@@ -348,6 +348,27 @@ def compute_gaps(
 
             gaps.append(gap)
 
+    # New/changed-code boost: functions added or modified since the
+    # previous run's inventory (inventory-diff.json, span-hash based)
+    # are the highest-yield review targets. Bounded and additive — a
+    # gap is lifted at most to the no-tool-coverage tier, never above
+    # entry points, and dead code is never resurrected.
+    if out_dir is not None and gaps:
+        new_keys: set = set()
+        try:
+            from .priority import load_new_functions
+            new_keys = load_new_functions(Path(out_dir), checklist)
+        except Exception:
+            logger.debug("new-code boost skipped", exc_info=True)
+        if new_keys:
+            for gap in gaps:
+                if gap.get("dead"):
+                    continue
+                if f"{gap['file']}:{gap['name']}" in new_keys:
+                    gap["new_code"] = True
+                    gap["priority"] = min(
+                        gap["priority"], PRIORITY_NO_TOOL_COVERAGE)
+
     gaps.sort(key=lambda g: (g["priority"], -g.get("sloc", 0)))
 
     if budget is not None and budget > 0:

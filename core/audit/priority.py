@@ -270,9 +270,12 @@ def load_new_functions(
 ) -> set[str]:
     """Identify new/modified functions from inventory diff.
 
-    Reads inventory-diff.json (produced by compare_inventories) and
-    joins the affected files with the checklist to get function-level
-    keys in file:function format.
+    Reads inventory-diff.json. When the diff carries function-level
+    keys (``functions_added`` / ``functions_changed``, hash-based —
+    written by the inventory builder or ``ensure_inventory_diff``),
+    those are used directly. Legacy file-level diffs fall back to
+    joining the affected files with the checklist, marking every
+    function in a changed file.
     """
     diff_path = out_dir / "inventory-diff.json"
     if not diff_path.exists():
@@ -282,6 +285,10 @@ def load_new_functions(
             diff = json.load(f)
     except (json.JSONDecodeError, OSError):
         return set()
+
+    if "functions_added" in diff or "functions_changed" in diff:
+        return (set(diff.get("functions_added") or [])
+                | set(diff.get("functions_changed") or []))
 
     affected_files = set(diff.get("added", []))
     affected_files.update(diff.get("modified", []))
@@ -298,6 +305,84 @@ def load_new_functions(
                 if name:
                     new_fns.add(f"{file_path}:{name}")
     return new_fns
+
+
+def _latest_sibling_checklist(
+    out_dir: Path, target_path: Path | None,
+) -> dict[str, Any] | None:
+    """The most recent sibling run's checklist.json, or None."""
+    try:
+        from .joern_backend import sibling_run_dirs
+        dirs = sibling_run_dirs(out_dir, target_path=target_path)
+    except Exception:
+        logger.debug("sibling run discovery failed", exc_info=True)
+        return None
+    best: Path | None = None
+    best_mtime = -1.0
+    for d in dirs:
+        p = d / "checklist.json"
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > best_mtime:
+            best, best_mtime = p, mtime
+    if best is None:
+        return None
+    try:
+        with open(best, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def ensure_inventory_diff(
+    out_dir: Path,
+    checklist: dict[str, Any],
+    *,
+    target_path: Path | None = None,
+) -> set[str]:
+    """Materialise ``inventory-diff.json`` for this run and return the
+    new/changed function keys.
+
+    The inventory builder writes the diff when it rebuilds in a
+    directory that already holds a previous checklist; a fresh run
+    directory has no previous checklist, so the production diff was
+    never emitted and the new-code priority signal stayed dark. When
+    the file is absent, diff the current checklist against the most
+    recent sibling run's checklist (function-level, span-hash based)
+    and persist the result so downstream loaders — gap computation and
+    ``score_functions`` — see one consistent artifact.
+
+    Best-effort: no discoverable previous inventory → empty set.
+    """
+    out_dir = Path(out_dir)
+    diff_path = out_dir / "inventory-diff.json"
+    if not diff_path.exists():
+        previous = _latest_sibling_checklist(out_dir, target_path)
+        if previous is None:
+            return set()
+        try:
+            from core.inventory.diff import (
+                compare_inventories,
+                function_level_diff,
+            )
+            payload: dict[str, Any] = {
+                "added": [], "removed": [], "modified": [],
+                "functions_added": [], "functions_changed": [],
+            }
+            file_diff = compare_inventories(previous, checklist)
+            if file_diff is not None:
+                for k in ("added", "removed", "modified"):
+                    payload[k] = list(file_diff.get(k) or [])
+                payload.update(function_level_diff(previous, checklist))
+            diff_path.write_text(json.dumps(payload, indent=2),
+                                 encoding="utf-8")
+        except Exception:
+            logger.debug("inventory-diff materialisation failed",
+                         exc_info=True)
+            return set()
+    return load_new_functions(out_dir, checklist)
 
 
 def detect_widely_used(

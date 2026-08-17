@@ -9,6 +9,7 @@ needs a cached call-graph view of the project.
 import ast
 import fnmatch
 import hashlib
+import json
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -510,6 +511,7 @@ def build_inventory(
                 inventory['source_unchanged'] = True
                 # Carry forward all checked_by data from old inventory
                 _carry_forward_coverage(old_inventory, inventory)
+                _write_inventory_diff(output_path, None)
             else:
                 logger.info(
                     "Source material changed: %d added, %d removed, %d modified",
@@ -518,6 +520,7 @@ def build_inventory(
                 inventory['changes_since_last'] = diff
                 # Carry forward checked_by only for unchanged files
                 _carry_forward_coverage(old_inventory, inventory, modified=set(diff['modified']))
+                _write_inventory_diff(output_path, diff, old_inventory, inventory)
         except (KeyError, TypeError):
             logger.debug("incompatible old inventory, skipping diff", exc_info=True)
 
@@ -531,6 +534,41 @@ def build_inventory(
     logger.debug("Saved to: %s", checklist_file)
 
     return inventory
+
+
+def _write_inventory_diff(
+    output_path: Path,
+    diff: dict[str, Any] | None,
+    old_inventory: dict[str, Any] | None = None,
+    new_inventory: dict[str, Any] | None = None,
+) -> None:
+    """Persist ``inventory-diff.json`` next to the checklist.
+
+    Consumed by ``core.audit.priority.load_new_functions`` to boost
+    new/changed functions in gap scoring. ``diff=None`` (source
+    unchanged) writes an empty diff so a stale file from an earlier
+    build cannot keep boosting functions that are no longer new.
+    Best-effort — a write failure never blocks the inventory.
+    """
+    payload: dict[str, Any] = {
+        'added': [], 'removed': [], 'modified': [],
+        'functions_added': [], 'functions_changed': [],
+    }
+    if diff is not None:
+        for k in ('added', 'removed', 'modified'):
+            payload[k] = list(diff.get(k) or [])
+        if old_inventory is not None and new_inventory is not None:
+            try:
+                from .diff import function_level_diff
+                payload.update(
+                    function_level_diff(old_inventory, new_inventory))
+            except Exception:
+                logger.debug("function-level diff failed", exc_info=True)
+    try:
+        (output_path / 'inventory-diff.json').write_text(
+            json.dumps(payload, indent=2), encoding='utf-8')
+    except OSError:
+        logger.debug("could not write inventory-diff.json", exc_info=True)
 
 
 def _carry_forward_coverage(
@@ -936,6 +974,33 @@ def _process_single_file(
             '_stat': file_stat,
             'items': [item.to_dict() for item in items],
         }
+        # Per-item span hashes (core.staleness format: SHA-256[:12] of
+        # the raw span lines). The function-level inventory diff
+        # compares these across runs to find added/changed functions
+        # without needing the previous run's source. Interstitial
+        # residue is skipped (synthetic, not a reviewable unit).
+        # Best-effort — a hash failure just leaves the field absent.
+        try:
+            from core.staleness import hash_spans_text
+            span_items = []
+            spans = []
+            for item_dict in record['items']:
+                ls = item_dict.get('line_start')
+                le = item_dict.get('line_end')
+                if (isinstance(ls, int) and not isinstance(ls, bool)
+                        and isinstance(le, int) and not isinstance(le, bool)
+                        and 0 < ls <= le
+                        and item_dict.get('kind') != 'interstitial'):
+                    span_items.append(item_dict)
+                    spans.append((ls, le))
+            if spans:
+                for item_dict, h in zip(span_items,
+                                        hash_spans_text(content, spans)):
+                    if h:
+                        item_dict['span_hash'] = h
+        except Exception:
+            logger.debug("span-hash stamping failed for %s", rel_path,
+                         exc_info=True)
         # S3: per-function lexical-dead tagging. Functions whose
         # definition lies inside an always-false guard (``if False:``,
         # ``if (false) {…}``, ``#[cfg(any())]``) never bind — the

@@ -291,11 +291,20 @@ def start_run(output_dir: Path, command: str,
 
 
 def _cleanup_abandoned(project_dir: Path, command: str, session_pid: int) -> None:
-    """Mark abandoned runs from the same session and command type as failed.
+    """Mark abandoned sibling runs as failed.
 
-    An abandoned run is one that has status=running, same session_pid (same
-    Claude Code session), and same command type. This happens when the user
-    presses Esc and retries the same command.
+    Two abandonment shapes, both status=running and past the freshness
+    gate:
+
+    - Same session_pid AND same command type — the Esc-then-retry case
+      (user cancelled and reissued the same command in one session).
+    - Owning session DEAD — the recorded session_pid no longer maps to
+      a live claude process (session SIGKILL'd, machine rebooted, or
+      PID recycled by something else). No live owner means no lifecycle
+      hook will ever finalize the run: without this branch such runs
+      sat in status=running forever, regardless of command type. The
+      current session's own runs are excluded (its in-flight runs of
+      OTHER command types are healthy).
 
     Recent siblings (created within ``_ABANDON_FRESHNESS_S`` seconds)
     are LEFT ALONE even on the (session_pid, command) match. Pre-fix
@@ -333,12 +342,22 @@ def _cleanup_abandoned(project_dir: Path, command: str, session_pid: int) -> Non
             continue
         if not meta:
             continue
-        if (meta.get("status") == STATUS_RUNNING
-                and meta.get("command") == command
-                and meta.get("session_pid") == session_pid):
+        if meta.get("status") != STATUS_RUNNING:
+            continue
+        run_session = meta.get("session_pid")
+        same_session_retry = (
+            meta.get("command") == command and run_session == session_pid
+        )
+        session_dead = (
+            isinstance(run_session, int)
+            and run_session != session_pid
+            and not _pid_alive(run_session)
+        )
+        if same_session_retry or session_dead:
             # Freshness gate — skip recent siblings (probable
-            # concurrent in-flight run of the same command type from
-            # the same session, NOT an Esc-then-retry).
+            # concurrent in-flight run, NOT an abandon; for the
+            # dead-session branch it also absorbs the window where
+            # a just-spawned run's owning session is still booting).
             ts_str = meta.get("timestamp")
             if isinstance(ts_str, str):
                 try:
@@ -352,8 +371,12 @@ def _cleanup_abandoned(project_dir: Path, command: str, session_pid: int) -> Non
                     # Malformed timestamp — fall through to fail_run
                     # (the run is questionable either way).
                     pass
-            fail_run(d, "abandoned — replaced by new run in same session",
-                     record_timing=False)
+            reason = (
+                "abandoned — replaced by new run in same session"
+                if same_session_retry
+                else "abandoned — owning session terminated"
+            )
+            fail_run(d, reason, record_timing=False)
 
 
 def _setup_checklist_symlink(run_dir: Path) -> None:

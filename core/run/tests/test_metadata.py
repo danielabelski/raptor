@@ -6,9 +6,16 @@ from tempfile import TemporaryDirectory
 
 from core.json import load_json
 from core.run import (
-    tracked_run, start_run, complete_run, fail_run, cancel_run,
-    load_run_metadata, is_run_directory, infer_command_type,
-    generate_run_metadata, RUN_METADATA_FILE,
+    RUN_METADATA_FILE,
+    cancel_run,
+    complete_run,
+    fail_run,
+    generate_run_metadata,
+    infer_command_type,
+    is_run_directory,
+    load_run_metadata,
+    start_run,
+    tracked_run,
 )
 
 
@@ -352,9 +359,8 @@ class TestTrackedRun(unittest.TestCase):
     def test_fails_on_exception(self):
         with TemporaryDirectory() as d:
             out = Path(d) / "run"
-            with self.assertRaises(RuntimeError):
-                with tracked_run(out, "scan"):
-                    raise RuntimeError("something broke")
+            with self.assertRaises(RuntimeError), tracked_run(out, "scan"):
+                raise RuntimeError("something broke")
             meta = load_json(out / RUN_METADATA_FILE)
             self.assertEqual(meta["status"], "failed")
             self.assertIn("something broke", meta["extra"]["error"])
@@ -362,9 +368,9 @@ class TestTrackedRun(unittest.TestCase):
     def test_cancels_on_keyboard_interrupt(self):
         with TemporaryDirectory() as d:
             out = Path(d) / "run"
-            with self.assertRaises(KeyboardInterrupt):
-                with tracked_run(out, "scan"):
-                    raise KeyboardInterrupt()
+            with self.assertRaises(KeyboardInterrupt), \
+                    tracked_run(out, "scan"):
+                raise KeyboardInterrupt()
             meta = load_json(out / RUN_METADATA_FILE)
             self.assertEqual(meta["status"], "cancelled")
 
@@ -477,3 +483,84 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             store = CoverageStore(proj / "coverage.json")
             self.assertEqual(store.who_checked("a.c", 5), ["semgrep"])
             self.assertEqual(store.who_checked("b.c", 5), ["semgrep"])
+
+
+class TestCleanupAbandonedDeadSession(unittest.TestCase):
+    """Dead-owner branch of _cleanup_abandoned: a status=running run
+    whose recorded session_pid no longer maps to a live claude process
+    has no lifecycle hook left to finalize it — start_run heals it
+    regardless of command type. Live foreign sessions and the current
+    session's other-command runs stay untouched."""
+
+    CURRENT_SESSION = 50_000
+
+    def _make_run(self, parent, name, command, session_pid, *, aged=True):
+        from datetime import datetime, timedelta, timezone
+
+        from core.json import save_json
+        d = parent / name
+        d.mkdir()
+        ts = datetime.now(timezone.utc)
+        if aged:
+            ts -= timedelta(minutes=5)
+        save_json(d / RUN_METADATA_FILE, {
+            "version": 2,
+            "command": command,
+            "timestamp": ts.isoformat(),
+            "status": "running",
+            "session_pid": session_pid,
+            "extra": {},
+        })
+        return d
+
+    def _cleanup(self, project, alive_pids):
+        from unittest.mock import patch
+
+        from core.run.metadata import _cleanup_abandoned
+        with patch("core.run.metadata._pid_alive",
+                   side_effect=lambda pid: pid in alive_pids):
+            _cleanup_abandoned(project, "scan", self.CURRENT_SESSION)
+
+    def _status(self, d):
+        return load_json(d / RUN_METADATA_FILE)["status"]
+
+    def test_dead_session_run_failed_any_command(self):
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            dead = self._make_run(project, "codeql-001", "codeql", 40_001)
+            self._cleanup(project, alive_pids=set())
+            self.assertEqual(self._status(dead), "failed")
+            meta = load_json(dead / RUN_METADATA_FILE)
+            self.assertIn("owning session terminated",
+                          meta["extra"]["error"])
+
+    def test_live_foreign_session_untouched(self):
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            other = self._make_run(project, "codeql-001", "codeql", 40_002)
+            self._cleanup(project, alive_pids={40_002})
+            self.assertEqual(self._status(other), "running")
+
+    def test_current_session_other_command_untouched(self):
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            mine = self._make_run(project, "validate-001", "validate",
+                                  self.CURRENT_SESSION)
+            self._cleanup(project, alive_pids=set())
+            self.assertEqual(self._status(mine), "running")
+
+    def test_fresh_dead_session_run_untouched(self):
+        # Freshness gate absorbs the just-spawned window.
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            fresh = self._make_run(project, "codeql-001", "codeql",
+                                   40_003, aged=False)
+            self._cleanup(project, alive_pids=set())
+            self.assertEqual(self._status(fresh), "running")
+
+    def test_run_without_session_pid_untouched(self):
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            unowned = self._make_run(project, "codeql-001", "codeql", None)
+            self._cleanup(project, alive_pids=set())
+            self.assertEqual(self._status(unowned), "running")

@@ -6,23 +6,24 @@ without any LiteLLM dependency.
 """
 
 import json
-import pytest
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-from pydantic import BaseModel
+from unittest.mock import MagicMock, patch
+
+import pytest
+from pydantic import BaseModel, ValidationError
 
 # Add parent directories to path for imports
 # packages/llm_analysis/tests/test_llm_callbacks_instructor.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[3]))
 
+from core.llm.config import ModelConfig
 from core.llm.providers import (
-    _dict_schema_to_pydantic,
-    _coerce_to_schema,
     LLMProvider,
     LLMResponse,
+    _coerce_to_schema,
+    _dict_schema_to_pydantic,
 )
-from core.llm.config import ModelConfig
 
 
 class TestDictSchemaToPydanticSimple:
@@ -170,10 +171,10 @@ class TestDictSchemaToPydanticJsonSchema:
         instance2 = model(status="finding")
         assert instance2.status == "finding"
         # Wrong case must be rejected
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             model(status="CLEAN")
         # Value not in enum must be rejected
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             model(status="banana")
         # Enum must appear in the generated JSON schema
         json_schema = model.model_json_schema()
@@ -231,7 +232,7 @@ class TestDictSchemaToPydanticJsonSchema:
         assert instance.findings[0].title == "bug1"
         assert instance.findings[0].severity == "high"
         # Nested enum must be enforced
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             model(findings=[{"title": "bug", "severity": "CRITICAL"}])
 
     def test_nested_enum_enforced(self):
@@ -259,7 +260,7 @@ class TestDictSchemaToPydanticJsonSchema:
             {"mechanism": "overflow", "confidence": "high"},
         ])
         assert instance.hypotheses[0].confidence == "high"
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             model(hypotheses=[{"mechanism": "overflow", "confidence": "WRONG"}])
 
     def test_array_of_strings(self):
@@ -392,7 +393,7 @@ class TestStructuredFallback:
         schema = {"result": "string", "confidence": "float"}
         pydantic_model = _dict_schema_to_pydantic(schema)
 
-        result_dict, full_response = provider._structured_fallback(
+        result_dict, _full_response = provider._structured_fallback(
             prompt="test", schema=schema,
             pydantic_model=pydantic_model,
         )
@@ -516,8 +517,9 @@ class TestGeminiNativeStructuredTruncation:
     @staticmethod
     def _make_gemini(mock_response):
         pytest.importorskip("google.genai")
-        from core.llm.providers import GeminiProvider
         import threading
+
+        from core.llm.providers import GeminiProvider
 
         provider = GeminiProvider(ModelConfig(
             provider="gemini", model_name="gemini-2.5-flash",

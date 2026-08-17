@@ -22,17 +22,14 @@ Workers don't need a custom SDK shim — the LLM SDKs sit on top of
 from __future__ import annotations
 
 import os
-from typing import Optional
-
 import threading
 
 import httpx
 
-
 _TOKEN_HEADER = "X-Raptor-Token"
 
 
-def read_token(fd: Optional[int] = None) -> str:
+def read_token(fd: int | None = None) -> str:
     """Read the worker's capability token from the inherited FD.
 
     Pass ``fd`` explicitly for tests; production code reads
@@ -87,7 +84,7 @@ def read_token(fd: Optional[int] = None) -> str:
 # would fail because the FD is already closed. Cache the value at
 # process scope so all Provider constructors in the same worker share
 # one resolved token.
-_cached_token: Optional[str] = None
+_cached_token: str | None = None
 _cache_lock = threading.Lock()
 
 
@@ -105,7 +102,7 @@ def _get_or_read_token() -> str:
 
 
 def _make_httpx_client(
-    socket_path: str, token: str, *, timeout: Optional[float] = None,
+    socket_path: str, token: str, *, timeout: float | None = None,
 ) -> httpx.Client:
     """Build the underlying ``httpx`` client.
 
@@ -128,7 +125,7 @@ def _make_httpx_client(
 
 
 def _resolve_socket_and_token(
-    socket_path: Optional[str], token: Optional[str],
+    socket_path: str | None, token: str | None,
 ) -> tuple[str, str]:
     """Shared default-resolution for the per-provider client factories.
 
@@ -151,9 +148,9 @@ def _resolve_socket_and_token(
 
 def make_anthropic_client(
     *,
-    socket_path: Optional[str] = None,
-    token: Optional[str] = None,
-    timeout: Optional[float] = None,
+    socket_path: str | None = None,
+    token: str | None = None,
+    timeout: float | None = None,
 ):
     """Return a stock ``anthropic.Anthropic`` client routed through
     the dispatcher.
@@ -171,7 +168,7 @@ def make_anthropic_client(
     receive responses (including streamed ones). The credential
     isolation is invisible at the call site.
     """
-    import anthropic   # imported lazily so the module loads without the SDK
+    import anthropic  # imported lazily so the module loads without the SDK
 
     socket_path, token = _resolve_socket_and_token(socket_path, token)
     http = _make_httpx_client(socket_path, token, timeout=timeout)
@@ -192,9 +189,9 @@ def make_anthropic_client(
 def make_bedrock_client(
     *,
     api: str = "mantle",
-    socket_path: Optional[str] = None,
-    token: Optional[str] = None,
-    timeout: Optional[float] = None,
+    socket_path: str | None = None,
+    token: str | None = None,
+    timeout: float | None = None,
 ):
     """Return a stock ``anthropic.Anthropic`` client whose requests are
     AWS-auth-attached for a Bedrock surface by the dispatcher.
@@ -237,9 +234,9 @@ def make_bedrock_client(
 
 def make_openai_client(
     *,
-    socket_path: Optional[str] = None,
-    token: Optional[str] = None,
-    timeout: Optional[float] = None,
+    socket_path: str | None = None,
+    token: str | None = None,
+    timeout: float | None = None,
 ):
     """Return a stock ``openai.OpenAI`` client routed through the
     dispatcher. Same shape as :func:`make_anthropic_client`."""
@@ -300,8 +297,8 @@ def relay_for_grandchild() -> tuple[str, int]:
     return socket_path, read_fd
 
 
-def make_gemini_base_url(*, socket_path: Optional[str] = None,
-                          token: Optional[str] = None,
+def make_gemini_base_url(*, socket_path: str | None = None,
+                          token: str | None = None,
                           timeout: float | None = None,
                           ) -> tuple[str, httpx.Client]:
     """Gemini's Python SDK (``google-genai``) doesn't take a custom

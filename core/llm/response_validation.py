@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from core.schema_constants import (
     AGENTIC_RULING_VALUES,
@@ -43,19 +43,19 @@ class FieldResult:
 @dataclass
 class ValidatedResponse:
     """Result of validate_structured_response."""
-    data: Dict[str, Any]
+    data: dict[str, Any]
     quality: float
-    incomplete: List[str] = field(default_factory=list)
-    coerced: List[str] = field(default_factory=list)
-    fields: Dict[str, FieldResult] = field(default_factory=dict)
-    raw: Dict[str, Any] = field(default_factory=dict)
+    incomplete: list[str] = field(default_factory=list)
+    coerced: list[str] = field(default_factory=list)
+    fields: dict[str, FieldResult] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 # ---- Field weights per schema ------------------------------------------------
 # Keyed by a schema identifier (first required field tuple as a proxy).
 # Unknown schemas get uniform weights.
 
-_ANALYSIS_WEIGHTS: Dict[str, float] = {
+_ANALYSIS_WEIGHTS: dict[str, float] = {
     "is_true_positive": 1.0,
     "is_exploitable": 1.0,
     "reasoning": 1.0,
@@ -74,7 +74,7 @@ _ANALYSIS_WEIGHTS: Dict[str, float] = {
     "prerequisites": 0.2,
 }
 
-_FINDING_RESULT_WEIGHTS: Dict[str, float] = {
+_FINDING_RESULT_WEIGHTS: dict[str, float] = {
     "finding_id": 1.0,
     "is_true_positive": 1.0,
     "is_exploitable": 1.0,
@@ -96,7 +96,7 @@ _FINDING_RESULT_WEIGHTS: Dict[str, float] = {
     "patch_code": 0.1,
 }
 
-_DATAFLOW_VALIDATION_WEIGHTS: Dict[str, float] = {
+_DATAFLOW_VALIDATION_WEIGHTS: dict[str, float] = {
     "is_exploitable": 1.0,
     "source_attacker_controlled": 1.0,
     "sanitizers_effective": 0.9,
@@ -118,7 +118,7 @@ _DATAFLOW_VALIDATION_WEIGHTS: Dict[str, float] = {
 }
 
 # Registry: recognise schema by its field set and return the right weights.
-_WEIGHT_REGISTRY: List[tuple[Set[str], Dict[str, float]]] = [
+_WEIGHT_REGISTRY: list[tuple[set[str], dict[str, float]]] = [
     ({"finding_id", "is_true_positive", "is_exploitable", "reasoning"}, _FINDING_RESULT_WEIGHTS),
     ({"source_attacker_controlled", "sanitizers_effective", "path_reachable"}, _DATAFLOW_VALIDATION_WEIGHTS),
     ({"is_true_positive", "is_exploitable", "reasoning"}, _ANALYSIS_WEIGHTS),
@@ -138,7 +138,7 @@ _DEFAULT_WEIGHT = 0.5
 _QUALITY_RETRY_THRESHOLD: float = 0.5
 
 
-def _resolve_weights(schema: Dict[str, Any]) -> Dict[str, float]:
+def _resolve_weights(schema: dict[str, Any]) -> dict[str, float]:
     """Pick the right weight table for a schema, or fall back to uniform."""
     props = _get_properties(schema)
     field_names = set(props)
@@ -150,7 +150,7 @@ def _resolve_weights(schema: Dict[str, Any]) -> Dict[str, float]:
 
 # ---- Schema helpers ----------------------------------------------------------
 
-def _get_properties(schema: Dict[str, Any]) -> Dict[str, Any]:
+def _get_properties(schema: dict[str, Any]) -> dict[str, Any]:
     if "properties" in schema:
         return schema.get("properties", {})
     # Simple schema: values are description strings like "boolean" or
@@ -159,7 +159,7 @@ def _get_properties(schema: Dict[str, Any]) -> Dict[str, Any]:
     return schema
 
 
-def _get_required(schema: Dict[str, Any]) -> Set[str]:
+def _get_required(schema: dict[str, Any]) -> set[str]:
     if "properties" in schema:
         return set(schema.get("required", []))
     return set(schema)
@@ -232,7 +232,7 @@ def _normalise_confidence(value: Any) -> tuple[Any, bool]:
     return value, False
 
 
-_DOMAIN_NORMALISERS: Dict[str, Any] = {
+_DOMAIN_NORMALISERS: dict[str, Any] = {
     "vuln_type": _normalise_vuln_type,
     "ruling": _normalise_status_field,
     "severity_assessment": _normalise_severity,
@@ -285,7 +285,7 @@ def _validate_score_0_10(value: Any) -> bool:
     return 0.0 <= value <= 10.0
 
 
-_DOMAIN_VALIDATORS: Dict[str, Any] = {
+_DOMAIN_VALIDATORS: dict[str, Any] = {
     "vuln_type": _validate_vuln_type,
     "ruling": _validate_ruling,
     "severity_assessment": _validate_severity,
@@ -353,8 +353,8 @@ def _coerce_value(value: Any, field_type: str) -> tuple[Any, bool]:
 # ---- Main entry point --------------------------------------------------------
 
 def validate_structured_response(
-    raw: Dict[str, Any],
-    schema: Dict[str, Any],
+    raw: dict[str, Any],
+    schema: dict[str, Any],
 ) -> ValidatedResponse:
     """Validate and normalise an LLM response dict against a schema.
 
@@ -373,10 +373,10 @@ def validate_structured_response(
     required = _get_required(schema)
     weights = _resolve_weights(schema)
 
-    data: Dict[str, Any] = {}
-    fields: Dict[str, FieldResult] = {}
-    incomplete: List[str] = []
-    coerced_fields: List[str] = []
+    data: dict[str, Any] = {}
+    fields: dict[str, FieldResult] = {}
+    incomplete: list[str] = []
+    coerced_fields: list[str] = []
 
     weighted_score = 0.0
     total_weight = 0.0
@@ -437,18 +437,17 @@ def validate_structured_response(
 
         # Domain validation
         validator = _DOMAIN_VALIDATORS.get(field_name)
-        if validator is not None and value is not None:
-            if not validator(value):
-                data[field_name] = value
-                status = "coerced" if was_coerced else "invalid"
-                fields[field_name] = FieldResult(status=status, original=original)
-                if was_coerced:
-                    coerced_fields.append(field_name)
-                    weighted_score += weight * 0.5
-                else:
-                    incomplete.append(field_name)
-                    weighted_score += weight * 0.25
-                continue
+        if validator is not None and value is not None and not validator(value):
+            data[field_name] = value
+            status = "coerced" if was_coerced else "invalid"
+            fields[field_name] = FieldResult(status=status, original=original)
+            if was_coerced:
+                coerced_fields.append(field_name)
+                weighted_score += weight * 0.5
+            else:
+                incomplete.append(field_name)
+                weighted_score += weight * 0.25
+            continue
 
         # Passed
         data[field_name] = value
@@ -501,8 +500,8 @@ def validate_structured_response(
     )
 
 
-def quality_retry_prompt(original_prompt: str, incomplete: List[str],
-                         coerced: List[str]) -> str:
+def quality_retry_prompt(original_prompt: str, incomplete: list[str],
+                         coerced: list[str]) -> str:
     """Build a retry prompt that tells the LLM which fields need fixing."""
     problems = []
     if incomplete:
@@ -523,14 +522,14 @@ def quality_retry_prompt(original_prompt: str, incomplete: List[str],
 
 def attempt_quality_retry(
     llm: Any,
-    validated: "ValidatedResponse",
+    validated: ValidatedResponse,
     prompt: str,
-    schema: Dict[str, Any],
+    schema: dict[str, Any],
     *,
-    system_prompt: Optional[str] = None,
+    system_prompt: str | None = None,
     task_type: Any = None,
     threshold: float = _QUALITY_RETRY_THRESHOLD,
-) -> "ValidatedResponse":
+) -> ValidatedResponse:
     """If `validated.quality` is below `threshold`, build a corrective
     retry prompt and call the LLM once more. Return whichever response
     is higher quality.
@@ -559,7 +558,7 @@ def attempt_quality_retry(
         prompt, validated.incomplete, validated.coerced,
     )
 
-    kwargs: Dict[str, Any] = {"prompt": retry_prompt, "schema": schema}
+    kwargs: dict[str, Any] = {"prompt": retry_prompt, "schema": schema}
     if system_prompt is not None:
         kwargs["system_prompt"] = system_prompt
     if task_type is not None:
@@ -567,7 +566,7 @@ def attempt_quality_retry(
 
     try:
         raw_retry, _ = llm.generate_structured(**kwargs)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — retry must never break the caller
         # Retry must never break the caller. Fall back to the original
         # validated response and let the caller log the low-quality
         # warning the same way it would have without retry.

@@ -44,8 +44,9 @@ Cost-gate failure semantics (W36.B / F090):
 import logging
 import time
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any
 
 from core.llm.multi_model.types import (
     Aggregator,
@@ -68,9 +69,9 @@ def run_multi_model(
     models: Iterable[ModelHandle],
     adapter: ItemAdapter,
     *,
-    reviewers: Optional[Iterable[Reviewer]] = (),
-    aggregator: Optional[Aggregator] = None,
-    cost_gate: Optional[CostGate] = None,
+    reviewers: Iterable[Reviewer] | None = (),
+    aggregator: Aggregator | None = None,
+    cost_gate: CostGate | None = None,
     max_parallel: int = 3,
 ) -> MultiModelResult:
     """Run a task across N models in parallel and merge results.
@@ -160,7 +161,7 @@ def run_multi_model(
     _gate_permanent_off = [cost_gate is None]
     _gate_disabled_at: list = [None]  # None or monotonic timestamp of last transient fail
 
-    def over_budget(cutoff_ratio: float) -> tuple[bool, Optional[float]]:
+    def over_budget(cutoff_ratio: float) -> tuple[bool, float | None]:
         """Return (skip, current_ratio). ratio is None when gating is off."""
         if _gate_permanent_off[0]:
             return False, None
@@ -213,7 +214,7 @@ def run_multi_model(
     #   None  — aggregator not configured OR skipped for budget (see logs)
     #   {}    — aggregator ran but produced no usable output (errored or empty)
     #   {...} — aggregator succeeded
-    aggregation: Optional[Dict[str, Any]] = None
+    aggregation: dict[str, Any] | None = None
     if aggregator is not None:
         skip, spend = over_budget(aggregator.cutoff_ratio)
         if skip:
@@ -261,8 +262,8 @@ def _validate_inputs(
     models: Sequence[ModelHandle],
     adapter: ItemAdapter,
     reviewers: Sequence[Reviewer],
-    aggregator: Optional[Aggregator],
-    cost_gate: Optional[CostGate],
+    aggregator: Aggregator | None,
+    cost_gate: CostGate | None,
 ) -> None:
     if not callable(task):
         raise TypeError(f"task must be callable; got {type(task).__name__}")
@@ -319,7 +320,7 @@ def _check_cutoff_ratio(value: Any, label: str) -> None:
 
 
 def _check_unique_ids(
-    merged: List[Dict[str, Any]], adapter: ItemAdapter,
+    merged: list[dict[str, Any]], adapter: ItemAdapter,
 ) -> None:
     """Validate adapter.merge() output: ids must be unique non-empty strings.
 
@@ -328,7 +329,7 @@ def _check_unique_ids(
     by-id lookups. Raise to surface the adapter bug at the boundary
     instead of letting it propagate.
     """
-    ids: List[str] = []
+    ids: list[str] = []
     for idx, item in enumerate(merged):
         item_id = adapter.item_id(item)
         if not isinstance(item_id, str) or not item_id:
@@ -351,15 +352,15 @@ def _dispatch_parallel(
     models: Sequence[ModelHandle],
     max_parallel: int,
     timeout: float = 600.0,
-) -> tuple[Dict[str, List[Dict[str, Any]]], List[str]]:
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     """Run task in parallel across models. Returns (per_model_raw, failed).
 
     A model is "failed" if task() raised, OR if every entry in its result
     list is an error dict. Empty result lists are NOT failures (the model
     just had nothing to say).
     """
-    per_model_raw: Dict[str, List[Dict[str, Any]]] = {}
-    failed: List[str] = []
+    per_model_raw: dict[str, list[dict[str, Any]]] = {}
+    failed: list[str] = []
 
     workers = max(1, min(max_parallel, len(models)))
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -412,7 +413,7 @@ def _dispatch_parallel(
                     failed.append(name)
         except TimeoutError:
             # Mark models that didn't complete as failed.
-            for fut, model in futures.items():
+            for model in futures.values():
                 if model.model_name not in per_model_raw:
                     logger.warning(
                         "Model %r timed out after %.0fs",
@@ -425,8 +426,8 @@ def _dispatch_parallel(
 
 
 def _filter_errors(
-    per_model_raw: Dict[str, List[Dict[str, Any]]],
-) -> Dict[str, List[Dict[str, Any]]]:
+    per_model_raw: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
     """Strip error entries before passing to adapter.merge / .correlate."""
     return {
         name: [r for r in results if not _is_error(r)]
@@ -440,10 +441,10 @@ def _is_error(item: Any) -> bool:
 
 
 def _apply_reviewer(
-    merged: List[Dict[str, Any]],
+    merged: list[dict[str, Any]],
     reviewer: Reviewer,
     adapter: ItemAdapter,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Run a reviewer and replace items by id.
 
     Items omitted from the reviewer's return keep their prior version.
@@ -456,7 +457,7 @@ def _apply_reviewer(
     # For ConditionalReviewer, the substrate restricts replacement to ids
     # that passed should_review. A buggy/malicious reviewer cannot sneak
     # changes onto items the condition rejected.
-    allowed_ids: Optional[set[str]] = None
+    allowed_ids: set[str] | None = None
     try:
         if isinstance(reviewer, ConditionalReviewer):
             applicable = [item for item in merged if reviewer.should_review(item)]
@@ -481,7 +482,7 @@ def _apply_reviewer(
         )
         return merged
 
-    by_id: Dict[str, Dict[str, Any]] = {
+    by_id: dict[str, dict[str, Any]] = {
         adapter.item_id(item): item for item in merged
     }
     for new_item in reviewed:

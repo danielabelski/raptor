@@ -292,7 +292,7 @@ class TestBroadcastRegistry:
             try:
                 for _ in range(50):
                     t.signal_rate_limit()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — collect any worker failure for the main thread to assert on
                 errors.append(e)
 
         threads = [threading.Thread(target=signal_many) for _ in range(4)]

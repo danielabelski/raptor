@@ -5,7 +5,7 @@ Uses test-only fake adapters and reviewers; no real LLM calls.
 
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -13,7 +13,6 @@ from core.llm.multi_model import (
     MultiModelResult,
     run_multi_model,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test fixtures: minimal fake handles, adapters, reviewers, gates
@@ -31,20 +30,20 @@ class IdentityAdapter:
     and dedupes by id (later models override earlier on conflict).
     Correlate returns count of contributing models per id."""
 
-    def item_id(self, item: Dict[str, Any]) -> str:
+    def item_id(self, item: dict[str, Any]) -> str:
         if not item.get("id"):
             raise ValueError(f"item missing id: {item}")
         return item["id"]
 
     def merge(self, per_model_results):
-        by_id: Dict[str, Dict] = {}
+        by_id: dict[str, dict] = {}
         for model_name, results in per_model_results.items():
             for r in results:
                 by_id[self.item_id(r)] = {**r, "from_model": model_name}
         return list(by_id.values())
 
     def correlate(self, merged_items, per_model_results):
-        per_id_count: Dict[str, int] = {}
+        per_id_count: dict[str, int] = {}
         for results in per_model_results.values():
             for r in results:
                 per_id_count[self.item_id(r)] = per_id_count.get(self.item_id(r), 0) + 1

@@ -46,7 +46,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 import httpx
 
@@ -58,7 +57,6 @@ from .auth import (
     ProviderRule,
     build_rules,
 )
-
 
 _logger = logging.getLogger(__name__)
 
@@ -81,7 +79,7 @@ _logger = logging.getLogger(__name__)
 _DEMOTED_AUDIT_EVENTS = frozenset({"request.dispatch"})
 
 
-def _scrub(value: Optional[str]) -> Optional[str]:
+def _scrub(value: str | None) -> str | None:
     """Defang nonprintable + ANSI escapes in operator-visible
     fields (``worker_label``, ``reason``) before they hit the
     audit log or stdlib logger. Pre-fix a malicious model name
@@ -179,12 +177,12 @@ class AuditEvent:
     """One row in the audit log. Body content is intentionally absent."""
     ts: float
     event: str
-    peer_pid: Optional[int]
-    peer_uid: Optional[int]
-    token_id: Optional[str]   # 12-char prefix for correlation; never the full token
-    worker_label: Optional[str]
+    peer_pid: int | None
+    peer_uid: int | None
+    token_id: str | None   # 12-char prefix for correlation; never the full token
+    worker_label: str | None
     status: str
-    reason: Optional[str] = None
+    reason: str | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -193,7 +191,7 @@ class AuditEvent:
 # ---------------------------------------------------------------------------
 
 
-def _peer_uid(conn: socket.socket) -> Optional[int]:
+def _peer_uid(conn: socket.socket) -> int | None:
     """Return the connecting peer's UID, or None on platforms / failure
     where the lookup isn't supported. Caller should reject the
     connection if None on a platform we expect to support it."""
@@ -244,10 +242,10 @@ class LLMDispatcher:
         self,
         run_id: str,
         *,
-        audit_path: Optional[Path] = None,
-        token_ttl_s: Optional[int] = None,
-        token_budget: Optional[int] = None,
-        creds: Optional[CredentialStore] = None,
+        audit_path: Path | None = None,
+        token_ttl_s: int | None = None,
+        token_budget: int | None = None,
+        creds: CredentialStore | None = None,
     ) -> None:
         self.run_id = run_id
         # TTL/budget resolution order: explicit caller arg →
@@ -325,7 +323,7 @@ class LLMDispatcher:
         # Pass dispatcher self into the request handler via the server.
         # http.server's HTTPServer accepts a ``RequestHandlerClass`` so
         # we close over the dispatcher in a per-instance handler.
-        dispatcher = self  # noqa: F841 — closed over by handler factory
+        dispatcher = self
 
         class _UnixThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
             address_family = socket.AF_UNIX
@@ -472,7 +470,7 @@ class LLMDispatcher:
             if self._shutdown_done:
                 return
             self._shutdown_done = True
-        errors: List[str] = []
+        errors: list[str] = []
         try:
             self._server.shutdown()
         except Exception:
@@ -609,7 +607,7 @@ class LLMDispatcher:
                     )
                     self._audit_warned = True
 
-    def _validate_token(self, raw: str | None) -> tuple[Optional[_TokenRecord], Optional[str]]:
+    def _validate_token(self, raw: str | None) -> tuple[_TokenRecord | None, str | None]:
         """L3 + L4 — return (record, None) on success, (None, reason)
         on rejection. Increments ``requests_made`` and revokes if
         budget exhausted or TTL elapsed."""
@@ -636,7 +634,7 @@ class LLMDispatcher:
             rec.requests_made += 1
             return rec, None
 
-    def _provider(self, name: str) -> Optional[ProviderRule]:
+    def _provider(self, name: str) -> ProviderRule | None:
         return self._rules.get(name)
 
 
@@ -685,7 +683,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
 
         # Disable BaseHTTPRequestHandler's reverse DNS log spam — peer
         # is always the local socket on UDS anyway.
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             return
 
         def _send_simple(self, status: int, reason: str) -> None:
@@ -712,7 +710,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 return
 
             # ---- provider routing via path prefix ----
-            provider_name: Optional[str] = None
+            provider_name: str | None = None
             upstream_path = self.path
             for prefix, name in _PROVIDER_FROM_PATH_PREFIX.items():
                 if self.path.startswith(prefix):
@@ -814,7 +812,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
 
             # ---- forward to upstream + stream response back ----
             try:
-                with httpx.Client(timeout=_upstream_timeout()) as client:
+                with httpx.Client(timeout=_upstream_timeout()) as client:  # noqa: SIM117 — merging the two `with`s would force re-indenting the whole streaming block
                     with client.stream(method, url, content=body, headers=forwarded) as up:
                         self.send_response(up.status_code)
                         for k, v in up.headers.items():
@@ -860,10 +858,10 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
 
         # Wire all common methods to the dispatch path. Anthropic /
         # OpenAI / Gemini all use POST + GET.
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             self._dispatch()
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             self._dispatch()
 
     return _Handler

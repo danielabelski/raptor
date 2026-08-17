@@ -26,9 +26,10 @@ section; the immediately-following HTML comment carries metadata;
 the rest until the next ``##`` (or EOF) is the prose body.
 
 Atomic write: each save writes to a sibling tempfile and renames
-into place. Concurrent writers may race the rename; last-writer-wins
-is acceptable for the audit / annotation workflow (the operator
-adding manual notes shouldn't conflict with an LLM run).
+into place. Concurrent writers may race the rename; the file lock
+around each read-modify-write cycle serialises them (two operators,
+or an operator and a scripted pass, editing the same file's
+annotations).
 """
 
 from __future__ import annotations
@@ -84,9 +85,10 @@ _VERSION_MARKER_RE = re.compile(
 # Allowed values for ``write_annotation(overwrite=...)``. ``all``
 # matches the original behaviour. ``respect-manual`` refuses to
 # overwrite an existing same-name annotation whose
-# ``metadata.source == "human"`` — used by LLM-driven callers
-# (``/agentic``, ``/understand`` post-processor) so a manual edit
-# is never silently clobbered.
+# ``metadata.source == "human"`` — for scripted / non-interactive
+# adds, so a manual note is never silently clobbered. (The one-time
+# LLM annotation producers that used this are gone; the mode remains
+# for any scripted caller.)
 _OVERWRITE_MODES = ("all", "respect-manual")
 
 
@@ -256,8 +258,8 @@ def _file_lock(path: Path):
     """Cross-process exclusive lock on the annotation file's read-
     modify-write window.
 
-    Two operators (or LLM + operator) writing to the same source
-    file's annotations concurrently could otherwise lose data via
+    Two operators (or a scripted pass + operator) writing to the same
+    source file's annotations concurrently could otherwise lose data via
     last-writer-wins on the read-modify-write cycle: both read state
     A, both write back A+B1 / A+B2 → one of B1/B2 is dropped.
 
@@ -452,9 +454,9 @@ def write_annotation(
         functions in the same file are still preserved.
       * ``"respect-manual"`` — if an existing same-name annotation
         carries ``metadata.source == "human"``, skip this write
-        (return ``None``). LLM-driven callers should pass this so
-        operator notes never get clobbered. LLM-over-LLM and
-        write-when-no-prior-record proceed normally.
+        (return ``None``). Scripted callers should pass this so
+        operator notes never get clobbered. Overwriting non-human
+        records and write-when-no-prior-record proceed normally.
 
     Atomic via tempfile + rename — concurrent readers see either the
     pre-write or post-write content, never a partial rewrite.

@@ -277,6 +277,11 @@ class AdversarialReviewer:
                 refutation = {"refuted": False, "reason": f"error: {exc}"}
 
             annotated = {**item, "adversarial_review": refutation}
+            if refutation.get("needs_evidence"):
+                # Route to dark verification: the refuter says the
+                # question cannot be settled by reading — the dark
+                # pass executes a concrete witness later.
+                annotated["adversarial_needs_evidence"] = True
             if refutation.get("refuted"):
                 # An LLM refutation may not erase tool-confirmed
                 # evidence: with mechanical evidence present, downgrade

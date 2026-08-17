@@ -107,6 +107,7 @@ _PROMPT_CONSTRUCTION_FILES = (
     "core/audit/validate.py",
     "core/audit/sibling_analysis.py",
     "core/audit/checker_synthesis.py",
+    "core/audit/adversarial_refute.py",
     "core/audit/dark_verify/_prompts.py",
     # checker-synthesis substrate (consumed by /audit mid-loop
     # synthesis and /agentic checker follow-up)

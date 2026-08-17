@@ -275,7 +275,11 @@ running `/scan` then `/codeql` on the same project gives a combined view.
 
 Annotations attach free-form prose to individual functions, stored as markdown
 files that mirror the source tree.  They are human-only: operators write
-manual review notes with `/annotate add`, marked `source=human`.  LLM
+manual review notes with `/annotate add`.  Every add/edit records an
+invocation-context stamp (which std fds were TTYs), and `source`
+defaults to `human` only for interactive invocations (`agent`
+otherwise); readers grant human-grade weight only to `source=human`
+notes with an interactive stamp (or legacy pre-stamp notes).  LLM
 review outcomes go to the review journal (`review-journal.jsonl`)
 instead -- the annotation → journal migration removed the LLM writer
 path, and the storage layer's `overwrite="respect-manual"` mode keeps

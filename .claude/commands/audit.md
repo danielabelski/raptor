@@ -182,7 +182,7 @@ Corrections append fresh review-journal entries (carrying the prior verdict and 
 - **Disproven findings** → correction entry downgrading to `clean` with reason
 - **Missed vulnerabilities** → correction entry upgrading to `finding`
 - **Corroborated findings** → confirmation entry, no status change
-- Human annotations (`source=human`) are never modified — they veto feedback for their function entirely
+- Human annotations are never modified — human-grade ones (`source=human` plus an interactive-TTY provenance stamp, or legacy pre-stamp notes) veto feedback for their function entirely; non-human-grade notes only serve as the prior claim when no journal entry exists
 
 ### Staleness check
 

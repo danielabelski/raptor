@@ -219,8 +219,11 @@ libexec/raptor-audit feedback --validation-report <dir>/findings.json \
 Corrections are appended as fresh review-journal entries (with the prior
 verdict and lesson recorded): disproven findings are downgraded to `clean`,
 missed vulnerabilities are upgraded to `finding`, corroborated findings get
-a confirmation entry.  Nothing is rewritten in place, and human annotations
-(`source=human`) veto feedback for their function entirely.
+a confirmation entry.  Nothing is rewritten in place, and human-grade
+annotations (`source=human` with an interactive-TTY provenance stamp, or
+legacy pre-stamp notes) veto feedback for their function entirely; agent
+notes and human claims stamped non-interactive only serve as the prior
+claim when no journal entry exists.
 
 ### Staleness check
 

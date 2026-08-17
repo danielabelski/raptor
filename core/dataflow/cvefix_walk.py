@@ -31,6 +31,11 @@ from pathlib import Path
 
 from core.config import RaptorConfig
 from core.dataflow.cvefix_loader import INJECTION_CWES, CveFixPair, load_pairs
+from core.git.clone import (
+    get_safe_git_env,
+    safe_git_command,
+    safe_git_readonly_command,
+)
 
 DEFAULT_CODEQL_BIN = "codeql"
 
@@ -205,15 +210,46 @@ class WalkResult:
 
 def _run(cmd, timeout) -> bool:
     # get_safe_env() strips env vars tools may shell-evaluate (untrusted-repo
-    # hygiene per CLAUDE.md); buildless extraction + git ops only.
-    # preserve_proxy: _fetch_pair routes `git fetch` at the REMOTE
-    # origin through here — git honours proxy env, and without it
-    # mandatory-egress-proxy hosts have no route. Harmless for the
-    # local-only invocations (git never dials out for those).
+    # hygiene per CLAUDE.md); buildless CodeQL extraction only — git
+    # invocations go through _run_git below.  preserve_proxy: buildless
+    # extraction may still resolve query packs over the network on
+    # mandatory-egress-proxy hosts.
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                            check=False,
                            env=RaptorConfig.get_safe_env(preserve_proxy=True))
+        return r.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _run_git(args, timeout, *, network: bool = False) -> bool:
+    """Run one hardened git command against a cloned (internet-sourced,
+    therefore untrusted) repo.
+
+    argv comes from ``core.git``'s shared helpers — never a bare
+    ``["git", ...]`` list: a hostile repo can ship ``.git/config``
+    entries (fsmonitor, hooksPath, filters, gpg, pagers) that execute
+    attacker code on ordinary git ops; the per-invocation ``-c``
+    overrides neutralise them (env vars alone cannot).
+
+      * ``network=False`` (init / remote add / checkout): the STRICT
+        read-only variant — ``protocol.allow=never``, no transport can
+        ever engage.
+      * ``network=True`` (the targeted ``fetch``): the network-capable
+        ``safe_git_command`` — the fetch genuinely needs the https
+        transport, so it keeps the per-protocol pins instead.
+
+    Env is the shared sanitised git env; the fetch keeps the
+    operator's proxy vars (git honours proxy env, and on mandatory-
+    egress-proxy hosts the remote has no route without them; local
+    invocations never dial out, so they get the fully-stripped env).
+    """
+    cmd = safe_git_command(*args) if network else safe_git_readonly_command(*args)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           check=False,
+                           env=get_safe_git_env(preserve_proxy=network))
         return r.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -275,12 +311,14 @@ def _run_autobuild_sandboxed(cmd, *, work_root: Path, codeql_bin: str,
 def _fetch_pair(repo_url: str, fix_hash: str, dest: Path, timeout: int) -> bool:
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
-    if not _run(["git", "init", "-q", str(dest)], 30):
+    if not _run_git(["init", "-q", str(dest)], 30):
         return False
-    if not _run(["git", "-C", str(dest), "remote", "add", "origin", repo_url], 30):
+    if not _run_git(["-C", str(dest), "remote", "add", "origin", repo_url], 30):
         return False
-    # --depth 2 brings the fix + its single parent.
-    return _run(["git", "-C", str(dest), "fetch", "-q", "--depth", "2", "origin", fix_hash], timeout)
+    # --depth 2 brings the fix + its single parent.  network=True: the
+    # fetch is the one step that legitimately needs a transport.
+    return _run_git(["-C", str(dest), "fetch", "-q", "--depth", "2", "origin", fix_hash],
+                    timeout, network=True)
 
 
 # CodeQL resource tunables live in ``packages.codeql`` — the central
@@ -295,7 +333,7 @@ _DEFAULT_TUNABLES = CodeQLTunables()
 def _build_db(src: Path, commit: str, db: Path, lang: str, codeql_bin: str, timeout: int,
               build_mode: str | None = None,
               tunables: CodeQLTunables = _DEFAULT_TUNABLES) -> bool:
-    if not _run(["git", "-C", str(src), "checkout", "-q", commit], 60):
+    if not _run_git(["-C", str(src), "checkout", "-q", commit], 60):
         return False
     cmd = [codeql_bin, "database", "create", str(db), f"--language={lang}",
            f"--source-root={src}", "--overwrite"]

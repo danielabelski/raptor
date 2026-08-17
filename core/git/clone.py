@@ -95,9 +95,25 @@ from ._proxy_hosts import _DEFAULT_GIT_HOSTS as _PROXY_HOSTS  # noqa: F401
 from ._proxy_hosts import proxy_hosts_for_git as _proxy_hosts_for_git
 
 
-def get_safe_git_env() -> dict[str, str]:
+def get_safe_git_env(*, preserve_proxy: bool = False) -> dict[str, str]:
     """Sanitised env for git subprocess. Same shape as scanner.py used
-    pre-centralisation; promoted here so all callers share it."""
+    pre-centralisation; promoted here so all callers share it.
+
+    ``preserve_proxy=True`` keeps the operator's proxy vars
+    (HTTP_PROXY / HTTPS_PROXY / NO_PROXY) in the returned env — same
+    opt-in contract as ``RaptorConfig.get_safe_env``. Use ONLY for git
+    invocations that dial a remote OUTSIDE the sandbox egress proxy
+    (the dataflow walkers' targeted fetches): git honours proxy env,
+    and on mandatory-egress-proxy hosts a fetch has no route without
+    it. Everything else about the sanitisation (allowlist +
+    dangerous-var strip + the GIT_ENV_VARS prompt/askpass pins) is
+    identical. The sandbox-routed entry points in this module don't
+    need it — their egress goes through the in-process proxy.
+    """
+    if preserve_proxy:
+        env = RaptorConfig.get_safe_env(preserve_proxy=True)
+        env.update(RaptorConfig.GIT_ENV_VARS)
+        return env
     return RaptorConfig.get_git_env()
 
 

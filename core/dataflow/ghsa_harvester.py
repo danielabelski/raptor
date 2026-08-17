@@ -152,33 +152,46 @@ def _resolve_parent(repo_url: str, fix_hash: str, timeout: int = 60) -> str | No
 
     Each call creates and destroys its own scratch dir so failures don't
     pollute later calls; the parent walker repeats the fetch on its own,
-    so we don't bother caching the clone."""
+    so we don't bother caching the clone.
+
+    HARDENING: the scratch repo receives internet-sourced objects, so
+    every git argv comes from ``core.git``'s shared helpers (never a
+    bare ``["git", ...]`` list): the strict read-only variant for the
+    local steps (init / remote add / rev-list — ``protocol.allow=
+    never``), the network-capable ``safe_git_command`` for the fetch
+    (it needs the https transport).  Env is the shared sanitised git
+    env; ``preserve_proxy`` because the fetch dials the REMOTE
+    repo_url — git honours proxy env, and on mandatory-egress-proxy
+    hosts there is no direct route."""
     with tempfile.TemporaryDirectory(prefix="ghsa-resolve-") as td:
         td_p = Path(td)
-        from core.config import RaptorConfig
+        from core.git.clone import (
+            get_safe_git_env,
+            safe_git_command,
+            safe_git_readonly_command,
+        )
         from core.sandbox.preexec import set_pdeathsig
-        # preserve_proxy: the fetch below dials the REMOTE repo_url —
-        # git honours proxy env, and on mandatory-egress-proxy hosts
-        # there is no direct route.
-        _env = RaptorConfig.get_safe_env(preserve_proxy=True)
+        _env = get_safe_git_env(preserve_proxy=True)
         _pds = set_pdeathsig()
         try:
-            subprocess.run(["git", "init", "-q", str(td_p)],
+            subprocess.run(safe_git_readonly_command("init", "-q", str(td_p)),
                            check=True, timeout=15, capture_output=True,
                            env=_env, preexec_fn=_pds)
-            subprocess.run(["git", "-C", str(td_p), "remote", "add", "origin", repo_url],
+            subprocess.run(safe_git_readonly_command(
+                               "-C", str(td_p), "remote", "add", "origin", repo_url),
                            check=True, timeout=15, capture_output=True,
                            env=_env, preexec_fn=_pds)
             r = subprocess.run(
-                ["git", "-C", str(td_p), "fetch", "-q", "--depth", "2",
-                 "origin", fix_hash],
+                safe_git_command("-C", str(td_p), "fetch", "-q", "--depth", "2",
+                                 "origin", fix_hash),
                 check=False, timeout=timeout, capture_output=True,
                 env=_env, preexec_fn=_pds,
             )
             if r.returncode != 0:
                 return None
             r = subprocess.run(
-                ["git", "-C", str(td_p), "rev-list", "--parents", "-n", "1", fix_hash],
+                safe_git_readonly_command(
+                    "-C", str(td_p), "rev-list", "--parents", "-n", "1", fix_hash),
                 check=False, timeout=15, capture_output=True, text=True,
                 env=_env, preexec_fn=_pds,
             )

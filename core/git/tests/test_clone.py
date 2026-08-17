@@ -581,6 +581,24 @@ def test_signature_probe_overrides_resolve_system_binaries() -> None:
         assert "gpg.program" in keys
 
 
+def test_get_safe_git_env_preserve_proxy_contract(monkeypatch) -> None:
+    """Default strips operator proxy vars (same as get_git_env);
+    ``preserve_proxy=True`` keeps them for git invocations that dial a
+    remote outside the sandbox egress proxy — while still applying the
+    GIT_ENV_VARS pins (terminal-prompt / askpass) in both modes."""
+    from core.config import RaptorConfig
+    from core.git.clone import get_safe_git_env
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    env_default = get_safe_git_env()
+    env_proxy = get_safe_git_env(preserve_proxy=True)
+    assert "HTTPS_PROXY" not in env_default
+    assert env_proxy.get("HTTPS_PROXY") == "http://proxy.invalid:3128"
+    for key, value in RaptorConfig.GIT_ENV_VARS.items():
+        assert env_default.get(key) == value
+        assert env_proxy.get(key) == value
+
+
 def test_safe_git_readonly_command_layers_strict_pins_last() -> None:
     """The strict read-only variant is the full safe_git_command posture
     PLUS transport refusal. git honours the LAST ``-c`` occurrence per

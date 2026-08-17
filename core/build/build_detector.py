@@ -636,6 +636,29 @@ class BuildDetector:
         }
 
         validation_cmd = validation_commands.get(build_system.type)
+
+        # Gradle wrapper: when detection kept the project's own ./gradlew
+        # as the build command, probing system `gradle` is wrong —
+        # wrapper-only projects (the common Gradle layout, no system
+        # gradle installed) would fail validation with "gradle not found
+        # in PATH" although the actual build command works. Do NOT
+        # execute the wrapper here: it is untrusted repo code and
+        # _run_trusted is reserved for system tools. Validate what the
+        # wrapper actually needs instead: the script itself (exists +
+        # executable) and a JVM on PATH.
+        if build_system.type == "gradle" and str(build_system.command).strip().startswith("./gradlew"):
+            wrapper_dir = (
+                Path(build_system.working_dir)
+                if build_system.working_dir else self.repo_path
+            )
+            gradlew = wrapper_dir / "gradlew"
+            if not gradlew.is_file() or not os.access(gradlew, os.X_OK):
+                logger.warning(
+                    "✗ gradle wrapper %s missing or not executable", gradlew,
+                )
+                return False
+            validation_cmd = ["java", "-version"]
+
         if not validation_cmd:
             # Unknown build-tool type. Pre-fix we returned True
             # ("Assume it's OK if we can't validate") — but the
@@ -698,7 +721,10 @@ class BuildDetector:
                 logger.warning("✗ %s validation failed", build_system.type)
             return success
         except FileNotFoundError:
-            logger.warning("✗ %s not found in PATH", build_system.type)
+            logger.warning(
+                "✗ %s not found in PATH (probe: %s)",
+                build_system.type, validation_cmd[0],
+            )
             return False
         except subprocess.TimeoutExpired:
             logger.warning("✗ %s validation timed out", build_system.type)

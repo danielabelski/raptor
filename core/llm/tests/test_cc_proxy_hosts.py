@@ -56,9 +56,9 @@ def isolated_env(monkeypatch):
     from a clean slate. Covers all the alternative-provider triggers
     plus the regional knobs."""
     for var in (
-        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-        "AWS_REGION", "AWS_DEFAULT_REGION",
+        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_MANTLE",
+        "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+        "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
         "CLOUD_ML_REGION", "VERTEX_LOCATION",
         "ANTHROPIC_BASE_URL", "AZURE_OPENAI_ENDPOINT",
     ):
@@ -745,4 +745,48 @@ class TestBuildDetectorMigration:
             "build_detector.py contains the pre-migration "
             "hardcoded proxy_hosts literal — call site should use "
             "proxy_hosts_for_cc_dispatch(claude_bin) instead"
+        )
+
+
+class TestBedrockMantle:
+
+    def test_mantle_flag_switches_host(
+        self, isolated_env, no_override_config, no_calibrate,
+    ):
+        isolated_env.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        isolated_env.setenv("CLAUDE_CODE_USE_MANTLE", "1")
+        isolated_env.setenv("AWS_REGION", "us-east-1")
+        hosts = proxy_hosts_for_cc_dispatch()
+        assert _hostname_in(hosts, "bedrock-mantle.us-east-1.api.aws")
+        assert not _hostname_in(
+            hosts, "bedrock-runtime.us-east-1.amazonaws.com",
+        )
+
+    def test_regional_sts_included(
+        self, isolated_env, no_override_config, no_calibrate,
+    ):
+        """botocore defaults to the regional STS endpoint — both the
+        global and regional hosts must be allowed or credential
+        refresh dies behind the proxy."""
+        isolated_env.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        isolated_env.setenv("AWS_REGION", "eu-west-2")
+        hosts = proxy_hosts_for_cc_dispatch()
+        assert _hostname_in(hosts, "sts.amazonaws.com")
+        assert _hostname_in(hosts, "sts.eu-west-2.amazonaws.com")
+
+    def test_profile_region_resolved_when_env_absent(
+        self, isolated_env, no_override_config, no_calibrate, tmp_path,
+    ):
+        """No env region → the profile's shared-config region is used
+        instead of a silent wrong-region guess."""
+        config = tmp_path / "aws-config"
+        config.write_text(
+            "[profile bedrock-access]\nregion = eu-central-1\n",
+        )
+        isolated_env.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        isolated_env.setenv("AWS_PROFILE", "bedrock-access")
+        isolated_env.setenv("AWS_CONFIG_FILE", str(config))
+        hosts = proxy_hosts_for_cc_dispatch()
+        assert _hostname_in(
+            hosts, "bedrock-runtime.eu-central-1.amazonaws.com",
         )

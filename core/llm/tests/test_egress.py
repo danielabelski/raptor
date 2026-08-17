@@ -431,3 +431,83 @@ class TestOllamaOnlyProxiedHost:
         assert "NO_PROXY" not in os.environ
         assert "HTTPS_PROXY" not in os.environ
         assert stub_proxy == []
+
+
+# ---------------------------------------------------------------------------
+# derive_allowlist — Bedrock hosts
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveAllowlistBedrock:
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_aws(self, monkeypatch):
+        for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
+                    "RAPTOR_BEDROCK_PROFILE", "AWS_ENDPOINT_URL_BEDROCK",
+                    "AWS_CONFIG_FILE"):
+            monkeypatch.delenv(var, raising=False)
+
+    def _bedrock_model(self, **kw):
+        mc = _model(provider="bedrock",
+                    model_name="anthropic.claude-sonnet-5")
+        mc.api_key = None
+        for k, v in kw.items():
+            setattr(mc, k, v)
+        return mc
+
+    def test_mantle_entry_yields_endpoint_and_sts(self):
+        cfg = _config(primary=self._bedrock_model(aws_region="us-east-1"))
+        hosts = egress.derive_allowlist(cfg)
+        assert "bedrock-mantle.us-east-1.api.aws" in hosts
+        assert "sts.amazonaws.com" in hosts
+        assert "sts.us-east-1.amazonaws.com" in hosts
+
+    def test_runtime_entry_yields_runtime_host(self):
+        cfg = _config(primary=self._bedrock_model(
+            aws_region="eu-west-1", bedrock_api="runtime"))
+        hosts = egress.derive_allowlist(cfg)
+        assert "bedrock-runtime.eu-west-1.amazonaws.com" in hosts
+        assert not any(h.startswith("bedrock-mantle") for h in hosts)
+
+    def test_env_region_fallback(self, monkeypatch):
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        cfg = _config(primary=self._bedrock_model())
+        hosts = egress.derive_allowlist(cfg)
+        assert "bedrock-mantle.us-west-2.api.aws" in hosts
+
+    def test_endpoint_override_wins(self, monkeypatch):
+        monkeypatch.setenv(
+            "AWS_ENDPOINT_URL_BEDROCK", "https://bedrock-stub.test:9443",
+        )
+        cfg = _config(primary=self._bedrock_model(aws_region="us-east-1"))
+        hosts = egress.derive_allowlist(cfg)
+        assert "bedrock-stub.test" in hosts
+
+    def test_no_region_yields_no_guess(self, monkeypatch, tmp_path):
+        """Unresolvable region → no invented host; the dispatcher's
+        own no-region 503 carries the diagnostic."""
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "absent"))
+        cfg = _config(primary=self._bedrock_model())
+        hosts = egress.derive_allowlist(cfg)
+        assert not any("bedrock" in h for h in hosts)
+
+    def test_multi_region_entries_both_covered(self):
+        cfg = _config(
+            primary=self._bedrock_model(aws_region="us-east-1"),
+            fallbacks=[self._bedrock_model(
+                aws_region="eu-west-1", bedrock_api="runtime")],
+        )
+        hosts = egress.derive_allowlist(cfg)
+        assert "bedrock-mantle.us-east-1.api.aws" in hosts
+        assert "bedrock-runtime.eu-west-1.amazonaws.com" in hosts
+        assert "sts.eu-west-1.amazonaws.com" in hosts
+
+
+def test_no_proxy_augmentation_includes_imds():
+    """IMDS is link-local and never proxyable — the NO_PROXY
+    augmentation must exempt it even when the operator's NO_PROXY
+    lacks the entry, or profile/role credential resolution dies
+    behind the proxy."""
+    out = egress._augment_no_proxy("corp.example")
+    assert "169.254.169.254" in out.split(",")
+    assert out.startswith("corp.example")

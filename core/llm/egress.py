@@ -104,7 +104,15 @@ _KNOWN_DEFAULTS = {
 # included: operators point clients at "0.0.0.0:11434" surprisingly
 # often (copy-pasted from the server's bind address), and it resolves
 # to loopback on connect.
-_LOCAL_BYPASS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+_LOCAL_BYPASS = (
+    "localhost", "127.0.0.1", "::1", "0.0.0.0",
+    # EC2 instance metadata (IMDS) — link-local, never proxyable.
+    # botocore's credential fetch honours env proxies; routing an IMDS
+    # request through any proxy breaks credential resolution for
+    # profile/role SigV4, so it must always be NO_PROXY-exempt even on
+    # hosts whose operator NO_PROXY lacks the entry.
+    "169.254.169.254",
+)
 
 
 # Idempotency: once enabled in this process, repeated calls are no-ops
@@ -169,6 +177,14 @@ def derive_allowlist(config: LLMConfig) -> set[str]:
     for model in candidates:
         if model is None:
             continue
+        if getattr(model, "provider", None) == "bedrock":
+            # Bedrock has no static endpoint — the host is
+            # region-derived per surface, and credential refresh
+            # (assume-role / SSO) additionally needs STS.  Without
+            # these the dispatcher's outbound would be denied by the
+            # very proxy this module installs.
+            hosts.update(_bedrock_hosts_for(model))
+            continue
         # Per-model api_base wins; otherwise fall back to provider
         # default. PROVIDER_ENDPOINTS first (what the SDK actually
         # uses), _KNOWN_DEFAULTS for native-SDK Anthropic which
@@ -184,6 +200,53 @@ def derive_allowlist(config: LLMConfig) -> set[str]:
         if host:
             hosts.add(host)
     return hosts
+
+
+def _bedrock_hosts_for(model) -> set[str]:
+    """Hosts one Bedrock ModelConfig needs through the egress proxy:
+    the surface endpoint for its resolved region, plus the STS hosts
+    botocore's credential refresh uses (global + regional endpoints —
+    botocore defaults to regional STS).
+
+    Region ladder mirrors the signer: the entry's pin → env → the
+    profile's configured region via the botocore chain (no-network
+    lookup).  When no region resolves, only the endpoint-override host
+    (if any) is returned — the dispatcher will 503 the request with
+    its own no-region diagnostic; a guessed host here would just mask
+    that with a proxy denial for the wrong hostname.
+    """
+    endpoint_override = os.environ.get("AWS_ENDPOINT_URL_BEDROCK")
+    if endpoint_override:
+        host = _hostname_of(endpoint_override)
+        return {host} if host else set()
+    region = (
+        getattr(model, "aws_region", None)
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+    )
+    if not region:
+        try:
+            import botocore.session
+            session = botocore.session.Session(
+                profile=getattr(model, "aws_profile", None)
+                or os.environ.get("RAPTOR_BEDROCK_PROFILE")
+                or os.environ.get("AWS_PROFILE"),
+            )
+            region = session.get_config_variable("region")
+        except Exception:  # noqa: BLE001 — botocore optional here
+            region = None
+    if not region:
+        return set()
+    surface = getattr(model, "bedrock_api", "mantle") or "mantle"
+    if surface == "runtime":
+        endpoint_host = f"bedrock-runtime.{region}.amazonaws.com"
+    else:
+        endpoint_host = f"bedrock-mantle.{region}.api.aws"
+    return {
+        endpoint_host,
+        "sts.amazonaws.com",
+        f"sts.{region}.amazonaws.com",
+    }
 
 
 def _hostname_of(url: str) -> str:

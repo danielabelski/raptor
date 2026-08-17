@@ -64,6 +64,11 @@ _OVERRIDE_CONFIG_PATH = Path.home() / ".config" / "raptor" / "cc-dispatch-proxy-
 # without ``CLAUDE_CODE_USE_BEDROCK`` produces distinct profiles.
 _PROVIDER_ENV_KEYS: tuple[str, ...] = (
     "CLAUDE_CODE_USE_BEDROCK",
+    # Mantle vs runtime are different endpoints on different domains
+    # (``bedrock-mantle.<region>.api.aws`` vs ``bedrock-runtime.
+    # <region>.amazonaws.com``) — flipping the flag must change both
+    # the static hosts and the calibration cache key.
+    "CLAUDE_CODE_USE_MANTLE",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
     "ANTHROPIC_BASE_URL",
@@ -181,13 +186,42 @@ def _bedrock_hosts() -> list[str]:
     region = (
         os.environ.get("AWS_REGION")
         or os.environ.get("AWS_DEFAULT_REGION")
-        or "us-east-1"
     )
+    if not region:
+        # Claude Code resolves its region through the full AWS chain
+        # (env, then the profile's shared-config entry), which this
+        # sandbox-policy module can't fully replicate without botocore.
+        # Try the profile's config-file region; fall back to us-east-1
+        # with a loud log rather than silently — a wrong guess here
+        # surfaces as an opaque proxy denial inside the CC child.
+        try:
+            import botocore.session
+            region = botocore.session.Session(
+                profile=os.environ.get("AWS_PROFILE"),
+            ).get_config_variable("region")
+        except Exception:  # noqa: BLE001 — botocore optional
+            region = None
+        if not region:
+            region = "us-east-1"
+            logger.warning(
+                "cc_proxy_hosts: no AWS region resolvable (env or "
+                "profile config) — defaulting Bedrock proxy hosts to "
+                "us-east-1; set AWS_REGION if Claude Code targets "
+                "another region",
+            )
+    # Mantle and runtime are distinct endpoints on distinct domains;
+    # emit the surface Claude Code is configured for.
+    if os.environ.get("CLAUDE_CODE_USE_MANTLE"):
+        llm_host = f"bedrock-mantle.{region}.api.aws"
+    else:
+        llm_host = f"bedrock-runtime.{region}.amazonaws.com"
     return [
-        # LLM endpoint, region-pinned
-        f"bedrock-runtime.{region}.amazonaws.com",
-        # AWS STS for credential refresh; required by AWS SDK auth flow
+        llm_host,
+        # AWS STS for credential refresh; required by AWS SDK auth
+        # flow.  botocore defaults to the REGIONAL STS endpoint, so
+        # allow both the global and regional hosts.
         "sts.amazonaws.com",
+        f"sts.{region}.amazonaws.com",
     ]
 
 

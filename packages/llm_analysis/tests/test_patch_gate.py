@@ -227,6 +227,31 @@ class TestDiffParse:
         assert result.detector is None
         assert result.control is None
 
+    def test_mid_string_file_scheme_not_corrupted(
+        self, tmp_path, monkeypatch,
+    ):
+        """A literal ``file://`` mid-path must survive normalisation.
+
+        The pre-fix substring-``replace`` deleted the marker anywhere
+        in the string, rewriting ``src/file://vuln.c`` (the directory
+        ``src/file:`` — doubled separators collapse) to ``src/vuln.c``
+        and skipping the gate on "source file not found".
+        """
+        monkeypatch.setattr(patch_gate, "_import_sandbox_run",
+                            lambda: None)
+        repo = tmp_path / "repo"
+        weird_dir = repo / "src" / "file:"
+        weird_dir.mkdir(parents=True)
+        (weird_dir / "vuln.c").write_text(VULN_C, encoding="utf-8")
+        result = run_patch_gate(
+            _fenced_response(_make_diff(VULN_C, FIXED_C,
+                                        path="src/file://vuln.c")),
+            repo_path=repo, file_path="src/file://vuln.c",
+            start_line=FINDING_LINE, end_line=FINDING_LINE,
+        )
+        assert not any("source file not found" in n
+                       for n in result.notes)
+
 
 # ---------------------------------------------------------------------------
 # 2. Scope check matrix

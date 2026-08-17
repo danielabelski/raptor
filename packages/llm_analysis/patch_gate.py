@@ -56,6 +56,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.paths import strip_file_uri
+
 logger = logging.getLogger(__name__)
 
 
@@ -762,7 +764,9 @@ def run_patch_gate(
 
     # Resolve + confine the finding's source file (same containment
     # check as VulnerabilityContext.get_full_file_path).
-    rel = _strip_diff_prefix(file_path).replace("file://", "")
+    # Leading-scheme strip only — the old substring-replace corrupted
+    # paths containing a literal file:// mid-string.
+    rel = strip_file_uri(_strip_diff_prefix(file_path))
     source_file = (Path(repo_path) / rel).resolve()
     try:
         source_file.relative_to(Path(repo_path).resolve())

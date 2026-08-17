@@ -415,6 +415,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "smt": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
+        "cwe_inference": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
         "joern_guard": TierCounters(),
@@ -8368,6 +8369,62 @@ def _write_decompilation_tmpfile(
         return None
 
 
+def _effective_cwe(
+    outcome: ReviewOutcome,
+    tier_counters: dict[str, TierCounters] | None = None,
+) -> str:
+    """Review-supplied CWE, falling back to keyword inference.
+
+    Reviews frequently emit ``cwe: ""`` even for non-clean verdicts,
+    which starves the CWE-seeded tool chains (``_cwe_fallback_chain``)
+    — the hypothesis then dispatches only through the narrower
+    string-matched channels. When the field is empty but hypotheses
+    exist, infer a CWE from the hypothesis texts via the existing
+    keyword dispatch, stamp ``review_result["cwe_inferred"]`` so the
+    journal/export show the value was inferred, and count the
+    inference in tier telemetry (``cwe_inference``).
+    """
+    review = outcome.review_result or {}
+    cwe = review.get("cwe_class") or review.get("cwe") or ""
+    if cwe:
+        return cwe
+
+    inferred_prior = review.get("cwe_inferred") or ""
+    if inferred_prior:
+        return inferred_prior
+
+    texts: list[str] = []
+    if outcome.hypothesis:
+        texts.append(outcome.hypothesis)
+    for h in (outcome.hypotheses or review.get("hypotheses") or []):
+        if isinstance(h, dict) and h.get("mechanism"):
+            texts.append(h["mechanism"])
+    if not texts:
+        return ""
+
+    try:
+        from .cwe_dispatch import infer_cwe_from_hypothesis
+    except ImportError:
+        return ""
+
+    for text in texts:
+        inferred = infer_cwe_from_hypothesis(text)
+        if inferred:
+            if outcome.review_result is not None:
+                outcome.review_result["cwe_inferred"] = inferred
+            if tier_counters is not None:
+                _increment_tier_dict(tier_counters, "cwe_inference", "confirmed")
+            logger.debug(
+                "cwe inference: %s:%s — review emitted empty cwe, "
+                "inferred %s from hypothesis text",
+                outcome.file, outcome.function, inferred,
+            )
+            return inferred
+    if tier_counters is not None:
+        _increment_tier_dict(tier_counters, "cwe_inference", "inconclusive")
+    return ""
+
+
 def _hypothesis_to_tool_chain(
     hypothesis: str,
     file_path: str,
@@ -8464,6 +8521,31 @@ def _hypothesis_to_tool_chain(
     return chain
 
 
+# CWEs already reported as having no dispatch entry (log once per run,
+# not once per finding — a hot class would otherwise spam the log).
+_UNMAPPED_CWES_LOGGED: set[str] = set()
+
+
+def _warn_unmapped_cwe(cwe: str) -> None:
+    """One-line visibility when a review-emitted CWE dispatches nothing.
+
+    Without this, a CWE outside every dispatch table silently produces
+    an empty chain and the claim is never mechanically tested.
+    """
+    norm = cwe.upper().strip()
+    if not norm.startswith("CWE-"):
+        norm = f"CWE-{norm}"
+    if norm in _UNMAPPED_CWES_LOGGED:
+        return
+    _UNMAPPED_CWES_LOGGED.add(norm)
+    logger.warning(
+        "review emitted %s but no tool-chain dispatch entry exists — "
+        "CWE-seeded verification will not run for this class "
+        "(hypothesis-keyword channels may still fire)",
+        norm,
+    )
+
+
 def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
     """Generate tool chain from CWE dispatch when string matching fails."""
     chain: list[dict[str, Any]] = []
@@ -8525,6 +8607,9 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         cocci_flow_entry = chain_entry_for_cwe(cwe)
         if cocci_flow_entry:
             chain.append(cocci_flow_entry)
+
+    if cwe and not chain:
+        _warn_unmapped_cwe(cwe)
 
     return chain
 
@@ -9242,11 +9327,7 @@ def _sweep_validate(
         if _decomp_tmp_dir is not None:
             effective_file = f"{outcome.function}.c"
 
-    cwe = (
-        (outcome.review_result or {}).get("cwe_class")
-        or (outcome.review_result or {}).get("cwe")
-        or ""
-    )
+    cwe = _effective_cwe(outcome, tier_counters)
 
     try:
         if not is_binary:
@@ -9494,11 +9575,9 @@ def _proactive_validate(
         return outcome
 
     review = outcome.review_result or {}
-    cwe = review.get("cwe_class") or review.get("cwe") or ""
 
     try:
         from .cwe_dispatch import (
-            infer_cwe_from_hypothesis,
             joern_applicable,
             sinks_for_cwe,
             smt_verb_for_cwe,
@@ -9507,10 +9586,10 @@ def _proactive_validate(
         _has_cwe_dispatch = True
     except ImportError:
         _has_cwe_dispatch = False
-        infer_cwe_from_hypothesis = None
 
-    if not cwe and _has_cwe_dispatch and infer_cwe_from_hypothesis:
-        cwe = infer_cwe_from_hypothesis(outcome.hypothesis or "") or ""
+    # Falls back to keyword inference over the hypothesis texts when
+    # the review emitted an empty cwe (marked inferred in telemetry).
+    cwe = _effective_cwe(outcome, tier_counters)
 
     if not cwe:
         return outcome
@@ -9904,11 +9983,7 @@ def _run_critique(
     for outcome in recent_suspicious:
         if _has_refuting_counter(outcome):
             continue
-        cwe = (
-            (outcome.review_result or {}).get("cwe_class")
-            or (outcome.review_result or {}).get("cwe")
-            or ""
-        )
+        cwe = _effective_cwe(outcome, result.tier_counters)
         chain = _hypothesis_to_tool_chain(outcome.hypothesis, outcome.file, cwe=cwe)
         if not chain:
             continue
@@ -11306,11 +11381,7 @@ def _promote_suspicious(
             line_end,
         )
 
-        cwe = (
-            (outcome.review_result or {}).get("cwe_class")
-            or (outcome.review_result or {}).get("cwe")
-            or ""
-        )
+        cwe = _effective_cwe(outcome, result.tier_counters)
 
         mech_tool = _correlated_mech_detector_tool(
             outcome, hypothesis, cwe, mechanical_findings,
@@ -11591,13 +11662,7 @@ def _promote_clean_refuted(
             line_end,
         )
 
-        cwe = ""
-        if outcome.review_result:
-            cwe = (
-                outcome.review_result.get("cwe_class")
-                or outcome.review_result.get("cwe")
-                or ""
-            )
+        cwe = _effective_cwe(outcome, result.tier_counters)
 
         ranked = sorted(
             refuted,

@@ -821,6 +821,11 @@ class TestPromoteCleanRefuted:
                 {"type": "semgrep", "config": {"rule": "r.yaml"}},
             ],
         )
+        # Pin the SMT-verb source to the hypothesis-string mapping so
+        # the CWE-inference fallback can't supply a different verb.
+        monkeypatch.setattr(
+            "core.audit.cwe_dispatch.smt_verb_for_cwe", lambda c: None,
+        )
         monkeypatch.setattr(
             "core.audit.orchestrator._read_raw_source",
             lambda *a, **kw: "int f(int x) { return x + 1; }",
@@ -866,6 +871,12 @@ class TestRefutedHypothesisDispatch:
         monkeypatch.setattr(
             "core.audit.orchestrator._hypothesis_to_smt_verb",
             lambda h: None,
+        )
+        # The CWE-inference fallback can also supply an SMT verb for
+        # mechanisms that keyword-map to a CWE — pin it off so these
+        # tests exercise the cheap-channel lane deterministically.
+        monkeypatch.setattr(
+            "core.audit.cwe_dispatch.smt_verb_for_cwe", lambda c: None,
         )
         monkeypatch.setattr(
             "core.audit.orchestrator._read_raw_source",

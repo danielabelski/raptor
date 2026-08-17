@@ -222,9 +222,15 @@ REVIEW_SCHEMA = {
             "description": (
                 "CWE identifier for the vulnerability class, e.g. "
                 "'CWE-362' for race conditions, 'CWE-190' for integer "
-                "overflow, 'CWE-120' for buffer overflow. Use the most "
-                "specific CWE that applies. Empty string if status is "
-                "clean."
+                "overflow, 'CWE-120' for buffer overflow. You MUST "
+                "fill this with the most specific CWE that applies "
+                "whenever status is NOT clean, OR whenever your "
+                "hypotheses array is non-empty (refuted hypotheses "
+                "included — tag the class of your primary hypothesis). "
+                "Mechanical tool dispatch is seeded from this field: "
+                "an empty value disables CWE-directed verification of "
+                "your claim. Empty string ONLY for a clean verdict "
+                "with no hypotheses."
             ),
         },
         "counter_hypothesis": {

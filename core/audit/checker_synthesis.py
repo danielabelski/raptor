@@ -54,22 +54,41 @@ class SynthesisResult:
     cost_usd: float = 0.0
 
 
+def _synthesis_class_cost(client: Any) -> float:
+    """Completed-call spend recorded for the checker_synthesis class.
+
+    The budget client is shared across audit phases, so deltas must be
+    read from the per-class history rather than ``total_cost`` (which
+    moves with every concurrent call class)."""
+    hist = getattr(client, "_call_cost_history", None) or {}
+    entry = hist.get("checker_synthesis")
+    return float(entry[1]) if entry else 0.0
+
+
 def _build_llm_callable(config: Any):
     """Build a ``packages.checker_synthesis.LLMCallable`` from /audit's
     LLM config. Returns ``(callable, client)`` or None when no LLM is
     available. The caller reads ``client.total_cost`` after synthesis to
     feed the cost back into the budget tracker."""
     try:
-        from core.llm.client import LLMClient
         from core.llm.task_types import TaskType
     except ImportError:
         return None
 
-    model = None
-    models = getattr(config, "models", None)
-    if models and models[0] != "default":
-        model = models[0]
-    client = LLMClient(pinned_model=model) if model else LLMClient()
+    # Budget-governed client: synthesis spend must hit the run ledger
+    # and the per-call reservation gate. Falls back to a fresh client
+    # (pinned to the run's primary model) for library callers.
+    client = getattr(config, "llm_budget_client", None)
+    if client is None:
+        try:
+            from core.llm.client import LLMClient
+        except ImportError:
+            return None
+        model = None
+        models = getattr(config, "models", None)
+        if models and models[0] != "default":
+            model = models[0]
+        client = LLMClient(pinned_model=model) if model else LLMClient()
     if not hasattr(client, "generate_structured"):
         return None
 
@@ -168,7 +187,7 @@ def synthesize_and_sweep(
     if llm_pair is None:
         return None
     llm_callable, llm_client = llm_pair
-    cost_before = llm_client.total_cost
+    cost_before = _synthesis_class_cost(llm_client)
 
     out_dir = getattr(config, "out_dir", None)
     target_path = getattr(config, "target_path", None)
@@ -299,7 +318,7 @@ def synthesize_and_sweep(
         origin_file=file_path,
         origin_function=function,
         hits=new_hits,
-        cost_usd=llm_client.total_cost - cost_before,
+        cost_usd=_synthesis_class_cost(llm_client) - cost_before,
     )
 
 
@@ -341,7 +360,7 @@ def synthesize_from_external_seed(
     if llm_pair is None:
         return None
     llm_callable, llm_client = llm_pair
-    cost_before = llm_client.total_cost
+    cost_before = _synthesis_class_cost(llm_client)
 
     positive = getattr(ext_seed, "positive_fixture", None)
     negative = getattr(ext_seed, "negative_fixture", None)
@@ -399,7 +418,7 @@ def synthesize_from_external_seed(
         origin_file=seed.file,
         origin_function=seed.function,
         hits=hits,
-        cost_usd=llm_client.total_cost - cost_before,
+        cost_usd=_synthesis_class_cost(llm_client) - cost_before,
     )
 
 
@@ -489,7 +508,7 @@ def synthesize_verification_rule(
     if llm_pair is None:
         return None
     llm_callable, llm_client = llm_pair
-    cost_before = llm_client.total_cost
+    cost_before = _synthesis_class_cost(llm_client)
 
     try:
         from packages.checker_synthesis import SeedBug
@@ -525,10 +544,10 @@ def synthesize_verification_rule(
         )
         return OnDemandSynthesisResult(
             cwe=seed.cwe,
-            cost_usd=llm_client.total_cost - cost_before,
+            cost_usd=_synthesis_class_cost(llm_client) - cost_before,
         )
 
-    cost = llm_client.total_cost - cost_before
+    cost = _synthesis_class_cost(llm_client) - cost_before
     if cs.rule is None:
         logger.debug(
             "on-demand synthesis: no rule produced for %s:%s (errors: %s)",

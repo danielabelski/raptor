@@ -1233,6 +1233,7 @@ def review_one_function(
                 llm_spec = infer_spec_with_llm_sync(
                     gap_with_source,
                     mechanical_spec=ctx.get("inferred_spec"),
+                    client=getattr(config, "llm_budget_client", None),
                 )
                 if llm_spec and llm_spec.intent:
                     ctx["inferred_spec"] = llm_spec
@@ -1639,6 +1640,23 @@ def review_one_function(
                     cc_ctx["clean_check"] = cc_prompt
                     try:
                         revised = review_fn(cc_ctx, config)
+                        # Phase-book the continuation call: the merge
+                        # below folds its cost into the outcome for
+                        # the journal, but the outcome-level booking
+                        # already happened — without this the second
+                        # call of every two-call review vanished from
+                        # the phase ledger ($8.93 on one measured run).
+                        result.cost_tracker.record_call(
+                            "clean_check",
+                            cost_usd=revised.cost_usd,
+                            tokens_in=getattr(revised, "tokens_in", 0),
+                            tokens_out=getattr(revised, "tokens_out", 0),
+                            cache_read_tokens=getattr(
+                                revised, "cache_read_tokens", 0),
+                            cache_write_tokens=getattr(
+                                revised, "cache_write_tokens", 0),
+                            wall_time_s=revised.duration_s,
+                        )
                         if revised.status != "clean":
                             outcome = _merge_clean(outcome, revised)
                             with result._lock:
@@ -1766,6 +1784,22 @@ def review_one_function(
                         exc_info=True,
                     )
                     break
+                # Phase-book the refinement round: merge_outcomes sums
+                # the cost into the surviving outcome for the journal,
+                # but the outcome-level phase booking already happened
+                # before refinement — continuation rounds otherwise
+                # never reach the phase ledger.
+                result.cost_tracker.record_call(
+                    "refinement",
+                    cost_usd=refined.cost_usd,
+                    tokens_in=getattr(refined, "tokens_in", 0),
+                    tokens_out=getattr(refined, "tokens_out", 0),
+                    cache_read_tokens=getattr(
+                        refined, "cache_read_tokens", 0),
+                    cache_write_tokens=getattr(
+                        refined, "cache_write_tokens", 0),
+                    wall_time_s=refined.duration_s,
+                )
                 outcome = _merge_refined(outcome, refined)
                 logger.debug(
                     "refinement round %d for %s:%s → %s",
@@ -4768,9 +4802,11 @@ def _run_audit_body(
 
             iris_llm = None
             try:
-                from core.llm.client import LLMClient
-                _iris_model = config.models[0] if config.models and config.models[0] != "default" else None
-                iris_llm = LLMClient(pinned_model=_iris_model) if _iris_model else LLMClient()
+                # Budget-governed client: iris refinement spend must hit
+                # the run ledger and the reservation gate (a private
+                # client once dispatched an iris call 11 minutes after
+                # budget exhaustion).
+                iris_llm = _run_llm_client(config)
             except Exception:
                 logger.debug("IRIS LLM client init failed", exc_info=True)
 
@@ -5089,9 +5125,7 @@ def _run_audit_body(
         logger.debug("error retry pass failed", exc_info=True)
 
     try:
-        from core.llm.client import LLMClient
-        _dark_model = config.models[0] if config.models and config.models[0] != "default" else None
-        _dark_client = LLMClient(pinned_model=_dark_model) if _dark_model else LLMClient()
+        _dark_client = _run_llm_client(config)
         _run_dark_verification(
             result,
             config,
@@ -5534,15 +5568,9 @@ def _run_concept_discovery(
         except Exception:
             logger.debug("concept discovery: domain model write failed", exc_info=True)
 
-    from core.llm.client import LLMClient
     from core.llm.task_types import TaskType
 
-    _model = (
-        config.models[0]
-        if config.models and config.models[0] != "default"
-        else None
-    )
-    client = LLMClient(pinned_model=_model) if _model else LLMClient()
+    client = _run_llm_client(config)
 
     def _llm(prompt, schema, system_prompt):
         try:
@@ -7144,6 +7172,43 @@ def _record_executor_stop(result: OrchestratorResult, executor_stats: Any) -> No
         result.terminated_by = "shutdown"
 
 
+def _client_class_cost(client: Any, call_class: str) -> float:
+    """Completed-call spend the client has recorded for one call class.
+
+    Reads the client's per-class cost history — the only per-purpose
+    ledger that stays accurate when several audit phases share the
+    budget-governed client concurrently."""
+    hist = getattr(client, "_call_cost_history", None) or {}
+    entry = hist.get(call_class)
+    return float(entry[1]) if entry else 0.0
+
+
+def _run_llm_client(config: OrchestratorConfig) -> Any:
+    """The run's budget-governed LLM client.
+
+    EVERY audit call class must dispatch through the client whose
+    ledger enforces --max-cost: a fresh ``LLMClient()`` carries its own
+    (default) cap, so its calls bypass the per-call reservation gate
+    AND never reach the run's authoritative spend ledger — one measured
+    run booked $24.10 while telemetry showed $29.18 because iris /
+    spec_inference / post-loop classes each built private clients.
+
+    Falls back to a fresh client (pinned to the run's primary model)
+    only when no budget client was wired — library callers and tests.
+    """
+    client = getattr(config, "llm_budget_client", None)
+    if client is not None:
+        return client
+    from core.llm.client import LLMClient
+
+    model = (
+        config.models[0]
+        if config.models and config.models[0] != "default"
+        else None
+    )
+    return LLMClient(pinned_model=model) if model else LLMClient()
+
+
 def _check_budget(
     config: OrchestratorConfig,
     start_time: float,
@@ -8021,14 +8086,13 @@ def _study_consumer_loop(
         n_before = len(dm.get("concepts", [])) if dm else 0
         try:
             from core.concepts.study import run_study
-            from core.llm.client import LLMClient
 
-            study_model = (
-                config.models[0]
-                if config.models and config.models[0] != "default"
-                else None
-            )
-            study_client = LLMClient(pinned_model=study_model)
+            # Budget-governed client: study spend must hit the run
+            # ledger and the reservation gate. Per-class history gives
+            # a contamination-free spend delta even though the client
+            # is shared with concurrent review calls.
+            study_client = _run_llm_client(config)
+            _study_before = _client_class_cost(study_client, "study")
             try:
                 if throttle is not None:
                     # Low priority: study batches yield the contended
@@ -8052,8 +8116,16 @@ def _study_consumer_loop(
                 # result.total_cost_usd, so a run under-reported (and
                 # under-enforced) by every Phase 2/3 study call —
                 # observed $2.87 reported vs $6.16 scorecard actual.
-                # finally: partial spend from a failed run still counts.
-                spent = getattr(study_client, "total_cost", 0.0) or 0.0
+                # Delta over the client's per-class ledger: the shared
+                # budget client also carries review/iris spend, so
+                # reading total_cost here would book the whole run
+                # into the study phase. Failed-attempt spend stays on
+                # the client ledger and reconciles at run end.
+                spent = max(
+                    0.0,
+                    _client_class_cost(study_client, "study")
+                    - _study_before,
+                )
                 if spent:
                     with result._lock:
                         result.total_cost_usd += spent
@@ -13617,15 +13689,7 @@ def _adversarial_refute_pass(
     llm_client = config.llm_client
     if llm_client is None:
         try:
-            from core.llm.client import LLMClient
-            _model = (
-                config.models[0]
-                if config.models and config.models[0] != "default"
-                else None
-            )
-            llm_client = (
-                LLMClient(pinned_model=_model) if _model else LLMClient()
-            )
+            llm_client = _run_llm_client(config)
         except Exception:  # noqa: BLE001 — pass is best-effort
             logger.warning(
                 "adversarial refutation skipped — no LLM client available",

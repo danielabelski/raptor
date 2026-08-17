@@ -136,8 +136,12 @@ def run_llm_summary_pass(
         return {}
 
     try:
-        from core.llm.client import LLMClient
-        client = LLMClient()
+        # Prefer the run's budget-governed client so summary spend
+        # enters the run ledger and the per-call reservation gate.
+        client = getattr(config, "llm_budget_client", None)
+        if client is None:
+            from core.llm.client import LLMClient
+            client = LLMClient()
     except Exception:
         logger.debug("LLM client unavailable for summary pass", exc_info=True)
         return {}

@@ -821,11 +821,19 @@ def _parse_llm_spec_response(response: str) -> dict[str, Any]:
 def infer_spec_with_llm_sync(
     gap: dict[str, Any],
     mechanical_spec: InferredSpec | None = None,
+    *,
+    client: Any | None = None,
 ) -> InferredSpec | None:
     """Synchronous LLM spec inference for use in the review loop.
 
     Fires only for high-value targets (entry points, sinks, auth/crypto)
     where mechanical inference produced incomplete results.
+
+    ``client`` should be the run's budget-governed LLM client so
+    spec-inference spend enters the run ledger and the per-call
+    reservation gate (a private client here once left 28 calls of
+    spend invisible to the --max-cost cap). Falls back to a fresh
+    client for library callers.
     """
     function_name = gap.get("name", "")
     file_path = gap.get("file", "")
@@ -835,8 +843,9 @@ def infer_spec_with_llm_sync(
         return mechanical_spec
 
     try:
-        from core.llm.client import LLMClient
-        client = LLMClient()
+        if client is None:
+            from core.llm.client import LLMClient
+            client = LLMClient()
         prompt, system_prompt = build_spec_prompt(
             function_name, file_path, source,
             model_id=getattr(client, "model_name", "") or "",

@@ -1268,6 +1268,10 @@ def call_llm_for_rule_refinement(
     """
     try:
         if client is None:
+            # Prefer the run's budget-governed client so refinement
+            # spend enters the run ledger and the reservation gate.
+            client = getattr(config, "llm_budget_client", None)
+        if client is None:
             from core.llm.client import LLMClient
             client = LLMClient()
         response = client.generate(

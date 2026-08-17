@@ -126,3 +126,62 @@ class TestEnsureInprocessDispatcherEnv:
             os.environ.pop("RAPTOR_LLM_TOKEN_FD", None)
             if d is not None:
                 d.shutdown()
+
+
+class TestEnsureRouteForModelConfigs:
+    """Shared self-serve gate for standalone entry points
+    (raptor-llm-ask, the audit pipeline): starts an in-process
+    dispatcher only when a resolved model is dispatcher-only
+    (Bedrock) and no route exists."""
+
+    def test_noop_when_route_exists(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        monkeypatch.setenv("RAPTOR_LLM_SOCKET", "/tmp/existing.sock")
+        assert ensure_route_for_model_configs(
+            [SimpleNamespace(provider="bedrock")], label="t",
+        ) is None
+
+    def test_noop_without_dispatcher_only_provider(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+        assert ensure_route_for_model_configs(
+            [
+                None,
+                SimpleNamespace(provider="anthropic"),
+                SimpleNamespace(provider="claudecode"),
+            ],
+            label="t",
+        ) is None
+        import os
+        assert "RAPTOR_LLM_SOCKET" not in os.environ
+
+    def test_starts_and_exports_route_for_bedrock(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+        monkeypatch.delenv("RAPTOR_LLM_TOKEN_FD", raising=False)
+        d = ensure_route_for_model_configs(
+            [SimpleNamespace(provider="bedrock")], label="test-route",
+        )
+        try:
+            assert d is not None
+            import os
+            assert os.environ["RAPTOR_LLM_SOCKET"] == str(d.socket_path)
+            assert os.environ["RAPTOR_LLM_TOKEN_FD"]
+        finally:
+            if d is not None:
+                d.shutdown()
+            import os
+            os.environ.pop("RAPTOR_LLM_SOCKET", None)
+            os.environ.pop("RAPTOR_LLM_TOKEN_FD", None)

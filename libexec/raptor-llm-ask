@@ -163,17 +163,19 @@ def main() -> int:
     # Bedrock is dispatcher-only (this process holds the AWS
     # credentials; the SDK client itself never does). Pipeline runs
     # get the dispatcher from raptor.py; this standalone CLI is its
-    # own parent, so it self-serves an in-process one.
-    if (model_config.provider == "bedrock"
-            and not os.environ.get("RAPTOR_LLM_SOCKET")):
-        try:
-            from core.llm.dispatcher.lifecycle import (
-                ensure_inprocess_dispatcher_env,
-            )
-            ensure_inprocess_dispatcher_env(label="raptor-llm-ask")
-        except Exception as exc:  # noqa: BLE001 — provider errors below
-            print(f"warning: could not start LLM dispatcher: {exc}",
-                  file=sys.stderr)
+    # own parent, so it self-serves an in-process one (shared gate
+    # with the audit pipeline's standalone entry — no-op unless a
+    # resolved model is dispatcher-only and no route exists).
+    try:
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        ensure_route_for_model_configs(
+            [model_config], label="raptor-llm-ask",
+        )
+    except Exception as exc:  # noqa: BLE001 — provider errors below
+        print(f"warning: could not start LLM dispatcher: {exc}",
+              file=sys.stderr)
 
     kwargs = {"model_config": model_config}
     if args.temperature is not None:

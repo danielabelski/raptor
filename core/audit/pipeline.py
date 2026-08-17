@@ -142,7 +142,50 @@ def _make_llm_client(opts: AuditPipelineOpts):
     else:
         llm_cfg = LLMConfig(max_cost_per_scan=max_cost)
         client = LLMClient(config=llm_cfg)
+    _ensure_dispatcher_route(client, models)
     return client, models, primary_model
+
+
+def _ensure_dispatcher_route(client, models: list[str]) -> None:
+    """Self-serve an in-process dispatcher for dispatcher-only models.
+
+    Bedrock is dispatcher-only (this process holds the AWS
+    credentials; the SDK client itself never does).  Pipeline runs get
+    the dispatcher from ``raptor.py``'s launcher, but the audit
+    entry points (``raptor-audit run``, the corpus runner) call the
+    LLM in-process — without a route every Bedrock-routed review dies
+    with 'requires the RAPTOR LLM dispatcher' and the client silently
+    falls back to the claudecode transport.  Same gate and lifecycle
+    as the ``raptor-llm-ask`` self-serve.
+
+    Scans the resolved primary + fallbacks AND every ``--model`` panel
+    member (multi-model runs dispatch per-name via
+    ``config_for_model``).  Best-effort: a dispatcher start failure
+    must not kill the audit — the provider surfaces its own error.
+    """
+    import os
+
+    if os.environ.get("RAPTOR_LLM_SOCKET"):
+        return
+    candidates = [client.config.primary_model]
+    candidates.extend(client.config.fallback_models or [])
+    for name in models:
+        if name == "default":
+            continue
+        try:
+            candidates.append(client.config.config_for_model(name))
+        except Exception:  # noqa: BLE001 — unresolvable name surfaces later
+            logger.debug("config_for_model(%r) failed", name, exc_info=True)
+    try:
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        ensure_route_for_model_configs(candidates, label="raptor-audit")
+    except Exception:  # noqa: BLE001 — provider errors surface downstream
+        logger.warning(
+            "could not start in-process LLM dispatcher for "
+            "Bedrock-routed models", exc_info=True,
+        )
 
 
 def _build_orchestrator_config(

@@ -134,3 +134,36 @@ def ensure_inprocess_dispatcher_env(
     os.environ["RAPTOR_LLM_TOKEN_FD"] = str(token_fd)
     atexit.register(d.shutdown)
     return d
+
+
+def ensure_route_for_model_configs(
+    model_configs,
+    *,
+    label: str = "inprocess",
+) -> Optional[LLMDispatcher]:
+    """Self-serve an in-process dispatcher when any resolved model is
+    dispatcher-only (Bedrock) and no route exists yet.
+
+    The shared gate for standalone entry points whose LLM calls happen
+    in the invoking process (``raptor-llm-ask``, the audit pipeline):
+    pipeline runs get their dispatcher from ``raptor.py``'s launcher,
+    but a standalone CLI is its own parent, so without this a
+    Bedrock-routed model dies with 'requires the RAPTOR LLM
+    dispatcher' and the client silently falls back to another
+    transport.  Same config gates and lifecycle as the
+    ``raptor-llm-ask`` self-serve: provider ``bedrock`` on any
+    resolved config + no ``RAPTOR_LLM_SOCKET`` → start one; no-op
+    (``None``) otherwise.
+
+    ``model_configs`` is any iterable of :class:`ModelConfig`-shaped
+    objects (``None`` entries tolerated).  Ownership contract matches
+    :func:`ensure_inprocess_dispatcher_env`.
+    """
+    if os.environ.get("RAPTOR_LLM_SOCKET"):
+        return None
+    if not any(
+        mc is not None and getattr(mc, "provider", "") == "bedrock"
+        for mc in model_configs
+    ):
+        return None
+    return ensure_inprocess_dispatcher_env(label=label)

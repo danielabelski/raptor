@@ -1522,9 +1522,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
 
         # The pid1 shim requires _RAPTOR_TRUSTED to run.  Only inject on
         # the unshare path (where the shim is used); the shim strips it
-        # before exec'ing the target so it never leaks.
-        if use_sandbox and not use_seatbelt and (block_network or use_mount or restrict_reads):
-            kwargs["env"].setdefault("_RAPTOR_TRUSTED", "1")
+        # before exec'ing the target so it never leaks. Copy-on-write:
+        # kwargs["env"] may still BE the caller's dict (the proxy /
+        # fake-home / degraded-net paths rebuild it, but only when
+        # those features are active) — mutating it in place would leak
+        # the trust marker into the caller's dictionary and from there
+        # into later non-sandbox subprocesses that must not carry it.
+        if (use_sandbox and not use_seatbelt
+                and (block_network or use_mount or restrict_reads)
+                and "_RAPTOR_TRUSTED" not in kwargs["env"]):
+            kwargs["env"] = {**kwargs["env"], "_RAPTOR_TRUSTED": "1"}
 
         # Force FD close at fork. Python defaults close_fds=True on POSIX
         # but we reject explicit overrides — inheriting FDs from RAPTOR

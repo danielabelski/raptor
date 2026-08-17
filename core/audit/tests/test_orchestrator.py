@@ -4113,7 +4113,7 @@ class TestHeuristicBypassFindings:
         from core.audit.orchestrator import _heuristic_bypass_findings
 
         class FakeAssumption:
-            enforced_by = ["check_auth"]
+            enforced_by = ("check_auth",)
             bug_class = "stored_taint"
             target = "db_write"
 
@@ -4144,7 +4144,7 @@ class TestHeuristicBypassFindings:
         from core.audit.orchestrator import _heuristic_bypass_findings
 
         class FakeAssumption:
-            enforced_by = ["check_auth"]
+            enforced_by = ("check_auth",)
 
         import core.iris.synthesise as synth_mod
         monkeypatch.setattr(

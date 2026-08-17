@@ -965,11 +965,9 @@ def _counter_hypothesis_is_compelling(counter: str) -> bool:
         "buffer", "stack", "heap", "oob", "out-of-bound",
         "attacker", "controlled", "tainted",
     )
-    if not any(m in lower for m in specificity_markers):
-        return False
     # Contract delegation was already ruled out above; a counter that
-    # survives every filter names a specific attack.
-    return True
+    # names a specific mechanism survives every filter.
+    return any(m in lower for m in specificity_markers)
 
 
 def _lang_correction(filename: str) -> float:

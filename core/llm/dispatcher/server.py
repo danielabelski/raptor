@@ -107,6 +107,19 @@ _TOKEN_DEFAULT_BUDGET = 10_000       # requests per worker run — agentic
                                      # easily clear 1k LLM calls.
 _TOKEN_HEADER = "X-Raptor-Token"
 
+_UPSTREAM_DEFAULT_TIMEOUT_S = 600    # read/write/pool timeout on the
+                                     # dispatcher→provider leg. Must be
+                                     # at least the largest worker-side
+                                     # timeout (claudecode/audit models
+                                     # configure up to 600s): a
+                                     # non-streaming call sends no bytes
+                                     # until generation completes, so a
+                                     # smaller value here kills long
+                                     # generations with ReadTimeout →
+                                     # 502 regardless of what the worker
+                                     # configured on its own leg.
+_UPSTREAM_CONNECT_TIMEOUT_S = 10.0
+
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     """Read an int from the environment with a default + floor.
@@ -131,6 +144,23 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
         )
         return default
     return value
+
+
+def _upstream_timeout() -> httpx.Timeout:
+    """Timeout for the dispatcher→provider forwarding leg.
+
+    Read from ``RAPTOR_LLM_DISPATCHER_UPSTREAM_TIMEOUT_S`` per request
+    (cheap — one env lookup) so operators can tune it without code
+    edits, same pattern as the token TTL/budget knobs. The connect
+    timeout stays fixed and short: a provider that can't complete the
+    TCP/TLS handshake in 10s is down, and a long connect timeout only
+    delays the worker's failover.
+    """
+    read_s = _env_int(
+        "RAPTOR_LLM_DISPATCHER_UPSTREAM_TIMEOUT_S",
+        _UPSTREAM_DEFAULT_TIMEOUT_S,
+    )
+    return httpx.Timeout(float(read_s), connect=_UPSTREAM_CONNECT_TIMEOUT_S)
 
 
 @dataclass
@@ -784,7 +814,7 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
 
             # ---- forward to upstream + stream response back ----
             try:
-                with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+                with httpx.Client(timeout=_upstream_timeout()) as client:
                     with client.stream(method, url, content=body, headers=forwarded) as up:
                         self.send_response(up.status_code)
                         for k, v in up.headers.items():

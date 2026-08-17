@@ -303,66 +303,72 @@ def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
     inside sandbox.run inherits our user-ns + net-ns, which is the
     architectural point — target and exploit land in the same netns
     without setns and without an external fd."""
-    # Import inside the function so a missing import surfaces as a
-    # structured error rather than a hard ImportError at module load time.
-    from core.sandbox import run as sandbox_run
-
-    cmd = spec["cmd"]
-    env = spec.get("env", {})
-    try:
-        timeout = float(spec.get("timeout_s", 10.0))
-    except (TypeError, ValueError):
-        timeout = 10.0
-    profile = spec.get("profile", "target_run")
-    block_network = bool(spec.get("block_network", True))
-    allowed_tcp_ports = spec.get("allowed_tcp_ports") or None
-    restrict_reads = bool(spec.get("restrict_reads", False))
-    stdin_b64 = spec.get("stdin_b64")
-    stdin_bytes = base64.b64decode(stdin_b64) if stdin_b64 else None
-
-    # Additional sandbox hardening params forwarded from the RPC so
-    # the coordinator path applies the same substrate posture as the
-    # stdin/argv adapters. Silently absent on legacy specs — kwargs
-    # only get set when the RPC populates them.
-    #
-    # Narrow types at the RPC boundary: ``list(writable_paths)`` on a
-    # bare string yields per-char paths (12-char path → 12 tiny
-    # Landlock entries); ``dict(etc_overlay)`` on a list-of-pairs
-    # silently succeeds with wrong keys. A caller typo should fail
-    # loudly here rather than at Landlock-rule installation.
-    target_path = spec.get("target")
-    output_path = spec.get("output")
-    writable_paths = spec.get("writable_paths")
-    if writable_paths is not None and not isinstance(writable_paths, list):
-        raise TypeError(
-            f"spec['writable_paths'] must be list, got {type(writable_paths).__name__}",
-        )
-    readable_paths = spec.get("readable_paths")
-    if readable_paths is not None and not isinstance(readable_paths, list):
-        raise TypeError(
-            f"spec['readable_paths'] must be list, got {type(readable_paths).__name__}",
-        )
-    exclude_tmp_baseline = spec.get("exclude_tmp_baseline")
-    etc_overlay = spec.get("etc_overlay")
-    if etc_overlay is not None and not isinstance(etc_overlay, dict):
-        raise TypeError(
-            f"spec['etc_overlay'] must be dict, got {type(etc_overlay).__name__}",
-        )
-    strict_env = spec.get("strict_env")
-    env_caller_filtered = spec.get("env_caller_filtered")
-    observe = spec.get("observe")
-
     t0 = time.monotonic()
     try:
-        kwargs = {
-            "profile": profile,
-            "block_network": block_network,
-            "inherit_netns": True,
-            "env": env if env else None,
-            "capture_output": True,
-            "timeout": timeout,
-            "restrict_reads": restrict_reads,
-        }
+        # Import inside the try so a missing import surfaces as a
+        # structured error rather than a hard ImportError at module
+        # load time (or a raw traceback on the coordinator's stderr).
+        from core.sandbox import run as sandbox_run
+
+        cmd = spec["cmd"]
+        env = spec.get("env", {})
+        try:
+            timeout = float(spec.get("timeout_s", 10.0))
+        except (TypeError, ValueError):
+            timeout = 10.0
+        profile = spec.get("profile", "target_run")
+        block_network = bool(spec.get("block_network", True))
+        allowed_tcp_ports = spec.get("allowed_tcp_ports") or None
+        restrict_reads = bool(spec.get("restrict_reads", False))
+        stdin_b64 = spec.get("stdin_b64")
+        stdin_bytes = base64.b64decode(stdin_b64) if stdin_b64 else None
+
+        # Additional sandbox hardening params forwarded from the RPC so
+        # the coordinator path applies the same substrate posture as the
+        # stdin/argv adapters. Silently absent on legacy specs — kwargs
+        # only get set when the RPC populates them.
+        #
+        # Narrow types at the RPC boundary: ``list(writable_paths)`` on a
+        # bare string yields per-char paths (12-char path → 12 tiny
+        # Landlock entries); ``dict(etc_overlay)`` on a list-of-pairs
+        # silently succeeds with wrong keys. A caller typo should fail
+        # loudly here rather than at Landlock-rule installation — and
+        # the failure must travel through ``result.error`` so the
+        # JSON-on-stdout protocol survives (a raised TypeError outside
+        # this try killed the coordinator with a raw traceback for the
+        # exploit spec, and silently killed the thread for the target
+        # spec, leaving returncode=None with no error string).
+        target_path = spec.get("target")
+        output_path = spec.get("output")
+        writable_paths = spec.get("writable_paths")
+        if writable_paths is not None and not isinstance(writable_paths, list):
+            raise TypeError(
+                f"spec['writable_paths'] must be list, got {type(writable_paths).__name__}",
+            )
+        readable_paths = spec.get("readable_paths")
+        if readable_paths is not None and not isinstance(readable_paths, list):
+            raise TypeError(
+                f"spec['readable_paths'] must be list, got {type(readable_paths).__name__}",
+            )
+        exclude_tmp_baseline = spec.get("exclude_tmp_baseline")
+        etc_overlay = spec.get("etc_overlay")
+        if etc_overlay is not None and not isinstance(etc_overlay, dict):
+            raise TypeError(
+                f"spec['etc_overlay'] must be dict, got {type(etc_overlay).__name__}",
+            )
+        strict_env = spec.get("strict_env")
+        env_caller_filtered = spec.get("env_caller_filtered")
+        observe = spec.get("observe")
+
+        kwargs = dict(
+            profile=profile,
+            block_network=block_network,
+            inherit_netns=True,
+            env=env if env else None,
+            capture_output=True,
+            timeout=timeout,
+            restrict_reads=restrict_reads,
+        )
         if allowed_tcp_ports is not None:
             kwargs["allowed_tcp_ports"] = list(allowed_tcp_ports)
         if stdin_bytes is not None:

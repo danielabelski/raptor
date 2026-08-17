@@ -98,6 +98,35 @@ frontmatter field pointing at the CLI entry point. The entry point goes in
 - Match the style of surrounding code.
 
 
+## CI checks
+
+Beyond the test suite and lint (which run on every PR — including
+`check_command_metadata.py`, which requires every `.claude/commands/*.md`
+to carry a parseable `dispatch:` field whose target exists on disk), two
+scheduled scans run daily from
+`.github/workflows/miswiring-scan.yml`. They are not PR gates — the
+full-repo index takes a while and the findings need human judgement —
+but a failure is actionable:
+
+- **Miswiring scan** (`.github/scripts/check_miswiring.py`) — detects
+  kwarg/signature mismatches, broken in-repo imports, dead definitions,
+  write-only or reader-orphan run artifacts, silently-swallowed
+  exceptions, and config fields / CLI flags / env vars that are parsed
+  but never read. New findings fail against
+  `.github/scripts/miswiring_baseline.json`: fix the miswiring, or
+  (deliberately, with a note) add the key to the baseline.
+
+- **Vocab-list guardrail** (`.github/scripts/check_vocab_lists.py`) —
+  flags new literal function-name lists (or regex alternations) longer
+  than nine names outside the data-pack and taxonomy seams. Vocabulary
+  belongs in a data pack (`core/audit/data/vocab_packs/`,
+  `core/function_taxonomy/data/packs/`,
+  `engine/coccinelle/source_intel/crypto/packs/`), the study-learned
+  domain model, or the central taxonomy — not hardcoded in logic. New
+  findings fail against `.github/scripts/vocab_baseline.json`; route the
+  names through one of those seams, or baseline the entry with a note.
+
+
 ## Security conventions
 
 RAPTOR scans untrusted repositories. Code that processes untrusted input

@@ -307,21 +307,20 @@ def nonce_leaked_in(nonce: str, text: str) -> bool:
 # pipelines; without stripping, the autofetch regex misses it.
 #
 # Coverage:
-#   \x00       — null (browsers ignore inside attribute values + tag names)
-#   ​-D   — zero-width space / non-joiner / joiner  # nosemgrep: contains-bidirectional-characters
-#   ﻿     — zero-width no-break space (also BOM)
-#   ­     — soft hyphen
-#   ‪-E   — bidi embedding / override controls  # nosemgrep: contains-bidirectional-characters
-#   ⁦-9   — bidi isolate controls  # nosemgrep: contains-bidirectional-characters
-# RAPTOR's anti-BiDi defense: ``_BYPASS_CHAR_RE`` IS the
-# defense — by definition contains the BiDi/control characters
-# the rule wants to flag. Stripping them would defeat the
-# defense. Suppressed at every literal-occurring line below.
-# nosemgrep: generic.unicode.security.bidi.contains-bidirectional-characters
+#   U+0000          — null (browsers ignore inside attribute values + tag names)
+#   U+200B-U+200D   — zero-width space / non-joiner / joiner
+#   U+FEFF          — zero-width no-break space (also BOM)
+#   U+00AD          — soft hyphen
+#   U+202A-U+202E   — bidi embedding / override controls
+#   U+2066-U+2069   — bidi isolate controls
+# RAPTOR's anti-BiDi defense: ``_BYPASS_CHAR_RE`` IS the defense — the
+# class deliberately names the BiDi/control code points, spelled as
+# \uXXXX escapes so the source file itself carries no raw control
+# characters (linters and diff viewers stay readable).
 _BYPASS_CHAR_RE = re.compile(
-    '[\x00­​‌‍﻿'  # nosemgrep: contains-bidirectional-characters
-    '‪‫‬‭‮'  # nosemgrep: contains-bidirectional-characters
-    '⁦⁧⁨⁩]'  # nosemgrep: contains-bidirectional-characters
+    '[\x00\u00ad\u200b\u200c\u200d\ufeff'
+    '\u202a\u202b\u202c\u202d\u202e'
+    '\u2066\u2067\u2068\u2069]'
 )
 
 
@@ -387,22 +386,22 @@ def neutralize_tag_forgery(content: str) -> str:
         # double-encoding when a downstream consumer also XML-escaped
         # the result (e.g. _render_slot's _xml_content_escape pass).
         if s.startswith('<'):
-            return '<​' + s[1:]
+            return '<\u200b' + s[1:]
         # Bracket-style: insert ZWSP after `[` and before `]` so the
         # model no longer pattern-matches against envelope boundaries.
         # Same rationale as the XML-style fix above — entity escaping
         # (&#91;/&#93;) caused double-encoding downstream.
         if s.startswith('['):
             inner = s[1:-1] if s.endswith(']') else s[1:]
-            tail = '​]' if s.endswith(']') else ''
-            return '[​' + inner + tail
+            tail = '\u200b]' if s.endswith(']') else ''
+            return '[\u200b' + inner + tail
         # Line-marker style (BEGIN_X / END_X): break the keyword by
         # inserting a zero-width space after the `_` so the visual
         # match against `BEGIN_<MARKER>` no longer fires. ZWSP is
         # invisible to humans and to the model's structural parsing.
         if s[:1].upper() in ('B', 'E') and '_' in s:
             head, _, tail = s.partition('_')
-            return f'{head}_​{tail}'
+            return f'{head}_\u200b{tail}'
         return s
 
     content = _ENVELOPE_TAG_RE.sub(_escape_match, content)
@@ -603,6 +602,13 @@ def _render_slots(slots: dict[str, TaintedString], profile: ModelDefenseProfile)
                 parts.append(f"{name} (trusted): {val}")
             else:
                 val = _content_for_envelope(ts.value, profile)
+                # Slots are identifiers, not prose: flatten newlines so
+                # a multi-line untrusted value can never contribute a
+                # line matching the `<name> (trusted): ...` grammar the
+                # priming teaches. (_content_for_envelope preserves
+                # newlines by design for prose blocks — a slot value
+                # has no legitimate use for them.)
+                val = escape_nonprintable(val)
                 parts.append(f"{name} (untrusted): {val}")
         return '\n'.join(parts)
     parts = '\n'.join(_render_slot(k, v, profile) for k, v in slots.items())

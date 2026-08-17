@@ -562,7 +562,10 @@ Skill-dispatched multi-agent orchestration.
 | `--max-retries <n>` | Maximum hypothesis revision rounds (default 3) |
 
 Agents query GH Archive (BigQuery), live GitHub API, Wayback Machine, and
-local git history.  Requires `GOOGLE_APPLICATION_CREDENTIALS` for BigQuery.
+local git history.  Requires `GOOGLE_APPLICATION_CREDENTIALS` for BigQuery
+(read-only `BigQuery User` role; queries run through the typed
+`libexec/raptor-bq-query` wrapper — single read-only statement,
+bytes-billed cap, egress-pinned sandbox).
 
 Output: `.out/oss-forensics-<timestamp>/forensic-report.md`
 

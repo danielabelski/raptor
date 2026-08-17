@@ -3164,8 +3164,9 @@ def run_untrusted_networked(
     Callers: Claude Code sub-agent dispatch (packages/llm_analysis/
     cc_dispatch.py, core/orchestration/agentic_passes.py,
     core/audit/validate.py), git network operations
-    (core/git/clone.py), and other hostname-allowlisted egress
-    consumers; see THREAT_MODEL.md.
+    (core/git/clone.py), the BigQuery query child
+    (libexec/raptor-bq-query → core/forensics/bq_query.py), and other
+    hostname-allowlisted egress consumers; see THREAT_MODEL.md.
     """
     if not (target or output):
         raise ValueError(

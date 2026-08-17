@@ -183,14 +183,27 @@ def main() -> int:
                     extra_sinks = iris_sinks
             except Exception as e:  # noqa: BLE001
                 logger.debug("IRIS sink fetch failed: %s", e)
+            # ``extra_sinks`` support depends on the substrate revision;
+            # pass it only when the signature accepts it so the whole
+            # sink stage doesn't die on a TypeError (which the handler
+            # below would eat).
+            import inspect
+            sink_kwargs = {}
+            if "extra_sinks" in inspect.signature(
+                    enrich_with_sink_discovery).parameters:
+                sink_kwargs["extra_sinks"] = extra_sinks
+            elif extra_sinks:
+                logger.warning(
+                    "IRIS sinks available but enrich_with_sink_discovery "
+                    "predates extra_sinks — continuing without them")
             n_sinks = enrich_with_sink_discovery(
-                context_map, Path(target_path), extra_sinks=extra_sinks,
+                context_map, Path(target_path), **sink_kwargs,
             )
             if n_sinks:
                 changed = True
                 summary.append(f"sinks: {n_sinks} entries")
         except Exception as e:
-            logger.debug("sink enrichment failed: %s", e, exc_info=True)
+            logger.warning("sink enrichment failed: %s", e, exc_info=True)
 
     if changed:
         save_json(context_map_path, context_map)

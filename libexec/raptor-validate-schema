@@ -75,8 +75,8 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: F401
-from core.artifacts.provenance import (
+import core.startup.process_init  # noqa: E402,F401
+from core.artifacts.provenance import (  # noqa: E402
     ARTIFACT_TEXT_SCHEMAS,
     STATUS_INVALID,
     STATUS_LEGACY,
@@ -84,7 +84,7 @@ from core.artifacts.provenance import (
     check_provenance,
     mark_schema_validated,
 )
-from core.json import load_json, save_json
+from core.json import load_json, save_json  # noqa: E402
 
 VALIDATORS = {
     "findings": "validate_findings",

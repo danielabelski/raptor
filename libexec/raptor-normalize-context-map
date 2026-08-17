@@ -41,14 +41,14 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: F401
-from core.artifacts.provenance import (
+import core.startup.process_init  # noqa: E402,F401
+from core.artifacts.provenance import (  # noqa: E402
     CONTEXT_MAP_TEXT_SCHEMA,
     sanitise_free_text,
     stamp_provenance,
 )
-from core.json import load_json, save_json
-from core.orchestration.understand_bridge import normalize_context_map
+from core.json import load_json, save_json  # noqa: E402
+from core.orchestration.understand_bridge import normalize_context_map  # noqa: E402
 
 
 def main() -> int:

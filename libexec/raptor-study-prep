@@ -48,11 +48,11 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import argparse
-from dataclasses import asdict
+import argparse  # noqa: E402
+from dataclasses import asdict  # noqa: E402
 
-import core.startup.process_init  # noqa: F401
-from core.concepts.model import StudyItem
+import core.startup.process_init  # noqa: E402,F401
+from core.concepts.model import StudyItem  # noqa: E402
 
 # ------------------------------------------------------------------
 # Patterns

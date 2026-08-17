@@ -41,9 +41,9 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: F401
-from core.run.metadata import complete_run, fail_run, start_run
-from core.run.output import TargetMismatchError, get_output_dir
+import core.startup.process_init  # noqa: E402,F401
+from core.run.metadata import complete_run, fail_run, start_run  # noqa: E402
+from core.run.output import TargetMismatchError, get_output_dir  # noqa: E402
 
 
 def _merge_journal_index(out_dir: Path) -> None:

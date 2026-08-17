@@ -70,8 +70,8 @@ if not (os.environ.get("CLAUDECODE")
 
 _RAPTOR_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_ROOT))
-import core.startup.process_init  # noqa: F401
-from core.forensics import bq_query as bq
+import core.startup.process_init  # noqa: E402,F401
+from core.forensics import bq_query as bq  # noqa: E402
 
 _CHILD_SCRIPT = _RAPTOR_ROOT / "core" / "forensics" / "bq_query.py"
 

@@ -39,9 +39,9 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: F401
-from core.json import load_json, save_json
-from core.orchestration.context_map_ast_view import enrich_with_ast_view
+import core.startup.process_init  # noqa: E402,F401
+from core.json import load_json, save_json  # noqa: E402
+from core.orchestration.context_map_ast_view import enrich_with_ast_view  # noqa: E402
 
 
 def main() -> int:

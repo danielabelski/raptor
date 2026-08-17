@@ -48,7 +48,7 @@ if not (os.environ.get("CLAUDECODE")
 
 RAPTOR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAPTOR))
-import core.startup.process_init  # noqa: F401
+import core.startup.process_init  # noqa: E402,F401
 
 os.environ.setdefault("RAPTOR_DIR", str(RAPTOR))
 
@@ -59,10 +59,10 @@ os.environ.setdefault("RAPTOR_DIR", str(RAPTOR))
 # --sandbox full to run the audit on a host without namespace
 # support. CLI-parsed value only, per the set_cli_profile()
 # contract.
-import argparse
+import argparse  # noqa: E402
 
-from core.sandbox import PROFILES as _SANDBOX_PROFILES
-from core.sandbox.cli import set_cli_profile
+from core.sandbox import PROFILES as _SANDBOX_PROFILES  # noqa: E402
+from core.sandbox.cli import set_cli_profile  # noqa: E402
 
 _ap = argparse.ArgumentParser(prog="raptor-binary-oracle-e2e")
 _ap.add_argument("--sandbox", default="strict",
@@ -155,7 +155,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 # 1. Direct classifier — verdicts on a real binary
 # ---------------------------------------------------------------------------
 print("\n=== 1. Direct classifier ===")
-from core.analysis.binary_oracle import classify_binary_evidence
+from core.analysis.binary_oracle import classify_binary_evidence  # noqa: E402
 
 names = ["api_open", "api_close", "api_read", "api_internal_helper",
          "api_inlined_target", "util_compute", "main",
@@ -188,7 +188,7 @@ check("all verdicts carry tier=full",
 # 2. Inventory enrichment + multi-binary combine (single binary case)
 # ---------------------------------------------------------------------------
 print("\n=== 2. Inventory enrichment ===")
-from core.analysis.binary_oracle import enrich_inventory_with_binary_oracle
+from core.analysis.binary_oracle import enrich_inventory_with_binary_oracle  # noqa: E402
 
 # Real source surface — names that actually match the binary so the
 # hostile-ELF coverage floor doesn't fire on a legitimate target.
@@ -246,7 +246,7 @@ check("top-level inventory.binary_oracle.earns_suppression == True",
 # 3. Chokepoint accessor — line disambiguation + tier guard
 # ---------------------------------------------------------------------------
 print("\n=== 3. Chokepoint accessor ===")
-from core.analysis.reachability import binary_oracle_absent
+from core.analysis.reachability import binary_oracle_absent  # noqa: E402
 
 check("absent verdict fires for dead function",
       binary_oracle_absent(inv, "src/api.c", "api_dead_function") is True)
@@ -263,7 +263,7 @@ _dead_api["metadata"]["binary_oracle"]["binaries"] = [
 ]
 # Index caches the lookup; invalidate so the modified inventory is
 # re-walked rather than served from cache (P1-C-2 perf fix side effect).
-from core.analysis import reachability as _R
+from core.analysis import reachability as _R  # noqa: E402
 
 _R._BO_ITEM_INDEX_CACHE.clear()
 check("mixed-tier (full + symbol_only) refuses to suppress",
@@ -279,7 +279,7 @@ _R._BO_ITEM_INDEX_CACHE.clear()
 # 4. reach_audit verdict chain
 # ---------------------------------------------------------------------------
 print("\n=== 4. reach_audit classify_reachability ===")
-from core.analysis.reach_audit import classify_reachability
+from core.analysis.reach_audit import classify_reachability  # noqa: E402
 
 v_dead = classify_reachability(
     inv, "src/api.c", "api_dead_function", 26, "src.api")
@@ -291,7 +291,7 @@ check("classify_reachability returns binary_oracle_absent for dead",
 # 5. Verdict → witness → suppression chain
 # ---------------------------------------------------------------------------
 print("\n=== 5. Verdict → witness → suppression ===")
-from core.analysis.reach_witness import (
+from core.analysis.reach_witness import (  # noqa: E402
     STRUCTURALLY_SUPPRESSIBLE_KINDS,
     VERDICTS,
     WitnessKind,
@@ -313,7 +313,7 @@ check("rv.may_suppress with empty earned set",
 # 6. Shared chokepoint helper (reach_chokepoint.check_suppress)
 # ---------------------------------------------------------------------------
 print("\n=== 6. Shared chokepoint helper ===")
-from core.analysis.reach_chokepoint import check_suppress, record_suppression
+from core.analysis.reach_chokepoint import check_suppress, record_suppression  # noqa: E402
 
 decision = check_suppress(
     checklist=inv,
@@ -373,7 +373,7 @@ with tempfile.TemporaryDirectory() as td:
 # 8. Auto-detect on real project tree
 # ---------------------------------------------------------------------------
 print("\n=== 8. Auto-detect ===")
-from core.analysis.binary_oracle_autodetect import detect_binaries
+from core.analysis.binary_oracle_autodetect import detect_binaries  # noqa: E402
 
 detected = detect_binaries(TARGET, "application")
 check("auto-detect finds build/app",
@@ -385,7 +385,7 @@ check("auto-detect finds build/app",
 # 9. Hostile-ELF defense — planted binary dropped
 # ---------------------------------------------------------------------------
 print("\n=== 9. Hostile-ELF defense ===")
-import subprocess
+import subprocess  # noqa: E402
 
 hostile_src = TARGET / "build" / "hostile.c"
 hostile_src.write_text(
@@ -461,7 +461,7 @@ check("multi-binary records both binaries",
 # ---------------------------------------------------------------------------
 print("\n=== 11. Stripped-binary tier fallback ===")
 stripped = TARGET / "build" / "app_stripped"
-import shutil
+import shutil  # noqa: E402
 
 shutil.copy(BINARY, stripped)
 subprocess.run(["strip", "--strip-debug", str(stripped)], check=True, timeout=30)
@@ -479,7 +479,7 @@ check("stripped binary verdicts carry tier=symbol_only",
 print("\n=== 12. Sandbox + corpus driver harness ===")
 # Verify the sandbox-aware corpus driver path imports cleanly + the
 # wiring is in place. Don't actually run the corpus build (slow).
-from core.inventory.binary_oracle_corpora import REGISTRY
+from core.inventory.binary_oracle_corpora import REGISTRY  # noqa: E402
 
 check("registry contains all 7 corpora",
       len(REGISTRY) == 7,
@@ -494,7 +494,7 @@ for name in ("synthetic", "zlib", "libsodium", "snappy", "leveldb",
 # 13. /project binaries persistence round-trip
 # ---------------------------------------------------------------------------
 print("\n=== 13. /project persistence ===")
-from core.project.project import _PROJECT_SCHEMA_VERSION, Project
+from core.project.project import _PROJECT_SCHEMA_VERSION, Project  # noqa: E402
 
 p = Project(name="e2e", target=str(TARGET),
             output_dir=str(TARGET / "out"))
@@ -518,8 +518,8 @@ check("v1 back-compat: empty binaries default",
 # 14. Inventory builder honours BINARY_ORACLE_PATHS
 # ---------------------------------------------------------------------------
 print("\n=== 14. build_inventory + BINARY_ORACLE_PATHS ===")
-from core.config import RaptorConfig
-from core.inventory.builder import build_inventory
+from core.config import RaptorConfig  # noqa: E402
+from core.inventory.builder import build_inventory  # noqa: E402
 
 # Save / restore
 _orig_paths = RaptorConfig.BINARY_ORACLE_PATHS

@@ -33,7 +33,7 @@ if not (os.environ.get("CLAUDECODE")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
 
-from packages.binary_analysis.graph_store import (
+from packages.binary_analysis.graph_store import (  # noqa: E402
     graph_path_for_run,
     graph_summary,
     query_edges,

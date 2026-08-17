@@ -51,16 +51,16 @@ if not (os.environ.get("CLAUDECODE")
 # fmt: on
 # ─── end trust-marker check ─────────────────────────────────
 
-from pathlib import Path
+from pathlib import Path  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
-import core.startup.process_init  # noqa: F401
-from core.run.metadata import complete_run, fail_run, start_run
-from core.run.output import get_output_dir
-from packages.sca import cli as sca_cli
-from packages.sca.cli import SUBCOMMANDS as _SUBCOMMANDS
-from packages.sca.cli import _configure_logging, _print_summary
+import core.startup.process_init  # noqa: E402,F401
+from core.run.metadata import complete_run, fail_run, start_run  # noqa: E402
+from core.run.output import get_output_dir  # noqa: E402
+from packages.sca import cli as sca_cli  # noqa: E402
+from packages.sca.cli import SUBCOMMANDS as _SUBCOMMANDS  # noqa: E402
+from packages.sca.cli import _configure_logging, _print_summary  # noqa: E402
 
 _HELP = """\
 raptor-sca — dependency security scanner

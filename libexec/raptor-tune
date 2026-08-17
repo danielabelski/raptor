@@ -36,8 +36,8 @@ if not (os.environ.get("CLAUDECODE")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
 
-from core.json import load_json_with_comments
-from core.tuning import load_tuning, _DEFAULTS, _KEY_COMMENTS, _detect_available_cpus
+from core.json import load_json_with_comments  # noqa: E402
+from core.tuning import load_tuning, _DEFAULTS, _KEY_COMMENTS, _detect_available_cpus  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TUNING_PATH = _REPO_ROOT / "tuning.json"

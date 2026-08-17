@@ -123,7 +123,7 @@ output_dir = output_dir_resolved
 logging.basicConfig(level=logging.WARNING, format="%(message)s", stream=sys.stderr)
 logging.getLogger("core.sandbox").setLevel(logging.INFO)
 
-from core.sandbox import sandbox, SandboxSetupError, SANDBOX_ENGAGE_EXIT_CODE
+from core.sandbox import sandbox, SandboxSetupError, SANDBOX_ENGAGE_EXIT_CODE  # noqa: E402
 
 try:
     with sandbox(block_network=True,

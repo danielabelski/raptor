@@ -31,7 +31,7 @@ if not (os.environ.get("CLAUDECODE")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
 
-from packages.binary_analysis.cli import main
+from packages.binary_analysis.cli import main  # noqa: E402
 
 
 if __name__ == "__main__":

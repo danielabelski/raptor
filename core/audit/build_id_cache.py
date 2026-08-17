@@ -1,9 +1,14 @@
 """Build-ID-keyed binary analysis cache.
 
-Caches binary analysis artifacts by ELF build-ID so no binary is
-analysed twice across /understand, /audit, and /validate runs.
-The first command that touches a binary caches its results; subsequent
-commands consume the cache.  Build-ID change automatically invalidates.
+Caches binary analysis artifacts by ELF build-ID so a binary need not
+be analysed twice across /understand, /audit, and /validate runs.
+Build-ID change automatically invalidates.
+
+NOTE: not yet wired into any production flow — binary_bridge's
+load_binary_bridge accepts a ``build_id_cache`` parameter that no
+caller currently passes, so nothing reads or populates this cache
+outside tests. Wire it up (or consume load_build_id_cache() directly)
+before relying on the no-reanalysis behaviour.
 
 Cache structure:
     {cache_dir}/{build_id}/
@@ -32,6 +37,12 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = ".cache/binary"
+
+def _valid_build_id(build_id: str) -> bool:
+    """Hex-only build IDs — anything else could escape cache_dir when
+    joined into an on-disk path (e.g. ``../../``)."""
+    return bool(re.match(r"^[0-9a-fA-F]+$", build_id or ""))
+
 
 _KNOWN_ARTIFACTS = frozenset({
     "metadata",
@@ -71,10 +82,20 @@ class BuildIDCache:
     _index: Dict[str, Dict[str, Path]] = field(default_factory=dict)
 
     def has(self, build_id: str, artifact: str) -> bool:
+        if not _valid_build_id(build_id):
+            return False
         path = self._artifact_path(build_id, artifact)
         return path.is_file()
 
     def get(self, build_id: str, artifact: str) -> Optional[Dict[str, Any]]:
+        """Read a cached entry.
+
+        Returns the on-disk envelope written by put() — the dict
+        ``{"build_id", "artifact", "source_command", "data"}`` — NOT
+        the bare artifact payload. Consumers read ``entry["data"]``.
+        """
+        if not _valid_build_id(build_id):
+            return None
         path = self._artifact_path(build_id, artifact)
         if not path.is_file():
             return None
@@ -90,9 +111,16 @@ class BuildIDCache:
         artifact: str,
         data: Dict[str, Any],
         source_command: str = "",
-    ) -> Path:
-        if not re.match(r'^[0-9a-fA-F]+$', build_id):
-            return
+    ) -> Optional[Path]:
+        """Write an artifact envelope; returns the path, or None when
+        the build_id is rejected (non-hex — could otherwise traverse
+        outside cache_dir via a crafted id)."""
+        if not _valid_build_id(build_id):
+            logger.warning(
+                "build-ID cache: rejected invalid build_id %r (artifact %s)",
+                build_id, artifact,
+            )
+            return None
         entry_dir = self.cache_dir / build_id
         entry_dir.mkdir(parents=True, exist_ok=True)
 
@@ -198,7 +226,8 @@ def import_validate_evidence(
 ) -> Optional[Dict[str, Any]]:
     """Import /validate Stage E feasibility results from the cache.
 
-    Returns the feasibility data if cached, None otherwise.
+    Returns the cache envelope (see BuildIDCache.get — feasibility
+    payload under ``["data"]``) if cached, None otherwise.
     """
     return cache.get(build_id, "feasibility")
 
@@ -207,5 +236,9 @@ def import_layer0_findings(
     cache: BuildIDCache,
     build_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """Import Layer 0 findings from the cache."""
+    """Import Layer 0 findings from the cache.
+
+    Returns the cache envelope (findings payload under ``["data"]``)
+    if cached, None otherwise.
+    """
     return cache.get(build_id, "layer0-findings")

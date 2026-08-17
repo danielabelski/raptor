@@ -74,6 +74,25 @@ class TestBuildIDCache:
         assert result is not None
         assert result["data"]["test"] is True
 
+    def test_put_invalid_build_id_returns_none(self, tmp_path):
+        """Non-hex build IDs are rejected (path-traversal defence)."""
+        cache = BuildIDCache(cache_dir=tmp_path)
+        assert cache.put("../../etc", "metadata", {"x": 1}) is None
+        assert cache.put("", "metadata", {"x": 1}) is None
+        # Nothing escaped or landed in the cache dir
+        assert list(tmp_path.iterdir()) == []
+
+    def test_put_valid_build_id_returns_path(self, tmp_path):
+        cache = BuildIDCache(cache_dir=tmp_path)
+        path = cache.put("abc123", "metadata", {"x": 1})
+        assert path is not None
+        assert path.is_file()
+
+    def test_get_and_has_reject_invalid_build_id(self, tmp_path):
+        cache = BuildIDCache(cache_dir=tmp_path)
+        assert cache.get("../../etc", "metadata") is None
+        assert cache.has("../../etc", "metadata") is False
+
     def test_overwrite(self, tmp_path):
         cache = BuildIDCache(cache_dir=tmp_path)
         cache.put("abc123", "metadata", {"version": 1})

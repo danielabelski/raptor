@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +44,9 @@ def import_validation_results(
     *,
     validation_report: Path,
     annotations_dir: Path,
-    audit_out_dir: Optional[Path] = None,
-    target_path: Optional[Path] = None,
-) -> Dict[str, int]:
+    audit_out_dir: Path | None = None,
+    target_path: Path | None = None,
+) -> dict[str, int]:
     """Import /validate results into the review journal.
 
     Args:
@@ -74,9 +74,14 @@ def import_validation_results(
     # with a conclusion status can veto Reflexion — but no annotation
     # is ever written back (see amendment §1 D3 + A5).
     from core.annotations.storage import read_annotation
+
     from .journal import (
-        ReviewJournalEntry, VALID_VERDICTS, append_entry,
-        latest_entries, now_iso,
+        VALID_VERDICTS,
+        ReviewJournalEntry,
+        append_entry,
+        latest_entries,
+        make_function_key,
+        now_iso,
     )
     from .record import _compute_hash
 
@@ -100,12 +105,18 @@ def import_validation_results(
 
     # Load prior LLM verdicts once — one journal read per audit-out
     # dir instead of per finding.
-    prior_by_key: Dict[str, ReviewJournalEntry] = {}
+    prior_by_key: dict[str, ReviewJournalEntry] = {}
     if audit_out_dir:
         try:
             prior_by_key = latest_entries(audit_out_dir)
         except Exception:  # noqa: BLE001
             prior_by_key = {}
+
+    # Keys that received a confirmed verdict in THIS import. A later
+    # disproven finding for the same function must not downgrade past
+    # them (dedup no longer collapses same-function findings, so both
+    # can appear in one report).
+    confirmed_keys: set = set()
 
     for finding in findings:
         file_path = finding.get("file", "")
@@ -132,7 +143,7 @@ def import_validation_results(
                 counts["skipped"] += 1
                 continue
 
-        key = f"{file_path}:{function_name}"
+        key = make_function_key(file_path, function_name)
         prior_entry = prior_by_key.get(key)
         audit_status = prior_entry.verdict if prior_entry else ""
         prior_body = prior_entry.body if prior_entry else ""
@@ -160,6 +171,35 @@ def import_validation_results(
 
         validate_verdict = _classify_verdict(finding)
         transition = _compute_transition(audit_status, validate_verdict)
+
+        # A downgrade to clean must refer to the SAME finding the
+        # journal entry records, and can never override a confirmed
+        # verdict for the same function within this import — a
+        # disproven decoy (different CWE/line, or processed after a
+        # confirmed sibling) must not erase real feedback.
+        if transition.get("new_status") == "clean":
+            if key in confirmed_keys:
+                transition = {
+                    "kind": "corroborated",
+                    "new_status": None,
+                    "description": (
+                        "/validate disproved one finding but another "
+                        "was confirmed for this function in the same "
+                        f"import — keeping {audit_status!r}"
+                    ),
+                }
+            elif not _disproven_matches_entry(finding, prior_entry):
+                transition = {
+                    "kind": "corroborated",
+                    "new_status": None,
+                    "description": (
+                        "/validate disproved a finding whose CWE/line "
+                        "does not match the journal entry — keeping "
+                        f"{audit_status!r}"
+                    ),
+                }
+        if validate_verdict == "confirmed":
+            confirmed_keys.add(key)
 
         reason = _sanitize_markdown(_extract_reason(finding))
         lesson = _extract_lesson(finding, audit_status, validate_verdict)
@@ -212,7 +252,7 @@ def import_validation_results(
         )
         try:
             append_entry(audit_out_dir or annotations_dir.parent, new_entry)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug(
                 "journal append failed for %s:%s",
                 file_path, function_name, exc_info=True,
@@ -231,14 +271,81 @@ def import_validation_results(
 
 
 def _deduplicate_findings(
-    findings: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Keep only the last finding per (file, function) pair."""
-    seen: Dict[tuple, int] = {}
+    findings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep only the last finding per finding identity.
+
+    Identity is the finding id when present, else
+    ``(file, function, cwe, line)``. Keying on ``(file, function)``
+    alone discarded the feedback of a confirmed finding whenever a
+    later disproven finding (a different CWE or line in the same
+    function) shared the pair — the transition logic then only ever
+    saw the decoy.
+    """
+    seen: dict[tuple, int] = {}
     for idx, finding in enumerate(findings):
-        key = (finding.get("file", ""), finding.get("function", ""))
+        fid = finding.get("id") or finding.get("finding_id")
+        if fid:
+            key = ("id", str(fid))
+        else:
+            key = (
+                finding.get("file", ""),
+                finding.get("function", ""),
+                _finding_cwe(finding),
+                _finding_line(finding),
+            )
         seen[key] = idx
     return [findings[i] for i in sorted(seen.values())]
+
+
+def _finding_cwe(finding: dict[str, Any]) -> str:
+    """Normalised CWE number from a finding ('787' from 'CWE-787')."""
+    raw = finding.get("cwe") or finding.get("cwe_id") or ""
+    digits = "".join(c for c in str(raw) if c.isdigit())
+    return digits
+
+
+def _finding_line(finding: dict[str, Any]) -> int | None:
+    """Line number from a finding, or None when absent."""
+    for field in ("line", "line_start"):
+        value = finding.get(field)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _disproven_matches_entry(
+    finding: dict[str, Any],
+    prior_entry: Any | None,
+) -> bool:
+    """Whether a disproven finding refers to the journal entry's finding.
+
+    A downgrade to clean is only justified when /validate disproved
+    the SAME finding the journal entry records. When both sides carry
+    a CWE and they differ — or both carry line data and the finding's
+    line falls outside the entry's span — the disproven finding is a
+    different issue (e.g. a decoy in the same function) and must not
+    erase the entry's verdict. Missing data on either side stays
+    lenient: the historical downgrade behaviour is preserved when
+    there is nothing to compare.
+    """
+    if prior_entry is None:
+        return True
+
+    finding_cwe = _finding_cwe(finding)
+    entry_cwe = "".join(
+        c for c in str(prior_entry.cwe or "") if c.isdigit()
+    )
+    if finding_cwe and entry_cwe and finding_cwe != entry_cwe:
+        return False
+
+    line = _finding_line(finding)
+    start = prior_entry.line_start or 0
+    end = prior_entry.line_end
+    has_span = start > 0 and isinstance(end, int) and end >= start
+    if line is None or not has_span:
+        return True
+    return start <= line <= end
 
 
 def _sanitize_markdown(text: str) -> str:
@@ -258,7 +365,7 @@ def _sanitize_markdown(text: str) -> str:
     return "\n".join(lines)
 
 
-def _extract_findings(report: Any) -> List[Dict[str, Any]]:
+def _extract_findings(report: Any) -> list[dict[str, Any]]:
     """Normalise different /validate output shapes into a flat list."""
     if isinstance(report, list):
         return report
@@ -270,7 +377,7 @@ def _extract_findings(report: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _classify_verdict(finding: Dict[str, Any]) -> str:
+def _classify_verdict(finding: dict[str, Any]) -> str:
     """Map /validate's various status fields to a canonical verdict.
 
     Returns one of: ``disproven``, ``confirmed``, ``unknown``.
@@ -297,7 +404,7 @@ def _classify_verdict(finding: Dict[str, Any]) -> str:
 def _compute_transition(
     audit_status: str,
     validate_verdict: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Decide what status transition to make.
 
     Returns dict with ``kind`` (downgraded/upgraded/corroborated),
@@ -354,7 +461,7 @@ def _compute_transition(
     }
 
 
-def _extract_reason(finding: Dict[str, Any]) -> str:
+def _extract_reason(finding: dict[str, Any]) -> str:
     """Pull the human-readable reason from the /validate finding."""
     ruling = finding.get("ruling", {})
     if isinstance(ruling, dict):
@@ -377,7 +484,7 @@ def _extract_reason(finding: Dict[str, Any]) -> str:
 
 
 def _extract_lesson(
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     audit_status: str,
     validate_verdict: str,
 ) -> str:
@@ -415,7 +522,7 @@ def _format_feedback_block(
     validate_verdict: str,
     reason: str,
     lesson: str,
-    transition: Dict[str, Any],
+    transition: dict[str, Any],
 ) -> str:
     """Format the feedback block appended to the annotation body."""
     lines = ["### /validate feedback"]
@@ -432,7 +539,7 @@ def _update_audit_state(
     audit_out_dir: Path,
     file_path: str,
     function_name: str,
-    transition: Dict[str, Any],
+    transition: dict[str, Any],
     validate_verdict: str,
     reason: str,
 ) -> None:

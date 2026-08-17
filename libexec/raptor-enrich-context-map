@@ -23,7 +23,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
@@ -35,8 +36,7 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: E402,F401
-
+import core.startup.process_init  # noqa: F401
 from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,17 @@ def main() -> int:
     )
     checklist_path = understand_dir / "checklist.json"
 
+    # checklist.json is a mutable run artefact — corroborate the
+    # recovered target against the target_path sealed into
+    # .raptor-run.json at run start before touching that tree.
+    if target_path:
+        from core.run.metadata import corroborate_target_path
+        mismatch = corroborate_target_path(understand_dir, target_path)
+        if mismatch:
+            print(f"raptor-enrich-context-map: {mismatch}; refusing "
+                  "recovered target", file=sys.stderr)
+            return 1
+
     changed = False
     summary: list[str] = []
 
@@ -93,7 +104,7 @@ def main() -> int:
         if n_edges:
             changed = True
             summary.append(f"callgraph: {n_edges} edges")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("callgraph enrichment failed: %s", e, exc_info=True)
 
     # 2. Build inventory once (shared by ast-view and forward-reachable)
@@ -103,7 +114,7 @@ def main() -> int:
             from core.inventory.builder import build_inventory
             with tempfile.TemporaryDirectory() as td:
                 inventory = build_inventory(str(target_path), td)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("inventory build failed: %s", e, exc_info=True)
 
     # 3. Forward reachability (needs target_path + inventory)
@@ -118,7 +129,7 @@ def main() -> int:
             if n_ep:
                 changed = True
                 summary.append(f"forward-reachable: {n_ep} entry points")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("forward-reachable enrichment failed: %s", e,
                          exc_info=True)
 
@@ -134,7 +145,7 @@ def main() -> int:
             if n_ast:
                 changed = True
                 summary.append(f"ast-view: {n_ast} entries")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("ast-view enrichment failed: %s", e, exc_info=True)
 
     # 5. Sites (source_intel — spatch, needs target_path)
@@ -155,7 +166,7 @@ def main() -> int:
                     f"sites: {counts['ownership_model']} ownership + "
                     f"{counts['privilege_model']} privilege"
                 )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("sites enrichment failed: %s", e, exc_info=True)
 
     # 6. Sink discovery (needs target_path)
@@ -178,7 +189,7 @@ def main() -> int:
             if n_sinks:
                 changed = True
                 summary.append(f"sinks: {n_sinks} entries")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("sink enrichment failed: %s", e, exc_info=True)
 
     if changed:

@@ -459,3 +459,55 @@ def test_dead_flag_set_for_all_dead_code_signals():
     assert by_name["after_abort"].get("dead") is True
     assert by_name["excluded"].get("dead") is True
     assert "dead" not in by_name["live"]
+
+
+class TestCoveredKeyInjectivity:
+    """Colon-bearing filenames must not alias another function's
+    coverage — the covered-set keys use the injective encoding."""
+
+    def _checklist(self):
+        return {
+            "target_path": "/tmp/target",
+            "files": [
+                {
+                    "path": "src/a.c:evil",
+                    "items": [
+                        {"name": "f", "line_start": 1, "line_end": 20},
+                    ],
+                },
+                {
+                    "path": "src/a.c",
+                    "items": [
+                        {"name": "evil:f", "line_start": 1, "line_end": 20},
+                    ],
+                },
+            ],
+        }
+
+    def test_coverage_record_does_not_alias(self):
+        records = [{
+            "tool": "semgrep",
+            "files": {
+                "src/a.c:evil": {"functions": {"f": {"status": "clean"}}},
+            },
+            "files_examined": ["src/a.c:evil"],
+        }]
+        gaps = compute_gaps(self._checklist(), records)
+        remaining = {(g["file"], g["name"]) for g in gaps}
+        assert ("src/a.c", "evil:f") in remaining
+        assert ("src/a.c:evil", "f") not in remaining
+
+    def test_journal_fold_does_not_alias(self, tmp_path):
+        from core.coverage.journal import ReviewJournalEntry, append_entry, now_iso
+        append_entry(tmp_path, ReviewJournalEntry(
+            ts=now_iso(),
+            run_id="test",
+            file="src/a.c:evil",
+            function="f",
+            verdict="clean",
+            source_hash="",
+        ))
+        gaps = compute_gaps(self._checklist(), [], out_dir=tmp_path)
+        remaining = {(g["file"], g["name"]) for g in gaps}
+        assert ("src/a.c", "evil:f") in remaining
+        assert ("src/a.c:evil", "f") not in remaining

@@ -1400,7 +1400,14 @@ def _lifecycle_fail(out_dir: Path, reason: str) -> None:
 
 
 def _guess_target(out_dir: Path) -> Path | None:
-    """Try to extract target_path from checklist.json."""
+    """Try to extract target_path from checklist.json.
+
+    The recovered path is corroborated against the ``target_path``
+    sealed into ``.raptor-run.json`` at run start — checklist.json is
+    a mutable run artefact and must not silently redirect the audit
+    to a different tree. On mismatch the guess is refused with an
+    error telling the operator to pass ``--target`` explicitly.
+    """
     checklist_path = out_dir / "checklist.json"
     if checklist_path.exists():
         try:
@@ -1408,6 +1415,14 @@ def _guess_target(out_dir: Path) -> Path | None:
                 data = json.load(f)
             tp = data.get("target_path")
             if tp:
+                from core.run.metadata import corroborate_target_path
+                mismatch = corroborate_target_path(out_dir, tp)
+                if mismatch:
+                    print(
+                        f"error: {mismatch}; pass --target explicitly",
+                        file=sys.stderr,
+                    )
+                    return None
                 return Path(tp)
         except (json.JSONDecodeError, OSError):
             pass

@@ -19,10 +19,12 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from .strategy import strategies_from_item
+from core.coverage.journal import make_function_key
+
 from ._util import extract_context_map_set, safe_join
+from .strategy import strategies_from_item
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +50,19 @@ _MAX_HYDRATED_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 def compute_gaps(
-    checklist: Dict[str, Any],
-    coverage_records: List[Dict[str, Any]],
+    checklist: dict[str, Any],
+    coverage_records: list[dict[str, Any]],
     *,
-    annotations_dir: Optional[Path] = None,
-    context_map: Optional[Dict[str, Any]] = None,
-    strategy_filter: Optional[str] = None,
-    budget: Optional[int] = None,
-    scope: Optional[str | list[str]] = None,
-    fuzz_coverage: Optional[Dict[str, Any]] = None,
-    out_dir: Optional[Path] = None,
-    project_dir: Optional[Path] = None,
-    include_kinds: Optional[set] = None,
-) -> List[Dict[str, Any]]:
+    annotations_dir: Path | None = None,
+    context_map: dict[str, Any] | None = None,
+    strategy_filter: str | None = None,
+    budget: int | None = None,
+    scope: str | list[str] | None = None,
+    fuzz_coverage: dict[str, Any] | None = None,
+    out_dir: Path | None = None,
+    project_dir: Path | None = None,
+    include_kinds: set | None = None,
+) -> list[dict[str, Any]]:
     """Compute the list of unreviewed functions.
 
     Args:
@@ -125,17 +127,17 @@ def compute_gaps(
             if not scope_list:
                 scope_list = None
 
-    gaps: List[Dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
     reviewable_kinds = _REVIEWABLE_KINDS | (include_kinds or set())
-    consumed_covered: Dict[str, int] = {}
+    consumed_covered: dict[str, int] = {}
 
     for file_info in checklist.get("files", []):
         file_path = file_info.get("path", "")
 
         if scope_list and not any(
             file_path == sc.rstrip("/")
-            or file_path.startswith(sc.rstrip("/") + "/")
-            or file_path.startswith(sc.rstrip("/") + ".")
+            or file_path.startswith(
+                (sc.rstrip("/") + "/", sc.rstrip("/") + "."))
             for sc in scope_list
         ):
             # Separator-aware: scope "ipc" matches ipc/... and the
@@ -156,7 +158,13 @@ def compute_gaps(
             if item_kind not in reviewable_kinds:
                 continue
 
-            func_key = f"{file_path}:{name}"
+            # Covered-set keys use the injective encoding (file
+            # component percent-encoded) so a colon-bearing filename
+            # cannot alias another function's coverage and wrongly
+            # suppress it. Context-map lookups below keep the raw
+            # join — those producers emit raw keys and a collision
+            # there only misprioritises, never suppresses.
+            func_key = make_function_key(file_path, name)
 
             if _consume_covered_key(
                     covered_functions, consumed_covered, func_key):
@@ -187,7 +195,7 @@ def compute_gaps(
             if strategy_filter and strategy_filter not in strategies:
                 continue
 
-            is_entry_point = func_key in entry_point_set
+            is_entry_point = f"{file_path}:{name}" in entry_point_set
             item_kind = item.get("kind", "")
             metadata = item.get("metadata") or {}
             visibility = metadata.get("visibility", "")
@@ -250,7 +258,7 @@ def compute_gaps(
     return gaps
 
 
-def load_checklist(out_dir: Path) -> Dict[str, Any]:
+def load_checklist(out_dir: Path) -> dict[str, Any]:
     """Load checklist.json from the output directory."""
     path = out_dir / "checklist.json"
     if not path.exists():
@@ -264,9 +272,9 @@ def load_checklist(out_dir: Path) -> Dict[str, Any]:
 
 
 def hydrate_live_gaps_for_detectors(
-    gaps: List[Dict[str, Any]],
+    gaps: list[dict[str, Any]],
     target_path: Path,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Return live gaps as **copies** carrying their function body.
 
     The mechanical pattern detectors that run before the LLM loop —
@@ -303,7 +311,7 @@ def hydrate_live_gaps_for_detectors(
 
     # Carry the validated span alongside the gap: re-indexing the dict
     # later would re-admit exactly the malformed shapes screened here.
-    by_file: Dict[str, List[tuple]] = {}
+    by_file: dict[str, list[tuple]] = {}
     for gap in live:
         line_start = gap.get("line_start")
         line_end = gap.get("line_end")
@@ -319,7 +327,7 @@ def hydrate_live_gaps_for_detectors(
         if file_path:
             by_file.setdefault(file_path, []).append((gap, line_start, line_end))
 
-    hydrated: List[Dict[str, Any]] = []
+    hydrated: list[dict[str, Any]] = []
     total_bytes = 0
 
     for file_path, file_gaps in by_file.items():
@@ -371,7 +379,7 @@ def hydrate_live_gaps_for_detectors(
     return hydrated
 
 
-def read_gap_source(gap: Dict[str, Any], target_path: Path) -> str:
+def read_gap_source(gap: dict[str, Any], target_path: Path) -> str:
     """Read a single gap's source from disk using its line spans.
 
     Wraps ``_read_spans`` so all consumers share the same path-safety,
@@ -402,10 +410,10 @@ def read_gap_source(gap: Dict[str, Any], target_path: Path) -> str:
 def _read_spans(
     target_path: Path,
     file_path: str,
-    spans: List[tuple],
+    spans: list[tuple],
     *,
     budget_bytes: int = _MAX_HYDRATED_TOTAL_BYTES,
-) -> Optional[Dict[tuple, str]]:
+) -> dict[tuple, str] | None:
     """Extract the requested 1-indexed inclusive line spans from a file.
 
     Streams line by line and retains only lines inside a requested span,
@@ -455,9 +463,9 @@ def _read_spans(
                 logger.debug("skipping binary-looking file: %s", file_path)
                 return None
 
-        parts: Dict[tuple, List[str]] = {}
-        sizes: Dict[tuple, int] = {}
-        done: Dict[tuple, str] = {}
+        parts: dict[tuple, list[str]] = {}
+        sizes: dict[tuple, int] = {}
+        done: dict[tuple, str] = {}
         abandoned: set = set()
         active: set = set()
         nxt = 0
@@ -523,12 +531,12 @@ def _read_spans(
   
   
 def gap_for_site(
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     file_path: str,
     line: int,
     *,
     priority: int = 1,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Build a reviewable gap for the function enclosing ``file_path:line``.
 
     Mechanical sweeps (Mode-2 checker synthesis, rule replay) report
@@ -587,7 +595,7 @@ def gap_for_site(
         # Strict: smallest containing span wins, so a nested function or
         # closure is attributed to the innermost match rather than to the
         # enclosing definition.
-        best: Optional[Dict[str, Any]] = None
+        best: dict[str, Any] | None = None
         best_span = None
         for item in items:
             line_start = item["line_start"]
@@ -647,7 +655,7 @@ def gap_for_site(
     return None
 
 
-def load_context_map(out_dir: Path) -> Optional[Dict[str, Any]]:
+def load_context_map(out_dir: Path) -> dict[str, Any] | None:
     """Load context-map.json if present."""
     path = out_dir / "context-map.json"
     if not path.exists():
@@ -660,7 +668,7 @@ def load_context_map(out_dir: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def write_gaps(gaps: List[Dict[str, Any]], out_dir: Path) -> Path:
+def write_gaps(gaps: list[dict[str, Any]], out_dir: Path) -> Path:
     """Write gaps.json to the output directory."""
     path = out_dir / "gaps.json"
     fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
@@ -686,11 +694,12 @@ def write_gaps(gaps: List[Dict[str, Any]], out_dir: Path) -> Path:
 
 
 def _build_covered_set(
-    records: List[Dict[str, Any]],
+    records: list[dict[str, Any]],
 ) -> set:
     """Build set of file:function keys that have coverage.
 
-    Keys are ``file:name`` — name collisions (C++ overloads,
+    Keys use ``make_function_key`` (file component percent-encoded
+    for injectivity) — name collisions (C++ overloads,
     same-named methods of different classes in one file) are
     disambiguated at CONSUMPTION time via _consume_covered_key, which
     suppresses only one same-named item per covered key instead of
@@ -700,7 +709,7 @@ def _build_covered_set(
     for record in records:
         for file_path, file_data in record.get("files", {}).items():
             for func_name in file_data.get("functions", {}):
-                covered.add(f"{file_path}:{func_name}")
+                covered.add(make_function_key(file_path, func_name))
     return covered
 
 
@@ -723,8 +732,8 @@ def _consume_covered_key(covered: set, consumed: dict, func_key: str) -> bool:
 
 def _fold_journal_into_covered(
     covered: set,
-    out_dir: Optional[Path],
-    project_dir: Optional[Path],
+    out_dir: Path | None,
+    project_dir: Path | None,
 ) -> None:
     """Fold review-journal entries into the covered-function set so
     LLM-reviewed functions suppress gaps mid-run.
@@ -761,7 +770,7 @@ def _fold_journal_into_covered(
             for entry in load_index(project_dir).values():
                 if entry.verdict == "error":
                     continue
-                covered.add(f"{entry.file}:{entry.function}")
+                covered.add(entry.key)
         except Exception:
             logger.warning(
                 "journal-fold: failed to read project index at %s — "
@@ -771,10 +780,10 @@ def _fold_journal_into_covered(
 
 
 def _build_file_tool_coverage(
-    records: List[Dict[str, Any]],
-) -> Dict[str, set]:
+    records: list[dict[str, Any]],
+) -> dict[str, set]:
     """Map each file to the set of tools that covered it."""
-    coverage: Dict[str, set] = {}
+    coverage: dict[str, set] = {}
     for record in records:
         tool = record.get("tool", "unknown")
         for file_path in record.get("files", {}):
@@ -785,8 +794,8 @@ def _build_file_tool_coverage(
 
 
 def _build_sink_reachability(
-    context_map: Optional[Dict[str, Any]],
-) -> Dict[str, List[str]]:
+    context_map: dict[str, Any] | None,
+) -> dict[str, list[str]]:
     """Extract file:name → reachable_sinks from all context map sources.
 
     Checks entry_points, the sinks array, and sink_discovery transitive_reach
@@ -795,7 +804,7 @@ def _build_sink_reachability(
     """
     if not context_map:
         return {}
-    result: Dict[str, List[str]] = {}
+    result: dict[str, list[str]] = {}
 
     for ep in context_map.get("entry_points", []):
         sinks = ep.get("reachable_sinks")
@@ -830,7 +839,7 @@ def _build_sink_reachability(
 
 
 
-def _derive_entry_points(checklist: Dict[str, Any]) -> set:
+def _derive_entry_points(checklist: dict[str, Any]) -> set:
     """Derive entry points from checklist when no context map is available.
 
     Uses header_api (C/C++ public API from headers) when present,
@@ -858,9 +867,7 @@ def _derive_entry_points(checklist: Dict[str, Any]) -> set:
                         entries.add(f"{file_path}:{name}")
                 elif visibility != "static":
                     entries.add(f"{file_path}:{name}")
-            elif lang == "go" and name[:1].isupper():
-                entries.add(f"{file_path}:{name}")
-            elif lang == "rust" and visibility == "pub":
+            elif lang == "go" and name[:1].isupper() or lang == "rust" and visibility == "pub":
                 entries.add(f"{file_path}:{name}")
 
     return entries
@@ -870,7 +877,7 @@ _FUZZ_HEAVY_ITERATIONS = 10_000
 
 
 def _fuzz_info_for(
-    fuzz_coverage: Optional[Dict[str, Any]],
+    fuzz_coverage: dict[str, Any] | None,
     file_path: str,
     function_name: str,
 ) -> tuple:
@@ -887,7 +894,7 @@ def _fuzz_info_for(
 def _compute_priority(
     *,
     file_coverage: set,
-    reachable_sinks: Optional[List[str]],
+    reachable_sinks: list[str] | None,
     sloc: int,
     is_entry_point: bool = False,
     item_kind: str = "",

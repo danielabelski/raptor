@@ -6,18 +6,21 @@ import json
 from pathlib import Path
 
 from core.audit.feedback import (
-    import_validation_results,
     _classify_verdict,
     _compute_transition,
-    _extract_reason,
-    _extract_lesson,
+    _deduplicate_findings,
     _extract_findings,
+    _extract_lesson,
+    _extract_reason,
     _format_feedback_block,
+    import_validation_results,
 )
 from core.coverage.journal import (
-    ReviewJournalEntry, append_entry, latest_entries, now_iso,
+    ReviewJournalEntry,
+    append_entry,
+    latest_entries,
+    now_iso,
 )
-
 
 # ---- helpers ----
 
@@ -649,3 +652,170 @@ class TestImportValidationResults:
         assert "## injected_fn" not in ann.body
         # The meta comment should be defanged
         assert "<!-- meta:" not in ann.body
+
+
+# ---- Dedup identity + confirmed-beats-disproven ----
+
+class TestDeduplicateFindings:
+    def test_distinct_cwe_same_function_both_kept(self):
+        """Two findings in the same function with different CWEs are
+        different findings — dedup must keep both."""
+        findings = [
+            {"file": "a.c", "function": "f", "cwe": "CWE-787", "line": 10,
+             "ruling": {"status": "confirmed"}},
+            {"file": "a.c", "function": "f", "cwe": "CWE-476", "line": 40,
+             "ruling": {"status": "ruled_out"}},
+        ]
+        assert len(_deduplicate_findings(findings)) == 2
+
+    def test_distinct_line_same_function_both_kept(self):
+        findings = [
+            {"file": "a.c", "function": "f", "line": 10},
+            {"file": "a.c", "function": "f", "line": 40},
+        ]
+        assert len(_deduplicate_findings(findings)) == 2
+
+    def test_same_identity_keeps_last(self):
+        findings = [
+            {"file": "a.c", "function": "f", "cwe": "787", "line": 10,
+             "ruling": {"status": "ruled_out"}},
+            {"file": "a.c", "function": "f", "cwe": "CWE-787", "line": 10,
+             "ruling": {"status": "confirmed"}},
+        ]
+        out = _deduplicate_findings(findings)
+        assert len(out) == 1
+        assert out[0]["ruling"]["status"] == "confirmed"
+
+    def test_finding_id_wins_over_field_identity(self):
+        findings = [
+            {"id": "F-1", "file": "a.c", "function": "f"},
+            {"id": "F-1", "file": "a.c", "function": "f", "extra": 1},
+            {"id": "F-2", "file": "a.c", "function": "f"},
+        ]
+        out = _deduplicate_findings(findings)
+        assert len(out) == 2
+        assert {f.get("id") for f in out} == {"F-1", "F-2"}
+
+
+class TestConfirmedBeatsDisproven:
+    def _seed_with_span(self, out_dir: Path, cwe: str,
+                        line_start: int, line_end: int) -> None:
+        entry = ReviewJournalEntry(
+            ts=now_iso(),
+            run_id="test",
+            file="src/a.c",
+            function="fn_a",
+            verdict="finding",
+            source_hash="",
+            line_start=line_start,
+            line_end=line_end,
+            cwe=cwe,
+            body="Bug found",
+        )
+        append_entry(out_dir, entry)
+
+    def _run(self, tmp_path: Path, report: list) -> dict:
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir(exist_ok=True)
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir(exist_ok=True)
+        report_path = tmp_path / "findings.json"
+        report_path.write_text(json.dumps(report))
+        return import_validation_results(
+            validation_report=report_path,
+            annotations_dir=ann_dir,
+            audit_out_dir=audit_out,
+        )
+
+    def test_confirmed_then_disproven_decoy_keeps_finding(self, tmp_path):
+        """A disproven decoy processed after a confirmed finding in
+        the same function must not downgrade the journal to clean."""
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _seed_journal_entry(audit_out, "src/a.c", "fn_a",
+                            "finding", "Bug found")
+        self._run(tmp_path, [
+            {"file": "src/a.c", "function": "fn_a",
+             "cwe": "CWE-787", "line": 10,
+             "ruling": {"status": "confirmed"}},
+            {"file": "src/a.c", "function": "fn_a",
+             "cwe": "CWE-476", "line": 40,
+             "ruling": {"status": "ruled_out", "reason": "decoy"}},
+        ])
+        assert _latest_journal_verdict(
+            audit_out, "src/a.c", "fn_a") == "finding"
+
+    def test_disproven_decoy_then_confirmed_keeps_finding(self, tmp_path):
+        """Reversed report order: the later confirmed finding must win
+        (its journal entry is the most recent)."""
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _seed_journal_entry(audit_out, "src/a.c", "fn_a",
+                            "finding", "Bug found")
+        self._run(tmp_path, [
+            {"file": "src/a.c", "function": "fn_a",
+             "cwe": "CWE-476", "line": 40,
+             "ruling": {"status": "ruled_out", "reason": "decoy"}},
+            {"file": "src/a.c", "function": "fn_a",
+             "cwe": "CWE-787", "line": 10,
+             "ruling": {"status": "confirmed"}},
+        ])
+        assert _latest_journal_verdict(
+            audit_out, "src/a.c", "fn_a") == "finding"
+
+    def test_disproven_mismatched_cwe_does_not_downgrade(self, tmp_path):
+        """The journal entry records CWE-787; disproving a CWE-476
+        finding in the same function is not evidence against it."""
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        self._seed_with_span(audit_out, "CWE-787", 5, 30)
+        result = self._run(tmp_path, [
+            {"file": "src/a.c", "function": "fn_a",
+             "cwe": "CWE-476", "line": 10,
+             "ruling": {"status": "ruled_out", "reason": "decoy"}},
+        ])
+        assert result["downgraded"] == 0
+        assert _latest_journal_verdict(
+            audit_out, "src/a.c", "fn_a") == "finding"
+
+    def test_disproven_line_outside_span_does_not_downgrade(self, tmp_path):
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        self._seed_with_span(audit_out, "", 5, 30)
+        result = self._run(tmp_path, [
+            {"file": "src/a.c", "function": "fn_a", "line": 200,
+             "ruling": {"status": "ruled_out"}},
+        ])
+        assert result["downgraded"] == 0
+        assert _latest_journal_verdict(
+            audit_out, "src/a.c", "fn_a") == "finding"
+
+    def test_disproven_matching_cwe_and_line_still_downgrades(self, tmp_path):
+        """The guards must not block legitimate Reflexion downgrades."""
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        self._seed_with_span(audit_out, "CWE-787", 5, 30)
+        result = self._run(tmp_path, [
+            {"file": "src/a.c", "function": "fn_a",
+             "cwe": "787", "line": 10,
+             "ruling": {"status": "ruled_out", "reason": "test code",
+                        "disqualifier": "D-1"}},
+        ])
+        assert result["downgraded"] == 1
+        assert _latest_journal_verdict(
+            audit_out, "src/a.c", "fn_a") == "clean"
+
+    def test_disproven_without_cwe_or_line_still_downgrades(self, tmp_path):
+        """Lenient when there is nothing to compare — historical
+        behaviour preserved."""
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _seed_journal_entry(audit_out, "src/a.c", "fn_a",
+                            "finding", "Bug found")
+        result = self._run(tmp_path, [
+            {"file": "src/a.c", "function": "fn_a",
+             "ruling": {"status": "ruled_out", "reason": "nope"}},
+        ])
+        assert result["downgraded"] == 1
+        assert _latest_journal_verdict(
+            audit_out, "src/a.c", "fn_a") == "clean"

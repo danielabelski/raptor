@@ -90,6 +90,15 @@ def main() -> int:
         print(f"{PROG}: checklist missing target_path; skipping")
         return 0
 
+    # checklist.json is a mutable run artefact — corroborate against
+    # the target_path sealed into .raptor-run.json at run start.
+    from core.run.metadata import corroborate_target_path
+    mismatch = corroborate_target_path(understand_dir, target_path)
+    if mismatch:
+        print(f"{PROG}: {mismatch}; refusing recovered target",
+              file=sys.stderr)
+        return 1
+
     from packages.joern.prereqs import is_available
     if not is_available():
         print(f"{PROG}: Joern not installed; skipping")

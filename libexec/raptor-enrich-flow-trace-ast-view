@@ -25,7 +25,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
@@ -37,8 +38,7 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: E402,F401
-
+import core.startup.process_init  # noqa: F401
 from core.json import load_json, save_json
 from core.orchestration.flow_trace_ast_view import enrich_with_ast_view
 
@@ -74,12 +74,24 @@ def main() -> int:
         )
         return 0
 
+    # checklist.json is a mutable run artefact — corroborate against
+    # the target_path sealed into .raptor-run.json at run start.
+    from core.run.metadata import corroborate_target_path
+    mismatch = corroborate_target_path(understand_dir, target_path)
+    if mismatch:
+        print(
+            f"raptor-enrich-flow-trace-ast-view: {mismatch}; refusing "
+            "recovered target", file=sys.stderr,
+        )
+        return 1
+
     # Build the inventory once and share across all trace files —
     # the per-call default would rebuild for every file, painful
     # when /understand --trace runs N times and emits N files.
     try:
-        from core.inventory.builder import build_inventory
         import tempfile
+
+        from core.inventory.builder import build_inventory
         with tempfile.TemporaryDirectory() as td:
             inventory = build_inventory(target_path, td)
     except Exception as e:                                  # noqa: BLE001

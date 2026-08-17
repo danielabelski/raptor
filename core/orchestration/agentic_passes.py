@@ -42,16 +42,16 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.json import load_json, save_json
-from core.sandbox import run_untrusted_networked
-from core.llm.cc_proxy_hosts import (
-    readable_paths_for_cc_dispatch as _readable_paths_for_cc_dispatch,
-)
 from core.llm.cc_proxy_hosts import (
     proxy_hosts_for_cc_dispatch as _proxy_hosts_for_cc_dispatch,
 )
+from core.llm.cc_proxy_hosts import (
+    readable_paths_for_cc_dispatch as _readable_paths_for_cc_dispatch,
+)
+from core.sandbox import run_untrusted_networked
 from core.schema_constants import CONFIDENCE_LEVELS
 from core.security.log_sanitisation import escape_nonprintable
 
@@ -87,9 +87,9 @@ _CHECKLIST_TIMEOUT_S = 300  # build_checklist parses every source file
 class PrepassResult:
     """Outcome of run_understand_prepass()."""
     ran: bool
-    skipped_reason: Optional[str] = None
-    understand_dir: Optional[Path] = None     # the proper run dir, if created
-    context_map_path: Optional[Path] = None
+    skipped_reason: str | None = None
+    understand_dir: Path | None = None     # the proper run dir, if created
+    context_map_path: Path | None = None
     checklist_enriched: bool = False          # priority markers written to agentic checklist?
     duration_s: float = 0.0
 
@@ -98,10 +98,10 @@ class PrepassResult:
 class PostpassResult:
     """Outcome of run_validate_postpass()."""
     ran: bool
-    skipped_reason: Optional[str] = None
+    skipped_reason: str | None = None
     selected_count: int = 0
-    validate_dir: Optional[Path] = None
-    report_path: Optional[Path] = None
+    validate_dir: Path | None = None
+    report_path: Path | None = None
     duration_s: float = 0.0
 
 
@@ -115,9 +115,9 @@ class ReachabilityPrepassResult:
     so they don't re-walk the source tree.
     """
     ran: bool
-    skipped_reason: Optional[str] = None
+    skipped_reason: str | None = None
     marked_count: int = 0          # functions marked priority=low
-    inventory: Optional[Any] = None
+    inventory: Any | None = None
     duration_s: float = 0.0
 
 
@@ -125,7 +125,7 @@ def run_understand_prepass(
     target: Path,
     agentic_out_dir: Path,
     block_cc_dispatch: bool = False,
-    claude_bin: Optional[str] = None,
+    claude_bin: str | None = None,
 ) -> PrepassResult:
     """Run the /understand --map skill before scanning.
 
@@ -147,13 +147,14 @@ def _run_understand_prepass_unsafe(
     target: Path,
     agentic_out_dir: Path,
     block_cc_dispatch: bool,
-    claude_bin: Optional[str],
+    claude_bin: str | None,
 ) -> PrepassResult:
     if block_cc_dispatch:
         return PrepassResult(ran=False, skipped_reason="cc_trust blocked dispatch (untrusted target)")
 
     from core.security.rule_of_two import (
-        NonInteractiveError, require_human_or_sandbox_for_agentic_pass,
+        NonInteractiveError,
+        require_human_or_sandbox_for_agentic_pass,
     )
     try:
         require_human_or_sandbox_for_agentic_pass("understand")
@@ -200,7 +201,9 @@ def _run_understand_prepass_unsafe(
         prompt = _build_understand_prompt(target, understand_dir)
         try:
             from core.llm.cc_adapter import (
-                CCDispatchConfig, build_cc_command, cc_subprocess_env,
+                CCDispatchConfig,
+                build_cc_command,
+                cc_subprocess_env,
             )
             prepass_config = CCDispatchConfig(
                 claude_bin=claude_bin,
@@ -326,7 +329,7 @@ def run_validate_postpass(
     agentic_out_dir: Path,
     analysis_report: Path,
     block_cc_dispatch: bool = False,
-    claude_bin: Optional[str] = None,
+    claude_bin: str | None = None,
     *,
     allow_unreachable: bool = False,
 ) -> PostpassResult:
@@ -359,7 +362,7 @@ def _run_validate_postpass_unsafe(
     agentic_out_dir: Path,
     analysis_report: Path,
     block_cc_dispatch: bool,
-    claude_bin: Optional[str],
+    claude_bin: str | None,
     *,
     allow_unreachable: bool = False,
 ) -> PostpassResult:
@@ -367,7 +370,8 @@ def _run_validate_postpass_unsafe(
         return PostpassResult(ran=False, skipped_reason="cc_trust blocked dispatch (untrusted target)")
 
     from core.security.rule_of_two import (
-        NonInteractiveError, require_human_or_sandbox_for_agentic_pass,
+        NonInteractiveError,
+        require_human_or_sandbox_for_agentic_pass,
     )
     try:
         require_human_or_sandbox_for_agentic_pass("validate")
@@ -492,7 +496,9 @@ def _run_validate_postpass_unsafe(
 
         try:
             from core.llm.cc_adapter import (
-                CCDispatchConfig, build_cc_command, cc_subprocess_env,
+                CCDispatchConfig,
+                build_cc_command,
+                cc_subprocess_env,
             )
             postpass_config = CCDispatchConfig(
                 claude_bin=claude_bin,
@@ -575,7 +581,7 @@ def _run_validate_postpass_unsafe(
 # ---------------------------------------------------------------------------
 
 
-def _start_lifecycle(command: str, target: Path) -> Optional[Path]:
+def _start_lifecycle(command: str, target: Path) -> Path | None:
     """Start a new lifecycle-managed run dir.
 
     Returns the OUTPUT_DIR path on success, or None if the helper failed
@@ -604,7 +610,7 @@ def _start_lifecycle(command: str, target: Path) -> Optional[Path]:
         proc = subprocess.run(
             [str(_LIFECYCLE), "start", command, "--target", str(target)],
             capture_output=True, text=True, timeout=_LIFECYCLE_TIMEOUT_S,
-            env=safe_env,
+            env=safe_env, check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning("lifecycle start %s failed: %s", command, e)
@@ -633,7 +639,7 @@ def _complete_lifecycle(output_dir: Path) -> None:
         proc = subprocess.run(
             [str(_LIFECYCLE), "complete", str(output_dir)],
             capture_output=True, text=True, timeout=_LIFECYCLE_TIMEOUT_S,
-            env=safe_env,
+            env=safe_env, check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning("lifecycle complete failed: %s", e)
@@ -656,7 +662,7 @@ def _fail_lifecycle(output_dir: Path, message: str) -> None:
         proc = subprocess.run(
             [str(_LIFECYCLE), "fail", str(output_dir), message],
             capture_output=True, text=True, timeout=_LIFECYCLE_TIMEOUT_S,
-            env=safe_env,
+            env=safe_env, check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning("lifecycle fail failed: %s", e)
@@ -677,7 +683,7 @@ def _build_checklist(target: Path, output_dir: Path) -> bool:
         proc = subprocess.run(
             [str(_BUILD_CHECKLIST), str(target), str(output_dir)],
             capture_output=True, text=True, timeout=_CHECKLIST_TIMEOUT_S,
-            env=safe_env,
+            env=safe_env, check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.warning("build_checklist failed: %s", e)
@@ -824,7 +830,7 @@ def _convert_ruling(agentic_ruling, fp_reason) -> dict:
     return ruling
 
 
-def _validate_context_map_shape(parsed) -> Optional[str]:
+def _validate_context_map_shape(parsed) -> str | None:
     """Return None if parsed context-map is structurally usable, else an
     error message describing the first problem found.
 
@@ -931,9 +937,16 @@ def _enrich_agentic_checklist(agentic_out_dir: Path, context_map_path: Path) -> 
             return False
         logger.info("enriched %d functions in agentic checklist", marked)
         return True
-    except Exception as e:
+    except Exception as e:                          # noqa: BLE001
         logger.warning("checklist enrichment failed: %s", e)
         return False
+
+
+class _ChecklistWriteSkipped(Exception):
+    """Raised inside an ``update_checklist`` transform to abort the
+    write while still releasing the accessor's flock — used when the
+    current checklist is missing/malformed (never clobber it with an
+    empty object) or when the transform made no changes."""
 
 
 def _mark_unreachable_low_priority(
@@ -963,21 +976,33 @@ def _mark_unreachable_low_priority(
     checklist_path = agentic_out_dir / "checklist.json"
     if not checklist_path.exists():
         return 0
+    counted = {"marked": 0}
     try:
-        from core.json import load_json, save_json
+        from core.inventory import update_checklist
         from core.orchestration.reachability_enrichment import (
             mark_unreachable_low_priority,
         )
-        checklist = load_json(checklist_path)
-        if not isinstance(checklist, dict):
-            return 0
-        marked = mark_unreachable_low_priority(
-            checklist, target, allow_unreachable=allow_unreachable,
-        )
-        if marked:
-            save_json(checklist_path, checklist)
-        return marked
-    except Exception:                               # noqa: BLE001
+
+        # Route the write through the accessor: it resolves the
+        # project-mode checklist symlink and holds the flock across
+        # the whole read-modify-write, so a concurrent writer's
+        # priority markers survive. A direct load+save here lost
+        # both properties.
+        def _transform(current: dict[str, Any]) -> dict[str, Any]:
+            if not isinstance(current, dict) or not current:
+                raise _ChecklistWriteSkipped
+            counted["marked"] = mark_unreachable_low_priority(
+                current, target, allow_unreachable=allow_unreachable,
+            )
+            if not counted["marked"]:
+                raise _ChecklistWriteSkipped
+            return current
+
+        update_checklist(agentic_out_dir, _transform)
+        return counted["marked"]
+    except _ChecklistWriteSkipped:
+        return counted["marked"]
+    except Exception:
         logger.debug(
             "reachability low-priority enrichment failed",
             exc_info=True,
@@ -991,8 +1016,8 @@ def run_reachability_prepass(
     *,
     allow_unreachable: bool = False,
     joern_server=None,
-    inventory: Optional[Dict[str, Any]] = None,
-) -> "ReachabilityPrepassResult":
+    inventory: dict[str, Any] | None = None,
+) -> ReachabilityPrepassResult:
     """Always-on companion to ``run_understand_prepass``.
 
     Runs unconditionally (no --understand gating): builds the
@@ -1028,8 +1053,9 @@ def run_reachability_prepass(
 
     if inventory is None:
         try:
-            from core.inventory.builder import build_inventory
             import tempfile
+
+            from core.inventory.builder import build_inventory
             with tempfile.TemporaryDirectory() as td:
                 inventory = build_inventory(str(target), td)
         except Exception as e:                      # noqa: BLE001
@@ -1043,6 +1069,7 @@ def run_reachability_prepass(
             )
 
     try:
+        from core.inventory import update_checklist
         from core.orchestration.reachability_enrichment import (
             enrich_with_caller_context,
             enrich_with_frida_traces,
@@ -1051,29 +1078,46 @@ def run_reachability_prepass(
         if joern_server is not None:
             from core.analysis.reach_audit import set_joern_server
             set_joern_server(joern_server)
-        checklist = load_json(checklist_path)
-        if not isinstance(checklist, dict):
+
+        # All three enrichment passes run inside the accessor's
+        # transform so the read-modify-write happens under the flock
+        # (concurrent writers can't drop each other's markers) and
+        # against the symlink-resolved project checklist.
+        state = {"marked": 0, "malformed": False}
+
+        def _transform(current: dict[str, Any]) -> dict[str, Any]:
+            if not isinstance(current, dict) or not current:
+                state["malformed"] = True
+                raise _ChecklistWriteSkipped
+            state["marked"] = mark_unreachable_low_priority(
+                current, target, inventory=inventory,
+                allow_unreachable=allow_unreachable,
+            )
+            enriched_frida = enrich_with_frida_traces(
+                current, target,
+                search_dirs=[agentic_out_dir, agentic_out_dir.parent],
+                inventory=inventory,
+            )
+            enriched_caller_ctx = enrich_with_caller_context(
+                current, target, inventory=inventory,
+            )
+            if not (state["marked"] or enriched_caller_ctx or enriched_frida):
+                raise _ChecklistWriteSkipped
+            return current
+
+        try:
+            update_checklist(agentic_out_dir, _transform)
+        except _ChecklistWriteSkipped:
+            pass
+        if state["malformed"]:
             return ReachabilityPrepassResult(
                 ran=False,
                 skipped_reason="checklist not a JSON object",
                 inventory=inventory,
                 duration_s=time.monotonic() - t0,
             )
-        marked = mark_unreachable_low_priority(
-            checklist, target, inventory=inventory,
-            allow_unreachable=allow_unreachable,
-        )
-        enriched_frida = enrich_with_frida_traces(
-            checklist, target,
-            search_dirs=[agentic_out_dir, agentic_out_dir.parent],
-            inventory=inventory,
-        )
-        enriched_caller_ctx = enrich_with_caller_context(
-            checklist, target, inventory=inventory,
-        )
-        if marked or enriched_caller_ctx or enriched_frida:
-            save_json(checklist_path, checklist)
-    except Exception:                               # noqa: BLE001
+        marked = state["marked"]
+    except Exception:
         logger.warning(
             "reachability prepass: enrichment failed",
             exc_info=True,

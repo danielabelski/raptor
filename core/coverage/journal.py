@@ -39,6 +39,55 @@ VALID_VERDICTS = frozenset({
 })
 
 
+# ── file:function key encoding ───────────────────────────────────────
+#
+# In-memory keys join the file path and function name with ':'. The
+# raw join is not injective: file "a.c:evil" + function "f" collides
+# with file "a.c" + function "evil:f". Producers and consumers must
+# therefore percent-encode the FILE component before joining.
+#
+# The encoding is deliberately minimal — only ':' and '%' (the escape
+# character itself) are encoded, so every path without those two
+# characters keeps its historical key byte-for-byte. A full
+# ``urllib.parse.quote`` would also rewrite spaces and non-ASCII
+# paths, silently desyncing the many raw ``f"{file}:{name}"`` joins
+# elsewhere in the tree that this chokepoint must stay consistent
+# with.
+#
+# On-disk compatibility: journal entries persist ``file`` and
+# ``function`` as separate JSON fields — keys are always recomputed
+# from those fields at read time, never parsed from disk. The
+# project index's dict keys (``index_key``) are opaque identity
+# handles: old-format keys keep loading (entries reconstruct from
+# fields), and a re-merge of a colon-bearing file simply adds a row
+# under the new key, which ``load_index`` collapses to
+# latest-by-timestamp.
+
+def encode_key_file(file: str) -> str:
+    """Percent-encode ':' and '%' in a key's file component."""
+    if ":" not in file and "%" not in file:
+        return file
+    return file.replace("%", "%25").replace(":", "%3A")
+
+
+def make_function_key(file: str, function: str) -> str:
+    """Injective ``file:function`` key (file component encoded)."""
+    return f"{encode_key_file(file)}:{function}"
+
+
+def split_function_key(key: str) -> tuple[str, str]:
+    """Split a key back into (file, function).
+
+    Splits on the LAST ':' — the historical convention — so
+    old-format (unencoded) keys still parse, then decodes the file
+    component. Decode order matters: '%3A' first (encoded ':' — a
+    literal '%' is always followed by '25' after encoding), then
+    '%25'.
+    """
+    file, _, function = key.rpartition(":")
+    return file.replace("%3A", ":").replace("%25", "%"), function
+
+
 # Journal entry schema version.
 #
 # Version 1 (current):
@@ -100,7 +149,7 @@ class ReviewJournalEntry:
 
     @property
     def key(self) -> str:
-        return f"{self.file}:{self.function}"
+        return make_function_key(self.file, self.function)
 
     @property
     def index_key(self) -> str:
@@ -113,7 +162,10 @@ class ReviewJournalEntry:
         """
         strategy_hash = _canonical_strategy_hash(self.strategies)
         model = self.model or ""
-        return f"{self.file}:{self.function}:{model}:{strategy_hash}"
+        return (
+            f"{encode_key_file(self.file)}:{self.function}"
+            f":{model}:{strategy_hash}"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         d = {k: v for k, v in asdict(self).items() if v is not None}

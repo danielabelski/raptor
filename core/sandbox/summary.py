@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Any
 
 from core.atomic_fs import write_text_atomically
+from core.logging import log_security_event as _log_security_event
 from core.security.redaction import redact_secrets
 
 from . import evidence as _evidence
@@ -235,6 +236,30 @@ def record_denial(cmd_display: str, returncode: int,
         "type": denial_type,
         "suggested_fix": _suggested_fix(denial_type, **details),
     }
+    # Security-event stream: mirror the denial into the framework
+    # audit trail. record_denial is the chokepoint every observed
+    # sandbox denial (network / write / seccomp / udp) flows through,
+    # so one emission here covers them all — placed after the per-run
+    # cap so an adversarial target cannot flood the stream, and
+    # independent of the evidence-file append below so a broken
+    # evidence fd doesn't also lose the audit-trail record.
+    # Observability only: never raises (guarded in core.logging),
+    # never changes what record_denial persists. Payload carries the
+    # denial type + already-redacted cmd + context identifiers only
+    # ("type"/"cmd" detail duplicates are skipped so the explicit
+    # fields always win, mirroring `record` above; denial_type /
+    # returncode are named params so **details cannot collide with
+    # them).
+    _log_security_event(
+        "sandbox_denial",
+        f"sandbox denied {denial_type}: {cmd_safe}",
+        denial_type=denial_type,
+        returncode=returncode,
+        **{
+            k: v for k, v in details.items()
+            if k not in ("type", "cmd")
+        },
+    )
     # JSONL append through the per-run held evidence fd — each line is
     # a single O_APPEND write, atomic under PIPE_BUF (~4KB); each line
     # is well under that threshold. The fd is opened O_EXCL in

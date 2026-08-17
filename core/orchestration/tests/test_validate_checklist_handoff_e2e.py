@@ -144,9 +144,9 @@ def test_agentic_launcher_writes_pointer_into_validate_dir(tmp_path):
     # the flow stays real. Patch ``shutil.which`` so claude
     # appears to exist.
     from core.orchestration import agentic_passes
-    with patch("core.orchestration.agentic_passes.run_untrusted_networked",
+    with patch("core.orchestration.skill_dispatch.run_untrusted_networked",
                side_effect=_capture_dispatch), \
-         patch("core.orchestration.agentic_passes.shutil.which",
+         patch("core.orchestration.skill_dispatch.shutil.which",
                return_value="/usr/bin/fake-claude"), \
          patch("core.security.rule_of_two."
                "require_human_or_sandbox_for_agentic_pass"):
@@ -340,6 +340,7 @@ def test_e2e_pointer_drives_full_reuse_and_demotion(tmp_path):
 def test_build_validate_prompt_default_omits_allow_unreachable_note():
     """Sanity: default prompt has no in-isolation-mode notice."""
     from pathlib import Path
+
     from core.orchestration.agentic_passes import _build_validate_prompt
     prompt = _build_validate_prompt(
         target=Path("/tmp/x"),
@@ -357,6 +358,7 @@ def test_build_validate_prompt_with_allow_unreachable_includes_notice():
     so the claude-code sub-agent knows to thread it into the
     PipelineConfig when invoking the validation pipeline."""
     from pathlib import Path
+
     from core.orchestration.agentic_passes import _build_validate_prompt
     prompt = _build_validate_prompt(
         target=Path("/tmp/x"),

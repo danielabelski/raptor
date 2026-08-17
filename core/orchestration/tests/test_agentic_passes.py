@@ -52,7 +52,11 @@ def tearDownModule():
 
 @contextlib.contextmanager
 def _patch_passes(dispatcher):
-    """Patch both subprocess.run and sandbox_run in agentic_passes.
+    """Patch both subprocess.run and sandbox_run in skill_dispatch.
+
+    The lifecycle helpers and the claude -p dispatch live in
+    core.orchestration.skill_dispatch (the shared runner agentic_passes
+    delegates to), so that's where the seams are.
 
     sandbox_run receives the claude -p calls (keyword-heavy signature);
     subprocess.run receives lifecycle/build_checklist calls. Both route
@@ -71,9 +75,9 @@ def _patch_passes(dispatcher):
         combined(cmd, *args, **kwargs)
         return result
 
-    with patch("core.orchestration.agentic_passes.subprocess.run",
+    with patch("core.orchestration.skill_dispatch.subprocess.run",
                side_effect=_subprocess_side_effect), \
-         patch("core.orchestration.agentic_passes.run_untrusted_networked",
+         patch("core.orchestration.skill_dispatch.run_untrusted_networked",
                side_effect=_sandbox_side_effect):
         yield combined
 
@@ -258,7 +262,7 @@ class UnderstandPrepassTests(unittest.TestCase):
 
     def test_skips_when_claude_not_on_path(self):
         with TemporaryDirectory() as tmp, \
-             patch("core.orchestration.agentic_passes.shutil.which", return_value=None):
+             patch("core.orchestration.skill_dispatch.shutil.which", return_value=None):
             result = run_understand_prepass(
                 target=Path(tmp), agentic_out_dir=Path(tmp),
             )
@@ -364,9 +368,9 @@ class UnderstandPrepassTests(unittest.TestCase):
                 sandbox_calls.append(kwargs)
                 return dispatcher(cmd, *args, **kwargs)
 
-            with patch("core.orchestration.agentic_passes.subprocess.run",
+            with patch("core.orchestration.skill_dispatch.subprocess.run",
                        side_effect=dispatcher), \
-                 patch("core.orchestration.agentic_passes.run_untrusted_networked",
+                 patch("core.orchestration.skill_dispatch.run_untrusted_networked",
                        side_effect=_sandbox_capture), \
                  patch.dict("os.environ", _FIRST_PARTY_PROVIDER_ENV):
                 run_understand_prepass(
@@ -607,9 +611,9 @@ class ValidatePostpassTests(unittest.TestCase):
                 sandbox_calls.append(kwargs)
                 return dispatcher(cmd, *args, **kwargs)
 
-            with patch("core.orchestration.agentic_passes.subprocess.run",
+            with patch("core.orchestration.skill_dispatch.subprocess.run",
                        side_effect=dispatcher), \
-                 patch("core.orchestration.agentic_passes.run_untrusted_networked",
+                 patch("core.orchestration.skill_dispatch.run_untrusted_networked",
                        side_effect=_sandbox_capture), \
                  patch.dict("os.environ", _FIRST_PARTY_PROVIDER_ENV):
                 run_validate_postpass(
@@ -1045,13 +1049,13 @@ class AdversarialBugsTests(unittest.TestCase):
         # _complete_lifecycle ignores the subprocess returncode silently.
         # If the helper failed internally (e.g. couldn't write metadata),
         # we'd never know — the run dir stays in "running" state.
-        from core.orchestration.agentic_passes import _complete_lifecycle
-        with patch("core.orchestration.agentic_passes.subprocess.run",
+        from core.orchestration.skill_dispatch import complete_lifecycle
+        with patch("core.orchestration.skill_dispatch.subprocess.run",
                    return_value=_ok(returncode=1, stderr="permission denied")):
             with self.assertLogs(
-                "core.orchestration.agentic_passes", level="WARNING"
+                "core.orchestration.skill_dispatch", level="WARNING"
             ) as cm:
-                _complete_lifecycle(Path("scratch"))
+                complete_lifecycle(Path("scratch"))
             self.assertTrue(
                 any("complete" in m.lower() and ("returned" in m.lower()
                                                   or "failed" in m.lower())
@@ -1067,23 +1071,23 @@ class LifecycleHelperResilienceTests(unittest.TestCase):
         # If raptor-run-lifecycle complete itself errors after the work
         # succeeded, we should still return a successful PrepassResult —
         # the analytical work is done, the housekeeping just didn't tick.
-        from core.orchestration.agentic_passes import _complete_lifecycle
-        with patch("core.orchestration.agentic_passes.subprocess.run",
+        from core.orchestration.skill_dispatch import complete_lifecycle
+        with patch("core.orchestration.skill_dispatch.subprocess.run",
                    side_effect=OSError("disk full")):
             # Should swallow the OSError, not raise.
-            _complete_lifecycle(Path("scratch"))
+            complete_lifecycle(Path("scratch"))
 
     def test_fail_lifecycle_handles_none_gracefully(self):
         # _fail_lifecycle is called from error paths where the dir might
         # not have been created. None must be a no-op, not a crash.
-        from core.orchestration.agentic_passes import _fail_lifecycle
-        _fail_lifecycle(None, "anything")  # must not raise
+        from core.orchestration.skill_dispatch import fail_lifecycle
+        fail_lifecycle(None, "anything")  # must not raise
 
     def test_fail_lifecycle_swallows_subprocess_errors(self):
-        from core.orchestration.agentic_passes import _fail_lifecycle
-        with patch("core.orchestration.agentic_passes.subprocess.run",
+        from core.orchestration.skill_dispatch import fail_lifecycle
+        with patch("core.orchestration.skill_dispatch.subprocess.run",
                    side_effect=OSError("no such file")):
-            _fail_lifecycle(Path("scratch"), "test")  # must not raise
+            fail_lifecycle(Path("scratch"), "test")  # must not raise
 
 
 class TimeoutTests(unittest.TestCase):
@@ -1380,7 +1384,7 @@ class FormatConverterTests(unittest.TestCase):
 class MockContractTests(unittest.TestCase):
     """Sanity-check that our subprocess.run mock path is the right one.
 
-    Tests do `patch("core.orchestration.agentic_passes.subprocess.run", ...)`.
+    Tests do `patch("core.orchestration.skill_dispatch.subprocess.run", ...)`.
     If a future refactor changes the import to `from subprocess import run`
     at module level, the patch path becomes wrong but tests still pass
     (mocking nothing) — silent test rot.
@@ -1393,9 +1397,9 @@ class MockContractTests(unittest.TestCase):
         # path.
         import subprocess as sp
 
-        import core.orchestration.agentic_passes as ap
-        self.assertIs(ap.subprocess, sp,
-                      msg="agentic_passes must keep `import subprocess` so "
+        import core.orchestration.skill_dispatch as sd
+        self.assertIs(sd.subprocess, sp,
+                      msg="skill_dispatch must keep `import subprocess` so "
                           "tests' patch paths stay valid")
 
 

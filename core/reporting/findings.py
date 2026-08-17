@@ -4,14 +4,15 @@ Translates vulnerability findings into ReportSpec for rendering.
 Used by both /validate and /agentic pipelines.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from core.security.prompt_output_sanitise import sanitise_code, sanitise_string
+
 from .formatting import get_display_status, title_case_type, truncate_path
-from .spec import ReportSpec, ReportSection
+from .spec import ReportSection, ReportSpec
 
 
-def build_findings_rows(findings: List[Dict[str, Any]], filename_only: bool = False) -> List[Tuple]:
+def build_findings_rows(findings: list[dict[str, Any]], filename_only: bool = False) -> list[tuple]:
     """Build table rows from findings. One shared implementation for all pipelines.
 
     Args:
@@ -54,11 +55,22 @@ FINDINGS_COLUMNS = ["#", "Type", "CWE", "File", "Status", "Severity", "CVSS"]
 _FILE_COLUMN_INDEX = FINDINGS_COLUMNS.index("File")
 
 
-def _markdown_rows(rows: List[Tuple]) -> List[Tuple]:
-    """Wrap file paths in backticks for markdown rendering."""
+def _markdown_rows(rows: list[tuple]) -> list[tuple]:
+    """Escape cells and wrap file paths in backticks for markdown rendering.
+
+    `build_findings_rows` output is shared with the console renderer
+    (which does its own `escape_nonprintable` pass and must not show
+    literal ``\\|`` / ``<br>``), so the markdown-specific escaping
+    lives here — every cell goes through `_md_table_cell` so a
+    finding-derived value (vuln_type, cwe, file:line, status) cannot
+    split table columns or open an inline-code span. Matches the
+    per-finding detail table, which already escapes via
+    `_md_table_cell`.
+    """
     return [
         tuple(
-            f"`{c}`" if j == _FILE_COLUMN_INDEX and c and c != "—" else c
+            f"`{_md_table_cell(c)}`" if j == _FILE_COLUMN_INDEX and c and c != "—"
+            else _md_table_cell(c)
             for j, c in enumerate(row)
         )
         for row in rows
@@ -67,7 +79,7 @@ def _markdown_rows(rows: List[Tuple]) -> List[Tuple]:
 _CVSS_NOTE = "CVSS scores reflect **inherent vulnerability impact** — not binary mitigations."
 
 
-def build_findings_summary(findings: List[Dict[str, Any]]) -> Dict[str, int]:
+def build_findings_summary(findings: list[dict[str, Any]]) -> dict[str, int]:
     """Count findings by status category.
 
     Splits the ``Confirmed`` family into three sub-counts so the
@@ -123,7 +135,7 @@ def build_findings_summary(findings: List[Dict[str, Any]]) -> Dict[str, int]:
     return counts
 
 
-def findings_summary_line(counts: Dict[str, int], vuln_count: Optional[int] = None) -> str:
+def findings_summary_line(counts: dict[str, int], vuln_count: int | None = None) -> str:
     """Build the one-line status summary from counts."""
     parts = []
     if counts["exploitable"]:
@@ -201,7 +213,7 @@ def _md_table_cell(s: str) -> str:
     return s
 
 
-def build_finding_detail(finding: Dict[str, Any], index: int) -> ReportSection:
+def build_finding_detail(finding: dict[str, Any], index: int) -> ReportSection:
     """Build a per-finding detail section."""
     fid = finding.get("id") or finding.get("finding_id") or f"FIND-{index:04d}"
     vtype = title_case_type(finding.get("vuln_type", "unknown"))
@@ -294,13 +306,13 @@ def build_finding_detail(finding: Dict[str, Any], index: int) -> ReportSection:
 
 
 def build_findings_spec(
-    findings: List[Dict[str, Any]],
+    findings: list[dict[str, Any]],
     title: str = "Security Report",
-    metadata: Dict[str, str] = None,
-    extra_summary: Dict[str, Any] = None,
-    warnings: List[str] = None,
-    extra_sections: List[ReportSection] = None,
-    output_files: List[str] = None,
+    metadata: dict[str, str] | None = None,
+    extra_summary: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+    extra_sections: list[ReportSection] | None = None,
+    output_files: list[str] | None = None,
     include_details: bool = True,
 ) -> ReportSpec:
     """Build a ReportSpec from findings data.
@@ -352,7 +364,7 @@ def build_findings_spec(
     )
 
 
-def findings_summary(findings: List[Dict[str, Any]]) -> str:
+def findings_summary(findings: list[dict[str, Any]]) -> str:
     """Generate the 'Results at a Glance' text: table + status line.
 
     Takes data directly — no file I/O.
@@ -363,7 +375,7 @@ def findings_summary(findings: List[Dict[str, Any]]) -> str:
     try:
         from core.project.findings_utils import count_vulns
         vuln_count = count_vulns(findings)
-    except Exception:
+    except Exception:  # noqa: BLE001
         vuln_count = None
 
     lines = []

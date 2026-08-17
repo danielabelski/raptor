@@ -93,6 +93,15 @@ _DEFAULT_MAX_AGE_H = 24.0
 _LOG_MAX_AGE_ENV = "RAPTOR_LOG_REAP_MAX_AGE_D"
 _DEFAULT_LOG_AGE_D = 14.0
 
+# Failed/cancelled run dirs (reap_stale_runs). Completed runs are
+# results and are never age-reaped.
+_RUN_MAX_AGE_ENV = "RAPTOR_RUN_REAP_MAX_AGE_D"
+_DEFAULT_RUN_AGE_D = 30.0
+
+# Mirrors core.run.metadata.RUN_METADATA_FILE — literal here to keep
+# this module import-light (metadata imports US at start_run time).
+_RUN_METADATA_FILE = ".raptor-run.json"
+
 
 def _max_age_seconds() -> float | None:
     """Age floor in seconds, or None when the sweep is disabled."""
@@ -247,6 +256,112 @@ def _reap(now: float | None) -> list[Path]:
             len(reaped),
         )
     return reaped
+
+
+def reap_stale_runs(parent: Path, now: float | None = None) -> list[Path]:
+    """Remove aged-out failed/cancelled run dirs under *parent*.
+
+    Nothing else deletes flat run dirs: ``_cleanup_abandoned`` only
+    relabels status, and ``/project clean`` is manual and
+    project-scoped. Failed runs are usually a few KB of metadata, but
+    interrupted agentic runs can strand tens of MB (a 37M checklist was
+    observed in one), and either way they pile up forever.
+
+    Deliberately narrow:
+
+      - Only dirs carrying a ``.raptor-run.json`` whose status is
+        ``failed`` or ``cancelled``. Completed runs are RESULTS — never
+        auto-deleted. Running runs belong to the liveness machinery
+        (`_cleanup_abandoned`, the lifecycle hook), not to age sweeps.
+      - Only past the age floor: ``RAPTOR_RUN_REAP_MAX_AGE_D`` (default
+        30 days, 0 disables), judged by the run's own start timestamp
+        with dir mtime as fallback.
+      - lstat-only + current-euid ownership, same posture as the tmp
+        sweep; non-run dirs (logs/, llm_cache/, projects/) carry no run
+        metadata and are never touched.
+
+    Best-effort by contract — never raises.
+    """
+    try:
+        return _reap_runs(parent, now)
+    except Exception as exc:  # noqa: BLE001 — sweep must never block a run
+        logger.debug("stale-run sweep aborted: %s", exc)
+        return []
+
+
+def _reap_runs(parent: Path, now: float | None) -> list[Path]:
+    raw = os.environ.get(_RUN_MAX_AGE_ENV, "")
+    if raw:
+        try:
+            days = float(raw)
+        except ValueError:
+            logger.debug("ignoring non-numeric %s=%r", _RUN_MAX_AGE_ENV, raw)
+            days = _DEFAULT_RUN_AGE_D
+    else:
+        days = _DEFAULT_RUN_AGE_D
+    if days <= 0:
+        return []
+    max_age = days * 86400.0
+
+    parent = Path(parent)
+    try:
+        children = list(parent.iterdir())
+    except OSError:
+        return []
+    if now is None:
+        import time
+
+        now = time.time()
+    euid = os.geteuid()
+    reaped: list[Path] = []
+    for d in children:
+        try:
+            st = d.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != euid:
+            continue
+        if d.name.startswith((".", "_")):
+            continue
+        meta_path = d / _RUN_METADATA_FILE
+        try:
+            import json
+
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("status") not in ("failed", "cancelled"):
+            continue
+        age = _run_age_seconds(meta, st, now)
+        if age < max_age:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        if not d.exists():
+            reaped.append(d)
+    if reaped:
+        logger.info(
+            "reaped %d failed/cancelled run dir(s) older than %g days "
+            "under %s", len(reaped), days, parent,
+        )
+    return reaped
+
+
+def _run_age_seconds(meta: dict, st: os.stat_result, now: float) -> float:
+    """Age from the run's own start timestamp; dir mtime as fallback."""
+    ts = meta.get("timestamp")
+    if isinstance(ts, str):
+        from datetime import datetime, timezone
+
+        try:
+            started = datetime.fromisoformat(ts)
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            return now - started.timestamp()
+        except ValueError:
+            pass
+    return now - st.st_mtime
 
 
 def reap_stale_logs(now: float | None = None) -> list[Path]:

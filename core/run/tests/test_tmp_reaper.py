@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from core.run.tmp_reaper import reap_stale_logs, reap_stale_tmp
+from core.run.tmp_reaper import reap_stale_logs, reap_stale_runs, reap_stale_tmp
 
 _OLD = time.time() - 25 * 3600  # past the 24h default age floor
 
@@ -223,6 +223,74 @@ class TestLogReaping:
         assert reap_stale_logs() == []
 
 
+class TestRunReaping:
+
+    @pytest.fixture
+    def out_root(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("RAPTOR_RUN_REAP_MAX_AGE_D", raising=False)
+        return tmp_path
+
+    @staticmethod
+    def _run_dir(root, name, status, age_d=45.0, *, with_meta=True):
+        import json
+        from datetime import datetime, timedelta, timezone
+        d = root / name
+        d.mkdir()
+        if with_meta:
+            ts = datetime.now(timezone.utc) - timedelta(days=age_d)
+            (d / ".raptor-run.json").write_text(json.dumps({
+                "version": 2, "command": "scan", "status": status,
+                "timestamp": ts.isoformat(), "extra": {},
+            }))
+        return d
+
+    def test_old_failed_and_cancelled_reaped(self, out_root):
+        failed = self._run_dir(out_root, "scan-001", "failed")
+        cancelled = self._run_dir(out_root, "fuzz-001", "cancelled")
+        reaped = reap_stale_runs(out_root)
+        assert sorted(reaped) == sorted([failed, cancelled])
+        assert not failed.exists() and not cancelled.exists()
+
+    def test_completed_and_running_never_reaped(self, out_root):
+        done = self._run_dir(out_root, "scan-001", "completed")
+        live = self._run_dir(out_root, "scan-002", "running")
+        assert reap_stale_runs(out_root) == []
+        assert done.is_dir() and live.is_dir()
+
+    def test_fresh_failed_kept(self, out_root):
+        fresh = self._run_dir(out_root, "scan-001", "failed", age_d=2.0)
+        assert reap_stale_runs(out_root) == []
+        assert fresh.is_dir()
+
+    def test_non_run_dirs_untouched(self, out_root):
+        logs = self._run_dir(out_root, "logs", "failed", with_meta=False)
+        (logs / "raptor_1.jsonl").write_text("{}")
+        assert reap_stale_runs(out_root) == []
+        assert logs.is_dir()
+
+    def test_env_zero_disables(self, out_root, monkeypatch):
+        failed = self._run_dir(out_root, "scan-001", "failed")
+        monkeypatch.setenv("RAPTOR_RUN_REAP_MAX_AGE_D", "0")
+        assert reap_stale_runs(out_root) == []
+        assert failed.is_dir()
+
+    def test_mtime_fallback_when_timestamp_malformed(self, out_root):
+        import json
+        d = out_root / "scan-001"
+        d.mkdir()
+        (d / ".raptor-run.json").write_text(json.dumps({
+            "status": "failed", "timestamp": "not-a-date", "extra": {},
+        }))
+        os.utime(d, (_OLD, _OLD))  # only ~25h — under the 30d floor
+        assert reap_stale_runs(out_root) == []
+        old = time.time() - 45 * 86400
+        os.utime(d, (old, old))
+        assert reap_stale_runs(out_root) == [d]
+
+    def test_missing_parent_is_noop(self, tmp_path):
+        assert reap_stale_runs(tmp_path / "absent") == []
+
+
 class TestStartRunHook:
 
     def test_start_run_invokes_sweeps(self, tmp_path, monkeypatch):
@@ -236,5 +304,10 @@ class TestStartRunHook:
         monkeypatch.setattr(
             reaper_mod, "reap_stale_logs", lambda: calls.append("logs") or [],
         )
-        start_run(tmp_path / "run", "scan")
-        assert calls == ["tmp", "logs"]
+        monkeypatch.setattr(
+            reaper_mod, "reap_stale_runs",
+            lambda parent: calls.append(("runs", parent)) or [],
+        )
+        out = tmp_path / "run"
+        start_run(out, "scan")
+        assert calls == ["tmp", "logs", ("runs", out.parent)]

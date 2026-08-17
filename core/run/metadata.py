@@ -237,12 +237,19 @@ def start_run(output_dir: Path, command: str,
         _cleanup_abandoned(output_dir.parent, command, session_pid)
 
     # Sweep temp artifacts orphaned by earlier hard-killed runs — their
-    # atexit/exit-path cleanups never fire on SIGKILL/OOM/SIGTERM — and
-    # aged-out per-process audit logs (one file per process, no rotation).
-    from core.run.tmp_reaper import reap_stale_logs, reap_stale_tmp
+    # atexit/exit-path cleanups never fire on SIGKILL/OOM/SIGTERM —
+    # aged-out per-process audit logs (one file per process, no
+    # rotation), and aged-out failed/cancelled sibling run dirs
+    # (completed runs are results and are never age-reaped).
+    from core.run.tmp_reaper import (
+        reap_stale_logs,
+        reap_stale_runs,
+        reap_stale_tmp,
+    )
 
     reap_stale_tmp()
     reap_stale_logs()
+    reap_stale_runs(output_dir.parent)
 
     # Seal the provenance manifest NOW, before any analysis runs. The
     # source-control snapshot in particular must be taken here — the tree

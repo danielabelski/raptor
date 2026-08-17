@@ -2398,8 +2398,18 @@ def run_joern_pre_sweep(
         logger.warning("standard_sinks.sc not found at %s", sinks_script)
         return {}
 
+    # Sink list authority: lang_config.STANDARD_SWEEP_SINKS, rendered
+    # into the script's __SINK_NAMES__ slot (was a hardcoded copy).
+    from packages.joern.lang_config import (
+        STANDARD_SWEEP_SINKS,
+        scala_string_list,
+    )
+    sink_subst = {"__SINK_NAMES__": scala_string_list(STANDARD_SWEEP_SINKS)}
+
     if server is not None:
-        result = server.query_script(sinks_script, timeout=query_timeout)
+        result = server.query_script(
+            sinks_script, timeout=query_timeout, substitutions=sink_subst,
+        )
         if result.errors:
             logger.warning("joern pre-sweep errors: %s", result.errors)
 
@@ -2427,7 +2437,10 @@ def run_joern_pre_sweep(
         return {}
 
     try:
-        result = run_query(cpg, str(sinks_script), timeout=query_timeout)
+        result = run_query(
+            cpg, str(sinks_script), timeout=query_timeout,
+            substitutions=sink_subst,
+        )
         if result.errors:
             logger.warning("joern pre-sweep errors: %s", result.errors)
 

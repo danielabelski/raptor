@@ -404,11 +404,14 @@ def run_query(
     timeout: int = 300,
     subprocess_runner=None,
     validate: bool = True,
+    substitutions: dict[str, str] | None = None,
 ) -> JoernResult:
     """Execute a Joern/CPGQL query against a built CPG.
 
     query: inline CPGQL string OR path to a .sc script file.
     validate: if True, run query validation before execution.
+    substitutions: template-slot markers (e.g. ``__SINK_NAMES__``)
+    mapped to replacement text, applied to the script body.
     """
     if not cpg.exists():
         return JoernResult(
@@ -435,6 +438,8 @@ def run_query(
             return JoernResult(query=query, errors=[f"cannot read script: {e}"])
     else:
         script_body = query
+    for marker, replacement in (substitutions or {}).items():
+        script_body = script_body.replace(marker, replacement)
 
     # joern's CLI flag surface drifts across releases: `--script-content`
     # does not exist in 4.x, and `--import` there means "compile .sc onto

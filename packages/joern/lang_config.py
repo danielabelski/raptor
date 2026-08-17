@@ -137,6 +137,34 @@ _PROFILES: dict[str, LangProfile] = {
 
 DEFAULT = PYTHON
 
+# Sink names for the bulk pre-sweep query (standard_sinks.sc). One
+# cross-language list: the sweep runs once at CPG build time before
+# the target language routing kicks in, so it mixes the C/C++ and
+# dynamic-language surfaces. This is the single authority — the .sc
+# template renders it through its __SINK_NAMES__ slot (the script
+# used to hardcode a drifting copy).
+STANDARD_SWEEP_SINKS: tuple[str, ...] = (
+    # Command execution
+    "system", "popen", "exec", "execve", "execvp", "execl", "execlp",
+    "execle", "fexecve", "posix_spawn", "posix_spawnp",
+    # Memory operations
+    "memcpy", "memmove", "memset", "strcpy", "strncpy", "strcat",
+    "strncat", "sprintf", "snprintf", "vsprintf", "vsnprintf",
+    # Format strings
+    "printf", "fprintf", "syslog",
+    # File operations
+    "fopen", "freopen", "open",
+    # SQL / injection surfaces
+    "query", "execute", "raw",
+    # Deserialization
+    "loads", "load", "unserialize", "pickle",
+)
+
+
+def scala_string_list(names: tuple[str, ...]) -> str:
+    """Render a name tuple as the body of a Scala List(...) literal."""
+    return ", ".join(f'"{n}"' for n in names)
+
 
 def profile_for(language: str) -> LangProfile:
     """Return the tuning profile for a language, defaulting to Python."""

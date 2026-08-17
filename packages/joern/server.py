@@ -636,12 +636,15 @@ class JoernServer:
         *,
         timeout: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        substitutions: dict[str, str] | None = None,
     ) -> JoernResult:
         """Execute a .sc script file via the server.
 
         Reads the script content and submits it as an inline query.
         When *cancel_check* is provided, uses the async submit+poll
-        path so the caller can abort mid-query.
+        path so the caller can abort mid-query.  *substitutions* maps
+        template-slot markers (e.g. ``__SINK_NAMES__``) to replacement
+        text, applied to the script body before submission.
         """
         script_path = Path(script_path)
         if not script_path.exists():
@@ -651,6 +654,8 @@ class JoernServer:
             )
 
         content = script_path.read_text(encoding="utf-8")
+        for marker, replacement in (substitutions or {}).items():
+            content = content.replace(marker, replacement)
         if cancel_check is not None:
             return self.query_cancellable(
                 content, timeout=timeout, cancel_check=cancel_check,

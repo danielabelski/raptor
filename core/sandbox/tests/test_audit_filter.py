@@ -280,7 +280,7 @@ class TestProxyEventResultVocabulary:
     Drift class:
       - Proxy emits a NEW result string but the canonical set
         (_PROXY_EVENT_RESULTS) doesn't list it → test queries that
-        whitelist by canonical set silently miss the event.
+        allowlist by canonical set silently miss the event.
       - Proxy renames an existing result (e.g., `denied_host` to
         `host_denied`) → all consumer filters break silently.
 

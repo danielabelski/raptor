@@ -789,11 +789,11 @@ class TestProxyAuditModeRecordsSurviveErrors:
 # Before W36.K.1: `bool(env_var)` treated any non-empty string as truthy,
 # so RAPTOR_PROXY_AUDIT_ENFORCE=0 / false / no / off all enabled strict
 # mode — fail-SAFE direction but contrary to operator expectations.
-# After W36.K.1: whitelist of explicit truthy spellings.
+# After W36.K.1: allowlist of explicit truthy spellings.
 
 
 class TestProxyAuditEnforceEnvVarParse:
-    """Regression coverage for the W36.K.1 truthy-whitelist parse."""
+    """Regression coverage for the W36.K.1 truthy-allowlist parse."""
 
     @pytest.mark.parametrize("value", [
         "0",
@@ -807,7 +807,7 @@ class TestProxyAuditEnforceEnvVarParse:
         "",
         "   ",
         "garbage",
-        "2",       # only "1" is truthy by the whitelist
+        "2",       # only "1" is truthy by the allowlist
         "10",
     ])
     def test_non_truthy_value_disables_enforce(

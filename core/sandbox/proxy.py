@@ -1750,7 +1750,7 @@ def get_proxy(
             # direction (the operator gets MORE security than they
             # asked for), but it contradicts the standard env-var
             # convention and confuses anyone scripting against the
-            # documented "=1" example. Whitelist the truthy spellings
+            # documented "=1" example. Allowlist the truthy spellings
             # explicitly; everything else (including "0" / "false" /
             # the absent var) leaves audit-mode in its default log-
             # only behaviour.

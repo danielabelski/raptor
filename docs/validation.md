@@ -112,7 +112,7 @@ The LLM then:
    and what would trigger reconsideration.
 
 Stage A also applies sanitisation-gate detection (parameterisation, escaping,
-whitelist validation, length checks, type-narrowing casts) and cross-class
+allowlist validation, length checks, type-narrowing casts) and cross-class
 escalation for persistent-storage sources (e.g. a database row flowing to an
 HTML render is flagged as a stored-XSS candidate regardless of how safe the
 sink looks in isolation).

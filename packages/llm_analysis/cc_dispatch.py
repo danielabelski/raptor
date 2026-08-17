@@ -204,7 +204,7 @@ def _safe_id(finding_id: str) -> str:
       Windows-path interactions if `finding_id` contained
       backslashes (`Path("a\\\\b").name` is OS-dependent).
 
-    Whitelist `[A-Za-z0-9._-]` (sub everything else with `_`)
+    Allowlist `[A-Za-z0-9._-]` (sub everything else with `_`)
     and cap at 80 chars (well under any FS limit, leaves room
     for the `cc_` prefix and `.txt` suffix). Empty / whitespace
     -> "unknown".
@@ -214,7 +214,7 @@ def _safe_id(finding_id: str) -> str:
     sanitised = _SAFE_ID_RE.sub("_", finding_id.strip())
     # Defence-in-depth: collapse multiple consecutive `..` runs
     # to one `_` so even after sanitisation no traversal token
-    # remains (whitelist already excludes `/` so this is mostly
+    # remains (allowlist already excludes `/` so this is mostly
     # cosmetic, but keeps the filename predictable).
     sanitised = sanitised.replace("..", "_")
     if len(sanitised) > _SAFE_ID_MAX:

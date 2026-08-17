@@ -1618,7 +1618,7 @@ class TestE2ELandlockReadRestriction(unittest.TestCase):
         self.assertIn("output", str(cm.exception))
 
     def test_readable_paths_extends_allowlist(self):
-        """readable_paths=[...] lets callers whitelist extras."""
+        """readable_paths=[...] lets callers allowlist extras."""
         # Pick a path NOT in the default allowlist: /var/lib
         # (many tools check this for state; not normally allowed).
         import os

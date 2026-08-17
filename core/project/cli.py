@@ -911,7 +911,7 @@ def main():
                 #
                 # Reject editor strings containing shell-meta
                 # characters that aren't valid in canonical editor
-                # invocations. Whitelist editor command names to
+                # invocations. Allowlist editor command names to
                 # the canonical set; reject otherwise (operator
                 # can use the printed message to override
                 # explicitly).

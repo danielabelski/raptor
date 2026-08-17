@@ -7,7 +7,7 @@ and reports per-ecosystem reachability. Useful for:
   cache, the network, or a registry outage?).
 - CI gating ("don't run /sca on this builder unless the registries are
   reachable").
-- New-environment sanity-check (proxy whitelist set up correctly?).
+- New-environment sanity-check (proxy allowlist set up correctly?).
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ import argparse
 import logging
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
 
 from core.json import JsonCache
-from . import SCA_CACHE_ROOT
-from . import default_client
+
+from . import SCA_CACHE_ROOT, default_client
 from .registries.crates import CratesClient
 from .registries.debian import DebianClient
 from .registries.golang import GoClient
@@ -60,7 +60,7 @@ class _ProbeResult:
     ok: bool
     elapsed_ms: int
     versions_returned: int
-    error: Optional[str] = None
+    error: str | None = None
 
 
 def main(argv: Sequence[str]) -> int:
@@ -70,7 +70,7 @@ def main(argv: Sequence[str]) -> int:
     cache = JsonCache(root=SCA_CACHE_ROOT)
     http = default_client()
 
-    results: List[_ProbeResult] = []
+    results: list[_ProbeResult] = []
     for eco, factory, probe in _PROBES:
         client = factory(http, cache, offline=args.offline)
         results.append(_run_probe(client, eco, probe))
@@ -99,7 +99,7 @@ def _run_probe(client, eco: str, probe: str) -> _ProbeResult:
     )
 
 
-def _print_table(results: List[_ProbeResult]) -> None:
+def _print_table(results: list[_ProbeResult]) -> None:
     print(f"{'Ecosystem':<12} {'Probe':<40} {'Status':<10} "
           f"{'Time':<8} {'Versions':<10}")
     print("-" * 90)

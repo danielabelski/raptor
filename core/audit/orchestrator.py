@@ -2780,6 +2780,55 @@ def _review_duration_hints(
     return hints
 
 
+def _heuristic_bypass_findings(
+    gaps: List[Dict[str, Any]],
+    bypass_runner: Optional[Callable],
+) -> List[Dict[str, Any]]:
+    """Stored-taint / config-provenance assumption bypass detection.
+
+    *bypass_runner* is ``None`` when IRIS refinement did not build a
+    compositional analyzer (no candidates, missing call graphs, or the
+    refine imports failed) — nothing to check then.
+    """
+    findings: List[Dict[str, Any]] = []
+    if bypass_runner is None:
+        return findings
+    try:
+        from core.iris.synthesise import (
+            stored_taint_assumptions,
+            config_provenance_assumptions,
+        )
+
+        heuristic_assumptions = stored_taint_assumptions(
+            gaps
+        ) + config_provenance_assumptions(gaps)
+        heuristic_with_enforcers = [
+            a for a in heuristic_assumptions if a.enforced_by
+        ]
+        if heuristic_with_enforcers:
+            for bf in bypass_runner(heuristic_with_enforcers):
+                findings.append(
+                    {
+                        "check": f"iris_{bf.assumption.bug_class or 'bypass'}",
+                        "title": (
+                            f"IRIS bypass: {bf.caller_function}"
+                            f" skips {bf.missing_enforcer}"
+                        ),
+                        "description": (
+                            f"Caller {bf.caller_file}:{bf.caller_function} reaches "
+                            f"{bf.assumption.target} without {bf.missing_enforcer}"
+                        ),
+                        "file": bf.caller_file,
+                        "function": bf.caller_function,
+                        "cwe": bf.assumption.bug_class or "",
+                        "confidence": "medium",
+                    }
+                )
+    except Exception:
+        logger.debug("IRIS heuristic assumption bypass failed", exc_info=True)
+    return findings
+
+
 def _run_audit_body(
     config,
     review_fn,
@@ -4091,6 +4140,11 @@ def _run_audit_body(
             logger.debug("IRIS re-query failed", exc_info=True)
 
     # --- IRIS refinement loop + bypass detection ---
+    # Bound unconditionally: the assignment inside ``if iris_candidates``
+    # below never runs when there are no candidates (or when the refine
+    # imports fail first), and the heuristic-assumption pass afterwards
+    # reads the name.
+    bypass_runner = None
     try:
         from core.iris.refine import refine_loop as iris_refine_loop
         from .iris_specs import identify_candidates
@@ -4265,38 +4319,7 @@ def _run_audit_body(
     except Exception:
         logger.debug("taint-spec post-loop checks failed", exc_info=True)
 
-    try:
-        from core.iris.synthesise import (
-            stored_taint_assumptions,
-            config_provenance_assumptions,
-        )
-
-        heuristic_assumptions = stored_taint_assumptions(
-            gaps
-        ) + config_provenance_assumptions(gaps)
-        heuristic_with_enforcers = [a for a in heuristic_assumptions if a.enforced_by]
-        if heuristic_with_enforcers and bypass_runner is not None:
-            heuristic_bypasses = bypass_runner(heuristic_with_enforcers)
-            for bf in heuristic_bypasses:
-                post_loop_findings.append(
-                    {
-                        "check": f"iris_{bf.assumption.bug_class or 'bypass'}",
-                        "title": (
-                            f"IRIS bypass: {bf.caller_function}"
-                            f" skips {bf.missing_enforcer}"
-                        ),
-                        "description": (
-                            f"Caller {bf.caller_file}:{bf.caller_function} reaches "
-                            f"{bf.assumption.target} without {bf.missing_enforcer}"
-                        ),
-                        "file": bf.caller_file,
-                        "function": bf.caller_function,
-                        "cwe": bf.assumption.bug_class or "",
-                        "confidence": "medium",
-                    }
-                )
-    except Exception:
-        logger.debug("IRIS heuristic assumption bypass failed", exc_info=True)
+    post_loop_findings.extend(_heuristic_bypass_findings(gaps, bypass_runner))
 
     try:
         from .negative_space import (

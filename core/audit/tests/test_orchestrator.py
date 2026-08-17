@@ -4094,3 +4094,68 @@ class TestTaintApproxHasFlow:
         from core.audit.orchestrator import _taint_approx_has_flow
 
         assert not _taint_approx_has_flow(None)
+
+
+class TestHeuristicBypassFindings:
+    """Post-loop stored-taint / config-provenance bypass detection.
+
+    The runner is None whenever IRIS refinement did not build a
+    compositional analyzer — previously the name was not even bound in
+    that (common) case and the pass died with a NameError swallowed by
+    a broad except."""
+
+    def test_none_runner_returns_empty(self):
+        from core.audit.orchestrator import _heuristic_bypass_findings
+
+        assert _heuristic_bypass_findings([{"file": "a.c"}], None) == []
+
+    def test_runner_findings_are_collected(self, monkeypatch):
+        from core.audit.orchestrator import _heuristic_bypass_findings
+
+        class FakeAssumption:
+            enforced_by = ["check_auth"]
+            bug_class = "stored_taint"
+            target = "db_write"
+
+        class FakeBypass:
+            assumption = FakeAssumption()
+            caller_file = "web.c"
+            caller_function = "handler"
+            missing_enforcer = "check_auth"
+
+        import core.iris.synthesise as synth_mod
+        monkeypatch.setattr(
+            synth_mod, "stored_taint_assumptions",
+            lambda gaps: [FakeAssumption()],
+        )
+        monkeypatch.setattr(
+            synth_mod, "config_provenance_assumptions", lambda gaps: [],
+        )
+
+        findings = _heuristic_bypass_findings(
+            [{"file": "web.c"}], lambda assumptions: [FakeBypass()],
+        )
+        assert len(findings) == 1
+        assert findings[0]["check"] == "iris_stored_taint"
+        assert findings[0]["file"] == "web.c"
+        assert findings[0]["function"] == "handler"
+
+    def test_runner_error_is_contained(self, monkeypatch):
+        from core.audit.orchestrator import _heuristic_bypass_findings
+
+        class FakeAssumption:
+            enforced_by = ["check_auth"]
+
+        import core.iris.synthesise as synth_mod
+        monkeypatch.setattr(
+            synth_mod, "stored_taint_assumptions",
+            lambda gaps: [FakeAssumption()],
+        )
+        monkeypatch.setattr(
+            synth_mod, "config_provenance_assumptions", lambda gaps: [],
+        )
+
+        def broken_runner(assumptions):
+            raise RuntimeError("analyzer crashed")
+
+        assert _heuristic_bypass_findings([], broken_runner) == []

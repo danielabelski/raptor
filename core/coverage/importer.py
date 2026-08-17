@@ -179,27 +179,25 @@ def import_journal(
 
     try:
         entries = load_index(project_dir)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — journal absence must not fail the import batch
+        # load_index already tolerates corrupt/missing index files
+        # internally, so anything landing here is genuinely unexpected
+        # (schema bug, permission error). Leave a breadcrumb instead of
+        # silently reporting "zero LLM coverage".
+        import logging
+        logging.getLogger("coverage.importer").warning(
+            "journal index load failed: %s: %s", type(exc).__name__, exc,
+        )
         return 0
     if not entries:
         return 0
 
-    # Build a fast (file, function) → (line_start, line_end) lookup
-    # from the checklist. Functions absent from the checklist are
-    # skipped — a journal entry without an inventory anchor can't
-    # be projected onto a line range.
-    ranges: Dict[tuple, tuple] = {}
-    for fe in checklist.get("files", []):
-        path = fe.get("path")
-        if not path:
-            continue
-        for fn in fe.get("items", fe.get("functions", [])) or []:
-            name = fn.get("name")
-            lo = fn.get("line_start")
-            if name and lo is not None:
-                hi = fn.get("line_end")
-                hi = hi if hi is not None else lo
-                ranges[(path, name)] = (lo, hi)
+    # Fast (file, function) → (line_start, line_end) lookup from the
+    # checklist. Functions absent from the checklist are skipped — a
+    # journal entry without an inventory anchor can't be projected
+    # onto a line range. hi is normalised (None → lo) because the
+    # consumer below marks (lo, hi) directly.
+    ranges = _function_ranges(checklist, normalise_hi=True)
 
     marks = 0
     for entry in entries.values():
@@ -335,7 +333,8 @@ def _load_findings_file(path: Path) -> List[Dict[str, Any]]:
 
 def load_run_findings(run_dir: Path) -> List[Dict[str, Any]]:
     """Union of a run's findings across the layouts producers use (top-level
-    findings.json, validation/, sca/). The store dedups by id on link, so
+    findings.json and validation/ — sca/ is DELIBERATELY excluded, see the
+    comment above _FINDINGS_LOCATIONS). The store dedups by id on link, so
     overlap is harmless; absent files contribute nothing."""
     run = Path(run_dir)
     out: List[Dict[str, Any]] = []
@@ -384,17 +383,7 @@ def import_annotations(
         return 0
     from core.annotations.storage import iter_all_annotations
 
-    ranges: Dict[tuple, tuple] = {}
-    for fe in checklist.get("files", []):
-        path = fe.get("path")
-        if not path:
-            continue
-        for it in fe.get("items", fe.get("functions", [])) or []:
-            name = it.get("name")
-            if name:
-                lo = it.get("line_start")
-                if lo is not None:
-                    ranges[(path, name)] = (lo, it.get("line_end"))
+    ranges = _function_ranges(checklist)
 
     imported = 0
     for ann in iter_all_annotations(base_dir):
@@ -472,8 +461,17 @@ def import_understand(
     return marks
 
 
-def _function_ranges(checklist: Dict[str, Any]) -> Dict[tuple, tuple]:
-    """``{(path, name): (line_start, line_end)}`` over every inventory item."""
+def _function_ranges(
+    checklist: Dict[str, Any], *, normalise_hi: bool = False,
+) -> Dict[tuple, tuple]:
+    """``{(path, name): (line_start, line_end)}`` over every inventory item.
+
+    Single source of truth for the checklist range walk (import_journal,
+    import_annotations and import_run_dir all consume it — previously
+    three inline copies that had already drifted on hi handling).
+    With ``normalise_hi=True`` a missing ``line_end`` collapses to
+    ``line_start`` so consumers can mark ``(lo, hi)`` directly.
+    """
     out: Dict[tuple, tuple] = {}
     for fe in checklist.get("files", []):
         path = fe.get("path")
@@ -483,7 +481,10 @@ def _function_ranges(checklist: Dict[str, Any]) -> Dict[tuple, tuple]:
             name = it.get("name")
             lo = it.get("line_start")
             if name and lo is not None:
-                out[(path, name)] = (lo, it.get("line_end"))
+                hi = it.get("line_end")
+                if normalise_hi and hi is None:
+                    hi = lo
+                out[(path, name)] = (lo, hi)
     return out
 
 

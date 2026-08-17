@@ -187,6 +187,11 @@
     "count": 10,
     "kind": "literal"
   },
+  "core/audit/callsite_consistency.py::_CONDITION_FIELDS": {
+    "count": 14,
+    "kind": "literal",
+    "note": "AST node-type / language-keyword vocabulary (framework mechanics, not target API names)"
+  },
   "core/audit/callsite_consistency.py::_KEYWORDS": {
     "count": 78,
     "kind": "literal"
@@ -275,6 +280,21 @@
     "count": 10,
     "kind": "literal"
   },
+  "core/audit/consistency_dimensions.py::d": {
+    "count": 13,
+    "kind": "literal",
+    "note": "framework-internal enum/namespace vocabulary (not target API names)"
+  },
+  "core/audit/consistency_prepass.py::run_consistency_prepass": {
+    "count": 13,
+    "kind": "literal",
+    "note": "framework-internal enum/namespace vocabulary (not target API names)"
+  },
+  "core/audit/consistency_verify.py::_HYPOTHESIS_STOPWORDS": {
+    "count": 48,
+    "kind": "literal",
+    "note": "English stopword list for hypothesis-text parsing (not API vocabulary)"
+  },
   "core/audit/context.py::_BUILTIN_TYPES": {
     "count": 29,
     "kind": "literal"
@@ -359,9 +379,29 @@
     "count": 14,
     "kind": "literal"
   },
+  "core/audit/evidence_grade.py::_TOOL_NAMESPACES": {
+    "count": 10,
+    "kind": "literal",
+    "note": "framework-internal enum/namespace vocabulary (not target API names)"
+  },
   "core/audit/executor.py::_process_glance_batch": {
     "count": 10,
     "kind": "literal"
+  },
+  "core/audit/fail_open_lang.py::_classify_ignored_return_site": {
+    "count": 10,
+    "kind": "literal",
+    "note": "AST node-type / language-keyword vocabulary (framework mechanics, not target API names)"
+  },
+  "core/audit/fail_open_roles.py::_GUARD_SEMANTICS_RE": {
+    "count": 17,
+    "kind": "alternation",
+    "note": "guard-semantics stem vocabulary for role classification (framework mechanics)"
+  },
+  "core/audit/fail_open_verify.py::_HYPOTHESIS_STOPWORDS": {
+    "count": 44,
+    "kind": "literal",
+    "note": "English stopword list for hypothesis-text parsing (not API vocabulary)"
   },
   "core/audit/findings_export.py::finding": {
     "count": 12,
@@ -440,11 +480,11 @@
     "kind": "literal"
   },
   "core/audit/orchestrator.py::_compute_audit_prep": {
-    "count": 55,
+    "count": 56,
     "kind": "literal"
   },
   "core/audit/orchestrator.py::_make_tier_counters": {
-    "count": 26,
+    "count": 29,
     "kind": "literal"
   },
   "core/audit/orchestrator.py::_review_items": {
@@ -458,6 +498,11 @@
   "core/audit/pattern_completeness.py::exclusion_hints": {
     "count": 10,
     "kind": "literal"
+  },
+  "core/audit/peer_evidence.py::d": {
+    "count": 11,
+    "kind": "literal",
+    "note": "framework-internal enum/namespace vocabulary (not target API names)"
   },
   "core/audit/pipeline.py::HYPOTHESIS_CLASS_KW": {
     "count": 11,
@@ -680,10 +725,6 @@
     "kind": "alternation"
   },
   "core/audit/uninit_detector.py::_COPY_SINK_NAMES": {
-    "count": 10,
-    "kind": "literal"
-  },
-  "core/audit/validate.py::finding": {
     "count": 10,
     "kind": "literal"
   },
@@ -1435,10 +1476,6 @@
     "count": 12,
     "kind": "literal"
   },
-  "packages/exploit_feasibility/__init__.py::_get_internal_classes": {
-    "count": 32,
-    "kind": "literal"
-  },
   "packages/exploit_feasibility/analyzer.py::input_funcs": {
     "count": 16,
     "kind": "literal"
@@ -1889,10 +1926,6 @@
   },
   "packages/source_intel/render.py::_RELEVANT_SANITIZERS": {
     "count": 10,
-    "kind": "literal"
-  },
-  "packages/static-analysis/codeql/env.py::_DANGEROUS": {
-    "count": 18,
     "kind": "literal"
   },
   "packages/static-analysis/scanner.py::_SEMGREP_LANG_ALIASES": {

@@ -2110,11 +2110,16 @@ class AnthropicProvider(LLMProvider):
             response = self.client.messages.create(**create_kwargs)
             duration = time.monotonic() - t_start
 
-            # Extract text from response (guard against empty/non-text content)
+            # Extract text from response (guard against empty/non-text
+            # content). Reasoning-tier models prepend thinking blocks —
+            # the text block is not necessarily first, so take the
+            # first block that HAS text rather than content[0].
             if not response.content:
                 raise RuntimeError("Anthropic returned empty content")
-            first_block = response.content[0]
-            if not hasattr(first_block, 'text'):
+            text_block = next(
+                (b for b in response.content if hasattr(b, 'text')), None,
+            )
+            if text_block is None:
                 # `getattr` with default — pre-fix `first_block.type`
                 # raised AttributeError mid-error-formatting if the
                 # block lacked BOTH `text` AND `type` (a future SDK
@@ -2122,9 +2127,15 @@ class AnthropicProvider(LLMProvider):
                 # AttributeError replaced the informative
                 # "non-text content" message with a confusing
                 # internal-state crash.
-                block_type = getattr(first_block, 'type', '<unknown>')
-                raise RuntimeError(f"Anthropic returned non-text content block: {block_type}")
-            content = first_block.text
+                block_types = ", ".join(
+                    str(getattr(b, 'type', '<unknown>'))
+                    for b in response.content
+                )
+                raise RuntimeError(
+                    f"Anthropic returned no text content block "
+                    f"(got: {block_types})"
+                )
+            content = text_block.text
             finish_reason = response.stop_reason or "complete"
 
             input_tokens = 0

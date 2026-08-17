@@ -6,6 +6,7 @@ an executor function; execute_witness() looks it up and calls it.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import logging
@@ -18,7 +19,6 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from ._types import DarkVerifyResult, DarkWitnessSpec, _SUPPORTED_LANGS, language_for_file
 from ._harness import (
     generate_c_harness,
     generate_go_harness,
@@ -32,6 +32,12 @@ from ._harness import (
     generate_ts_harness,
     generate_witness_script,
     validate_import_path,
+)
+from ._types import (
+    _SUPPORTED_LANGS,
+    DarkVerifyResult,
+    DarkWitnessSpec,
+    language_for_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,20 +65,80 @@ _DANGEROUS_INTERP_FUNCS = frozenset({
     "backtick", "send", "__send__",
 })
 
-_CODE_INJECTION_RE = re.compile(
-    r"[;`]"
-    r"|system\s*\(|popen\s*\(|exec\s*\("
-    r"|eval\s*\(|spawn\s*\("
-    r"|\$\(|%x\{|%x\(|%x\["
-    r"|Runtime\s*\.\s*getRuntime"
-    r"|ProcessBuilder"
-    r"|os\s*\.\s*system|os\s*\.\s*popen"
-    r"|subprocess"
-)
-
 _TYPE_RE = re.compile(
     r"^[a-zA-Z_][a-zA-Z0-9_*&\[\]<>, .:]*$"
 )
+
+# arg_expressions are target-language literal expressions that the harness
+# generators paste verbatim into compiled/interpreted source (C: "NULL",
+# "buf", "256"; Go: "nil"; Rust: "0usize", '"x".to_string()'; Java: "null",
+# '"admin"').  A substring blocklist over them is trivially bypassed by
+# string concatenation ('__import__("o"+"s")'), so validation is an
+# ALLOWLIST: each expression must parse (as Python, mode="eval") into the
+# small literal grammar in _ALLOWED_EXPR_NODES — constants, bare
+# identifiers, dotted names, literal containers, +/-/* arithmetic over
+# those, and the one call shape the LLM corpus actually produces
+# (zero-argument method on a string/bytes literal, Rust's
+# '"x".to_string()').  Typed numeric literals Python cannot parse
+# ("0usize", "100L", "1.5f") are matched by _SUFFIXED_NUMBER_RE instead.
+# Everything else — general calls, subscripts, lambdas, f-strings,
+# statement separators (fail the parse), comments, newlines — is a
+# validation error.
+_SUFFIXED_NUMBER_RE = re.compile(r"^-?\d+(?:\.\d+)?[a-zA-Z_][a-zA-Z0-9_]*$")
+
+_ALLOWED_EXPR_NODES = (
+    ast.Expression, ast.Constant,
+    ast.Tuple, ast.List, ast.Dict, ast.Set,
+    ast.Name, ast.Load,
+    ast.UnaryOp, ast.USub, ast.UAdd,
+    ast.BinOp, ast.Add, ast.Sub, ast.Mult,
+    ast.Attribute, ast.Call,
+)
+
+
+def _arg_expression_error(expr_s: str) -> str | None:
+    """Allowlist check for a single arg_expression.
+
+    Returns a short reason string when the expression falls outside the
+    literal grammar, None when it is acceptable.
+    """
+    if "\n" in expr_s or "\r" in expr_s:
+        return "newline"
+    if "#" in expr_s:
+        # A trailing Python comment would let arbitrary text past the
+        # parser while still being pasted verbatim into the harness.
+        return "comment character"
+    # Rust borrows: a leading `&` / `&mut` is an inert prefix token (no
+    # call or statement-separator power) over an otherwise-allowed
+    # literal — strip it so witness args like `&[1, 2]` validate.
+    if expr_s.startswith("&"):
+        expr_s = expr_s[1:].lstrip()
+        if expr_s.startswith("mut "):
+            expr_s = expr_s[4:].lstrip()
+    if _SUFFIXED_NUMBER_RE.match(expr_s):
+        return None  # target-language typed numeric literal (0usize, 100L)
+    try:
+        tree = ast.parse(expr_s, mode="eval")
+    except (SyntaxError, ValueError):
+        return "not a parseable literal expression"
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_EXPR_NODES):
+            return f"disallowed construct: {type(node).__name__}"
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            return "dunder attribute access"
+        if isinstance(node, ast.Call):
+            # Only call shape allowed: zero-argument method on a
+            # string/bytes literal ('"x".to_string()').  General calls
+            # stay rejected — Runtime.getRuntime().exec(...), getattr,
+            # __import__ over concatenated strings, etc.
+            func = node.func
+            if (
+                not isinstance(func, ast.Attribute)
+                or not isinstance(func.value, ast.Constant)
+                or node.args or node.keywords
+            ):
+                return "function call not allowed"
+    return None
 
 
 def validate_spec(spec: DarkWitnessSpec) -> str | None:
@@ -92,8 +158,12 @@ def validate_spec(spec: DarkWitnessSpec) -> str | None:
     lc = spec.lang_config
     for expr in lc.get("arg_expressions", []):
         expr_s = str(expr)
-        if _CODE_INJECTION_RE.search(expr_s):
-            return f"code injection in arg_expression: {expr_s[:60]!r}"
+        reason = _arg_expression_error(expr_s)
+        if reason:
+            return (
+                f"code injection risk in arg_expression "
+                f"({reason}): {expr_s[:60]!r}"
+            )
 
     rt = lc.get("return_type", "")
     if rt and not _TYPE_RE.match(rt):
@@ -283,6 +353,73 @@ _classify_output = _classify_json_output
 
 
 # ---------------------------------------------------------------------------
+# Shared: sandbox access — FAIL CLOSED when the sandbox is unavailable
+# ---------------------------------------------------------------------------
+
+_SANDBOX_REFUSAL = "sandbox unavailable — refusing to execute target-derived code"
+
+
+def _import_sandbox_run() -> Callable | None:
+    """Import the sandbox entry point, or None when core.sandbox is missing.
+
+    Callers FAIL CLOSED: every witness step executes target-derived code —
+    the run steps obviously, but the compile steps too (javac discovers
+    annotation processors on the compile classpath; C/Rust compiles honour
+    #embed/.incbin/include_str! reads of any operator-readable file and
+    embed the bytes into the produced binary).  "No sandbox" therefore
+    means "no execution", never a plain subprocess.run fallback.  Mirrors
+    _run_autobuild_sandboxed in core/dataflow/cvefix_walk.py.
+    """
+    try:
+        from core.sandbox.context import run as sandbox_run
+    except ImportError:
+        return None
+    return sandbox_run
+
+
+def _sandbox_refusal_result(
+    spec: DarkWitnessSpec, language: str,
+) -> DarkVerifyResult:
+    """Error verdict for a witness step refused because core.sandbox is absent."""
+    return DarkVerifyResult(
+        finding_key=spec.finding_key, verdict="error", language=language,
+        match_detail=_SANDBOX_REFUSAL,
+    )
+
+
+def _sandboxed_compile(
+    sandbox_run: Callable,
+    compile_cmd: list[str],
+    *,
+    target_root: Path,
+    work_dir: Path,
+    caller_label: str,
+    env: dict | None = None,
+) -> subprocess.CompletedProcess:
+    """Run a compile step in the same sandbox shape as the run steps.
+
+    Network blocked, env sanitised (get_safe_env by default; a caller env
+    is stripped of DANGEROUS_ENV_VARS via strict_env), reads/writes
+    confined by the same policy as the run steps: toolchain + target_root
+    + the throwaway work_dir.
+    """
+    kwargs: dict = {}
+    if env is not None:
+        kwargs["env"] = env
+        kwargs["strict_env"] = True
+    return sandbox_run(
+        compile_cmd,
+        block_network=True,
+        target=str(target_root),
+        capture_output=True, text=True,
+        timeout=_COMPILE_TIMEOUT_S,
+        caller_label=caller_label,
+        tool_paths=[str(work_dir)],
+        **kwargs,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Shared: interpreted-language script runner
 # ---------------------------------------------------------------------------
 
@@ -305,29 +442,18 @@ def _run_script_witness(
         script_file = Path(script_path)
         script_file.write_text(script, encoding="utf-8")
 
-        try:
-            from core.sandbox.context import run as sandbox_run
-            proc = sandbox_run(
-                cmd_prefix + [str(script_file)],
-                block_network=True,
-                target=str(target_root),
-                capture_output=True, text=True,
-                timeout=timeout_s,
-                caller_label=f"audit-dark-verify-{language}",
-                tool_paths=[str(script_file.parent)],
-            )
-        except ImportError:
-            logger.warning(
-                "sandbox unavailable, falling back to unsandboxed execution for %s",
-                language,
-            )
-            from core.config import RaptorConfig
-            proc = subprocess.run(
-                cmd_prefix + [str(script_file)],
-                capture_output=True, text=True,
-                timeout=timeout_s,
-                env=RaptorConfig.get_safe_env(),
-            )
+        sandbox_run = _import_sandbox_run()
+        if sandbox_run is None:
+            return _sandbox_refusal_result(spec, language)
+        proc = sandbox_run(
+            cmd_prefix + [str(script_file)],
+            block_network=True,
+            target=str(target_root),
+            capture_output=True, text=True,
+            timeout=timeout_s,
+            caller_label=f"audit-dark-verify-{language}",
+            tool_paths=[str(script_file.parent)],
+        )
 
         stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
         return _classify_json_output(spec, stdout, language)
@@ -408,30 +534,20 @@ def _run_native_binary(
     from core.config import RaptorConfig
     env = RaptorConfig.get_safe_env()
     env["ASAN_OPTIONS"] = "detect_leaks=0"
-    try:
-        from core.sandbox.context import run as sandbox_run
-        proc = sandbox_run(
-            [str(binary)],
-            block_network=True,
-            target=str(target_root),
-            capture_output=True, text=True,
-            timeout=timeout_s,
-            caller_label="audit-dark-verify-native",
-            tool_paths=[str(binary.parent)],
-            env=env,
-            strict_env=True,
-        )
-    except ImportError:
-        logger.warning(
-            "sandbox unavailable, falling back to unsandboxed"
-            " execution for native binary",
-        )
-        proc = subprocess.run(
-            [str(binary)],
-            capture_output=True, text=True,
-            timeout=timeout_s,
-            env=env,
-        )
+    sandbox_run = _import_sandbox_run()
+    if sandbox_run is None:
+        return _sandbox_refusal_result(spec, lang)
+    proc = sandbox_run(
+        [str(binary)],
+        block_network=True,
+        target=str(target_root),
+        capture_output=True, text=True,
+        timeout=timeout_s,
+        caller_label="audit-dark-verify-native",
+        tool_paths=[str(binary.parent)],
+        env=env,
+        strict_env=True,
+    )
 
     sandbox_info = getattr(proc, "sandbox_info", None)
     return _classify_native_output(spec, proc, sandbox_info, lang)
@@ -559,12 +675,16 @@ def _execute_native(
             "-lm",
         ]
 
-        from core.config import RaptorConfig
-        safe_env = RaptorConfig.get_safe_env()
-
-        comp = subprocess.run(
-            compile_cmd, capture_output=True, text=True,
-            timeout=_COMPILE_TIMEOUT_S, env=safe_env,
+        # The compile itself executes target-derived code paths (#embed /
+        # .incbin can read any operator-readable file into the binary), so
+        # it gets the same sandbox as the run step — and fails closed.
+        sandbox_run = _import_sandbox_run()
+        if sandbox_run is None:
+            return _sandbox_refusal_result(spec, lang)
+        comp = _sandboxed_compile(
+            sandbox_run, compile_cmd,
+            target_root=target_root, work_dir=work_dir,
+            caller_label=f"audit-dark-verify-{lang}-compile",
         )
         if comp.returncode != 0:
             return DarkVerifyResult(
@@ -639,9 +759,18 @@ def _execute_go(
 
         binary = work_dir / "harness_bin"
         build_cmd = [go_bin, "build", "-o", str(binary)] + build_files
-        comp = subprocess.run(
-            build_cmd, capture_output=True, text=True,
-            timeout=_COMPILE_TIMEOUT_S, env=safe_env,
+        # `go build` can execute target-derived code (cgo, //go:generate
+        # tooling in odd setups) — sandbox it like the run step, fail
+        # closed without one.  GOPATH/GOCACHE stay redirected into the
+        # work area; strict_env strips DANGEROUS_ENV_VARS on the way in.
+        sandbox_run = _import_sandbox_run()
+        if sandbox_run is None:
+            return _sandbox_refusal_result(spec, "go")
+        comp = _sandboxed_compile(
+            sandbox_run, build_cmd,
+            target_root=target_root, work_dir=work_dir,
+            caller_label="audit-dark-verify-go-compile",
+            env=safe_env,
         )
         if comp.returncode != 0:
             stderr = (comp.stderr or "")[:300]
@@ -743,34 +872,58 @@ def _execute_rust(
         harness_file.write_text(harness_src, encoding="utf-8")
         binary = work_dir / "harness_bin"
 
+        # rustc accepts exactly one crate root, so the harness pulls the
+        # target in via include!("target_source.rs") — copy the source
+        # next to the harness under that fixed name (contract with
+        # generate_rust_harness). Copying into work_dir also keeps the
+        # compile read-set minimal. Rename any target fn main so it
+        # cannot collide with the harness main once spliced into the
+        # same crate (same idiom as the Go executor).
         source_file = target_root / spec.file
         source_copy = work_dir / "target_source.rs"
         src_content = source_file.read_text(encoding="utf-8")
+        src_content = re.sub(
+            r'(?m)^fn\s+main\s*\(\s*\)',
+            'fn _original_main()',
+            src_content,
+        )
         source_copy.write_text(src_content, encoding="utf-8")
+        # -C panic=abort: a panicking witness must register as a crash.
+        # Default unwind exits with code 101 (no signal), which the
+        # shared classifier reads as a normal exit — abort raises SIGABRT
+        # and flows through the existing EXIT_SIGNAL path.
         compile_cmd = [
             rustc, "--edition", "2021",
+            "-C", "panic=abort",
             "-Z", "sanitizer=address",
             "-g", "-o", str(binary),
-            str(harness_file), str(source_copy),
+            str(harness_file),
         ]
 
-        from core.config import RaptorConfig
-        safe_env = RaptorConfig.get_safe_env()
-
-        comp = subprocess.run(
-            compile_cmd, capture_output=True, text=True,
-            timeout=_COMPILE_TIMEOUT_S, env=safe_env,
+        # rustc executes target-derived code paths at compile time
+        # (include_str!/include_bytes! read any operator-readable file
+        # into the binary) — sandbox the compile like the run step and
+        # fail closed without one.
+        sandbox_run = _import_sandbox_run()
+        if sandbox_run is None:
+            return _sandbox_refusal_result(spec, "rust")
+        comp = _sandboxed_compile(
+            sandbox_run, compile_cmd,
+            target_root=target_root, work_dir=work_dir,
+            caller_label="audit-dark-verify-rust-compile",
         )
 
         if comp.returncode != 0:
             compile_cmd_simple = [
                 rustc, "--edition", "2021",
+                "-C", "panic=abort",
                 "-g", "-o", str(binary),
-                str(harness_file), str(source_copy),
+                str(harness_file),
             ]
-            comp = subprocess.run(
-                compile_cmd_simple, capture_output=True, text=True,
-                timeout=_COMPILE_TIMEOUT_S, env=safe_env,
+            comp = _sandboxed_compile(
+                sandbox_run, compile_cmd_simple,
+                target_root=target_root, work_dir=work_dir,
+                caller_label="audit-dark-verify-rust-compile",
             )
             if comp.returncode != 0:
                 return DarkVerifyResult(
@@ -821,18 +974,24 @@ def _execute_java(
 
         source_file = target_root / spec.file
 
-        from core.config import RaptorConfig
-        safe_env = RaptorConfig.get_safe_env()
-
+        # -proc:none: javac auto-discovers annotation processors from the
+        # compile classpath — which includes target_root — and RUNS them
+        # at compile time.  Disabling processing means target classes
+        # never execute inside javac, even in the sandbox (belt and
+        # braces, and faster).
         compile_cmd = [
-            javac, "-cp",
+            javac, "-proc:none", "-cp",
             f"{work_dir}:{source_file.parent}:{target_root}",
             str(harness_file), str(source_file),
         ]
 
-        comp = subprocess.run(
-            compile_cmd, capture_output=True, text=True,
-            timeout=_COMPILE_TIMEOUT_S, env=safe_env,
+        sandbox_run = _import_sandbox_run()
+        if sandbox_run is None:
+            return _sandbox_refusal_result(spec, "java")
+        comp = _sandboxed_compile(
+            sandbox_run, compile_cmd,
+            target_root=target_root, work_dir=work_dir,
+            caller_label="audit-dark-verify-java-compile",
         )
         if comp.returncode != 0:
             return DarkVerifyResult(
@@ -846,26 +1005,15 @@ def _execute_java(
             "DarkWitnessHarness",
         ]
 
-        try:
-            from core.sandbox.context import run as sandbox_run
-            proc = sandbox_run(
-                run_cmd,
-                block_network=True,
-                target=str(target_root),
-                capture_output=True, text=True,
-                timeout=timeout_s,
-                caller_label="audit-dark-verify-java",
-                tool_paths=[str(work_dir)],
-            )
-        except ImportError:
-            logger.warning(
-                "sandbox unavailable, falling back to"
-                " unsandboxed execution for java",
-            )
-            proc = subprocess.run(
-                run_cmd, capture_output=True, text=True,
-                timeout=timeout_s, env=safe_env,
-            )
+        proc = sandbox_run(
+            run_cmd,
+            block_network=True,
+            target=str(target_root),
+            capture_output=True, text=True,
+            timeout=timeout_s,
+            caller_label="audit-dark-verify-java",
+            tool_paths=[str(work_dir)],
+        )
 
         stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
         return _classify_json_output(spec, stdout, "java")

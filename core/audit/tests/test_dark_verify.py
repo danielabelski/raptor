@@ -32,7 +32,6 @@ from core.audit.dark_verify import (
     validate_spec,
 )
 
-
 # -- language_for_file --------------------------------------------------------
 
 
@@ -810,6 +809,45 @@ class TestGenerateRustHarness:
         assert "init();" in harness
         assert "void" in harness
 
+    def test_single_crate_root_include(self, tmp_path):
+        """The harness must splice the target in via include! — rustc
+        accepts exactly one crate root, so the executor compiles only the
+        harness and copies the target next to it as target_source.rs."""
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="src/lib.rs", function="process",
+            language="rust",
+            lang_config={
+                "arg_expressions": ["42"],
+                "return_type": "i32",
+                "use_path": "",
+                "setup_lines": [],
+            },
+        )
+        harness = generate_rust_harness(spec, tmp_path)
+        assert 'include!("target_source.rs");' in harness
+        # include! must precede fn main so items land at the crate root.
+        assert harness.index("include!") < harness.index("fn main()")
+
+    def test_println_template_is_single_string(self, tmp_path):
+        """Regression: the JSON println! template contained a stray quote
+        that terminated the Rust string literal mid-way, so no generated
+        harness ever compiled."""
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="src/lib.rs", function="process",
+            language="rust",
+            lang_config={
+                "arg_expressions": ["42"],
+                "return_type": "i32",
+                "use_path": "",
+                "setup_lines": [],
+            },
+        )
+        harness = generate_rust_harness(spec, tmp_path)
+        assert (
+            'println!("{{\\"status\\":\\"returned\\",'
+            '\\"value\\":\\"{:?}\\"}}", result);'
+        ) in harness
+
 
 # -- generate_java_harness ----------------------------------------------------
 
@@ -1541,6 +1579,87 @@ class TestRealExecutionGo:
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not shutil.which("rustc"), reason="rustc not available")
+class TestRealExecutionRust:
+    def test_confirms_return_value(self, tmp_path):
+        src = tmp_path / "lib.rs"
+        src.write_text(
+            "pub fn double_it(x: i32) -> i32 { x * 2 }\n", encoding="utf-8",
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="lib.rs", function="double_it",
+            language="rust",
+            expected_return="84",
+            lang_config={
+                "arg_expressions": ["42"], "return_type": "i32",
+                "use_path": "", "setup_lines": [],
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "confirmed"
+        assert r.language == "rust"
+
+    def test_refutes_wrong_prediction(self, tmp_path):
+        src = tmp_path / "add.rs"
+        src.write_text(
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n", encoding="utf-8",
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="add.rs", function="add",
+            language="rust",
+            expected_return="999",
+            lang_config={
+                "arg_expressions": ["3", "4"], "return_type": "i32",
+                "use_path": "", "setup_lines": [],
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "refuted"
+        assert "7" in r.actual_return
+
+    def test_confirms_panic_as_crash(self, tmp_path):
+        """-C panic=abort turns a panic into SIGABRT so the shared signal
+        classifier confirms it (unwind would exit 101 = normal exit)."""
+        src = tmp_path / "oob.rs"
+        src.write_text(
+            "pub fn idx(v: &[i32]) -> i32 { v[10] }\n", encoding="utf-8",
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="oob.rs", function="idx",
+            language="rust",
+            expected_crash=True,
+            lang_config={
+                "arg_expressions": ["&[1, 2]"], "return_type": "i32",
+                "use_path": "", "setup_lines": [],
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "confirmed"
+        assert "SIGABRT" in r.actual_exception
+
+    def test_target_with_own_main(self, tmp_path):
+        """A bin-crate target's fn main is renamed before the include!
+        splice so it cannot collide with the harness main."""
+        src = tmp_path / "main.rs"
+        src.write_text(
+            'fn main() { println!("app"); }\n'
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+            encoding="utf-8",
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="main.rs", function="add",
+            language="rust",
+            expected_return="7",
+            lang_config={
+                "arg_expressions": ["3", "4"], "return_type": "i32",
+                "use_path": "", "setup_lines": [],
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "confirmed"
+
+
+@pytest.mark.slow
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js not available")
 class TestRealExecutionJs:
     def test_confirms_exception(self, tmp_path):
@@ -1769,7 +1888,8 @@ class TestRunDarkVerification:
 
     def test_no_llm_client_is_noop(self, tmp_path):
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
         outcome = self._make_outcome("a.py", "check")
@@ -1779,7 +1899,8 @@ class TestRunDarkVerification:
 
     def test_no_dark_outcomes_is_noop(self, tmp_path):
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
         outcome = self._make_outcome("a.py", "check", status="clean")
@@ -1789,7 +1910,8 @@ class TestRunDarkVerification:
 
     def test_confirmed_witness_upgrades_to_finding(self, tmp_path):
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "math_util.py"
         src.write_text(textwrap.dedent("""\
@@ -1819,7 +1941,8 @@ class TestRunDarkVerification:
 
     def test_refuted_witness_downgrades_to_clean(self, tmp_path):
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "math_util.py"
         src.write_text(textwrap.dedent("""\
@@ -1848,7 +1971,8 @@ class TestRunDarkVerification:
 
     def test_unsupported_language_skipped(self, tmp_path):
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
         outcome = self._make_outcome("README.md", "check")
@@ -1858,7 +1982,8 @@ class TestRunDarkVerification:
 
     def test_unparseable_llm_response_stays_dark(self, tmp_path):
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "util.py"
         src.write_text("def check(): pass\n", encoding="utf-8")
@@ -1872,7 +1997,8 @@ class TestRunDarkVerification:
 
     def test_persists_results_json(self, tmp_path):
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "math_util.py"
         src.write_text("def divide(a, b): return a / b\n", encoding="utf-8")
@@ -1903,7 +2029,8 @@ class TestRunDarkVerification:
         """A non-dark outcome with an auth CWE (dark_verify: True in
         dispatch) is eligible for dark verification."""
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "auth.py"
         src.write_text(textwrap.dedent("""\
@@ -1936,7 +2063,8 @@ class TestRunDarkVerification:
     def test_cwe190_eligible(self, tmp_path):
         """CWE-190 (integer overflow) is dark-verify eligible."""
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "calc.py"
         src.write_text(textwrap.dedent("""\
@@ -1967,7 +2095,8 @@ class TestRunDarkVerification:
     def test_cwe134_eligible(self, tmp_path):
         """CWE-134 (format string) is dark-verify eligible."""
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "log.py"
         src.write_text(textwrap.dedent("""\
@@ -1998,7 +2127,8 @@ class TestRunDarkVerification:
     def test_cwe416_eligible(self, tmp_path):
         """CWE-416 (use-after-free) is dark-verify eligible."""
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "cache.py"
         src.write_text(textwrap.dedent("""\
@@ -2033,7 +2163,8 @@ class TestRunDarkVerification:
     def test_cwe457_eligible(self, tmp_path):
         """CWE-457 (uninitialised variable) is dark-verify eligible."""
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         src = tmp_path / "initmod.py"
         src.write_text(textwrap.dedent("""\
@@ -2068,7 +2199,8 @@ class TestRunDarkVerification:
     def test_non_dark_verify_cwe_skipped(self, tmp_path):
         """A suspicious outcome with a non-dark-verify CWE is not eligible."""
         from core.audit.orchestrator import (
-            OrchestratorConfig, _run_dark_verification,
+            OrchestratorConfig,
+            _run_dark_verification,
         )
         config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
         outcome = self._make_outcome(
@@ -2079,3 +2211,383 @@ class TestRunDarkVerification:
         result.suspicious = 1
         _run_dark_verification(result, config, llm_client=lambda s, u: "{}")
         assert result.outcomes[0].status == "suspicious"
+
+
+# ============================================================================
+# Compile/run sandbox parity — compiles route through core.sandbox and the
+# whole module fails closed when the sandbox is unavailable
+# ============================================================================
+
+
+class _SandboxSpy:
+    """Stand-in for core.sandbox.context.run — records every invocation
+    (cmd, kwargs) and plays back canned CompletedProcess results."""
+
+    def __init__(self, results):
+        self.calls = []
+        self._results = list(results)
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append((list(cmd), dict(kwargs)))
+        return self._results.pop(0)
+
+
+def _completed(stdout="", returncode=0):
+    import subprocess
+    return subprocess.CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr="",
+    )
+
+
+def _forbid_bare_subprocess(monkeypatch):
+    """Any subprocess.run reached from the executor module is a sandbox
+    bypass — fail the test loudly."""
+    from core.audit.dark_verify import _execute as ex
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "subprocess.run reached — target-derived code must only "
+            "execute through core.sandbox"
+        )
+
+    monkeypatch.setattr(ex.subprocess, "run", _boom)
+
+
+class TestCompileSandboxParity:
+    """Compile steps execute target-derived code too (javac annotation
+    processors, #embed/.incbin/include_str! reads) — pin them to the same
+    sandbox entry point the run steps use."""
+
+    def test_c_compile_routed_through_sandbox(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "add.c").write_text(
+            "int add(int a, int b) { return a + b; }\n", encoding="utf-8",
+        )
+        spy = _SandboxSpy([
+            _completed(),  # compile
+            _completed(stdout=json.dumps({"status": "returned", "value": "7"})),
+        ])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="add.c", function="add",
+            language="c", expected_return="7",
+            lang_config={
+                "param_types": ["int", "int"], "return_type": "int",
+                "arg_expressions": ["3", "4"], "includes": [], "setup_lines": [],
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "confirmed"
+        assert len(spy.calls) == 2
+        cmd, kwargs = spy.calls[0]
+        assert cmd[0] == "cc"
+        assert "-fsanitize=address,undefined" in cmd
+        assert kwargs["block_network"] is True
+        assert kwargs["target"] == str(tmp_path)
+        assert "compile" in kwargs["caller_label"]
+
+    def test_go_compile_routed_through_sandbox(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "main.go").write_text(
+            "package main\n\nfunc Add(a, b int) int { return a + b }\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        spy = _SandboxSpy([
+            _completed(),  # go build
+            _completed(stdout=json.dumps({"status": "returned", "value": "7"})),
+        ])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="main.go", function="Add",
+            language="go", expected_return="7",
+            lang_config={
+                "package": "main", "arg_expressions": ["3", "4"],
+                "return_type": "int",
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "confirmed"
+        cmd, kwargs = spy.calls[0]
+        assert cmd[:2] == ["/usr/bin/go", "build"]
+        assert kwargs["block_network"] is True
+        # go build gets a caller env (GOPATH/GOCACHE redirected into the
+        # work area) — the sandbox must strip DANGEROUS_ENV_VARS from it.
+        assert "GOPATH" in kwargs["env"]
+        assert "GOCACHE" in kwargs["env"]
+        assert kwargs["strict_env"] is True
+
+    def test_rust_compile_routed_through_sandbox(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "lib.rs").write_text(
+            "pub fn double_it(x: i32) -> i32 { x * 2 }\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        spy = _SandboxSpy([
+            _completed(),  # rustc
+            _completed(stdout=json.dumps({"status": "returned", "value": "84"})),
+        ])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="lib.rs", function="double_it",
+            language="rust", expected_return="84",
+            lang_config={
+                "arg_expressions": ["42"], "return_type": "i32",
+                "use_path": "", "setup_lines": [],
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "confirmed"
+        cmd, kwargs = spy.calls[0]
+        assert cmd[0] == "/usr/bin/rustc"
+        assert kwargs["block_network"] is True
+        assert "compile" in kwargs["caller_label"]
+        # Single crate root: rustc rejects multiple input files, so the
+        # harness is the ONLY .rs on the command line — the target source
+        # is spliced in via include!("target_source.rs").
+        rs_inputs = [a for a in cmd if a.endswith(".rs")]
+        assert len(rs_inputs) == 1
+        assert rs_inputs[0].endswith("harness.rs")
+        # Panics must surface as crash signals, not exit code 101.
+        assert "panic=abort" in cmd
+
+    def test_javac_sandboxed_with_proc_none(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "MathUtil.java").write_text(
+            "public class MathUtil {\n"
+            "    public static int square(int x) { return x * x; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        spy = _SandboxSpy([
+            _completed(),  # javac
+            _completed(stdout=json.dumps({"status": "returned", "value": "49"})),
+        ])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="MathUtil.java", function="square",
+            language="java", expected_return="49",
+            lang_config={
+                "class_name": "MathUtil", "imports": [],
+                "arg_expressions": ["7"], "return_type": "int",
+                "is_static": True,
+            },
+        )
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "confirmed"
+        assert len(spy.calls) == 2
+        cmd, kwargs = spy.calls[0]
+        assert cmd[0] == "/usr/bin/javac"
+        # Classpath annotation processors must never execute at compile
+        # time, even inside the sandbox.
+        assert "-proc:none" in cmd
+        assert kwargs["block_network"] is True
+        assert "compile" in kwargs["caller_label"]
+        run_cmd, _run_kwargs = spy.calls[1]
+        assert run_cmd[0] == "/usr/bin/java"
+
+
+class TestSandboxFailClosed:
+    """No core.sandbox → error verdict, never a bare-subprocess fallback."""
+
+    def test_import_helper_returns_none_when_sandbox_missing(self, monkeypatch):
+        import builtins
+
+        from core.audit.dark_verify import _execute as ex
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name.startswith("core.sandbox"):
+                raise ImportError("core.sandbox not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        assert ex._import_sandbox_run() is None
+
+    def _refusal_asserts(self, result):
+        assert result.verdict == "error"
+        assert "sandbox unavailable" in result.match_detail
+        assert "refusing to execute" in result.match_detail
+
+    def test_script_witness_refuses(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "calc.py").write_text(
+            "def double(x): return x * 2\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: None)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="calc.py", function="double",
+            module_path="calc", args=[5], expected_return=10,
+        )
+        r = execute_witness(spec, tmp_path)
+        self._refusal_asserts(r)
+        assert r.language == "python"
+
+    def test_c_compile_refuses(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "add.c").write_text(
+            "int add(int a, int b) { return a + b; }\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: None)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="add.c", function="add",
+            language="c",
+            lang_config={
+                "param_types": ["int", "int"], "return_type": "int",
+                "arg_expressions": ["3", "4"], "includes": [], "setup_lines": [],
+            },
+        )
+        self._refusal_asserts(execute_witness(spec, tmp_path))
+
+    def test_go_compile_refuses(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "main.go").write_text(
+            "package main\n\nfunc Add(a, b int) int { return a + b }\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: None)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="main.go", function="Add",
+            language="go",
+            lang_config={
+                "package": "main", "arg_expressions": ["3", "4"],
+                "return_type": "int",
+            },
+        )
+        self._refusal_asserts(execute_witness(spec, tmp_path))
+
+    def test_rust_compile_refuses(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "lib.rs").write_text(
+            "pub fn f() {}\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: None)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="lib.rs", function="f",
+            language="rust",
+            lang_config={
+                "arg_expressions": [], "return_type": "i32",
+                "use_path": "", "setup_lines": [],
+            },
+        )
+        self._refusal_asserts(execute_witness(spec, tmp_path))
+
+    def test_java_refuses(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+        (tmp_path / "A.java").write_text(
+            "public class A { public static int f() { return 1; } }\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: None)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="A.java", function="f",
+            language="java",
+            lang_config={
+                "class_name": "A", "imports": [], "arg_expressions": [],
+                "return_type": "int", "is_static": True,
+            },
+        )
+        self._refusal_asserts(execute_witness(spec, tmp_path))
+
+    def test_run_native_binary_refuses(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from core.audit.dark_verify import _execute as ex
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: None)
+        _forbid_bare_subprocess(monkeypatch)
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.c", function="f", language="c",
+        )
+        r = ex._run_native_binary(
+            spec, Path("/nonexistent/harness_bin"), tmp_path, 5, "c",
+        )
+        self._refusal_asserts(r)
+
+
+# -- validate_spec arg_expression allowlist -----------------------------------
+
+
+class TestArgExpressionAllowlist:
+    """arg_expressions must fit the literal grammar — constants, bare/dotted
+    names, literal containers, +/-/* arithmetic, suffixed numerics, and the
+    zero-arg method-on-literal shape. The old substring blocklist was
+    bypassable via string concatenation."""
+
+    def _spec(self, exprs, language="c", file="a.c"):
+        return DarkWitnessSpec(
+            finding_key="f1", file=file, function="parse",
+            language=language,
+            lang_config={"arg_expressions": exprs, "return_type": "int"},
+        )
+
+    @pytest.mark.parametrize("expr", [
+        "42",                       # int
+        "-1",                       # negative int
+        "3.14",                     # float
+        '"admin"',                  # string
+        '"<script>"',               # string with markup
+        '"a;b"',                    # semicolon INSIDE a string literal is data
+        "'a'",                      # C/Rust char literal parses as a string
+        "buf",                      # bare identifier (C variable from setup)
+        "nil",                      # Go
+        "null",                     # Java
+        "NULL",                     # C
+        "None",                     # Python
+        "True",                     # bool
+        "(1, 2)",                   # tuple
+        "[1, 2]",                   # list
+        "{1, 2}",                   # set / C initializer braces
+        '{"k": 1}',                 # dict
+        'b"A" * 100',               # BinOp over literals (buffer patterns)
+        '"a" + "b"',                # literal concatenation
+        "0usize",                   # Rust suffixed numeric
+        "100L",                     # Java/C suffixed numeric
+        "1.5f",                     # C float suffix
+        "-1i64",                    # negative suffixed numeric
+        '"test".to_string()',       # Rust: zero-arg method on a literal
+        "Integer.MAX_VALUE",        # Java dotted constant
+        "&[1, 2]",                  # Rust borrow of a slice literal
+        "&mut buf",                 # Rust mutable borrow of an identifier
+        '&"abc"',                   # Rust borrow of a string literal
+    ])
+    def test_literal_grammar_accepted(self, expr):
+        assert validate_spec(self._spec([expr])) is None
+
+    @pytest.mark.parametrize("expr", [
+        '__import__("o" + "s")',                # concatenation bypass of old blocklist
+        "getattr(x, 'y')",                      # general call
+        'open("/etc/passwd")',                  # general call
+        '0); system("rm -rf /")',               # statement breakout (parse fails)
+        "`whoami`",                             # backtick (parse fails)
+        'Runtime.getRuntime().exec("evil")',    # chained method calls
+        '"".join(x)',                           # method on literal WITH args
+        '"x".to_string(1)',                     # method on literal WITH args
+        "().__class__",                         # dunder attribute access
+        "1\n2",                                 # newline
+        "42 # comment",                         # comment past the parser
+        "lambda: 1",                            # lambda
+        "[i for i in (1, 2)]",                  # comprehension
+        "x[0]",                                 # subscript
+        "a if b else c",                        # conditional expression
+        "(x := 1)",                             # named expression
+        'f"{x}"',                               # f-string
+        '&open("/etc/passwd")',                 # borrow prefix must not launder calls
+    ])
+    def test_non_literal_rejected(self, expr):
+        err = validate_spec(self._spec([expr]))
+        assert err is not None
+        assert "arg_expression" in err

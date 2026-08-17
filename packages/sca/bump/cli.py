@@ -101,6 +101,16 @@ def main(argv: Sequence[str]) -> int:
              "trust marker (explicit negative wins).",
     )
     parser.add_argument(
+        "--offline", action="store_true",
+        help="No network: the HttpClient is replaced by the no-op "
+             "client (every request raises immediately), so every "
+             "upstream-latest / registry / OSV / KEV / EPSS lookup "
+             "fails fast and the corresponding verdicts degrade to "
+             "Unknown / skipped-with-reason. For air-gapped runs and "
+             "hermetic tests — without it, an unreachable feed costs "
+             "the full HTTP retry-backoff schedule per candidate.",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="count", default=0,
     )
     args = parser.parse_args(argv)
@@ -144,16 +154,16 @@ def main(argv: Sequence[str]) -> int:
     # builds the right egress-allowlisted HttpClient with SCA's
     # known-host set augmented by anything the target's Dockerfiles
     # reference.
-    http = _sca_default_http(target=target)
+    http = _sca_default_http(target=target, offline=args.offline)
     cache_root = Path(args.cache_root) if args.cache_root else SCA_CACHE_ROOT
     cache = None if args.no_cache else JsonCache(root=cache_root)
-    pypi_client = PyPIClient(http, cache, offline=False)
-    npm_client = NpmClient(http, cache, offline=False)
+    pypi_client = PyPIClient(http, cache, offline=args.offline)
+    npm_client = NpmClient(http, cache, offline=args.offline)
     # OSV vuln-delta gate: if the bump introduces new CVEs the
     # current pin doesn't carry, the verdict escalates.
-    osv_client = OsvClient(http, cache, offline=False)
-    kev_client = KevClient(http, cache, offline=False)
-    epss_client = EpssClient(http, cache, offline=False)
+    osv_client = OsvClient(http, cache, offline=args.offline)
+    kev_client = KevClient(http, cache, offline=args.offline)
+    epss_client = EpssClient(http, cache, offline=args.offline)
 
     try:
         report = run_bump(

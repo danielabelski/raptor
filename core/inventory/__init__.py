@@ -54,9 +54,9 @@ from .lookup import lookup_function, normalise_path
 # "unused import"; with it, ruff recognises the re-export intent and
 # `from core.inventory import *` exposes exactly this list.
 # Sorted (RUF022); the import statements above show which submodule
-# each name comes from. `save_checklist` / `update_checklist` /
-# `get_items` are module-level functions defined below — included
-# here because they're part of the public surface too.
+# each name comes from. `save_checklist` / `read_checklist` /
+# `update_checklist` / `get_items` are module-level functions defined
+# below — included here because they're part of the public surface too.
 __all__ = [
     "DEFAULT_EXCLUDES",
     "EXTRACTORS",
@@ -90,6 +90,7 @@ __all__ = [
     "lookup_function",
     "match_exclusion_reason",
     "normalise_path",
+    "read_checklist",
     "save_checklist",
     "should_exclude",
     "update_checklist",
@@ -194,6 +195,46 @@ def save_checklist(output_dir, data):
     checklist_path = _resolve_checklist_path(output_dir)
     with _checklist_lock(checklist_path):
         save_json(checklist_path, data)
+
+
+def read_checklist(output_dir):
+    """Read checklist.json under the writers' flock + symlink resolution.
+
+    Read-side counterpart of :func:`save_checklist` /
+    :func:`update_checklist`. A raw ``json.load`` on
+    ``output_dir/checklist.json`` bypasses two properties the write
+    accessors guarantee:
+
+    - **project-symlink resolution** — in project mode the run-dir
+      checklist is a symlink to the project-level file; reading the
+      resolved path keeps read and write sides pointed at the same
+      inode;
+    - **flock over the read** — a concurrent :func:`update_checklist`
+      holds the lock across its whole read-modify-write, so taking the
+      same lock here prevents torn/mid-write reads.
+
+    Returns ``{}`` when the file is missing, malformed, or not a JSON
+    object (a non-dict checklist is corrupt for every consumer that
+    calls ``.get`` on it).
+    """
+    import json
+    import logging as _logging
+    from pathlib import Path
+
+    # Missing file → {} without side effects (_resolve_checklist_path
+    # would mkdir the output dir, which a pure read must not do).
+    if not (Path(output_dir) / "checklist.json").exists():
+        return {}
+    checklist_path = _resolve_checklist_path(output_dir)
+    with _checklist_lock(checklist_path):
+        try:
+            data = json.loads(checklist_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            _logging.getLogger(__name__).error(
+                "malformed JSON in %s", checklist_path,
+            )
+            return {}
+    return data if isinstance(data, dict) else {}
 
 
 def update_checklist(output_dir, transform_fn):

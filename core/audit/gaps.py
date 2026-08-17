@@ -447,16 +447,18 @@ def write_not_attempted(
 
 
 def load_checklist(out_dir: Path) -> dict[str, Any]:
-    """Load checklist.json from the output directory."""
-    path = out_dir / "checklist.json"
-    if not path.exists():
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        logger.error("malformed JSON in %s", path)
-        return {}
+    """Load checklist.json from the output directory.
+
+    Routed through :func:`core.inventory.read_checklist` so audit-side
+    reads share the write accessors' flock and project-symlink
+    resolution. A raw ``json.load`` here could tear against a
+    concurrent ``update_checklist`` (e.g. the reachability prepass
+    marking priorities) and, in project mode, read a stale run-local
+    copy instead of the project-level checklist the writers resolve to.
+    Missing/malformed files still load as ``{}``.
+    """
+    from core.inventory import read_checklist
+    return read_checklist(out_dir)
 
 
 def hydrate_live_gaps_for_detectors(

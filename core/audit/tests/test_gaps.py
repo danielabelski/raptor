@@ -294,6 +294,42 @@ class TestLoadChecklist:
         result = load_checklist(tmp_path)
         assert result == {}
 
+    def test_load_malformed_returns_empty(self, tmp_path: Path):
+        (tmp_path / "checklist.json").write_text("{not json")
+        assert load_checklist(tmp_path) == {}
+
+    def test_load_non_dict_returns_empty(self, tmp_path: Path):
+        # A JSON array is corrupt for every consumer that calls .get()
+        # on the checklist — the shared accessor normalises it to {}.
+        (tmp_path / "checklist.json").write_text("[1, 2, 3]")
+        assert load_checklist(tmp_path) == {}
+
+    def test_load_routes_through_shared_accessor(self, tmp_path: Path,
+                                                 monkeypatch):
+        # The audit read side must share the inventory writers' flock +
+        # project-symlink resolution (torn-read protection).
+        import core.inventory as inv
+        calls = []
+
+        def _spy(output_dir):
+            calls.append(Path(output_dir))
+            return {"spied": True}
+
+        monkeypatch.setattr(inv, "read_checklist", _spy)
+        assert load_checklist(tmp_path) == {"spied": True}
+        assert calls == [tmp_path]
+
+    def test_load_reads_project_checklist_through_symlink(
+            self, tmp_path: Path):
+        project = tmp_path / "project"
+        run_dir = project / "run-001"
+        run_dir.mkdir(parents=True)
+        (project / "checklist.json").write_text(
+            json.dumps({"version": "project-level"}))
+        (run_dir / "checklist.json").symlink_to("../checklist.json")
+
+        assert load_checklist(run_dir)["version"] == "project-level"
+
 
 class TestLoadContextMap:
     def test_load_existing(self, tmp_path: Path):

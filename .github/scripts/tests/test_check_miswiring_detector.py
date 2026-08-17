@@ -236,6 +236,168 @@ class TestBaselineCorpusExclusion:
         )
 
 
+def _plumbing(detector, root: Path):
+    idx = _index(detector, root)
+    findings, _sup, info = detector.find_plumbing(idx)
+    orphans = {f["name"] for f in findings
+               if f["kind"] == "orphan_config_field"}
+    consumed = {i["name"] for i in info
+                if i["kind"] == "config_field_consumed_via_serialization"}
+    return orphans, consumed
+
+
+class TestSerializationAwareConfigFields:
+    """A config dataclass whose instances flow through wholesale
+    serialization (asdict/vars/fields/json.dump/model_dump/**-unpack)
+    has every field consumed by the serializer; those fields must be
+    classified consumed-via-serialization, not orphaned."""
+
+    def _write(self, tmp_path, name, body):
+        pkg = tmp_path / "core" / "cfg"
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / name).write_text(body, encoding="utf-8")
+        return tmp_path
+
+    def test_unserialized_config_field_is_still_orphaned(
+        self, detector, tmp_path,
+    ):
+        root = self._write(tmp_path, "plain.py",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class PlainConfig:\n"
+            "    unread_knob: int = 0\n"
+            "\n"
+            "\n"
+            "def build():\n"
+            "    return PlainConfig()\n",
+        )
+        orphans, consumed = _plumbing(detector, root)
+        assert "PlainConfig.unread_knob" in orphans
+        assert not consumed
+
+    def test_asdict_at_call_site_consumes_fields(self, detector, tmp_path):
+        root = self._write(tmp_path, "report.py",
+            "import json\n"
+            "from dataclasses import asdict, dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class RunReport:\n"
+            "    wall_seconds: float = 0.0\n"
+            "\n"
+            "\n"
+            "def emit(out):\n"
+            "    report = RunReport()\n"
+            "    out.write_text(json.dumps(asdict(report)))\n",
+        )
+        orphans, consumed = _plumbing(detector, root)
+        assert "RunReport.wall_seconds" in consumed
+        assert "RunReport.wall_seconds" not in orphans
+
+    def test_asdict_self_method_consumes_fields(self, detector, tmp_path):
+        root = self._write(tmp_path, "model.py",
+            "from dataclasses import asdict, dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class StoredModel:\n"
+            "    revision_tag: str = ''\n"
+            "\n"
+            "    def to_payload(self):\n"
+            "        return asdict(self)\n",
+        )
+        orphans, consumed = _plumbing(detector, root)
+        assert "StoredModel.revision_tag" in consumed
+        assert not orphans
+
+    def test_nested_dataclass_consumed_through_parent(
+        self, detector, tmp_path,
+    ):
+        """asdict() recurses: serializing the parent serializes every
+        dataclass-typed field, including through containers."""
+        root = self._write(tmp_path, "nested.py",
+            "from dataclasses import asdict, dataclass, field\n"
+            "from typing import List\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class InnerStat:\n"
+            "    peak_rss_kb: int = 0\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class OuterReport:\n"
+            "    stats: List[InnerStat] = field(default_factory=list)\n"
+            "\n"
+            "    def to_payload(self):\n"
+            "        return asdict(self)\n",
+        )
+        orphans, consumed = _plumbing(detector, root)
+        assert "InnerStat.peak_rss_kb" in consumed
+        assert not orphans
+
+    def test_model_dump_on_annotated_param_consumes_fields(
+        self, detector, tmp_path,
+    ):
+        root = self._write(tmp_path, "pyd.py",
+            "class ScanSettings:\n"
+            "    retry_budget: int = 3\n"
+            "\n"
+            "\n"
+            "def persist(settings: ScanSettings, out):\n"
+            "    out.write_text(str(settings.model_dump()))\n",
+        )
+        orphans, consumed = _plumbing(detector, root)
+        assert "ScanSettings.retry_budget" in consumed
+        assert not orphans
+
+    def test_double_star_unpack_consumes_fields(self, detector, tmp_path):
+        root = self._write(tmp_path, "unpack.py",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class WriterOpts:\n"
+            "    flush_interval: int = 5\n"
+            "\n"
+            "\n"
+            "def run(writer):\n"
+            "    opts = WriterOpts()\n"
+            "    writer(**opts)\n",
+        )
+        orphans, consumed = _plumbing(detector, root)
+        assert "WriterOpts.flush_interval" in consumed
+        assert not orphans
+
+    def test_manual_to_dict_that_drops_field_stays_orphaned(
+        self, detector, tmp_path,
+    ):
+        """A hand-written to_dict with explicit string keys is NOT
+        wholesale serialization — a field it omits is genuinely
+        unconsumed and must keep firing."""
+        root = self._write(tmp_path, "manual.py",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class QueryResult:\n"
+            "    query: str = ''\n"
+            "    dropped_extra: int = 0\n"
+            "\n"
+            "    def to_dict(self):\n"
+            "        return {'query': self.query}\n"
+            "\n"
+            "\n"
+            "def emit(out):\n"
+            "    out.write(str(QueryResult().to_dict()))\n",
+        )
+        orphans, consumed = _plumbing(detector, root)
+        assert "QueryResult.dropped_extra" in orphans
+        assert "QueryResult.dropped_extra" not in consumed
+
+
 class TestAtomicWriteIdiom:
     def test_tempfile_rename_writer_is_not_orphan_reader(
         self, detector, tmp_path,

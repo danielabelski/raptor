@@ -1135,8 +1135,158 @@ def find_swallowed(idx: RepoIndex, kwarg_findings):
 
 # ------------------------------------------------- (e) plumbing orphans
 
+# Wholesale-serialization consumption.  A config/result dataclass often
+# has no per-field attribute read anywhere: the whole instance flows
+# through asdict()/astuple()/vars()/dataclasses.fields()/json.dump()/
+# .model_dump()/**-unpacking, and the serialized form is consumed
+# downstream (report artifacts, LLM prompts, operators, jq).  Fields of
+# such a class are consumed via serialization, not orphaned.  Tracked at
+# class granularity: once the owning class is observed flowing through a
+# wholesale serializer anywhere, every field of it counts as consumed —
+# the per-field string-key case is already covered by the str-constant
+# reference counter.  The result only ever moves a field from a failing
+# orphan finding to an informational classification, never the reverse.
+
+_SERIALIZE_FREE_FNS = {"asdict", "astuple", "vars", "fields"}
+_SERIALIZE_MOD_FNS = {
+    ("dataclasses", "asdict"), ("dataclasses", "astuple"),
+    ("dataclasses", "fields"), ("attr", "asdict"), ("attrs", "asdict"),
+    ("json", "dump"), ("json", "dumps"),
+}
+_SERIALIZE_METHODS = {"model_dump", "model_dump_json", "_asdict", "dict",
+                      "json"}
+
+
+def _annotation_classes(node, all_classes: set) -> set:
+    """Class names referenced by a type annotation (incl. string forms)."""
+    found = set()
+    if node is None:
+        return found
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and n.id in all_classes:
+            found.add(n.id)
+        elif isinstance(n, ast.Attribute) and n.attr in all_classes:
+            found.add(n.attr)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            found.update(w for w in IDENT_RE.findall(n.value)
+                         if w in all_classes)
+    return found
+
+
+def find_serialized_classes(idx: RepoIndex) -> set:
+    """Names of in-repo classes that flow through wholesale serialization."""
+    all_classes = set()
+    for mod in idx.module_list:
+        all_classes.update(mod.classes)
+    serialized = set()
+
+    for mod in idx.module_list:
+        # identifier -> class name, from constructor assignments, variable/
+        # attribute annotations and function parameters.  Flat per-module
+        # scope: deliberately generous — the map is only ever consulted to
+        # RECLASSIFY an orphan as consumed, never to create a finding.
+        ident_types = {}
+        for node in ast.walk(mod.tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                cname = dec_name(node.value.func).rsplit(".", 1)[-1]
+                if cname in all_classes:
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            ident_types[t.id] = cname
+                        elif isinstance(t, ast.Attribute):
+                            ident_types[t.attr] = cname
+            elif isinstance(node, ast.AnnAssign):
+                cands = _annotation_classes(node.annotation, all_classes)
+                if len(cands) == 1:
+                    cname = cands.pop()
+                    if isinstance(node.target, ast.Name):
+                        ident_types[node.target.id] = cname
+                    elif isinstance(node.target, ast.Attribute):
+                        ident_types[node.target.attr] = cname
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                a = node.args
+                for arg in a.posonlyargs + a.args + a.kwonlyargs:
+                    cands = _annotation_classes(arg.annotation, all_classes)
+                    if len(cands) == 1:
+                        ident_types[arg.arg] = cands.pop()
+
+        class Ser(ast.NodeVisitor):
+            def __init__(self, ident_types):
+                self.class_stack = []
+                self.ident_types = ident_types
+
+            def visit_ClassDef(self, node):
+                self.class_stack.append(node.name)
+                self.generic_visit(node)
+                self.class_stack.pop()
+
+            def _type_of(self, e):
+                if isinstance(e, ast.Name):
+                    if e.id in ("self", "cls") and self.class_stack:
+                        return self.class_stack[-1]
+                    if e.id in all_classes:
+                        return e.id             # fields(ClassName)
+                    return self.ident_types.get(e.id)
+                if isinstance(e, ast.Attribute):
+                    if e.attr == "__dict__":
+                        return self._type_of(e.value)
+                    return self.ident_types.get(e.attr)
+                if isinstance(e, ast.Call):
+                    cname = dec_name(e.func).rsplit(".", 1)[-1]
+                    if cname in all_classes:
+                        return cname
+                return None
+
+            def _mark(self, e):
+                t = self._type_of(e)
+                if t:
+                    serialized.add(t)
+
+            def visit_Attribute(self, node):
+                if node.attr == "__dict__":
+                    self._mark(node.value)      # json.dumps(cfg.__dict__)
+                self.generic_visit(node)
+
+            def visit_Call(self, node):
+                f = node.func
+                if isinstance(f, ast.Name) and f.id in _SERIALIZE_FREE_FNS \
+                        and node.args:
+                    self._mark(node.args[0])
+                elif isinstance(f, ast.Attribute):
+                    base = dec_name(f.value).rsplit(".", 1)[-1]
+                    if (base, f.attr) in _SERIALIZE_MOD_FNS and node.args:
+                        self._mark(node.args[0])
+                    elif f.attr in _SERIALIZE_METHODS:
+                        self._mark(f.value)     # cfg.model_dump() / ._asdict()
+                for kw in node.keywords:
+                    if kw.arg is None:
+                        self._mark(kw.value)    # writer(**cfg)
+                self.generic_visit(node)
+
+        Ser(ident_types).visit(mod.tree)
+
+    # Nested-dataclass closure: asdict()/model_dump()/json recurse into
+    # dataclass-typed fields, so serializing the parent serializes every
+    # nested class too (incl. through List[...]/Dict[...] containers).
+    nested = defaultdict(set)       # class name -> field-annotation classes
+    for mod in idx.module_list:
+        for ci in mod.classes.values():
+            for stmt in ci.node.body:
+                if isinstance(stmt, ast.AnnAssign):
+                    nested[ci.name] |= _annotation_classes(
+                        stmt.annotation, all_classes)
+    queue = list(serialized)
+    while queue:
+        for child in nested.get(queue.pop(), ()):
+            if child not in serialized:
+                serialized.add(child)
+                queue.append(child)
+    return serialized
+
+
 def find_plumbing(idx: RepoIndex):
     findings = []
+    info = []           # non-failing classifications (census stays honest)
     sup = Counter()
     attr_use = Counter()
     str_use = Counter()
@@ -1149,6 +1299,7 @@ def find_plumbing(idx: RepoIndex):
             name_use[n] += 1
 
     # dataclass/config fields
+    serialized_classes = find_serialized_classes(idx)
     for mod in idx.module_list:
         for ci in mod.classes.values():
             is_dc = any("dataclass" in (d or "") for d in ci.decorators)
@@ -1167,6 +1318,17 @@ def find_plumbing(idx: RepoIndex):
                     continue
                 if fname in idx.text_idents:
                     sup["text_corpus_reference"] += 1
+                    continue
+                if ci.name in serialized_classes:
+                    # owning class flows through wholesale serialization —
+                    # the field is read by the serializer, not orphaned.
+                    info.append({
+                        "kind": "config_field_consumed_via_serialization",
+                        "file": str(mod.path), "line": lineno,
+                        "name": f"{ci.name}.{fname}",
+                        "detail": f"no direct reference, but {ci.name} is "
+                               "serialized wholesale (asdict/vars/fields/"
+                               "json.dump/model_dump/** unpack)"})
                     continue
                 findings.append({
                     "kind": "orphan_config_field",
@@ -1248,7 +1410,7 @@ def find_plumbing(idx: RepoIndex):
             "kind": "orphan_env_var", "name": name,
             "writers": sorted(set(writers)),
             "detail": "set/exported but never read in-repo (external consumers possible)"})
-    return findings, sup
+    return findings, sup, info
 
 
 # ---------------------------------------------------------------- driver
@@ -1353,13 +1515,18 @@ def main():
         report["classes"]["swallowed"] = {"findings": f,
                                           "suppressions": dict(s)}
     if "plumbing" in only:
-        f, s = find_plumbing(idx)
+        f, s, info = find_plumbing(idx)
         report["classes"]["plumbing"] = {"findings": f,
-                                         "suppressions": dict(s)}
+                                         "suppressions": dict(s),
+                                         "informational": info}
 
     for cls, data in report["classes"].items():
-        print(f"== {cls}: {len(data['findings'])} findings, "
-              f"suppressions: {data['suppressions']}")
+        line = f"== {cls}: {len(data['findings'])} findings"
+        if data.get("informational"):
+            counts = Counter(i["kind"] for i in data["informational"])
+            line += " (info: " + ", ".join(
+                f"{k}={v}" for k, v in sorted(counts.items())) + ")"
+        print(f"{line}, suppressions: {data['suppressions']}")
 
     # -- swallowed census (informational) --------------------------------
     swallowed = report["classes"].get("swallowed", {}).get("findings", [])

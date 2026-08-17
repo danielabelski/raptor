@@ -88,10 +88,15 @@ def run_untrusted(
 ) -> subprocess.CompletedProcess
 ```
 
-Always engages `profile='full'`: network blocked by namespace, Landlock
-filesystem restriction (via `target`/`output`), resource rlimits. At
-least one of `target` or `output` must be truthy so Landlock actually
-engages. `block_network` and `allowed_tcp_ports` are deliberately not
+Engages `profile='full'` by default: network blocked by namespace,
+Landlock filesystem restriction (via `target`/`output`), resource
+rlimits. At least one of `target` or `output` must be truthy so
+Landlock actually engages. `profile=` is accepted as a ratchet only:
+`'full'` (the default) or the fail-closed `'strict'`; anything weaker
+(`none`, `network-only`, `debug`, `target_run`, `frida`) raises
+`TypeError` because it would relax the untrusted-execution contract.
+The `--sandbox` CLI flag remains authoritative over the value.
+`block_network` and `allowed_tcp_ports` are deliberately not
 accepted -- this function forces namespace-level network block. Callers
 wanting a network allowlist must use `sandbox()` directly.
 
@@ -250,7 +255,11 @@ CLI: `--sandbox <profile>` on any RAPTOR command that honours it.
 Use `--sandbox strict` when a run should stop rather than quietly carry
 on with less isolation. On Linux, strict mode also requires mount
 namespaces when target/output isolation is requested. On macOS, the
-Seatbelt backend is the strict isolation layer.
+Seatbelt backend is the strict isolation layer, and the strict profile
+adds three probe-validated SBPL denies on top of `full`: `(deny signal
+(target others))`, `(deny nvram*)`, and a mach-lookup deny scoped by a
+curated service allowlist (`MACOS_STRICT_MACH_SERVICES`). Under
+`--audit` these report instead of denying.
 
 Read-denial recovery: `--sandbox-readable-path PATH` (repeatable;
 file or directory) extends the read allowlist of every read-restricting

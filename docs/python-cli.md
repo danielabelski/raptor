@@ -45,6 +45,10 @@ These sandbox flags apply to every mode. Pass them **after** the mode name:
 --no-sandbox                               Alias for --sandbox none
 --audit                                    Log what enforcement would have blocked
 --audit-verbose                            With --audit, log every traced syscall
+--audit-budget N                           With --audit, override the record cap (default 10000)
+--sandbox-readable-path PATH               Extend the sandbox read allowlist (repeatable)
+--sandbox-tool-path DIR                    Make an operator-installed tool dir visible
+                                           inside the sandbox (repeatable; read-only)
 ```
 
 `--trust-repo` (mark the target repo as trusted) is mode-specific: it exists

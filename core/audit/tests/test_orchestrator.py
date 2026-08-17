@@ -4256,3 +4256,17 @@ class TestG3ReRecordGate:
             self._outcome(evidence_tool=""), audit_log=audit_log,
         )
         assert not any("G3" in x for x in v)
+
+
+class TestUpdateRunProgress:
+    def test_checkpoint_reports_reviewed_count(self, tmp_path):
+        from core.audit.orchestrator import _update_run_progress
+
+        meta_path = tmp_path / ".raptor-run.json"
+        meta_path.write_text(json.dumps({"status": "running"}))
+
+        result = OrchestratorResult(reviewed=7)
+        _update_run_progress(tmp_path, result)
+
+        meta = json.loads(meta_path.read_text())
+        assert meta["extra"]["progress"]["completed"] == 7

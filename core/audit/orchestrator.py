@@ -164,7 +164,9 @@ def _update_run_progress(out_dir: Path, result: Any) -> None:
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         meta.setdefault("extra", {})["progress"] = {
-            "completed": getattr(result, "completed", 0),
+            # OrchestratorResult counts completed reviews in
+            # ``reviewed`` (it has no ``completed`` field).
+            "completed": getattr(result, "reviewed", 0),
         }
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
     except Exception:

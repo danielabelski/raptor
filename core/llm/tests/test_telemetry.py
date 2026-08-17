@@ -72,6 +72,21 @@ class TestSink:
         assert "summary=1/$0.25" in line
         assert sink.total_records == 4
 
+    def test_summary_line_reports_blocked_separately(self, tmp_path):
+        sink = TelemetrySink(tmp_path / "t.jsonl")
+        sink.record({"event": "attempt_failed", "call_class": "summary",
+                     "disposition": "blocked"})
+        sink.record({"event": "attempt_failed", "call_class": "review",
+                     "disposition": "timeout"})
+        line = sink.summary_line()
+        assert "2 failed attempts (1 timeout, 1 blocked)" in line
+
+    def test_summary_line_omits_blocked_when_zero(self, tmp_path):
+        sink = TelemetrySink(tmp_path / "t.jsonl")
+        sink.record({"event": "attempt_failed", "call_class": "review",
+                     "disposition": "timeout"})
+        assert "1 failed attempts (1 timeout)" in sink.summary_line()
+
     def test_write_failure_is_silent_and_keeps_aggregates(self, tmp_path):
         target = tmp_path / "not-a-dir"
         target.write_text("occupied")  # parent path is a FILE
@@ -177,6 +192,34 @@ class TestClientEmission:
         assert all(r["event"] == "attempt_failed" for r in recs)
         assert all(r["disposition"] == "timeout" for r in recs)
         assert [r["attempt"] for r in recs] == [1, 2]
+
+    def test_model_refusal_emits_blocked_disposition_no_retry(
+        self, tmp_path, monkeypatch,
+    ):
+        """A refusal-shaped provider error (the message
+        AnthropicProvider raises for stop_reason=refusal) must label
+        the attempt 'blocked' — a model boundary, distinct from
+        transport failures — and must not be retried: an identical
+        retry cannot change a refusal."""
+        import core.llm.client as client_mod
+        monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+        sink = TelemetrySink(tmp_path / "t.jsonl")
+        set_sink(sink)
+        client = _client(max_retries=3)
+        with patch.object(client, "_get_provider") as mock_get:
+            prov = MagicMock()
+            prov.generate.side_effect = RuntimeError(
+                "Anthropic model refused request "
+                "(stop_reason=refusal, empty content)",
+            )
+            mock_get.return_value = prov
+            with pytest.raises(RuntimeError):
+                client.generate("p", call_class="summary")
+
+        recs = _read_jsonl(tmp_path / "t.jsonl")
+        assert len(recs) == 1  # non-retryable: single attempt only
+        assert recs[0]["event"] == "attempt_failed"
+        assert recs[0]["disposition"] == "blocked"
 
     def test_structured_emits_counter_deltas(self, tmp_path):
         sink = TelemetrySink(tmp_path / "t.jsonl")

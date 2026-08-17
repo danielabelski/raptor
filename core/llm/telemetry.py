@@ -45,6 +45,7 @@ class _ClassStats:
     cache_hits: int = 0
     failed_attempts: int = 0
     timeouts: int = 0
+    blocked: int = 0
     cost_usd: float = 0.0
     duration_s: float = 0.0
     tokens_in: int = 0
@@ -95,6 +96,8 @@ class TelemetrySink:
             st.failed_attempts += 1
             if rec.get("disposition") == "timeout":
                 st.timeouts += 1
+            elif rec.get("disposition") == "blocked":
+                st.blocked += 1
         elif rec.get("disposition") == "cache_hit":
             st.cache_hits += 1
         else:
@@ -156,6 +159,7 @@ class TelemetrySink:
             hits = sum(s.cache_hits for s in self._by_class.values())
             failed = sum(s.failed_attempts for s in self._by_class.values())
             timeouts = sum(s.timeouts for s in self._by_class.values())
+            blocked = sum(s.blocked for s in self._by_class.values())
             cost = sum(s.cost_usd for s in self._by_class.values())
             tin = sum(s.tokens_in for s in self._by_class.values())
             tout = sum(s.tokens_out for s in self._by_class.values())
@@ -173,8 +177,17 @@ class TelemetrySink:
             if hits:
                 parts.append(f"{hits} local cache hits")
             if failed:
+                breakdown = f"{timeouts} timeout"
+                if blocked:
+                    # Model refusals / content-filter blocks — a model
+                    # boundary, not a transport failure. Called out
+                    # separately so an operator reading the rollup
+                    # sees "the model declined N calls" instead of
+                    # lumping them in with retryable infrastructure
+                    # noise.
+                    breakdown += f", {blocked} blocked"
                 parts.append(
-                    f"{failed} failed attempts ({timeouts} timeout)"
+                    f"{failed} failed attempts ({breakdown})"
                 )
             per_class = ", ".join(
                 f"{cls}={s.calls}/${s.cost_usd:.2f}"

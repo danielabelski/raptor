@@ -2115,7 +2115,38 @@ class AnthropicProvider(LLMProvider):
             # the text block is not necessarily first, so take the
             # first block that HAS text rather than content[0].
             if not response.content:
-                raise RuntimeError("Anthropic returned empty content")
+                # Zero content blocks. The stop_reason says WHY, and
+                # dropping it turned a diagnosable model boundary into
+                # an opaque transport-looking failure (observed live:
+                # a whole call class dying with "returned empty
+                # content" while sibling classes succeeded on the
+                # same route — no way to tell refusal from
+                # truncation from the artifacts).
+                stop = response.stop_reason or "unknown"
+                if stop == "refusal":
+                    # Hard refusal: the API ends the turn with
+                    # stop_reason="refusal" and may return no content
+                    # at all. Phrased with "model refused" so
+                    # structured_call.classify_error_text buckets it
+                    # 'blocked' and telemetry disposition reads
+                    # "blocked" — a model boundary, not a transport
+                    # failure; an identical retry cannot change it.
+                    raise RuntimeError(
+                        "Anthropic model refused request "
+                        "(stop_reason=refusal, empty content)"
+                    )
+                if stop == "max_tokens":
+                    raise RuntimeError(
+                        "Anthropic returned empty content with "
+                        "stop_reason=max_tokens — output budget "
+                        "exhausted before the first content block "
+                        "(on reasoning-tier models thinking can "
+                        "consume the entire budget)"
+                    )
+                raise RuntimeError(
+                    f"Anthropic returned empty content "
+                    f"(stop_reason={stop})"
+                )
             text_block = next(
                 (b for b in response.content if hasattr(b, 'text')), None,
             )
@@ -2133,7 +2164,8 @@ class AnthropicProvider(LLMProvider):
                 )
                 raise RuntimeError(
                     f"Anthropic returned no text content block "
-                    f"(got: {block_types})"
+                    f"(got: {block_types}; stop_reason="
+                    f"{response.stop_reason or 'unknown'})"
                 )
             content = text_block.text
             finish_reason = response.stop_reason or "complete"

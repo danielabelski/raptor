@@ -576,9 +576,16 @@ def _resolve_timeout_retry_cap(raw: Any) -> int:
 def _failure_disposition(error: Exception) -> str:
     """Telemetry label for a failed attempt: how the retry policy saw
     it. Ordering matters — quota beats the message-based timeout
-    match, mirroring ``is_timeout_error``'s own exclusion."""
+    match, mirroring ``is_timeout_error``'s own exclusion. Blocked
+    (content filter / model refusal) is checked before timeout so a
+    refusal message never mislabels; it is non-retryable like fatal,
+    but the distinct label keeps model-boundary failures separable
+    from transport failures in the telemetry rollup."""
     if _is_quota_error(error):
         return "quota"
+    from core.llm.structured_call import is_content_filter_text
+    if is_content_filter_text(str(error)):
+        return "blocked"
     if is_timeout_error(error):
         return "timeout"
     if _is_retryable_error(error):

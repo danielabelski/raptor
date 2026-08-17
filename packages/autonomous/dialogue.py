@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Multi-Turn LLM Dialogue - Iterative Reasoning
 
@@ -9,7 +8,7 @@ for deeper analysis and iterative refinement, rather than single-shot prompts.
 import re
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import Any
 
 from core.llm.providers import LLMProvider
 from core.llm.task_types import TaskType
@@ -39,7 +38,7 @@ class Message:
     role: str  # "user" or "assistant"
     content: str
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class MultiTurnAnalyser:
@@ -64,7 +63,7 @@ class MultiTurnAnalyser:
         """
         self.llm = llm_client
         self.memory = memory
-        self.dialogue_history: List[List[Message]] = []
+        self.dialogue_history: list[list[Message]] = []
         logger.info("Multi-turn analyser initialised")
 
     def analyse_crash_deeply(
@@ -72,8 +71,8 @@ class MultiTurnAnalyser:
         crash_context,
         max_turns: int = 5,
         *,
-        sage_prior_recall: Optional[str] = None,
-    ) -> Dict:
+        sage_prior_recall: str | None = None,
+    ) -> dict:
         """
         Perform deep, multi-turn analysis of a crash.
 
@@ -173,8 +172,8 @@ class MultiTurnAnalyser:
         return analysis_result
 
     def refine_exploit_iteratively(self, exploit_code: str, crash_context,
-                                   validation_errors: List[str],
-                                   max_iterations: int = 3) -> Optional[str]:
+                                   validation_errors: list[str],
+                                   max_iterations: int = 3) -> str | None:
         """
         Iteratively refine an exploit based on validation failures.
 
@@ -235,7 +234,7 @@ class MultiTurnAnalyser:
         self.dialogue_history.append(messages)
         return current_code  # Return best attempt
 
-    def ask_strategic_question(self, question: str, context_data: Dict = None) -> str:
+    def ask_strategic_question(self, question: str, context_data: dict | None = None) -> str:
         """
         Ask the LLM a strategic question about fuzzing.
 
@@ -300,7 +299,7 @@ class MultiTurnAnalyser:
         self,
         crash_context,
         *,
-        sage_prior_recall: Optional[str] = None,
+        sage_prior_recall: str | None = None,
     ) -> PromptBundle:
         """Build initial crash analysis prompt."""
         system = (
@@ -347,7 +346,7 @@ class MultiTurnAnalyser:
             slots=slots,
         )
 
-    def _build_clarification_prompt(self, initial_analysis: Dict, crash_context) -> PromptBundle:
+    def _build_clarification_prompt(self, initial_analysis: dict, crash_context) -> PromptBundle:
         """Build clarification prompt based on initial analysis."""
         system = (
             "Based on the initial analysis, clarify exploitability.\n\n"
@@ -385,7 +384,7 @@ class MultiTurnAnalyser:
             slots=slots,
         )
 
-    def _build_refinement_prompt(self, code: str, errors: List[str],
+    def _build_refinement_prompt(self, code: str, errors: list[str],
                                 crash_context, iteration: int) -> PromptBundle:
         """Build exploit refinement prompt."""
         system = (
@@ -426,7 +425,7 @@ class MultiTurnAnalyser:
             slots=slots,
         )
 
-    def _parse_crash_analysis(self, response: str) -> Dict:
+    def _parse_crash_analysis(self, response: str) -> dict:
         """Parse LLM response for crash analysis."""
         analysis = {
             "vulnerability_type": "unknown",
@@ -462,7 +461,7 @@ class MultiTurnAnalyser:
 
         return analysis
 
-    def _extract_code_from_response(self, response: str) -> Optional[str]:
+    def _extract_code_from_response(self, response: str) -> str | None:
         """Extract C code from LLM response."""
         import re
 
@@ -491,7 +490,7 @@ class MultiTurnAnalyser:
 
         return None
 
-    def _quick_validate_code(self, code: str) -> List[str]:
+    def _quick_validate_code(self, code: str) -> list[str]:
         """Quick validation of C code (basic syntax checks).
 
         Brace / paren counting is REMOVED. Pre-fix
@@ -536,7 +535,7 @@ class MultiTurnAnalyser:
 
         return errors
 
-    def _validate_with_memory(self, analysis: Dict, crash_context) -> Optional[str]:
+    def _validate_with_memory(self, analysis: dict, crash_context) -> str | None:
         """Validate analysis against memory."""
         if not self.memory:
             return None
@@ -554,7 +553,7 @@ class MultiTurnAnalyser:
 
         return f"Memory validation: consistent with history (p={probability:.2f})"
 
-    def _messages_to_context(self, messages: List[Message]) -> str:
+    def _messages_to_context(self, messages: list[Message]) -> str:
         """Convert message history to context string for LLM.
 
         ``msg.content`` may carry attacker-influenced text (prior
@@ -571,7 +570,7 @@ class MultiTurnAnalyser:
             context += f"{role}: {safe_content}\n\n"
         return context
 
-    def get_dialogue_summary(self) -> Dict:
+    def get_dialogue_summary(self) -> dict:
         """Get summary of all dialogues."""
         return {
             "total_dialogues": len(self.dialogue_history),

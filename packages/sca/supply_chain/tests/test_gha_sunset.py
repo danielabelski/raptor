@@ -43,7 +43,7 @@ def test_load_real_sunset_data():
     assert "actions/checkout" in out
     assert "actions/upload-artifact" in out
     # All records have the required shape.
-    for action, records in out.items():
+    for records in out.values():
         for r in records:
             assert isinstance(r.get("sunset_versions"), list)
 

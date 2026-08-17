@@ -14,7 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-
 from core.dataflow.finding import Finding, Step
 from packages.source_intel.adapter import (
     _PRIV_BACK_WALK_DEFAULT_DEPTH,
@@ -23,11 +22,10 @@ from packages.source_intel.adapter import (
     _privilege_back_walk_suppresses,
 )
 from packages.source_intel.analyze import (
-    CapabilityEvidence,
     GRADE_SAME_FUNCTION,
+    CapabilityEvidence,
     SourceIntelResult,
 )
-
 
 # ---- fixtures ---------------------------------------------------------
 
@@ -210,13 +208,13 @@ class TestPrivilegeBackWalkSuppresses:
         ):
             # Patch the import inside the function as well.
             import packages.coccinelle.prereqs as p
-            with patch.object(p, "gather_prereqs", return_value=facts):
-                with patch.object(Path, "is_dir", return_value=True):
-                    assert _privilege_back_walk_suppresses(
-                        _finding(),
-                        _result_with_caps(),
-                        Path("/repo"),
-                    ) is False
+            with patch.object(p, "gather_prereqs", return_value=facts), \
+                    patch.object(Path, "is_dir", return_value=True):
+                assert _privilege_back_walk_suppresses(
+                    _finding(),
+                    _result_with_caps(),
+                    Path("/repo"),
+                ) is False
 
     def test_max_depth_clamped_to_ceiling(self):
         """User-supplied max_depth above _MAX is clamped."""

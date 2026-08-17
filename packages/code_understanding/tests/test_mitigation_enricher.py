@@ -32,11 +32,11 @@ from unittest.mock import patch
 
 from packages.code_understanding.mitigation_enricher import (
     SCHEMA_VERSION,
-    build_mitigation_context,
-    enrich_context_map,
     _availability_for_cwe,
     _priority_hint,
     _sink_cwe,
+    build_mitigation_context,
+    enrich_context_map,
 )
 
 

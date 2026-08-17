@@ -30,6 +30,8 @@ based on system hardware.
 | `joern_heap_mb` | `"auto"` | JVM heap for Joern; auto = 25% system RAM, min 1024, no upper clamp |
 | `joern_cpg_timeout_s` | `300` | CPG generation timeout |
 | `joern_query_timeout_s` | `300` | Per-query timeout |
+| `max_llm_workers` | `"auto"` | Parallel LLM API calls; beats the RPM-derived and claudecode caps |
+| `throttle_cooldown_s` | `30` | Cooldown after an LLM rate-limit response |
 | `max_semgrep_workers` | `4` | Parallel Semgrep scans |
 | `max_codeql_workers` | `2` | Parallel CodeQL DB builds |
 | `max_fuzz_parallel` | `4` | AFL++ parallel instances ceiling |
@@ -58,8 +60,9 @@ RAPTOR-specific variables:
 **Path:** `~/.cache/raptor/sandbox-profiles/`
 
 Auto-calibration profiles for external binaries (CodeQL, pip, etc.). Cache
-key is `sha256(realpath(binary)) + env_signature`. Clear with:
+key is `sha256(realpath(binary)) + env_signature`. Clear one entry or all:
 
 ```bash
-raptor sandbox calibrate --clear
+libexec/raptor-sandbox-calibrate --bin <path> --clear
+libexec/raptor-sandbox-calibrate --clear-all
 ```

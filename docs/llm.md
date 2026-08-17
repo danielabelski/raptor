@@ -24,10 +24,14 @@ See [dependencies](dependencies.md) for SDK installation.
 ### Claude Code transport
 
 When no other provider is configured but the `claude` CLI is on PATH,
-RAPTOR dispatches LLM calls through `claude -p` subprocesses. The
-transport never passes `--model`: children inherit the CLI session's
-own default (settings.json, `ANTHROPIC_MODEL`, or the backend's
-mapping), so it works unchanged on Bedrock/Vertex-backed installs.
+RAPTOR dispatches LLM calls through `claude -p` subprocesses. By
+default children are pinned via `--model` to the backend-resolved
+model identity (see [Model pinning](#model-pinning)); only when the
+probe cache is cold or `RAPTOR_CC_PIN_MODEL=0` is set do children
+inherit the CLI session's own default (settings.json,
+`ANTHROPIC_MODEL`, or the backend's mapping). Because the pinned id
+comes from the backend's own result envelope, this works unchanged on
+Bedrock/Vertex-backed installs.
 
 Before committing to this transport, `raptor-resolve-mode` runs a
 pre-flight probe — one cheap `claude -p` call that confirms the CLI
@@ -46,6 +50,12 @@ fails — on pricier backends the biggest call classes (audit Mode 2
 checker synthesis) can hit this. Set `RAPTOR_CC_BUDGET_USD` to raise
 or lower the ceiling; total run spend is still governed by the
 orchestrator-level `--max-cost`.
+
+Timeouts are per call class: the provider default is 600 s, callers
+override `timeout_s` per call (checker synthesis uses 1800 s), and
+`timeout_s <= 0` means no timeout. Timed-out calls are retried once
+by the client (`timeout_retry_cap`, default 1); each call's
+disposition lands in `llm-telemetry.jsonl` with its `call_class`.
 
 #### Model pinning
 
@@ -93,6 +103,7 @@ verbatim and run temporally clustered (the cache TTL is minutes).
 | `RAPTOR_CC_MAX_WORKERS` | Subprocess concurrency cap (default 4) |
 | `RAPTOR_CC_EFFORT` | `--effort` for children (low/medium/high/xhigh/max) |
 | `RAPTOR_CC_FALLBACK_MODEL` | `--fallback-model`: CLI-native retry on overload |
+| `RAPTOR_CC_PROBE_WARM=0` | Skip the run-start probe warm |
 
 #### Security posture
 
@@ -138,7 +149,7 @@ tool use, prompt caching, vision, extended thinking.
 ### Runtime (Legacy)
 
 Endpoint: `bedrock-runtime.<region>.amazonaws.com`. Required for models not yet on
-Mantle, cross-region inference profile IDs (`us./eu./apac./global.` prefixes), and
+Mantle, cross-region inference profile IDs (`us./eu./au./apac./global.` prefixes), and
 compliance-pinned ARN-versioned IDs. Non-streaming only.
 
 ### Authentication
@@ -148,7 +159,7 @@ Two auth modes:
 | Mode | Environment Variables | Notes |
 |------|----------------------|-------|
 | Bearer token | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION` | Recommended; no SDK dependency |
-| SigV4 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | Uses AWS credential chain (env/profile/SSO/IMDS); requires `boto3` |
+| SigV4 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | Uses AWS credential chain (env/profile/SSO/IMDS); signing needs `botocore` (the dispatcher path), while provider auto-detection currently probes for `boto3` — install `boto3` to get both |
 
 ### Switching API Surface
 
@@ -161,8 +172,9 @@ export RAPTOR_BEDROCK_API=runtime
 {"provider": "bedrock", "model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "bedrock_api": "runtime"}
 ```
 
-Cross-region inference (`us./eu./apac./global.` prefixes) routes through Runtime
-automatically. Mantle handles regional routing at the hostname layer.
+A geo-prefixed model id (`us.anthropic.*` etc.) infers `provider: bedrock` but
+still defaults to Mantle — select Runtime explicitly via `bedrock_api` or
+`RAPTOR_BEDROCK_API`. Mantle handles regional routing at the hostname layer.
 
 ## Model Configuration
 
@@ -301,8 +313,10 @@ The budget cap is set exclusively via `--max-cost-usd` (CLI) or `max_cost_per_sc
 Per-1K-token input/output rates are maintained in `core/llm/model_data.py` for every
 known model, verified against provider pricing pages. Includes:
 
-- Bedrock regional surcharges (10% for geo-prefixed `us./eu./au./apac.` models)
-- Anthropic cache pricing (1.25x input for cache writes, 0.1x for cache reads)
+- Bedrock cross-region surcharge (10%, applied to geo-prefixed models with a
+  confirmed `global.` cross-region SKU; other geo prefixes stay at 1.0x)
+- Anthropic cache pricing (1.25x input for 5-minute cache writes, 2.0x for
+  1-hour cache writes, 0.1x for cache reads)
 - Thinking/reasoning tokens billed at output rate across all providers
 
 Unknown models log a warning and record $0 cost (budget caps silently defeated).
@@ -367,6 +381,12 @@ native schema-constrained JSON output and accurate thinking-token tracking. Fall
 to OpenAI-compatible mode when only the `openai` SDK is installed (loses thinking-token
 granularity).
 
+Security-analysis prompts routinely discuss exploits, so every native-SDK call
+disables the dangerous-content safety filter (`HARM_CATEGORY_DANGEROUS_CONTENT:
+BLOCK_NONE`); if a response is still blocked, the block reason is surfaced in the
+error. Truncated native structured responses (output cut mid-JSON) are detected
+and raised rather than returned as silently-corrupt data.
+
 ## Environment Variables Summary
 
 | Variable | Purpose |
@@ -383,3 +403,9 @@ granularity).
 | `RAPTOR_LLM_SOCKET` | Credential isolation dispatcher socket |
 | `RAPTOR_CONFIG` | Override path to `models.json` |
 | `OLLAMA_HOST` | Ollama server URL |
+| `RAPTOR_CC_MODEL` / `RAPTOR_CC_PIN_MODEL` | Claude Code transport model pinning (see above) |
+| `RAPTOR_CC_BUDGET_USD` | Claude Code per-call abort ceiling (default 5.00) |
+| `RAPTOR_CC_MAX_WORKERS` | Claude Code subprocess concurrency cap (default 4) |
+| `RAPTOR_CC_EFFORT` / `RAPTOR_CC_FALLBACK_MODEL` | Claude Code child effort / fallback model |
+| `RAPTOR_CC_PROBE_WARM` | `0` skips the run-start probe warm |
+| `RAPTOR_LLM_CACHE_TTL_S` | LLM response cache TTL override (default 24 h) |

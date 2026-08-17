@@ -63,8 +63,9 @@ Pinned versions are in `requirements.txt`. Install with
 | beautifulsoup4 | MIT | HTML parsing (web scanning) |
 | orjson | Apache 2.0 / MIT | Faster JSON parse and serialise (transparent fallback to stdlib `json`) |
 | pwntools | MIT | Binary exploit analysis (ELF parsing, gadget search) — used if present, not in requirements.txt |
-| r2pipe | LGPL v3 | Python bridge for radare2 |
-| atheris | Apache 2.0 | Coverage-guided Python fuzzing engine |
+| r2pipe | LGPL v3 | Python bridge for radare2 — used if present, not in requirements.txt |
+| atheris | Apache 2.0 | Coverage-guided Python fuzzing engine — used if present, not in requirements.txt |
+| playwright | Apache 2.0 | Browser automation for web scanning (commented in requirements.txt) |
 | z3-solver | MIT | SMT-based constraint analysis (one-gadget feasibility, path validation) |
 | tree-sitter + grammars | MIT | Rich inventory metadata (decorators, typed params) |
 | sage-agent-sdk | -- | SAGE persistent memory |

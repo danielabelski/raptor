@@ -1158,6 +1158,25 @@ def _discover_executables(target):
             "instead of the ambient environment",
             file=sys.stderr,
         )
+        # Security-event stream: an env-sanitisation failure on the
+        # untrusted-target path is exactly the class of event the
+        # stream exists for. Observability only — the fail-closed
+        # minimal env above is the behaviour; a logging failure (the
+        # same import breakage that broke get_safe_env may reach
+        # core.logging too) must not disturb it. Payload carries the
+        # stage + target path identifier — never env names or values.
+        try:
+            from core.logging import log_security_event
+            log_security_event(
+                "env_sanitisation_failed",
+                "RaptorConfig.get_safe_env() failed during binary "
+                "discovery; child env stripped to the minimal inline "
+                "allowlist",
+                stage="stage_e_discover_executables",
+                target=str(target),
+            )
+        except Exception:  # noqa: BLE001, S110 — observability must never break the fail-closed path
+            pass
     result = {}
     with contextlib.suppress(Exception):
         proc = _sp.run(

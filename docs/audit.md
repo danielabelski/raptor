@@ -46,6 +46,7 @@ full flag table.
 | `--out <dir>` | Output directory |
 | `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep |
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
+| `--deepen-reserve <fraction>` | Slice of `--max-cost` held back for the deepen phase so announced re-reviews can execute (default 0.15; 0 disables) |
 | `--max-time <seconds>` | Wall-clock time limit |
 | `--review-passes <N>` | Independent review passes per function for self-consistency (default: 1) |
 | `--subsystem-depth <N>` | Directory grouping depth for subsystem-ordered review (default: 0) |
@@ -68,7 +69,12 @@ full flag table.
 0. /understand --map  →  context-map.json (entry points, sinks, trust boundaries)
 1. Build inventory    →  checklist.json (SHA-256 per file)
 2. Compute gaps       →  gaps.json (functions with no coverage)
-3. For each gap batch (grouped by directory):
+3. Consistency census pre-pass (once per run)  →  return-census.json;
+   registry-grade contract deviations become LLM-free findings
+4. Pre-loop LLM summary pass: callee-context summaries for connected but
+   unsummarised functions (booked as the `summary` phase in the cost ledger;
+   skipped when the run has no LLM budget client)
+5. For each gap batch (grouped by directory):
    a. Assemble context slice (source + callers + callees + strategy exemplars)
    b. LLM review: form hypotheses about assumptions and violations
    c. Generate mechanical tests (Semgrep/Coccinelle/CodeQL/SMT rules)
@@ -76,12 +82,12 @@ full flag table.
    e. Record journal entry (what was tested, tool evidence)
    f. Record status (clean / suspicious / finding / error / dormant)
    g. If pattern has variants: generate codebase-wide checker (Mode 2)
-4. Joern CPG builds in background, drains when ready for dataflow re-review
-5. Constraint propagation across related functions
-6. Sweep validation to confirm tool-backed evidence
-7. Tool-grounded critique: identifies gaps, generates additional tool invocations
-8. Report: review-journal.jsonl + findings.json + summary
-9. /validate post-pass on findings (unless --no-validate)
+6. Joern CPG builds in background, drains when ready for dataflow re-review
+7. Constraint propagation across related functions
+8. Sweep validation to confirm tool-backed evidence
+9. Tool-grounded critique: identifies gaps, generates additional tool invocations
+10. Report: review-journal.jsonl + findings.json + summary
+11. /validate post-pass on findings (unless --no-validate)
 ```
 
 
@@ -128,8 +134,9 @@ alongside the target code.
 Semgrep, Coccinelle, CodeQL, SMT, and compilation invocations run through
 `libexec/raptor-audit sweep` so results are logged to the audit trail
 automatically.  Joern, the compiler analyzers, the expanded-view Semgrep
-pass, the fail-open channel, the consistency channel, and the
-git-history oracle run as orchestrator channels.
+pass, the fail-open channel, the consistency channel, the API-boundary
+channel, the SMT invariant channel, and the git-history oracle run as
+orchestrator channels.
 
 | Tool | What it validates | Example use |
 |------|-------------------|-------------|
@@ -141,8 +148,10 @@ git-history oracle run as orchestrator channels.
 | **Compiler analyzers** | Mechanical verification sweep (gcc `-fanalyzer` / clang `--analyze`) over hypothesis TUs | "Analyzer confirms the null-deref path the hypothesis names" |
 | **Expanded-view Semgrep** | Re-runs rules over fidelity-3 preprocessor-expanded views of macro-heavy C/C++ | "Sink hidden behind a macro expansion" |
 | **Git history** | Corroboration only -- prior security fixes touching the function (never a verdict by itself) | "This function was patched for the same bug class before" |
-| **Fail-open channel** | Swallowed-error hypotheses (CWE-703/636/391/390/252): security role x permissive handler outcome x fallibility, all mechanical with receipts. Phase 1: Python handlers, C ignored-return + tri-state shapes | "The broad `except` around token verification swallows signature errors and the request proceeds" |
-| **Consistency channel** | Peer-majority deviations with PeerEvidence receipts: the return-usage census (six-value enum, `return-census.json`), contract witnesses (warn_unused_result, learned contracts, the shared Tier-A registry), flag/mode and error-path-cleanup comparators. Registry-grade contract witness = promote-capable LLM-free finding; majority-only = detection grade (one shared namespace -- two consistency statistics never self-corroborate to promotion) | "9/10 call sites check `do_auth()`'s return and it is declared `warn_unused_result`; this site discards it" |
+| **Fail-open channel** | Swallowed-error hypotheses (CWE-703/636/391/390/252, plus CWE-248 routed but never confirmed): security role x permissive handler outcome x fallibility, all mechanical with receipts. Handler shapes: Python broad handlers, C ignored-return + tri-state, Go recover-and-continue, JS/TS unawaited promises | "The broad `except` around token verification swallows signature errors and the request proceeds" |
+| **Consistency channel** | Peer-majority deviations with PeerEvidence receipts: the return-usage census (six-value enum, `return-census.json`), contract witnesses (warn_unused_result, learned contracts, the shared Tier-A registry), flag/mode and error-path-cleanup comparators. Registry-grade contract witness = promote-capable LLM-free finding, stamped `consistency:<dimension>`; majority-only = detection grade, stamped `consistency:<dimension>-majority` and never promotable alone (one shared namespace -- two consistency statistics never self-corroborate to promotion) | "9/10 call sites check `do_auth()`'s return and it is declared `warn_unused_result`; this site discards it" |
+| **API-boundary channel** | Caller-contract hypotheses about exported functions, adjudicated mechanically (`api_boundary:caller-contract`): every in-repo call site guarded = refuted; a concrete unguarded call site = confirmed; external-only callers or environment contracts = inconclusive.  Only literal violations confirm | "Every caller of `resolve_path()` must reject `..` first; `handle_upload()` doesn't" |
+| **SMT invariant channel** | Invariant-preservation checks (`smt:invariant-preservation`): per mutation site, is `invariant(pre) AND transition AND NOT invariant(post)` satisfiable?  All-unsat = preserved; sat = violable.  Linear integer arithmetic, inductive step only; degrades gracefully without z3 | "`buf_len <= buf_cap` survives every append path except the realloc-failure branch" |
 
 ### SMT verbs
 
@@ -163,7 +172,7 @@ Every finding must pass these gates before it can be emitted:
 | Gate | Rule |
 |------|------|
 | **G1 Hypothesis-first** | Every suspicion framed as a testable hypothesis before any finding is emitted |
-| **G2 Tool-grounded** | At least one mechanical validation (Semgrep, CodeQL, Coccinelle, SMT, compilation, compiler analyzers, Joern, dark-verify, dynamic) |
+| **G2 Tool-grounded** | At least one mechanical validation (Semgrep, CodeQL, Coccinelle, SMT, compilation, compiler analyzers, Joern, dark-verify, dynamic, or a mechanical channel receipt: fail-open, registry-grade consistency).  Detection-grade stamps (`consistency:*-majority`) never qualify alone |
 | **G3 No self-critique loop** | Iteration without tool feedback is prohibited |
 | **G4 Evidence recorded** | Journal entry includes tool names and results |
 | **G5 Read-first** | Code read with the Read tool before any hypothesis is formed |
@@ -203,6 +212,32 @@ generates a codebase-wide checker:
 This is the KNighter pattern: one hypothesis → sweep the whole codebase.
 Rules are stored in the project's rule library and can be replayed across
 runs.
+
+
+## Vocabulary Packs
+
+The mechanical checkers, the prefilter, and strategy selection draw their
+API-name vocabulary from three sources, always unioned additively:
+hardcoded seeds < data pack < study-learned domain model.  A pack never
+suppresses anything -- it only adds names.  Seed sets are deliberately
+tiny (a CI guardrail rejects new literal name lists over nine entries);
+growing a vocabulary means teaching the study loop or editing pack data,
+never the code.
+
+| Pack family | Location | Consumed by |
+|-------------|----------|-------------|
+| Checker vocab packs | `core/audit/data/vocab_packs/` (today: `linux_kernel.json` -- allocators, deallocators, lock pairs, callback register/cancel pairs, nullable returns, auth predicates, ...) | SMT condition vocabulary, prefilter, callback-lifetime checker.  Applied when the target is detected as a kernel tree |
+| Strategy signal packs | `core/audit/data/strategy_packs/` (today: `linux_kernel.json` -- per-strategy path and source tokens) | Per-function strategy inference |
+| Parser-API pack | `core/function_taxonomy/data/packs/parser_apis.json` (seed set + CVE-harvested names; refresh with `libexec/raptor-parser-pack-harvest`) | Function taxonomy (`PARSER_FUNCS`), binary-analysis surface classification, Frida hooks |
+| Crypto API packs | `engine/coccinelle/source_intel/crypto/packs/` (`openssl.json`, `kernel-crypto.json`, `libsodium.json`) | The `crypto_calls` Coccinelle rule and `/understand --map`'s crypto inventory |
+
+Adding a library is a data change: drop a new JSON pack in the family's
+directory (crypto packs are picked up automatically; a new checker-vocab
+target kind additionally needs a `pack_for_target()` branch).  The parser
+and crypto pack directories carry a `README.md` documenting their schema;
+the audit pack schemas are documented in `core/audit/vocab_packs.py` and
+`core/audit/strategy.py`.  Malformed packs are skipped with a warning --
+checkers then run on seeds + learned vocabulary alone.
 
 
 ## Post-run Workflows
@@ -267,7 +302,12 @@ Query audit state across all four layers:
 | `gaps.json` | Gap list used for this run |
 | `.audit-log.jsonl` | Full audit trail |
 | `review-journal.jsonl` | Per-function review decisions (strategies, hypotheses, tools, cost) |
-| `cost-breakdown.json` | Per-consumer cost ledger reconciliation |
+| `return-census.json` | Return-usage census from the consistency pre-pass (six-value usage enum per call site) |
+| `prefilter-kills.jsonl` | One record per prefilter/triage kill (summary row first, then `file`, `function`, `gate`, `reason`, plus spot-audit corroboration fields on sampled rows) |
+| `suppressions.jsonl` | Oracle-earned triage-skip audit trail (same record shape as `/agentic`/`/codeql`) |
+| `tier-diagnostics.json` | Per-channel outcome counters (prefilter, semgrep, smt, fail_open, consistency, ...) |
+| `fuzz-dict.json` / `fuzz.dict` | Fuzz handoff: dictionary tokens mined from constants, parse-shape literals, and dispatch keys; `fuzz.dict` is AFL format and is auto-discovered by [/fuzz](fuzzing.md#dictionary-auto-discovery) |
+| `cost-breakdown.json` | Per-phase cost ledger reconciliation (completed + failed-attempt + unattributed spend always sum to the authoritative total; the pre-loop summary pass books as the `summary` phase) |
 | `llm-telemetry.jsonl` | Per-call LLM telemetry |
 | `promotion-alarms.jsonl` | Promotion-without-tool-evidence alarms — a `finding` that reached the journal or export without qualifying tool evidence. Empty on every legitimate run; any record means the mechanical-verdict gate was bypassed (possible injection or policy bug). Alarm-only, never blocks |
 | `audit-report.json` | Summary report |

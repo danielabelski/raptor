@@ -18,7 +18,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 
 ```
 /audit <target_path> [--strategy <name>] [--budget <N>] [--scope <dir>] [--out <dir>]
-       [--codeql-db <path>] [--max-cost <USD>] [--max-time <seconds>]
+       [--codeql-db <path>] [--max-cost <USD>] [--deepen-reserve <fraction>] [--max-time <seconds>]
        [--review-passes <N>] [--subsystem-depth <N>] [--batch-sloc-threshold <N>]
        [--include-kinds <list>] [--max-propagation-depth <N>] [--adversarial]
        [--no-verdict-reuse] [--schedule {cost,priority}] [--dynamic | --no-dynamic]
@@ -33,6 +33,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--out <dir>` — output directory (default: resolved by lifecycle)
 - `--codeql-db <path>` — path to a CodeQL database for query dispatch and pre-sweep
 - `--max-cost <USD>` — stop after spending this many dollars on LLM calls
+- `--deepen-reserve <fraction>` — slice of `--max-cost` held back for the deepen phase so announced re-reviews can execute (default 0.15; 0 disables)
 - `--max-time <seconds>` — stop after this many wall-clock seconds
 - `--review-passes <N>` — independent review passes per function for self-consistency (default: 1)
 - `--subsystem-depth <N>` — directory grouping depth for subsystem-ordered review (default: 0)
@@ -92,7 +93,7 @@ If the operator passed `--scope`, still map the full target (the map covers the 
 libexec/raptor-audit run "$TARGET_PATH" --out "$OUTPUT_DIR"
 ```
 
-Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`, `--include-kinds`, `--no-verdict-reuse`, `--schedule`, `--dynamic`, `--no-dynamic`, `--binary`, `--binary-auto`, `--no-binary-oracle`).
+Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--deepen-reserve`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`, `--include-kinds`, `--no-verdict-reuse`, `--schedule`, `--dynamic`, `--no-dynamic`, `--binary`, `--binary-auto`, `--no-binary-oracle`).
 
 The orchestrator handles everything from here: gap computation, context assembly, LLM review, tool chain dispatch, Joern background build, sweep validation, constraint propagation, Mode 2 checker synthesis, /validate post-pass, report generation, and lifecycle completion.
 
@@ -108,6 +109,8 @@ When the orchestrator completes, read and print the summary from `$OUTPUT_DIR/au
 0. context-map.json (from /understand --map, done by the .md shim above)
 1. Lifecycle start, build inventory → checklist.json
 2. Compute gaps → gaps.json (functions with no coverage)
+2a. Consistency census pre-pass → return-census.json (registry-grade contract deviations become LLM-free findings)
+2b. Pre-loop LLM summary pass: callee-context summaries for connected but unsummarised functions (booked as the `summary` phase in cost-breakdown.json)
 3. For each gap batch (by directory):
    a. Assemble context slice (source + callers + callees + metadata + strategy exemplars + flow traces)
    b. LLM review: form hypotheses about assumptions and violations
@@ -140,6 +143,8 @@ These tools are available for hypothesis validation. The orchestrator invokes th
 | **Git history** | Orchestrator channel: prior security fixes touching the function (corroboration only, never a verdict) | Bug-class recurrence |
 
 **SMT verbs:** `check-overflow`, `check-oob`, `check-null-deref`, `check-overflow-to-oob`, `check-negative-bypass`, `validate-path`
+
+**Orchestrator-only channels** (not `sweep --tool` choices): fail-open (`fail_open:*`), consistency (`consistency:*`, peer census + contract witnesses), API-boundary caller contracts (`api_boundary:caller-contract`), SMT invariant preservation (`smt:invariant-preservation`). See `docs/audit.md` for semantics.
 
 **Manual sweep logging** (for tools not yet auto-executed):
 ```bash
@@ -224,6 +229,9 @@ OUTPUT_DIR=/path/to/out libexec/raptor-audit gaps --out /path/to/out
 - `$OUTPUT_DIR/findings.json` — findings in standard format (→ `/validate`)
 - `$OUTPUT_DIR/gaps.json` — gap list used for this run
 - `$OUTPUT_DIR/.audit-log.jsonl` — full audit trail (context/sweep/record/feedback actions)
-- `$OUTPUT_DIR/cost-breakdown.json` — per-consumer cost ledger reconciliation
+- `$OUTPUT_DIR/return-census.json` — return-usage census from the consistency pre-pass
+- `$OUTPUT_DIR/prefilter-kills.jsonl` — one record per prefilter/triage kill, with spot-audit corroboration
+- `$OUTPUT_DIR/fuzz-dict.json` + `fuzz.dict` — fuzz handoff (AFL dictionary; auto-discovered by `/fuzz`)
+- `$OUTPUT_DIR/cost-breakdown.json` — per-phase cost ledger reconciliation
 - `$OUTPUT_DIR/llm-telemetry.jsonl` — per-call LLM telemetry
 - `annotations/<source_path>.md` — human-written per-function notes (project-level; never written by the LLM)

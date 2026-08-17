@@ -2208,7 +2208,18 @@ class LLMClient:
                             cost_delta = provider.total_cost - cost_before
                             if cost_delta > 0:
                                 with self._stats_lock:
-                                    self.total_cost += cost_delta - _BUDGET_RESERVATION
+                                    # Cancel the reservation only when
+                                    # one was actually taken — with
+                                    # cost tracking disabled
+                                    # _acquire_budget was a no-op, and
+                                    # subtracting here would drift
+                                    # total_cost low by the
+                                    # reservation per failed call
+                                    # (mirrors the success path below).
+                                    if self.config.enable_cost_tracking:
+                                        self.total_cost += cost_delta - _BUDGET_RESERVATION
+                                    else:
+                                        self.total_cost += cost_delta
                                     self.request_count += 1
                                     if task_type:
                                         self.task_type_costs[task_type] = (

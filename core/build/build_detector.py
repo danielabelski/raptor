@@ -1284,6 +1284,24 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
                 tail = stderr_lines[-1] if stderr_lines else "(no stderr)"
                 logger.warning("Build script crashed: %s", tail)
                 return None
+            if result.returncode != 0 and not any(
+                marker in result.stderr
+                for marker in (": error:", ": fatal error:")
+            ):
+                # Nonzero exit with no Python traceback AND no compiler
+                # diagnostics: signal death (OOM-kill → returncode -9,
+                # empty stderr), interpreter mismatch, wrapper failure.
+                # Nothing was measured — falling through to the stderr
+                # parse would return [] and the caller would log
+                # "all files compiled successfully" with confidence 0.7,
+                # exactly the collapsed case the None sentinel exists to
+                # prevent.
+                logger.warning(
+                    "Build script exited %d without compiler diagnostics "
+                    "— treating as 'didn't run'",
+                    result.returncode,
+                )
+                return None
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
         except (subprocess.TimeoutExpired, Exception) as e:

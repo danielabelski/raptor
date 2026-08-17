@@ -80,6 +80,7 @@ raptor/
 │   ├── raptor-llm-scorecard       # LLM scorecard queries
 │   ├── raptor-migrate-journal     # Review-journal migration
 │   ├── raptor-normalize-context-map  # Context map normalisation
+│   ├── raptor-parser-pack-harvest # Parser-API pack refresh (CVE-fix harvest)
 │   ├── raptor-pick-strategies     # Strategy selection
 │   ├── raptor-pid1-shim           # PID 1 shim for sandboxed processes
 │   ├── raptor-project-manager     # Project workspace management
@@ -96,6 +97,7 @@ raptor/
 │   ├── raptor-sandbox-*           # Sandbox calibration and observation
 │   ├── raptor-sca-*               # SCA helpers
 │   ├── raptor-seatbelt-shim       # macOS Seatbelt shim
+│   ├── raptor-self-test           # Non-destructive smoke suite over the command surface
 │   ├── raptor-session-init        # Session initialisation
 │   ├── raptor-smt-*               # SMT constraint checkers
 │   ├── raptor-startup-check       # Startup environment validation

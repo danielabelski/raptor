@@ -100,13 +100,27 @@ VALID_EVIDENCE_TOOLS: frozenset = frozenset({
 _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "prefilter", "critique", "sweep", "sarif_cache",
     "dynamic", "frida", "dark_verify", "precondition",
-    "fail_open",
+    "fail_open", "consistency",
 })
+
+
+def _is_detection_variant(part: str) -> bool:
+    """Detection-role consistency stamps (``consistency:*-majority``).
+
+    A majority statistic corroborates; it does not convict (the
+    ``git_history`` epistemology applied to statistics). Such a stamp
+    may ride along in a ``+``-joined aggregation receipt, but alone it
+    is NOT tool evidence — a ``finding`` carrying only a ``-majority``
+    stamp trips the promotion alarm.
+    """
+    return part.startswith("consistency:") and part.endswith("-majority")
 
 
 def _is_single_tool_evidence(part: str) -> bool:
     """Check one atomic stamp (no ``+`` separator)."""
     if not part or part == "none":
+        return False
+    if _is_detection_variant(part):
         return False
     root = part.split(":")[0] if ":" in part else part
     return root in _TOOL_NAMESPACES or part in _TOOL_NAMESPACES
@@ -118,11 +132,22 @@ def is_tool_evidence(stamp: str) -> bool:
     Matches canonical stamps (``"dynamic:sanitizer"``, ``"semgrep"``, etc.),
     namespaced composites (``"semgrep:rule-123"``, ``"critique:prefilter:id"``),
     and ``+``-joined multi-tool stamps (``"semgrep+joern"``).
+
+    Detection-role consistency variants (``consistency:*-majority``)
+    qualify only inside a composite that also carries a qualifying
+    receipt (the aggregation-promotion shape); alone they are a
+    statistical prior, not verification.
     """
     if not stamp or stamp == "none":
         return False
     parts = stamp.split("+") if "+" in stamp else [stamp]
-    return all(_is_single_tool_evidence(p) for p in parts)
+    qualifying = 0
+    for p in parts:
+        if _is_single_tool_evidence(p):
+            qualifying += 1
+        elif not _is_detection_variant(p):
+            return False
+    return qualifying > 0
 
 
 _LLM_ONLY_EVIDENCE = frozenset({
@@ -215,6 +240,38 @@ _RECEIPT_MAP: dict[str, tuple] = {
     "fail_open": (
         EvidenceSource.TREE_SITTER,
         "fail-open shape confirmed by the handler-outcome channel",
+    ),
+    # Consistency channel receipts (per dimension; the bare namespace
+    # covers the -majority detection variants riding in aggregation
+    # composites). Every premise is a deterministic fact: the usage
+    # classification is AST, the contract is the target's own header
+    # attribute or a receipted learned contract, the majority is
+    # reproducible arithmetic.
+    "consistency:return-check": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a return-contract-bearing callee's result is discarded at "
+            "the flagged site while the checking siblings exhibit the "
+            "convention (census + contract witness receipts)"
+        ),
+    ),
+    "consistency:flag-mode": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a security-relevant flag/mode argument deviates from the "
+            "constant the sibling call sites agree on"
+        ),
+    ),
+    "consistency:cleanup": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "an error path omits the learned release call its sibling "
+            "paths perform on the same acquisition"
+        ),
+    ),
+    "consistency": (
+        EvidenceSource.TREE_SITTER,
+        "peer-majority consistency evidence (PeerEvidence receipts)",
     ),
     "sarif_cache": (EvidenceSource.SEMGREP, "matched prior SARIF result"),
     "precondition": (

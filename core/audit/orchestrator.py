@@ -14782,6 +14782,16 @@ def _is_detection_only(tool_id: str) -> bool:
         from core.audit.fail_open_verify import is_detection_rule_id
         return is_detection_rule_id(tool_id)
 
+    if tool_id.startswith("consistency:"):
+        # -majority variants (majority-only contract source) are
+        # detection-role: a statistical prior corroborates, it does
+        # not convict. Registry-grade contract-witness confirmations
+        # promote directly. All consistency dimensions share ONE
+        # namespace, so two of them can never satisfy the two-
+        # independent-namespaces aggregation rule by themselves.
+        from core.audit.peer_evidence import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
+
     return False
 
 

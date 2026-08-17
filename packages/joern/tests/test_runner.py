@@ -606,3 +606,38 @@ class TestBuildCpgSandbox:
         build_cpg(target, on_progress=lambda m: None,
                   output_dir=tmp_path / "out")
         assert "cmd" in called
+
+
+class TestStallMonitorStdoutDrain:
+    """A chatty joern-parse stdout must not wedge the monitored build.
+
+    Regression: stdout was PIPE'd but only read after exit, so a child
+    emitting more than the OS pipe buffer (~64KB) on stdout blocked in
+    write(), stalled its stderr progress, and got killed as a spurious
+    timeout/stall.
+    """
+
+    def test_chatty_stdout_completes_and_is_parsed(self, tmp_path):
+        import sys as _sys
+
+        from packages.joern.runner import _build_cpg_with_stall_monitor
+
+        # Writes 256KB of noise plus a language line to stdout — far
+        # past the pipe buffer an undrained child deadlocks on.
+        script = (
+            "import sys\n"
+            "sys.stdout.write('noise\\n' * (256 * 1024 // 6))\n"
+            "sys.stdout.write('language: c\\n')\n"
+        )
+        cpg = _build_cpg_with_stall_monitor(
+            [_sys.executable, "-c", script],
+            cpg_path=tmp_path / "cpg.bin",
+            target=tmp_path,
+            languages=None,
+            timeout=20,
+            on_progress=lambda m: None,
+        )
+        # Pre-fix the child hit the 20s wait timeout and the fallback
+        # JoernCPG carried no languages and no build time.
+        assert cpg.languages == {"c"}
+        assert cpg.build_time_ms < 20_000

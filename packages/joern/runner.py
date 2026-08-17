@@ -86,6 +86,18 @@ _STALL_MULTIPLIER = 3
 _STALL_FLOOR_S = 30
 
 
+def _drain_stream(stream, chunks: list[str]) -> None:
+    """Incrementally read a child's pipe so it can never block on a
+    full OS pipe buffer; keeps partial output if the child is killed."""
+    if stream is None:
+        return
+    try:
+        for line in stream:
+            chunks.append(line)  # noqa: PERF402 — incremental drain, not a copy
+    except (OSError, ValueError):
+        pass
+
+
 class _StallMonitor:
     """Monitor joern-parse stderr for per-file progress and kill on stall.
 
@@ -325,10 +337,23 @@ def _build_cpg_with_stall_monitor(
     )
     monitor_thread.start()
 
-    # Wait for the process without reading its pipes -- the monitor
-    # thread owns stderr and stdout is collected after it exits.
-    # Using proc.communicate() here would race with the monitor
-    # thread on the stderr pipe (two unsynchronised consumers).
+    # Drain stdout in its own thread. The monitor owns stderr; leaving
+    # stdout unread until after exit let a chatty joern-parse fill the
+    # ~64KB OS pipe buffer and block in write() — stderr progress then
+    # stopped and the stall monitor (or the wait timeout below) killed
+    # it, misreported as a joern-parse timeout/stall.
+    stdout_chunks: list[str] = []
+    stdout_thread = threading.Thread(
+        target=_drain_stream,
+        args=(proc.stdout, stdout_chunks),
+        daemon=True,
+        name="joern-stdout-drain",
+    )
+    stdout_thread.start()
+
+    # Wait for the process without reading its pipes here -- the two
+    # drain threads own them. Using proc.communicate() would race with
+    # those threads (two unsynchronised consumers per pipe).
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -338,8 +363,9 @@ def _build_cpg_with_stall_monitor(
         return JoernCPG(path=cpg_path, target=target)
 
     monitor_thread.join(timeout=5)
+    stdout_thread.join(timeout=5)
 
-    stdout = proc.stdout.read() if proc.stdout else ""
+    stdout = "".join(stdout_chunks)
 
     elapsed = int((time.monotonic() - start) * 1000)
 

@@ -8,15 +8,14 @@ verdicts silently, so the data layer needs explicit coverage.
 from __future__ import annotations
 
 from core.inventory.call_graph import (
-    FileCallGraph,
     INDIRECTION_BRACKET_DISPATCH,
     INDIRECTION_DUNDER_IMPORT,
     INDIRECTION_GETATTR,
     INDIRECTION_IMPORTLIB,
     INDIRECTION_WILDCARD_IMPORT,
+    FileCallGraph,
     extract_call_graph_python,
 )
-
 
 # ---------------------------------------------------------------------------
 # Imports

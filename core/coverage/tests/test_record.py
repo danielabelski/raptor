@@ -7,15 +7,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core.coverage.record import (
+    READS_MANIFEST,
+    build_from_cocci,
+    build_from_codeql,
+    build_from_findings,
     build_from_manifest,
     build_from_semgrep,
-    build_from_codeql,
-    build_from_cocci,
-    build_from_findings,
-    write_record,
     load_record,
     load_records,
-    READS_MANIFEST,
+    write_record,
 )
 from core.coverage.track_read import main as track_read_main
 

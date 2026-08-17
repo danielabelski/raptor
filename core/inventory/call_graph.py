@@ -53,7 +53,7 @@ import logging
 import threading
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ def _get_ts_parser(language_fn: Any) -> Any:
 
     Raises ``ImportError`` if ``tree_sitter`` itself isn't installed.
     """
-    cache: Dict[int, Any] = getattr(_TS_PARSER_LOCAL, "parsers", None)  # type: ignore[assignment]
+    cache: dict[int, Any] = getattr(_TS_PARSER_LOCAL, "parsers", None)  # type: ignore[assignment]
     if cache is None:
         cache = {}
         _TS_PARSER_LOCAL.parsers = cache
@@ -162,11 +162,11 @@ class CallSite:
     resolver then falls back to the type-free CHA over-approximation.
     """
     line: int
-    chain: List[str]
-    caller: Optional[str] = None
-    receiver_class: Optional[str] = None
-    argument_identifiers: List[str] = field(default_factory=list)
-    receiver_type: Optional[str] = None
+    chain: list[str]
+    caller: str | None = None
+    receiver_class: str | None = None
+    argument_identifiers: list[str] = field(default_factory=list)
+    receiver_type: str | None = None
 
 
 @dataclass(slots=True)
@@ -187,7 +187,7 @@ class DecoratedFunction:
     """
     name: str
     line: int
-    decorators: List[List[str]] = field(default_factory=list)
+    decorators: list[list[str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -211,8 +211,8 @@ class ClassDef:
     """
     name: str
     line: int
-    bases: List[str] = field(default_factory=list)
-    methods: List[Tuple[str, int]] = field(default_factory=list)
+    bases: list[str] = field(default_factory=list)
+    methods: list[tuple[str, int]] = field(default_factory=list)
     nested: bool = False
 
 
@@ -227,12 +227,12 @@ class FileCallGraph:
     ``getattr(requests, 'get')`` is a confounder for queries about
     ``requests.get`` even if no static call chain has tail ``get``.
     """
-    imports: Dict[str, str] = field(default_factory=dict)
-    calls: List[CallSite] = field(default_factory=list)
-    indirection: Set[str] = field(default_factory=set)
-    getattr_targets: Set[str] = field(default_factory=set)
-    classes: List[ClassDef] = field(default_factory=list)
-    decorated_functions: List[DecoratedFunction] = field(default_factory=list)
+    imports: dict[str, str] = field(default_factory=dict)
+    calls: list[CallSite] = field(default_factory=list)
+    indirection: set[str] = field(default_factory=set)
+    getattr_targets: set[str] = field(default_factory=set)
+    classes: list[ClassDef] = field(default_factory=list)
+    decorated_functions: list[DecoratedFunction] = field(default_factory=list)
     # Module/package/namespace declared inside this file. The
     # reachability resolver uses this to canonicalise cross-package
     # references into project-defined functions for languages where
@@ -244,7 +244,7 @@ class FileCallGraph:
     # heuristically. For JS/TS each file IS its module — also
     # path-derivable, so stays ``None``. For Ruby the
     # module/class nesting at file scope.
-    package_name: Optional[str] = None
+    package_name: str | None = None
     # Relative imports (Python ``from . import x`` /
     # ``from ..pkg import y``). Stored as
     # ``(level, module_or_empty, name, asname_or_None)`` quads. Not
@@ -253,7 +253,7 @@ class FileCallGraph:
     # extractor doesn't know. The resolver in
     # :mod:`core.analysis.reachability` consumes these to model
     # ``__init__.py`` re-exports.
-    relative_imports: List[Tuple[int, str, str, Optional[str]]] = field(
+    relative_imports: list[tuple[int, str, str, str | None]] = field(
         default_factory=list,
     )
 
@@ -334,7 +334,7 @@ class FileCallGraph:
         return out
 
     @classmethod
-    def from_dict(cls, d: dict) -> "FileCallGraph":
+    def from_dict(cls, d: dict) -> FileCallGraph:
         rel = d.get("relative_imports") or []
         return cls(
             imports=dict(d.get("imports") or {}),
@@ -449,13 +449,13 @@ class _PythonCallGraph(ast.NodeVisitor):
     def __init__(self) -> None:
         self.graph = FileCallGraph()
         # Stack of enclosing function names, top is innermost.
-        self._enclosing: List[str] = []
+        self._enclosing: list[str] = []
         # Stack of enclosing ClassDefs, top is innermost. Used to
         # tag CallSite.receiver_class for ``self.X()`` calls and to
         # register methods on their owning class. The stack supports
         # nested classes; we only consider the innermost element
         # when tagging calls.
-        self._class_stack: List[ClassDef] = []
+        self._class_stack: list[ClassDef] = []
 
     # ------------------------------------------------------------------
     # Imports
@@ -530,7 +530,7 @@ class _PythonCallGraph(ast.NodeVisitor):
         # Visit them BEFORE pushing the function name onto
         # ``_enclosing``, otherwise ``@app.route(...)`` looks like
         # a call from inside the decorated function — wrong scope.
-        decorator_chains: List[List[str]] = []
+        decorator_chains: list[list[str]] = []
         for deco in getattr(node, "decorator_list", []) or []:
             # ``@foo`` → name node
             # ``@foo.bar`` → attribute chain
@@ -680,7 +680,7 @@ class _PythonCallGraph(ast.NodeVisitor):
 
 
 def _is_builtin_call(
-    chain: List[str], builtin_name: str, imports: Dict[str, str],
+    chain: list[str], builtin_name: str, imports: dict[str, str],
 ) -> bool:
     """Does ``chain`` resolve to a call of the Python builtin
     ``builtin_name`` (``getattr``, ``__import__``, …)?
@@ -703,12 +703,10 @@ def _is_builtin_call(
         qualified = imports.get(chain[0])
         if qualified == f"builtins.{builtin_name}":
             return True
-    if chain == ["builtins", builtin_name]:
-        return True
-    return False
+    return chain == ["builtins", builtin_name]
 
 
-def _decorator_chain(deco: ast.AST) -> Optional[List[str]]:
+def _decorator_chain(deco: ast.AST) -> list[str] | None:
     """Return the attribute chain naming a decorator, or ``None``.
 
     ``@foo``                → ``["foo"]``
@@ -723,14 +721,14 @@ def _decorator_chain(deco: ast.AST) -> Optional[List[str]]:
     return _attribute_chain(deco)
 
 
-def _attribute_chain(node: ast.AST) -> Optional[List[str]]:
+def _attribute_chain(node: ast.AST) -> list[str] | None:
     """Convert ``foo.bar.baz`` into ``["foo", "bar", "baz"]``.
 
     Returns ``None`` for non-name callees (function returns,
     subscripts, lambdas, etc.) — those have no qualified name we
     could resolve against an import map.
     """
-    parts: List[str] = []
+    parts: list[str] = []
     cur = node
     while isinstance(cur, ast.Attribute):
         parts.append(cur.attr)
@@ -844,19 +842,19 @@ class _JsCallGraph:
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
+        self._enclosing: list[str] = []
         # Class context for ``class Foo { method() { this.x(); } }``.
         # JS classes are single-inheritance (one ``extends`` target)
         # but mixin patterns mean class_heritage may carry a call
         # expression — we capture the surface identifier when present.
-        self._class_stack: List[ClassDef] = []
+        self._class_stack: list[ClassDef] = []
         # Typed-dispatch scope tracking (Tier 2). Only TS/TSX carry the
         # type annotations these read; on plain JS they're always absent
         # so receiver_type stays None (no effect). ``_field_types`` is a
         # per-class stack; ``_local_types`` the current function's typed
         # params + locals.
-        self._field_types: List[Dict[str, str]] = []
-        self._local_types: Dict[str, str] = {}
+        self._field_types: list[dict[str, str]] = []
+        self._local_types: dict[str, str] = {}
 
     def walk(self, node) -> None:
         _drive_visit(self, node)
@@ -877,7 +875,7 @@ class _JsCallGraph:
                 node, (self._IDENT_NODE, "type_identifier"),
             )
             if name_node is not None:
-                bases: List[str] = []
+                bases: list[str] = []
                 heritage = self._first_child_of_type(node, (
                     self._CLASS_HERITAGE,
                 ))
@@ -1079,7 +1077,7 @@ class _JsCallGraph:
         ``name`` (taken from the variable_declarator's LHS,
         since class expressions are anonymous in the grammar).
         """
-        bases: List[str] = []
+        bases: list[str] = []
         body = None
         for c in cls_node.children:
             if c.type == self._CLASS_HERITAGE:
@@ -1088,7 +1086,7 @@ class _JsCallGraph:
                         bases.append(hc.text.decode())
             elif c.type == self._CLASS_BODY:
                 body = c
-        methods: List[Tuple[str, int]] = []
+        methods: list[tuple[str, int]] = []
         if body is not None:
             for c in body.children:
                 if c.type != self._METHOD_DEF:
@@ -1114,7 +1112,7 @@ class _JsCallGraph:
     # Typed-dispatch scope (Tier 2) — TS/TSX only (JS has no annotations)
     # ------------------------------------------------------------------
 
-    def _type_name(self, type_node) -> Optional[str]:
+    def _type_name(self, type_node) -> str | None:
         """Simple type name from a TS type node, or None for predefined
         types (``string``/``number``/``void``) and shapes without a single
         nominal type (unions, literals). ``Array<Foo>`` → ``Array``,
@@ -1138,7 +1136,7 @@ class _JsCallGraph:
             return self._type_name(inner)
         return None  # predefined_type / union_type / literal / etc.
 
-    def _annotation_type(self, ann_node) -> Optional[str]:
+    def _annotation_type(self, ann_node) -> str | None:
         """Simple type name from a ``type_annotation`` (``: T``)."""
         if ann_node is None:
             return None
@@ -1147,8 +1145,8 @@ class _JsCallGraph:
                 return self._type_name(c)
         return None
 
-    def _collect_param_types(self, params_node) -> Dict[str, str]:
-        out: Dict[str, str] = {}
+    def _collect_param_types(self, params_node) -> dict[str, str]:
+        out: dict[str, str] = {}
         if params_node is None:
             return out
         for p in params_node.children:
@@ -1161,8 +1159,8 @@ class _JsCallGraph:
                 out[name.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _collect_field_types(self, class_body) -> Dict[str, str]:
-        out: Dict[str, str] = {}
+    def _collect_field_types(self, class_body) -> dict[str, str]:
+        out: dict[str, str] = {}
         if class_body is None:
             return out
         for member in class_body.children:
@@ -1175,8 +1173,8 @@ class _JsCallGraph:
                 out[name.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _collect_local_types(self, lex_decl_node) -> Dict[str, str]:
-        out: Dict[str, str] = {}
+    def _collect_local_types(self, lex_decl_node) -> dict[str, str]:
+        out: dict[str, str] = {}
         for d in lex_decl_node.children:
             if d.type != self._VAR_DECLARATOR_NODE:
                 continue
@@ -1187,7 +1185,7 @@ class _JsCallGraph:
                 out[name.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _resolve_receiver_type(self, chain: List[str]) -> Optional[str]:
+    def _resolve_receiver_type(self, chain: list[str]) -> str | None:
         """Declared type of a length-2 ``recv.m()`` receiver — local/param
         then enclosing-class field. None for this/super receivers, longer
         chains, or untyped receivers."""
@@ -1265,7 +1263,7 @@ class _JsCallGraph:
         # does NOT — JS unqualified names resolve through the
         # lexical scope (could be a module-level function, an
         # import, or a closure variable), not via implicit-this.
-        receiver_class: Optional[str] = None
+        receiver_class: str | None = None
         if (self._class_stack and not self._class_stack[-1].nested
                 and self._enclosing
                 and len(chain) >= 2 and chain[0] == "this"):
@@ -1289,7 +1287,7 @@ class _JsCallGraph:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _function_name(self, node) -> Optional[str]:
+    def _function_name(self, node) -> str | None:
         """Best-effort name extraction for a function-shape node.
 
         ``function foo() {}`` → ``foo``.
@@ -1334,7 +1332,7 @@ class _JsCallGraph:
                 return c
         return None
 
-    def _callee_chain(self, callee) -> Optional[List[str]]:
+    def _callee_chain(self, callee) -> list[str] | None:
         """Convert a call's callee node into the dotted attribute
         chain. Returns None for non-name callees (subscripts,
         function returns, ``new_expression``, etc.)."""
@@ -1343,7 +1341,7 @@ class _JsCallGraph:
         if callee.type == self._IDENT_NODE:
             return [callee.text.decode()]
         if callee.type == self._MEMBER_NODE:
-            parts: List[str] = []
+            parts: list[str] = []
             cur = callee
             while cur is not None and cur.type == self._MEMBER_NODE:
                 prop = self._last_child_of_type(
@@ -1375,7 +1373,7 @@ class _JsCallGraph:
                 return c.type == self._STRING_NODE
         return False
 
-    def _call_identifier_args(self, call_node) -> List[str]:
+    def _call_identifier_args(self, call_node) -> list[str]:
         """Bare-identifier argument names at this call site, in order.
 
         ``f(handler)`` → ``["handler"]``.
@@ -1397,7 +1395,7 @@ class _JsCallGraph:
         args = self._first_child_of_type(call_node, (self._ARGS_NODE,))
         if args is None:
             return []
-        out: List[str] = []
+        out: list[str] = []
         for c in args.children:
             if not c.is_named:
                 continue
@@ -1405,7 +1403,7 @@ class _JsCallGraph:
                 out.append(c.text.decode())
         return out
 
-    def _subscript_string_literal(self, subscript_node) -> Optional[str]:
+    def _subscript_string_literal(self, subscript_node) -> str | None:
         """``obj["name"]`` → ``"name"``. Returns None for
         ``obj[var]``."""
         # The subscript_expression children (named) are
@@ -1421,7 +1419,7 @@ class _JsCallGraph:
             return None
         return frag.text.decode()
 
-    def _import_module_name(self, import_node) -> Optional[str]:
+    def _import_module_name(self, import_node) -> str | None:
         """First ``string`` child of an ``import_statement`` carries
         the module path."""
         s = self._first_child_of_type(import_node, (self._STRING_NODE,))
@@ -1442,7 +1440,7 @@ class _JsCallGraph:
             return None
         return named[-1]
 
-    def _require_module_name(self, value_node) -> Optional[str]:
+    def _require_module_name(self, value_node) -> str | None:
         """Detect ``require('foo')`` and return ``'foo'``. Anything
         else (including ``require(variable)``) → None."""
         if value_node.type != self._CALL_NODE:
@@ -1494,7 +1492,7 @@ class _JsCallGraph:
 INDIRECTION_REFLECT = "reflect"
 
 
-def _go_bare_binding_names(path: str) -> List[str]:
+def _go_bare_binding_names(path: str) -> list[str]:
     """Binding names a bare Go ``import "<path>"`` makes available.
 
     Go's nominal rule is "the last path segment is the package
@@ -1524,7 +1522,7 @@ def _go_bare_binding_names(path: str) -> List[str]:
     binds in order without overwriting existing entries — first
     import wins, matching Go's compile-time duplicate-name rule.
     """
-    names: List[str] = []
+    names: list[str] = []
     last = path.rsplit("/", 1)[-1]
     if not last:
         return names
@@ -1619,7 +1617,7 @@ class _GoCallGraph:
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
+        self._enclosing: list[str] = []
 
     def walk(self, node) -> None:
         _drive_visit(self, node)
@@ -1680,7 +1678,7 @@ class _GoCallGraph:
                     self.graph.package_name = pkg_ident.text.decode(
                         "utf-8", errors="replace",
                     ).strip()
-                except Exception:                       # noqa: BLE001
+                except Exception:  # noqa: BLE001, S110 — malformed package clause: keep walking
                     pass
             return
 
@@ -1752,7 +1750,7 @@ class _GoCallGraph:
             if name and name not in self.graph.imports:
                 self.graph.imports[name] = path
 
-    def _import_path(self, spec) -> Optional[str]:
+    def _import_path(self, spec) -> str | None:
         """Pull the string literal out of an import_spec."""
         s = self._first_child_of_type(spec, (self._STRING_LIT_NODE,))
         if s is None:
@@ -1812,7 +1810,7 @@ class _GoCallGraph:
                 return c
         return None
 
-    def _call_identifier_args(self, call_node) -> List[str]:
+    def _call_identifier_args(self, call_node) -> list[str]:
         """Bare-identifier argument names at this call site, in order.
 
         ``http.HandleFunc("/x", handler)`` → ``["handler"]`` (string
@@ -1838,7 +1836,7 @@ class _GoCallGraph:
                 break
         if args is None:
             return []
-        out: List[str] = []
+        out: list[str] = []
         for c in args.children:
             if not c.is_named:
                 continue
@@ -1846,14 +1844,14 @@ class _GoCallGraph:
                 out.append(c.text.decode())
         return out
 
-    def _callee_chain(self, callee) -> Optional[List[str]]:
+    def _callee_chain(self, callee) -> list[str] | None:
         """``foo`` → ``["foo"]``;
         ``foo.Bar`` → ``["foo", "Bar"]``;
         ``foo.Bar.Baz`` → ``["foo", "Bar", "Baz"]``."""
         if callee.type == self._IDENT_NODE:
             return [callee.text.decode()]
         if callee.type == self._SELECTOR_NODE:
-            parts: List[str] = []
+            parts: list[str] = []
             cur = callee
             while cur is not None and cur.type == self._SELECTOR_NODE:
                 # ``selector_expression`` → operand + field_identifier.
@@ -2002,12 +2000,12 @@ class _JavaCallGraph:
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
+        self._enclosing: list[str] = []
         # Class-context stack — Java methods always live inside a
         # class. The innermost class is what ``self.method()`` /
         # ``this.method()`` calls dispatch on. Captured for
         # class-aware narrowing parity with Python.
-        self._class_stack: List[ClassDef] = []
+        self._class_stack: list[ClassDef] = []
         # Typed-dispatch scope tracking (Tier 2). ``_field_types`` is a
         # stack parallel to ``_class_stack`` — field name → declared
         # type for the enclosing class (pre-scanned on class entry so a
@@ -2016,8 +2014,8 @@ class _JavaCallGraph:
         # name → declared type (reset per method, populated in source
         # order). A length-2 ``recv.m()`` whose ``recv`` resolves here
         # gets ``CallSite.receiver_type``.
-        self._field_types: List[Dict[str, str]] = []
-        self._local_types: Dict[str, str] = {}
+        self._field_types: list[dict[str, str]] = []
+        self._local_types: dict[str, str] = {}
 
     def walk(self, node) -> None:
         _drive_visit(self, node)
@@ -2106,7 +2104,7 @@ class _JavaCallGraph:
                 name_node.text.decode("utf-8", errors="replace")
                 if name_node is not None else None
             )
-            bases: List[str] = []
+            bases: list[str] = []
             for child in node.children:
                 if child.type == self._SUPERCLASS:
                     # ``extends Base`` — direct type_identifier child.
@@ -2152,7 +2150,7 @@ class _JavaCallGraph:
                 self._class_stack.append(cdef)
                 # Pre-scan depth-1 field declarations so a field used in
                 # a method before its textual declaration still resolves.
-                field_types: Dict[str, str] = {}
+                field_types: dict[str, str] = {}
                 body = self._first_child_of_type(node, (self._CLASS_BODY,))
                 if body is not None:
                     for member in body.children:
@@ -2237,7 +2235,7 @@ class _JavaCallGraph:
     # Typed-dispatch scope (Tier 2)
     # ------------------------------------------------------------------
 
-    def _type_name(self, type_node) -> Optional[str]:
+    def _type_name(self, type_node) -> str | None:
         """Simple (unqualified) type name from a Java type node, or None
         for primitives / unresolvable shapes. Strips generics + array
         dimensions to the base reference type (``List<Foo>`` → ``List``,
@@ -2258,9 +2256,9 @@ class _JavaCallGraph:
             return self._type_name(base)
         return None  # primitives (integral_type/void_type/…) — no dispatch
 
-    def _collect_param_types(self, params_node) -> Dict[str, str]:
+    def _collect_param_types(self, params_node) -> dict[str, str]:
         """``name → declared type`` for a ``formal_parameters`` node."""
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         if params_node is None:
             return out
         for p in params_node.children:
@@ -2273,10 +2271,10 @@ class _JavaCallGraph:
                 out[name_node.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _collect_decl_types(self, decl_node) -> Dict[str, str]:
+    def _collect_decl_types(self, decl_node) -> dict[str, str]:
         """``name → declared type`` for a ``field_declaration`` or
         ``local_variable_declaration`` (one type, ≥1 declarators)."""
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         tn = self._type_name(
             self._first_child_of_type(decl_node, self._TYPE_NODES))
         if not tn:
@@ -2289,7 +2287,7 @@ class _JavaCallGraph:
                 out[name_node.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _resolve_receiver_type(self, chain: List[str]) -> Optional[str]:
+    def _resolve_receiver_type(self, chain: list[str]) -> str | None:
         """Declared type of a length-2 ``recv.m()`` receiver — a local /
         param (looked up first) or a field of the enclosing class. None
         when unresolvable (longer chain, ``this``/``super`` receiver,
@@ -2331,9 +2329,7 @@ class _JavaCallGraph:
         #     Method.invoke / Constructor.newInstance patterns.
         if chain == ["Class", "forName"]:
             self.graph.indirection.add(INDIRECTION_IMPORTLIB)
-        elif chain[-1:] == ["invoke"] and len(chain) >= 2:
-            self.graph.indirection.add(INDIRECTION_REFLECT)
-        elif chain[-1:] == ["newInstance"] and len(chain) >= 2:
+        elif chain[-1:] == ["invoke"] and len(chain) >= 2 or chain[-1:] == ["newInstance"] and len(chain) >= 2:
             self.graph.indirection.add(INDIRECTION_REFLECT)
 
         caller = self._enclosing[-1] if self._enclosing else None
@@ -2343,13 +2339,12 @@ class _JavaCallGraph:
         # dispatch on the innermost non-nested enclosing class.
         # ``super.foo()`` is the parent — leave receiver_class
         # None and let the resolver search bases via the hierarchy.
-        receiver_class: Optional[str] = None
+        receiver_class: str | None = None
         if (self._class_stack and not self._class_stack[-1].nested
-                and self._enclosing):
-            if len(chain) == 1:
-                receiver_class = self._class_stack[-1].name
-            elif len(chain) == 2 and chain[0] == "this":
-                receiver_class = self._class_stack[-1].name
+                and self._enclosing
+                and (len(chain) == 1
+                     or len(chain) == 2 and chain[0] == "this")):
+            receiver_class = self._class_stack[-1].name
 
         # Typed dispatch (Tier 2): when the receiver is a simple
         # identifier with a declared type in scope (param/local/field),
@@ -2367,7 +2362,7 @@ class _JavaCallGraph:
             receiver_type=receiver_type,
         ))
 
-    def _invocation_chain(self, node) -> Optional[List[str]]:
+    def _invocation_chain(self, node) -> list[str] | None:
         """Convert a ``method_invocation`` node into the dotted
         chain.
 
@@ -2390,7 +2385,7 @@ class _JavaCallGraph:
         # The method name is always the LAST named identifier
         # before the argument_list; preceding names are the
         # receiver chain.
-        named_before_args: List[Any] = []
+        named_before_args: list[Any] = []
         for child in node.children:
             if child.type == self._ARG_LIST:
                 break
@@ -2437,10 +2432,10 @@ class _JavaCallGraph:
 
         return None
 
-    def _field_access_chain(self, node) -> Optional[List[str]]:
+    def _field_access_chain(self, node) -> list[str] | None:
         """``a.b.c`` (a ``field_access`` subtree) → ``["a", "b", "c"]``."""
         # field_access children: object + . + field
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         while cur is not None and cur.type == self._FIELD_ACCESS:
             field = self._last_child_of_type(cur, (self._IDENT,))
@@ -2563,12 +2558,12 @@ class _RustCallGraph:
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
+        self._enclosing: list[str] = []
         # Class context for ``impl Foo { fn m() {} }`` — methods
         # in the impl block belong to ``Foo``. ``impl Trait for
         # Foo`` also belongs to ``Foo`` (the second type_identifier).
         # Same convention as Python / Java class_stack.
-        self._class_stack: List[ClassDef] = []
+        self._class_stack: list[ClassDef] = []
         # Module nesting for mod_item; not threaded into
         # package_name (Rust file modules are path-derived) but
         # used to mark nested classes.
@@ -2632,7 +2627,7 @@ class _RustCallGraph:
             name_node = self._first_child_of_type(node, (
                 self._TYPE_IDENT,
             ))
-            bases: List[str] = []
+            bases: list[str] = []
             if node.type == self._TRAIT_ITEM:
                 # Trait supertraits live inside a ``trait_bounds``
                 # node — collect type_identifiers there.
@@ -2678,7 +2673,7 @@ class _RustCallGraph:
             # impls (``impl<T> Box<T>``) wrap the target in a
             # ``generic_type`` node whose first child is the
             # type_identifier we want.
-            target_names: List[str] = []
+            target_names: list[str] = []
             for c in node.children:
                 if c.type == self._TYPE_IDENT:
                     target_names.append(c.text.decode())
@@ -2745,7 +2740,7 @@ class _RustCallGraph:
                 # Class-aware: ``self.foo()`` inside a method
                 # dispatches on the enclosing impl target. The
                 # chain shape is ``["self", "foo"]``.
-                receiver_class: Optional[str] = None
+                receiver_class: str | None = None
                 if (self._class_stack and self._enclosing
                         and len(chain) == 2 and chain[0] == "self"):
                     receiver_class = self._class_stack[-1].name
@@ -2801,7 +2796,7 @@ class _RustCallGraph:
                 self.graph.imports[name] = name
 
     def _handle_scoped_use_list(self, node) -> None:
-        prefix: List[str] = []
+        prefix: list[str] = []
         list_node = None
         for c in node.children:
             if c.type == self._IDENT:
@@ -2832,8 +2827,8 @@ class _RustCallGraph:
         """``Original as Alias`` (use_as_clause). The original
         side may be a bare identifier (inside a use_list) or a
         scoped_identifier (top-level ``use foo::bar::Baz as Q;``)."""
-        original_parts: List[str] = []
-        alias: Optional[str] = None
+        original_parts: list[str] = []
+        alias: str | None = None
         idents_seen = 0
         for c in node.children:
             if c.type == self._SCOPED_IDENT:
@@ -2849,13 +2844,13 @@ class _RustCallGraph:
         full = ".".join(list(prefix) + original_parts)
         self.graph.imports[alias] = full
 
-    def _scoped_parts(self, node) -> List[str]:
+    def _scoped_parts(self, node) -> list[str]:
         """``foo::bar::Baz`` -> ``["foo", "bar", "Baz"]``."""
-        out: List[str] = []
+        out: list[str] = []
         # Recursive: scoped_identifier nests with deeper scope_identifier
         # on the left.
         cur = node
-        stack: List[List[str]] = []
+        stack: list[list[str]] = []
         # Walk down the LHS scoped_identifier chain.
         while cur is not None and cur.type == self._SCOPED_IDENT:
             named = [c for c in cur.children if c.is_named]
@@ -2878,7 +2873,7 @@ class _RustCallGraph:
 
     # --- calls ---
 
-    def _call_chain(self, node) -> Optional[List[str]]:
+    def _call_chain(self, node) -> list[str] | None:
         """First named child is the callee. ``arguments`` follows."""
         callee = None
         for c in node.children:
@@ -2897,7 +2892,7 @@ class _RustCallGraph:
             return self._field_chain(callee)
         return None
 
-    def _callee_tail(self, node) -> Optional[str]:
+    def _callee_tail(self, node) -> str | None:
         """Trailing method/function name of a call, unwrapping a turbofish
         ``generic_function`` (``x.downcast_ref::<T>()`` → ``downcast_ref``,
         ``mem::transmute::<A,B>(x)`` → ``transmute``) — used for the reflect
@@ -2929,9 +2924,9 @@ class _RustCallGraph:
             return callee.text.decode()
         return None
 
-    def _field_chain(self, node) -> Optional[List[str]]:
+    def _field_chain(self, node) -> list[str] | None:
         """``a.b.c`` (field_expression) -> ``["a", "b", "c"]``."""
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         while cur is not None and cur.type == self._FIELD_EXPR:
             field = None
@@ -3037,24 +3032,24 @@ class _RubyCallGraph:
     _SUPERCLASS = "superclass"
     _SELF = "self"
 
-    _REFLECT_NAMES = {"send", "public_send", "__send__"}
-    _CONST_GET_NAMES = {"const_get"}
-    _EVAL_NAMES = {"eval", "instance_eval", "class_eval", "module_eval"}
-    _REQUIRE_NAMES = {"require", "require_relative", "load"}
+    _REFLECT_NAMES: ClassVar[set[str]] = {"send", "public_send", "__send__"}
+    _CONST_GET_NAMES: ClassVar[set[str]] = {"const_get"}
+    _EVAL_NAMES: ClassVar[set[str]] = {"eval", "instance_eval", "class_eval", "module_eval"}
+    _REQUIRE_NAMES: ClassVar[set[str]] = {"require", "require_relative", "load"}
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
+        self._enclosing: list[str] = []
         # Class context. Ruby ``self.foo()`` dispatches on the
         # innermost ``class`` (modules dispatch to module functions
         # but those aren't instance-bound, so we don't tag
         # receiver_class for modules).
-        self._class_stack: List[ClassDef] = []
+        self._class_stack: list[ClassDef] = []
         # Module nesting stack — used to build ``package_name``
         # for nested modules. Ruby's top-level file is its own
         # module; nested ``module Foo; module Bar; ...`` produce
         # ``package_name="Foo.Bar"``.
-        self._mod_stack: List[str] = []
+        self._mod_stack: list[str] = []
 
     def walk(self, node) -> None:
         _drive_visit(self, node)
@@ -3088,7 +3083,7 @@ class _RubyCallGraph:
                 self._CONSTANT,
             ))
             if name_node is not None:
-                bases: List[str] = []
+                bases: list[str] = []
                 # Ruby is single-inheritance — ``superclass`` carries
                 # exactly one base.
                 supercls = self._first_child_of_type(node, (
@@ -3183,9 +3178,7 @@ class _RubyCallGraph:
                     # ``self.foo`` — keep ``self`` as the receiver
                     # so the chain reads ``["self", "foo"]``.
                     receiver = c
-                elif c.type == self._SCOPE_RES:
-                    receiver = c
-                elif c.type == self._CALL:
+                elif c.type == self._SCOPE_RES or c.type == self._CALL:
                     receiver = c
                 else:
                     continue
@@ -3237,7 +3230,7 @@ class _RubyCallGraph:
                         bound = path.split("/")[-1]
                         self.graph.imports[bound] = path
 
-    def _chain_from_node(self, node) -> List[str]:
+    def _chain_from_node(self, node) -> list[str]:
         if node is None:
             return []
         if node.type in (self._IDENT, self._CONSTANT):
@@ -3245,7 +3238,7 @@ class _RubyCallGraph:
         if node.type == self._SELF:
             return ["self"]
         if node.type == self._SCOPE_RES:
-            parts: List[str] = []
+            parts: list[str] = []
             for c in node.children:
                 if c.type in (self._IDENT, self._CONSTANT):
                     parts.append(c.text.decode())
@@ -3257,7 +3250,7 @@ class _RubyCallGraph:
             return self._chain_from_call(node)
         return []
 
-    def _chain_from_call(self, node) -> List[str]:
+    def _chain_from_call(self, node) -> list[str]:
         receiver = None
         method = None
         for c in node.children:
@@ -3279,7 +3272,7 @@ class _RubyCallGraph:
             return rc
         return rc + [method.text.decode()]
 
-    def _record(self, node, chain: List[str]) -> None:
+    def _record(self, node, chain: list[str]) -> None:
         line = node.start_point[0] + 1
         caller = self._enclosing[-1] if self._enclosing else None
         # ``self.foo()`` inside an instance method → narrow to the
@@ -3287,7 +3280,7 @@ class _RubyCallGraph:
         # Ruby's method-lookup chain (could be from a mixin, the
         # superclass, or the same class); without runtime semantics
         # we can't narrow it, so leave receiver_class None.
-        receiver_class: Optional[str] = None
+        receiver_class: str | None = None
         if (self._class_stack and not self._class_stack[-1].nested
                 and self._enclosing
                 and len(chain) >= 2 and chain[0] == "self"):
@@ -3381,26 +3374,26 @@ class _CSharpCallGraph:
     _NULLABLE_TYPE = "nullable_type"
     _ARRAY_TYPE = "array_type"
 
-    _REFLECT_METHODS = {
+    _REFLECT_METHODS: ClassVar[set[str]] = {
         "Invoke", "GetMethod", "CreateInstance",
         "InvokeMember",
     }
-    _ASSEMBLY_LOAD = {"Load", "LoadFrom", "LoadFile", "LoadWithPartialName"}
+    _ASSEMBLY_LOAD: ClassVar[set[str]] = {"Load", "LoadFrom", "LoadFile", "LoadWithPartialName"}
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
-        self._class_stack: List[ClassDef] = []
+        self._enclosing: list[str] = []
+        self._class_stack: list[ClassDef] = []
         # Namespace nesting; can be ``namespace Foo.Bar { ... }``
         # (one node carrying dotted form) OR nested ``namespace Foo
         # { namespace Bar { ... } }``. Track each segment separately.
-        self._ns_stack: List[str] = []
+        self._ns_stack: list[str] = []
         # Typed-dispatch scope tracking (Tier 2), mirroring the Java
         # walker: ``_field_types`` is a per-class stack (field name →
         # declared type, pre-scanned on class entry); ``_local_types``
         # is the current method's param + local name → declared type.
-        self._field_types: List[Dict[str, str]] = []
-        self._local_types: Dict[str, str] = {}
+        self._field_types: list[dict[str, str]] = []
+        self._local_types: dict[str, str] = {}
 
     def walk(self, node) -> None:
         _drive_visit(self, node)
@@ -3454,7 +3447,7 @@ class _CSharpCallGraph:
                          self._STRUCT_DECL, self._RECORD_DECL):
             name_node = self._first_child_of_type(node, (self._IDENT,))
             if name_node is not None:
-                bases: List[str] = []
+                bases: list[str] = []
                 bl = self._first_child_of_type(node, (self._BASE_LIST,))
                 if bl is not None:
                     for sub in bl.children:
@@ -3474,7 +3467,7 @@ class _CSharpCallGraph:
                 self._class_stack.append(cdef)
                 # Pre-scan depth-1 fields so a field used before its
                 # textual declaration still resolves (Tier 2).
-                field_types: Dict[str, str] = {}
+                field_types: dict[str, str] = {}
                 body = self._first_child_of_type(node, (self._DECLARATION_LIST,))
                 if body is not None:
                     for member in body.children:
@@ -3535,14 +3528,13 @@ class _CSharpCallGraph:
                 # also dispatches via implicit-this (no module-
                 # level functions in C#), so tag length-1 chains
                 # too when inside a class.
-                receiver_class: Optional[str] = None
+                receiver_class: str | None = None
                 if (self._class_stack
                         and not self._class_stack[-1].nested
-                        and self._enclosing):
-                    if len(chain) == 1:
-                        receiver_class = self._class_stack[-1].name
-                    elif len(chain) == 2 and chain[0] == "this":
-                        receiver_class = self._class_stack[-1].name
+                        and self._enclosing
+                        and (len(chain) == 1
+                             or len(chain) == 2 and chain[0] == "this")):
+                    receiver_class = self._class_stack[-1].name
                 # Typed dispatch (Tier 2): declared type of a simple
                 # ``recv.m()`` receiver, when not a this/implicit call.
                 receiver_type = (
@@ -3586,7 +3578,7 @@ class _CSharpCallGraph:
     # Typed-dispatch scope (Tier 2)
     # ------------------------------------------------------------------
 
-    def _type_name(self, type_node) -> Optional[str]:
+    def _type_name(self, type_node) -> str | None:
         """Simple type name from a C# type node, or None for predefined
         types (``int``/``string``/``void``) and unresolvable shapes.
         ``List<Foo>`` → ``List``, ``Foo.Bar`` → ``Bar``, ``Foo?``/``Foo[]``
@@ -3608,9 +3600,9 @@ class _CSharpCallGraph:
             return self._type_name(inner)
         return None  # predefined_type / pointer / tuple / etc.
 
-    def _collect_param_types(self, params_node) -> Dict[str, str]:
+    def _collect_param_types(self, params_node) -> dict[str, str]:
         """``name → declared type`` for a ``parameter_list`` node."""
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         if params_node is None:
             return out
         for p in params_node.children:
@@ -3622,10 +3614,10 @@ class _CSharpCallGraph:
                 out[name.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _collect_decl_types(self, var_decl_node) -> Dict[str, str]:
+    def _collect_decl_types(self, var_decl_node) -> dict[str, str]:
         """``name → declared type`` for a ``variable_declaration`` (the
         node inside a field_declaration / local_declaration_statement)."""
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         if var_decl_node is None:
             return out
         tn = self._type_name(var_decl_node.child_by_field_name("type"))
@@ -3640,7 +3632,7 @@ class _CSharpCallGraph:
                 out[name.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _resolve_receiver_type(self, chain: List[str]) -> Optional[str]:
+    def _resolve_receiver_type(self, chain: list[str]) -> str | None:
         """Declared type of a length-2 ``recv.m()`` receiver — a local /
         param then an enclosing-class field. None for ``this``/``base``
         receivers, longer chains, or untyped receivers."""
@@ -3662,10 +3654,9 @@ class _CSharpCallGraph:
         for c in node.children:
             if c.type == self._QUALIFIED:
                 target = c
-            elif c.type == self._IDENT:
-                # First identifier could be alias name (when followed by '=')
-                if alias is None:
-                    alias = c
+            # First identifier could be alias name (when followed by '=')
+            elif c.type == self._IDENT and alias is None:
+                alias = c
         if target is None:
             if alias is not None:
                 name = alias.text.decode()
@@ -3680,11 +3671,11 @@ class _CSharpCallGraph:
         else:
             self.graph.imports[parts[-1]] = full
 
-    def _qualified_parts(self, node) -> List[str]:
+    def _qualified_parts(self, node) -> list[str]:
         if node.type == self._IDENT:
             return [node.text.decode()]
         if node.type == self._QUALIFIED:
-            parts: List[str] = []
+            parts: list[str] = []
             for c in node.children:
                 if c.type == self._IDENT:
                     parts.append(c.text.decode())
@@ -3693,7 +3684,7 @@ class _CSharpCallGraph:
             return parts
         return []
 
-    def _invocation_chain(self, node) -> Optional[List[str]]:
+    def _invocation_chain(self, node) -> list[str] | None:
         # invocation_expression: function + argument_list
         callee = None
         for c in node.children:
@@ -3712,12 +3703,12 @@ class _CSharpCallGraph:
             return self._qualified_parts(callee) or None
         return None
 
-    def _member_access_chain(self, node) -> Optional[List[str]]:
+    def _member_access_chain(self, node) -> list[str] | None:
         """``a.b.c`` (member_access_expression).
 
         ``this.X`` and ``base.X`` use unnamed keyword tokens for the
         LHS in tree-sitter-c_sharp — special-cased below."""
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         while cur is not None and cur.type == self._MEMBER_ACCESS:
             named = [c for c in cur.children if c.is_named]
@@ -3764,7 +3755,7 @@ class _CSharpCallGraph:
             return qparts + list(reversed(parts))
         return None
 
-    def _tail_identifier(self, node) -> Optional[str]:
+    def _tail_identifier(self, node) -> str | None:
         """Return the rightmost simple identifier reachable from
         the invocation's callee subtree. Used as a fallback when
         the chain is too complex to extract cleanly."""
@@ -3852,7 +3843,8 @@ def extract_call_graph_php(content: str) -> FileCallGraph:
         # identity-keying would either thrash or mis-hit. Per-call
         # construction here; PHP parses are infrequent enough that
         # the missed cache opportunity is acceptable.
-        from tree_sitter import Language as _PHPLanguage, Parser as _PHPParser
+        from tree_sitter import Language as _PHPLanguage
+        from tree_sitter import Parser as _PHPParser
         lang_fn = getattr(ts_php, "language_php", None) or ts_php.language()
         if callable(lang_fn):
             lang_fn = lang_fn()
@@ -3892,19 +3884,19 @@ class _PhpCallGraph:
     _BASE_CLAUSE = "base_clause"
     _CLASS_INTERFACE_CLAUSE = "class_interface_clause"
 
-    _REFLECT_FNS = {
+    _REFLECT_FNS: ClassVar[set[str]] = {
         "call_user_func", "call_user_func_array",
         "ReflectionMethod", "ReflectionClass",
     }
-    _EVAL_FNS = {"eval", "create_function", "assert"}
-    _DYNAMIC_INCLUDE = {
+    _EVAL_FNS: ClassVar[set[str]] = {"eval", "create_function", "assert"}
+    _DYNAMIC_INCLUDE: ClassVar[set[str]] = {
         "include", "include_once", "require", "require_once",
     }
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
-        self._class_stack: List[ClassDef] = []
+        self._enclosing: list[str] = []
+        self._class_stack: list[ClassDef] = []
 
     def walk(self, node) -> None:
         _drive_visit(self, node)
@@ -3930,7 +3922,7 @@ class _PhpCallGraph:
                          self._TRAIT_DECL, self._ENUM_DECL):
             name_node = self._first_child_of_type(node, (self._NAME,))
             if name_node is not None:
-                bases: List[str] = []
+                bases: list[str] = []
                 # ``extends Base`` (single-class inheritance in PHP).
                 bc = self._first_child_of_type(node, (self._BASE_CLAUSE,))
                 if bc is not None:
@@ -4017,8 +4009,8 @@ class _PhpCallGraph:
                 self._handle_use_clause(c)
 
     def _handle_use_clause(self, node) -> None:
-        target_parts: List[str] = []
-        alias_name: Optional[str] = None
+        target_parts: list[str] = []
+        alias_name: str | None = None
         for c in node.children:
             if c.type in (self._QUALIFIED, self._NAMESPACE_NAME):
                 target_parts = self._namespace_parts(c)
@@ -4033,7 +4025,7 @@ class _PhpCallGraph:
         bound = alias_name or target_parts[-1]
         self.graph.imports[bound] = full
 
-    def _namespace_parts(self, node) -> List[str]:
+    def _namespace_parts(self, node) -> list[str]:
         """``Foo\\Bar\\Baz`` (qualified_name with nested
         namespace_name LHS) -> ``["Foo", "Bar", "Baz"]``.
 
@@ -4042,7 +4034,7 @@ class _PhpCallGraph:
         ``name`` (Baz). Recurse into any child of type
         ``qualified_name`` / ``namespace_name`` for the LHS.
         """
-        parts: List[str] = []
+        parts: list[str] = []
         for c in node.children:
             if c.type == self._NAME:
                 parts.append(c.text.decode())
@@ -4071,16 +4063,13 @@ class _PhpCallGraph:
         # also dispatch on the enclosing class; ``parent::X()``
         # dispatches on the parent (leave None, let resolver
         # search bases).
-        receiver_class: Optional[str] = None
+        receiver_class: str | None = None
         if (self._class_stack and not self._class_stack[-1].nested
                 and self._enclosing
-                and len(chain) >= 2):
-            if (node.type == self._MEMBER_CALL
-                    and chain[0] == "this"):
-                receiver_class = self._class_stack[-1].name
-            elif (node.type == self._SCOPED_CALL
-                  and chain[0] in ("self", "static")):
-                receiver_class = self._class_stack[-1].name
+                and len(chain) >= 2) and ((node.type == self._MEMBER_CALL
+                and chain[0] == "this") or (node.type == self._SCOPED_CALL
+              and chain[0] in ("self", "static"))):
+            receiver_class = self._class_stack[-1].name
         self.graph.calls.append(
             CallSite(
                 line=line, chain=chain, caller=caller,
@@ -4096,7 +4085,7 @@ class _PhpCallGraph:
         if chain[0] in self._DYNAMIC_INCLUDE:
             self.graph.indirection.add(INDIRECTION_DYNAMIC_IMPORT)
 
-    def _function_call_chain(self, node) -> Optional[List[str]]:
+    def _function_call_chain(self, node) -> list[str] | None:
         # function_call_expression: function (qualified_name | name | variable) + arguments
         for c in node.children:
             if c.type == self._ARGS:
@@ -4113,7 +4102,7 @@ class _PhpCallGraph:
                 return None
         return None
 
-    def _scoped_call_chain(self, node) -> Optional[List[str]]:
+    def _scoped_call_chain(self, node) -> list[str] | None:
         # scoped_call_expression: scope (Class) :: name + arguments.
         # PHP's ``self::method()`` / ``static::method()`` /
         # ``parent::method()`` use a ``relative_scope`` node holding
@@ -4151,7 +4140,7 @@ class _PhpCallGraph:
             return None
         return scope_parts + [method.text.decode()]
 
-    def _member_call_chain(self, node) -> Optional[List[str]]:
+    def _member_call_chain(self, node) -> list[str] | None:
         # member_call_expression: object -> name + arguments
         obj = None
         method = None
@@ -4170,17 +4159,17 @@ class _PhpCallGraph:
             return None
         return obj_chain + [method.text.decode()]
 
-    def _object_chain(self, node) -> Optional[List[str]]:
+    def _object_chain(self, node) -> list[str] | None:
         if node.type == self._VAR:
             return [node.text.decode().lstrip("$")]
         if node.type == self._NAME:
             return [node.text.decode()]
         if node.type == self._MEMBER_ACCESS:
-            parts: List[str] = []
+            parts: list[str] = []
             for c in node.children:
                 if c.is_named:
                     parts.append(self._object_chain(c) or [])
-            flat: List[str] = []
+            flat: list[str] = []
             for p in parts:
                 flat.extend(p)
             return flat
@@ -4320,8 +4309,8 @@ class _CCallGraph:
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
-        self._fn_ptr_vars: Set[str] = set()
+        self._enclosing: list[str] = []
+        self._fn_ptr_vars: set[str] = set()
 
     # ------------------------------------------------------------------
     # Pre-pass: collect function-pointer variable declarations
@@ -4351,7 +4340,7 @@ class _CCallGraph:
             if name:
                 self._fn_ptr_vars.add(name)
 
-    def _extract_fn_ptr_name(self, node) -> Optional[str]:
+    def _extract_fn_ptr_name(self, node) -> str | None:
         """Recursively search for identifier inside pointer_declarator
         that wraps a function_declarator."""
         if node.type == self._POINTER_DECLARATOR:
@@ -4465,9 +4454,7 @@ class _CCallGraph:
         if chain is None:
             return
 
-        if is_fn_pointer:
-            self.graph.indirection.add(INDIRECTION_FN_POINTER)
-        elif len(chain) == 1 and chain[0] in self._fn_ptr_vars:
+        if is_fn_pointer or len(chain) == 1 and chain[0] in self._fn_ptr_vars:
             self.graph.indirection.add(INDIRECTION_FN_POINTER)
 
         caller = self._enclosing[-1] if self._enclosing else None
@@ -4477,7 +4464,7 @@ class _CCallGraph:
             caller=caller,
         ))
 
-    def _callee_chain(self, node) -> Tuple[Optional[List[str]], bool]:
+    def _callee_chain(self, node) -> tuple[list[str] | None, bool]:
         """Resolve the callee expression to an attribute chain.
 
         Returns (chain, is_fn_pointer). ``chain`` is None when the
@@ -4513,9 +4500,9 @@ class _CCallGraph:
 
         return None, False
 
-    def _field_chain(self, node) -> Optional[List[str]]:
+    def _field_chain(self, node) -> list[str] | None:
         """Resolve ``a.b.c`` / ``a->b->c`` / mixed → ``["a","b","c"]``."""
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         # field_expression: argument . | -> field
         while cur is not None and cur.type == self._FIELD_EXPRESSION:
@@ -4546,7 +4533,7 @@ class _CCallGraph:
     # Function name extraction
     # ------------------------------------------------------------------
 
-    def _function_name(self, fn_def_node) -> Optional[str]:
+    def _function_name(self, fn_def_node) -> str | None:
         """Find the function identifier inside a function_definition.
 
         The declarator subtree may be wrapped:
@@ -4569,7 +4556,7 @@ class _CCallGraph:
                     return self._declarator_name(inner)
         return None
 
-    def _declarator_name(self, fn_declarator_node) -> Optional[str]:
+    def _declarator_name(self, fn_declarator_node) -> str | None:
         # function_declarator first named child is the name (identifier)
         # or another declarator that wraps the name.
         for c in fn_declarator_node.children:
@@ -4607,7 +4594,7 @@ class _CCallGraph:
         return None
 
     @staticmethod
-    def _unwrap_string(string_node) -> Optional[str]:
+    def _unwrap_string(string_node) -> str | None:
         """``"foo/bar.h"`` → ``foo/bar.h``."""
         for c in string_node.children:
             if c.type == "string_content":
@@ -4746,13 +4733,13 @@ class _CppCallGraph(_CCallGraph):
 
     def __init__(self) -> None:
         super().__init__()
-        self._class_stack: List[ClassDef] = []
+        self._class_stack: list[ClassDef] = []
         # Namespace nesting stack. Each entry is a segment name
         # (e.g. ``ns`` for ``namespace ns { ... }``; ``a``, ``b``
         # for ``namespace a::b { ... }``). The dotted join feeds
         # ``graph.package_name`` for resolver canonicalisation —
         # parity with Java/C#/PHP/Ruby/Go.
-        self._ns_stack: List[str] = []
+        self._ns_stack: list[str] = []
 
     # ------------------------------------------------------------------
     # Walk dispatch
@@ -4794,7 +4781,7 @@ class _CppCallGraph(_CCallGraph):
         namespaces (``namespace { ... }`` with no name) push
         nothing — the body's symbols have internal linkage but
         no qualified-name prefix in the call graph."""
-        parts: List[str] = []
+        parts: list[str] = []
         for c in node.children:
             if c.type == "namespace_identifier":
                 parts.append(c.text.decode("utf-8", errors="replace"))
@@ -4909,20 +4896,20 @@ class _CppCallGraph(_CCallGraph):
                         )
                     break
 
-    def _class_name(self, node) -> Optional[str]:
+    def _class_name(self, node) -> str | None:
         # class_specifier: "class" type_identifier base_class_clause? body
         for c in node.children:
             if c.type == self._TYPE_IDENTIFIER:
                 return c.text.decode("utf-8", errors="replace")
         return None
 
-    def _extract_bases(self, node) -> List[str]:
+    def _extract_bases(self, node) -> list[str]:
         """Parse ``: public Foo, protected Bar`` into ``["Foo",
         "Bar"]``. Access specifiers are dropped; only the type names
         survive. ``Foo<T>`` (template_type) base is reduced to
         ``Foo`` — type args are erased for the same reason
         template_function callees emit the bare name."""
-        bases: List[str] = []
+        bases: list[str] = []
         for c in node.children:
             if c.type != self._BASE_CLASS_CLAUSE:
                 continue
@@ -4987,7 +4974,7 @@ class _CppCallGraph(_CCallGraph):
         # but accepted gap; the lookup falls back to the body-walk
         # collecting the class later in the file, which then helps
         # any subsequent definitions.
-        synthetic_class: Optional[ClassDef] = None
+        synthetic_class: ClassDef | None = None
         if qualified_class is not None and not self._class_in_stack(qualified_class):
             real = self._lookup_class(qualified_class)
             if real is not None:
@@ -5009,17 +4996,17 @@ class _CppCallGraph(_CCallGraph):
                 yield c
         finally:
             self._enclosing.pop()
-            if synthetic_class is not None:
-                # The synthetic class is the top of the stack iff no
-                # other class_specifier pushed during the body.
-                if (self._class_stack
-                        and self._class_stack[-1] is synthetic_class):
-                    self._class_stack.pop()
+            # The synthetic class is the top of the stack iff no
+            # other class_specifier pushed during the body.
+            if (synthetic_class is not None
+                    and self._class_stack
+                    and self._class_stack[-1] is synthetic_class):
+                self._class_stack.pop()
 
     def _class_in_stack(self, name: str) -> bool:
         return any(c.name == name for c in self._class_stack)
 
-    def _lookup_class(self, name: str) -> Optional[ClassDef]:
+    def _lookup_class(self, name: str) -> ClassDef | None:
         """Find a previously-recorded class by name. Returns None on
         forward references (the class hasn't been visited yet)."""
         for c in self.graph.classes:
@@ -5027,7 +5014,7 @@ class _CppCallGraph(_CCallGraph):
                 return c
         return None
 
-    def _function_name(self, fn_def_node) -> Optional[str]:
+    def _function_name(self, fn_def_node) -> str | None:
         """C++ declarators can be qualified (``Foo::bar``), template-
         parameterised, or destructors (``~Foo``). Walk through wrapping
         declarators to find the innermost name."""
@@ -5042,7 +5029,7 @@ class _CppCallGraph(_CCallGraph):
                     return self._declarator_name_cpp(inner)
         return None
 
-    def _declarator_name_cpp(self, fn_declarator_node) -> Optional[str]:
+    def _declarator_name_cpp(self, fn_declarator_node) -> str | None:
         """Like the C version but accepts qualified_identifier
         (returns just the trailing name), destructor_name, and
         operator_name."""
@@ -5072,7 +5059,7 @@ class _CppCallGraph(_CCallGraph):
                             return parts[-1]
         return None
 
-    def _qualified_class_from_declarator(self, fn_def_node) -> Optional[str]:
+    def _qualified_class_from_declarator(self, fn_def_node) -> str | None:
         """If the function's declarator is ``Foo::bar`` (out-of-line
         method), return ``"Foo"``. Otherwise None."""
         for c in fn_def_node.children:
@@ -5086,7 +5073,7 @@ class _CppCallGraph(_CCallGraph):
                     return self._qualified_class_from_fn_declarator(inner)
         return None
 
-    def _qualified_class_from_fn_declarator(self, fn_declarator_node) -> Optional[str]:
+    def _qualified_class_from_fn_declarator(self, fn_declarator_node) -> str | None:
         for c in fn_declarator_node.children:
             if not c.is_named:
                 continue
@@ -5101,7 +5088,7 @@ class _CppCallGraph(_CCallGraph):
     # Qualified-identifier parsing
     # ------------------------------------------------------------------
 
-    def _qualified_parts(self, qualified_node) -> List[str]:
+    def _qualified_parts(self, qualified_node) -> list[str]:
         """``Foo::bar`` → ``["Foo", "bar"]``;
         ``ns::sub::fn`` → ``["ns", "sub", "fn"]``.
 
@@ -5109,7 +5096,7 @@ class _CppCallGraph(_CCallGraph):
         has ``namespace_identifier`` + nested ``qualified_identifier``
         or terminal ``identifier`` / ``destructor_name`` /
         ``field_identifier`` / ``template_function``."""
-        parts: List[str] = []
+        parts: list[str] = []
         cur = qualified_node
         while cur is not None and cur.type == self._QUALIFIED_IDENTIFIER:
             # Pre-order children: namespace_identifier, then nested.
@@ -5159,7 +5146,7 @@ class _CppCallGraph(_CCallGraph):
     # Calls (override to set receiver_class + handle qualified callees)
     # ------------------------------------------------------------------
 
-    def _callee_chain(self, node) -> Tuple[Optional[List[str]], bool]:
+    def _callee_chain(self, node) -> tuple[list[str] | None, bool]:
         # Extension: qualified_identifier as a callee.
         if node.type == self._QUALIFIED_IDENTIFIER:
             parts = self._qualified_parts(node)
@@ -5179,14 +5166,14 @@ class _CppCallGraph(_CCallGraph):
             return None, False
         return super()._callee_chain(node)
 
-    def _field_chain_cpp(self, node) -> Optional[List[str]]:
+    def _field_chain_cpp(self, node) -> list[str] | None:
         """C++ ``a.b.c`` / ``a->b->c`` / ``this->member`` resolution.
 
         Same as the C base's ``_field_chain`` but accepts ``this`` as
         a terminal (rendered as the literal string ``"this"`` in the
         chain), and handles a qualified_identifier at the root
         (``ns::var.field`` is legal C++)."""
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         while cur is not None and cur.type == self._FIELD_EXPRESSION:
             # The field side is either a plain ``field_identifier``
@@ -5256,7 +5243,7 @@ class _CppCallGraph(_CCallGraph):
             return None
         return None
 
-    def _compound_literal_type_name(self, node) -> Optional[str]:
+    def _compound_literal_type_name(self, node) -> str | None:
         """Pull the type's bare name from a compound_literal_expression.
         Handles plain ``Foo{}`` (type_identifier) and templated
         ``vector<int>{}`` (template_type → type_identifier)."""
@@ -5342,7 +5329,7 @@ class _CppCallGraph(_CCallGraph):
             receiver_class=None,
         ))
 
-    def _infer_receiver_class(self, chain: List[str]) -> Optional[str]:
+    def _infer_receiver_class(self, chain: list[str]) -> str | None:
         """Tag ``receiver_class`` when the callee shape pins it.
 
         Rules (deliberately narrow to avoid wrong tags):
@@ -5424,13 +5411,13 @@ class _LuaCallGraph:
     _STRING = "string"
     _STRING_CONTENT = "string_content"
 
-    _REQUIRE_NAMES = {"require", "dofile", "loadfile"}
-    _EVAL_NAMES = {"loadstring", "load"}
-    _PCALL_NAMES = {"pcall", "xpcall"}
+    _REQUIRE_NAMES: ClassVar[set[str]] = {"require", "dofile", "loadfile"}
+    _EVAL_NAMES: ClassVar[set[str]] = {"loadstring", "load"}
+    _PCALL_NAMES: ClassVar[set[str]] = {"pcall", "xpcall"}
 
     def __init__(self) -> None:
         self.graph = FileCallGraph()
-        self._enclosing: List[str] = []
+        self._enclosing: list[str] = []
 
     def walk(self, node) -> None:
         _drive_visit(self, node)
@@ -5470,7 +5457,7 @@ class _LuaCallGraph:
         for c in node.children:
             yield c
 
-    def _func_decl_name(self, node) -> Optional[str]:
+    def _func_decl_name(self, node) -> str | None:
         """Extract the name from a function_declaration node."""
         for c in node.children:
             if c.type == self._IDENT:
@@ -5481,7 +5468,7 @@ class _LuaCallGraph:
                 return c.text.decode().replace(":", ".")
         return None
 
-    def _assigned_name(self, node) -> Optional[str]:
+    def _assigned_name(self, node) -> str | None:
         """Resolve the name of an anonymous function from its enclosing
         assignment (``local parse = function(s) ... end``)."""
         parent = node.parent
@@ -5562,17 +5549,16 @@ class _LuaCallGraph:
                             # dofile / loadfile — file path. Bind basename
                             # sans extension.
                             bound = path.rsplit("/", 1)[-1]
-                            if bound.endswith(".lua"):
-                                bound = bound[:-4]
+                            bound = bound.removesuffix(".lua")
                         self.graph.imports[bound] = path
                         return
 
-    def _chain_from_node(self, node) -> List[str]:
+    def _chain_from_node(self, node) -> list[str]:
         """Build an attribute chain from a node."""
         if node.type == self._IDENT:
             return [node.text.decode()]
         if node.type == self._DOT_INDEX:
-            parts: List[str] = []
+            parts: list[str] = []
             for c in node.children:
                 if c.type == self._IDENT:
                     parts.append(c.text.decode())
@@ -5589,7 +5575,7 @@ class _LuaCallGraph:
             return parts
         return []
 
-    def _record(self, node, chain: List[str]) -> None:
+    def _record(self, node, chain: list[str]) -> None:
         line = node.start_point[0] + 1
         caller = self._enclosing[-1] if self._enclosing else None
         self.graph.calls.append(
@@ -5605,8 +5591,6 @@ class _LuaCallGraph:
 
 
 __all__ = [
-    "CallSite",
-    "FileCallGraph",
     "INDIRECTION_BRACKET_DISPATCH",
     "INDIRECTION_DUNDER_IMPORT",
     "INDIRECTION_DYNAMIC_IMPORT",
@@ -5616,6 +5600,8 @@ __all__ = [
     "INDIRECTION_IMPORTLIB",
     "INDIRECTION_REFLECT",
     "INDIRECTION_WILDCARD_IMPORT",
+    "CallSite",
+    "FileCallGraph",
     "extract_call_graph_c",
     "extract_call_graph_cpp",
     "extract_call_graph_csharp",
@@ -6324,7 +6310,7 @@ class _SwiftCallGraph:
 # ---------------------------------------------------------------------------
 
 #: Extension → (language label, extractor kwargs) for the loader below.
-_EXT_TO_LANGUAGE: Dict[str, Tuple[str, Dict[str, Any]]] = {
+_EXT_TO_LANGUAGE: dict[str, tuple[str, dict[str, Any]]] = {
     ".py": ("python", {}),
     ".js": ("javascript", {}),
     ".jsx": ("javascript", {}),
@@ -6376,11 +6362,11 @@ def _extractor_for(ext: str):
 
 def load_call_graphs(
     target_path: Any,
-    checklist: Optional[Dict[str, Any]] = None,
+    checklist: dict[str, Any] | None = None,
     *,
     max_files: int = 2000,
     max_bytes: int = 1_500_000,
-) -> Dict[str, FileCallGraph]:
+) -> dict[str, FileCallGraph]:
     """Extract per-file call graphs for a target tree.
 
     Consumers (:class:`core.iris.bypass.CompositionalAnalyzer`, the
@@ -6407,7 +6393,7 @@ def load_call_graphs(
     from pathlib import Path
 
     root = Path(target_path)
-    candidates: List[Tuple[str, Any]] = []
+    candidates: list[tuple[str, Any]] = []
 
     if checklist is not None:
         for file_info in checklist.get("files", []) or []:
@@ -6430,7 +6416,7 @@ def load_call_graphs(
                     candidates.append(
                         (p.relative_to(root).as_posix(), p))
 
-    graphs: Dict[str, FileCallGraph] = {}
+    graphs: dict[str, FileCallGraph] = {}
     skipped = 0
     for rel, path in candidates:
         if len(graphs) >= max_files:
@@ -6447,7 +6433,7 @@ def load_call_graphs(
             continue
         try:
             graphs[rel] = extractor(content)
-        except Exception:  # noqa: BLE001 — per-file extraction is best-effort
+        except Exception:
             logger.debug("call-graph extraction failed for %s", rel,
                          exc_info=True)
     if skipped:

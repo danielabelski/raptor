@@ -7,7 +7,7 @@ Semgrep JSON output, CodeQL SARIF, and findings.json.
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.json import load_json, save_json
 
@@ -16,8 +16,8 @@ READS_MANIFEST = ".reads-manifest"
 
 
 def build_from_manifest(run_dir: Path, tool: str,
-                        rules_applied: List[str] = None,
-                        extra_files: List[str] = None) -> Optional[Dict[str, Any]]:
+                        rules_applied: list[str] | None = None,
+                        extra_files: list[str] | None = None) -> dict[str, Any] | None:
     """Build a coverage record from the reads manifest.
 
     The manifest is populated by the PostToolUse hook on Read.
@@ -93,7 +93,7 @@ def cleanup_manifest(run_dir: Path) -> bool:
 
 
 def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
-                       rules_applied: List[str] = None) -> Optional[Dict[str, Any]]:
+                       rules_applied: list[str] | None = None) -> dict[str, Any] | None:
     """Build a coverage record from Semgrep JSON output.
 
     Reads paths.scanned from Semgrep's JSON output for authoritative
@@ -129,9 +129,9 @@ def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
     return record
 
 
-def build_from_cocci(spatch_results: List[Any],
-                     spatch_version: Optional[str] = None,
-                     ) -> Optional[Dict[str, Any]]:
+def build_from_cocci(spatch_results: list[Any],
+                     spatch_version: str | None = None,
+                     ) -> dict[str, Any] | None:
     """Build a coverage record from a list of ``SpatchResult``.
 
     Source of truth is the runner's structured output, NOT the
@@ -159,8 +159,8 @@ def build_from_cocci(spatch_results: List[Any],
         return None
 
     files: set = set()
-    rules_applied: List[str] = []
-    failures: List[Dict[str, str]] = []
+    rules_applied: list[str] = []
+    failures: list[dict[str, str]] = []
 
     for r in spatch_results:
         # Defensive attribute access — these are SpatchResult fields
@@ -185,7 +185,7 @@ def build_from_cocci(spatch_results: List[Any],
         # Skipped run with no signal at all — don't write a record.
         return None
 
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "tool": "coccinelle",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "files_examined": sorted(files),
@@ -200,7 +200,7 @@ def build_from_cocci(spatch_results: List[Any],
     return record
 
 
-def build_from_codeql(sarif_path: Path) -> Optional[Dict[str, Any]]:
+def build_from_codeql(sarif_path: Path) -> dict[str, Any] | None:
     """Build a coverage record from CodeQL SARIF output.
 
     Extracts: files from artifacts, packs from tool.extensions,
@@ -266,8 +266,8 @@ def build_from_codeql(sarif_path: Path) -> Optional[Dict[str, Any]]:
     return record
 
 
-def build_from_findings(findings_path: Path, reads_manifest_path: Path = None,
-                        tool: str = "llm") -> Optional[Dict[str, Any]]:
+def build_from_findings(findings_path: Path, reads_manifest_path: Path | None = None,
+                        tool: str = "llm") -> dict[str, Any] | None:
     """Build a coverage record from findings.json + optional reads manifest.
 
     Combines two signals:
@@ -378,7 +378,7 @@ def build_from_annotations(
     annotations_dir: Path,
     *,
     tool_name: str = "annotations",
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Build a coverage record from a tree of annotation .md files.
 
     Every annotated function counts as "examined" for coverage purposes:
@@ -415,10 +415,10 @@ def build_from_annotations(
     from core.annotations import iter_all_annotations
 
     files = set()
-    functions: List[Dict[str, str]] = []
+    functions: list[dict[str, str]] = []
     seen = set()
-    statuses: Dict[str, int] = {}
-    sources: Dict[str, int] = {}
+    statuses: dict[str, int] = {}
+    sources: dict[str, int] = {}
     for ann in iter_all_annotations(annotations_dir):
         if ann.file:
             files.add(ann.file)
@@ -426,7 +426,7 @@ def build_from_annotations(
         if key in seen:
             continue
         seen.add(key)
-        entry: Dict[str, str] = {"file": ann.file, "function": ann.function}
+        entry: dict[str, str] = {"file": ann.file, "function": ann.function}
         # Include verdict + source-line hash inline when the
         # annotation metadata carries them. /audit's status enum
         # (clean / suspicious / finding / error) flows straight
@@ -456,7 +456,7 @@ def build_from_annotations(
 
 
 def build_from_journal(run_dir: Path,
-                       tool_name: str = "journal") -> Optional[Dict[str, Any]]:
+                       tool_name: str = "journal") -> dict[str, Any] | None:
     """Build a coverage record from review-journal.jsonl.
 
     Replaces ``build_from_annotations`` for runs that emit journal
@@ -476,9 +476,9 @@ def build_from_journal(run_dir: Path,
         return None
 
     files = set()
-    functions: List[Dict[str, str]] = []
+    functions: list[dict[str, str]] = []
     seen = set()
-    statuses: Dict[str, int] = {}
+    statuses: dict[str, int] = {}
 
     for entry in entries:
         if entry.file:
@@ -487,7 +487,7 @@ def build_from_journal(run_dir: Path,
         if key in seen:
             continue
         seen.add(key)
-        func_entry: Dict[str, str] = {
+        func_entry: dict[str, str] = {
             "file": entry.file,
             "function": entry.function,
         }
@@ -509,8 +509,8 @@ def build_from_journal(run_dir: Path,
     }
 
 
-def write_record(run_dir: Path, record: Dict[str, Any],
-                 tool_name: str = None) -> Path:
+def write_record(run_dir: Path, record: dict[str, Any],
+                 tool_name: str | None = None) -> Path:
     """Write a coverage record to the run directory.
 
     Args:
@@ -528,7 +528,7 @@ def write_record(run_dir: Path, record: Dict[str, Any],
     return path
 
 
-def load_records(run_dir: Path) -> List[Dict[str, Any]]:
+def load_records(run_dir: Path) -> list[dict[str, Any]]:
     """Load all coverage records from a run directory.
 
     The per-tool glob `coverage-*.json` overlaps the legacy
@@ -574,6 +574,6 @@ def load_records(run_dir: Path) -> List[Dict[str, Any]]:
     return records
 
 
-def load_record(run_dir: Path) -> Optional[Dict[str, Any]]:
+def load_record(run_dir: Path) -> dict[str, Any] | None:
     """Load a coverage record from a run directory. Legacy single-file API."""
     return load_json(Path(run_dir) / COVERAGE_RECORD_FILE)

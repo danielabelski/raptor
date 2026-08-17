@@ -1070,12 +1070,24 @@ def test_generate_explicit_model_still_passes_flag(monkeypatch) -> None:
 
 def test_build_claudecode_config_uses_session_sentinel(monkeypatch) -> None:
     """The auto-fallback builder stamps the sentinel, not a hardcoded
-    Anthropic model name."""
+    Anthropic model name.
+
+    Pin the model-resolution inputs (same pinning as
+    test_cc_transport_tuning's fixtures): ``_resolve_claudecode_model``
+    consults ``RAPTOR_CC_MODEL`` and the on-disk cc-probe cache
+    (``~/.raptor/cache/cc-probe.json``) before falling back to the
+    sentinel, so an operator pin or a warm probe cache on the host
+    would flip the assertion."""
     import shutil as _shutil
 
     from core.llm.config import (
         CLAUDECODE_SESSION_MODEL,
         _build_claudecode_config,
+    )
+    monkeypatch.delenv("RAPTOR_CC_MODEL", raising=False)
+    monkeypatch.delenv("RAPTOR_CC_PIN_MODEL", raising=False)
+    monkeypatch.setattr(
+        "core.llm.cc_probe.cached_cc_session_model", lambda: None,
     )
     monkeypatch.setattr(_shutil, "which", lambda name: "/usr/bin/claude")
     cfg = _build_claudecode_config()

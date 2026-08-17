@@ -2,19 +2,22 @@
 
 import json
 import os
-import pytest
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 # packages/llm_analysis/tests/test_config_file.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[3]))
 
 from core.llm.config import (
-    _get_configured_models, _get_best_thinking_model,
-    _get_default_fallback_models, _model_config_from_entry,
+    _get_best_thinking_model,
+    _get_configured_models,
+    _get_default_fallback_models,
+    _model_config_from_entry,
 )
-from core.llm.model_data import PROVIDER_DEFAULT_MODELS, MODEL_COSTS, MODEL_LIMITS
+from core.llm.model_data import MODEL_COSTS, MODEL_LIMITS, PROVIDER_DEFAULT_MODELS
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +44,37 @@ def _restore_llm_caches():
         cfg._cached_thinking_model = saved_cached
         cfg._operator_primary_override = saved_override
         det._cached_llm_availability = saved_avail
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_env(monkeypatch):
+    """Strip ambient provider env signals and pin the Anthropic model
+    resolver for every test in this file.
+
+    Two host-dependences this kills:
+
+    * ``_warn_unusable_keys`` iterates EVERY provider env key, and the
+      TestWarnUnusableKeys assertions read ``warning.call_args`` (the
+      LAST call) — an ambient key (e.g. MISTRAL_API_KEY with the
+      openai SDK patched unavailable) made the last warning a
+      different provider's and flipped both the warns and the
+      no-warning tests. Same scrub-family precedent as the dispatcher
+      conftest (core/llm/dispatcher/tests/conftest.py).
+    * ``_get_configured_models`` routes anthropic entries through
+      ``resolve_anthropic``, which lazily fetches the live
+      ``/v1/models`` inventory (5 s timeout) whenever an entry
+      carries an api_key — the config-reading fixtures here do. Pin
+      the resolver to identity so no unit test in this file can emit
+      a network call (or pay the timeout) from a keyed host.
+    """
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+                "MISTRAL_API_KEY", "AWS_BEARER_TOKEN_BEDROCK",
+                "RAPTOR_LLM_SOCKET"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        "core.llm.model_resolution.resolve_anthropic",
+        lambda name, api_key: name,
+    )
 
 
 class TestGetConfiguredModels:
@@ -524,9 +558,9 @@ class TestCompromisedLitellmDetection:
     def test_182_8_shows_shell_removal(self, mock_home, tmp_path, capsys):
         mock_home.return_value = tmp_path
         from core.llm.detection import _check_litellm_installed
-        with patch("importlib.metadata.version", return_value="1.82.8"):
-            with pytest.raises(SystemExit):
-                _check_litellm_installed()
+        with patch("importlib.metadata.version", return_value="1.82.8"), \
+             pytest.raises(SystemExit):
+            _check_litellm_installed()
         captured = capsys.readouterr()
         assert "Do NOT use pip" in captured.out
         # Operator gets a guided two-step removal scoped to actual
@@ -542,9 +576,9 @@ class TestCompromisedLitellmDetection:
     def test_182_7_shows_pip_removal(self, mock_home, tmp_path, capsys):
         mock_home.return_value = tmp_path
         from core.llm.detection import _check_litellm_installed
-        with patch("importlib.metadata.version", return_value="1.82.7"):
-            with pytest.raises(SystemExit):
-                _check_litellm_installed()
+        with patch("importlib.metadata.version", return_value="1.82.7"), \
+             pytest.raises(SystemExit):
+            _check_litellm_installed()
         captured = capsys.readouterr()
         assert "pip uninstall litellm" in captured.out
 
@@ -785,7 +819,8 @@ class TestOperatorPrimaryOverride:
         thinking model is configured."""
         import core.llm.config as cfg
         from core.llm.config import (
-            ModelConfig, _get_default_primary_model,
+            ModelConfig,
+            _get_default_primary_model,
             set_operator_primary_override,
         )
 
@@ -820,7 +855,8 @@ class TestOperatorPrimaryOverride:
         specific provider preference could route the run through a
         different model than what the operator asked for."""
         from core.llm.config import (
-            ModelConfig, _get_default_primary_model,
+            ModelConfig,
+            _get_default_primary_model,
             set_operator_primary_override,
         )
 
@@ -840,7 +876,8 @@ class TestOperatorPrimaryOverride:
         refuter, judge, brain-adjacent LLMs) would silently take the
         thinking-model path."""
         from core.llm.config import (
-            LLMConfig, ModelConfig,
+            LLMConfig,
+            ModelConfig,
             set_operator_primary_override,
         )
 
@@ -858,7 +895,8 @@ class TestOperatorPrimaryOverride:
         resolution chain — no permanent state change."""
         import core.llm.config as cfg
         from core.llm.config import (
-            ModelConfig, _get_default_primary_model,
+            ModelConfig,
+            _get_default_primary_model,
             set_operator_primary_override,
         )
 

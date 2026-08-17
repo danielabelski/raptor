@@ -1794,6 +1794,37 @@ class AutonomousSecurityAgentV2:
                 f"(used_llm={verdict.used_llm})"
             )
 
+    _SYNTHESIZED_RULE_PREFIX = "synthesized:"
+
+    def _record_graduated_rule_feedback(self, vuln) -> None:
+        """Feed an analysis verdict back to the rule library (P7).
+
+        Graduated-rule findings carry ``rule_id =
+        "synthesized:<library_rule_id>"`` (stamped by the scanner's
+        graduated stage). When the LLM analysis reached a
+        true/false-positive verdict, record it via
+        ``RuleLibrary.record_match`` so per-rule precision keeps
+        updating after graduation — rules that decay below the
+        retirement threshold get archived on the next /audit pass.
+        """
+        rule_id = getattr(vuln, "rule_id", "") or ""
+        if not rule_id.startswith(self._SYNTHESIZED_RULE_PREFIX):
+            return
+        analysis = vuln.analysis if isinstance(vuln.analysis, dict) else {}
+        is_tp = analysis.get("is_true_positive")
+        if is_tp is None:
+            return  # no verdict, nothing to record
+        library_rule_id = rule_id[len(self._SYNTHESIZED_RULE_PREFIX):]
+        from packages.checker_synthesis.library import RuleLibrary
+        # Default library dir — the same resolution /audit's
+        # graduation pass uses, so feedback lands on the same
+        # manifest the rule graduated from.
+        RuleLibrary().record_match(library_rule_id, is_tp=bool(is_tp))
+        logger.debug(
+            "graduated-rule feedback: %s is_tp=%s",
+            library_rule_id, bool(is_tp),
+        )
+
     def _get_verified_outcomes(self):
         """Collect (once per run) the verified-outcome corpus visible to this
         run — its own witness store plus, when a project is active, sibling
@@ -2716,6 +2747,14 @@ class AutonomousSecurityAgentV2:
                 # 1. Autonomous analysis (LLM-powered, or prep-only)
                 if self.analyze_vulnerability(vuln):
                     analyzed += 1
+                    # P7 precision loop: analysis verdicts on findings
+                    # produced by graduated synthesized rules feed
+                    # RuleLibrary.record_match so graduation /
+                    # retirement keeps tracking real-world precision
+                    # (a scan hit judged FP must count against the
+                    # rule). Best-effort — never blocks analysis.
+                    with contextlib.suppress(Exception):
+                        self._record_graduated_rule_feedback(vuln)
                     if emit_journal and self._emit_journal_entry(vuln, checklist):
                         journal_entries_emitted += 1
 

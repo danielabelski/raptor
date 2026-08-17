@@ -1789,6 +1789,226 @@ def run_expanded_semgrep_stage(
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Graduated synthesized rules (P7) — default-on, opt-out
+# ---------------------------------------------------------------------------
+
+_GRADUATED_TOOL_NAME = "raptor-graduated"
+
+
+def find_engine_rules_dir(out_dir: Path, repo_path: Path) -> Path | None:
+    """Locate the project's graduated semgrep rules directory.
+
+    Graduation (RuleLibrary.graduate / core.audit graduation) writes to
+    ``<project_dir>/engine-rules/semgrep/rules/*.yaml``. Candidate
+    resolution mirrors the run-directory layouts:
+
+      * /scan with a project: ``out_dir`` is the run dir → sibling
+        ``engine-rules`` under the project dir (``out_dir.parent``).
+      * /agentic: the scanner child writes to ``<run_dir>/scan`` →
+        two levels up.
+      * the active project's ``output_dir`` (authoritative when set).
+
+    SECURITY: only RAPTOR-graduated rules may load — a candidate that
+    resolves inside the scanned repo is rejected, so a hostile target
+    cannot plant YAML that runs as trusted scanner config.
+    """
+    repo_resolved = Path(repo_path).resolve()
+    candidates = []
+    out_resolved = Path(out_dir).resolve()
+    candidates.append(out_resolved.parent / "engine-rules")
+    candidates.append(out_resolved.parent.parent / "engine-rules")
+    try:
+        from core.project.project import ProjectManager
+        mgr = ProjectManager()
+        active = mgr.get_active()
+        if active:
+            proj = mgr.load(active)
+            if proj is not None and getattr(proj, "output_dir", ""):
+                candidates.append(Path(proj.output_dir) / "engine-rules")
+    except Exception:
+        logger.debug(
+            "graduated-rules: active-project lookup failed", exc_info=True,
+        )
+
+    for candidate in candidates:
+        rules_dir = candidate / "semgrep" / "rules"
+        try:
+            resolved = rules_dir.resolve()
+        except OSError:
+            continue
+        if resolved == repo_resolved or repo_resolved in resolved.parents:
+            logger.warning(
+                "graduated-rules: refusing rules dir inside the scanned "
+                "repo (%s) — repo-supplied YAML never loads", resolved,
+            )
+            continue
+        if rules_dir.is_dir() and any(rules_dir.glob("*.yaml")):
+            return rules_dir
+    return None
+
+
+def run_graduated_rules_stage(
+    repo_path: Path,
+    out_dir: Path,
+    rules_dir: Path | None = None,
+) -> list[str]:
+    """Run the project's graduated synthesized rules as a scan stage.
+
+    Each graduated rule encodes a confirmed real-bug pattern
+    (precision-gated at graduation: >=2 TPs, >=3 matches, >=80%).
+    Runs every ``*.yaml`` under the engine-rules semgrep dir
+    individually (one bad rule never kills the stage), and emits
+    ``graduated.sarif`` under the distinct ``raptor-graduated`` tool
+    name with ``properties.provenance = "synthesized:<rule_id>"`` on
+    every result — so downstream analysis can key precision feedback
+    (``RuleLibrary.record_match``) back to the originating rule.
+
+    Auto-skips silently when no graduated rules exist. Returns the
+    list of SARIF paths emitted (same shape as the other stage
+    runners).
+    """
+    if rules_dir is None:
+        rules_dir = find_engine_rules_dir(out_dir, repo_path)
+    if rules_dir is None:
+        logger.debug("graduated-rules: no engine-rules dir found; skipping")
+        return []
+
+    # Containment check also for operator-supplied dirs: rules that
+    # live inside the scanned repo never load as scanner config.
+    try:
+        rules_resolved = Path(rules_dir).resolve()
+        repo_resolved = Path(repo_path).resolve()
+    except OSError:
+        return []
+    if rules_resolved == repo_resolved or repo_resolved in rules_resolved.parents:
+        print(
+            f"⚠️  graduated-rules: refusing rules dir inside the scanned "
+            f"repo: {rules_resolved}",
+            file=sys.stderr,
+        )
+        return []
+
+    rule_files = sorted(Path(rules_dir).glob("*.yaml"))
+    if not rule_files:
+        return []
+
+    try:
+        from packages.semgrep.runner import is_available as semgrep_available
+        from packages.semgrep.runner import run_rule as semgrep_run_rule
+    except ImportError:
+        return []
+    if not semgrep_available():
+        print(
+            "⚠️  graduated-rules stage did not run: semgrep not installed",
+            file=sys.stderr,
+        )
+        return []
+
+    all_findings: list[tuple[str, dict]] = []
+    failed = 0
+    for rule_file in rule_files:
+        rule_id = rule_file.stem
+        try:
+            res = semgrep_run_rule(
+                Path(repo_path), str(rule_file),
+                name=f"graduated_{rule_id}",
+                timeout=RaptorConfig.SEMGREP_PACK_TIMEOUT,
+                env=RaptorConfig.get_safe_env(preserve_proxy=True),
+            )
+        except Exception as exc:  # noqa: BLE001 — one rule must not kill the stage
+            logger.warning("graduated-rules: %s failed: %s", rule_id, exc)
+            failed += 1
+            continue
+        if res.errors and not res.findings:
+            logger.debug(
+                "graduated-rules: %s errors: %s", rule_id, res.errors[:3],
+            )
+            failed += 1
+            continue
+        for f in res.findings:
+            all_findings.append((rule_id, f.to_dict()))
+
+    sarif_path = Path(out_dir) / "graduated.sarif"
+    save_json(sarif_path, _graduated_findings_to_sarif(all_findings))
+    logger.info(
+        "graduated-rules: %d rule(s) ran (%d failed), %d finding(s); "
+        "SARIF at %s",
+        len(rule_files), failed, len(all_findings), sarif_path,
+    )
+    if failed:
+        print(
+            f"⚠️  graduated-rules: {failed}/{len(rule_files)} graduated "
+            "rule(s) failed to run",
+            file=sys.stderr,
+        )
+    return [str(sarif_path)]
+
+
+def _graduated_findings_to_sarif(
+    findings: list[tuple[str, dict]],
+) -> dict:
+    """SARIF 2.1.0 document for graduated-rule findings.
+
+    Distinct ``tool.driver.name`` keeps these a separate run in
+    combined.sarif. Provenance rides the ``ruleId`` itself
+    (``synthesized:<library_rule_id>``) because the downstream SARIF
+    parser (core/sarif/parser.py) keeps rule_id but drops result
+    properties — the precision-feedback loop keys
+    ``RuleLibrary.record_match`` off this prefix. The semgrep-internal
+    rule id (LLM-chosen kebab-case) is preserved in properties for
+    forensics.
+    """
+    rule_defs: list[dict] = []
+    seen_rules: set = set()
+    results: list[dict] = []
+    for rule_id, f in findings:
+        sarif_rule_id = f"synthesized:{rule_id}"
+        if sarif_rule_id not in seen_rules:
+            rule_defs.append({
+                "id": sarif_rule_id,
+                "name": sarif_rule_id,
+                "shortDescription": {"text": sarif_rule_id},
+                "defaultConfiguration": {"level": "warning"},
+            })
+            seen_rules.add(sarif_rule_id)
+        results.append({
+            "ruleId": sarif_rule_id,
+            "level": f.get("level") or "warning",
+            "message": {
+                "text": f.get("message")
+                        or f"graduated rule {rule_id} matched",
+            },
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": f.get("file", "")},
+                    "region": {"startLine": f.get("line", 0)},
+                },
+            }],
+            "properties": {
+                "provenance": sarif_rule_id,
+                "semgrep_rule_id": f.get("rule_id", ""),
+            },
+        })
+    return {
+        "$schema": (
+            "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/"
+            "master/Schemata/sarif-schema-2.1.0.json"
+        ),
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": _GRADUATED_TOOL_NAME,
+                    "informationUri": "https://github.com/anthropics/raptor",
+                    "rules": rule_defs,
+                },
+            },
+            "results": results,
+        }],
+    }
+
+
 def _sarif_has_findings(sarif_path: Path) -> bool:
     """Return True iff the SARIF file contains at least one result.
 
@@ -2099,6 +2319,24 @@ def main():
              "sinks hidden behind macros (LIST_FOREACH wrappers, allocator "
              "macros). Budget-bounded; preprocessing is sandboxed and no "
              "repo code executes. Off by default (operator opt-in).",
+    )
+    ap.add_argument(
+        "--no-graduated-rules", action="store_true",
+        dest="no_graduated_rules",
+        help="Disable the graduated synthesized-rules stage. By default "
+             "every scan runs the active project's precision-gated "
+             "graduated rules (engine-rules/semgrep/rules/) as a "
+             "standard stage — each encodes a previously confirmed "
+             "real-bug pattern. Auto-skips silently when no graduated "
+             "rules exist; this flag is the explicit opt-out.",
+    )
+    ap.add_argument(
+        "--graduated-rules-dir", default=None, metavar="DIR",
+        dest="graduated_rules_dir",
+        help="Explicit graduated-rules directory (the semgrep/rules "
+             "subdir of an engine-rules tree). Overrides project-based "
+             "auto-resolution. Path-validated: a directory inside the "
+             "scanned repo is refused.",
     )
     ap.add_argument(
         "--languages",
@@ -2428,10 +2666,25 @@ def main():
                 extra_configs=args.extra_config,
             )
 
+        # Graduated synthesized rules (default-on, opt-out). Every
+        # past confirmed bug pattern that graduated from the rule
+        # library re-fires as a standing zero-LLM-cost detector, with
+        # provenance synthesized:<id> per result. Auto-skips silently
+        # when the project has no graduated rules.
+        graduated_sarifs = []
+        if not args.no_graduated_rules:
+            graduated_sarifs = run_graduated_rules_stage(
+                repo_path, out_dir,
+                rules_dir=(
+                    Path(args.graduated_rules_dir)
+                    if args.graduated_rules_dir else None
+                ),
+            )
+
         # Merge SARIFs if more than one
         sarif_inputs = (
             semgrep_sarifs + codeql_sarifs + cocci_sarifs
-            + compiler_sarifs + expanded_sarifs
+            + compiler_sarifs + expanded_sarifs + graduated_sarifs
         )
         merged = out_dir / "combined.sarif"
         exclude_globs = args.exclude_dir

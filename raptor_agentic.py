@@ -1314,6 +1314,13 @@ Examples:
              "repo code executes. Off by default; rides the Semgrep scan "
              "stage, so it is skipped under --codeql-only.",
     )
+    parser.add_argument(
+        "--no-graduated-rules", action="store_true",
+        help="Disable the graduated synthesized-rules scan stage "
+             "(default on at the scanner: the active project's "
+             "precision-gated rules from engine-rules/semgrep/rules/ "
+             "run as a standard stage). Rides the Semgrep scan stage.",
+    )
     # Reachability gating control
     parser.add_argument(
         "--allow-unreachable",
@@ -2230,6 +2237,10 @@ Examples:
                 ])
         if args.expanded_semgrep:
             semgrep_cmd.append("--expanded-semgrep")
+        # Graduated synthesized rules are default-on at the scanner;
+        # forward only the opt-out.
+        if args.no_graduated_rules:
+            semgrep_cmd.append("--no-graduated-rules")
         logger.debug("Running: Scanning code with Semgrep")
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         # ``semgrep_cmd`` is a list of RAPTOR-constructed argv;

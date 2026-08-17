@@ -169,7 +169,7 @@ GIDMAP_ALLOW_PATH = (
 )
 
 
-def _gidmap_allow_available() -> "str | None":
+def _gidmap_allow_available() -> str | None:
     """Return the path to raptor-gidmap-allow if built and capable.
 
     Probes once per process (cached in ``state._gidmap_allow_cache``).
@@ -187,10 +187,11 @@ def _gidmap_allow_available() -> "str | None":
                     r = subprocess.run(
                         [getcap, str(GIDMAP_ALLOW_PATH)],
                         capture_output=True, text=True, timeout=2,
+                        check=False,
                     )
                     if "cap_setgid" in r.stdout:
                         result = str(GIDMAP_ALLOW_PATH)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — capability probe is best-effort; ANY failure means "helper unavailable", cached as False
             pass
         state._gidmap_allow_cache = result
         return result or None
@@ -960,12 +961,20 @@ def run_sandboxed(
         # inside the child would fail with ModuleNotFoundError. Binding
         # the function objects here means the child only needs the
         # in-memory references, no filesystem import.
-        _proxy_loopback_fn = None
         _proxy_forwarder_fn = None
+        # Loopback bring-up is bound unconditionally: EVERY fresh netns
+        # needs lo up, not just the proxy-bridge variant. A new netns
+        # has lo DOWN, so self-loopback connects fail ENETUNREACH —
+        # which silently broke every loopback-IPC tool (gradle daemon,
+        # language servers, self-connecting test suites) under
+        # block_network profiles until 2026-08-15. The netns is per-run
+        # and externally unreachable, so a working loopback adds no
+        # exposure — it realises the isolated-loopback semantics the
+        # netns_coordinator and proxy-bridge paths already had.
+        from core.sandbox._proxy_bridge import (
+            _bring_up_loopback as _loopback_up_fn,
+        )
         if proxy_unix_socket and proxy_forwarder_port:
-            from core.sandbox._proxy_bridge import (
-                _bring_up_loopback as _proxy_loopback_fn,
-            )
             from core.sandbox._proxy_bridge import (
                 _run_forwarder as _proxy_forwarder_fn,
             )
@@ -1108,6 +1117,22 @@ def run_sandboxed(
                 # actual sethostname call lives after step 7.
                 ns_flags |= CLONE_NEWUTS
             os.unshare(ns_flags)
+
+            # Step 3.5: bring lo up in the fresh netns. A new netns has
+            # loopback DOWN — bind() works but self-connect fails
+            # ENETUNREACH, breaking every loopback-IPC tool under
+            # block_network. We own the netns (created by our user-ns)
+            # so SIOCSIFFLAGS is permitted even pre-uidmap. Best-effort:
+            # on failure the netns behaves exactly as before this fix.
+            if ns_flags & CLONE_NEWNET:
+                try:
+                    _loopback_up_fn()
+                except OSError as e:
+                    warn_post_fork(
+                        b"_spawn: netns loopback bringup failed "
+                        b"(errno=%d); loopback IPC unavailable in "
+                        b"this sandbox\n" % (e.errno or 0)
+                    )
 
             # Step 4.5: declare PR_SET_PTRACER_ANY under Yama scope 1.
             #
@@ -1261,9 +1286,9 @@ def run_sandboxed(
             # AF_UNIX socket() which seccomp blocks for the target.
             _forwarder_pid = 0
             _forwarder_death_w = -1
-            if _proxy_loopback_fn is not None and _proxy_forwarder_fn is not None:
+            if _proxy_forwarder_fn is not None:
                 try:
-                    _proxy_loopback_fn()
+                    _loopback_up_fn()
                 except OSError as e:
                     warn_post_fork(
                         b"_spawn: loopback bringup failed (errno=%d)"

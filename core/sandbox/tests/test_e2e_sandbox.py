@@ -2857,5 +2857,61 @@ class TestStrictProfileDefaults(unittest.TestCase):
                              "full must stay read-everywhere by default")
 
 
+class TestNetnsLoopbackUp(unittest.TestCase):
+    """The fresh netns must have a WORKING isolated loopback.
+
+    A new netns has lo DOWN — bind() works but self-connect fails
+    ENETUNREACH, which silently broke every loopback-IPC tool (gradle
+    daemon, language servers, self-connecting test suites) under
+    block_network until 2026-08-15. The spawn path brings lo up right
+    after unshare (in-process, capabilities intact). External
+    reachability must stay at zero — the namespace has no other
+    interfaces and no routes out.
+    """
+
+    def setUp(self):
+        if not check_net_available():
+            self.skipTest("User namespaces not available")
+
+    def test_self_loopback_works_external_blocked(self):
+        code = (
+            "import socket, threading, errno\n"
+            "b = socket.socket(); b.bind(('127.0.0.1', 0)); b.listen(1)\n"
+            "threading.Thread(target=lambda: b.accept(), daemon=True).start()\n"
+            "c = socket.socket(); c.settimeout(5)\n"
+            "try:\n"
+            "    c.connect(b.getsockname()); print('SELF-CONNECT-OK')\n"
+            "except OSError as e:\n"
+            "    print('SELF-CONNECT-FAIL', errno.errorcode.get(e.errno, e.errno))\n"
+            "u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+            "try:\n"
+            "    u.sendto(b'x', ('127.0.0.1', 9)); print('UDP-LOOPBACK-OK')\n"
+            "except OSError as e:\n"
+            "    print('UDP-LOOPBACK-FAIL', errno.errorcode.get(e.errno, e.errno))\n"
+            "x = socket.socket(); x.settimeout(3)\n"
+            "try:\n"
+            "    x.connect(('192.0.2.1', 80)); print('EXTERNAL-REACHABLE')\n"
+            "except OSError:\n"
+            "    print('EXTERNAL-BLOCKED')\n"
+        )
+        with TemporaryDirectory() as out:
+            # /usr/bin/python3 explicitly: a $PATH interpreter outside
+            # the mount tree would fall back to the subprocess path,
+            # where the loopback bringup is best-effort only (see
+            # raptor-pid1-shim._ensure_loopback_up).
+            r = sandbox_run(
+                ["/usr/bin/python3", "-c", code],
+                block_network=True, target=out, output=out,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr[-300:])
+            self.assertIn("SELF-CONNECT-OK", r.stdout,
+                          f"loopback TCP must work inside the netns: "
+                          f"{r.stdout!r}")
+            self.assertIn("UDP-LOOPBACK-OK", r.stdout)
+            self.assertIn("EXTERNAL-BLOCKED", r.stdout,
+                          "external network must stay unreachable")
+
+
 if __name__ == "__main__":
     unittest.main()

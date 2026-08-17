@@ -1687,7 +1687,21 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             shim_path = str(
                 _Path(__file__).resolve().parents[2] / "libexec" / "raptor-pid1-shim"
             )
-            full_cmd = unshare_cmd + ["--"] + prlimit_wrapper + [shim_path] + cmd
+            # --netns-lo: ask the shim to bring lo up (best-effort).
+            # On this path the netns comes from the unshare CLI and the
+            # exec into the shim drops capabilities, so the bringup
+            # only succeeds when a uid mapping kept them (map_root) —
+            # see the shim's _ensure_loopback_up for why the unmapped
+            # case cannot be fixed without breaking the ns-nobody NPROC
+            # containment. The spawn path (core/sandbox/_spawn) brings
+            # lo up unconditionally; this flag is only passed when
+            # --net is in the chain (a nested netns would ADD isolation
+            # nobody asked for and break inherit_netns coordinator
+            # runs).
+            _shim_argv = [shim_path]
+            if block_network:
+                _shim_argv.append("--netns-lo")
+            full_cmd = unshare_cmd + ["--"] + prlimit_wrapper + _shim_argv + cmd
         else:
             full_cmd = cmd
 

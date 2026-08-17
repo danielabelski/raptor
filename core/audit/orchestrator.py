@@ -5920,10 +5920,18 @@ def _check_finding_gates(
     # G3: NO-SELF-CRITIQUE — re-recording same function requires a sweep
     if audit_log is not None:
         key = f"{outcome.file}:{outcome.function}"
+
+        def _bare_key(k: str) -> str:
+            # Journal keys are lined ("file:function:line") — strip a
+            # numeric tail so they compare against the bare form, like
+            # get_reviewed_set does.
+            head, _, tail = k.rpartition(":")
+            return head if tail.isdigit() else k
+
         prior_records = [
             e
             for e in audit_log
-            if e.get("key") == key
+            if _bare_key(e.get("key", "")) == key
             and e.get("action") in ("record", "orchestrator_review")
             and e.get("status") in ("finding", "suspicious")
         ]

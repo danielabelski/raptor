@@ -4194,3 +4194,65 @@ class TestDiffNewConcepts:
         new = _diff_new_concepts(seen, self._dm("A"), None)
         assert new == set()
         assert seen == {"a"}
+
+
+class TestG3ReRecordGate:
+    """G3 must match journal entries by their lined key form
+    ("file:function:line", the shape _commit_outcome writes)."""
+
+    def _outcome(self, evidence_tool=""):
+        return ReviewOutcome(
+            file="a.c", function="f",
+            status="finding", body="bad",
+            hypothesis="overflow",
+            evidence_tool=evidence_tool,
+        )
+
+    def test_lined_prior_record_triggers_g3(self):
+        audit_log = [
+            {
+                "action": "orchestrator_review",
+                "key": "a.c:f:42",
+                "status": "finding",
+            },
+        ]
+        v = _check_finding_gates(
+            self._outcome(evidence_tool=""), audit_log=audit_log,
+        )
+        assert any("G3" in x for x in v)
+
+    def test_bare_prior_record_still_triggers_g3(self):
+        audit_log = [
+            {"action": "record", "key": "a.c:f", "status": "finding"},
+        ]
+        v = _check_finding_gates(
+            self._outcome(evidence_tool=""), audit_log=audit_log,
+        )
+        assert any("G3" in x for x in v)
+
+    def test_new_tool_evidence_passes_g3(self):
+        audit_log = [
+            {
+                "action": "orchestrator_review",
+                "key": "a.c:f:42",
+                "status": "finding",
+            },
+        ]
+        v = _check_finding_gates(
+            self._outcome(evidence_tool="semgrep:overflow"),
+            audit_log=audit_log,
+        )
+        assert not any("G3" in x for x in v)
+
+    def test_other_function_does_not_trigger_g3(self):
+        audit_log = [
+            {
+                "action": "orchestrator_review",
+                "key": "a.c:other:42",
+                "status": "finding",
+            },
+        ]
+        v = _check_finding_gates(
+            self._outcome(evidence_tool=""), audit_log=audit_log,
+        )
+        assert not any("G3" in x for x in v)

@@ -12,8 +12,10 @@ domain-model.json.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import json
 import logging
+import os
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -108,10 +110,8 @@ def _promote_to_project(per_run_path: Path, output_dir: Path) -> None:
     except OSError:
         logger.debug("domain-model promotion failed", exc_info=True)
         if tmp:
-            try:
+            with contextlib.suppress(Exception):
                 Path(tmp).unlink(missing_ok=True)
-            except Exception:
-                pass
 
 
 def _is_under_projects_base(directory: Path) -> bool:
@@ -121,7 +121,7 @@ def _is_under_projects_base(directory: Path) -> bool:
 
         directory.resolve().relative_to(DEFAULT_OUTPUT_BASE.resolve())
         return True
-    except (ValueError, Exception):
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -148,10 +148,35 @@ _INJECTION_RE = re.compile(
 )
 
 
-def _load_doc_context(related_docs: list[dict]) -> str:
+def _resolve_in_root(source_root: Path, file_path: str) -> Path | None:
+    """Containment chokepoint for study-supplied file paths.
+
+    Joins *file_path* onto *source_root*, resolves symlinks, and
+    requires the result to stay inside the resolved root. Absolute
+    paths are accepted only when they already sit inside the root
+    (study-prep emits absolute in-tree paths); ``..`` traversal and
+    symlink escapes resolve outside and are rejected.
+
+    Returns the resolved path, or ``None`` when the entry should be
+    dropped (never raises for a bad path).
+    """
+    if not file_path:
+        return None
+    try:
+        root = source_root.resolve()
+        candidate = (source_root / file_path).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _load_doc_context(related_docs: list[dict], source_root: Path) -> str:
     """Load and sanitise discovered documentation for LLM context.
 
     Defence against prompt injection from untrusted repos:
+    - Paths confined to *source_root* (``_resolve_in_root`` chokepoint)
+    - Final open refuses symlinks (O_NOFOLLOW)
     - Hard size cap per file (8KB) and total (32KB)
     - Strip lines matching known injection patterns
     - Frame as quoted data, not instructions
@@ -167,15 +192,21 @@ def _load_doc_context(related_docs: list[dict]) -> str:
         filepath = entry.get("file", "")
         if not filepath:
             continue
-        # Defence: reject path traversal and absolute paths
-        if ".." in Path(filepath).parts:
-            continue
-        if Path(filepath).is_absolute():
+        # Containment: study-prep emits absolute in-tree paths, older
+        # lists may carry source-root-relative ones. Both resolve
+        # through the chokepoint; anything outside the tree is dropped.
+        resolved = _resolve_in_root(source_root, filepath)
+        if resolved is None:
             continue
         try:
-            content = Path(filepath).read_text(
-                encoding="utf-8", errors="ignore"
-            )[:_DOC_MAX_BYTES]
+            fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            continue
+        try:
+            with os.fdopen(fd, "rb") as fh:
+                content = fh.read(_DOC_MAX_BYTES).decode(
+                    "utf-8", errors="ignore",
+                )
         except OSError:
             continue
 
@@ -190,7 +221,7 @@ def _load_doc_context(related_docs: list[dict]) -> str:
         if not content.strip():
             continue
 
-        fname = Path(filepath).name
+        fname = resolved.name
         block = f"## {fname}\n```\n{content}\n```\n"
 
         if total_len + len(block) > cap:
@@ -1398,7 +1429,11 @@ def _stamp_evidence_hashes(
             by_file.setdefault(ev.file, []).append(ev)
 
     for file_rel, file_evs in by_file.items():
-        full_path = source_root / file_rel
+        # Evidence file paths come from LLM structured output — confine
+        # to source_root; entries escaping it are left unhashed.
+        full_path = _resolve_in_root(source_root, file_rel)
+        if full_path is None:
+            continue
         spans = [(ev.line, ev.line) for ev in file_evs]  # type: ignore[arg-type]
         hashes = hash_spans(full_path, spans)
         for ev, h in zip(file_evs, hashes):
@@ -1424,7 +1459,10 @@ def _stamp_contract_hashes(
             continue
         defn_lines = len(item.definition.splitlines()) if item.definition else 1
         end_line = item.line + max(defn_lines - 1, 0)
-        h = hash_span(source_root / item.file, item.line, end_line)
+        full_path = _resolve_in_root(source_root, item.file)
+        if full_path is None:
+            continue
+        h = hash_span(full_path, item.line, end_line)
         if h:
             ct.hash = h
 
@@ -1917,9 +1955,7 @@ def _semantic_dedup_concepts(concepts: list[Concept]) -> list[Concept]:
     for i in range(len(concepts)):
         for j in range(i + 1, len(concepts)):
             sim = _jaccard(keywords[i], keywords[j])
-            if sim >= threshold:
-                union(i, j)
-            elif sim >= id_boost_threshold and _jaccard(
+            if sim >= threshold or sim >= id_boost_threshold and _jaccard(
                 id_keywords[i], id_keywords[j],
             ) >= 0.4:
                 union(i, j)
@@ -2049,9 +2085,7 @@ def _dedup_bug_patterns(patterns: list[BugPattern]) -> list[BugPattern]:
     for bp in patterns:
         norm = _normalise_id(bp.id)
         bp.id = norm
-        if norm not in by_id:
-            by_id[norm] = bp
-        elif len(bp.description) > len(by_id[norm].description):
+        if norm not in by_id or len(bp.description) > len(by_id[norm].description):
             by_id[norm] = bp
     return list(by_id.values())
 
@@ -2310,8 +2344,14 @@ def run_study(
         for item_raw in raw.get("items", [])
     ]
 
-    # Load related documentation discovered by study-prep
-    doc_context = _load_doc_context(raw.get("related_docs") or [])
+    # Load related documentation discovered by study-prep (reads are
+    # confined to the study source_root; without one there is no safe
+    # anchor, so doc context is skipped)
+    doc_context = ""
+    if source_root:
+        doc_context = _load_doc_context(
+            raw.get("related_docs") or [], Path(source_root),
+        )
     if doc_context and on_progress:
         n_docs = len(raw.get("related_docs") or [])
         on_progress("docs", f"Loaded {n_docs} reference doc(s) as context")
@@ -2536,7 +2576,11 @@ def _verify_evidence_hashes(
         if not stored_hash or not line_str:
             continue
         line_num = int(line_str)
-        full_path = source_root / file_str
+        # SAGE-recalled evidence paths are untrusted — confine to
+        # source_root; entries escaping it are dropped from the check.
+        full_path = _resolve_in_root(source_root, file_str)
+        if full_path is None:
+            continue
         if not full_path.is_file():
             return False
         current = hash_span(full_path, line_num, line_num)
@@ -2670,11 +2714,9 @@ def _apply_sage_prior(
     # Try to load a local domain model for skip (concept reconstruction)
     local_model = None
     for candidate in _find_local_models(output_dir):
-        try:
+        with contextlib.suppress(Exception):
             local_model = DomainModel.load(candidate)
             break
-        except Exception:
-            continue
 
     remaining = []
     skipped_concepts: list[Concept] = []
@@ -2824,8 +2866,13 @@ def check_evidence_staleness(
         for ev_idx, ev in enumerate(concept.evidence):
             if not ev.hash or not ev.file or ev.line is None:
                 continue
+            # Evidence paths originate from LLM output — confine to
+            # source_root; entries escaping it are dropped (not read).
+            ev_path = _resolve_in_root(source_root, ev.file)
+            if ev_path is None:
+                continue
             items.append(CheckItem(
-                file=source_root / ev.file,
+                file=ev_path,
                 start_line=ev.line,
                 end_line=ev.line,
                 stored_hash=ev.hash,

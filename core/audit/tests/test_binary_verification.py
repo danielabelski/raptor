@@ -8,13 +8,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from unittest.mock import patch
-
-from core.audit.binary_verification import (
-    auto_launch_and_observe,
-    can_auto_launch,
-    decompiler_rules_for_hypothesis,
-)
+from core.audit.binary_verification import decompiler_rules_for_hypothesis
 
 
 class TestDecompilerRuleSelection:
@@ -61,24 +55,22 @@ class TestDecompilerRuleSelection:
 
 
 
-class TestCanAutoLaunch:
-    def test_none_path(self):
-        assert not can_auto_launch(None)
+class TestNoAutoLaunchSurface:
+    """The dead Frida auto-launch path was removed — the module must not
+    grow it back silently. Dynamic engagement lives in dynamic_sweep /
+    frida_observe instead."""
 
-    def test_nonexistent_path(self, tmp_path):
-        assert not can_auto_launch(tmp_path / "nope")
+    def test_auto_launch_helpers_removed(self):
+        import core.audit.binary_verification as bv
+        assert not hasattr(bv, "auto_launch_and_observe")
+        assert not hasattr(bv, "can_auto_launch")
 
-    def test_non_executable(self, tmp_path):
-        f = tmp_path / "notexec"
-        f.write_bytes(b"data")
-        f.chmod(0o644)
-        assert not can_auto_launch(f)
+    def test_orchestrator_has_no_binary_path_gate(self):
+        import inspect
 
-    def test_executable(self, tmp_path):
-        f = tmp_path / "exec"
-        f.write_bytes(b"data")
-        f.chmod(0o755)
-        assert can_auto_launch(f)
+        from core.audit import orchestrator
+        src = inspect.getsource(orchestrator._sweep_validate)
+        assert 'getattr(config, "_binary_path"' not in src
 
 
 class TestSweepValidateBinary:
@@ -99,7 +91,6 @@ class TestSweepValidateBinary:
         mock_config = MagicMock()
         mock_config.target_path = Path("/nonexistent")
         mock_config.sweep_validate_findings = True
-        mock_config._binary_path = None
         mock_config.codeql_db_path = None
 
         result = _sweep_validate(
@@ -123,7 +114,6 @@ class TestSweepValidateBinary:
 
         mock_config = MagicMock()
         mock_config.target_path = Path("/nonexistent")
-        mock_config._binary_path = None
         mock_config.codeql_db_path = None
 
         result = _sweep_validate(outcome, mock_config)
@@ -349,139 +339,3 @@ class TestR2Normaliser:
         sym.imp.KERNEL32.dll_WriteFile ()"""
         result = _normalise_r2_decompilation(r2)
         assert "WriteFile(arg1, arg2)" in result
-
-
-class TestAutoLaunchAndObserve:
-    """Mock-based tests for auto_launch_and_observe."""
-
-    def test_returns_none_when_frida_unavailable(self, tmp_path):
-        binary = tmp_path / "target"
-        binary.write_bytes(b"\x7fELF")
-        binary.chmod(0o755)
-        with patch.dict("sys.modules", {"frida": None}):
-            result = auto_launch_and_observe(
-                binary_path=binary, function_name="vuln",
-            )
-        assert result is None
-
-    def test_returns_none_for_non_executable(self, tmp_path):
-        binary = tmp_path / "target"
-        binary.write_bytes(b"data")
-        binary.chmod(0o644)
-        with patch("core.audit.binary_verification.importlib"):
-            result = auto_launch_and_observe(
-                binary_path=binary, function_name="vuln",
-            )
-        assert result is None
-
-    def test_inconclusive_when_process_exits_early(self, tmp_path):
-        binary = tmp_path / "target"
-        binary.write_bytes(b"\x7fELF")
-        binary.chmod(0o755)
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 1
-        mock_proc.returncode = 1
-
-        with (
-            patch("core.audit.binary_verification.importlib"),
-            patch("subprocess.Popen", return_value=mock_proc),
-        ):
-            result = auto_launch_and_observe(
-                binary_path=binary, function_name="vuln",
-            )
-        assert result is not None
-        assert result["evidence_strength"] == "inconclusive"
-        assert result["reason"] == "process exited before Frida could attach"
-
-    def test_confirmed_when_function_observed(self, tmp_path):
-        binary = tmp_path / "target"
-        binary.write_bytes(b"\x7fELF")
-        binary.chmod(0o755)
-
-        mock_proc = MagicMock()
-        mock_proc.poll.side_effect = [None, None, None]
-        mock_proc.stdin = MagicMock()
-
-        mock_obs = MagicMock()
-        mock_obs.function = "vuln"
-        mock_obs.args = []
-
-        with (
-            patch("core.audit.binary_verification.importlib"),
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch("core.audit.binary_verification.time"),
-            patch(
-                "core.audit.frida_observe._run_frida_session_pid",
-                return_value=True,
-            ),
-            patch(
-                "core.audit.frida_observe._generate_frida_script",
-                return_value="// script",
-            ),
-            patch(
-                "core.audit.frida_observe._parse_observations",
-                return_value=[mock_obs],
-            ),
-        ):
-            result = auto_launch_and_observe(
-                binary_path=binary, function_name="vuln",
-            )
-        assert result is not None
-        assert result["evidence_strength"] == "confirmed"
-
-    def test_inconclusive_when_function_not_observed(self, tmp_path):
-        binary = tmp_path / "target"
-        binary.write_bytes(b"\x7fELF")
-        binary.chmod(0o755)
-
-        mock_proc = MagicMock()
-        mock_proc.poll.side_effect = [None, None, None]
-        mock_proc.stdin = MagicMock()
-
-        with (
-            patch("core.audit.binary_verification.importlib"),
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch("core.audit.binary_verification.time"),
-            patch(
-                "core.audit.frida_observe._run_frida_session_pid",
-                return_value=True,
-            ),
-            patch(
-                "core.audit.frida_observe._generate_frida_script",
-                return_value="// script",
-            ),
-            patch(
-                "core.audit.frida_observe._parse_observations",
-                return_value=[],
-            ),
-        ):
-            result = auto_launch_and_observe(
-                binary_path=binary, function_name="vuln",
-            )
-        assert result is not None
-        assert result["evidence_strength"] == "inconclusive"
-
-    def test_uses_safe_env(self, tmp_path):
-        """Subprocess must be launched with sanitised environment."""
-        binary = tmp_path / "target"
-        binary.write_bytes(b"\x7fELF")
-        binary.chmod(0o755)
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 1
-        mock_proc.returncode = 1
-
-        with (
-            patch("core.audit.binary_verification.importlib"),
-            patch("subprocess.Popen", return_value=mock_proc) as popen_mock,
-            patch(
-                "core.audit.binary_verification._safe_env",
-                return_value={"PATH": "/usr/bin"},
-            ),
-        ):
-            auto_launch_and_observe(
-                binary_path=binary, function_name="vuln",
-            )
-        call_kwargs = popen_mock.call_args
-        assert call_kwargs.kwargs.get("env") == {"PATH": "/usr/bin"}

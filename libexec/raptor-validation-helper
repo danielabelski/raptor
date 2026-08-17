@@ -10,6 +10,7 @@ Stages 0 and 1 compose generic tools (lifecycle, checklist, coverage, diagrams)
 with validation-specific logic (bridge, stage merging, report generation).
 Stages A-F do per-stage merging, validation, and schema hints.
 """
+import contextlib
 import faulthandler
 import re
 import signal
@@ -22,7 +23,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
@@ -34,16 +36,20 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: E402,F401
-
 import hashlib
+
+import core.startup.process_init  # noqa: F401
+from core.inventory.lookup import normalise_path
 from core.json import load_json, save_json
 from core.schema_constants import MEMORY_CORRUPTION_TYPES, normalise_vuln_type
-from core.inventory.lookup import normalise_path
 from packages.exploitability_validation.schemas import (
-    create_empty_findings, validate_findings, validate_attack_tree,
-    validate_attack_paths, validate_attack_surface, validate_hypotheses,
+    create_empty_findings,
+    validate_attack_paths,
+    validate_attack_surface,
+    validate_attack_tree,
     validate_disproven,
+    validate_findings,
+    validate_hypotheses,
 )
 
 STAGE_LETTERS = "ABCDEF"
@@ -375,14 +381,39 @@ def _build_standalone_pocs(target, build_dir):
     # the dangerous env vars before the compile sees them.
     # Fall back to plain `_sp.run` only if `_sandbox_run` import
     # fails — preserves pre-fix behaviour for unusual install
-    # layouts where core.sandbox isn't reachable.
+    # layouts where core.sandbox isn't reachable. The env-strip
+    # is imported separately so a sandbox-only ImportError does
+    # not silently revert the compile env to the full operator
+    # environment.
     try:
         from core.sandbox import run as _sandbox_run
+    except ImportError:
+        _sandbox_run = None
+        print(
+            "WARNING: core.sandbox unavailable — PoC compiles will run "
+            "UNSANDBOXED (no filesystem/network confinement)",
+            file=sys.stderr,
+        )
+    try:
         from core.config import RaptorConfig
         _safe_env = RaptorConfig.get_safe_env()
     except ImportError:
-        _sandbox_run = None
-        _safe_env = os.environ.copy()
+        # Last resort: minimal inline allowlist mirroring the intent of
+        # RaptorConfig.SAFE_ENV_ALLOWLIST — never the full environment.
+        _minimal_keep = {
+            "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM",
+            "TMPDIR", "LANG", "TZ",
+        }
+        _safe_env = {
+            k: v for k, v in os.environ.items()
+            if k in _minimal_keep or k.startswith("LC_")
+        }
+        print(
+            "WARNING: core.config unavailable — PoC compile env stripped "
+            "to a minimal inline allowlist instead of "
+            "RaptorConfig.get_safe_env()",
+            file=sys.stderr,
+        )
 
     compiler = "gcc"
     try:
@@ -402,7 +433,7 @@ def _build_standalone_pocs(target, build_dir):
             built += 1
             continue
         cmd = [compiler] + _POC_GCC_FLAGS + ["-o", str(output), str(source)]
-        try:
+        with contextlib.suppress(Exception):
             if _sandbox_run is not None:
                 result = _sandbox_run(
                     cmd,
@@ -414,7 +445,7 @@ def _build_standalone_pocs(target, build_dir):
                 )
             else:
                 result = _sp.run(cmd, capture_output=True, text=True, timeout=30,
-                                env=_safe_env)
+                                check=False, env=_safe_env)
             if result.returncode == 0:
                 print(f"  Built: {source.name} -> {output.name}")
                 if result.stderr.strip():
@@ -423,8 +454,6 @@ def _build_standalone_pocs(target, build_dir):
                 built += 1
             else:
                 print(f"  Build failed: {source.name} ({result.stderr.strip()[:80]})", file=sys.stderr)
-        except Exception:
-            pass
 
     if built:
         print(f"PoC binaries: {built}/{len(sources)} in {build_dir}")
@@ -668,7 +697,7 @@ def prepare_B(workdir, target=None):
     save_json(wdir / "attack-paths.json", attack_paths)
 
     # Frida runtime-evidence annotation (best-effort).
-    try:
+    with contextlib.suppress(Exception):
         from core.orchestration.frida_validation_bridge import (
             annotate_attack_paths,
             collect_runtime_evidence,
@@ -679,8 +708,6 @@ def prepare_B(workdir, target=None):
             attack_paths = annotate_attack_paths(attack_paths, evidence_map)
             save_json(wdir / "attack-paths.json", attack_paths)
             print(f"  Frida runtime evidence: {len(evidence_map)} functions observed")
-    except Exception:
-        pass
 
     if not (wdir / "attack-surface.json").exists():
         save_json(wdir / "attack-surface.json", {"sources": [], "sinks": [], "trust_boundaries": []})
@@ -802,6 +829,8 @@ def _run_cocci_prereqs(workdir, findings_data, target=None):
     try:
         from packages.coccinelle.prereqs import (
             evaluate_finding as _cocci_evaluate,
+        )
+        from packages.coccinelle.prereqs import (
             gather_prereqs as _cocci_gather,
         )
     except ImportError:
@@ -970,13 +999,13 @@ def _discover_executables(target):
     try:
         from core.config import RaptorConfig
         _env = RaptorConfig.get_safe_env()
-    except Exception:
+    except Exception:  # noqa: BLE001
         _env = os.environ.copy()
     result = {}
-    try:
+    with contextlib.suppress(Exception):
         proc = _sp.run(
             ["find", target, "-executable", "-type", "f"],
-            capture_output=True, text=True, timeout=30, env=_env
+            capture_output=True, text=True, timeout=30, check=False, env=_env
         )
         # GNU find returns rc=0 on success; BSD find with
         # `-executable` errors out (rc!=0, stderr "find: -executable:
@@ -985,7 +1014,7 @@ def _discover_executables(target):
         if proc.returncode != 0 or "unknown primary" in (proc.stderr or "").lower():
             proc = _sp.run(
                 ["find", target, "-type", "f", "-perm", "+111"],
-                capture_output=True, text=True, timeout=30, env=_env
+                capture_output=True, text=True, timeout=30, check=False, env=_env
             )
         # Track collisions on stem. Pre-fix `result[p.stem] = str(p)`
         # silently OVERWROTE earlier entries when two binaries
@@ -1019,8 +1048,6 @@ def _discover_executables(target):
                     file=sys.stderr,
                 )
             result[stem] = paths[0]
-    except Exception:
-        pass
     return result
 
 
@@ -1135,11 +1162,10 @@ VERDICT_MAP = {
 
 def prepare_F(workdir, target=None):
     merged_e = _apply_stage_file(workdir, "E")
-    if not merged_e:
-        # Stage E may have been skipped (no memory-corruption findings).
-        # Merge stage-d.json here so the ruling data is not lost.
-        if _apply_stage_file(workdir, "D"):
-            print("  (Stage E skipped — merged stage-d.json directly)")
+    # Stage E may have been skipped (no memory-corruption findings).
+    # Merge stage-d.json here so the ruling data is not lost.
+    if not merged_e and _apply_stage_file(workdir, "D"):
+        print("  (Stage E skipped — merged stage-d.json directly)")
 
     data = _findings(workdir)
 
@@ -1194,7 +1220,7 @@ def prepare_F(workdir, target=None):
             if score is not None:
                 print(f"  {finding['id']}: {vector} -> {score}")
         _save_findings(workdir, data)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  ⚠️  CVSS scoring error: {e}", file=sys.stderr)
 
     # --- Verdict mapping consistency ---
@@ -1259,8 +1285,12 @@ def _bridge_understand_output(out_dir, checklist, target,
         against current disk.
     """
     from core.orchestration.understand_bridge import (
-        find_understand_output, load_understand_context, enrich_checklist,
-        _extract_hashes, _find_stale_files, _filter_context_map,
+        _extract_hashes,
+        _filter_context_map,
+        _find_stale_files,
+        enrich_checklist,
+        find_understand_output,
+        load_understand_context,
     )
 
     understand_dir, stale_files = find_understand_output(
@@ -1323,13 +1353,13 @@ def _bridge_audit_output(out_dir, target=None):
     """Import /audit constraints, attack chains, and summaries into the validate run."""
     try:
         from core.orchestration.audit_bridge import (
-            find_audit_output,
-            load_audit_constraints,
             enrich_attack_paths,
-            load_attack_chains,
-            inject_chains_as_hypotheses,
-            load_summaries,
             enrich_with_summaries,
+            find_audit_output,
+            inject_chains_as_hypotheses,
+            load_attack_chains,
+            load_audit_constraints,
+            load_summaries,
         )
     except ImportError:
         return
@@ -1378,8 +1408,8 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
         print("ERROR: --target is required for stage 0", file=sys.stderr)
         sys.exit(1)
 
-    from core.run.output import get_output_dir, TargetMismatchError
     from core.run.metadata import start_run
+    from core.run.output import TargetMismatchError, get_output_dir
     from packages.exploitability_validation import build_checklist
 
     try:
@@ -1424,14 +1454,12 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
     # of `/project status` listed the orphan as in-progress;
     # `coverage-summary` skipped it; cleanup never fired.
     # SAGE recall: pull prior validation verdicts + methodology before analysis.
-    try:
+    with contextlib.suppress(Exception):
         from core.sage.hooks import recall_context_for_validation
         sage_memories = recall_context_for_validation(target)
         if sage_memories:
             from core.json import save_json
             save_json(out_dir / "sage_precall_validation.json", sage_memories)
-    except Exception:
-        pass
 
     from core.run.metadata import fail_run
     try:
@@ -1470,14 +1498,12 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
         # see the right state. Re-raise so the caller (validate
         # CLI) sees the exception and can surface it to the
         # operator with stack trace.
-        try:
+        # Best-effort — if even fail_run breaks (filesystem
+        # error mid-stage), we'd rather the original
+        # exception propagate than mask it with a metadata-
+        # write error.
+        with contextlib.suppress(Exception):
             fail_run(out_dir, str(e))
-        except Exception:
-            # Best-effort — if even fail_run breaks (filesystem
-            # error mid-stage), we'd rather the original
-            # exception propagate than mask it with a metadata-
-            # write error.
-            pass
         raise
 
 
@@ -1486,18 +1512,26 @@ def prepare_1(workdir, target=None, model=None):
     _apply_stage_file(workdir, "F")
 
     # Report
-    from packages.exploitability_validation.report import write_validation_report, generate_summary
+    from packages.exploitability_validation.report import (
+        generate_summary,
+        write_validation_report,
+    )
     try:
         write_validation_report(workdir)
         print("Report generated")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"⚠️  Report error: {e}", file=sys.stderr)
 
     print(generate_summary(workdir))
 
     # Coverage record from findings + reads manifest
-    try:
-        from core.coverage.record import build_from_findings, write_record, cleanup_manifest, READS_MANIFEST
+    with contextlib.suppress(Exception):
+        from core.coverage.record import (
+            READS_MANIFEST,
+            build_from_findings,
+            cleanup_manifest,
+            write_record,
+        )
         findings_path = Path(workdir) / "findings.json"
         manifest_path = Path(workdir) / READS_MANIFEST
         record = build_from_findings(
@@ -1508,15 +1542,16 @@ def prepare_1(workdir, target=None, model=None):
         if record:
             write_record(Path(workdir), record, tool_name="llm")
             cleanup_manifest(Path(workdir))
-    except Exception:
-        pass
 
     # SAGE store: persist validation verdicts + disproven hypotheses for cross-run learning.
-    try:
+    with contextlib.suppress(Exception):
         from core.json import load_json
         findings_data = load_json(Path(workdir) / "findings.json")
         if findings_data:
-            from core.sage.hooks import store_validation_verdicts, store_validation_disproven
+            from core.sage.hooks import (
+                store_validation_disproven,
+                store_validation_verdicts,
+            )
             findings_list = findings_data.get("findings", [])
             summary = findings_data.get("summary", {})
             resolved_target = findings_data.get("target_path", target or "")
@@ -1528,27 +1563,23 @@ def prepare_1(workdir, target=None, model=None):
                 disproven_list = disproven_data.get("disproven", []) if disproven_data else []
                 if disproven_list:
                     store_validation_disproven(resolved_target, disproven_list)
-    except Exception:
-        pass
 
     # Diagrams
     try:
         from packages.diagram import render_and_write
         render_and_write(Path(workdir))
         print("Diagrams generated")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"⚠️  Diagram error: {e}", file=sys.stderr)
 
     # Coverage summary (unified store-backed report; file-level tier when
     # there's no function inventory).
-    try:
+    with contextlib.suppress(Exception):
         from core.coverage.store_summary import render_run_coverage
         cov = render_run_coverage(workdir)
         if cov:
             print()
             print(cov)
-    except Exception:
-        pass
 
     # Complete lifecycle. Record the ambient harness model the agent passed via
     # --model (only the harness knows /model — RAPTOR's Python can't read it);
@@ -1558,11 +1589,11 @@ def prepare_1(workdir, target=None, model=None):
     try:
         entry = harness_model_entry(model)
         manifest = {"models": [entry]} if entry else None
-    except Exception:
+    except Exception:  # noqa: BLE001
         manifest = None
     try:
         complete_run(Path(workdir), manifest=manifest)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"⚠️  Lifecycle error: {e}", file=sys.stderr)
 
 

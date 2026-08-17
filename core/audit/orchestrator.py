@@ -8631,26 +8631,12 @@ def _sweep_validate(
             cwe=cwe,
         )
 
-        # Frida auto-launch — last resort for binary targets.
-        # Requires explicit opt-in (config.dynamic_validation) because
-        # it executes the real binary on the host.
-        if is_binary and not confirmed and getattr(config, "dynamic_validation", False):
-            binary_path = getattr(config, "_binary_path", None)
-            if binary_path:
-                try:
-                    from .binary_verification import auto_launch_and_observe, can_auto_launch
-                    if can_auto_launch(binary_path):
-                        frida_result = auto_launch_and_observe(
-                            binary_path=Path(binary_path),
-                            function_name=outcome.function,
-                        )
-                        if frida_result and frida_result.get("evidence_strength") == "confirmed":
-                            confirmed.append("frida:runtime")
-                            dispatched.add("frida_auto")
-                            if tier_counters:
-                                _increment_tier_dict(tier_counters, "frida", "confirmed")
-                except ImportError:
-                    pass
+        # No Frida auto-launch here — an earlier last-resort path gated
+        # on a never-set ``config._binary_path`` attribute was dead code
+        # and has been removed. Dynamic engagement is handled by
+        # core/audit/dynamic_sweep.py (should_run_dynamic /
+        # run_dynamic_sweep in the review loop, gated on
+        # config.dynamic_validation) and core/audit/frida_observe.py.
 
         outcome.tools_dispatched = dispatched
         if confirmed:

@@ -333,7 +333,15 @@ class OrchestratorResult:
     suspicious: int = 0
     clean: int = 0
     errors: int = 0
+    # Spend attributed to completed review calls (outcome-carrying).
     total_cost_usd: float = 0.0
+    # Spend consumed by attempts that raised (timeouts, retries, budget
+    # kills) — no outcome carries it, but the LLM client billed it.
+    failed_attempts_cost_usd: float = 0.0
+    # Authoritative end-of-run LLM-client ledger (0.0 when the run had
+    # no budget client). Includes BOTH of the above plus anything the
+    # phase ledgers missed; the operator-facing "Cost:" line uses this.
+    llm_spend_usd: float = 0.0
     total_duration_s: float = 0.0
     terminated_by: str = "complete"
     prefilter_skipped: int = 0
@@ -1234,6 +1242,25 @@ def review_one_function(
 
     # ── LLM review ────────────────────────────────────────────────────
     review_start = time.monotonic()
+    # Snapshot the client ledger so a failed attempt's spend (timeouts,
+    # exhausted retries — the client tracks each attempt's cost even
+    # when the call ultimately raises) is booked as failed-attempt cost
+    # instead of silently vanishing from every report while still
+    # counting against the budget. Best-effort attribution: with
+    # parallel workers the delta may include a concurrent call's spend;
+    # the end-of-run reconciliation against the client ledger keeps the
+    # aggregate exact.
+    _spend_before = (
+        (getattr(_budget_client, "total_cost", 0.0) or 0.0)
+        if _budget_client is not None else 0.0
+    )
+
+    def _failed_attempt_cost() -> float:
+        if _budget_client is None:
+            return 0.0
+        spent = getattr(_budget_client, "total_cost", 0.0) or 0.0
+        return max(0.0, spent - _spend_before)
+
     if config.review_passes > 1:
         outcome = _multi_pass_review(
             review_fn,
@@ -1254,6 +1281,13 @@ def review_one_function(
         except Exception as exc:
             from core.llm.client import is_budget_exceeded_error
 
+            _attempt_cost = _failed_attempt_cost()
+            if _attempt_cost > 0:
+                result.cost_tracker.record_failed_attempt(
+                    "review", cost_usd=_attempt_cost,
+                )
+                with result._lock:
+                    result.failed_attempts_cost_usd += _attempt_cost
             if is_budget_exceeded_error(exc):
                 # Budget exhaustion is terminal for the run, not a
                 # per-function error: re-raise so the executor stops
@@ -4388,6 +4422,20 @@ def _run_audit_body(
             logger.debug("summaries.json write failed", exc_info=True)
 
     try:
+        # ── Ledger reconciliation ────────────────────────────────────
+        # The LLM client's ledger is the authoritative total spend: it
+        # includes failed/timed-out attempts and anything the phase
+        # ledgers missed. Inject it so cost-breakdown.json carries
+        # totals.total_spend_usd / failed_attempts_cost_usd /
+        # unattributed_cost_usd, and stash it on the result for the
+        # operator-facing "Cost:" summary line. Without this, one run
+        # produced three unexplained numbers: $8.08 (client), $4.52
+        # (review phase), $2.82 (summary).
+        _client = getattr(config, "llm_budget_client", None)
+        if _client is not None:
+            _spent = float(getattr(_client, "total_cost", 0.0) or 0.0)
+            result.cost_tracker.set_total_spend(_spent)
+            result.llm_spend_usd = result.cost_tracker.total_spend_usd
         result.cost_tracker.write(config.out_dir)
         logger.info(result.cost_tracker.summary())
     except Exception:
@@ -9474,6 +9522,15 @@ def _deepen_suspicious(
             continue
 
         outcome.line = gap.get("line_start", 0)
+        # Phase ledger: deepen calls cost money whether or not the new
+        # verdict is accepted below — without this the spend appeared
+        # in result.total_cost_usd (when accepted) but in no phase of
+        # cost-breakdown.json, so the ledgers couldn't reconcile.
+        result.cost_tracker.record_call(
+            "re_review",
+            cost_usd=outcome.cost_usd,
+            wall_time_s=outcome.duration_s,
+        )
 
         # Accept the deepen verdict when it's non-clean, OR when
         # the clean came from a structured demotion (all-refuted or
@@ -9485,6 +9542,10 @@ def _deepen_suspicious(
         )
 
         if _deepen_dominated:
+            # The discarded deepen call still spent real money; the
+            # accepted path books it via _tally_outcome below.
+            with result._lock:
+                result.total_cost_usd += outcome.cost_usd
             logger.info(
                 "deepen [%d/%d] %s:%s: stayed %s (clean without structured basis)",
                 idx,
@@ -9926,6 +9987,12 @@ def _iterative_re_review(
                 outcome = _error_outcome(gap, exc)
 
             outcome.line = gap.get("line_start", 0)
+            # Phase ledger — see the deepen loop for the rationale.
+            result.cost_tracker.record_call(
+                "re_review",
+                cost_usd=outcome.cost_usd,
+                wall_time_s=outcome.duration_s,
+            )
 
             if outcome.status == "finding" and config.sweep_validate_findings:
                 outcome = _sweep_validate(
@@ -10349,7 +10416,15 @@ def _inject_chain_targets(
 
 
 def _untally_outcome(result: OrchestratorResult, outcome: ReviewOutcome) -> None:
-    """Reverse a previously tallied outcome."""
+    """Reverse a previously tallied outcome's VERDICT counters.
+
+    Cost is deliberately NOT reversed: deepen / re-review replace the
+    outcome, but the original call's money was still spent. Subtracting
+    it made ``result.total_cost_usd`` a "cost of surviving outcomes"
+    number that drifted below both the phase ledger and the LLM
+    client's ledger (observed $2.82 vs $4.52 vs $8.08 for one run) and
+    under-enforced the --max-cost gate.
+    """
     with result._lock:
         if outcome.status == "finding":
             result.findings -= 1
@@ -10366,7 +10441,6 @@ def _untally_outcome(result: OrchestratorResult, outcome: ReviewOutcome) -> None
             if outcome.error_class and outcome.error_class in result.error_counts:
                 result.error_counts[outcome.error_class] -= 1
         result.reviewed -= 1
-        result.total_cost_usd -= outcome.cost_usd
 
 
 _DISMISSIVE_COUNTERS = frozenset(

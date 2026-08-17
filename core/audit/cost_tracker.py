@@ -3,6 +3,22 @@
 Tracks time and token usage across orchestrator phases so operators
 can see where the budget goes. Written to cost-breakdown.json at
 the end of each run.
+
+Ledger semantics — one audit run has three cost surfaces that MUST
+reconcile (a real run once showed $8.08 / $4.52 / $2.82 for the same
+money, all "true" for different ledgers):
+
+* ``phases.<p>.cost_usd``    — spend on calls that produced a usable
+  outcome (the "completed" figure).
+* ``phases.<p>.failed_attempts_cost_usd`` — spend consumed by attempts
+  that raised (timeouts, retries, budget kills). Tracked by the LLM
+  client's budget but carried by no outcome; before this field it
+  vanished from every report while still counting against the cap.
+* ``totals.total_spend_usd`` — the authoritative LLM-client ledger
+  (everything above plus anything not attributable to a phase),
+  injected via :meth:`CostTracker.set_total_spend` at run end. Any
+  residual is surfaced as ``totals.unattributed_cost_usd`` so the
+  arithmetic always closes: total_spend = cost + failed + unattributed.
 """
 
 from __future__ import annotations
@@ -11,7 +27,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -25,9 +41,11 @@ class PhaseCost:
     cost_usd: float = 0.0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    failed_calls: int = 0
+    failed_attempts_cost_usd: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "wall_time_s": round(self.wall_time_s, 2),
             "calls": self.calls,
             "tokens_in": self.tokens_in,
@@ -37,6 +55,11 @@ class PhaseCost:
         if self.cache_read_tokens or self.cache_write_tokens:
             d["cache_read_tokens"] = self.cache_read_tokens
             d["cache_write_tokens"] = self.cache_write_tokens
+        if self.failed_calls or self.failed_attempts_cost_usd:
+            d["failed_calls"] = self.failed_calls
+            d["failed_attempts_cost_usd"] = round(
+                self.failed_attempts_cost_usd, 4,
+            )
         return d
 
 
@@ -44,9 +67,12 @@ class PhaseCost:
 class CostTracker:
     """Accumulates per-phase cost for an audit run."""
 
-    phases: Dict[str, PhaseCost] = field(default_factory=dict)
-    _active_phase: Optional[str] = field(default=None, repr=False)
+    phases: dict[str, PhaseCost] = field(default_factory=dict)
+    _active_phase: str | None = field(default=None, repr=False)
     _phase_start: float = field(default=0.0, repr=False)
+    # Authoritative end-of-run LLM-client ledger (None until injected
+    # via set_total_spend — e.g. runs without a budget client).
+    _total_spend_usd: float | None = field(default=None, repr=False)
 
     _KNOWN_PHASES = (
         "triage",
@@ -107,9 +133,60 @@ class CostTracker:
         pc.cache_read_tokens += cache_read_tokens
         pc.cache_write_tokens += cache_write_tokens
 
+    def record_failed_attempt(
+        self,
+        phase: str,
+        *,
+        cost_usd: float = 0.0,
+        count_call: bool = True,
+    ) -> None:
+        """Record spend consumed by an attempt that raised.
+
+        Timed-out / retried / budget-killed calls still cost money on
+        the LLM client's ledger but produce no outcome to carry the
+        cost — record them here so the ledgers reconcile.
+        ``count_call=False`` is the end-of-run reconciliation path:
+        it books residual unattributed spend as failed-attempt cost
+        without inventing a call count for it.
+        """
+        pc = self._ensure_phase(phase)
+        if count_call:
+            pc.failed_calls += 1
+        pc.failed_attempts_cost_usd += cost_usd
+
+    def set_total_spend(self, spend_usd: float) -> None:
+        """Inject the authoritative end-of-run LLM-client ledger."""
+        self._total_spend_usd = max(0.0, float(spend_usd))
+
     @property
     def total_cost_usd(self) -> float:
         return sum(p.cost_usd for p in self.phases.values())
+
+    @property
+    def total_failed_attempts_cost_usd(self) -> float:
+        return sum(p.failed_attempts_cost_usd for p in self.phases.values())
+
+    @property
+    def total_spend_usd(self) -> float:
+        """Total money spent: the client ledger when injected, else the
+        sum of everything the phase ledgers captured."""
+        tracked = self.total_cost_usd + self.total_failed_attempts_cost_usd
+        if self._total_spend_usd is None:
+            return tracked
+        # The client ledger is authoritative but can't be LOWER than
+        # what the phases demonstrably recorded (multiple clients or a
+        # missing snapshot would otherwise hide tracked spend).
+        return max(self._total_spend_usd, tracked)
+
+    @property
+    def unattributed_cost_usd(self) -> float:
+        """Client-ledger spend no phase captured (residual)."""
+        return max(
+            0.0,
+            self.total_spend_usd
+            - self.total_cost_usd
+            - self.total_failed_attempts_cost_usd,
+        )
 
     @property
     def total_wall_time_s(self) -> float:
@@ -127,8 +204,8 @@ class CostTracker:
     def total_cache_write_tokens(self) -> int:
         return sum(p.cache_write_tokens for p in self.phases.values())
 
-    def to_dict(self) -> Dict[str, Any]:
-        totals: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        totals: dict[str, Any] = {
             "cost_usd": round(self.total_cost_usd, 4),
             "wall_time_s": round(self.total_wall_time_s, 2),
             "calls": self.total_calls,
@@ -138,6 +215,12 @@ class CostTracker:
         if cr or cw:
             totals["cache_read_tokens"] = cr
             totals["cache_write_tokens"] = cw
+        failed = self.total_failed_attempts_cost_usd
+        unattributed = self.unattributed_cost_usd
+        if failed or unattributed or self._total_spend_usd is not None:
+            totals["failed_attempts_cost_usd"] = round(failed, 4)
+            totals["unattributed_cost_usd"] = round(unattributed, 4)
+            totals["total_spend_usd"] = round(self.total_spend_usd, 4)
         return {
             "phases": {k: v.to_dict() for k, v in sorted(self.phases.items())},
             "totals": totals,
@@ -152,13 +235,16 @@ class CostTracker:
 
     def summary(self) -> str:
         """One-line summary of total cost."""
-        parts: List[str] = []
+        parts: list[str] = []
         for name in self._KNOWN_PHASES:
             if name in self.phases:
                 pc = self.phases[name]
                 if pc.calls > 0:
                     parts.append(f"{name}={pc.calls}calls/${pc.cost_usd:.2f}")
-        total = self.total_cost_usd
+        failed = self.total_failed_attempts_cost_usd + self.unattributed_cost_usd
+        if failed > 0:
+            parts.append(f"failed/timed-out=${failed:.2f}")
+        total = self.total_spend_usd
         return f"cost: ${total:.2f} ({', '.join(parts)})"
 
     def phase_summary(self) -> str:
@@ -166,16 +252,29 @@ class CostTracker:
         lines = ["## Cost breakdown"]
         for name in sorted(self.phases):
             pc = self.phases[name]
-            lines.append(
+            line = (
                 f"- **{name}**: {pc.calls} calls, "
                 f"${pc.cost_usd:.4f}, "
                 f"{pc.wall_time_s:.1f}s wall"
             )
+            if pc.failed_calls or pc.failed_attempts_cost_usd:
+                line += (
+                    f" (+{pc.failed_calls} failed attempts, "
+                    f"${pc.failed_attempts_cost_usd:.4f})"
+                )
+            lines.append(line)
         lines.append(
             f"\n**Total**: {self.total_calls} calls, "
             f"${self.total_cost_usd:.4f}, "
             f"{self.total_wall_time_s:.1f}s wall"
         )
+        failed = self.total_failed_attempts_cost_usd + self.unattributed_cost_usd
+        if failed > 0:
+            lines.append(
+                f"**Total spend incl. failed/timed-out attempts**: "
+                f"${self.total_spend_usd:.4f} (${failed:.4f} produced "
+                f"no outcome)"
+            )
         cr = self.total_cache_read_tokens
         cw = self.total_cache_write_tokens
         if cr or cw:
@@ -183,3 +282,42 @@ class CostTracker:
                 f"**Prompt cache**: {cr:,} read, {cw:,} written"
             )
         return "\n".join(lines)
+
+
+def format_cost_summary(result: Any) -> str | None:
+    """Operator-facing "Cost:" line for the end-of-run summary.
+
+    One number with its own explanation: total spend (the LLM client's
+    ledger, which includes failed/timed-out attempts) with the
+    completed-vs-failed split when they differ, e.g.::
+
+        Cost: $8.08 ($2.82 across 3 completed reviews; $5.26 on
+        failed/timed-out attempts)
+
+    Returns None when the run spent nothing (no line printed).
+    Duck-typed over OrchestratorResult so the CLI shim stays thin.
+    """
+    completed_cost = getattr(result, "total_cost_usd", 0.0) or 0.0
+    failed_cost = getattr(result, "failed_attempts_cost_usd", 0.0) or 0.0
+    total_spend = max(
+        getattr(result, "llm_spend_usd", 0.0) or 0.0,
+        completed_cost + failed_cost,
+    )
+    if total_spend <= 0:
+        return None
+    # Everything the client billed beyond completed calls was consumed
+    # by attempts that produced no outcome.
+    failed_spend = max(0.0, total_spend - completed_cost)
+    if failed_spend < 0.005:
+        return f"Cost: ${total_spend:.2f}"
+    completed_reviews = max(
+        0,
+        (getattr(result, "reviewed", 0) or 0)
+        - (getattr(result, "errors", 0) or 0),
+    )
+    noun = "review" if completed_reviews == 1 else "reviews"
+    return (
+        f"Cost: ${total_spend:.2f} (${completed_cost:.2f} across "
+        f"{completed_reviews} completed {noun}; ${failed_spend:.2f} on "
+        f"failed/timed-out attempts)"
+    )

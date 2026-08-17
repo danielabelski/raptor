@@ -1281,8 +1281,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Audit complete in {duration_str}: {result.reviewed} reviewed, "
           f"{result.findings} findings, {result.suspicious} suspicious, "
           f"{result.clean} clean, {result.errors} errors", flush=True)
-    if result.total_cost_usd > 0:
-        print(f"Cost: ${result.total_cost_usd:.2f}", flush=True)
+    from core.audit.cost_tracker import format_cost_summary
+    cost_line = format_cost_summary(result)
+    if cost_line:
+        print(cost_line, flush=True)
     print(f"Report: {report_path}", flush=True)
     print(f"Terminated: {result.terminated_by}", flush=True)
 

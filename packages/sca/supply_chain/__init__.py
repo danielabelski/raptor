@@ -34,8 +34,8 @@ Deferred to follow-ups:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from collections.abc import Iterable
+from pathlib import Path
 
 from ..models import (
     Confidence,
@@ -45,26 +45,26 @@ from ..models import (
 )
 from . import artefacts as _artefacts
 from . import binary_in_package as _binary_in_package
-from . import exfil_destinations as _exfil
-from . import gha_drift as _gha_drift
-from . import gha_secret_flow as _gha_secret_flow
-from . import gha_freshness as _gha_freshness
-from . import gha_sunset as _gha_sunset
-from . import git_drift as _git_drift
+from . import branch_protection as _branch_protection
 from . import cargo_build_scripts as _cargo_build
 from . import commit_provenance as _commit_provenance
 from . import composer_lifecycle_hooks as _composer_lifecycle_hooks
+from . import exfil_destinations as _exfil
+from . import gha_drift as _gha_drift
+from . import gha_freshness as _gha_freshness
+from . import gha_secret_flow as _gha_secret_flow
+from . import gha_sunset as _gha_sunset
+from . import git_drift as _git_drift
 from . import install_hooks as _install_hooks
 from . import orphan_commit_dep as _orphan_commit_dep
 from . import python_imports as _python_imports
 from . import python_lifecycle_hooks as _python_lifecycle_hooks
-from . import rubygems_lifecycle_hooks as _rubygems_lifecycle_hooks
 from . import registry_metadata as _registry_metadata
+from . import rubygems_lifecycle_hooks as _rubygems_lifecycle_hooks
 from . import sentinel as _sentinel
 from . import slopsquat as _slopsquat
 from . import typosquat as _typosquat
 from . import typosquat_domain as _typosquat_domain
-from . import branch_protection as _branch_protection
 from . import workflow_signing as _workflow_signing
 
 logger = logging.getLogger(__name__)
@@ -417,7 +417,7 @@ def _install_hook_to_finding(
                 evidence["has_unconditional_sink_in_payload"] = any(
                     a.has_unconditional_dangerous_call for a in analyses
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug(
                 "guard analysis failed for %s",
                 hit.dependency.name, exc_info=True,
@@ -627,14 +627,18 @@ def _workflow_signing_to_finding(
     if ws.unsigned_commit is not None:
         hit = ws.unsigned_commit
         short_sha = hit.commit_sha[:12]
-        return SupplyChainFinding(
-            finding_id=(
-                f"sca:supplychain:workflow_unsigned_commit:"
-                f"{hit.commit_sha}"
-            ),
-            kind="workflow_unsigned_commit",
-            dependency=ws.dependency,
-            detail=(
+        if hit.sig_status == "B":
+            detail = (
+                f"commit {short_sha} modifying .github/workflows/** "
+                f"carries a signature that FAILS verification "
+                f"(status B — key available, check failed; author: "
+                f"{hit.author_name} <{hit.author_email}>, subject: "
+                f"{_truncate(hit.subject, limit=80)}). A present-but-"
+                f"bad signature is anomalous in any signing regime "
+                f"and worth a look regardless of the repo's norm."
+            )
+        else:
+            detail = (
                 f"commit {short_sha} modifying .github/workflows/** "
                 f"is unsigned (author: {hit.author_name} "
                 f"<{hit.author_email}>, subject: "
@@ -643,7 +647,15 @@ def _workflow_signing_to_finding(
                 f"stands out — Megalodon-class attacks push forged-"
                 f"identity commits to ``main`` and would produce "
                 f"exactly this signal."
+            )
+        return SupplyChainFinding(
+            finding_id=(
+                f"sca:supplychain:workflow_unsigned_commit:"
+                f"{hit.commit_sha}"
             ),
+            kind="workflow_unsigned_commit",
+            dependency=ws.dependency,
+            detail=detail,
             evidence={
                 "commit_sha": hit.commit_sha,
                 "sig_status": hit.sig_status,

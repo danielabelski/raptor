@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from core.config import RaptorConfig
@@ -85,16 +86,16 @@ logger = logging.getLogger(__name__)
 # — operator saw "git clone failed" with no signal that the proxy
 # allowlist was the missing piece. Add them so the egress proxy
 # accepts the redirected hosts.
-from ._proxy_hosts import proxy_hosts_for_git as _proxy_hosts_for_git  # noqa: E402
 # Backwards-compat re-export — historical callers + tests reference
 # ``core.git.clone._PROXY_HOSTS`` directly. Kept as the static-default
 # tuple (no operator override applied) so existing semantics hold;
 # new call sites should use ``_proxy_hosts_for_git()`` to pick up the
 # operator override config.
-from ._proxy_hosts import _DEFAULT_GIT_HOSTS as _PROXY_HOSTS  # noqa: F401, E402
+from ._proxy_hosts import _DEFAULT_GIT_HOSTS as _PROXY_HOSTS  # noqa: F401
+from ._proxy_hosts import proxy_hosts_for_git as _proxy_hosts_for_git
 
 
-def get_safe_git_env() -> Dict[str, str]:
+def get_safe_git_env() -> dict[str, str]:
     """Sanitised env for git subprocess. Same shape as scanner.py used
     pre-centralisation; promoted here so all callers share it."""
     return RaptorConfig.get_git_env()
@@ -132,6 +133,31 @@ def get_safe_git_env() -> Dict[str, str]:
 #   - credential.helper=: per-repo credential helper RCE
 #     (CVE-2017-1000117 family).
 #   - core.gitProxy=: per-repo proxy command RCE.
+#   - gpg.program=true (+ x509/ssh variants): `git log --format=%G?`
+#     and friends invoke the configured signature verifier once per
+#     signed commit walked, and the per-repo config can point it at
+#     any program. Pinned to `true` (no-op) so ordinary target-repo
+#     git ops never execute a repo-chosen verifier; the few callers
+#     that deliberately verify signatures re-enable it through the
+#     system binaries via `signature_probe_overrides()` below.
+#   - diff.external=: per-repo external diff command. git treats the
+#     empty value as a command to exec, so a `git diff` through these
+#     overrides FAILS LOUDLY unless the caller passes `--no-ext-diff`
+#     — deliberate: a diff invocation that forgot to disable external
+#     drivers fails closed instead of silently honouring a repo-named
+#     program. Per-driver `diff.<name>.command` entries share the
+#     arbitrary-name problem filters have (next paragraph); the
+#     explicit `--no-ext-diff` covers both.
+#
+# KNOWN LIMIT — clean/smudge filter drivers (`filter.<name>.clean` et
+# al.) cannot be blanket-neutralised here: the driver names are
+# repo-chosen, so there is no finite `-c` list that covers them. Any
+# git operation that (re)hashes worktree content — `git status`'s
+# index refresh, `git add`, checkout — runs them. Callers probing a
+# target repo must therefore stick to plumbing that never re-hashes
+# worktree files: `rev-parse`, `diff-index` WITHOUT a preceding
+# refresh (stat-cache comparison only), `ls-files`. See
+# core.run.provenance.target_snapshot for the pattern.
 #
 # Use `safe_git_command(*args)` below instead of building bare
 # `["git", ...]` lists when operating on a target repo.
@@ -146,6 +172,10 @@ _SAFE_GIT_OVERRIDES = (
     "-c", "core.gitProxy=",
     "-c", "protocol.file.allow=user",
     "-c", "protocol.ext.allow=never",
+    "-c", "gpg.program=true",
+    "-c", "gpg.x509.program=true",
+    "-c", "gpg.ssh.program=true",
+    "-c", "diff.external=",
 )
 
 
@@ -170,6 +200,35 @@ def safe_git_command(*args: str) -> list:
     in-place if needed.
     """
     return ["git", *_SAFE_GIT_OVERRIDES, *args]
+
+
+def signature_probe_overrides() -> list:
+    """Extra ``-c`` pairs for the few call sites that deliberately verify
+    commit signatures (``git log`` with ``%G?`` formats).
+
+    ``_SAFE_GIT_OVERRIDES`` pins every ``gpg.*.program`` to ``true`` so an
+    ordinary target-repo git op never executes a repo-configured verifier.
+    These pairs re-enable verification through the SYSTEM binaries
+    (resolved on PATH at call time) — later ``-c`` occurrences win, so
+    appending them after the safe overrides restores real verification
+    without ever honouring a program named by the target's own config::
+
+        cmd = safe_git_command(*signature_probe_overrides(), "log", ...)
+
+    A verifier that isn't installed keeps its neutral pin; the caller then
+    sees unverifiable signature statuses rather than an error, which is
+    the honest degradation (signature status "unknown", never fabricated).
+    """
+    pairs: list = []
+    for key, prog in (
+        ("gpg.program", "gpg"),
+        ("gpg.x509.program", "gpgsm"),
+        ("gpg.ssh.program", "ssh-keygen"),
+    ):
+        path = shutil.which(prog)
+        if path:
+            pairs += ["-c", f"{key}={path}"]
+    return pairs
 
 
 def _validate_writable_path(p: Path, *, role: str) -> None:
@@ -263,7 +322,7 @@ def _validate_writable_path(p: Path, *, role: str) -> None:
 
 
 def clone_repository(
-    url: str, target: Path, depth: Optional[int] = 1,
+    url: str, target: Path, depth: int | None = 1,
 ) -> bool:
     """Shallow-clone ``url`` into ``target`` via the sandboxed runner.
 
@@ -392,14 +451,14 @@ def fetch_commit(
     sandbox_target = str(repo_dir.parent)
 
     def _run(cmd: list, *, network: bool):
-        kwargs = dict(
-            target=sandbox_target,
-            output=sandbox_target,
-            env=env,
-            timeout=timeout,
-            capture_output=True,
-            text=True,
-        )
+        kwargs = {
+            "target": sandbox_target,
+            "output": sandbox_target,
+            "env": env,
+            "timeout": timeout,
+            "capture_output": True,
+            "text": True,
+        }
         if network:
             return run_untrusted_networked(
                 cmd, proxy_hosts=proxy_hosts, fake_home=True, **kwargs)
@@ -466,7 +525,7 @@ def ls_remote(
     *,
     proxy_hosts: Iterable[str],
     timeout: int = 20,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Run ``git ls-remote --heads --tags`` against ``url``.
 
     Read-only operation that returns the refs the remote advertises.
@@ -639,7 +698,7 @@ def ls_remote(
             f"git ls-remote failed: {stderr or stdout or 'unknown error'}"
         )
 
-    refs: List[Tuple[str, str]] = []
+    refs: list[tuple[str, str]] = []
     for line in (proc.stdout or "").splitlines():
         # Each line is: ``<40-hex sha>\t<ref>``.
         parts = line.split("\t", 1)

@@ -10,7 +10,6 @@ import pytest
 
 from core.git.clone import clone_repository, fetch_commit, ls_remote
 
-
 _VALID_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
 
@@ -548,3 +547,49 @@ def test_ls_remote_uses_strict_40char_sha_regex() -> None:
             proxy_hosts=_KERNEL_HOSTS,
         )
     assert refs == []  # nothing parsed
+
+
+def test_safe_git_command_pins_signature_and_diff_programs() -> None:
+    """Ordinary target-repo git ops must never execute a program named by
+    the repo's own config: the safety overrides pin every ``gpg.*.program``
+    to the no-op ``true`` and clear ``diff.external``."""
+    from core.git.clone import safe_git_command
+    joined = " ".join(safe_git_command("log", "-1"))
+    assert "gpg.program=true" in joined
+    assert "gpg.x509.program=true" in joined
+    assert "gpg.ssh.program=true" in joined
+    assert "diff.external=" in joined
+
+
+def test_signature_probe_overrides_resolve_system_binaries() -> None:
+    """The opt-in signature probe re-enables verification through
+    PATH-resolved system binaries only — never a repo-named program — and
+    emits well-formed ``-c key=value`` pairs."""
+    import shutil
+
+    from core.git.clone import signature_probe_overrides
+    pairs = signature_probe_overrides()
+    assert len(pairs) % 2 == 0
+    keys = []
+    for flag, kv in zip(pairs[::2], pairs[1::2]):
+        assert flag == "-c"
+        key, _, value = kv.partition("=")
+        keys.append(key)
+        assert Path(value).is_absolute()
+    assert set(keys) <= {"gpg.program", "gpg.x509.program", "gpg.ssh.program"}
+    if shutil.which("gpg"):
+        assert "gpg.program" in keys
+
+
+def test_signature_probe_overrides_take_precedence() -> None:
+    """git honours the LAST ``-c`` occurrence, so the probe pairs must land
+    after the neutral pins for re-enablement to take effect."""
+    from core.git.clone import safe_git_command, signature_probe_overrides
+    probe = signature_probe_overrides()
+    if not probe:
+        pytest.skip("no signature programs installed on this host")
+    cmd = safe_git_command(*probe, "log")
+    neutral = cmd.index("gpg.program=true")
+    real = [i for i, v in enumerate(cmd)
+            if v.startswith("gpg.program=") and v != "gpg.program=true"]
+    assert real and real[0] > neutral

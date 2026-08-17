@@ -35,6 +35,7 @@ def _have_git() -> bool:
     try:
         proc = subprocess.run(
             ["git", "--version"], capture_output=True, timeout=5,
+            check=False,
         )
         return proc.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
@@ -106,10 +107,12 @@ def _commit(
 # Positive cases — conjunction fires
 # ---------------------------------------------------------------------------
 
-def test_canonical_dependabot_email_does_not_fire(tmp_path: Path) -> None:
+def test_canonical_dependabot_email_downgrades(tmp_path: Path) -> None:
     """A real dependabot rebase has the canonical email shape AND
     will commonly show 100+ day skew — the legitimate-but-skewed
-    state.  Must NOT fire (FP suppression)."""
+    state. The author email is free text, so on an unsigned commit
+    the canonical shape can't justify suppression; the conjunction
+    still surfaces, at reduced severity/confidence."""
     _init_repo(tmp_path)
     _commit(
         tmp_path, filename="package.json", content='{"name": "x"}',
@@ -119,7 +122,9 @@ def test_canonical_dependabot_email_does_not_fire(tmp_path: Path) -> None:
         commit_date="2026-06-01T00:00:00+00:00",   # 151 days later
     )
     hits = commit_provenance.scan_target(tmp_path)
-    assert hits == []
+    assert len(hits) == 1
+    assert hits[0].severity == "medium"
+    assert hits[0].confidence.level == "low"
 
 
 def test_bot_name_with_non_canonical_email_fires(tmp_path: Path) -> None:
@@ -157,7 +162,7 @@ def test_bot_name_with_noreply_but_no_numeric_prefix_fires(
     assert hits
 
 
-def test_canonical_renovate_email_suppressed(tmp_path: Path) -> None:
+def test_canonical_renovate_email_downgrades(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _commit(
         tmp_path, filename="package.json", content='{"name": "y"}',
@@ -167,10 +172,12 @@ def test_canonical_renovate_email_suppressed(tmp_path: Path) -> None:
         commit_date="2026-06-01T00:00:00+00:00",
     )
     hits = commit_provenance.scan_target(tmp_path)
-    assert hits == []
+    assert [(h.severity, h.confidence.level) for h in hits] == [
+        ("medium", "low"),
+    ]
 
 
-def test_canonical_github_actions_email_suppressed(tmp_path: Path) -> None:
+def test_canonical_github_actions_email_downgrades(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _commit(
         tmp_path, filename="requirements.txt", content="flask==2.0\n",
@@ -181,7 +188,9 @@ def test_canonical_github_actions_email_suppressed(tmp_path: Path) -> None:
         commit_date="2026-06-01T00:00:00+00:00",
     )
     hits = commit_provenance.scan_target(tmp_path)
-    assert hits == []
+    assert [(h.severity, h.confidence.level) for h in hits] == [
+        ("medium", "low"),
+    ]
 
 
 # ---------------------------------------------------------------------------

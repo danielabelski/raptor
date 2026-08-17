@@ -416,7 +416,9 @@ class TestNeverAVerdict:
 
         src = inspect.getsource(orch_mod._compute_audit_prep)
         idx_fix = src.index("apply_fix_history(")
-        idx_budget = src.index("gaps = gaps[: config.budget]")
+        # The budget cut is the truncation-reporting helper (the raw
+        # slice it replaced would silently drop the tail).
+        idx_budget = src.index("truncate_gaps_to_budget(")
         assert idx_fix < idx_budget
 
 

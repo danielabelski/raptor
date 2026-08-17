@@ -6865,9 +6865,35 @@ def _study_consumer(
 # include resolution) on top of the LLM seeding call's timeout.
 _STUDY_PREP_MECHANICAL_MARGIN_S = 300
 
+# Size scaling for the mechanical share: prep's extraction walks the
+# whole target, so a fixed margin that fits a 10 KLoC repo guarantees
+# a timeout on a 500 KLoC one — and a timed-out prep disables domain
+# models for the entire run. Per-KLoC increment, bounded so a huge
+# monorepo can't stretch the cap indefinitely.
+_STUDY_PREP_PER_KLOC_S = 3.0
+_STUDY_PREP_EXTRA_CAP_S = 900
 
-def _study_prep_timeout_s() -> int:
-    """Subprocess timeout for study-prep, sized to its call class.
+
+def _checklist_kloc(checklist: dict | None) -> float:
+    """Approximate target size (KLoC) from the checklist's function
+    line spans. Returns 0.0 when the checklist is absent or carries no
+    usable line numbers — callers fall back to the unscaled cap."""
+    total_lines = 0
+    for fi in (checklist or {}).get("files", []):
+        for item in fi.get("items", []) or []:
+            try:
+                ls = int(item.get("line_start") or 0)
+                le = int(item.get("line_end") or 0)
+            except (TypeError, ValueError):
+                continue
+            if 0 < ls <= le:
+                total_lines += le - ls + 1
+    return total_lines / 1000.0
+
+
+def _study_prep_timeout_s(checklist: dict | None = None) -> int:
+    """Subprocess timeout for study-prep, sized to its call class and
+    the target's size.
 
     Prep is mechanical extraction PLUS one LLM concept-seeding call,
     so its ceiling must cover the configured primary model's per-call
@@ -6875,6 +6901,12 @@ def _study_prep_timeout_s() -> int:
     margin. The old hardcoded 120s guaranteed a timeout on any
     cc-transport run whose seeding call ran long — and each timed-out
     prep silently disabled the domain-model subsystem.
+
+    The mechanical margin scales with target size (per-KLoC increment
+    derived from the checklist, bounded by
+    ``_STUDY_PREP_EXTRA_CAP_S``): the extraction cost grows with the
+    tree, and a size-blind cap disabled domain models on every large
+    target.
     """
     llm_timeout = 600
     try:
@@ -6884,7 +6916,11 @@ def _study_prep_timeout_s() -> int:
             llm_timeout = max(int(mc.timeout), 120)
     except Exception:  # config probing is best-effort
         logger.debug("study-prep timeout probe failed", exc_info=True)
-    return llm_timeout + _STUDY_PREP_MECHANICAL_MARGIN_S
+    extra = min(
+        _STUDY_PREP_EXTRA_CAP_S,
+        int(_checklist_kloc(checklist) * _STUDY_PREP_PER_KLOC_S),
+    )
+    return llm_timeout + _STUDY_PREP_MECHANICAL_MARGIN_S + extra
 
 
 def _announce_study_disabled(reason: str) -> None:
@@ -7003,7 +7039,7 @@ def _study_consumer_loop(
             # ``continue`` retried the whole prep from scratch on
             # every subsequent batch, re-paying the full timeout each
             # time while the domain model stayed silently empty.
-            prep_timeout = _study_prep_timeout_s()
+            prep_timeout = _study_prep_timeout_s(checklist)
             try:
                 prep_result = subprocess.run(
                     prep_cmd,
@@ -7021,8 +7057,26 @@ def _study_consumer_loop(
                     )
                     break
             except subprocess.TimeoutExpired:
+                # Surface what the cap was sized for and how it
+                # relates to the remaining run budget, so the
+                # operator can tell "cap too small for this target"
+                # apart from "run nearly out of time anyway".
+                _kloc = _checklist_kloc(checklist)
+                _detail = f"cap sized for ~{_kloc:.0f} KLoC"
+                if config.max_seconds:
+                    _remaining = max(
+                        0.0,
+                        config.max_seconds
+                        - (time.monotonic() - start_time),
+                    )
+                    _detail += (
+                        f"; needed >{prep_timeout}s, "
+                        f"{_remaining:.0f}s left of the run's "
+                        f"{config.max_seconds:.0f}s budget"
+                    )
                 _announce_study_disabled(
-                    f"study-prep timed out after {prep_timeout}s",
+                    f"study-prep timed out after {prep_timeout}s "
+                    f"({_detail})",
                 )
                 break
             except Exception:

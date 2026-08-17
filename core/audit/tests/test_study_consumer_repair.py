@@ -59,6 +59,48 @@ class TestStudyPrepTimeout:
         self._mock_primary(monkeypatch, None)
         assert _study_prep_timeout_s() > 120
 
+    @staticmethod
+    def _checklist(total_lines, *, per_fn=500):
+        items = []
+        line = 1
+        remaining = total_lines
+        while remaining > 0:
+            span = min(per_fn, remaining)
+            items.append(
+                {"name": f"f{line}", "line_start": line,
+                 "line_end": line + span - 1},
+            )
+            line += span
+            remaining -= span
+        return {"files": [{"path": "big.c", "items": items}]}
+
+    def test_cap_scales_with_target_size(self, monkeypatch):
+        # A size-blind 900s cap timed out on a large target and
+        # disabled domain models for the whole run. 100 KLoC at
+        # 3 s/KLoC buys 300 extra seconds.
+        self._mock_primary(monkeypatch, 600)
+        checklist = self._checklist(100_000)
+        assert _study_prep_timeout_s(checklist) == 900 + 300
+
+    def test_scaling_is_bounded(self, monkeypatch):
+        # A monorepo can't stretch the cap indefinitely.
+        self._mock_primary(monkeypatch, 600)
+        checklist = self._checklist(1_000_000)   # would be +3000s raw
+        assert _study_prep_timeout_s(checklist) == 900 + 900
+
+    def test_small_target_keeps_base_cap(self, monkeypatch):
+        self._mock_primary(monkeypatch, 600)
+        checklist = self._checklist(200)   # 0.2 KLoC → +0s
+        assert _study_prep_timeout_s(checklist) == 900
+
+    def test_unusable_checklist_falls_back(self, monkeypatch):
+        self._mock_primary(monkeypatch, 600)
+        assert _study_prep_timeout_s(None) == 900
+        assert _study_prep_timeout_s({}) == 900
+        assert _study_prep_timeout_s(
+            {"files": [{"items": [{"line_start": None, "line_end": "x"}]}]},
+        ) == 900
+
 
 def _capture_warnings(monkeypatch):
     """Capture rendered logger.warning lines from the orchestrator."""
@@ -172,6 +214,55 @@ class TestPrepFailureDisablesLoudly:
         disabled = [m for m in warnings if "DISABLED" in m]
         assert len(disabled) == 1
         assert "no study-list.json" in disabled[0]
+
+    def test_timeout_warning_surfaces_size_and_budget(
+        self, monkeypatch, tmp_path,
+    ):
+        # The size-scaled cap is used for the subprocess AND the
+        # disable warning states what the cap was sized for plus the
+        # remaining-vs-needed picture against the run's time budget.
+        import core.audit.orchestrator as _orch
+
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+
+        monkeypatch.setattr(_orch.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            "core.llm.config._get_default_primary_model",
+            lambda prefer=None: types.SimpleNamespace(timeout=600),
+        )
+        warnings = _capture_warnings(monkeypatch)
+
+        config = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path, max_seconds=3600,
+        )
+        checklist = {"files": [{"path": "big.c", "items": [
+            {"name": "f", "line_start": 1, "line_end": 100_000},
+        ]}]}
+        shared = types.SimpleNamespace(domain_model=None)
+        _study_consumer_loop(
+            _queue_with_batches(2), config, shared,
+            lambda ctx, cfg: None,
+            _LockedOutcomes(), OrchestratorResult(),
+            checklist=checklist,
+            context_map=None,
+            evidence_index={},
+            sarif_cache=None,
+            entry_points=set(),
+            start_time=time.monotonic(),
+            on_progress=None,
+        )
+
+        assert seen["timeout"] == 1200   # 900 base + 100 KLoC × 3 s
+        disabled = [m for m in warnings if "DISABLED" in m]
+        assert len(disabled) == 1
+        assert "timed out after 1200s" in disabled[0]
+        assert "~100 KLoC" in disabled[0]
+        assert "needed >1200s" in disabled[0]
+        assert "left of the run's 3600s budget" in disabled[0]
 
     def test_prep_uses_call_class_timeout(self, monkeypatch, tmp_path):
         import core.audit.orchestrator as _orch

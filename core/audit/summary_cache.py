@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -282,19 +283,40 @@ def _parse_package_json(content: str, library: str) -> Optional[str]:
 
 
 def _parse_go_mod(content: str, library: str) -> Optional[str]:
+    """Match by exact module path, or by suffix on a '/' boundary —
+    "crypto" matches golang.org/x/crypto but NOT github.com/x/cryptoutil.
+    Substring matching returned whichever unrelated module happened to
+    contain the name first."""
     for line in content.splitlines():
         parts = line.strip().split()
-        if len(parts) >= 2 and library in parts[0]:
-            return parts[1].lstrip("v")
+        if parts and parts[0] == "require" and len(parts) >= 3:
+            # single-line `require example.com/mod v1.2.3`
+            parts = parts[1:]
+        if len(parts) >= 2:
+            module = parts[0]
+            if module == library or module.endswith("/" + library):
+                return parts[1].lstrip("v")
     return None
+
+
+_CARGO_INLINE_VERSION_RE = re.compile(r'version\s*=\s*"([^"]+)"')
 
 
 def _parse_cargo_toml(content: str, library: str) -> Optional[str]:
     for line in content.splitlines():
         line = line.strip()
         if line.startswith(f'{library} ') or line.startswith(f'{library}='):
-            for sep in ("=",):
-                if sep in line:
-                    rhs = line.split(sep, 1)[1].strip().strip('"').strip("'")
-                    return rhs.lstrip("^~>=<").split(",")[0].strip()
+            if "=" not in line:
+                continue
+            rhs = line.split("=", 1)[1].strip()
+            if rhs.startswith("{"):
+                # Inline table: foo = { version = "1.0", features = [...] }
+                # Naive quote-stripping returned '{ version = "1.0' here,
+                # which then became the cache directory / version key.
+                m = _CARGO_INLINE_VERSION_RE.search(rhs)
+                if m:
+                    return m.group(1).lstrip("^~>=<").split(",")[0].strip()
+                return None  # git/path dependency — no version key
+            rhs = rhs.strip('"').strip("'")
+            return rhs.lstrip("^~>=<").split(",")[0].strip()
     return None

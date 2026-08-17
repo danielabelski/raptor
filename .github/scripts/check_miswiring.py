@@ -63,6 +63,13 @@ PY_ROOTS = ["core", "packages", "plugins", "libexec", "engine"]
 TEXT_ROOTS = ["docs", ".claude", "bin", "tiers", ".github"]
 TEXT_ROOT_SKIP = SKIP_DIR_NAMES | {"worktrees"}
 
+# The baseline must never join the reference corpus: its keys name every
+# baselined symbol and artifact, so indexing it would self-suppress
+# exactly the findings it records — a baselined dead symbol or orphan
+# config field could never fire (or go genuinely stale) again, and the
+# census would silently go vacuous.
+CORPUS_EXCLUDE_NAMES = {"miswiring_baseline.json"}
+
 
 def iter_text_root_files(root: Path):
     for sub in TEXT_ROOTS:
@@ -427,6 +434,8 @@ class RepoIndex:
                 self._add_text_file(p)
 
     def _add_text_file(self, p: Path) -> None:
+        if p.name in CORPUS_EXCLUDE_NAMES:
+            return
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:

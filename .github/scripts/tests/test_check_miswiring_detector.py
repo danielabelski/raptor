@@ -164,6 +164,78 @@ class TestTextCorpusRoots:
         assert "skill_invoked_entry" in _dead_names(detector, root)
 
 
+class TestBaselineCorpusExclusion:
+    """The baseline file names every baselined symbol; if it joined the
+    reference corpus it would self-suppress exactly the findings it
+    records, so baselined entries could never fire or go stale again."""
+
+    def _repo_with_dead_symbol(self, tmp_path) -> Path:
+        pkg = tmp_path / "core" / "api"
+        pkg.mkdir(parents=True)
+        (pkg / "surface.py").write_text(
+            "def orphaned_entry_nobody_calls():\n    return 1\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_baseline_file_does_not_self_suppress(self, detector, tmp_path):
+        root = self._repo_with_dead_symbol(tmp_path)
+        bl = root / ".github" / "scripts" / "miswiring_baseline.json"
+        bl.parent.mkdir(parents=True)
+        bl.write_text(
+            '{"entries": {"dead:dead_function:core/api/surface.py:'
+            'orphaned_entry_nobody_calls": {"note": "triaged"}}}\n',
+            encoding="utf-8",
+        )
+        assert "orphaned_entry_nobody_calls" in _dead_names(detector, root)
+
+    def test_other_github_text_still_joins_corpus(self, detector, tmp_path):
+        """The exclusion is surgical: any other .github text file still
+        keeps referenced symbols alive."""
+        root = self._repo_with_dead_symbol(tmp_path)
+        notes = root / ".github" / "scripts" / "notes.json"
+        notes.parent.mkdir(parents=True)
+        notes.write_text(
+            '{"hint": "call orphaned_entry_nobody_calls on boot"}\n',
+            encoding="utf-8",
+        )
+        assert "orphaned_entry_nobody_calls" not in _dead_names(
+            detector, root,
+        )
+
+    def test_baseline_mention_does_not_count_as_artifact_reference(
+        self, detector, tmp_path,
+    ):
+        """Artifact names inside the baseline's own keys must not feed
+        the artifact occurrence scan."""
+        pkg = tmp_path / "core" / "foo"
+        pkg.mkdir(parents=True)
+        (pkg / "writer.py").write_text(
+            "import json\n"
+            "\n"
+            "\n"
+            "def emit(out_dir, rows):\n"
+            "    with open(out_dir / 'run-report.json', 'w') as f:\n"
+            "        json.dump(rows, f)\n",
+            encoding="utf-8",
+        )
+        bl = tmp_path / ".github" / "scripts" / "miswiring_baseline.json"
+        bl.parent.mkdir(parents=True)
+        bl.write_text(
+            '{"entries": {"artifacts:write_only_artifact::run-report.json":'
+            ' {"note": "reader lands later"}}}\n',
+            encoding="utf-8",
+        )
+        idx = _index(detector, tmp_path)
+        findings, _sup = detector.find_artifacts(idx)
+        assert any(
+            f["kind"] == "write_only_artifact"
+            and f["name"] == "run-report.json"
+            and all("miswiring_baseline" not in m for m in f["mentions"])
+            for f in findings
+        )
+
+
 class TestAtomicWriteIdiom:
     def test_tempfile_rename_writer_is_not_orphan_reader(
         self, detector, tmp_path,

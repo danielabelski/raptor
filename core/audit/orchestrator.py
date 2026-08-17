@@ -160,6 +160,9 @@ from .loaders import (
     load_fuzz_coverage as _load_fuzz_coverage,
 )
 from .loaders import (
+    load_fuzz_coverage_any as _load_fuzz_coverage_any,
+)
+from .loaders import (
     load_or_build_taint_approx as _load_or_build_taint_approx_raw,
 )
 from .loaders import (
@@ -2421,7 +2424,25 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         logger.debug("typestate model extraction failed", exc_info=True)
 
     coverage_records = _load_coverage_records(config.out_dir)
+    # Per-function fuzz coverage: this run's own artifact, else the
+    # newest sibling /fuzz run in the same project (the producer
+    # writes into ITS run dir, one directory over).
     fuzz_coverage = _load_fuzz_coverage(config.out_dir)
+    if fuzz_coverage is None:
+        try:
+            fuzz_coverage = _load_fuzz_coverage_any(
+                config.out_dir,
+                _sibling_run_dirs(
+                    config.out_dir, target_path=config.target_path,
+                ),
+            )
+            if fuzz_coverage is not None:
+                logger.info(
+                    "fuzz coverage: imported per-function map from a "
+                    "sibling /fuzz run",
+                )
+        except Exception:
+            logger.debug("sibling fuzz coverage import failed", exc_info=True)
 
     _project_dir = (
         Path(config.out_dir).parent
@@ -2578,6 +2599,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         open_constraint_keys=open_keys,
         tool_failures=tool_failures,
         fuzz_coverage=fuzz_cov_files,
+        fuzz_function_coverage=fuzz_coverage,
         strategy_weights=strat_weights,
         binary_bridge=binary_bridge_early,
         new_functions=new_fn_keys or None,

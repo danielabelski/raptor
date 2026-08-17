@@ -45,6 +45,8 @@ SCORE_CALLEE_OF_ENTRY = 3
 SCORE_EXPORTED = 2
 SCORE_PARTIAL_TOOL_COVERAGE = 2
 SCORE_NOT_FUZZED = 2
+SCORE_FUZZ_UNREACHED = 3
+SCORE_FUZZ_REACHED_CLEAN = -1
 SCORE_UNCHECKED_FLOW = 2
 SCORE_FILE_HAS_ENTRY_POINT = 1
 SCORE_NEW_CODE = 3
@@ -62,6 +64,11 @@ _COMPLEX_SLOC = 80
 _MODERATE_SLOC = 30
 _LARGE_SLOC = 200
 
+# "Substantial coverage" threshold for the mild reached-crash-free
+# demotion — mirrors gaps._FUZZ_HEAVY_ITERATIONS: below this a clean
+# fuzz record says little.
+FUZZ_SUBSTANTIAL_ITERATIONS = 10_000
+
 _EXPORTED_VISIBILITY = frozenset({"extern", "exported", "public"})
 
 
@@ -73,6 +80,7 @@ def score_functions(
     tool_coverage: dict[str, set[str]] | None = None,
     tool_failures: set[str] | None = None,
     fuzz_coverage: set[str] | None = None,
+    fuzz_function_coverage: dict[str, Any] | None = None,
     new_functions: set[str] | None = None,
     threat_model: dict[str, Any] | None = None,
     open_constraint_keys: set[str] | None = None,
@@ -92,6 +100,12 @@ def score_functions(
         tool_coverage: {file_path: set_of_tool_names} — files with no tools
             get SCORE_NO_TOOL_COVERAGE, files with only one tool get
             SCORE_PARTIAL_TOOL_COVERAGE.
+        fuzz_function_coverage: Per-function coverage-fuzz.json document
+            (``files.{path}.functions.{name}`` records with ``reached``,
+            ``iterations``, ``crashes``). Functions the fuzzer never
+            reached get SCORE_FUZZ_UNREACHED; functions reached with
+            substantial iterations and zero crashes get the mild
+            SCORE_FUZZ_REACHED_CLEAN demotion.
         new_functions: Set of file:function keys from inventory diff
             (added or modified functions). Gets SCORE_NEW_CODE.
         threat_model: Parsed threat model dict.  When it carries a
@@ -161,6 +175,26 @@ def score_functions(
         if fuzz_coverage is not None and gap["file"] not in fuzz_coverage:
             score += SCORE_NOT_FUZZED
 
+        if fuzz_function_coverage:
+            entry = _fuzz_function_entry(
+                fuzz_function_coverage, gap["file"], gap["name"],
+            )
+            if entry is not None:
+                if not entry.get("reached", True):
+                    # Fuzzing examined the file but never exercised
+                    # this function — dynamic analysis can't see it,
+                    # so audit review should.
+                    score += SCORE_FUZZ_UNREACHED
+                elif (
+                    entry.get("iterations", 0)
+                    >= FUZZ_SUBSTANTIAL_ITERATIONS
+                    and entry.get("crashes", 0) == 0
+                ):
+                    # Exercised a lot, never crashed: mild demotion
+                    # only — fuzzing finds shallow bugs, not logic
+                    # ones.
+                    score += SCORE_FUZZ_REACHED_CLEAN
+
         visibility = (gap.get("metadata") or {}).get("visibility", "")
         if visibility in _EXPORTED_VISIBILITY:
             score += SCORE_EXPORTED
@@ -210,6 +244,20 @@ def score_functions(
         g["name"],
     ))
     return scored
+
+
+def _fuzz_function_entry(
+    fuzz_data: dict[str, Any],
+    file_path: str,
+    function_name: str,
+) -> dict[str, Any] | None:
+    """Per-function record lookup (same shapes as loaders.fuzz_coverage_for)."""
+    flat = fuzz_data.get(f"{file_path}:{function_name}")
+    if isinstance(flat, dict):
+        return flat
+    file_data = fuzz_data.get("files", {}).get(file_path, {})
+    entry = file_data.get("functions", {}).get(function_name)
+    return entry if isinstance(entry, dict) else None
 
 
 def load_tool_coverage(run_dirs: list[Path]) -> dict[str, set[str]]:

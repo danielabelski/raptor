@@ -101,6 +101,38 @@ def load_fuzz_coverage(out_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+def load_fuzz_coverage_any(
+    out_dir: Path,
+    sibling_dirs: list[Path] | tuple[Path, ...] = (),
+) -> dict[str, Any] | None:
+    """Per-function fuzz coverage from this run, else newest sibling.
+
+    In project mode /fuzz writes ``coverage-fuzz.json`` into its OWN
+    run directory — the per-function consumer only ever read the audit
+    run's dir, so the artifact was invisible one directory over. Falls
+    back to the newest sibling run (by artifact mtime) that carries a
+    per-function ``files`` map.
+    """
+    own = load_fuzz_coverage(out_dir)
+    if own is not None:
+        return own
+    best: tuple[int, dict[str, Any]] | None = None
+    for d in sibling_dirs or ():
+        path = Path(d) / "coverage-fuzz.json"
+        try:
+            if not path.is_file():
+                continue
+            data = load_fuzz_coverage(Path(d))
+            if not data or not data.get("files"):
+                continue
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            continue
+        if best is None or mtime > best[0]:
+            best = (mtime, data)
+    return best[1] if best else None
+
+
 def fuzz_coverage_for(
     fuzz_data: dict[str, Any],
     file_path: str,

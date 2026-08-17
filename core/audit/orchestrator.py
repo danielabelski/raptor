@@ -12639,7 +12639,10 @@ def _persist_project_learnings(
         if not text:
             continue
         source_fn = obs.get("source", "")
-        if obs.get("tool_confirmed"):
+        # _accumulate_observations tags tool-confirmed observations
+        # with kind="tool_confirmation" (no producer ever set a
+        # "tool_confirmed" flag).
+        if obs.get("kind") == "tool_confirmation":
             learning = Learning(
                 text=text,
                 category="pattern",

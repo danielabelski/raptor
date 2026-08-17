@@ -23,7 +23,7 @@ import unittest
 from unittest.mock import patch
 
 import core.logging as core_logging
-from core.logging import RaptorLogger, log_security_event
+from core.logging import log_security_event
 
 
 class _CapturingHandler(logging.Handler):
@@ -39,7 +39,12 @@ class _CapturingHandler(logging.Handler):
 
 class _SecurityEventTestBase(unittest.TestCase):
     def setUp(self) -> None:
-        self.raptor_logger = RaptorLogger()
+        # Resolve the class through the module global (call-time
+        # binding), not the collection-time import: an earlier test
+        # reloading core.logging leaves the imported symbol pointing at
+        # a stale class whose singleton is not the one the code under
+        # test emits through.
+        self.raptor_logger = core_logging.RaptorLogger()
         self.handler = _CapturingHandler()
         self.raptor_logger.logger.addHandler(self.handler)
 
@@ -80,8 +85,13 @@ class MethodEmissionTest(_SecurityEventTestBase):
         self.assertEqual(record.returncode, 1)
 
     def test_never_raises_on_sink_failure(self) -> None:
+        # Patch the emitting INSTANCE, not the class symbol: a
+        # class-level patch silently misses when an earlier test
+        # reloaded core.logging (the singleton then belongs to a
+        # different class object) and the real sink runs anyway.
         with patch.object(
-            RaptorLogger, "warning", side_effect=OSError("sink down"),
+            self.raptor_logger, "warning",
+            side_effect=OSError("sink down"),
         ):
             # Must not propagate — emission is best-effort.
             self.raptor_logger.log_security_event("probe", "sink failure")
@@ -117,8 +127,13 @@ class ModuleFunctionTest(_SecurityEventTestBase):
         self.assertEqual(self._security_records(), [])
 
     def test_never_raises_on_sink_failure(self) -> None:
+        # The module function resolves RaptorLogger from the module
+        # globals at call time — patch the instance that resolution
+        # will return, so the test stays hermetic even after an
+        # earlier test reloaded core.logging.
+        emitter = core_logging.RaptorLogger()
         with patch.object(
-            RaptorLogger, "warning", side_effect=OSError("sink down"),
+            emitter, "warning", side_effect=OSError("sink down"),
         ):
             log_security_event("probe", "sink failure")
         self.assertEqual(self._security_records(), [])

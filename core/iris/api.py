@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from core.evidence import EvidenceTier, TIER_RANK
+from core.evidence import TIER_RANK, EvidenceTier
 
 from .specs import TaintSpec
 from .store import load_specs, load_store_metadata, save_specs
@@ -154,15 +154,15 @@ def get_bypass_findings(
 ) -> list:
     """Load bypass findings written by the orchestrator.
 
-    Bypass findings are written to ``bypass-findings.json`` in the
-    run output directory by the compositional analysis phase.
+    Bypass findings are written to ``iris-bypass-findings.json`` in
+    the run output directory by the compositional analysis phase.
     Returns a list of ``BypassFinding`` objects.
     """
     from .assumptions import BypassFinding
 
     if out_dir is None:
         return []
-    path = Path(out_dir) / "bypass-findings.json"
+    path = Path(out_dir) / "iris-bypass-findings.json"
     if not path.is_file():
         return []
     try:

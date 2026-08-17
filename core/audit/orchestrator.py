@@ -32,6 +32,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from core.analysis.reachability_gates import (
@@ -2966,11 +2967,272 @@ def _heuristic_bypass_findings(
                         "function": bf.caller_function,
                         "cwe": bf.assumption.bug_class or "",
                         "confidence": "medium",
+                        "missing_enforcer": bf.missing_enforcer,
                     }
                 )
     except Exception:
         logger.debug("IRIS heuristic assumption bypass failed", exc_info=True)
     return findings
+
+
+def _write_iris_bypass_findings(
+    out_dir: Path,
+    bypass_findings: list[Any],
+) -> None:
+    """Serialize refine-loop bypass findings round-trippably.
+
+    Uses ``BypassFinding.to_dict()`` so ``core.iris.api.
+    get_bypass_findings`` can reconstruct the objects — the previous
+    hand-rolled dict stringified the assumption and dropped
+    ``evidence_tier`` / ``line_info`` / transitivity, making the file
+    unreadable by its own reader.
+    """
+    try:
+        path = out_dir / "iris-bypass-findings.json"
+        path.write_text(
+            json.dumps(
+                [
+                    bf.to_dict()
+                    for bf in bypass_findings
+                    if hasattr(bf, "to_dict") and hasattr(bf, "caller_file")
+                ],
+                indent=2,
+            )
+        )
+    except Exception:
+        logger.debug("iris bypass findings write failed", exc_info=True)
+
+
+def _refine_bypass_post_loop_findings(
+    bypass_findings: list[Any],
+    existing: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert IRIS refine-loop bypass findings to post-loop entries.
+
+    The compositional (tool-confirmed-spec) bypass findings used to be
+    serialized to ``iris-bypass-findings.json`` and dropped every run —
+    this routes them through the same post-loop path the heuristic
+    bypasses already take (journal as ``suspicious`` + graded export),
+    deduplicated against the heuristic pass on
+    ``(file, function, missing_enforcer)``.
+    """
+    seen = {
+        (
+            f.get("file", ""),
+            f.get("function", ""),
+            f.get("missing_enforcer", ""),
+        )
+        for f in existing
+        if str(f.get("check", "")).startswith("iris_")
+    }
+    out: list[dict[str, Any]] = []
+    for bf in bypass_findings or []:
+        if not hasattr(bf, "caller_file"):
+            continue
+        key = (bf.caller_file, bf.caller_function, bf.missing_enforcer)
+        if key in seen:
+            continue
+        seen.add(key)
+        assumption = getattr(bf, "assumption", None)
+        bug_class = getattr(assumption, "bug_class", "") or ""
+        target = getattr(assumption, "target", "") or ""
+        if getattr(bf, "ordering_violation", False):
+            kind = "ordering violation"
+        elif getattr(bf, "is_transitive", False):
+            kind = "transitive bypass"
+        else:
+            kind = "bypass"
+        entry: dict[str, Any] = {
+            "check": f"iris_{bug_class or 'bypass'}",
+            "title": (
+                f"IRIS {kind}: {bf.caller_function}"
+                f" skips {bf.missing_enforcer}"
+            ),
+            "description": (
+                f"Caller {bf.caller_file}:{bf.caller_function} reaches "
+                f"{target} without {bf.missing_enforcer}"
+            ),
+            "file": bf.caller_file,
+            "function": bf.caller_function,
+            "cwe": bug_class,
+            "confidence": "medium",
+            "missing_enforcer": bf.missing_enforcer,
+            "source": "iris_refine_loop",
+        }
+        try:
+            entry["evidence"] = bf.to_dict()
+        except Exception:
+            logger.debug("bypass finding to_dict failed", exc_info=True)
+        line_info = getattr(bf, "line_info", None) or {}
+        lines = [
+            v for v in line_info.values() if isinstance(v, int) and v > 0
+        ]
+        if lines:
+            entry["line_start"] = min(lines)
+            entry["line_end"] = max(lines)
+        out.append(entry)
+    return out
+
+
+# Refine-loop bypass findings routed into the same-run review pass are
+# bounded: each one costs a full LLM review.
+_MAX_BYPASS_REVIEWS = 5
+
+
+def _bypass_findings_to_gaps(
+    bypass_plfs: list[dict[str, Any]],
+    checklist: dict[str, Any],
+    *,
+    max_reviews: int = _MAX_BYPASS_REVIEWS,
+) -> list[dict[str, Any]]:
+    """Resolve refine-loop bypass findings to reviewable gaps.
+
+    Mirrors ``_synthesis_hits_to_gaps``: checklist resolution via
+    ``gap_for_site``, dedup per function, provenance marked
+    (``from_bypass``), and the bypass mechanism carried as an injected
+    hypothesis so the review prompt investigates it concretely.
+    """
+    from .gaps import gap_for_site
+
+    gaps: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for plf in bypass_plfs:
+        if len(gaps) >= max_reviews:
+            break
+        file_path = plf.get("file", "")
+        func = plf.get("function", "")
+        if not file_path or not func:
+            continue
+        gap = None
+        try:
+            line = int(plf.get("line_start") or 0)
+        except (TypeError, ValueError):
+            line = 0
+        if line > 0:
+            gap = gap_for_site(checklist, file_path, line)
+        if gap is None:
+            decl_line = _checklist_function_line(checklist, file_path, func)
+            if decl_line:
+                gap = gap_for_site(checklist, file_path, decl_line)
+        if gap is None:
+            continue
+        key = f"{gap['file']}:{gap['name']}"
+        if key in seen:
+            continue
+        seen.add(key)
+        gap["priority_score"] = max(
+            float(gap.get("priority_score") or 0.0), 0.9,
+        )
+        gap["from_bypass"] = True
+        mechanism = (
+            f"{plf.get('title', '')}: {plf.get('description', '')}"
+        ).strip(": ")[:300]
+        gap["injected_hypotheses"] = [
+            {
+                "mechanism": mechanism,
+                "confidence": plf.get("confidence", "medium"),
+                "source": "iris_bypass",
+            }
+        ]
+        gaps.append(gap)
+    return gaps
+
+
+def _checklist_function_line(
+    checklist: dict[str, Any],
+    file_path: str,
+    function_name: str,
+) -> int:
+    """Declaration line of *function_name* in *file_path*, or 0."""
+    for f in checklist.get("files", []):
+        if f.get("path") != file_path:
+            continue
+        items = f.get("items", f.get("functions", [])) or []
+        for item in items:
+            if item.get("name") == function_name:
+                try:
+                    return int(item.get("line_start") or 0)
+                except (TypeError, ValueError):
+                    return 0
+    return 0
+
+
+def _bypass_export_outcomes(
+    post_loop_findings: list[dict[str, Any]],
+    outcomes: list[Any],
+) -> list[Any]:
+    """Synthetic suspicious outcomes for IRIS bypass post-loop findings.
+
+    Bypass findings (heuristic and refine-loop) reached only the
+    journal; ``export_findings`` iterates outcomes, so the whole
+    CWE-862/306-shaped class was invisible in findings-graded.json.
+    Deduplicates against functions that already export an outcome.
+    """
+    existing = {
+        (getattr(o, "file", ""), getattr(o, "function", ""))
+        for o in outcomes
+        if getattr(o, "status", "") in ("finding", "suspicious", "dark")
+    }
+    extra: list[Any] = []
+    for plf in post_loop_findings:
+        if not str(plf.get("check", "")).startswith("iris_"):
+            continue
+        file_path = plf.get("file", "")
+        func = plf.get("function", "")
+        if not file_path or not func or (file_path, func) in existing:
+            continue
+        existing.add((file_path, func))
+        o = SimpleNamespace(
+            file=file_path,
+            function=func,
+            line=int(plf.get("line_start") or 0),
+            status="suspicious",
+            hypothesis=plf.get("title", ""),
+            review_result={
+                "hypothesis": plf.get("description", ""),
+                "cwe_class": plf.get("cwe", ""),
+            },
+            evidence_tool="",
+            discovered_by="iris_bypass",
+            model="",
+            cost_usd=0.0,
+        )
+        extra.append(o)
+    return extra
+
+
+def _attach_bypass_evidence(
+    graded: dict[str, Any],
+    post_loop_findings: list[dict[str, Any]],
+) -> None:
+    """Attach the compositional bypass evidence to exported findings."""
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for plf in post_loop_findings:
+        if not str(plf.get("check", "")).startswith("iris_"):
+            continue
+        by_key.setdefault(
+            (plf.get("file", ""), plf.get("function", "")), plf,
+        )
+    for finding in graded.get("findings", []):
+        disc = finding.get("discovery", {})
+        if disc.get("discovered_by") != "iris_bypass":
+            continue
+        plf = by_key.get((finding.get("file", ""), finding.get("function", "")))
+        if not plf:
+            continue
+        chain = finding.setdefault("evidence_chain", [])
+        chain.append(
+            {
+                "source": "iris:bypass_detector",
+                "confidence": plf.get("confidence", "medium"),
+                "description": (
+                    "compositional bypass detection: caller reaches the "
+                    "assumption target without the enforcer"
+                ),
+            }
+        )
+        if plf.get("evidence"):
+            finding["iris_bypass_evidence"] = plf["evidence"]
 
 
 def _run_audit_body(
@@ -4307,6 +4569,7 @@ def _run_audit_body(
     # imports fail first), and the heuristic-assumption pass afterwards
     # reads the name.
     bypass_runner = None
+    iris_bypass_findings: list[Any] = []
     try:
         from core.iris.refine import refine_loop as iris_refine_loop
 
@@ -4434,22 +4697,13 @@ def _run_audit_body(
                     "IRIS bypass: %d bypass findings",
                     len(bypass_findings),
                 )
+                iris_bypass_findings = [
+                    bf for bf in bypass_findings
+                    if hasattr(bf, "caller_file")
+                ]
                 if config.out_dir:
-                    bp_path = config.out_dir / "iris-bypass-findings.json"
-                    bp_path.write_text(
-                        json.dumps(
-                            [
-                                {
-                                    "caller_file": bf.caller_file,
-                                    "caller_function": bf.caller_function,
-                                    "missing_enforcer": bf.missing_enforcer,
-                                    "assumption": str(bf.assumption),
-                                }
-                                for bf in bypass_findings
-                                if hasattr(bf, "caller_file")
-                            ],
-                            indent=2,
-                        )
+                    _write_iris_bypass_findings(
+                        config.out_dir, iris_bypass_findings,
                     )
     except Exception:
         logger.debug("IRIS refinement/bypass failed", exc_info=True)
@@ -4483,6 +4737,11 @@ def _run_audit_body(
         logger.debug("taint-spec post-loop checks failed", exc_info=True)
 
     post_loop_findings.extend(_heuristic_bypass_findings(gaps, bypass_runner))
+    post_loop_findings.extend(
+        _refine_bypass_post_loop_findings(
+            iris_bypass_findings, post_loop_findings,
+        )
+    )
 
     try:
         from .negative_space import (
@@ -4630,6 +4889,54 @@ def _run_audit_body(
                     exc_info=True,
                 )
 
+    # --- Bypass-finding review pass (bounded) ---
+    #
+    # Refine-loop bypass findings resolve to reviewable functions and
+    # get one bounded LLM review each, with the bypass mechanism
+    # injected as a hypothesis. Same degradation contract as the
+    # synthesis second pass: a failure here must never cost the run
+    # its main-pass results.
+    try:
+        bypass_review_gaps = _bypass_findings_to_gaps(
+            [
+                plf for plf in post_loop_findings
+                if plf.get("source") == "iris_refine_loop"
+            ],
+            checklist,
+        )
+        if bypass_review_gaps and not executor_stats.budget_stopped:
+            logger.info(
+                "bypass review pass: %d bypass findings resolved to "
+                "reviewable functions",
+                len(bypass_review_gaps),
+            )
+            bypass_graph = TaskGraph.from_workqueue(
+                bypass_review_gaps, call_edges,
+            )
+            run_executor_sync(
+                bypass_graph,
+                review_fn,
+                shared,
+                config,
+                result,
+                executor_config,
+                joern_server=joern_server,
+                audit_log=audit_log,
+                workqueue=workqueue,
+                reviewed_set=reviewed_set,
+                start_time=start_time,
+                layer_disagreements=layer_disagreements,
+                on_progress=on_progress,
+                collector=collector,
+                budget_check=lambda: _check_budget(config, start_time, result),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "bypass review pass failed (%s: %s) — keeping main-pass results",
+            type(exc).__name__,
+            exc,
+        )
+
     if config.validate and result.findings > 0:
         from .validate import validate_findings
 
@@ -4722,12 +5029,23 @@ def _run_audit_body(
             import json as _json
 
             chains = _json.loads(chains_path.read_text())
+        export_outcomes = list(result.outcomes)
+        try:
+            export_outcomes.extend(
+                _bypass_export_outcomes(post_loop_findings, result.outcomes)
+            )
+        except Exception:
+            logger.debug("bypass export outcomes failed", exc_info=True)
         graded = export_findings(
-            result.outcomes,
+            export_outcomes,
             evidence_index=evidence_index,
             attack_chains=chains,
             out_dir=config.out_dir,
         )
+        try:
+            _attach_bypass_evidence(graded, post_loop_findings)
+        except Exception:
+            logger.debug("bypass evidence attach failed", exc_info=True)
         if feedback_state and feedback_state.confirmed_finding_ids:
             for finding in graded.get("findings", []):
                 if finding.get("id") in feedback_state.confirmed_finding_ids:
@@ -5907,6 +6225,11 @@ def _build_context(
                     if existing
                     else f"### Mid-loop tool discoveries\n{disc_text}"
                 )
+
+    if gap.get("injected_hypotheses"):
+        # Mechanically derived hypotheses (IRIS bypass detection,
+        # fix-history mining) ride the gap into the review prompt.
+        ctx["injected_hypotheses"] = list(gap["injected_hypotheses"])
 
     if config.models:
         ctx["model"] = config.models[0]

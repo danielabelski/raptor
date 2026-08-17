@@ -1208,6 +1208,14 @@ def format_context_for_prompt(
     if prior_hyp_text:
         sections.append(PromptSection("prior_hypotheses", prior_hyp_text, 1))
 
+    injected_hyp_text = _format_injected_hypotheses(
+        ctx.get("injected_hypotheses"),
+    )
+    if injected_hyp_text:
+        sections.append(
+            PromptSection("injected_hypotheses", injected_hyp_text, 1),
+        )
+
     if ctx.get("disagreement_override"):
         do = ctx["disagreement_override"]
         dp = [
@@ -1385,6 +1393,60 @@ def _format_prior_hypotheses(prior_hypotheses: Any) -> str:
         counter = str(h.get("counter", "") or "").strip()
         if counter:
             line += f" — counter: {neutralize_tag_forgery(counter[:200])}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# Same cap as prior hypotheses: past this count the marginal injected
+# hypothesis is noise in a tight review budget.
+_MAX_INJECTED_HYPOTHESES = 8
+
+_SOURCE_SAFE_RE = re.compile(r"[^a-z0-9_-]")
+
+
+def _format_injected_hypotheses(injected: Any) -> str:
+    """Render mechanically-derived hypotheses for a first-pass review.
+
+    Unlike :func:`_format_prior_hypotheses` (whose framing is "do NOT
+    re-derive"), injected hypotheses come from mechanical analysis —
+    IRIS compositional bypass detection, fix-history mining — and the
+    review should investigate them concretely, not avoid them.
+
+    Mechanism text describes attacker-visible source paths and
+    identifiers (untrusted) — defanged with ``neutralize_tag_forgery``
+    before interpolation; confidence and source are charset-restricted.
+    """
+    if not injected:
+        return ""
+
+    entries = [
+        h for h in injected
+        if isinstance(h, dict) and (h.get("mechanism") or "").strip()
+    ]
+    if not entries:
+        return ""
+
+    lines = [
+        "\n### Mechanically derived hypotheses",
+        ("Mechanical analysis produced the hypotheses below for THIS "
+         "function. Investigate each one concretely against the code: "
+         "confirm it with line references, or refute it with a specific "
+         "counter-argument. Do not dismiss a hypothesis without stating "
+         "what evidence rules it out."),
+    ]
+    for h in entries[:_MAX_INJECTED_HYPOTHESES]:
+        conf = _CONFIDENCE_SAFE_RE.sub(
+            "", str(h.get("confidence", "") or "").lower(),
+        )[:16] or "unstated"
+        mechanism = neutralize_tag_forgery(
+            str(h.get("mechanism", "")).strip()[:300],
+        )
+        source = _SOURCE_SAFE_RE.sub(
+            "", str(h.get("source", "") or "").lower(),
+        )[:32]
+        line = f"- ({conf}) {mechanism}"
+        if source:
+            line += f" [source: {source}]"
         lines.append(line)
     return "\n".join(lines)
 

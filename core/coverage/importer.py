@@ -16,8 +16,9 @@ arrives only when a producer emits ranges -- a later format extension.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 from core.json import load_json
 from core.run.metadata import load_run_metadata
@@ -35,7 +36,7 @@ from .store import CoverageStore
 from .summary import _match_to_inventory
 
 
-def _inventory_paths(checklist: Dict[str, Any]) -> set:
+def _inventory_paths(checklist: dict[str, Any]) -> set:
     return {fe.get("path") for fe in checklist.get("files", []) if fe.get("path")}
 
 
@@ -50,7 +51,7 @@ def _to_inventory_path(path: str, inventory_paths: set) -> str:
     return _match_to_inventory(path, inventory_paths) or path
 
 
-def _field(d: Dict[str, Any], *names: str) -> Optional[Any]:
+def _field(d: dict[str, Any], *names: str) -> Any | None:
     for n in names:
         v = d.get(n)
         if v is not None:
@@ -58,7 +59,7 @@ def _field(d: Dict[str, Any], *names: str) -> Optional[Any]:
     return None
 
 
-def run_provenance(run_dir: Path) -> Dict[str, Any]:
+def run_provenance(run_dir: Path) -> dict[str, Any]:
     """Read a run's ``.raptor-run.json`` manifest into a stamping dict
     (``{}`` when absent — pre-provenance runs degrade gracefully). The
     coverage store is the (file,function) sink; this is the run-keyed
@@ -76,8 +77,8 @@ def run_provenance(run_dir: Path) -> Dict[str, Any]:
     }
 
 
-def _tool_stamp(tool: str, prov: Dict[str, Any],
-                record_version: Optional[str] = None) -> Dict[str, Any]:
+def _tool_stamp(tool: str, prov: dict[str, Any],
+                record_version: str | None = None) -> dict[str, Any]:
     """The provenance slice for one (file, tool): engine version for a
     scanner, resolved model(s) for an LLM tool, plus run-level fields.
 
@@ -91,7 +92,7 @@ def _tool_stamp(tool: str, prov: Dict[str, Any],
     see ``(version unrecorded)`` even though the per-tool JSON does
     carry it.
     """
-    stamp: Dict[str, Any] = {
+    stamp: dict[str, Any] = {
         "timestamp": prov.get("timestamp"),
         "target": prov.get("target"),
         "framework_sha": prov.get("framework_sha"),
@@ -114,8 +115,8 @@ def _tool_stamp(tool: str, prov: Dict[str, Any],
     return stamp
 
 
-def _total_lines_by_file(checklist: Dict[str, Any]) -> Dict[str, int]:
-    out: Dict[str, int] = {}
+def _total_lines_by_file(checklist: dict[str, Any]) -> dict[str, int]:
+    out: dict[str, int] = {}
     for fe in checklist.get("files", []):
         path = fe.get("path")
         tl = fe.get("lines")
@@ -124,7 +125,7 @@ def _total_lines_by_file(checklist: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
-def import_checked_by(store: CoverageStore, checklist: Dict[str, Any]) -> int:
+def import_checked_by(store: CoverageStore, checklist: dict[str, Any]) -> int:
     """DEPRECATED — kept for one release for backward compat.
 
     ``checked_by`` on checklist items was removed under the
@@ -154,7 +155,7 @@ def import_checked_by(store: CoverageStore, checklist: Dict[str, Any]) -> int:
 def import_journal(
     store: CoverageStore,
     project_dir: Path,
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
 ) -> int:
     """Import LLM review existence from the project-level review-
     journal index into the coverage store.
@@ -231,7 +232,7 @@ def import_journal(
         if not tool:
             tool = "audit"
             run_id = entry.run_id or ""
-            if run_id.startswith("agentic") or run_id.startswith("scan"):
+            if run_id.startswith(("agentic", "scan")):
                 tool = "agentic"
         store.mark(entry.file, lo, hi, tool)
         marks += 1
@@ -240,9 +241,9 @@ def import_journal(
 
 def import_record(
     store: CoverageStore,
-    record: Dict[str, Any],
-    total_lines: Dict[str, int],
-    provenance: Optional[Dict[str, Any]] = None,
+    record: dict[str, Any],
+    total_lines: dict[str, int],
+    provenance: dict[str, Any] | None = None,
 ) -> int:
     """Whole-file marks from one record's ``files_examined``.
 
@@ -276,8 +277,8 @@ def import_record(
 
 
 def import_findings(
-    store: CoverageStore, findings: List[Dict[str, Any]], retained: bool = True,
-    inventory_paths: Optional[set] = None,
+    store: CoverageStore, findings: list[dict[str, Any]], retained: bool = True,
+    inventory_paths: set | None = None,
 ) -> int:
     """Link findings into the store with their line, so functions get an
     ``open`` / ``found_then_lost`` verdict.
@@ -324,27 +325,27 @@ def import_findings(
 _FINDINGS_LOCATIONS = ("findings.json", "validation/findings.json")
 
 
-def _load_findings_file(path: Path) -> List[Dict[str, Any]]:
+def _load_findings_file(path: Path) -> list[dict[str, Any]]:
     data = load_json(path)
     if isinstance(data, dict):
         data = data.get("findings", data.get("results", []))
     return data if isinstance(data, list) else []
 
 
-def load_run_findings(run_dir: Path) -> List[Dict[str, Any]]:
+def load_run_findings(run_dir: Path) -> list[dict[str, Any]]:
     """Union of a run's findings across the layouts producers use (top-level
     findings.json and validation/ — sca/ is DELIBERATELY excluded, see the
     comment above _FINDINGS_LOCATIONS). The store dedups by id on link, so
     overlap is harmless; absent files contribute nothing."""
     run = Path(run_dir)
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for rel in _FINDINGS_LOCATIONS:
         out.extend(_load_findings_file(run / rel))
     return out
 
 
 def import_run_findings(
-    store: CoverageStore, run_dir: Path, inventory_paths: Optional[set] = None,
+    store: CoverageStore, run_dir: Path, inventory_paths: set | None = None,
 ) -> int:
     """Link a run's findings (detail present, since the run dir exists)."""
     return import_findings(
@@ -353,7 +354,7 @@ def import_run_findings(
     )
 
 
-def _parse_lines(spec: Optional[str]) -> Optional[tuple]:
+def _parse_lines(spec: str | None) -> tuple | None:
     if not spec or "-" not in spec:
         return None
     try:
@@ -366,7 +367,7 @@ def _parse_lines(spec: Optional[str]) -> Optional[tuple]:
 def import_annotations(
     store: CoverageStore,
     base_dir: Path,
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     tool: str = "annotations",
 ) -> int:
     """Import durable human-authored annotations as coverage evidence.
@@ -443,7 +444,7 @@ def _understand_points(run_dir: Path):
 
 
 def import_understand(
-    store: CoverageStore, run_dir: Path, checklist: Dict[str, Any],
+    store: CoverageStore, run_dir: Path, checklist: dict[str, Any],
     tool: str = "understand",
 ) -> int:
     """Fold a run's /understand outputs into the store as llm-category coverage.
@@ -462,8 +463,8 @@ def import_understand(
 
 
 def _function_ranges(
-    checklist: Dict[str, Any], *, normalise_hi: bool = False,
-) -> Dict[tuple, tuple]:
+    checklist: dict[str, Any], *, normalise_hi: bool = False,
+) -> dict[tuple, tuple]:
     """``{(path, name): (line_start, line_end)}`` over every inventory item.
 
     Single source of truth for the checklist range walk (import_journal,
@@ -472,7 +473,7 @@ def _function_ranges(
     With ``normalise_hi=True`` a missing ``line_end`` collapses to
     ``line_start`` so consumers can mark ``(lo, hi)`` directly.
     """
-    out: Dict[tuple, tuple] = {}
+    out: dict[tuple, tuple] = {}
     for fe in checklist.get("files", []):
         path = fe.get("path")
         if not path:
@@ -490,10 +491,10 @@ def _function_ranges(
 
 def import_functions_analysed(
     store: CoverageStore,
-    record: Dict[str, Any],
-    ranges: Dict[tuple, tuple],
+    record: dict[str, Any],
+    ranges: dict[tuple, tuple],
     inventory_paths: set,
-    provenance: Optional[Dict[str, Any]] = None,
+    provenance: dict[str, Any] | None = None,
 ) -> int:
     """Function-level marks from a record's ``functions_analysed`` — the precise
     "this function was reviewed" signal (an operator ``--mark``, or a
@@ -526,7 +527,7 @@ def import_functions_analysed(
 
 
 def import_run_dir(
-    store: CoverageStore, run_dir: Path, checklist: Dict[str, Any],
+    store: CoverageStore, run_dir: Path, checklist: dict[str, Any],
 ) -> int:
     """Import all coverage records in ``run_dir``: whole-file marks from
     ``files_examined`` (a tool examined the file) AND function-level marks from
@@ -546,9 +547,9 @@ def import_run_dir(
 def backfill(
     store: CoverageStore,
     run_dirs: Iterable[Path],
-    checklist: Dict[str, Any],
-    annotations_base: Optional[Path] = None,
-    project_dir: Optional[Path] = None,
+    checklist: dict[str, Any],
+    annotations_base: Path | None = None,
+    project_dir: Path | None = None,
 ) -> int:
     """One-shot backfill: inventory meta + LLM review existence
     (from the project-level review-journal index — post-migration
@@ -585,7 +586,7 @@ def backfill(
         )
     except ImportError:
         pass
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — frida bridge is optional enrichment
         import logging
         logging.getLogger("coverage.importer").info(
             "frida coverage bridge failed: %s: %s", type(exc).__name__, exc,
@@ -608,7 +609,7 @@ def _runs(lines):
 
 
 def mark_runtime(
-    store: CoverageStore, data: Dict[str, Any], checklist: Dict[str, Any],
+    store: CoverageStore, data: dict[str, Any], checklist: dict[str, Any],
     tool: str,
 ) -> int:
     """Mark a ``{source_path: iterable-of-executed-lines}`` map into the store
@@ -631,8 +632,8 @@ def mark_runtime(
 
 
 def import_runtime(
-    store: CoverageStore, path, checklist: Dict[str, Any],
-    fmt: Optional[str] = None, tool: Optional[str] = None,
+    store: CoverageStore, path, checklist: dict[str, Any],
+    fmt: str | None = None, tool: str | None = None,
 ) -> int:
     """Import external runtime coverage (gcov / lcov / coverage.py) into the
     store (Phase 4). Detects the format (unless ``fmt`` given), parses executed

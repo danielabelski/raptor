@@ -1218,6 +1218,72 @@ def run_sandboxed(
                         % (e.errno or 0)
                     )
 
+            # Step 8.7: proxy netns bridge. When the child is in an
+            # empty netns with an egress proxy, fork a TCP-to-Unix
+            # relay so the target can reach the proxy at
+            # 127.0.0.1:<port> via HTTPS_PROXY. Ordering is
+            # load-bearing twice over: BEFORE Landlock/seccomp so the
+            # forwarder runs unrestricted (it needs AF_UNIX socket()
+            # which seccomp blocks for the target), and BEFORE
+            # setup_mount_ns so the forwarder keeps the HOST mount
+            # view — after pivot_root the per-sandbox tmpfs replaces
+            # /tmp and can shadow the unix socket path (observed with
+            # output=/tmp), leaving the relay unable to reach the
+            # proxy. The loopback bringup already happened at Step 3.5
+            # for every fresh netns; the call here is a harmless
+            # idempotent belt-and-braces retained for the proxy
+            # error-handling contract (bridge is skipped, loudly, if
+            # loopback cannot come up).
+            _forwarder_pid = 0
+            _forwarder_death_w = -1
+            if _proxy_forwarder_fn is not None:
+                try:
+                    _loopback_up_fn()
+                except OSError as e:
+                    warn_post_fork(
+                        b"_spawn: loopback bringup failed (errno=%d)"
+                        b"; proxy bridge will not work\n"
+                        % (e.errno or 0)
+                    )
+                else:
+                    _fwd_death_r, _fwd_death_w = os.pipe()
+                    _forwarder_death_w = _fwd_death_w
+                    import warnings as _w2
+                    with _w2.catch_warnings():
+                        _w2.filterwarnings(
+                            "ignore", category=DeprecationWarning,
+                            message=r".*fork.*may lead to deadlocks.*",
+                        )
+                        _forwarder_pid = os.fork()
+                    if _forwarder_pid == 0:
+                        os.close(_fwd_death_w)
+                        os.close(status_w)
+                        # p_ready_w was closed at step 5 — do NOT close
+                        # here; the fd number may have been reused by
+                        # the death pipe allocated above.
+                        #
+                        # Detach into a PRIVATE COPY of the current
+                        # (pre-pivot) mount tree. Fork order alone does
+                        # not protect the forwarder's filesystem view:
+                        # it shares the mount NAMESPACE entered at Step
+                        # 3, so the target child's pivot_root at Step 9
+                        # would swap the tree under it — the unix
+                        # socket path then reads through the per-
+                        # sandbox tmpfs and the relay dies with ENOENT
+                        # (observed with output=/tmp). unshare(NEWNS)
+                        # here snapshots the host view; capabilities
+                        # are still intact (no exec has happened).
+                        with contextlib.suppress(OSError):
+                            os.unshare(CLONE_NEWNS)
+                        with contextlib.suppress(BaseException):
+                            _proxy_forwarder_fn(
+                                proxy_forwarder_port,
+                                proxy_unix_socket,
+                                _fwd_death_r,
+                            )
+                        os._exit(0)
+                    os.close(_fwd_death_r)
+
             # Step 9: mount-ns pivot_root if target/output supplied.
             # readable_paths from the caller also get bind-mounted at
             # their original paths so they exist inside the pivoted
@@ -1277,48 +1343,6 @@ def run_sandboxed(
                     except OSError:
                         pass
                     os._exit(127)
-
-            # Step 9.7: proxy netns bridge. When the child is in an
-            # empty netns with an egress proxy, bring up loopback and
-            # fork a TCP-to-Unix relay so the target can reach the proxy
-            # at 127.0.0.1:<port> via HTTPS_PROXY. The forwarder forks
-            # BEFORE Landlock/seccomp so it runs unrestricted — it needs
-            # AF_UNIX socket() which seccomp blocks for the target.
-            _forwarder_pid = 0
-            _forwarder_death_w = -1
-            if _proxy_forwarder_fn is not None:
-                try:
-                    _loopback_up_fn()
-                except OSError as e:
-                    warn_post_fork(
-                        b"_spawn: loopback bringup failed (errno=%d)"
-                        b"; proxy bridge will not work\n"
-                        % (e.errno or 0)
-                    )
-                else:
-                    _fwd_death_r, _fwd_death_w = os.pipe()
-                    _forwarder_death_w = _fwd_death_w
-                    import warnings as _w2
-                    with _w2.catch_warnings():
-                        _w2.filterwarnings(
-                            "ignore", category=DeprecationWarning,
-                            message=r".*fork.*may lead to deadlocks.*",
-                        )
-                        _forwarder_pid = os.fork()
-                    if _forwarder_pid == 0:
-                        os.close(_fwd_death_w)
-                        os.close(status_w)
-                        # p_ready_w was closed at step 5 — do NOT close
-                        # here; the fd number may have been reused by
-                        # the death pipe allocated above.
-                        with contextlib.suppress(BaseException):
-                            _proxy_forwarder_fn(
-                                proxy_forwarder_port,
-                                proxy_unix_socket,
-                                _fwd_death_r,
-                            )
-                        os._exit(0)
-                    os.close(_fwd_death_r)
 
             # Step 10: Landlock. Must run BEFORE seccomp so seccomp
             # inherits PR_SET_NO_NEW_PRIVS.

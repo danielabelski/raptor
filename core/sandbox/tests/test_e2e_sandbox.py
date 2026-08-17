@@ -1295,44 +1295,49 @@ class TestE2EEgressProxy(unittest.TestCase):
                              "canary file — O_NOFOLLOW missing on the "
                              "proxy-events.jsonl write")
 
-    def test_udp_blocked_in_proxy_mode(self):
-        """Proxy mode blocks AF_INET SOCK_DGRAM via seccomp — DNS exfil closed."""
-        from core.sandbox import check_seccomp_available
-        if not check_seccomp_available():
-            self.skipTest("libseccomp not available")
-        import shutil
-        if not shutil.which("gcc"):
-            self.skipTest("gcc not installed")
+    def test_udp_contained_in_proxy_mode(self):
+        """DNS/UDP exfil is closed on BOTH proxy tiers, by different
+        mechanisms. netns tier (default where the capability exists):
+        UDP sockets may be CREATED — that is the point, gradle-class
+        tools need a loopback UDP socket at startup — but an external
+        send has no route out of the empty namespace. landlock_tcp
+        tier (no netns): seccomp denies AF_INET SOCK_DGRAM creation
+        outright."""
+        probe = (
+            "import socket, errno\n"
+            "try:\n"
+            "    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+            "except OSError as e:\n"
+            "    print('CREATE-DENIED', errno.errorcode.get(e.errno, e.errno))\n"
+            "else:\n"
+            "    print('CREATE-OK')\n"
+            "    try:\n"
+            "        u.sendto(b'x', ('192.0.2.1', 53))\n"
+            "        print('EXTERNAL-SEND-OK')\n"
+            "    except OSError as e:\n"
+            "        print('EXTERNAL-SEND-DENIED',\n"
+            "              errno.errorcode.get(e.errno, e.errno))\n"
+        )
         with TemporaryDirectory() as d:
-            src = Path(d) / "udp_probe.c"
-            src.write_text(
-                "#include <stdio.h>\n"
-                "#include <sys/socket.h>\n"
-                "#include <errno.h>\n"
-                "int main(void){\n"
-                "  int s = socket(AF_INET, SOCK_DGRAM, 0);\n"
-                "  printf(\"rc=%d errno=%d\\n\", s, errno);\n"
-                "  return 0;\n"
-                "}\n"
-            )
-            bin_path = Path(d) / "udp_probe"
-            compile_result = sandbox_run(
-                ["gcc", "-O0", str(src), "-o", str(bin_path)],
-                block_network=True, target=d, output=d,
-                capture_output=True, text=True, timeout=15,
-            )
-            if compile_result.returncode != 0:
-                self.skipTest(f"gcc failed: {compile_result.stderr[:200]}")
             r = sandbox_run(
-                [str(bin_path)],
+                ["/usr/bin/python3", "-c", probe],
                 target=d, output=d,
                 use_egress_proxy=True, proxy_hosts=["example.com"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=15,
             )
-            # AF_INET/SOCK_DGRAM must return EPERM (errno=1) under proxy mode.
-            self.assertIn("errno=1", r.stdout,
-                          f"UDP socket should be blocked by seccomp in proxy "
-                          f"mode; got {r.stdout!r}")
+            tier = r.sandbox_info.get("proxy_enforcement")
+            if tier == "netns":
+                self.assertIn("CREATE-OK", r.stdout,
+                              f"netns tier must allow UDP socket "
+                              f"creation (gradle): {r.stdout!r}")
+                self.assertIn("EXTERNAL-SEND-DENIED", r.stdout,
+                              f"external UDP must have no route out "
+                              f"of the empty netns: {r.stdout!r}")
+                self.assertNotIn("EXTERNAL-SEND-OK", r.stdout)
+            else:
+                self.assertIn("CREATE-DENIED", r.stdout,
+                              f"landlock_tcp tier must seccomp-deny "
+                              f"UDP creation: {r.stdout!r}")
 
 
 class TestE2ELandlockReadRestriction(unittest.TestCase):

@@ -332,8 +332,11 @@ class TestProxyNetnsContextWiring:
             assert result.returncode == 0
             assert result.sandbox_info.get("proxy_enforcement") == "netns"
 
-    def test_tcp_path_on_high_abi(self):
-        """When ABI >= 4, sandbox_info reports landlock_tcp."""
+    def test_netns_tier_wins_on_high_abi(self):
+        """netns is the strongest tier and wins on ANY ABI when the
+        netns capability exists — the Landlock pin is port-scoped to
+        any host and needs the seccomp UDP block, so ABI >= 4 no
+        longer routes to landlock_tcp on netns-capable hosts."""
         from core.sandbox import sandbox
 
         abi = 4
@@ -342,6 +345,33 @@ class TestProxyNetnsContextWiring:
         ), mock.patch(
             "core.sandbox.context.check_landlock_available",
             return_value=True,
+        ), sandbox(
+            target=self.out,
+            output=self.out,
+            use_egress_proxy=True,
+            proxy_hosts=["example.com"],
+        ) as run:
+            result = run(
+                ["echo", "proxy-tcp-test"],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert result.returncode == 0
+            assert result.sandbox_info.get("proxy_enforcement") == "netns"
+
+    def test_tcp_path_when_netns_unavailable(self):
+        """Without netns capability, ABI >= 4 falls back to the
+        Landlock TCP pin tier — the pre-generalisation posture."""
+        from core.sandbox import sandbox
+
+        abi = 4
+        with mock.patch(
+            "core.sandbox.context._get_landlock_abi", return_value=abi,
+        ), mock.patch(
+            "core.sandbox.context.check_landlock_available",
+            return_value=True,
+        ), mock.patch(
+            "core.sandbox.context.check_net_available",
+            return_value=False,
         ), sandbox(
             target=self.out,
             output=self.out,

@@ -56,7 +56,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.atomic_fs import write_text_atomically
 from core.security.redaction import redact_secrets
@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 # either the old or new pointer, never a torn read). Writes are serialised
 # via _lock so concurrent set/clear can't interleave (matters for
 # tests that exercise the lifecycle from multiple threads).
-_active_run_dir: Optional[Path] = None
+_active_run_dir: Path | None = None
 _lock = threading.Lock()
 
 DENIALS_FILE = ".sandbox-denials.jsonl"
@@ -92,7 +92,7 @@ MAX_CMD_LEN = 2048
 _denial_count: int = 0  # reset by set_active_run_dir per run
 
 
-def set_active_run_dir(run_dir: Optional[Path]) -> None:
+def set_active_run_dir(run_dir: Path | None) -> None:
     """Mark a run as active (or clear it). Subsequent record_denial() calls
     write to ``<run_dir>/.sandbox-denials.jsonl`` until cleared.
 
@@ -105,7 +105,7 @@ def set_active_run_dir(run_dir: Optional[Path]) -> None:
         _denial_count = 0
 
 
-def get_active_run_dir() -> Optional[Path]:
+def get_active_run_dir() -> Path | None:
     """Return current active run dir, or None if no run is being recorded."""
     return _active_run_dir
 
@@ -117,7 +117,7 @@ def record_denial(cmd_display: str, returncode: int,
     No-op if no active run is set (sandbox call from outside any tracked
     run, e.g., probes during test setup or sandbox CLI invocations).
 
-    denial_type is one of: ``network``, ``write``, ``seccomp``.
+    denial_type is one of: ``network``, ``write``, ``seccomp``, ``udp``.
     details vary by type — `path` for write, `profile` for seccomp, etc.
     """
     global _denial_count
@@ -218,7 +218,7 @@ def record_denial(cmd_display: str, returncode: int,
         )
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(line)
-    except Exception:  # noqa: BLE001 — best-effort; never fail the sandbox call
+    except Exception:
         # WARNING (F071 W21 promote): operators rarely run with DEBUG
         # enabled, so pre-fix this swallow meant every dropped sandbox-
         # denial record was invisible — operator sees "no denials" with
@@ -263,6 +263,13 @@ def _suggested_fix(denial_type: str, **details: Any) -> str:
         return (f"write outside allowed paths blocked{ctx}; use "
                 f"`--sandbox network-only` or `--sandbox none` to drop "
                 f"Landlock (or move write into target dir)")
+    if denial_type == "udp":
+        return ("UDP socket creation blocked by the egress-proxy "
+                "fallback tier's seccomp SOCK_DGRAM deny (host lacks "
+                "netns capability); JVM build tools (gradle) need a "
+                "loopback UDP socket at startup — run on a "
+                "netns-capable host where the default proxy tier "
+                "contains UDP topologically instead")
     if denial_type == "seccomp":
         profile = details.get("profile")
         if profile == "full":
@@ -322,7 +329,7 @@ def record_audit_degraded(run_dir: Path, *, reason: str,
         pass
 
 
-def summarize_and_write(run_dir: Path) -> Optional[Dict[str, Any]]:
+def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     """Read ``<run_dir>/.sandbox-denials.jsonl`` and write
     ``<run_dir>/sandbox-summary.json`` aggregating all denials.
 
@@ -436,7 +443,7 @@ def summarize_and_write(run_dir: Path) -> Optional[Dict[str, Any]]:
                 d.get("type", "unknown"), **details,
             )
 
-    by_type: Dict[str, int] = {}
+    by_type: dict[str, int] = {}
     for d in denials:
         t = d.get("type", "unknown")
         by_type[t] = by_type.get(t, 0) + 1
@@ -480,7 +487,7 @@ def summarize_and_write(run_dir: Path) -> Optional[Dict[str, Any]]:
     return summary
 
 
-def _cli_main(argv: Optional[list] = None) -> int:
+def _cli_main(argv: list | None = None) -> int:
     """Retroactive summarize CLI.
 
     Rarely needed in normal operation: ``core.run.metadata._cleanup_abandoned``

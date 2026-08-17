@@ -41,6 +41,14 @@ _BLOCKED_PATTERNS = [
     ("network", "fatal: unable to access"),
     ("network", "ConnectionError"),
     ("network", "urlopen error"),
+    # UDP-at-startup casualties of the egress-proxy FALLBACK tier
+    # (netns-incapable hosts): seccomp denies AF_INET SOCK_DGRAM
+    # creation there, and JVM build tooling opens a loopback UDP
+    # socket before doing anything (gradle's FileLockContentionHandler
+    # / local-IP detection). Precise tool strings; the real gating is
+    # udp_block_engaged + rc != 0 in _check_blocked.
+    ("udp", "Could not determine a usable local IP"),
+    ("udp", "java.net.SocketException: Operation not permitted"),
     # Daemon-IPC casualty of the degraded-mode Landlock TCP-connect deny:
     # the daemon binds fine (bind is never restricted) but the client's
     # loopback connect gets EACCES. Precise tool string, not a generic
@@ -263,7 +271,8 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
                    writable_paths: list | None = None,
                    seccomp_engaged: bool = False,
                    seccomp_profile: str | None = None,
-                   degraded_net_deny: bool = False) -> None:
+                   degraded_net_deny: bool = False,
+                   udp_block_engaged: bool = False) -> None:
     """Enrich sandbox_info when stderr shows evidence of sandbox enforcement.
 
     Only fires for an enforcement layer that is actually engaged this call:
@@ -291,6 +300,13 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
                 continue
             if not landlock_engaged:
                 continue
+        # UDP-block patterns only fire when the seccomp SOCK_DGRAM
+        # block is actually engaged for this call (egress-proxy
+        # fallback tier) AND the process failed — the JVM
+        # SocketException string is otherwise too generic.
+        if category == "udp" and (not udp_block_engaged or returncode == 0):
+            continue
+
         # Seccomp returns EPERM ("Operation not permitted"). The pattern
         # is inherently noisy — EPERM also comes from legitimate
         # capability checks (ptrace on protected process, mount without
@@ -361,6 +377,22 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
             else:
                 blocked_evidence.append("Attempted write outside allowed paths (blocked by sandbox)")
                 record_denial(cmd_display, returncode, "write")
+        elif category == "udp":
+            logger.info(
+                f"Sandbox: UDP socket creation denied during: "
+                f"{cmd_display} (rc={returncode}) — this host has no "
+                f"netns capability, so the egress proxy runs on the "
+                f"fallback tier where seccomp blocks AF_INET SOCK_DGRAM "
+                f"to close DNS/UDP exfil. JVM build tools (gradle) open "
+                f"a loopback UDP socket at startup and cannot run on "
+                f"this tier; on netns-capable hosts the default proxy "
+                f"tier contains UDP topologically and they work."
+            )
+            blocked_evidence.append(
+                "UDP socket creation denied by the proxy fallback "
+                "tier's seccomp block (JVM-startup casualty)"
+            )
+            record_denial(cmd_display, returncode, "udp")
         elif category == "seccomp":
             # Actionable diagnostic — name the knob users can turn. Debug
             # unblocks ptrace; network-only turns off Landlock AND seccomp

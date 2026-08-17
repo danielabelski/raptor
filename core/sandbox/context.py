@@ -397,16 +397,21 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  string.
         use_egress_proxy: If True, route the child's outbound HTTPS
                  traffic through a local HTTPS-CONNECT proxy with a
-                 hostname allowlist. Closes the UDP/DNS exfil gap that
-                 `allowed_tcp_ports` leaves open: seccomp blocks
-                 AF_INET/AF_INET6 SOCK_DGRAM (so the child can't do DNS
-                 directly), and `allowed_tcp_ports` is auto-set to the
-                 proxy's ephemeral loopback port. The child env is
-                 extended with HTTPS_PROXY/http_proxy (both cases, for
-                 Node/curl/Python AND CodeQL's Java stack). Pair with
-                 `proxy_hosts=[...]` to declare the hostname allowlist.
-                 Implicitly sets block_network=False (network-ns block
-                 would make the proxy unreachable).
+                 hostname allowlist. Enforcement is tiered (strongest
+                 available wins): with netns capability the child runs
+                 in an EMPTY network namespace (loopback up) and
+                 reaches the proxy only via a unix-socket bridge —
+                 DNS/UDP exfil is impossible topologically and no
+                 seccomp UDP block is needed, so loopback-UDP tools
+                 (gradle) work. Without netns, Landlock pins TCP
+                 connect to the proxy port and seccomp blocks
+                 AF_INET/AF_INET6 SOCK_DGRAM to close the DNS/UDP
+                 exfil channel (gradle-class UDP-at-startup tools
+                 break there). The child env is extended with
+                 HTTPS_PROXY/http_proxy (both cases, for Node/curl/
+                 Python AND CodeQL's Java stack). Pair with
+                 `proxy_hosts=[...]` to declare the hostname
+                 allowlist.
         proxy_hosts: Hostname allowlist for the egress proxy. Union'd
                  with any existing allowlist if the proxy singleton is
                  already running. Required when use_egress_proxy=True.
@@ -686,47 +691,72 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         from . import proxy as _proxy_mod
         proxy_instance = _proxy_mod.get_proxy(proxy_hosts)
 
-        # Decide enforcement path. On Landlock ABI >= 4 (kernel 6.7+),
-        # the TCP-connect allowlist pins the child to the proxy port.
-        # On ABI < 4, that allowlist is inert — the child can bypass
-        # HTTPS_PROXY and connect directly. Fix: put the child in an
-        # empty netns and relay through a Unix socket bridge. The
-        # bridge forwarder (TCP inside netns → Unix socket outside)
-        # runs inside the child's netns before Landlock/seccomp, so it
-        # is unrestricted; the target is fully locked down.
+        # Decide enforcement path, strongest first.
+        #
+        # Tier 1 — netns bridge (any Landlock ABI; needs netns
+        # capability): the child runs in an EMPTY netns (loopback
+        # brought up by the spawn layer) and reaches the proxy only
+        # through the forwarder that relays loopback TCP → unix
+        # socket. Containment is topological: no interfaces, no
+        # routes out, so DNS/UDP exfil is impossible WITHOUT the
+        # seccomp UDP block — which means JVM tools that open a
+        # loopback UDP socket before any build (gradle's
+        # FileLockContentionHandler / local-IP detection) work here.
+        # Previously this tier engaged only on ABI < 4 hosts; it is
+        # strictly stronger than the Landlock pin (port-scoped to ANY
+        # host) on every host, so it is now the default whenever the
+        # netns capability exists.
+        #
+        # Tier 2 — Landlock TCP pin (ABI >= 4, no netns): connect
+        # pinned to the proxy port + seccomp UDP block for DNS/UDP
+        # exfil. Known cost: gradle-class UDP-at-startup tools break
+        # ("Could not determine a usable local IP").
+        #
+        # Tier 3 — advisory (ABI < 4, no netns): env vars only.
         _proxy_abi = (
             _get_landlock_abi() if check_landlock_available() else 0
         )
-        if _proxy_abi < 4 and sys.platform != "darwin" and not output:
-            logger.warning(
-                "Sandbox: Landlock ABI %d < 4 (no TCP allowlist); "
-                "proxy netns enforcement unavailable (no output= "
-                "directory for unix socket). Egress proxy allowlist "
-                "is advisory only on this kernel.",
-                _proxy_abi,
-            )
-        if _proxy_abi < 4 and sys.platform != "darwin" and output:
+        _proxy_netns_capable = (
+            sys.platform != "darwin" and check_net_available()
+        )
+        if _proxy_netns_capable:
             _use_proxy_netns = True
+            import secrets as _secrets
             import tempfile as _tmpf
+            # Per-context random suffix: two concurrent sandbox()
+            # contexts in one orchestrator would otherwise collide on
+            # a pid-keyed path and knock the second down a tier.
+            _sock_name = (
+                f".raptor-proxy-{os.getpid()}-"
+                f"{_secrets.token_hex(4)}.sock"
+            )
             _proxy_unix_path = os.path.join(
-                output, f".raptor-proxy-{os.getpid()}.sock",
+                output if output else _tmpf.gettempdir(), _sock_name,
             )
             if len(_proxy_unix_path.encode()) > 104:
                 _proxy_unix_path = os.path.join(
-                    _tmpf.gettempdir(),
-                    f".raptor-proxy-{os.getpid()}.sock",
+                    _tmpf.gettempdir(), _sock_name,
                 )
             try:
                 proxy_instance.bind_unix(_proxy_unix_path)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Sandbox: proxy unix socket bind failed (%s); "
-                    "falling back to TCP-only (ABI %d < 4, TCP "
-                    "allowlist NOT enforced on this kernel)", e,
-                    _proxy_abi,
+                    "falling back to Landlock TCP pin%s", e,
+                    "" if _proxy_abi >= 4 else
+                    " — which is INERT on this kernel (Landlock ABI "
+                    f"{_proxy_abi} < 4): egress allowlist is advisory "
+                    "only",
                 )
                 _use_proxy_netns = False
                 _proxy_unix_path = None
+        elif _proxy_abi < 4:
+            logger.warning(
+                "Sandbox: no netns capability AND Landlock ABI %d < 4 "
+                "(no TCP allowlist) — egress proxy allowlist is "
+                "advisory only on this host.",
+                _proxy_abi,
+            )
 
         if _use_proxy_netns:
             # Netns enforcement: the child gets CLONE_NEWNET; the
@@ -756,7 +786,12 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
 
         _will_engage_audit = bool(audit_mode)
 
-        seccomp_block_udp = True
+        # UDP block only where containment needs it: on the netns tier
+        # the empty namespace already contains UDP topologically (no
+        # interfaces, no routes), and blocking UDP socket creation
+        # there would only re-break loopback-UDP tools (gradle). On
+        # the Landlock tier the block is what closes DNS/UDP exfil.
+        seccomp_block_udp = not _use_proxy_netns
 
         _effective_proxy_port = (
             _proxy_forwarder_port
@@ -2560,7 +2595,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                           writable_paths=writable_paths,
                           seccomp_engaged=seccomp_engaged,
                           seccomp_profile=seccomp_profile,
-                          degraded_net_deny=_degraded_tcp_deny)
+                          degraded_net_deny=_degraded_tcp_deny,
+                          # the SOCK_DGRAM block rides the seccomp
+                          # filter, so it is only live when seccomp is
+                          udp_block_engaged=bool(seccomp_block_udp
+                                                 and seccomp_engaged))
 
         return result
 

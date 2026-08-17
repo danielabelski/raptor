@@ -11,12 +11,14 @@ from unittest.mock import patch
 import pytest
 
 from core.sandbox import (
-    _check_blocked,
     _DEFAULT_LIMITS,
+    _check_blocked,
     _make_preexec_fn,
-    check_sandbox_available,
     check_landlock_available,
+    check_sandbox_available,
     sandbox,
+)
+from core.sandbox import (
     run as sandbox_run,
 )
 
@@ -140,6 +142,29 @@ class TestBlockedCheck(unittest.TestCase):
                            returncode=128, sandbox_info=info,
                            network_engaged=False)
         # Regardless of Python version: blocked field must stay empty.
+        self.assertNotIn("blocked", info)
+
+    def test_udp_block_signature_when_engaged(self):
+        """gradle's UDP-at-startup failure is named on the proxy
+        fallback tier so operators learn WHY and what would work."""
+        info = {}
+        with self.assertLogs("core.sandbox", level="INFO") as cm:
+            _check_blocked(
+                "Could not determine a usable local IP for this machine.",
+                "gradle build", returncode=1, sandbox_info=info,
+                seccomp_engaged=True, udp_block_engaged=True)
+        self.assertIn("udp", cm.output[0].lower())
+        self.assertIn("netns", cm.output[0])
+        self.assertIn("blocked", info)
+
+    def test_udp_block_signature_silent_when_not_engaged(self):
+        """The JVM SocketException string is generic — without the
+        SOCK_DGRAM block engaged it must not fire."""
+        info = {}
+        _check_blocked(
+            "java.net.SocketException: Operation not permitted",
+            "gradle build", returncode=1, sandbox_info=info,
+            seccomp_engaged=False, udp_block_engaged=False)
         self.assertNotIn("blocked", info)
 
     def test_write_pattern_silent_when_not_engaged(self):
@@ -331,9 +356,8 @@ class TestSandboxContextManager(unittest.TestCase):
 
     def test_timeout_works(self):
         """Python timeout still functions inside sandbox."""
-        with sandbox() as run:
-            with self.assertRaises(subprocess.TimeoutExpired):
-                run(["sleep", "60"], timeout=1)
+        with sandbox() as run, self.assertRaises(subprocess.TimeoutExpired):
+            run(["sleep", "60"], timeout=1)
 
     def test_multiple_commands(self):
         """Multiple run() calls work in same context."""
@@ -828,7 +852,7 @@ class TestFdIsolation(unittest.TestCase):
         # BEFORE write so a failing write still lets the outer finally
         # unlink the stub (delete=False means the NamedTemporaryFile
         # stays on disk unless we explicitly remove it).
-        f = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        f = tempfile.NamedTemporaryFile(mode="w", delete=False)  # noqa: SIM115 — deliberate: fd must outlive the with-scope to probe leak-into-child
         leaked_path = f.name
         leaked_fd = f.file.fileno()
         try:
@@ -859,10 +883,10 @@ class TestFdIsolation(unittest.TestCase):
         import os as _os
         r, w = _os.pipe()
         try:
-            with sandbox() as run:
-                with self.assertLogs("core.sandbox", level="INFO") as cm:
-                    run(["true"], pass_fds=[r],
-                        capture_output=True, text=True, timeout=5)
+            with sandbox() as run, \
+                    self.assertLogs("core.sandbox", level="INFO") as cm:
+                run(["true"], pass_fds=[r],
+                    capture_output=True, text=True, timeout=5)
             self.assertTrue(any("pass_fds" in m for m in cm.output))
         finally:
             _os.close(r)
@@ -870,10 +894,10 @@ class TestFdIsolation(unittest.TestCase):
 
     def test_custom_env_logged(self):
         """Custom env= bypasses DANGEROUS_ENV_VARS sanitizer — logged at INFO."""
-        with sandbox() as run:
-            with self.assertLogs("core.sandbox", level="INFO") as cm:
-                run(["true"], env={"PATH": "/usr/bin"},
-                    capture_output=True, text=True, timeout=5)
+        with sandbox() as run, \
+                self.assertLogs("core.sandbox", level="INFO") as cm:
+            run(["true"], env={"PATH": "/usr/bin"},
+                capture_output=True, text=True, timeout=5)
         self.assertTrue(any("custom env" in m for m in cm.output))
 
 
@@ -890,7 +914,9 @@ class TestDebugProfile(unittest.TestCase):
     def test_cli_debug_profile_accepted(self):
         """`--sandbox debug` parses and applies."""
         import argparse
-        from core.sandbox import add_cli_args, apply_cli_args, state as mod_state
+
+        from core.sandbox import add_cli_args, apply_cli_args
+        from core.sandbox import state as mod_state
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
         args = parser.parse_args(["--sandbox", "debug"])
@@ -920,7 +946,9 @@ class TestTargetRunProfile(unittest.TestCase):
     def test_cli_target_run_profile_accepted(self):
         """`--sandbox target_run` parses and applies."""
         import argparse
-        from core.sandbox import add_cli_args, apply_cli_args, state as mod_state
+
+        from core.sandbox import add_cli_args, apply_cli_args
+        from core.sandbox import state as mod_state
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
         args = parser.parse_args(["--sandbox", "target_run"])
@@ -987,16 +1015,14 @@ class TestRunUntrustedGuard(unittest.TestCase):
     def test_run_untrusted_rejects_block_network_override(self):
         """run_untrusted contract includes network block — cannot be disabled."""
         from core.sandbox import run_untrusted
-        with TemporaryDirectory() as out:
-            with self.assertRaises(TypeError):
-                run_untrusted(["true"], output=out, block_network=False)
+        with TemporaryDirectory() as out, self.assertRaises(TypeError):
+            run_untrusted(["true"], output=out, block_network=False)
 
     def test_run_untrusted_rejects_allowed_tcp_ports(self):
         """Dead combination: namespace --net kills any Landlock TCP allow-rule."""
         from core.sandbox import run_untrusted
-        with TemporaryDirectory() as out:
-            with self.assertRaises(TypeError):
-                run_untrusted(["true"], output=out, allowed_tcp_ports=[443])
+        with TemporaryDirectory() as out, self.assertRaises(TypeError):
+            run_untrusted(["true"], output=out, allowed_tcp_ports=[443])
 
 
 class TestSandboxRunKwargGuard(unittest.TestCase):
@@ -1059,17 +1085,18 @@ class TestSanitizerStderrBytes(unittest.TestCase):
         _interpret_result (sibling call) still decoded correctly.
         """
         import tempfile
+
         from core.sandbox import sandbox
         # Use a sandbox with Landlock engaged and a write to a non-writable
         # path so Landlock produces "Permission denied" stderr in bytes.
-        with tempfile.TemporaryDirectory() as td:
-            with sandbox(target=td, output=td) as run:
-                # touch outside writable dirs: Landlock blocks with EACCES.
-                # Don't pass text=True → stderr is bytes.
-                result = run(
-                    ["sh", "-c", "touch /root/denied_write 2>&1 || true"],
-                    capture_output=True,  # no text=True → bytes stderr
-                )
+        with tempfile.TemporaryDirectory() as td, \
+                sandbox(target=td, output=td) as run:
+            # touch outside writable dirs: Landlock blocks with EACCES.
+            # Don't pass text=True → stderr is bytes.
+            result = run(
+                ["sh", "-c", "touch /root/denied_write 2>&1 || true"],
+                capture_output=True,  # no text=True → bytes stderr
+            )
         # Even with bytes stderr, sandbox_info should be populated.
         # We don't assert a specific block because the test host may not have
         # Landlock — the key invariant is that sandbox_info exists and the
@@ -1081,16 +1108,17 @@ class TestUserLimitsInvalidUtf8(unittest.TestCase):
     """_load_user_limits must not crash on non-UTF-8 config files."""
 
     def test_invalid_utf8_config(self):
-        import core.sandbox as mod
-        from core.sandbox import state as mod_state
         import tempfile
         from pathlib import Path
+
+        import core.sandbox as mod
+        from core.sandbox import state as mod_state
         saved_cache = mod_state._user_limits_cache
         saved_path = mod.preexec._CONFIG_PATH
         # Capture tmp_path before the write so a failing write doesn't
         # leak the file AND mask the real error with a NameError in
         # the finally below.
-        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False)  # noqa: SIM115 — deliberate: file must outlive close() for the parse-under-test
         tmp_path = f.name
         try:
             try:
@@ -1118,14 +1146,15 @@ class TestUserLimitsValidation(unittest.TestCase):
     """
 
     def test_rejects_negatives_accepts_zero(self):
-        import core.sandbox as mod
-        from core.sandbox import state as mod_state
         import json
         import tempfile
         from pathlib import Path
+
+        import core.sandbox as mod
+        from core.sandbox import state as mod_state
         saved_cache = mod_state._user_limits_cache
         saved_path = mod.preexec._CONFIG_PATH
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json",  # noqa: SIM115 — deliberate: file must outlive close() for the parse-under-test
                                         delete=False)
         tmp_path = f.name
         try:
@@ -1151,14 +1180,15 @@ class TestUserLimitsValidation(unittest.TestCase):
 
     def test_rejects_bool(self):
         """bool is an int subclass — exclude so `true` doesn't become 1."""
-        import core.sandbox as mod
-        from core.sandbox import state as mod_state
         import json
         import tempfile
         from pathlib import Path
+
+        import core.sandbox as mod
+        from core.sandbox import state as mod_state
         saved_cache = mod_state._user_limits_cache
         saved_path = mod.preexec._CONFIG_PATH
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json",  # noqa: SIM115 — deliberate: file must outlive close() for the parse-under-test
                                         delete=False)
         tmp_path = f.name
         try:
@@ -1183,15 +1213,15 @@ class TestProfileDiscardWarning(unittest.TestCase):
 
     def test_unknown_profile_raises(self):
         """Typos in profile= must fail loudly, not silently fall back to defaults."""
-        with self.assertRaises(ValueError):
-            with sandbox(profile="fulll") as run:  # typo
-                run(["true"], capture_output=True, text=True)
+        with self.assertRaises(ValueError), \
+                sandbox(profile="fulll") as run:  # typo
+            run(["true"], capture_output=True, text=True)
 
     def test_profile_none_warns_on_target(self):
-        with TemporaryDirectory() as d:
-            with self.assertLogs("core.sandbox", level="WARNING") as cm:
-                with sandbox(profile="none", target=d) as run:
-                    run(["true"], capture_output=True, text=True)
+        with TemporaryDirectory() as d, \
+                self.assertLogs("core.sandbox", level="WARNING") as cm, \
+                sandbox(profile="none", target=d) as run:
+            run(["true"], capture_output=True, text=True)
         self.assertTrue(any("ignores" in m and "target" in m for m in cm.output))
 
     def test_disabled_does_not_warn(self):
@@ -1204,9 +1234,9 @@ class TestProfileDiscardWarning(unittest.TestCase):
             prev = logger_obj.level
             logger_obj.setLevel(logging.WARNING)
             try:
-                with self.assertNoLogs("core.sandbox", level="WARNING"):
-                    with sandbox(disabled=True, target=d) as run:
-                        run(["true"], capture_output=True, text=True)
+                with self.assertNoLogs("core.sandbox", level="WARNING"), \
+                        sandbox(disabled=True, target=d) as run:
+                    run(["true"], capture_output=True, text=True)
             finally:
                 logger_obj.setLevel(prev)
 
@@ -1370,16 +1400,16 @@ class TestCliProfile(unittest.TestCase):
     def test_set_cli_profile_none_also_disables(self):
         """profile='none' must set both _cli_sandbox_profile and _cli_sandbox_disabled
         so existing disabled-checks continue to work."""
-        from core.sandbox import state as mod_state
         from core.sandbox import set_cli_profile
+        from core.sandbox import state as mod_state
         set_cli_profile("none")
         self.assertEqual(mod_state._cli_sandbox_profile, "none")
         self.assertTrue(mod_state._cli_sandbox_disabled)
 
     def test_set_cli_profile_switches_coherently(self):
         """Switching profile='none' → 'full' must un-stick the disabled flag."""
-        from core.sandbox import state as mod_state
         from core.sandbox import set_cli_profile
+        from core.sandbox import state as mod_state
         set_cli_profile("none")
         self.assertTrue(mod_state._cli_sandbox_disabled)
         set_cli_profile("full")
@@ -1389,8 +1419,8 @@ class TestCliProfile(unittest.TestCase):
     def test_disable_from_cli_coherent_after_profile_full(self):
         """disable_from_cli() after set_cli_profile('full') must disable — it
         used to leave _cli_sandbox_profile='full' and silently win."""
+        from core.sandbox import disable_from_cli, set_cli_profile
         from core.sandbox import state as mod_state
-        from core.sandbox import set_cli_profile, disable_from_cli
         set_cli_profile("full")
         self.assertEqual(mod_state._cli_sandbox_profile, "full")
         disable_from_cli()
@@ -1410,6 +1440,7 @@ class TestCliProfile(unittest.TestCase):
     def test_add_cli_args_adds_both_flags(self):
         """add_cli_args attaches --sandbox and --no-sandbox to an argparse parser."""
         import argparse
+
         from core.sandbox import add_cli_args
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
@@ -1427,6 +1458,7 @@ class TestCliProfile(unittest.TestCase):
     def test_add_cli_args_rejects_unknown_profile(self):
         """argparse choices= rejects typos at parse time."""
         import argparse
+
         from core.sandbox import add_cli_args
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
@@ -1437,6 +1469,7 @@ class TestCliProfile(unittest.TestCase):
         """Passing both --sandbox and --no-sandbox must be a parse error,
         not a silent tie-break."""
         import argparse
+
         from core.sandbox import add_cli_args
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
@@ -1446,8 +1479,9 @@ class TestCliProfile(unittest.TestCase):
     def test_apply_cli_args_no_sandbox_alone(self):
         """--no-sandbox sets BOTH flags coherently via shared _set_cli_state."""
         import argparse
-        from core.sandbox import state as mod_state
+
         from core.sandbox import add_cli_args, apply_cli_args
+        from core.sandbox import state as mod_state
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
         args = parser.parse_args(["--no-sandbox"])
@@ -1458,8 +1492,9 @@ class TestCliProfile(unittest.TestCase):
     def test_apply_cli_args_sandbox_network_only(self):
         """--sandbox network-only sets profile, does NOT set disabled."""
         import argparse
-        from core.sandbox import state as mod_state
+
         from core.sandbox import add_cli_args, apply_cli_args
+        from core.sandbox import state as mod_state
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
         args = parser.parse_args(["--sandbox", "network-only"])
@@ -1469,8 +1504,9 @@ class TestCliProfile(unittest.TestCase):
 
     def test_apply_cli_args_noop_when_neither_flag(self):
         import argparse
-        from core.sandbox import state as mod_state
+
         from core.sandbox import add_cli_args, apply_cli_args
+        from core.sandbox import state as mod_state
         parser = argparse.ArgumentParser()
         add_cli_args(parser)
         args = parser.parse_args([])
@@ -1503,67 +1539,70 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
         mod_state._landlock_warned_abi_v4 = self._saved_abi
 
     def test_raises_when_landlock_unavailable_but_target_set(self):
+        from unittest.mock import patch
+
         import core.sandbox as mod
         from core.sandbox.errors import SandboxSetupError
-        from unittest.mock import patch
-        with TemporaryDirectory() as d:
-            with patch.object(mod.landlock, "check_landlock_available", return_value=False):
-                with patch.object(mod.probes, "check_mount_available", return_value=False):
-                    with self.assertRaises(SandboxSetupError) as cm:
-                        with sandbox(target=d, output=d) as run:
-                            run(["true"], capture_output=True, text=True)
+        with TemporaryDirectory() as d, \
+                patch.object(mod.landlock, "check_landlock_available", return_value=False), \
+                patch.object(mod.probes, "check_mount_available", return_value=False), \
+                self.assertRaises(SandboxSetupError) as cm, \
+                sandbox(target=d, output=d) as run:
+            run(["true"], capture_output=True, text=True)
         self.assertIn("Landlock is unavailable", cm.exception.reason)
 
     def test_warns_when_tcp_allowlist_on_abi_lt_4(self):
-        import core.sandbox as mod 
         from unittest.mock import patch
+
+        import core.sandbox as mod
         # Simulate ABI v3 kernel: Landlock available for fs, not for net.
-        with patch.object(mod.landlock, "check_landlock_available", return_value=True):
-            with patch.object(mod.landlock, "_get_landlock_abi", return_value=3):
-                with patch.object(mod.probes, "check_mount_available", return_value=False):
-                    with self.assertLogs("core.sandbox", level="WARNING") as cm:
-                        with sandbox(allowed_tcp_ports=[443]) as run:
-                            run(["true"], capture_output=True, text=True)
+        with patch.object(mod.landlock, "check_landlock_available", return_value=True), \
+                patch.object(mod.landlock, "_get_landlock_abi", return_value=3), \
+                patch.object(mod.probes, "check_mount_available", return_value=False), \
+                self.assertLogs("core.sandbox", level="WARNING") as cm, \
+                sandbox(allowed_tcp_ports=[443]) as run:
+            run(["true"], capture_output=True, text=True)
         self.assertTrue(any("ABI v4" in m for m in cm.output))
 
     def test_landlock_unavailable_raises_every_time(self):
         """Each sandbox() call raises when Landlock is unavailable — no silent degradation."""
+        from unittest.mock import patch
+
         import core.sandbox as mod
         from core.sandbox.errors import SandboxSetupError
-        from unittest.mock import patch
-        with TemporaryDirectory() as d:
-            with patch.object(mod.landlock, "check_landlock_available", return_value=False), \
-                 patch.object(mod.probes, "check_mount_available", return_value=False):
-                for _ in range(3):
-                    with self.assertRaises(SandboxSetupError):
-                        with sandbox(target=d, output=d) as run:
-                            run(["true"], capture_output=True, text=True)
+        with TemporaryDirectory() as d, \
+                patch.object(mod.landlock, "check_landlock_available", return_value=False), \
+                patch.object(mod.probes, "check_mount_available", return_value=False):
+            for _ in range(3):
+                with self.assertRaises(SandboxSetupError), \
+                        sandbox(target=d, output=d) as run:
+                    run(["true"], capture_output=True, text=True)
 
     def test_warns_on_old_landlock_abi_v2(self):
         """Pre-5.19 kernels lack REFER — rename-across-dirs isn't blocked.
         Operator should see a WARNING so the gap is visible."""
-        import core.sandbox as mod 
-        with patch.object(mod.landlock, "check_landlock_available", return_value=True):
-            with patch.object(mod.landlock, "_get_landlock_abi", return_value=1):
-                with patch.object(mod.probes, "check_mount_available", return_value=False):
-                    with TemporaryDirectory() as d:
-                        with self.assertLogs("core.sandbox", level="WARNING") as cm:
-                            with sandbox(target=d, output=d) as run:
-                                run(["true"], capture_output=True, text=True)
+        import core.sandbox as mod
+        with patch.object(mod.landlock, "check_landlock_available", return_value=True), \
+                patch.object(mod.landlock, "_get_landlock_abi", return_value=1), \
+                patch.object(mod.probes, "check_mount_available", return_value=False), \
+                TemporaryDirectory() as d, \
+                self.assertLogs("core.sandbox", level="WARNING") as cm, \
+                sandbox(target=d, output=d) as run:
+            run(["true"], capture_output=True, text=True)
         # Both v2 and v3 warnings should fire (ABI 1 is below both).
         self.assertTrue(any("ABI v2" in m and "REFER" in m for m in cm.output))
         self.assertTrue(any("ABI v3" in m and "TRUNCATE" in m for m in cm.output))
 
     def test_warns_on_old_landlock_abi_v3_only(self):
         """Pre-6.2 kernels lack TRUNCATE but have REFER (ABI 2)."""
-        import core.sandbox as mod 
-        with patch.object(mod.landlock, "check_landlock_available", return_value=True):
-            with patch.object(mod.landlock, "_get_landlock_abi", return_value=2):
-                with patch.object(mod.probes, "check_mount_available", return_value=False):
-                    with TemporaryDirectory() as d:
-                        with self.assertLogs("core.sandbox", level="WARNING") as cm:
-                            with sandbox(target=d, output=d) as run:
-                                run(["true"], capture_output=True, text=True)
+        import core.sandbox as mod
+        with patch.object(mod.landlock, "check_landlock_available", return_value=True), \
+                patch.object(mod.landlock, "_get_landlock_abi", return_value=2), \
+                patch.object(mod.probes, "check_mount_available", return_value=False), \
+                TemporaryDirectory() as d, \
+                self.assertLogs("core.sandbox", level="WARNING") as cm, \
+                sandbox(target=d, output=d) as run:
+            run(["true"], capture_output=True, text=True)
         # ABI 2: TRUNCATE warning YES, REFER warning NO
         self.assertTrue(any("ABI v3" in m and "TRUNCATE" in m for m in cm.output))
         self.assertFalse(any("ABI v2" in m and "REFER" in m for m in cm.output))
@@ -1572,25 +1611,26 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
         """block_network=True + allowed_tcp_ports is a dead combination —
         namespace removes all interfaces before Landlock's allow-rule can
         apply. Warn so the caller catches their misconfiguration."""
-        with self.assertLogs("core.sandbox", level="WARNING") as cm:
-            with sandbox(block_network=True, allowed_tcp_ports=[443]) as run:
-                run(["true"], capture_output=True, text=True)
+        with self.assertLogs("core.sandbox", level="WARNING") as cm, \
+                sandbox(block_network=True, allowed_tcp_ports=[443]) as run:
+            run(["true"], capture_output=True, text=True)
         self.assertTrue(any("unreachable" in m and "443" in m for m in cm.output))
 
     def test_no_warning_on_abi_v4_with_tcp_allowlist(self):
         """On ABI v4+, allowed_tcp_ports is enforceable — no degradation warning."""
-        import core.sandbox as mod 
         from unittest.mock import patch
-        with patch.object(mod.landlock, "check_landlock_available", return_value=True):
-            with patch.object(mod.landlock, "_get_landlock_abi", return_value=4):
-                with patch.object(mod.probes, "check_mount_available", return_value=False):
-                    import logging
-                    logger_obj = logging.getLogger("core.sandbox")
-                    with self.assertLogs("core.sandbox", level="WARNING") as cm:
-                        with sandbox(allowed_tcp_ports=[443]) as run:
-                            run(["true"], capture_output=True, text=True)
-                        # Force at least one WARNING so assertLogs doesn't fail
-                        logger_obj.warning("test sentinel")
+
+        import core.sandbox as mod
+        with patch.object(mod.landlock, "check_landlock_available", return_value=True), \
+                patch.object(mod.landlock, "_get_landlock_abi", return_value=4), \
+                patch.object(mod.probes, "check_mount_available", return_value=False):
+            import logging
+            logger_obj = logging.getLogger("core.sandbox")
+            with self.assertLogs("core.sandbox", level="WARNING") as cm:
+                with sandbox(allowed_tcp_ports=[443]) as run:
+                    run(["true"], capture_output=True, text=True)
+                # Force at least one WARNING so assertLogs doesn't fail
+                logger_obj.warning("test sentinel")
         self.assertFalse(any("ABI v4" in m for m in cm.output))
 
 
@@ -1610,18 +1650,18 @@ class TestCliProfileAuthoritative(unittest.TestCase):
     def test_cli_full_beats_library_disabled(self):
         """User passed --sandbox full; library code passes disabled=True.
         CLI must win — sandbox should actually run."""
-        from core.sandbox import state as mod_state
         from core.sandbox import set_cli_profile
+        from core.sandbox import state as mod_state
         set_cli_profile("full")
         # With disabled=True + CLI='full', we expect CLI to override —
         # use_sandbox must become True when check_net_available is True.
         # Test by observing effective behaviour: the sandbox wrapper
         # should actually engage (unshare in the command line). We can
         # introspect via sandbox_info or just verify no ValueError.
-        with TemporaryDirectory() as d:
-            with sandbox(disabled=True, target=d, output=d) as run:
-                # A command that succeeds regardless of isolation.
-                result = run(["echo", "cli-wins"], capture_output=True, text=True)
+        with TemporaryDirectory() as d, \
+                sandbox(disabled=True, target=d, output=d) as run:
+            # A command that succeeds regardless of isolation.
+            result = run(["echo", "cli-wins"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn("cli-wins", result.stdout)
         # And the CLI state should still read as "full" (not disabled by library).
@@ -1642,7 +1682,7 @@ class TestSandboxObservability(unittest.TestCase):
             # Compile
             import subprocess
             subprocess.run(["gcc", "-o", str(binary), str(src)],
-                           capture_output=True, timeout=10)
+                           capture_output=True, timeout=10, check=False)
             if not binary.exists():
                 self.skipTest("gcc not available")
             # Run in sandbox
@@ -1732,9 +1772,8 @@ class TestToolPathsKwarg(unittest.TestCase):
         run() means the caller misunderstands the API. Reject loudly
         per the _SANDBOX_KWARGS guard in profiles.py."""
         from core.sandbox import sandbox
-        with sandbox() as run:
-            with self.assertRaises(TypeError):
-                run(["true"], tool_paths=["/opt/foo/bin"])
+        with sandbox() as run, self.assertRaises(TypeError):
+            run(["true"], tool_paths=["/opt/foo/bin"])
 
 
 class TestSpeculativeToolPathsRetry(unittest.TestCase):
@@ -1753,6 +1792,7 @@ class TestSpeculativeToolPathsRetry(unittest.TestCase):
         """The degrade-to-Landlock-only branch MUST gate on the exec-status
         signal (M/X categories), not the old exit-code/stderr heuristic."""
         from pathlib import Path
+
         from core.sandbox import context as _ctx
         src = Path(_ctx.__file__).read_text()
         for required in ("_setup_status",
@@ -1765,6 +1805,7 @@ class TestSpeculativeToolPathsRetry(unittest.TestCase):
         """A Landlock/seccomp/unshare APPLY failure ('L'/'S'/'U') must fail
         loud (SandboxSetupError), not degrade."""
         from pathlib import Path
+
         from core.sandbox import context as _ctx
         src = Path(_ctx.__file__).read_text()
         for required in ('_setup_status[0] in ("L", "S", "U")',
@@ -1777,6 +1818,7 @@ class TestSpeculativeToolPathsRetry(unittest.TestCase):
         longer depend on stderr emptiness or RAPTOR:-prefix stripping — a
         target could forge those to force an isolation downgrade."""
         from pathlib import Path
+
         from core.sandbox import context as _ctx
         src = Path(_ctx.__file__).read_text()
         self.assertNotIn("not _stderr_text.strip()", src,
@@ -1804,6 +1846,7 @@ class TestSpeculativeFailureCache(unittest.TestCase):
         cache HIT site (in spawn-eligibility check) reference the
         canonical attribute name."""
         from pathlib import Path
+
         from core.sandbox import context as _ctx
         src = Path(_ctx.__file__).read_text()
         self.assertIn("state._speculative_failure_cache[", src,
@@ -1816,6 +1859,7 @@ class TestSpeculativeFailureCache(unittest.TestCase):
         double-log. The cache populate is wrapped in state._cache_lock
         so the read+insert+log-decision is atomic."""
         from pathlib import Path
+
         from core.sandbox import context as _ctx
         src = Path(_ctx.__file__).read_text()
         idx = src.find("state._speculative_failure_cache[")
@@ -1828,6 +1872,7 @@ class TestSpeculativeFailureCache(unittest.TestCase):
         """Operator-visibility contract: first failure per binary fires
         ONE INFO log; cache-hit subsequent calls log at DEBUG only."""
         from pathlib import Path
+
         from core.sandbox import context as _ctx
         src = Path(_ctx.__file__).read_text()
         idx = src.find("if _first_seen:")
@@ -1851,6 +1896,7 @@ class TestMountNsToolPathFallbackContract(unittest.TestCase):
         works, operator has nothing to fix. Pinned by source-grep
         on the call-site usage."""
         from pathlib import Path
+
         from core.sandbox import context as _ctx
         src = Path(_ctx.__file__).read_text()
         # Find the CALL SITE (not the definition). The pattern

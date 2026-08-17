@@ -4347,3 +4347,33 @@ class TestRunCritiqueConcurrency:
         assert result.findings == 0  # no double promotion tally
         assert result.suspicious == 1
         assert result.sweep_promoted == 0
+
+
+class TestRecordExecutorStop:
+    """A shutdown-stopped run must not report terminated_by='complete'
+    (the old guard compared 'not terminated_by' against the truthy
+    default, so it never fired)."""
+
+    def test_shutdown_stop_named(self):
+        from core.audit.executor import ExecutorStats
+        from core.audit.orchestrator import _record_executor_stop
+
+        result = OrchestratorResult()
+        _record_executor_stop(result, ExecutorStats(budget_stopped=True))
+        assert result.terminated_by == "shutdown"
+
+    def test_budget_reason_preserved(self):
+        from core.audit.executor import ExecutorStats
+        from core.audit.orchestrator import _record_executor_stop
+
+        result = OrchestratorResult(terminated_by="llm_budget_exceeded")
+        _record_executor_stop(result, ExecutorStats(budget_stopped=True))
+        assert result.terminated_by == "llm_budget_exceeded"
+
+    def test_normal_completion_untouched(self):
+        from core.audit.executor import ExecutorStats
+        from core.audit.orchestrator import _record_executor_stop
+
+        result = OrchestratorResult()
+        _record_executor_stop(result, ExecutorStats(budget_stopped=False))
+        assert result.terminated_by == "complete"

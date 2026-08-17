@@ -3522,8 +3522,7 @@ def _run_audit_body(
         concept_index_ref=concept_index_ref,
     )
     joern_future = joern_state["future"]
-    if executor_stats.budget_stopped and not result.terminated_by:
-        result.terminated_by = "llm_budget_exceeded"
+    _record_executor_stop(result, executor_stats)
     if executor_stats.budget_stopped:
         _announce_budget_stop(
             result, executor_stats, graph, on_progress,
@@ -6340,6 +6339,19 @@ def _retry_error_outcomes(
         )
 
     return result
+
+
+def _record_executor_stop(result: OrchestratorResult, executor_stats: Any) -> None:
+    """Name the stop reason when the executor stopped without one.
+
+    ``terminated_by`` defaults to the truthy string "complete" (the old
+    ``not result.terminated_by`` guard here never fired).  Budget stops
+    are named by ``_check_budget`` or the budget-RuntimeError handlers;
+    the remaining unnamed cause of ``budget_stopped`` is an operator
+    shutdown request.
+    """
+    if executor_stats.budget_stopped and result.terminated_by == "complete":
+        result.terminated_by = "shutdown"
 
 
 def _check_budget(

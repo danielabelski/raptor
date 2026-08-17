@@ -46,6 +46,7 @@ from core.dataflow.barrier_synth import (
 )
 from core.dataflow.cvefix_loader import CveFixPair
 from core.git import safe_git_readonly_command
+from core.paths import strip_file_uri
 
 # Tier 0 (SMT) is the free first-pass backend. Imported defensively so a
 # missing substrate / packaging glitch can't break the existing Tier 2
@@ -173,11 +174,12 @@ def _default_search_path() -> str | None:
 
 def _norm_uri(uri: str) -> str:
     """Strip a file: scheme + leading slash so `repo_root / uri` stays in-repo."""
-    if uri.startswith("file://"):
-        uri = uri[len("file://"):]
-    elif uri.startswith("file:"):
-        uri = uri[len("file:"):]
-    return uri.lstrip("/")
+    stripped = strip_file_uri(uri)
+    if stripped == uri and uri.startswith("file:"):
+        # Scheme without authority (``file:/abs/path``) — SARIF emits
+        # this too; core.paths deliberately handles only ``file://``.
+        stripped = uri[len("file:"):]
+    return stripped.lstrip("/")
 
 
 def _git_diff(repo: Path, parent: str, fix: str, uri: str,

@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.paths import strip_file_uri
 from core.security.prompt_envelope import neutralize_tag_forgery
 from packages.hypothesis_validation import Hypothesis
 from packages.hypothesis_validation.adapters import CodeQLAdapter
@@ -1701,7 +1702,7 @@ def _resolve_finding_in_db(finding: dict, db_path: Path) -> str | None:
     if not file_path:
         return None
     # Strip uri-style prefixes some scanners use
-    file_path = file_path.removeprefix("file://")
+    file_path = strip_file_uri(file_path)
     indexed = _db_indexed_files(Path(db_path))
     if not indexed:
         return None
@@ -1928,7 +1929,7 @@ def _function_in_codeql_inventory(
     if inventory is None:
         return None  # probe unavailable — defer to Layer 2
     file_path = (finding.get("file_path") or finding.get("file") or "").strip()
-    file_path = file_path.removeprefix("file://")
+    file_path = strip_file_uri(file_path)
     needle = file_path.lstrip("/")
     # Suffix match — finding's path may not anchor to DB's source root.
     for entry_file, entry_fn in inventory:

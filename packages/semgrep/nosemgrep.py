@@ -25,6 +25,8 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from core.paths import strip_file_uri
+
 logger = logging.getLogger(__name__)
 
 # Matches nosemgrep comments in any common style:
@@ -163,8 +165,9 @@ def annotate_sarif(sarif_data: dict, repo_root: str) -> int:
                 continue
 
             # Resolve the file path against repo root.
-            if uri.startswith("file://"):
-                abs_path = uri[7:]
+            stripped = strip_file_uri(uri)
+            if stripped != uri:
+                abs_path = stripped
             else:
                 abs_path = str(root / uri)
 

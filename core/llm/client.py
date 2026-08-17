@@ -2113,7 +2113,12 @@ class LLMClient:
                     cost=0.0,
                     tokens_used=0,
                     model=model_config.model_name,
-                    provider=model_config.provider,
+                    # Lowercase — same normalisation as generate()'s
+                    # cached path (see the comment there): a mixed-case
+                    # LLMConfig provider would otherwise split
+                    # cached/fresh responses into separate buckets for
+                    # consumers grouping by provider.
+                    provider=model_config.provider.lower(),
                     duration=0.0,
                     cached=True,
                 )
@@ -2275,7 +2280,11 @@ class LLMClient:
                             cost=cost_delta,
                             tokens_used=tokens_delta,
                             model=model.model_name,
-                            provider=model.provider,
+                            # Lowercase — keeps cached and fresh
+                            # structured responses in the same
+                            # provider bucket (matches the providers'
+                            # own ``config.provider.lower()``).
+                            provider=model.provider.lower(),
                             duration=duration,
                             resolved_model=resolved,
                             input_tokens=in_delta,

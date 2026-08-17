@@ -967,7 +967,9 @@ def _counter_hypothesis_is_compelling(counter: str) -> bool:
     )
     if not any(m in lower for m in specificity_markers):
         return False
-    return not _is_contract_delegation(lower)
+    # Contract delegation was already ruled out above; a counter that
+    # survives every filter names a specific attack.
+    return True
 
 
 def _lang_correction(filename: str) -> float:

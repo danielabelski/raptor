@@ -46,7 +46,14 @@ scan  →  dedup  →  prep  →  analyse (per finding)
    build scripts execute); pass `--traced-build` to opt into
    full-fidelity traced extraction on a repo you trust (see
    [CodeQL](codeql.md)).
-   External SARIF can be imported with `--sarif` instead of scanning.
+   Two opt-in channels ride the Semgrep stage on C/C++ targets (so both
+   are skipped under `--codeql-only`): `--compiler-scan` runs gcc
+   `-fanalyzer` / clang `--analyze` per translation unit (capped by
+   `--compiler-scan-max-tus`, default 2000), and `--expanded-semgrep`
+   re-runs the ruleset over preprocessor-expanded views of macro-heavy
+   TUs.
+   External SARIF can be imported with `--sarif` instead of scanning
+   (repeatable; add `--also-scan` to merge with a fresh scan).
 2. **Dedup** -- collapse duplicate and overlapping findings so the same bug is
    not analysed twice.  Skip with `--skip-dedup`.
 3. **Prep** -- read the code around each finding, pull surrounding context, and
@@ -210,8 +217,8 @@ automatically.
 
 ## Output
 
-Everything lands in the run's output directory (`out/agentic_<timestamp>/` or
-the active project directory).
+Everything lands in the run's output directory (`out/agentic_<target>_<timestamp>/`
+or the active project directory).
 
 | File | Contents |
 |------|----------|

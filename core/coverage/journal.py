@@ -129,6 +129,10 @@ class ReviewJournalEntry:
     hypotheses: list[dict[str, str]] = field(default_factory=list)
     body: str = ""
     reading_list_items: list[str] = field(default_factory=list)
+    # Receipts of study answers whose re-review produced this verdict
+    # (question, tier, file, line, sha256, verified) — makes a bad
+    # study answer's blast radius traceable from the journal.
+    study_receipts: list[dict] = field(default_factory=list)
     model: str | None = None
     evidence_tools: list[str] = field(default_factory=list)
     token_budget: int | None = None
@@ -319,6 +323,7 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         hypotheses=raw.get("hypotheses", []),
         body=raw.get("body", ""),
         reading_list_items=raw.get("reading_list_items", []),
+        study_receipts=raw.get("study_receipts", []),
         model=raw.get("model"),
         evidence_tools=raw.get("evidence_tools", []),
         token_budget=raw.get("token_budget"),

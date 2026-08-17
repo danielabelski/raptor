@@ -8331,6 +8331,30 @@ def _record_study_scorecard(
         logger.debug("study scorecard record failed", exc_info=True)
 
 
+def _record_study_flip(config: OrchestratorConfig, outcome: Any) -> None:
+    """Register a study-answer-driven verdict flip on the scorecard
+    (volume signal under the study_question decision class)."""
+    try:
+        from core.llm.scorecard.scorecard import ModelScorecard
+
+        raptor_dir = os.environ.get("RAPTOR_DIR")
+        path = (
+            Path(raptor_dir) / "out" / "llm_scorecard.json"
+            if raptor_dir else Path("out/llm_scorecard.json")
+        )
+        model = (
+            getattr(outcome, "model", "")
+            or (config.models[0] if config.models else "default")
+        )
+        ModelScorecard(path).register_uses([{
+            "model": model,
+            "decision_class": "study_question",
+            "calls": 1,
+        }])
+    except Exception:
+        logger.debug("study flip record failed", exc_info=True)
+
+
 def _corpus_has_snippet(concept_l: str, tail: str, study_items: list[dict]) -> bool:
     """Extract-then-answer check: did mechanical extraction produce
     ANY snippet for this identifier?"""
@@ -17303,6 +17327,24 @@ def _re_review_study_enriched(
                 else ""
             ),
         }
+        # Contradiction quarantine: the re-review sees BOTH the
+        # original assumption and the sourced study answer (with its
+        # receipt and tier) — never a silent substitution.
+        if config.out_dir is not None:
+            try:
+                from core.concepts.study_answers import (
+                    answers_for_function,
+                )
+                sa = answers_for_function(
+                    config.out_dir, file_path, func_name,
+                )
+                if sa:
+                    ctx["study_answers"] = sa
+            except Exception:
+                logger.debug(
+                    "study answers load failed for %s:%s",
+                    file_path, func_name, exc_info=True,
+                )
         prior_hyps = _prior_hypotheses_for(prior_outcome)
         if prior_hyps:
             ctx["prior_hypotheses"] = prior_hyps
@@ -17356,6 +17398,27 @@ def _re_review_study_enriched(
             continue
 
         outcome.line = gap.get("line_start", 0)
+
+        # Receipt threading: a verdict whose re-review was triggered
+        # by study answers embeds their receipts in its evidence
+        # chain, so one bad answer's blast radius is traceable.
+        study_answers = ctx.get("study_answers") or []
+        if study_answers and isinstance(outcome.review_result, dict):
+            receipts = []
+            for a in study_answers:
+                if a.get("status") != "resolved":
+                    continue
+                receipt = a.get("receipt") or {}
+                receipts.append({
+                    "question": str(a.get("question", ""))[:200],
+                    "tier": a.get("tier", ""),
+                    "file": receipt.get("file", ""),
+                    "line": receipt.get("line"),
+                    "sha256": receipt.get("sha256", ""),
+                    "verified": bool(receipt.get("verified")),
+                })
+            if receipts:
+                outcome.review_result["study_receipts"] = receipts
 
         if outcome.status in ("finding", "suspicious"):
             if outcome.status == "finding" and config.sweep_validate_findings:
@@ -17428,6 +17491,8 @@ def _re_review_study_enriched(
                 prior_outcome.status,
                 outcome.status,
             )
+            if ctx.get("study_answers"):
+                _record_study_flip(config, outcome)
 
     return result
 

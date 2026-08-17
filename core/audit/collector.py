@@ -105,6 +105,13 @@ def append_journal_for_outcome(
             if isinstance(item, dict)
         ]
 
+    study_receipts: list[dict] = []
+    if review_result and review_result.get("study_receipts"):
+        study_receipts = [
+            r for r in review_result["study_receipts"]
+            if isinstance(r, dict)
+        ]
+
     domain_concepts: list[str] = []
     invariants_available: list[str] = []
     try:
@@ -190,6 +197,7 @@ def append_journal_for_outcome(
         hypotheses=hypotheses_list,
         body=getattr(outcome, "body", "") or "",
         reading_list_items=reading_list_items,
+        study_receipts=study_receipts,
         model=getattr(outcome, "model", None) or None,
         evidence_tools=evidence_tools,
         cost_usd=getattr(outcome, "cost_usd", None) or None,

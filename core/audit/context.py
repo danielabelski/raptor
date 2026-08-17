@@ -1208,6 +1208,13 @@ def format_context_for_prompt(
             )
         sections.append(PromptSection("prior_verdict", "\n".join(pp), 1))
 
+    if ctx.get("study_answers"):
+        sections.append(PromptSection(
+            "study_answers",
+            _format_study_answers(ctx["study_answers"]),
+            1,
+        ))
+
     prior_hyp_text = _format_prior_hypotheses(ctx.get("prior_hypotheses"))
     if prior_hyp_text:
         sections.append(PromptSection("prior_hypotheses", prior_hyp_text, 1))
@@ -1348,6 +1355,65 @@ def format_context_for_prompt(
 _MAX_PRIOR_HYPOTHESES = 8
 
 _CONFIDENCE_SAFE_RE = re.compile(r"[^a-z_-]")
+
+
+_ACTIONABLE_STUDY_TIERS = ("verbatim", "mechanical")
+
+
+def _format_study_answers(study_answers: list[dict]) -> str:
+    """Contradiction-quarantine block for study-triggered re-reviews.
+
+    The prior review declared assumptions; the study loop investigated
+    them.  BOTH sides are presented — the original assumption and the
+    sourced answer with its receipt and provenance tier — and the
+    model is told to re-derive, never substitute.  Answer/assumption
+    text is prior-LLM output over attacker-visible source (untrusted)
+    — defanged with ``neutralize_tag_forgery`` before interpolation;
+    receipt quotes are verbatim repo source, framed as quoted data.
+    """
+    from core.security.prompt_envelope import neutralize_tag_forgery
+
+    lines = [
+        "\n### Study answers for your prior assumptions",
+        ("The study loop investigated assumptions your prior review "
+         "relied on. For each, BOTH your original assumption AND the "
+         "sourced answer are shown — neither replaces the other. "
+         "Re-derive your verdict against the quoted source; never "
+         "substitute either claim without verifying it against the "
+         "receipt. Entries marked UNVERIFIED HINT carry no verified "
+         "receipt and must NOT be treated as established fact."),
+    ]
+    for a in study_answers[:8]:
+        if not isinstance(a, dict):
+            continue
+        question = neutralize_tag_forgery(
+            str(a.get("question", ""))[:200],
+        )
+        assumption = neutralize_tag_forgery(
+            str(a.get("assumption", ""))[:200],
+        )
+        answer = neutralize_tag_forgery(str(a.get("answer", ""))[:300])
+        tier = str(a.get("tier", ""))[:20]
+        status = str(a.get("status", ""))[:20]
+        receipt = a.get("receipt") or {}
+        label = f"[{tier or 'unverified'}]"
+        if tier not in _ACTIONABLE_STUDY_TIERS:
+            label += " UNVERIFIED HINT"
+        elif status == "inconclusive":
+            label += " INCONCLUSIVE — independent verification disagreed"
+        lines.append(f"\n- Question: {question}")
+        if assumption:
+            lines.append(f"  Your assumption: {assumption}")
+        if answer:
+            lines.append(f"  Sourced answer {label}: {answer}")
+        quote = str(receipt.get("quote", "") or "")
+        if quote and receipt.get("verified"):
+            where = f"{receipt.get('file', '')}:{receipt.get('line', '?')}"
+            lines.append(
+                f"  Receipt ({where}): "
+                f"`{neutralize_tag_forgery(quote[:200])}`"
+            )
+    return "\n".join(lines)
 
 
 def _format_prior_hypotheses(prior_hypotheses: Any) -> str:

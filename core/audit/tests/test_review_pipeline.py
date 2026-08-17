@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 # ── Feature 1: Wrapper auto-clean ─────────────────────────────────
 
@@ -463,7 +462,7 @@ class _MockOutcome:
     function: str
     status: str
     verification_tier: str = "speculative"
-    hypotheses: Optional[List[Dict[str, Any]]] = None
+    hypotheses: list[dict[str, Any]] | None = None
 
 
 class TestConfidencePropagation:
@@ -1103,7 +1102,7 @@ class TestLearningLoop:
         assert extract_fp_patterns(results) == []
 
     def test_save_and_load_corrections(self, tmp_path):
-        from core.audit.learning import save_corrections, load_corrections
+        from core.audit.learning import load_corrections, save_corrections
         patterns = [
             {"category": "caller_contract", "count": 5,
              "correction": "Do not flag caller contract issues.",
@@ -1350,7 +1349,8 @@ class TestSelfContradictionDemotion:
 
     def test_all_refuted_suspicious_demoted(self):
         from core.audit.orchestrator import (
-            OrchestratorResult, _demote_self_contradictions,
+            OrchestratorResult,
+            _demote_self_contradictions,
         )
         outcome = self._make_outcome("suspicious", [
             {"mechanism": "overflow", "confidence": "refuted"},
@@ -1367,7 +1367,8 @@ class TestSelfContradictionDemotion:
 
     def test_mixed_confidence_not_demoted(self):
         from core.audit.orchestrator import (
-            OrchestratorResult, _demote_self_contradictions,
+            OrchestratorResult,
+            _demote_self_contradictions,
         )
         outcome = self._make_outcome("suspicious", [
             {"mechanism": "overflow", "confidence": "refuted"},
@@ -1381,7 +1382,8 @@ class TestSelfContradictionDemotion:
 
     def test_evidence_backed_not_demoted(self):
         from core.audit.orchestrator import (
-            OrchestratorResult, _demote_self_contradictions,
+            OrchestratorResult,
+            _demote_self_contradictions,
         )
         outcome = self._make_outcome("suspicious", [
             {"mechanism": "overflow", "confidence": "refuted"},
@@ -1394,7 +1396,8 @@ class TestSelfContradictionDemotion:
 
     def test_no_hypotheses_not_demoted(self):
         from core.audit.orchestrator import (
-            OrchestratorResult, _demote_self_contradictions,
+            OrchestratorResult,
+            _demote_self_contradictions,
         )
         outcome = self._make_outcome("suspicious", [])
         result = OrchestratorResult()
@@ -1421,6 +1424,7 @@ class TestFormatStringGoGate:
             "format string injection via user input", "src/logger.c",
         )
         assert result is not None
+        Path(result).unlink()
 
 
 # ── Auth bypass SMT check (check-auth-bypass) ──────────────────
@@ -1911,15 +1915,16 @@ class TestDeepenParallel:
         ]
         return {"files": files}
 
-    def test_serial_and_parallel_produce_same_results(self, monkeypatch):
+    def test_serial_and_parallel_produce_same_results(self, monkeypatch, tmp_path):
+        import copy
+        import time
+
+        import core.audit.orchestrator as _orch
         from core.audit.orchestrator import (
             OrchestratorConfig,
             OrchestratorResult,
             _deepen_suspicious,
         )
-        import copy
-        import time
-        import core.audit.orchestrator as _orch
 
         outcomes = [
             self._make_outcome("a.c", "foo", "suspicious"),
@@ -1930,8 +1935,8 @@ class TestDeepenParallel:
             ("a.c", "foo"), ("b.c", "bar"), ("c.c", "baz"),
         )
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
             sweep_validate_findings=False,
             deepen_suspicious=True,
             enable_session_context=False,
@@ -1977,21 +1982,22 @@ class TestDeepenParallel:
         assert serial_count == call_count == 3
         assert result_serial.findings == result_parallel.findings
 
-    def test_parallel_deepen_no_targets(self):
+    def test_parallel_deepen_no_targets(self, tmp_path):
+        import time
+
         from core.audit.orchestrator import (
             OrchestratorConfig,
             OrchestratorResult,
             _deepen_suspicious,
         )
-        import time
 
         result = OrchestratorResult(
             outcomes=[self._make_outcome("a.c", "foo", "clean")],
             clean=1,
         )
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
             deepen_suspicious=True,
         )
         out = _deepen_suspicious(
@@ -2001,14 +2007,15 @@ class TestDeepenParallel:
         )
         assert out.clean == 1
 
-    def test_parallel_deepen_handles_review_failure(self, monkeypatch):
+    def test_parallel_deepen_handles_review_failure(self, monkeypatch, tmp_path):
+        import time
+
+        import core.audit.orchestrator as _orch
         from core.audit.orchestrator import (
             OrchestratorConfig,
             OrchestratorResult,
             _deepen_suspicious,
         )
-        import time
-        import core.audit.orchestrator as _orch
 
         outcomes = [
             self._make_outcome("a.c", "foo", "suspicious"),
@@ -2016,8 +2023,8 @@ class TestDeepenParallel:
         ]
         checklist = self._make_checklist(("a.c", "foo"), ("b.c", "bar"))
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
             sweep_validate_findings=False,
             deepen_suspicious=True,
             enable_session_context=False,
@@ -2059,16 +2066,17 @@ class TestDisagreementParallel:
             review_result={"body": body},
         )
 
-    def test_serial_and_parallel_same_results(self, monkeypatch):
+    def test_serial_and_parallel_same_results(self, monkeypatch, tmp_path):
+        import copy
+        import time
+        from types import SimpleNamespace
+
+        import core.audit.orchestrator as _orch
         from core.audit.orchestrator import (
             OrchestratorConfig,
             OrchestratorResult,
             _re_review_disagreements,
         )
-        import copy
-        import time
-        import core.audit.orchestrator as _orch
-        from types import SimpleNamespace
 
         outcomes = [
             self._make_outcome("a.c", "foo", "clean"),
@@ -2081,8 +2089,8 @@ class TestDisagreementParallel:
             ],
         }
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
             sweep_validate_findings=False,
         )
         monkeypatch.setattr(
@@ -2132,15 +2140,16 @@ class TestDisagreementParallel:
         assert serial_count == call_count == 2
         assert result_serial.suspicious == result_parallel.suspicious == 2
 
-    def test_handles_review_failure(self, monkeypatch):
+    def test_handles_review_failure(self, monkeypatch, tmp_path):
+        import time
+        from types import SimpleNamespace
+
+        import core.audit.orchestrator as _orch
         from core.audit.orchestrator import (
             OrchestratorConfig,
             OrchestratorResult,
             _re_review_disagreements,
         )
-        import time
-        import core.audit.orchestrator as _orch
-        from types import SimpleNamespace
 
         outcomes = [
             self._make_outcome("a.c", "foo", "clean"),
@@ -2153,8 +2162,8 @@ class TestDisagreementParallel:
             ],
         }
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
             sweep_validate_findings=False,
         )
         monkeypatch.setattr(
@@ -2199,15 +2208,16 @@ class TestIterativeReReviewParallel:
             review_result={"body": body},
         )
 
-    def test_parallel_iteration_same_results(self, monkeypatch):
+    def test_parallel_iteration_same_results(self, monkeypatch, tmp_path):
+        import copy
+        import time
+
+        import core.audit.orchestrator as _orch
         from core.audit.orchestrator import (
             OrchestratorConfig,
             OrchestratorResult,
             _iterative_re_review,
         )
-        import copy
-        import time
-        import core.audit.orchestrator as _orch
 
         outcomes = [
             self._make_outcome("a.c", "caller1", "clean"),
@@ -2233,8 +2243,8 @@ class TestIterativeReReviewParallel:
             },
         }
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
             sweep_validate_findings=False,
             propagate_constraints=True,
             enable_session_context=False,
@@ -2290,15 +2300,16 @@ class TestStudyReReviewParallel:
             review_result={"body": body},
         )
 
-    def test_serial_and_parallel_same_results(self, monkeypatch):
+    def test_serial_and_parallel_same_results(self, monkeypatch, tmp_path):
+        import copy
+        import time
+
+        import core.audit.orchestrator as _orch
         from core.audit.orchestrator import (
             OrchestratorConfig,
             OrchestratorResult,
             _re_review_study_enriched,
         )
-        import copy
-        import time
-        import core.audit.orchestrator as _orch
 
         outcomes = [
             self._make_outcome("a.c", "foo", "clean"),
@@ -2311,8 +2322,8 @@ class TestStudyReReviewParallel:
             ],
         }
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
             sweep_validate_findings=False,
             enable_session_context=False,
         )
@@ -2369,7 +2380,7 @@ class TestPreLoopSmtScreen:
         return _Cfg()
 
     def test_auth_bypass_injects_evidence_and_keeps_in_workqueue(self, tmp_path):
-        from core.audit.orchestrator import _pre_loop_smt_screen, OrchestratorResult
+        from core.audit.orchestrator import OrchestratorResult, _pre_loop_smt_screen
 
         src = tmp_path / "auth.c"
         src.write_text("""\
@@ -2393,7 +2404,7 @@ int check_access(struct task *t) {
         assert "_smt_pre_evidence" in kept[0]
 
     def test_clean_function_stays_in_workqueue(self, tmp_path):
-        from core.audit.orchestrator import _pre_loop_smt_screen, OrchestratorResult
+        from core.audit.orchestrator import OrchestratorResult, _pre_loop_smt_screen
 
         src = tmp_path / "clean.c"
         src.write_text("""\
@@ -2413,7 +2424,7 @@ int add(int a, int b) {
         assert len(result.outcomes) == 0
 
     def test_non_c_file_skips_c_only_checks(self, tmp_path):
-        from core.audit.orchestrator import _pre_loop_smt_screen, OrchestratorResult
+        from core.audit.orchestrator import OrchestratorResult, _pre_loop_smt_screen
 
         src = tmp_path / "app.py"
         src.write_text("""\
@@ -2431,7 +2442,7 @@ def greet(name):
         assert result.findings == 0
 
     def test_mixed_workqueue_partial_screen(self, tmp_path):
-        from core.audit.orchestrator import _pre_loop_smt_screen, OrchestratorResult
+        from core.audit.orchestrator import OrchestratorResult, _pre_loop_smt_screen
 
         buggy = tmp_path / "leak.c"
         buggy.write_text("""\

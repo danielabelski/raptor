@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +26,6 @@ from core.sandbox.observe_cli import (
     _profile_to_json,
 )
 from core.sandbox.observe_profile import ConnectTarget, ObserveProfile
-
 
 # ---------------------------------------------------------------------------
 # Argparse
@@ -246,6 +246,12 @@ class TestCliDispatch:
         )
         loaded = json.loads(out)
         assert loaded["run_dir"] is not None
+        # The kept dir is a real mkdtemp under the system temp dir —
+        # verify it survived _cli_main, then clean it up ourselves so
+        # every test run doesn't strand one in /tmp.
+        kept = Path(loaded["run_dir"])
+        assert kept.is_dir()
+        shutil.rmtree(kept)
 
     def test_explicit_out_dir_used(self, tmp_path):
         # --out implies kept=True.
@@ -340,8 +346,8 @@ class TestE2EShim:
         #     where unprivileged user-ns is blocked by AppArmor)
         # The Landlock-only path was added in PR-θ; mount-ns is no
         # longer a hard prereq for observe.
-        from core.sandbox.seccomp import check_seccomp_available
         from core.sandbox.ptrace_probe import check_ptrace_available
+        from core.sandbox.seccomp import check_seccomp_available
         if not check_seccomp_available():
             pytest.skip("libseccomp unavailable")
         if not check_ptrace_available():
@@ -351,7 +357,7 @@ class TestE2EShim:
         result = subprocess.run(
             [str(shim), "--out", str(tmp_path), "--",
              "/usr/bin/true"],
-            env=env, capture_output=True, text=True, timeout=30,
+            env=env, capture_output=True, text=True, timeout=30, check=False,
         )
         assert result.returncode == 0, (
             f"shim exited {result.returncode}; "
@@ -365,8 +371,8 @@ class TestE2EShim:
         if not shim.exists():
             pytest.skip(f"shim not present at {shim}")
 
-        from core.sandbox.seccomp import check_seccomp_available
         from core.sandbox.ptrace_probe import check_ptrace_available
+        from core.sandbox.seccomp import check_seccomp_available
         if not (check_seccomp_available()
                 and check_ptrace_available()):
             pytest.skip("observe-mode prerequisites unavailable (libseccomp / ptrace)")
@@ -375,7 +381,7 @@ class TestE2EShim:
         result = subprocess.run(
             [str(shim), "--out", str(tmp_path), "--json", "--",
              "/usr/bin/true"],
-            env=env, capture_output=True, text=True, timeout=30,
+            env=env, capture_output=True, text=True, timeout=30, check=False,
         )
         assert result.returncode == 0, result.stderr
         payload = json.loads(result.stdout)
@@ -403,7 +409,7 @@ class TestTrustMarker:
                if k not in ("CLAUDECODE", "_RAPTOR_TRUSTED")}
         result = subprocess.run(
             [str(shim), "--", "/usr/bin/true"],
-            env=env, capture_output=True, text=True, timeout=10,
+            env=env, capture_output=True, text=True, timeout=10, check=False,
         )
         assert result.returncode == 2, (
             f"shim must refuse without trust marker; got "

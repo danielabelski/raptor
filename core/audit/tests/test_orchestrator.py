@@ -2273,6 +2273,21 @@ class TestHasRefutingCounter:
             )
 
 
+def _unlink_chain_rules(chain):
+    """Remove the on-disk audit_sweep_ rule files a chain carries.
+
+    Production unlinks them in _run_tool_chain's finally; tests that
+    only build the chain must clean up themselves or every run strands
+    rule files in the system temp dir.
+    """
+    import os
+    for entry in chain:
+        rule = entry.get("config", {}).get("rule") or ""
+        if isinstance(rule, str) and \
+                os.path.basename(rule).startswith("audit_sweep_"):
+            Path(rule).unlink(missing_ok=True)
+
+
 class TestToolChain:
     """Test _hypothesis_to_tool_chain and _run_tool_chain."""
 
@@ -2282,6 +2297,7 @@ class TestToolChain:
             "sem.c",
         )
         types = [e["type"] for e in chain]
+        _unlink_chain_rules(chain)
         assert "smt" in types
         assert "coccinelle" in types
 
@@ -2298,6 +2314,7 @@ class TestToolChain:
             "shm.c",
         )
         types = [e["type"] for e in chain]
+        _unlink_chain_rules(chain)
         assert "coccinelle" in types
 
     def test_chain_preserves_order(self):
@@ -2306,6 +2323,7 @@ class TestToolChain:
             "msg.c",
         )
         types = [e["type"] for e in chain]
+        _unlink_chain_rules(chain)
         assert types.index("semgrep") < types.index("smt")
 
     def test_run_chain_fallback_on_error(self, tmp_path: Path, monkeypatch):
@@ -3238,7 +3256,7 @@ class TestRunCleanCheckSweep:
         result = _run_clean_check_sweep(outcome, None, None)
         assert result is None
 
-    def test_returns_flows_from_evidence_index(self):
+    def test_returns_flows_from_evidence_index(self, tmp_path):
         from core.audit.orchestrator import _run_clean_check_sweep
         from core.evidence import EvidenceRecord
         outcome = ReviewOutcome(
@@ -3254,14 +3272,14 @@ class TestRunCleanCheckSweep:
         index = {"a.c:f": rec}
 
         config = OrchestratorConfig(
-            target_path=Path("/tmp"), out_dir=Path("/tmp"),
+            target_path=tmp_path, out_dir=tmp_path,
         )
         result = _run_clean_check_sweep(outcome, config, index)
         assert result is not None
         assert "buf" in result
         assert "memcpy" in result
 
-    def test_returns_none_for_empty_evidence(self):
+    def test_returns_none_for_empty_evidence(self, tmp_path):
         from core.audit.orchestrator import _run_clean_check_sweep
         from core.evidence import EvidenceRecord
         outcome = ReviewOutcome(
@@ -3271,7 +3289,7 @@ class TestRunCleanCheckSweep:
         index = {"a.c:f": rec}
 
         config = OrchestratorConfig(
-            target_path=Path("/tmp"), out_dir=Path("/tmp"),
+            target_path=tmp_path, out_dir=tmp_path,
         )
         result = _run_clean_check_sweep(outcome, config, index)
         assert result is None

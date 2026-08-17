@@ -139,6 +139,21 @@ class TestSweepValidateBinary:
         assert _write_decompilation_tmpfile("", "f") is None
 
 
+def _unlink_chain_rules(chain):
+    """Remove the on-disk audit_sweep_ rule files a chain carries.
+
+    Production unlinks them in _run_tool_chain's finally; tests that
+    only build the chain must clean up themselves or every run strands
+    rule files in the system temp dir.
+    """
+    import os
+    for entry in chain:
+        rule = entry.get("config", {}).get("rule") or ""
+        if isinstance(rule, str) and \
+                os.path.basename(rule).startswith("audit_sweep_"):
+            Path(rule).unlink(missing_ok=True)
+
+
 class TestStandardChainOnBinary:
     """The standard _hypothesis_to_tool_chain should produce a normal
     tool chain even when called with a .c filename (the temp file).
@@ -152,6 +167,7 @@ class TestStandardChainOnBinary:
             cwe="CWE-134",
         )
         types = {e["type"] for e in chain}
+        _unlink_chain_rules(chain)
         assert "semgrep" in types or "smt" in types or len(chain) > 0
 
     def test_decompiler_rules_extend_chain(self):
@@ -162,6 +178,7 @@ class TestStandardChainOnBinary:
             "format string vulnerability", "lolwot.c", cwe="CWE-134",
         )
         base_len = len(chain)
+        _unlink_chain_rules(chain)
 
         rules = decompiler_rules_for_hypothesis("format string", cwe="CWE-134")
         for r in rules:
@@ -186,6 +203,7 @@ class TestStandardChainOnBinary:
             "src/main.c",
             cwe="CWE-134",
         )
+        _unlink_chain_rules(chain)
         assert len(chain) > 0
 
 

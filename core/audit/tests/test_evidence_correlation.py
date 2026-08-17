@@ -115,6 +115,21 @@ def _mk_config(tmp_path):
     )
 
 
+def _unlink_chain_rules(chain):
+    """Remove the on-disk audit_sweep_ rule files a chain carries.
+
+    The real _run_tool_chain unlinks them in a finally; a stub that
+    replaces it must do the same or every mocked sweep strands the
+    rule file that _sweep_validate/_promote_suspicious just built.
+    """
+    import os
+    for entry in chain:
+        rule = entry.get("config", {}).get("rule") or ""
+        if isinstance(rule, str) and \
+                os.path.basename(rule).startswith("audit_sweep_"):
+            Path(rule).unlink(missing_ok=True)
+
+
 def _patch_common(monkeypatch, *, hits, chain_confirms):
     class _PF:
         def __init__(self, hits):
@@ -130,8 +145,9 @@ def _patch_common(monkeypatch, *, hits, chain_confirms):
     )
     calls = []
 
-    def fake_chain(*a, **kw):
+    def fake_chain(chain, *a, **kw):
         calls.append(kw)
+        _unlink_chain_rules(chain)
         return list(chain_confirms)
 
     monkeypatch.setattr("core.audit.orchestrator._run_tool_chain", fake_chain)

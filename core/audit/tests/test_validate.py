@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from core.audit.orchestrator import OrchestratorResult, ReviewOutcome
 from core.audit.validate import (
@@ -198,12 +198,12 @@ class TestExtractCwe:
 
 
 class TestValidateFindings:
-    def test_no_findings_returns_early(self):
+    def test_no_findings_returns_early(self, tmp_path):
         result = _result(_outcome(status="clean"))
         updated = validate_findings(
             result,
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
         )
         assert updated.findings == 0
 
@@ -346,11 +346,11 @@ class TestDispatchValidate:
 
 
 class TestValidateDefault:
-    def test_validate_defaults_to_true(self):
+    def test_validate_defaults_to_true(self, tmp_path):
         from core.audit.orchestrator import OrchestratorConfig
         config = OrchestratorConfig(
-            target_path=Path("/tmp"),
-            out_dir=Path("/tmp"),
+            target_path=tmp_path,
+            out_dir=tmp_path,
         )
         assert config.validate is True
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 
+from core.sandbox import evidence as evidence_mod
 from core.sandbox import seatbelt_audit
 from core.sandbox.seatbelt import SANDBOX_KEXT_SENDER
 
@@ -158,7 +159,8 @@ def test_log_streamer_appends_one_line_per_record(tmp_path):
     rec2 = {"b": 2}
     streamer._append_record(rec1)
     streamer._append_record(rec2)
-    path = tmp_path / seatbelt_audit.DENIALS_FILE
+    path = (tmp_path / evidence_mod.AUDIT_SUBDIR
+            / seatbelt_audit.DENIALS_FILE)
     assert path.exists()
     lines = path.read_text().splitlines()
     assert len(lines) == 2
@@ -174,7 +176,8 @@ def test_log_streamer_creates_run_dir(tmp_path):
     streamer = seatbelt_audit.LogStreamer(new_dir)
     streamer._append_record({"x": 1})
     assert new_dir.exists()
-    assert (new_dir / seatbelt_audit.DENIALS_FILE).exists()
+    assert (new_dir / evidence_mod.AUDIT_SUBDIR
+            / seatbelt_audit.DENIALS_FILE).exists()
 
 
 # --- LogStreamer ↔ AuditBudget integration ----------------------------
@@ -198,7 +201,8 @@ def test_log_streamer_uses_injected_budget_for_summary(tmp_path):
     # No proc started — stop() should still flush the summary.
     streamer.stop()
 
-    lines = (tmp_path / seatbelt_audit.DENIALS_FILE).read_text().splitlines()
+    lines = (tmp_path / evidence_mod.AUDIT_SUBDIR
+             / seatbelt_audit.DENIALS_FILE).read_text().splitlines()
     summaries = [json.loads(line) for line in lines
                   if json.loads(line).get("type") == "audit_summary"]
     assert len(summaries) == 1
@@ -223,13 +227,16 @@ def test_log_streamer_default_budget_is_cli_aware(tmp_path):
 
 
 def test_log_streamer_o_nofollow_blocks_symlink(tmp_path):
-    """Defence in depth: a sandboxed child with write access to
-    run_dir could pre-plant DENIALS_FILE as a symlink to a host
-    file. O_NOFOLLOW must reject the open with ELOOP rather than
-    follow the link and append to the host file."""
+    """Defence in depth: an attacker with write access to the
+    evidence dir could pre-plant DENIALS_FILE as a symlink to a host
+    file. The evidence open (O_EXCL create → O_NOFOLLOW append
+    fallback) must reject it with ELOOP rather than follow the link
+    and append to the host file."""
     target = tmp_path / "target"
     target.write_text("")
-    link = tmp_path / seatbelt_audit.DENIALS_FILE
+    evdir = tmp_path / evidence_mod.AUDIT_SUBDIR
+    evdir.mkdir(mode=0o700)
+    link = evdir / seatbelt_audit.DENIALS_FILE
     link.symlink_to(target)
     streamer = seatbelt_audit.LogStreamer(tmp_path)
     try:

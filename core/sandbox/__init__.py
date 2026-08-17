@@ -581,33 +581,45 @@ Related shared helpers (core.security):
 """
 
 # Public re-exports — the surface other code imports from `core.sandbox`.
+# Re-exports for private symbols some tests / callers depend on.
+# Keeping them at the package level preserves backward compatibility while
+# the real definitions live in focused submodules.
+from . import state as _state
 from .cli import (
     add_cli_args,
     apply_cli_args,
     disable_from_cli,
     set_cli_profile,
 )
-from .context import run, run_trusted, run_untrusted, run_untrusted_networked, sandbox
-from .landlock import check_landlock_available, _get_landlock_abi
+from .context import (
+    run,
+    run_trusted,
+    run_untrusted,
+    run_untrusted_networked,
+    sandbox,
+    spawn_backend_available,
+)
+from .errors import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
+from .landlock import _get_landlock_abi, check_landlock_available
+from .mount import _build_mount_script
 from .observe import _BLOCKED_PATTERNS, _check_blocked, _interpret_result, _path_within
 from .observe_profile import (
-    OBSERVE_FILENAME, ConnectTarget, ObserveProfile, parse_observe_log,
+    OBSERVE_FILENAME,
+    ConnectTarget,
+    ObserveProfile,
+    parse_observe_log,
 )
 from .preexec import _DEFAULT_LIMITS, _load_user_limits, _make_preexec_fn, set_pdeathsig
-from .mount import _build_mount_script
-from .errors import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
 from .probes import (
-    check_mount_available, check_net_available, check_sandbox_available,
-    check_seatbelt_available, check_unshare_engages,
+    check_mount_available,
+    check_net_available,
+    check_sandbox_available,
+    check_seatbelt_available,
+    check_unshare_engages,
 )
-from .profiles import DEFAULT_PROFILE, PROFILES, _SANDBOX_KWARGS
+from .profiles import _SANDBOX_KWARGS, DEFAULT_PROFILE, PROFILES
 from .python_paths import python_runtime_tool_paths
 from .seccomp import check_seccomp_available
-
-# Re-exports for private symbols some tests / callers depend on.
-# Keeping them at the package level preserves backward compatibility while
-# the real definitions live in focused submodules.
-from . import state as _state
 
 _cache_lock = _state._cache_lock
 
@@ -636,27 +648,49 @@ def __getattr__(name):
 # fixture already does this.
 
 __all__ = [
-    # Context manager and convenience wrappers
-    "sandbox", "run", "run_trusted", "run_untrusted", "run_untrusted_networked",
-    "python_runtime_tool_paths",
-    # CLI surface
-    "add_cli_args", "apply_cli_args", "disable_from_cli", "set_cli_profile",
-    # Availability probes (exposed for the startup banner)
-    "check_sandbox_available", "check_net_available",
-    "check_mount_available", "check_landlock_available",
-    "check_seatbelt_available",
-    "check_seccomp_available",
-    "check_unshare_engages",
-    # Engagement-failure signal (fail-loud, never silently degrade)
-    "SandboxSetupError", "SANDBOX_ENGAGE_EXIT_CODE",
+    "DEFAULT_PROFILE",
+    "OBSERVE_FILENAME",
     # Named profiles
-    "PROFILES", "DEFAULT_PROFILE", "_SANDBOX_KWARGS",
+    "PROFILES",
+    "SANDBOX_ENGAGE_EXIT_CODE",
+    "_BLOCKED_PATTERNS",
+    "_DEFAULT_LIMITS",
+    "_SANDBOX_KWARGS",
+    "ConnectTarget",
+    "ObserveProfile",
+    # Engagement-failure signal (fail-loud, never silently degrade)
+    "SandboxSetupError",
+    "_build_mount_script",
+    "_check_blocked",
     # Private re-exports kept for backward compatibility — see the
     # block comment above; tests + a few internal callers reach into
     # these names directly so the public name stays stable.
     "_get_landlock_abi",
-    "_BLOCKED_PATTERNS", "_check_blocked", "_interpret_result", "_path_within",
-    "OBSERVE_FILENAME", "ConnectTarget", "ObserveProfile", "parse_observe_log",
-    "_DEFAULT_LIMITS", "_load_user_limits", "_make_preexec_fn", "set_pdeathsig",
-    "_build_mount_script",
+    "_interpret_result",
+    "_load_user_limits",
+    "_make_preexec_fn",
+    "_path_within",
+    # CLI surface
+    "add_cli_args",
+    "apply_cli_args",
+    "check_landlock_available",
+    "check_mount_available",
+    "check_net_available",
+    # Availability probes (exposed for the startup banner)
+    "check_sandbox_available",
+    "check_seatbelt_available",
+    "check_seccomp_available",
+    "check_unshare_engages",
+    "disable_from_cli",
+    "parse_observe_log",
+    "python_runtime_tool_paths",
+    "run",
+    "run_trusted",
+    "run_untrusted",
+    "run_untrusted_networked",
+    # Context manager and convenience wrappers
+    "sandbox",
+    "set_cli_profile",
+    "set_pdeathsig",
+    "spawn_backend_available",
 ]

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from core.sandbox import evidence as evidence_mod
 from core.sandbox import probes, ptrace_probe
 from core.sandbox import proxy as proxy_mod
 from core.sandbox import tracer as tracer_mod
@@ -59,7 +60,7 @@ class TestAuditWithDisabled:
             r = run(["true"], capture_output=True, text=True, timeout=5)
         assert r.returncode == 0
         # No JSONL — tracer wasn't engaged.
-        jsonl = out / tracer_mod._DENIALS_FILENAME
+        jsonl = out / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME
         assert not jsonl.exists(), (
             "audit machinery wrongly engaged under disabled=True — "
             "unnecessary tracer fork + ptrace cost"
@@ -149,7 +150,7 @@ class TestAuditWithoutPtraceAvailable:
             audit_mode=True, audit_run_dir=str(run_dir),
         )
         assert result.returncode == 0
-        jsonl = run_dir / tracer_mod._DENIALS_FILENAME
+        jsonl = run_dir / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME
         assert not jsonl.exists()
 
 
@@ -185,10 +186,11 @@ class TestTracerJsonlFailureModes:
             ok = tracer_mod._write_record(
                 tmp_path, "openat", 257, [0]*6, target_pid=1, path="/x",
             )
-        # OSError caught by tracer's broad except — returns False
+        # OSError caught by the append helper — returns False
         assert ok is False
-        # Debug log line about the failure
-        assert any("write_record failed" in r.message
+        # Debug log line about the failure (shared append helper —
+        # "evidence append failed" — since the evidence relocation).
+        assert any("append failed" in r.message
                    for r in caplog.records), (
             f"expected debug log on write failure: "
             f"{[r.message for r in caplog.records]}"
@@ -210,7 +212,7 @@ class TestRedactionInTracerRecord:
         )
         records = [
             json.loads(line) for line in
-            (tmp_path / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
+            (tmp_path / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
             if line
         ]
         r = records[0]
@@ -228,7 +230,7 @@ class TestRedactionInTracerRecord:
         )
         records = [
             json.loads(line) for line in
-            (tmp_path / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
+            (tmp_path / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
             if line
         ]
         # Non-URL paths preserved verbatim.
@@ -249,7 +251,7 @@ class TestRedactionInTracerRecord:
         )
         records = [
             json.loads(line) for line in
-            (tmp_path / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
+            (tmp_path / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
             if line
         ]
         # Filename preserved verbatim — no false-positive redaction.
@@ -267,7 +269,7 @@ class TestRedactionInTracerRecord:
         )
         records = [
             json.loads(line) for line in
-            (tmp_path / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
+            (tmp_path / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
             if line
         ]
         assert "Z" * 20 in records[0]["path"]
@@ -288,7 +290,7 @@ class TestTracerSecurityProperties:
             tmp_path, "openat", 257, [0]*6, target_pid=1,
             path=f"{tmp_path}/{evil}",
         )
-        raw_bytes = (tmp_path / tracer_mod._DENIALS_FILENAME).read_bytes()
+        raw_bytes = (tmp_path / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME).read_bytes()
         # No raw ESC bytes in on-disk JSON — encoded as 
         assert b"\x1b" not in raw_bytes, (
             f"raw terminal escape in JSONL — operator catting "
@@ -322,7 +324,7 @@ class TestTracerSecurityProperties:
         )
         records = [
             json.loads(line) for line in
-            (tmp_path / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
+            (tmp_path / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME).read_text().splitlines()
             if line
         ]
         # After JSON decode, the path field must NOT contain raw \x1b
@@ -347,7 +349,7 @@ class TestTracerSecurityProperties:
         tracer_mod._write_record(
             tmp_path, "openat", 257, [0]*6, target_pid=1, path=weird,
         )
-        raw = (tmp_path / tracer_mod._DENIALS_FILENAME).read_bytes()
+        raw = (tmp_path / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME).read_bytes()
         # Must still be valid JSON
         records = [
             json.loads(line) for line in raw.decode().splitlines() if line
@@ -554,17 +556,18 @@ class TestStaleAuditConfigSweep:
 
 
 class TestAuditConfigWriteFailureHandling:
-    """Finding LL: audit-config file is mkstemp'd in /tmp, JSON
-    written, then handed to the tracer subprocess via execvpe argv.
-    If the write fails (disk full, EIO, partial write), the tracer
-    would later read an empty/partial file → JSONDecodeError → exit
-    1 → parent times out waiting for ready signal → audit silently
-    disabled. Worse: operator gets an ambiguous 'tracer failed to
-    attach' error rather than the actual cause.
+    """Finding LL (updated for the anonymous-fd config channel): the
+    audit config is serialised into an anonymous fd (memfd) and handed
+    to the tracer subprocess as /proc/self/fd/N. If the write fails
+    (EIO, memfd limits, partial write), the tracer would later read an
+    empty/partial JSON → decode error → exit 1 → parent times out
+    waiting for ready signal → audit silently disabled. Worse:
+    operator gets an ambiguous 'tracer failed to attach' error rather
+    than the actual cause.
 
-    Fix: write loops until done; any partial-write/EIO unlinks the
-    file, propagates the error immediately, and clears the engaged
-    state so the parent's audit cleanup paths don't double-unlink.
+    Fix: the write loops until done; any partial-write/EIO propagates
+    the error immediately at spawn time and clears the engaged state
+    so the parent's audit cleanup paths don't double-release.
     """
 
     def test_partial_write_propagates_oserror(self, monkeypatch, tmp_path):
@@ -581,11 +584,13 @@ class TestAuditConfigWriteFailureHandling:
         sentinel_paths = []
 
         def selective_write(fd, data):
-            # Only intercept writes to the audit-config tempfile.
-            # Use /proc/self/fd/<fd> to check the symlink target.
+            # Only intercept writes to the audit-config anonymous fd.
+            # Use /proc/self/fd/<fd> to check the symlink target —
+            # for the memfd it reads "/memfd:raptor-audit-cfg
+            # (deleted)".
             try:
                 target = os.readlink(f"/proc/self/fd/{fd}")
-                if "raptor-audit-cfg-" in target:
+                if "raptor-audit-cfg" in target:
                     sentinel_paths.append(target)
                     return 0  # simulate disk-full
             except OSError:
@@ -595,7 +600,7 @@ class TestAuditConfigWriteFailureHandling:
 
         out = tmp_path / "out"
         out.mkdir()
-        with pytest.raises(OSError, match="audit-config"):
+        with pytest.raises(OSError, match="anonymous-fd|audit-config"):
             _spawn.run_sandboxed(
                 ["true"],
                 target=str(tmp_path), output=str(tmp_path),
@@ -606,10 +611,14 @@ class TestAuditConfigWriteFailureHandling:
                 env=None, cwd=None, timeout=10,
                 audit_mode=True, audit_run_dir=str(out),
             )
-        # Confirm the tempfile got unlinked despite the failure.
+        # The intercept must actually have fired on the config fd —
+        # otherwise the raise above came from somewhere else.
+        assert sentinel_paths, "config-fd write intercept never fired"
+        # Anonymous fds have no filesystem name; nothing can leak on
+        # disk regardless of the failure path.
         for p in sentinel_paths:
             assert not os.path.exists(p), (
-                f"audit-config tempfile leaked after write failure: {p}"
+                f"audit config unexpectedly exists on disk: {p}"
             )
 
 
@@ -990,7 +999,7 @@ class TestAuditComposesWithDebugProfile:
         )
 
         # Tracer JSONL exists: tracer was engaged despite debug profile.
-        jsonl = out / tracer_mod._DENIALS_FILENAME
+        jsonl = out / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME
         assert jsonl.exists(), (
             "debug+audit didn't produce audit JSONL — refactor broke "
             "the new debug+audit composition"
@@ -1023,7 +1032,7 @@ class TestAuditWithExistingSandboxFlows:
             r = run(["true"], capture_output=True, text=True, timeout=5)
         assert r.returncode == 0
         # Critical: no audit signal because disabled took precedence.
-        jsonl = out / tracer_mod._DENIALS_FILENAME
+        jsonl = out / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME
         assert not jsonl.exists()
 
     def test_cli_audit_overrides_library(
@@ -1056,7 +1065,7 @@ class TestAuditWithExistingSandboxFlows:
                     capture_output=True, text=True, timeout=15)
         assert r.returncode == 0
         # CLI's --audit took effect: tracer JSONL exists.
-        jsonl = out / tracer_mod._DENIALS_FILENAME
+        jsonl = out / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME
         assert jsonl.exists(), (
             "CLI --audit was ignored — prompt-injection safety violation"
         )

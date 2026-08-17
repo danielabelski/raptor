@@ -21,6 +21,7 @@ import socket
 
 import pytest
 
+from core.sandbox import evidence as evidence_mod
 from core.sandbox import proxy as proxy_mod
 from core.sandbox import summary as summary_mod
 
@@ -146,7 +147,8 @@ class TestProxyAuditModeHostGate:
             proxy.stop()
 
         # record_denial wrote to the active run's JSONL
-        jsonl = active_run / summary_mod.DENIALS_FILE
+        jsonl = (active_run / evidence_mod.AUDIT_SUBDIR
+                 / summary_mod.DENIALS_FILE)
         assert jsonl.exists(), "no denials file written by audit-mode proxy"
         records = [json.loads(line) for line in jsonl.read_text().splitlines() if line]
         network_records = [r for r in records if r["type"] == "network"]
@@ -229,7 +231,8 @@ class TestProxyAuditModeResolvedIpGate:
             proxy.stop()
 
         # Audit mode routes the gate-2 deny into the summary too.
-        jsonl = active_run / summary_mod.DENIALS_FILE
+        jsonl = (active_run / evidence_mod.AUDIT_SUBDIR
+                 / summary_mod.DENIALS_FILE)
         assert jsonl.exists(), \
             "audit-mode gate 2 should record_denial into summary"
         records = [json.loads(line) for line in
@@ -274,7 +277,8 @@ class TestProxyAuditModeResolvedIpGate:
         finally:
             proxy.stop()
 
-        jsonl = active_run / summary_mod.DENIALS_FILE
+        jsonl = (active_run / evidence_mod.AUDIT_SUBDIR
+                 / summary_mod.DENIALS_FILE)
         assert not jsonl.exists(), (
             f"enforced-mode proxy unexpectedly wrote summary: "
             f"{jsonl.read_text() if jsonl.exists() else ''}"
@@ -332,7 +336,8 @@ class TestProxyEnforcedModeStillBlocks:
 
         # No JSONL written — proxy didn't call record_denial in
         # enforced mode (that's observe.py's job, post-subprocess).
-        jsonl = active_run / summary_mod.DENIALS_FILE
+        jsonl = (active_run / evidence_mod.AUDIT_SUBDIR
+                 / summary_mod.DENIALS_FILE)
         assert not jsonl.exists(), \
             f"enforced-mode proxy unexpectedly wrote to summary: " \
             f"{jsonl.read_text() if jsonl.exists() else ''}"
@@ -367,7 +372,8 @@ class TestProxyAuditModeAllowedHost:
             f"audit mode emitted would_deny for allowlisted host: {events}"
 
         # No record_denial fired either.
-        jsonl = active_run / summary_mod.DENIALS_FILE
+        jsonl = (active_run / evidence_mod.AUDIT_SUBDIR
+                 / summary_mod.DENIALS_FILE)
         if jsonl.exists():
             records = [json.loads(line) for line in
                        jsonl.read_text().splitlines() if line]

@@ -16,6 +16,7 @@ from typing import ClassVar
 import pytest
 
 from core.sandbox import audit_budget, probes, ptrace_probe
+from core.sandbox import evidence as evidence_mod
 from core.sandbox import tracer as tracer_mod
 
 pytestmark = pytest.mark.skipif(
@@ -1391,11 +1392,13 @@ class TestEndToEndAuditVsAuditVerbose:
 
         # Filtered: 0 or near-zero records (python opens only system
         # paths).
-        f_jsonl = run_filtered / tracer_mod._DENIALS_FILENAME
+        f_jsonl = (run_filtered / evidence_mod.AUDIT_SUBDIR
+                   / tracer_mod._DENIALS_FILENAME)
         f_count = (len(f_jsonl.read_text().splitlines())
                    if f_jsonl.exists() else 0)
         # Verbose: many records (Python startup is open-heavy).
-        v_jsonl = run_verbose / tracer_mod._DENIALS_FILENAME
+        v_jsonl = (run_verbose / evidence_mod.AUDIT_SUBDIR
+                   / tracer_mod._DENIALS_FILENAME)
         assert v_jsonl.exists()
         v_count = len(v_jsonl.read_text().splitlines())
 

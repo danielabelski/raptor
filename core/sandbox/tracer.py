@@ -4,9 +4,14 @@ Spawned by the sandbox parent when audit mode is engaged. Attaches via
 PTRACE_SEIZE to the sandboxed child, listens for SECCOMP_RET_TRACE
 events (set up by core/sandbox/seccomp.py's audit_mode filter), reads
 the offending syscall via PTRACE_GETREGSET, and writes a structured
-JSONL denial record directly to the run's
-`<run_dir>/.sandbox-denials.jsonl` file (POSIX O_APPEND atomicity —
-same trick `core.sandbox.summary.record_denial` uses).
+JSONL denial record to the run's evidence directory —
+`<run_dir>/.audit/.sandbox-denials.jsonl` (POSIX O_APPEND atomicity —
+same trick `core.sandbox.summary.record_denial` uses). When the spawn
+parent passed an inherited evidence fd (``evidence_fd`` in the audit
+config), every append goes through that held fd instead of a per-
+record open — the fd shares the parent's open file description, so a
+rename/unlink of the path cannot redirect the tracer's appends (see
+core/sandbox/evidence.py).
 
 Why a separate process rather than a thread inside RAPTOR:
 - ptrace + multi-threaded parents fight for signal delivery: SIGCHLD
@@ -78,8 +83,13 @@ unblock the child" handshake. When omitted, no handshake is performed.
 
 The config_path is an optional path to a JSON file containing audit-
 mode filter configuration (writable_paths, read_allowlist,
-allowed_tcp_ports, verbose flag). When omitted, the tracer runs in
-unfiltered (verbose) mode — every traced syscall produces a record.
+allowed_tcp_ports, verbose flag, evidence_fd). When omitted, the
+tracer runs in unfiltered (verbose) mode — every traced syscall
+produces a record. Production spawn paths pass an anonymous-fd path
+(``/proc/self/fd/N`` — resolved by THIS process against its inherited
+fd; see core/sandbox/evidence.py) so the nonce-carrying config never
+exists at a filesystem path the target can name; the fd is closed
+immediately after parsing.
 
 Required when omitted: nothing (testing path).
 Required when present: pid + run_dir + sync_fd + config_path
@@ -90,6 +100,7 @@ TestTracerArgvContract structural test.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.util
 import json
@@ -104,8 +115,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import audit_budget
+from .evidence import AUDIT_SUBDIR, parse_fd_path
 
 logger = logging.getLogger(__name__)
+
+# Held evidence fd inherited from the spawn parent (see
+# core/sandbox/evidence.py). When set, _write_record /
+# _write_record_dict append through it instead of opening the JSONL
+# path per record. Module-level because the tracer is a dedicated
+# single-purpose process; set once at trace() startup.
+_evidence_out_fd: int | None = None
 
 # ----- ptrace request constants (see <sys/ptrace.h>) -----
 _PTRACE_CONT = 7
@@ -935,6 +954,39 @@ def _ptrace_detach(pid: int) -> bool:
 
 # ----- JSONL record writer -----
 
+def _append_jsonl_line(run_dir: Path, filename: str, line: str) -> bool:
+    """Append one line to the evidence JSONL. Returns True on success.
+
+    Preferred path: the held evidence fd inherited from the spawn
+    parent (`_evidence_out_fd`) — appends through it are immune to
+    path-level swaps of the JSONL. Fallback (standalone / testing
+    invocations without a parent-minted fd): open
+    ``<run_dir>/.audit/<filename>`` per record with the same
+    O_NOFOLLOW + O_APPEND discipline as summary.record_denial.
+    """
+    if _evidence_out_fd is not None:
+        try:
+            os.write(_evidence_out_fd, line.encode("utf-8"))
+            return True
+        except OSError as e:
+            logger.debug("tracer: evidence-fd write failed: %s", e)
+            return False
+    try:
+        jsonl_path = run_dir / AUDIT_SUBDIR / filename
+        jsonl_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(
+            str(jsonl_path),
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(line)
+        return True
+    except OSError as e:
+        logger.debug("tracer: evidence append failed: %s", e)
+        return False
+
+
 def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
                   args: list, target_pid: int,
                   path: str | None = None,
@@ -1053,25 +1105,10 @@ def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
         record["note"] = note
     try:
         line = json.dumps(record, ensure_ascii=True) + "\n"
-        # NOTE: deliberately a different name from the `path` parameter
-        # (which is the syscall's path arg). Earlier versions of this
-        # function shadowed `path` with the file path and worked by
-        # accident — would confuse a reader and break if record-build
-        # ever moved below this line.
-        jsonl_path = run_dir / filename
-        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        # O_NOFOLLOW + O_APPEND match summary.record_denial exactly.
-        fd = os.open(
-            str(jsonl_path),
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
-            0o600,
-        )
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(line)
-        return True
-    except OSError as e:
-        logger.debug("tracer: write_record failed: %s", e)
+    except (TypeError, ValueError) as e:
+        logger.debug("tracer: write_record encode failed: %s", e)
         return False
+    return _append_jsonl_line(run_dir, filename, line)
 
 
 def _write_record_dict(run_dir: Path, record: dict,
@@ -1088,19 +1125,10 @@ def _write_record_dict(run_dir: Path, record: dict,
     """
     try:
         line = json.dumps(record, ensure_ascii=True, default=str) + "\n"
-        jsonl_path = run_dir / filename
-        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(
-            str(jsonl_path),
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
-            0o600,
-        )
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(line)
-        return True
-    except OSError as e:
-        logger.debug("tracer: write_record_dict failed: %s", e)
+    except (TypeError, ValueError) as e:
+        logger.debug("tracer: write_record_dict encode failed: %s", e)
         return False
+    return _append_jsonl_line(run_dir, filename, line)
 
 
 # ----- Event loop -----
@@ -1207,6 +1235,25 @@ def trace(target_pid: int, run_dir: Path,
     _observe_nonce = (
         audit_filter.get("observe_nonce") if audit_filter else None
     )
+    # Held evidence fd inherited from the spawn parent (F11). All
+    # appends route through it so a path-level swap of the JSONL
+    # cannot redirect tracer output. Validated with fstat before use
+    # — a stale/wrong number degrades to the per-record open fallback
+    # rather than silently writing into an unrelated fd.
+    global _evidence_out_fd
+    _ev_fd = (
+        audit_filter.get("evidence_fd")
+        if isinstance(audit_filter, dict) else None
+    )
+    if isinstance(_ev_fd, int) and _ev_fd >= 0:
+        try:
+            os.fstat(_ev_fd)
+            _evidence_out_fd = _ev_fd
+        except OSError:
+            logger.warning(
+                "tracer: evidence_fd %d not inherited/valid; falling "
+                "back to per-record path appends", _ev_fd,
+            )
     # Audit budget — shared with macOS seatbelt LogStreamer via
     # core.sandbox.audit_budget. Token-bucket + per-category +
     # per-PID sub-caps + 1-in-N post-cap sampling; markers and
@@ -1667,20 +1714,54 @@ def _cli_main(argv: list | None = None) -> int:
                 f"error: invalid JSON in audit config {config_path}: {e}\n"
             )
             return 1
-        # Parsed — the tempfile has served its purpose, so remove it
-        # HERE rather than relying only on the spawn parent's cleanup
-        # paths: a SIGKILL'd parent never reaches its finally blocks
-        # and the config strands in the temp dir. Best-effort, and
-        # only for the parent-minted mkstemp shape — an operator
-        # passing their own config file keeps it.
-        if os.path.basename(config_path).startswith("raptor-audit-cfg-"):
-            try:
+        # Parsed — release the config's backing store immediately.
+        #
+        # Anonymous-fd shape (/proc/self/fd/N, /dev/fd/N): close the
+        # inherited fd NOW, before signalling ready and before the
+        # target is unblocked, so the /proc/<tracer-pid>/fd/N
+        # reflection of the (nonce-carrying) config disappears before
+        # any untrusted code runs. Belt-and-braces with the
+        # PR_SET_DUMPABLE=0 above.
+        _cfg_fd = parse_fd_path(config_path)
+        if _cfg_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(_cfg_fd)
+        # Legacy tempfile shape — remove it HERE rather than relying
+        # only on the spawn parent's cleanup paths: a SIGKILL'd parent
+        # never reaches its finally blocks and the config strands in
+        # the temp dir. Best-effort, and only for the parent-minted
+        # mkstemp shape — an operator passing their own config file
+        # keeps it.
+        elif os.path.basename(config_path).startswith("raptor-audit-cfg-"):
+            with contextlib.suppress(OSError):
                 os.unlink(config_path)
-            except OSError:
-                pass
 
     return trace(pid, run_dir, sync_fd, audit_filter)
 
 
+def _set_non_dumpable() -> None:
+    """PR_SET_DUMPABLE=0 for THIS process, best-effort.
+
+    Blocks same-UID processes (the sandboxed target on namespace-less
+    backends) from traversing /proc/<tracer-pid>/fd and reaching the
+    inherited config fd (which briefly holds the observe nonce) or
+    the held evidence fd — /proc fd traversal requires
+    ptrace_may_access, which fails on a non-dumpable target.
+
+    Called ONLY from the ``python -m core.sandbox.tracer`` process
+    entry: the flag is process-global, and callers that drive
+    _cli_main in-process (tests) must not have their own process made
+    non-dumpable (it breaks newuidmap-based user-ns setup, among
+    other things).
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    libc = _get_libc()
+    if libc is not None and hasattr(libc, "prctl"):
+        with contextlib.suppress(OSError, ctypes.ArgumentError):
+            libc.prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 4
+
+
 if __name__ == "__main__":
+    _set_non_dumpable()
     raise SystemExit(_cli_main())

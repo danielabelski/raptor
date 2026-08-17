@@ -49,6 +49,39 @@ def check_seccomp_available():
 def check_seatbelt_available():
     return _probes.check_seatbelt_available()
 
+
+def spawn_backend_available() -> bool:
+    """True when sandbox().run() will route through the Linux fork-based
+    spawn backend (core.sandbox._spawn.run_sandboxed) on this host.
+
+    The spawn backend is the only execution path that can deliver a live
+    child pid to an ``exec_pid_callback=`` caller before the sandboxed
+    target exits — the subprocess fallback paths (Landlock-only, unshare
+    CLI) and the macOS seatbelt path run the command to completion before
+    returning. Callers that need mid-run visibility of the child (e.g.
+    /proc/<pid>/maps sampling of an untrusted binary) must check this
+    predicate first and degrade to a "not sampled" result when it is
+    False, rather than running the target on a weaker or absent backend.
+
+    Mirrors the routing decision made inside sandbox().run(): Linux,
+    sandbox not disabled (per-CLI), a CLI profile (when set) that keeps
+    Landlock engaged, user-namespace capability, mount-namespace
+    capability, and the newuidmap/newgidmap helpers present.
+    """
+    if sys.platform == "darwin":
+        return False
+    if state._cli_sandbox_profile is not None:
+        _profile_cfg = PROFILES.get(state._cli_sandbox_profile)
+        if not _profile_cfg or not _profile_cfg.get("use_landlock"):
+            return False
+    elif state._cli_sandbox_disabled:
+        return False
+    if not (check_net_available() and check_mount_available()):
+        return False
+    from . import _spawn as _spawn_mod
+    return _spawn_mod.mount_ns_available()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1372,6 +1405,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         _skip_mount_ns = kwargs.pop("skip_mount_ns", False)
         _inherit_netns = kwargs.pop("inherit_netns", False)
         _start_new_session = kwargs.pop("start_new_session", True)
+        # exec_pid_callback: live-pid observation hook, honoured only by
+        # the Linux fork-based spawn backend (see _spawn.run_sandboxed).
+        # Popped unconditionally so the subprocess fallback paths never
+        # forward an unknown kwarg to subprocess.run. Callers must gate
+        # on spawn_backend_available() — on the fallback paths the
+        # callback simply never fires.
+        _exec_pid_callback = kwargs.pop("exec_pid_callback", None)
         if kwargs.get("env") is None:
             kwargs.pop("env", None)  # drop any explicit None
             kwargs["env"] = RaptorConfig.get_safe_env()
@@ -2109,6 +2149,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             skip_mount_ns=_skip_mount_ns,
                             proxy_unix_socket=_proxy_unix_path if _use_proxy_netns else None,
                             proxy_forwarder_port=_proxy_forwarder_port if _use_proxy_netns else None,
+                            exec_pid_callback=_exec_pid_callback,
                         )
                         used_spawn = True
                         # Authoritative setup-failure signal from the exec-
@@ -2277,6 +2318,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         _spawn_err,
                     )
             if not used_spawn:
+                if _exec_pid_callback is not None:
+                    logger.debug(
+                        "Sandbox: exec_pid_callback supplied but this "
+                        "call is not routed through the spawn backend — "
+                        "the callback will not fire for %s",
+                        " ".join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or repr(cmd),
+                    )
                 # Audit/observe in Landlock-only mode: the bare
                 # subprocess.run path has no tracer-fork machinery,
                 # so audit silently degraded pre-PR. _landlock_audit
@@ -2508,6 +2556,20 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 and nonlocal_audit_mode
                 and _audit_engaged_anywhere):
             result.sandbox_info["observe_nonce"] = nonlocal_observe_nonce
+            # Record HOW the nonce reached the tracer so
+            # parse_observe_log's backstop can refuse nonce-based
+            # trust if a future regression re-introduces a delivery
+            # channel the target could read on a namespace-less
+            # host. macOS: the nonce stays in parent-process state
+            # (seatbelt_audit.LogStreamer) and never touches disk;
+            # Linux spawn paths (mount-ns _spawn AND the Landlock-
+            # only _landlock_audit helper): anonymous fd — memfd
+            # passed as /proc/self/fd/N, no filesystem name.
+            result.sandbox_info["nonce_delivery"] = (
+                "in_process"
+                if (spawn_eligible and use_seatbelt)
+                else "anonymous_fd"
+            )
         else:
             result.sandbox_info["observe_nonce"] = None
 

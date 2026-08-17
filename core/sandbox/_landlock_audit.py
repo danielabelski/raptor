@@ -14,8 +14,15 @@ This module adds the missing piece: a focused spawn function that
     seccomp do all of the per-call isolation;
   * forks a ``core.sandbox.tracer`` subprocess in parallel with the
     target child, mirroring the sync-pipe handshake from _spawn;
-  * passes the same audit-config tempfile so observe records carry
-    the per-run nonce + observe-stamp the parser validates.
+  * passes the same audit-config shape — via an ANONYMOUS fd
+    (memfd; see core/sandbox/evidence.py), never a /tmp path — so
+    observe records carry the per-run nonce + observe-stamp the
+    parser validates, and the nonce never exists at a filesystem
+    path the (namespace-less, same-UID) target can name;
+  * creates the evidence JSONL in ``<run_dir>/.audit/`` with O_EXCL
+    at spawn time and hands the held fd to the tracer, so appends
+    survive path-level tampering and the inode is verified at
+    finalisation.
 
 Implementation note: uses ``os.fork()`` directly (not
 ``subprocess.Popen``) for the target child. ``Popen`` blocks until
@@ -35,16 +42,17 @@ restores AUDIT/OBSERVE signal that was missing. The Linux
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import select
 import subprocess
 import sys
-import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Optional
 
+from . import evidence as _evidence_mod
 
 logger = logging.getLogger(__name__)
 
@@ -94,13 +102,14 @@ def _build_audit_config(
     *,
     audit_verbose: bool,
     observe_mode: bool,
-    observe_nonce: Optional[str],
+    observe_nonce: str | None,
     writable_paths: Iterable[str],
-    readable_paths: Optional[Iterable[str]],
-    allowed_tcp_ports: Optional[Iterable[int]],
-    output: Optional[str],
-    target: Optional[str],
+    readable_paths: Iterable[str] | None,
+    allowed_tcp_ports: Iterable[int] | None,
+    output: str | None,
+    target: str | None,
     restrict_reads: bool,
+    evidence_fd: int | None = None,
 ) -> dict:
     """Construct the audit_config dict the tracer reads at startup.
 
@@ -108,9 +117,14 @@ def _build_audit_config(
     sees the same shape regardless of which spawn path engaged it.
     Pinning is enforced by ``test_audit_filter.TestAuditConfigSchemaAgree``
     in the existing test suite.
+
+    ``evidence_fd``: the held evidence fd the tracer inherits across
+    its exec (see core/sandbox/evidence.py) — all tracer appends route
+    through it so a path-level swap of the JSONL cannot redirect them.
     """
-    from . import state as _state
     import os.path as _osp
+
+    from . import state as _state
 
     _writable: list = []
     for p in (writable_paths or ()):
@@ -125,8 +139,7 @@ def _build_audit_config(
     _read_allow = list(_writable)
     for p in (readable_paths or ()):
         _read_allow.append(_osp.abspath(p))
-    for p in _system_ro:
-        _read_allow.append(p)
+    _read_allow.extend(_system_ro)
     if target:
         _read_allow.append(_osp.abspath(target))
 
@@ -141,42 +154,30 @@ def _build_audit_config(
         ),
         "observe_mode": bool(observe_mode),
         "observe_nonce": observe_nonce,
+        "evidence_fd": evidence_fd,
     }
 
 
-def _write_audit_config(audit_config: dict) -> str:
-    """Persist the audit-config dict to /tmp; return path.
+def _write_audit_config(audit_config: dict) -> int:
+    """Serialise the audit-config dict into an anonymous fd; return it.
 
-    Tempfile lives outside any sandbox view (random suffix in /tmp;
-    targets see /tmp via the system_ro list but cannot guess the
-    suffix). The nonce inside is therefore not readable by the
-    target, defeating spoofs by record-content forgery.
+    F31: this used to be a ``/tmp/raptor-audit-cfg-*.json`` tempfile.
+    On the Landlock-only path there are no namespaces — same UID,
+    shared /tmp, and /tmp readable — so the target could glob the
+    path and read the observe nonce inside. The config now lives in
+    a memfd (Linux) / unlinked temp file (elsewhere): no filesystem
+    path exists for the target to name. The caller passes the fd to
+    the tracer as ``/proc/self/fd/N`` (cleared from CLOEXEC only for
+    the TRACER's exec) and closes its own copy after the fork; the
+    tracer closes the inherited fd right after parsing.
+
+    sort_keys=True — the serialised audit config is hashed elsewhere
+    for cache lookups and reproducibility. Without stable key
+    ordering, dict-rebuild order changes (across Python versions /
+    interpreter restarts) would break the cache identity contract.
     """
-    fd, path = tempfile.mkstemp(
-        prefix="raptor-audit-cfg-", suffix=".json",
-    )
-    # sort_keys=True — the serialised audit config is hashed
-    # elsewhere for cache lookups and reproducibility. Without
-    # stable key ordering, dict-rebuild order changes (across
-    # Python versions / interpreter restarts) would break the
-    # cache identity contract.
     serialised = json.dumps(audit_config, sort_keys=True).encode("utf-8")
-    try:
-        written = 0
-        while written < len(serialised):
-            n = os.write(fd, serialised[written:])
-            if n <= 0:
-                raise OSError(
-                    "audit-config write returned 0 bytes — "
-                    "filesystem full or read-only"
-                )
-            written += n
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-    return path
+    return _evidence_mod.anonymous_fd(serialised)
 
 
 def _close_safely(fd: int) -> None:
@@ -222,7 +223,7 @@ def _read_to_eof(fd: int, max_bytes: int = 16 * 1024 * 1024) -> bytes:
     generous (16 MiB) for most workloads; over-cap callers should
     use stdin/stdout passthrough (capture_output=False).
     """
-    chunks: List[bytes] = []
+    chunks: list[bytes] = []
     total = 0
     while total < max_bytes:
         try:
@@ -237,24 +238,24 @@ def _read_to_eof(fd: int, max_bytes: int = 16 * 1024 * 1024) -> bytes:
 
 
 def run_landlock_audit(
-    cmd: List[str],
+    cmd: list[str],
     *,
     audit_run_dir: str,
     audit_verbose: bool = False,
     observe_mode: bool = False,
-    observe_nonce: Optional[str] = None,
-    writable_paths: Optional[Iterable[str]] = None,
-    readable_paths: Optional[Iterable[str]] = None,
-    allowed_tcp_ports: Optional[Iterable[int]] = None,
-    target: Optional[str] = None,
-    output: Optional[str] = None,
+    observe_nonce: str | None = None,
+    writable_paths: Iterable[str] | None = None,
+    readable_paths: Iterable[str] | None = None,
+    allowed_tcp_ports: Iterable[int] | None = None,
+    target: str | None = None,
+    output: str | None = None,
     restrict_reads: bool = False,
     landlock_preexec=None,
     seccomp_preexec=None,
     rlimit_preexec=None,
-    env: Optional[dict] = None,
-    cwd: Optional[str] = None,
-    timeout: Optional[float] = None,
+    env: dict | None = None,
+    cwd: str | None = None,
+    timeout: float | None = None,
     capture_output: bool = True,
     text: bool = True,
     stdin=None,
@@ -282,18 +283,33 @@ def run_landlock_audit(
             "tracer has a place to write the JSONL"
         )
 
-    audit_config = _build_audit_config(
-        audit_verbose=audit_verbose,
-        observe_mode=observe_mode,
-        observe_nonce=observe_nonce,
-        writable_paths=writable_paths or (),
-        readable_paths=readable_paths,
-        allowed_tcp_ports=allowed_tcp_ports,
-        output=output,
-        target=target,
-        restrict_reads=restrict_reads,
+    # F11: create the evidence JSONL up-front in <run_dir>/.audit/
+    # (O_EXCL, held fd, inode recorded — see core/sandbox/evidence.py).
+    # The tracer inherits the fd and appends through it.
+    from .tracer import _resolve_output_filename as _out_name
+    evidence_file = _evidence_mod.EvidenceFile.open(
+        audit_run_dir, _out_name(bool(observe_mode)),
     )
-    config_path = _write_audit_config(audit_config)
+    config_fd = -1
+    try:
+        audit_config = _build_audit_config(
+            audit_verbose=audit_verbose,
+            observe_mode=observe_mode,
+            observe_nonce=observe_nonce,
+            writable_paths=writable_paths or (),
+            readable_paths=readable_paths,
+            allowed_tcp_ports=allowed_tcp_ports,
+            output=output,
+            target=target,
+            restrict_reads=restrict_reads,
+            evidence_fd=evidence_file.fd,
+        )
+        config_fd = _write_audit_config(audit_config)
+    except BaseException:
+        evidence_file.close(verify=False)
+        raise
+    # argv spelling of the config fd — "self" resolves in the tracer.
+    config_arg = _evidence_mod.fd_path(config_fd)
 
     # Sync pipes:
     #   p_go: parent → target ("tracer attached, proceed")
@@ -423,7 +439,7 @@ def run_landlock_audit(
                 os._exit(127)
             except PermissionError:
                 os._exit(126)
-            except Exception:
+            except Exception:  # noqa: BLE001 — post-fork guard; any failure must become an exit code, never a traceback in the child
                 os._exit(125)
 
         # ============== PARENT after target fork ==============
@@ -452,12 +468,24 @@ def run_landlock_audit(
                 import resource as _resource
                 soft, _hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
                 upper = min(soft, 65536)
-                # Two ranges around t_ready_w.
-                if 3 <= t_ready_w < upper:
-                    os.closerange(3, t_ready_w)
-                    os.closerange(t_ready_w + 1, upper)
-                else:
-                    os.closerange(3, upper)
+                # Keep the sync write end, the anonymous config fd,
+                # and the held evidence fd; closerange over the gaps.
+                _keep = sorted(
+                    fd for fd in (t_ready_w, config_fd, evidence_file.fd)
+                    if fd is not None and 3 <= fd < upper
+                )
+                _lo = 3
+                for _k in _keep:
+                    os.closerange(_lo, _k)
+                    _lo = _k + 1
+                os.closerange(_lo, upper)
+                # Clear CLOEXEC on config + evidence fds for the
+                # TRACER's exec only — the target child's exec keeps
+                # the default close-on-exec, so neither fd ever
+                # reaches the target's fd table.
+                if config_fd >= 0:
+                    os.set_inheritable(config_fd, True)
+                os.set_inheritable(evidence_file.fd, True)
                 raptor_dir = os.environ.get("RAPTOR_DIR")
                 if raptor_dir is None:
                     raptor_dir = str(
@@ -470,7 +498,7 @@ def run_landlock_audit(
                 tracer_argv = [
                     sys.executable, "-m", "core.sandbox.tracer",
                     str(target_pid), str(audit_run_dir),
-                    str(t_ready_w), config_path,
+                    str(t_ready_w), config_arg,
                 ]
                 # tracer_env is a hand-crafted dict with 2 keys only
                 # (PYTHONPATH + PATH). No inheritance — strictly
@@ -481,7 +509,7 @@ def run_landlock_audit(
                 os._exit(127)
             except PermissionError:
                 os._exit(126)
-            except Exception:
+            except Exception:  # noqa: BLE001 — post-fork guard; any failure must become an exit code, never a traceback in the child
                 os._exit(125)
 
         # ============== PARENT after tracer fork ==============
@@ -490,6 +518,12 @@ def run_landlock_audit(
         # if the tracer dies before signalling.
         _close_safely(t_ready_w)
         t_ready_w = -1
+        # Drop our copy of the anonymous config fd — the tracer holds
+        # its own inherited copy (closed right after parsing). This
+        # minimises the window in which /proc/<parent-pid>/fd exposes
+        # the nonce-carrying config to same-UID processes.
+        _close_safely(config_fd)
+        config_fd = -1
 
         # Wait for tracer to signal ready (or die).
         ready = b""
@@ -510,11 +544,9 @@ def run_landlock_audit(
                 pass
             finally:
                 tracer_pid = -1
-            try:
+            with contextlib.suppress(Exception):
                 _kill_and_reap(target_pid)
                 target_pid = -1
-            except Exception:
-                pass
             rc_hint = ""
             if (tracer_status is not None
                     and os.WIFEXITED(tracer_status)):
@@ -634,16 +666,15 @@ def run_landlock_audit(
     finally:
         _cleanup_fds()
         if target_pid > 0:
-            try:
+            with contextlib.suppress(Exception):
                 _kill_and_reap(target_pid)
-            except Exception:
-                pass
         if tracer_pid > 0:
-            try:
+            with contextlib.suppress(Exception):
                 _kill_and_reap(tracer_pid)
-            except Exception:
-                pass
-        try:
-            os.unlink(config_path)
-        except OSError:
-            pass
+        # Release the anonymous config fd (normally already closed
+        # right after the tracer fork; covers early-exit paths).
+        _close_safely(config_fd)
+        # Finalise the evidence file AFTER both children are gone:
+        # verify the on-disk path still names the inode created at
+        # spawn time (loud warning on a swap), then close the fd.
+        evidence_file.close()

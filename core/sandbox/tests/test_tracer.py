@@ -10,25 +10,35 @@ where the end-to-end test will live.
 from __future__ import annotations
 
 import sys as _sys
+
 import pytest as _pytest
+
 pytestmark = _pytest.mark.skipif(
     _sys.platform != "linux",
     reason="Linux-only sandbox internals (mount-ns / Landlock / seccomp / ptrace tracer / pid1 shim) — see core/sandbox/_macos_spawn.py for the macOS path",
 )
 
 
-import ctypes  # noqa: E402
-import json  # noqa: E402
-import os  # noqa: E402
-import platform  # noqa: E402
-import struct  # noqa: E402
-import subprocess  # noqa: E402
-import sys  # noqa: E402
-import time  # noqa: E402
+import ctypes
+import json
+import os
+import platform
+import struct
+import subprocess
+import sys
+import time
 
-import pytest  # noqa: E402
+import pytest
 
-from core.sandbox import tracer  # noqa: E402
+from core.sandbox import evidence as evidence_mod
+from core.sandbox import tracer
+
+
+def _denials_jsonl(run_dir):
+    """Evidence-relocated denials path: <run_dir>/.audit/<name>."""
+    return evidence_mod.evidence_write_path(
+        run_dir, tracer._DENIALS_FILENAME,
+    )
 
 
 # Skip the whole module on archs the tracer doesn't support (currently
@@ -53,7 +63,6 @@ class TestLibcCacheSentinel:
         call_count = [0]
         def fake_find(name):
             call_count[0] += 1
-            return None
         monkeypatch.setattr("ctypes.util.find_library", fake_find)
 
         first = tracer._get_libc()
@@ -341,7 +350,7 @@ class TestJsonlRecordWrite:
         )
         assert ok is True
 
-        path = tmp_path / tracer._DENIALS_FILENAME
+        path = _denials_jsonl(tmp_path)
         assert path.exists()
         records = [json.loads(line) for line in path.read_text().splitlines() if line]
         assert len(records) == 1
@@ -363,7 +372,7 @@ class TestJsonlRecordWrite:
             tracer._write_record(tmp_path, "openat", 257,
                                  [i, 0, 0, 0, 0, 0], target_pid=1)
 
-        path = tmp_path / tracer._DENIALS_FILENAME
+        path = _denials_jsonl(tmp_path)
         records = [json.loads(line) for line in path.read_text().splitlines() if line]
         assert len(records) == 3
         # First arg differs per record; assert against args[0] specifically.
@@ -379,10 +388,12 @@ class TestJsonlRecordWrite:
 
     def test_o_nofollow_refuses_symlink(self, tmp_path):
         # Mirror the same defense record_denial uses — symlink at the
-        # JSONL path must NOT be followed.
+        # JSONL path (inside the .audit/ evidence dir) must NOT be
+        # followed.
         target = tmp_path / "evil-target"
         target.write_text("ATTACKER OWNED\n")
-        link = tmp_path / tracer._DENIALS_FILENAME
+        link = _denials_jsonl(tmp_path)
+        link.parent.mkdir(mode=0o700)
         os.symlink(target, link)
 
         ok = tracer._write_record(tmp_path, "openat", 257,
@@ -534,7 +545,7 @@ class TestSeizeAndDetachLifecycle:
             assert interrupted is True
 
             # Reap the stop event.
-            wpid, status = os.waitpid(child.pid, 0)
+            _wpid, status = os.waitpid(child.pid, 0)
             assert os.WIFSTOPPED(status), \
                 f"expected stop after INTERRUPT, got status={status:#x}"
 
@@ -578,7 +589,9 @@ class TestMultiProcessSupport:
         # one of these, the test fails AND the comment in _ptrace_seize
         # needs updating.
         from core.sandbox.tracer import (
-            _PTRACE_O_TRACEFORK, _PTRACE_O_TRACEVFORK, _PTRACE_O_TRACECLONE,
+            _PTRACE_O_TRACECLONE,
+            _PTRACE_O_TRACEFORK,
+            _PTRACE_O_TRACEVFORK,
         )
         assert _PTRACE_O_TRACEFORK == 0x00000002
         assert _PTRACE_O_TRACEVFORK == 0x00000004
@@ -598,8 +611,11 @@ class TestMultiProcessSupport:
         # These are stable kernel UAPI; if they ever change the
         # tracer dispatch is silently broken.
         from core.sandbox.tracer import (
-            _PTRACE_EVENT_FORK, _PTRACE_EVENT_VFORK, _PTRACE_EVENT_CLONE,
-            _PTRACE_EVENT_EXIT, _PTRACE_EVENT_SECCOMP,
+            _PTRACE_EVENT_CLONE,
+            _PTRACE_EVENT_EXIT,
+            _PTRACE_EVENT_FORK,
+            _PTRACE_EVENT_SECCOMP,
+            _PTRACE_EVENT_VFORK,
         )
         assert _PTRACE_EVENT_FORK == 1
         assert _PTRACE_EVENT_VFORK == 2
@@ -719,7 +735,7 @@ class TestRecordWithPath:
 
         records = [
             json.loads(line) for line in
-            (tmp_path / tracer._DENIALS_FILENAME).read_text().splitlines()
+            _denials_jsonl(tmp_path).read_text().splitlines()
             if line
         ]
         r = records[0]
@@ -740,7 +756,7 @@ class TestRecordWithPath:
         assert ok is True
         records = [
             json.loads(line) for line in
-            (tmp_path / tracer._DENIALS_FILENAME).read_text().splitlines()
+            _denials_jsonl(tmp_path).read_text().splitlines()
             if line
         ]
         r = records[0]

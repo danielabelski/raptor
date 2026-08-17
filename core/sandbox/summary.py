@@ -12,9 +12,14 @@ Design:
   and cleared at run end.
 - ``record_denial(...)`` is called by ``core/sandbox/observe.py:_check_blocked``
   for each detected denial. Appends one JSONL line to
-  ``<run_dir>/.sandbox-denials.jsonl``.
+  ``<run_dir>/.audit/.sandbox-denials.jsonl`` — the evidence directory
+  the sandboxed child cannot write to (see core/sandbox/evidence.py).
+  Appends go through a per-run held fd opened O_EXCL at first denial;
+  the inode is verified at finalisation so a swapped file is detected.
 - ``summarize_and_write(run_dir)`` is called by ``core/run/metadata.py``
-  ``complete_run`` / ``fail_run`` / ``cancel_run``. Reads the JSONL, writes
+  ``complete_run`` / ``fail_run`` / ``cancel_run``. Reads the JSONL
+  (new ``.audit/`` location first, legacy ``<run_dir>/`` spot as a
+  back-compat fallback for one release), writes
   ``sandbox-summary.json``, removes the intermediate JSONL.
 
 JSONL append is atomic on POSIX up to PIPE_BUF (~4KB) so concurrent writers
@@ -61,6 +66,8 @@ from typing import Any
 from core.atomic_fs import write_text_atomically
 from core.security.redaction import redact_secrets
 
+from . import evidence as _evidence
+
 logger = logging.getLogger(__name__)
 
 # Module-level active-run state. Set by start_run, cleared at run end.
@@ -70,6 +77,15 @@ logger = logging.getLogger(__name__)
 # tests that exercise the lifecycle from multiple threads).
 _active_run_dir: Path | None = None
 _lock = threading.Lock()
+
+# Per-run held evidence fd (core/sandbox/evidence.EvidenceFile) for
+# record_denial appends. Opened lazily on the first denial so runs
+# without denials leave no file behind; closed (with inode
+# verification) at summarize_and_write / set_active_run_dir. Guarded
+# by _lock. _evidence_open_failed suppresses repeat warnings when the
+# evidence dir cannot be created for a run.
+_evidence_handle: _evidence.EvidenceFile | None = None
+_evidence_open_failed = False
 
 DENIALS_FILE = ".sandbox-denials.jsonl"
 SUMMARY_FILE = "sandbox-summary.json"
@@ -97,12 +113,39 @@ def set_active_run_dir(run_dir: Path | None) -> None:
     write to ``<run_dir>/.sandbox-denials.jsonl`` until cleared.
 
     Resets the per-run denial counter so each run starts with a fresh
-    cap (see MAX_DENIALS_PER_RUN).
+    cap (see MAX_DENIALS_PER_RUN). Any held evidence fd from the
+    previous run is finalised (inode-verified, then closed).
     """
-    global _active_run_dir, _denial_count
+    global _active_run_dir, _denial_count, _evidence_handle
+    global _evidence_open_failed
     with _lock:
+        if _evidence_handle is not None:
+            _evidence_handle.close()
+            _evidence_handle = None
+        _evidence_open_failed = False
         _active_run_dir = Path(run_dir) if run_dir is not None else None
         _denial_count = 0
+
+
+def _get_evidence_handle_locked(run_dir: Path):
+    """Return the held evidence fd for the active run, opening it on
+    first use. Caller holds _lock. Returns None when the evidence file
+    cannot be opened (warned once per run)."""
+    global _evidence_handle, _evidence_open_failed
+    if _evidence_handle is not None:
+        return _evidence_handle
+    if _evidence_open_failed:
+        return None
+    try:
+        _evidence_handle = _evidence.EvidenceFile.open(run_dir, DENIALS_FILE)
+    except OSError:
+        _evidence_open_failed = True
+        logger.warning(
+            "record_denial: cannot open evidence file under %s",
+            run_dir, exc_info=True,
+        )
+        return None
+    return _evidence_handle
 
 
 def get_active_run_dir() -> Path | None:
@@ -192,9 +235,14 @@ def record_denial(cmd_display: str, returncode: int,
         "type": denial_type,
         "suggested_fix": _suggested_fix(denial_type, **details),
     }
-    # JSONL append: open-write-close per line so each record is atomic.
-    # POSIX guarantees writes < PIPE_BUF (~4KB) are atomic when the file
-    # is opened O_APPEND. Each line is well under that threshold.
+    # JSONL append through the per-run held evidence fd — each line is
+    # a single O_APPEND write, atomic under PIPE_BUF (~4KB); each line
+    # is well under that threshold. The fd is opened O_EXCL in
+    # <run_dir>/.audit/ (a directory excluded from the sandboxed
+    # child's writable view) on the first denial of the run; appending
+    # through the held fd means a path-level swap of the JSONL cannot
+    # redirect later records (and IS detected at finalisation via the
+    # inode check).
     #
     # `default=str` defends against future callers passing non-serializable
     # detail values (Path, datetime, etc.) — without it, json.dumps would
@@ -204,20 +252,16 @@ def record_denial(cmd_display: str, returncode: int,
     # change introduces a different exception path.
     try:
         line = json.dumps(record, ensure_ascii=True, default=str) + "\n"
-        path = run_dir / DENIALS_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # O_NOFOLLOW refuses if path is a symlink — defends against
-        # symlink planted by an attacker who got write access to the
-        # run dir (rare but possible on shared filesystems). Plain
-        # open(path, "a") would have followed and written to the
-        # symlink target. Mode 0o600 keeps the JSONL operator-only.
-        fd = os.open(
-            str(path),
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
-            0o600,
-        )
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(line)
+        with _lock:
+            handle = _get_evidence_handle_locked(run_dir)
+            if handle is None:
+                raise OSError(
+                    f"evidence file unavailable under {run_dir}"
+                )
+            if not handle.write_line(line):
+                raise OSError(
+                    f"evidence append failed under {run_dir}"
+                )
     except Exception:
         # WARNING (F071 W21 promote): operators rarely run with DEBUG
         # enabled, so pre-fix this swallow meant every dropped sandbox-
@@ -341,8 +385,21 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     Idempotent: if called again with the same run_dir and no JSONL is
     present, returns None without writing.
     """
+    global _evidence_handle
     run_dir = Path(run_dir)
-    jsonl = run_dir / DENIALS_FILE
+    # Finalise the held evidence fd for this run BEFORE the rename:
+    # the inode verification fires here (loud warning on a swapped
+    # file), and closing stops any later record_denial from appending
+    # to the renamed inode. Only when the active handle belongs to
+    # this run_dir — sweep-mode calls for other dirs leave it alone.
+    with _lock:
+        if (_evidence_handle is not None
+                and _evidence_handle.path.parent.parent == run_dir):
+            _evidence_handle.close()
+            _evidence_handle = None
+    # New (.audit/) location preferred; legacy <run_dir>/ location
+    # kept as a read fallback for runs produced by older versions.
+    jsonl = _evidence.resolve_read_path(run_dir, DENIALS_FILE)
     if not jsonl.exists():
         return None
 
@@ -362,16 +419,15 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     # renamed inode (which we then unlink — those entries are lost,
     # but they're a strictly small race window vs the bigger
     # multi-second post-summary race the prior code had).
-    import os as _os
     import threading as _threading
     # pid+tid suffix — two threads in the same summariser process can
     # race on the same pid; tid disambiguates. Mirrors core/json/utils.py
     # and core/json/cache.py.
     tmp = jsonl.with_name(
-        f"{jsonl.name}.summarising.{_os.getpid()}.{_threading.get_ident()}"
+        f"{jsonl.name}.summarising.{os.getpid()}.{_threading.get_ident()}"
     )
     try:
-        _os.replace(str(jsonl), str(tmp))
+        os.replace(str(jsonl), str(tmp))
     except OSError:
         # KEEP-SILENT (F071 per-site triage W21): the realistic
         # branch here is "sibling summariser won the rename race and
@@ -572,7 +628,7 @@ def _cli_main(argv: list | None = None) -> int:
         try:
             if not child.is_dir() or child.name.startswith((".", "_")):
                 continue
-            if not (child / DENIALS_FILE).exists():
+            if not _evidence.resolve_read_path(child, DENIALS_FILE).exists():
                 continue
         except OSError:
             continue

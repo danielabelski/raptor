@@ -4,9 +4,15 @@ When ``--audit`` is engaged on macOS, the SBPL profile uses
 ``(allow file-write* (with report))`` — the write succeeds AND the
 kernel Sandbox.kext emits an entry to the unified log. This module
 streams those entries live via ``log stream``, parses them, and
-appends RAPTOR-format records to ``<run_dir>/.sandbox-denials.jsonl``
-— matching the JSONL schema produced by the Linux ptrace tracer so
-the existing ``summarize_and_write`` aggregation works unchanged.
+appends RAPTOR-format records to the run's evidence directory —
+``<run_dir>/.audit/.sandbox-denials.jsonl`` (see
+core/sandbox/evidence.py) — matching the JSONL schema produced by the
+Linux ptrace tracer so the existing ``summarize_and_write``
+aggregation works unchanged. The seatbelt profile denies the target
+all writes beneath ``<run_dir>/.audit`` (seatbelt.build_profile's
+``audit_evidence_dir``), so only this parent-side streamer can touch
+the file; appends go through a held fd whose inode is verified when
+the streamer stops.
 
 Spike-validated facts (see scripts/macos_sandbox_spike4.py):
 
@@ -35,7 +41,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -43,8 +48,8 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
+from . import evidence as _evidence_mod
 from .seatbelt import SANDBOX_KEXT_SENDER
 
 logger = logging.getLogger(__name__)
@@ -96,8 +101,7 @@ _SANDBOX_EXEC_FALLBACK = "/usr/bin/sandbox-exec"
 # which is shared with the Linux ptrace tracer so the two backends
 # stay in sync. See that module for the full mechanism (token-bucket
 # + per-category + per-PID + 1-in-N sampling + CLI override).
-from . import audit_budget as _audit_budget  # noqa: E402
-
+from . import audit_budget as _audit_budget
 
 # Sandbox kext eventMessage format. Spike #4 confirmed:
 #   "Sandbox: <ProcessName>(<PID>) <verdict> <action> <path>"
@@ -122,7 +126,7 @@ def _action_to_type(action: str) -> str:
 
 def parse_log_entry(entry: dict, *,
                     observe_mode: bool = False,
-                    nonce: Optional[str] = None) -> Optional[dict]:
+                    nonce: str | None = None) -> dict | None:
     """Convert a `log stream` ndjson entry to a RAPTOR audit record.
 
     Returns None if the entry isn't a recognisable Sandbox.kext
@@ -172,7 +176,7 @@ def _now_iso() -> str:
 
 class LogStreamer:
     """Background log-stream subprocess feeding parsed audit records
-    into ``run_dir/.sandbox-denials.jsonl``.
+    into ``run_dir/.audit/.sandbox-denials.jsonl``.
 
     Owned by ``_macos_spawn.run_sandboxed`` for the duration of one
     sandboxed call. NOT a singleton — a fresh streamer per sandbox()
@@ -182,12 +186,12 @@ class LogStreamer:
     """
 
     def __init__(self, run_dir: Path,
-                 budget: Optional["_audit_budget.AuditBudget"] = None,
+                 budget: _audit_budget.AuditBudget | None = None,
                  *, observe_mode: bool = False,
-                 observe_nonce: Optional[str] = None):
+                 observe_nonce: str | None = None):
         self._run_dir = Path(run_dir)
-        self._proc: Optional[subprocess.Popen] = None
-        self._reader: Optional[threading.Thread] = None
+        self._proc: subprocess.Popen | None = None
+        self._reader: threading.Thread | None = None
         self._stopped = threading.Event()
         # Per-run provenance secret — included in every record so the
         # parser can drop spoofed entries written by the target
@@ -215,9 +219,9 @@ class LogStreamer:
         # last write. AuditBudget itself is also single-writer
         # (it's mutated only inside the held lock).
         self._append_lock = threading.Lock()
-        # Lazily-opened directory fd for openat(). See
-        # _append_record_locked for the TOCTOU rationale.
-        self._dirfd: Optional[int] = None
+        # Lazily-opened held evidence fd (core/sandbox/evidence.py).
+        # See _append_record_locked for the tamper rationale.
+        self._evidence: _evidence_mod.EvidenceFile | None = None
 
     def start(self) -> None:
         """Spawn `log stream` filtered to sandbox kext events, gate
@@ -283,7 +287,7 @@ class LogStreamer:
                 self._proc.terminate()
                 try:
                     self._proc.wait(timeout=5)
-                except Exception:
+                except Exception:  # noqa: BLE001 — any wait failure (timeout, interpreter shutdown) must escalate to kill
                     self._proc.kill()
                     self._proc.wait()
             except OSError:
@@ -527,30 +531,28 @@ class LogStreamer:
     def _append_record_locked(self, record: dict) -> None:
         """Real append logic. Called with self._append_lock held.
 
-        Uses an O_DIRECTORY|O_NOFOLLOW dirfd cached at first call
-        and an `openat(dirfd, DENIALS_FILE, ...)` for each append.
-        Without the dirfd, an attacker who can write to run_dir's
-        parent could swap run_dir with a symlink between
-        `mkdir(...)` and `open(...)` (TOCTOU) and redirect audit
-        records into a host file. The dirfd is opened once, before
-        any writes, and survives any later replacement of the
-        path-to-the-directory.
+        Uses a held evidence fd (core/sandbox/evidence.EvidenceFile)
+        opened O_EXCL in ``<run_dir>/.audit/`` at first call. The
+        held fd means a swap/rename of the JSONL path cannot
+        redirect later appends (the fd pins the original inode), and
+        the O_EXCL create defeats a pre-planted file or symlink. The
+        inode recorded at open is verified when stop() closes the
+        streamer. The profile-side ``audit_evidence_dir`` deny keeps
+        the target away from the path entirely; this is the
+        defence-in-depth layer for operator-misconfigured profiles.
         """
-        line = json.dumps(record, ensure_ascii=True, default=str) + "\n"
-        if self._dirfd is None:
-            # First call: materialise run_dir AND pin it as a dirfd.
+        if self._evidence is None:
+            # First call: materialise run_dir AND pin the evidence
+            # file beneath it.
             self._run_dir.mkdir(parents=True, exist_ok=True)
-            self._dirfd = os.open(
-                str(self._run_dir),
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            self._evidence = _evidence_mod.EvidenceFile.open(
+                self._run_dir, self._filename,
             )
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
-        fd = os.open(self._filename, flags, mode=0o600,
-                     dir_fd=self._dirfd)
-        try:
-            os.write(fd, line.encode("utf-8"))
-        finally:
-            os.close(fd)
+        if not self._evidence.write_record(record):
+            raise OSError(
+                f"evidence append failed for {self._filename} "
+                f"under {self._run_dir}"
+            )
 
     def stop(self, *, drain_timeout: float = 1.5) -> None:
         """Stop the streamer. Gives `log stream` a brief window to
@@ -630,27 +632,19 @@ class LogStreamer:
             # Mirrors c5a4505 / 8edf0f6 promotion family.
             logger.warning("seatbelt audit summary append failed",
                            exc_info=True)
-        # Close the cached dirfd. Best-effort — fd leaks on
-        # daemon-thread paths are bounded by the per-process fd
-        # limit, but keeping process exit clean here avoids
-        # ResourceWarnings in test runs.
+        # Finalise the held evidence fd: verify the on-disk path
+        # still names the inode created at first append (loud
+        # warning inside close() on a swap), then release the fd so
+        # test runs stay free of ResourceWarnings.
         with self._append_lock:
-            if self._dirfd is not None:
-                try:
-                    os.close(self._dirfd)
-                except OSError:
-                    # KEEP-SILENT (F070 per-site triage W21): closing
-                    # a (potentially already-closed) cached dirfd is
-                    # ResourceWarning-prevention housekeeping. EBADF
-                    # here is benign; OS will reclaim on process exit.
-                    # WARNING would be noise.
-                    pass
-                self._dirfd = None
+            if self._evidence is not None:
+                self._evidence.close()
+                self._evidence = None
 
 
 def start_log_streamer(run_dir: Path, *,
                        observe_mode: bool = False,
-                       observe_nonce: Optional[str] = None,
+                       observe_nonce: str | None = None,
                        ) -> LogStreamer:
     """Convenience: instantiate + start a LogStreamer.
 

@@ -438,6 +438,31 @@ def setup_mount_ns(target: str | None, output: str | None,
         os.makedirs(inside, exist_ok=True)
         _mount(output, inside, None, MS_BIND)
 
+    # 8a. Shadow the evidence directory (<dir>/.audit — see
+    # core/sandbox/evidence.py) inside the rw-bound target/output
+    # views. The parent-side tracer/summary writers append sandbox
+    # evidence there through held fds in the PARENT namespace; the
+    # child must not be able to reach the real files through its rw
+    # bind, so an empty read-only tmpfs is stacked over the mount
+    # point. Landlock's writable grant may still nominally cover the
+    # path, but every write lands on (and is refused by) the ro
+    # tmpfs. Failure is warned, not fatal: the inode-verification at
+    # evidence-file close still detects tampering after the fact.
+    for _evdir_base in {p for p in (output, target) if p}:
+        _evdir = f"{root}{_evdir_base}/.audit"
+        if not os.path.isdir(_evdir):
+            continue
+        try:
+            _mount("tmpfs", _evdir, "tmpfs", 0, "mode=700")
+            _mount("tmpfs", _evdir, None,
+                   MS_REMOUNT | MS_BIND | MS_RDONLY)
+        except OSError as exc:
+            warn_post_fork(
+                b"RAPTOR: mount_ns: evidence-dir shadow mount failed "
+                b"(errno=%d); relying on evidence-file inode "
+                b"verification\n" % (exc.errno or 0)
+            )
+
     # 8b. Bind any extra read-only paths the caller requested (via
     # readable_paths in the public sandbox API). Each is bind-mounted
     # at its original absolute path, so the child sees it exactly where

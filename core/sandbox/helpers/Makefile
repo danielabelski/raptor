@@ -17,8 +17,14 @@
 # not, auto-elevate during a build — the operator's grant of LSM or file
 # capabilities is the explicit consent step, and it can't move into a
 # Makefile target without weakening the trust model.
+#
+# `make test` builds and runs the unprivileged contract harness
+# (helpers_test.c): the helpers' argument-validation functions are
+# compiled with -DRAPTOR_HELPERS_TEST (which drops their main()) and
+# exercised against temp files and a self-created user namespace. No
+# capability grant is needed to run it.
 
-.PHONY: all help clean check
+.PHONY: all help clean check test
 
 CC ?= cc
 
@@ -42,12 +48,17 @@ COORD_SRC    := raptor-coord-launcher.c
 GIDMAP_BIN   := raptor-gidmap-allow
 GIDMAP_SRC   := raptor-gidmap-allow.c
 
+VALIDATE_HDR := helpers_validate.h
+
+TEST_BIN     := helpers-test
+TEST_SRC     := helpers_test.c
+
 all: $(COORD_BIN) $(GIDMAP_BIN)
 
-$(COORD_BIN): $(COORD_SRC)
+$(COORD_BIN): $(COORD_SRC) $(VALIDATE_HDR)
 	$(CC) $(CFLAGS) $(SAFETY_CFLAGS) $(LDFLAGS) $(SAFETY_LDFLAGS) -o $@ $<
 
-$(GIDMAP_BIN): $(GIDMAP_SRC)
+$(GIDMAP_BIN): $(GIDMAP_SRC) $(VALIDATE_HDR)
 	$(CC) $(CFLAGS) $(SAFETY_CFLAGS) $(LDFLAGS) $(SAFETY_LDFLAGS) -o $@ $<
 	@echo
 	@echo "  Built: $$(realpath $@)"
@@ -58,6 +69,15 @@ $(GIDMAP_BIN): $(GIDMAP_SRC)
 	@echo "  core/sandbox/_spawn.py auto-detects this binary and uses it"
 	@echo "  instead of newgidmap when CAP_SETGID is present."
 	@echo
+
+# Unprivileged contract harness — validation functions only, mains
+# compiled out via -DRAPTOR_HELPERS_TEST. Runs without any grant.
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
+$(TEST_BIN): $(TEST_SRC) $(COORD_SRC) $(GIDMAP_SRC) $(VALIDATE_HDR)
+	$(CC) $(CFLAGS) $(SAFETY_CFLAGS) $(LDFLAGS) $(SAFETY_LDFLAGS) \
+	    -DRAPTOR_HELPERS_TEST -o $@ $(TEST_SRC) $(COORD_SRC) $(GIDMAP_SRC)
 
 # Informational target. We never auto-grant anything.
 help:
@@ -119,4 +139,4 @@ check:
 	fi
 
 clean:
-	rm -f $(COORD_BIN) $(GIDMAP_BIN)
+	rm -f $(COORD_BIN) $(GIDMAP_BIN) $(TEST_BIN)

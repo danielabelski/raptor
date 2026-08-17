@@ -57,18 +57,18 @@ import sys
 # responsible for setting RAPTOR_DIR in the subprocess env.
 sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
-import base64  # noqa: E402
-import ctypes  # noqa: E402
-import ctypes.util  # noqa: E402
-import errno  # noqa: E402
-import fcntl  # noqa: E402
-import json  # noqa: E402
-import socket  # noqa: E402
-import struct  # noqa: E402
-import threading  # noqa: E402
-import time  # noqa: E402
-from pathlib import Path  # noqa: E402
-from typing import Any, Dict, Optional  # noqa: E402
+import base64
+import ctypes
+import ctypes.util
+import errno
+import fcntl
+import json
+import socket
+import struct
+import threading
+import time
+from pathlib import Path
+from typing import Any
 
 CLONE_NEWUSER = 0x10000000
 CLONE_NEWNET = 0x40000000
@@ -185,6 +185,14 @@ def _setup_via_launcher_reexec() -> None:
         if k.startswith("RAPTOR_COORD_"):
             env[k] = v
     env["RAPTOR_COORD_REEXEC_GUARD"] = "1"
+    # Argument contract with the launcher (see the header comment in
+    # helpers/raptor-coord-launcher.c): argv must be exactly
+    # [launcher, interpreter, script] — the launcher refuses any other
+    # argc, pins the script to its own checkout's netns_coordinator.py,
+    # and requires the interpreter/script to be owned by root or by the
+    # launcher binary's owner with no group/other write bits. Passing
+    # anything beyond [sys.executable, __file__] here trips the contract
+    # and the launcher exits 3 before its privileged setup.
     os.execve(
         str(HELPER_PATH),
         [str(HELPER_PATH), sys.executable, __file__],
@@ -254,13 +262,18 @@ def _setup_namespaces() -> str:
 
 class _ChildResult:
     __slots__ = (
-        "returncode", "stdout", "stderr", "wallclock_s",
-        "sandbox_info", "error", "_lock",
+        "_lock",
+        "error",
+        "returncode",
+        "sandbox_info",
+        "stderr",
+        "stdout",
+        "wallclock_s",
     )
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.returncode: Optional[int] = None
+        self.returncode: int | None = None
         self.stdout: bytes = b""
         self.stderr: bytes = b""
         self.wallclock_s: float = 0.0
@@ -270,10 +283,10 @@ class _ChildResult:
         # reads it to classify the target's execution; without it we'd
         # collapse every run to NO_OBVIOUS_EFFECT regardless of what
         # actually happened.
-        self.sandbox_info: Optional[Dict[str, Any]] = None
-        self.error: Optional[str] = None
+        self.sandbox_info: dict[str, Any] | None = None
+        self.error: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "returncode": self.returncode,
@@ -285,7 +298,7 @@ class _ChildResult:
             }
 
 
-def _run_child(role: str, spec: Dict[str, Any], result: _ChildResult) -> None:
+def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
     """Run one sandbox.run command as a child of THIS process. The fork
     inside sandbox.run inherits our user-ns + net-ns, which is the
     architectural point — target and exploit land in the same netns
@@ -341,15 +354,15 @@ def _run_child(role: str, spec: Dict[str, Any], result: _ChildResult) -> None:
 
     t0 = time.monotonic()
     try:
-        kwargs = dict(
-            profile=profile,
-            block_network=block_network,
-            inherit_netns=True,
-            env=env if env else None,
-            capture_output=True,
-            timeout=timeout,
-            restrict_reads=restrict_reads,
-        )
+        kwargs = {
+            "profile": profile,
+            "block_network": block_network,
+            "inherit_netns": True,
+            "env": env if env else None,
+            "capture_output": True,
+            "timeout": timeout,
+            "restrict_reads": restrict_reads,
+        }
         if allowed_tcp_ports is not None:
             kwargs["allowed_tcp_ports"] = list(allowed_tcp_ports)
         if stdin_bytes is not None:
@@ -448,7 +461,7 @@ def _emit_error(reason: str, message: str) -> None:
     sys.stdout.flush()
 
 
-def _emit_response(response: Dict[str, Any]) -> None:
+def _emit_response(response: dict[str, Any]) -> None:
     json.dump(response, sys.stdout)
     sys.stdout.write("\n")
     sys.stdout.flush()

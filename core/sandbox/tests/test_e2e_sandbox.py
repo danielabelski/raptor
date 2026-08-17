@@ -2046,8 +2046,10 @@ class TestE2ESandboxSummaryRecording(unittest.TestCase):
                 summary_path = run_dir / SUMMARY_FILE
                 self.assertTrue(summary_path.exists(),
                                 f"sandbox-summary.json missing at {summary_path}")
-                self.assertFalse((run_dir / DENIALS_FILE).exists(),
-                                 "intermediate JSONL should be removed after summary")
+                from core.sandbox.evidence import evidence_write_path
+                self.assertFalse(
+                    evidence_write_path(run_dir, DENIALS_FILE).exists(),
+                    "intermediate JSONL should be removed after summary")
 
                 summary = _json.loads(summary_path.read_text())
                 # Network denial captured
@@ -2387,8 +2389,11 @@ class TestE2EObserveMode(unittest.TestCase):
             self.assertEqual(result.returncode, 0,
                              f"true should exit 0; stderr={result.stderr!r}")
 
-            observe_log = run_dir / OBSERVE_FILENAME
-            denials_log = run_dir / ".sandbox-denials.jsonl"
+            from core.sandbox.evidence import resolve_read_path
+            observe_log = resolve_read_path(run_dir, OBSERVE_FILENAME)
+            denials_log = resolve_read_path(
+                run_dir, ".sandbox-denials.jsonl",
+            )
 
             if not observe_log.exists():
                 self.skipTest(
@@ -2916,6 +2921,270 @@ class TestNetnsLoopbackUp(unittest.TestCase):
             self.assertIn("UDP-LOOPBACK-OK", r.stdout)
             self.assertIn("EXTERNAL-BLOCKED", r.stdout,
                           "external network must stay unreachable")
+
+
+# The tamper script both backends run. Attempts every mutation from
+# the evidence-placement design's tamper matrix against the evidence
+# JSONL and reports each outcome as OP=RESULT lines on stdout. The
+# parent asserts on the on-disk state (authoritative) AND on the
+# reported outcomes (diagnostic).
+_EVIDENCE_TAMPER_SCRIPT = r"""
+import json, os, sys
+evdir = sys.argv[1]
+jsonl = os.path.join(evdir, ".sandbox-denials.jsonl")
+def attempt(name, fn):
+    try:
+        fn()
+        print(f"{name}=OK")
+    except OSError as e:
+        print(f"{name}=ERR:{e.errno}")
+def _append():
+    fd = os.open(jsonl, os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(fd, b'{"forged": true}\n')
+    finally:
+        os.close(fd)
+def _truncate():
+    fd = os.open(jsonl, os.O_WRONLY | os.O_TRUNC)
+    os.close(fd)
+def _unlink():
+    os.unlink(jsonl)
+def _precreate():
+    fd = os.open(os.path.join(evdir, "planted.jsonl"),
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+def _read():
+    with open(jsonl, "rb") as f:
+        data = f.read()
+    print(f"READ-BYTES={len(data)}")
+    sys.stdout.write("READ-CONTENT:" + data.decode(errors="replace"))
+attempt("APPEND", _append)
+attempt("TRUNCATE", _truncate)
+attempt("UNLINK", _unlink)
+attempt("PRECREATE", _precreate)
+attempt("READ", _read)
+"""
+
+
+class TestE2EEvidenceTamperResistanceMountNs(unittest.TestCase):
+    """Evidence-placement tamper matrix, mount-ns backend: the
+    ``<run_dir>/.audit`` directory is shadowed by an empty read-only
+    tmpfs inside the child's mount view, so append / truncate /
+    unlink / pre-create attempts against the evidence JSONL cannot
+    reach (or even see) the real file the parent-side writers hold
+    open."""
+
+    def setUp(self):
+        if not check_net_available():
+            self.skipTest("User namespaces not available")
+        from core.sandbox._spawn import mount_ns_available
+        if not mount_ns_available():
+            self.skipTest("mount-ns not available on this host")
+
+    def test_child_cannot_touch_or_see_evidence(self):
+        from core.sandbox.evidence import EvidenceFile
+
+        with TemporaryDirectory() as d:
+            # Parent-side evidence file with a seeded record, exactly
+            # as the spawn layer creates it at sandbox start.
+            seed = {"seeded": "raptor-evidence-sentinel-1f2e3d"}
+            ev_file = EvidenceFile.open(d, ".sandbox-denials.jsonl")
+            try:
+                ev_file.write_record(seed)
+
+                r = sandbox_run(
+                    ["/usr/bin/python3", "-B", "-c",
+                     _EVIDENCE_TAMPER_SCRIPT, f"{d}/.audit"],
+                    block_network=True, target=d, output=d,
+                    capture_output=True, text=True, timeout=30,
+                )
+                if not (getattr(r, "sandbox_info", None) or {}).get(
+                        "mount_ns_active"):
+                    self.skipTest(
+                        "run fell back below mount-ns; the shadow-"
+                        "tmpfs exclusion is not in effect on this host"
+                    )
+                self.assertEqual(r.returncode, 0, r.stderr[-300:])
+
+                # No mutation may report success.
+                for op in ("APPEND", "TRUNCATE", "UNLINK",
+                           "PRECREATE"):
+                    self.assertNotIn(f"{op}=OK", r.stdout, (
+                        f"{op} succeeded from inside the sandbox: "
+                        f"{r.stdout!r}"
+                    ))
+                # The child must not be able to READ the evidence
+                # either — its view of .audit is an empty decoy.
+                self.assertNotIn("raptor-evidence-sentinel-1f2e3d",
+                                 r.stdout)
+
+                # Authoritative on-disk state: the seeded record is
+                # intact, nothing forged, nothing planted, and the
+                # inode verification is clean.
+                self.assertTrue(ev_file.close(),
+                                "inode verification failed")
+                lines = ev_file.path.read_text().splitlines()
+                self.assertEqual(len(lines), 1)
+                self.assertEqual(
+                    __import__("json").loads(lines[0]), seed)
+                self.assertEqual(
+                    sorted(p.name for p in ev_file.path.parent.iterdir()),
+                    [".sandbox-denials.jsonl"],
+                    "child planted a file into the evidence dir",
+                )
+            finally:
+                ev_file.close(verify=False)
+
+
+class TestE2EEvidenceTamperResistanceLandlockOnly(unittest.TestCase):
+    """Evidence-placement tamper matrix, Landlock-only backend: when
+    the evidence dir is not beneath any writable grant, Landlock
+    denies append / truncate / pre-create (WRITE/TRUNCATE/MAKE_REG)
+    and — with the REMOVE mask handled — deletion of the JSONL too.
+
+    Note the honest scope limit: Landlock allow-rules are subtree-
+    recursive with no subtraction, so when ``audit_run_dir`` equals a
+    granted writable dir (run_dir == output on this backend) the
+    exclusion cannot be expressed and the held-fd + inode-
+    verification detection layer is the remaining defence. This test
+    pins the enforced configuration (evidence dir outside the
+    writable grants)."""
+
+    def setUp(self):
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+
+    def test_child_denied_all_mutations_including_remove(self):
+        import errno
+        import subprocess as sp
+
+        from core.sandbox.evidence import EvidenceFile
+        from core.sandbox.landlock import _make_landlock_preexec
+
+        with TemporaryDirectory() as d:
+            base = Path(d)
+            out = base / "out"          # the child's writable grant
+            out.mkdir()
+            run_dir = base / "run"      # evidence home — NOT granted
+            run_dir.mkdir()
+
+            seed = {"seeded": "landlock-evidence-sentinel-9a8b7c"}
+            ev_file = EvidenceFile.open(run_dir, ".sandbox-denials.jsonl")
+            try:
+                ev_file.write_record(seed)
+
+                preexec = _make_landlock_preexec([str(out)], None)
+                r = sp.run(
+                    ["/usr/bin/python3", "-B", "-c",
+                     _EVIDENCE_TAMPER_SCRIPT,
+                     str(run_dir / ".audit")],
+                    preexec_fn=preexec,
+                    capture_output=True, text=True, timeout=30,
+                    check=False,
+                )
+                self.assertEqual(r.returncode, 0, r.stderr[-300:])
+
+                # Every mutation must be EACCES'd by Landlock —
+                # including UNLINK, which is only denied because the
+                # REMOVE mask is handled by the ruleset.
+                for op in ("APPEND", "TRUNCATE", "UNLINK",
+                           "PRECREATE"):
+                    self.assertIn(f"{op}=ERR:{errno.EACCES}",
+                                  r.stdout, (
+                        f"{op} was not denied by Landlock: "
+                        f"{r.stdout!r}"
+                    ))
+
+                # On-disk state intact + inode verification clean.
+                self.assertTrue(ev_file.close(),
+                                "inode verification failed")
+                lines = ev_file.path.read_text().splitlines()
+                self.assertEqual(len(lines), 1)
+                self.assertEqual(
+                    sorted(p.name for p in ev_file.path.parent.iterdir()),
+                    [".sandbox-denials.jsonl"],
+                )
+            finally:
+                ev_file.close(verify=False)
+
+    def test_sandbox_write_into_own_output_still_works(self):
+        # Control: the same preexec still allows writes inside the
+        # granted dir — proves the denials above come from the
+        # evidence-dir exclusion, not a broken ruleset.
+        import subprocess as sp
+
+        from core.sandbox.landlock import _make_landlock_preexec
+
+        with TemporaryDirectory() as d:
+            out = Path(d) / "out"
+            out.mkdir()
+            preexec = _make_landlock_preexec([str(out)], None)
+            r = sp.run(
+                ["/usr/bin/python3", "-B", "-c",
+                 "import sys; open(sys.argv[1], 'w').write('ok')",
+                 str(out / "artifact.txt")],
+                preexec_fn=preexec,
+                capture_output=True, text=True, timeout=30,
+                check=False,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr[-300:])
+            self.assertEqual((out / "artifact.txt").read_text(), "ok")
+
+
+class TestE2ENonceNotDiscoverable(unittest.TestCase):
+    """F31: the observe nonce travels to the tracer through an
+    anonymous fd. On the namespace-less Landlock-only audit path —
+    where /tmp is shared with the target — no ``raptor-audit-cfg-*``
+    file may exist for the target to glob, and the nonce must land
+    only in the ``.audit/`` JSONL the target cannot write."""
+
+    def setUp(self):
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+        from core.sandbox.ptrace_probe import check_ptrace_available
+        from core.sandbox.seccomp import check_seccomp_available
+        if not check_seccomp_available():
+            self.skipTest("libseccomp unavailable")
+        if not check_ptrace_available():
+            self.skipTest("ptrace blocked (Yama scope, cap-drop)")
+
+    def test_no_config_file_visible_to_target_during_run(self):
+        import secrets
+
+        from core.sandbox._landlock_audit import run_landlock_audit
+        from core.sandbox.evidence import evidence_write_path
+
+        nonce = secrets.token_hex(16)
+        probe = (
+            "import glob, tempfile;"
+            "hits = glob.glob(tempfile.gettempdir()"
+            " + '/raptor-audit-cfg-*');"
+            "print('CFG-HITS:' + repr(hits))"
+        )
+        with TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            r = run_landlock_audit(
+                ["/usr/bin/python3", "-B", "-c", probe],
+                audit_run_dir=str(run_dir),
+                audit_verbose=True,
+                observe_mode=True,
+                observe_nonce=nonce,
+                writable_paths=[d],
+                timeout=30,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr[-300:])
+            # The target found no on-disk config to read the nonce
+            # from — the fd-based delivery leaves no /tmp footprint.
+            self.assertIn("CFG-HITS:[]", r.stdout)
+            self.assertNotIn(nonce, r.stdout)
+            # The nonce DID reach the tracer: the end-of-run summary
+            # record in the .audit/ JSONL carries it.
+            jsonl = evidence_write_path(
+                run_dir, ".sandbox-observe.jsonl")
+            self.assertTrue(jsonl.exists(),
+                            "observe JSONL missing from .audit/")
+            self.assertIn(nonce, jsonl.read_text())
 
 
 if __name__ == "__main__":

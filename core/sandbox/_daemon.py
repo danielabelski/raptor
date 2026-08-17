@@ -1,18 +1,30 @@
 #!/usr/bin/env python3
-"""Persistent sandbox host — RPC daemon (FIFO rendezvous).
+"""Persistent sandbox host — RPC daemon (inherited-fd transport).
 
-Runs INSIDE the sandbox as the argv sandbox_run sees. Opens two
-FIFOs at ``<work_dir>/rpc_in.fifo`` (parent→daemon) and
-``<work_dir>/rpc_out.fifo`` (daemon→parent) that the parent
-mknod's BEFORE launching the daemon. Both sides see the same
-underlying inodes via the mount-ns bind of the target directory.
+Runs INSIDE the sandbox as the argv sandbox_run sees. The RPC
+endpoints are two pipe fds the parent created and passed across the
+sandbox spawn (``pass_fds``); their numbers arrive on argv
+(``--rpc-in-fd N`` parent→daemon, ``--rpc-out-fd M`` daemon→parent).
+The daemon opens nothing by path — no rendezvous name exists in any
+filesystem for a hostile target to squat, replace, or open.
 
-FIFOs instead of AF_UNIX sockets because seccomp:full (which
+Pipes instead of AF_UNIX sockets because seccomp:full (which
 matches parse_result's target posture for env parity) blocks
-``socket()``. FIFOs need only ``open()``/``read()``/``write()``,
-which pass the filter. FIFOs instead of stdin/stdout pipes
-because ``core.sandbox.run`` blocks the caller and doesn't
-expose caller-provided stdout=fd.
+``socket()``. The seccomp filter is a blocklist that leaves
+``pipe``/``pipe2`` alone, and at daemon runtime the channel needs
+only ``read()``/``write()``/``close()``, which pass the filter.
+Pipes instead of the daemon's own stdin/stdout because
+``core.sandbox.run`` blocks the caller, captures stdout itself,
+and doesn't expose a caller-provided stdout fd.
+
+Immediately after argv parsing the daemon re-arms FD_CLOEXEC on
+both RPC fds: CLOEXEC was cleared only so they survive the daemon's
+own exec chain. Targets the daemon later spawns must never inherit
+the channel — a target holding the write end could forge verdict
+frames, and one holding the read end could steal parent requests.
+(The subprocess module's default ``close_fds=True`` already keeps
+them out of spawned targets; the CLOEXEC re-arm covers any exec
+that bypasses subprocess.)
 
 Protocol — length-prefixed JSON, big-endian u32 length header:
 
@@ -37,9 +49,9 @@ Design notes:
 * Step-driver logic copied from tools.py::interactive_probe. Two
   copies will converge into core/sandbox when the A/B measurement
   proves the persistent-sandbox pattern.
-* Socket path is passed as argv (``--sock <path>``) not stdout so
-  parent controls it. Path lives in the bind-mounted ``target``
-  directory so both sides can reach the same inode.
+* The RPC fd numbers are passed as argv (``--rpc-in-fd``/
+  ``--rpc-out-fd``) not discovered — the parent controls them, and
+  ``pass_fds`` keeps the numbers stable across the spawn.
 """
 from __future__ import annotations
 
@@ -709,14 +721,16 @@ def _run_one_shot() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="raptor-sandbox-host-daemon")
-    ap.add_argument("--fifo-in",
-                    help="FIFO path daemon reads RPC frames FROM "
-                         "(parent → daemon). Parent mknod's this "
-                         "before launching us. Persistent mode.")
-    ap.add_argument("--fifo-out",
-                    help="FIFO path daemon writes RPC frames TO "
-                         "(daemon → parent). Parent mknod's this "
-                         "before launching us. Persistent mode.")
+    ap.add_argument("--rpc-in-fd", type=int,
+                    help="Inherited pipe fd the daemon reads RPC "
+                         "frames FROM (parent → daemon). Parent "
+                         "creates the pipe and passes this end via "
+                         "pass_fds. Persistent mode.")
+    ap.add_argument("--rpc-out-fd", type=int,
+                    help="Inherited pipe fd the daemon writes RPC "
+                         "frames TO (daemon → parent). Parent "
+                         "creates the pipe and passes this end via "
+                         "pass_fds. Persistent mode.")
     ap.add_argument("--one-shot", action="store_true",
                     help="Read one RPC frame from stdin, execute, "
                          "write response to stdout, exit. Used by "
@@ -726,19 +740,25 @@ def main() -> int:
     if args.one_shot:
         return _run_one_shot()
 
-    if not (args.fifo_in and args.fifo_out):
-        ap.error("--fifo-in and --fifo-out required in persistent mode")
+    if args.rpc_in_fd is None or args.rpc_out_fd is None:
+        ap.error("--rpc-in-fd and --rpc-out-fd required in "
+                 "persistent mode")
 
-    _log(f"opening fifos pid={os.getpid()}")
-    # Open order matters — FIFO open() blocks until the other end
-    # opens too. Parent opens BOTH before we do; here we open
-    # symmetrically: read FIFO (blocks until parent opens for
-    # write), then write FIFO (parent has already opened for
-    # read). Both must be open simultaneously to avoid a deadlock
-    # where parent+daemon each wait for the other to appear.
-    in_fd = os.open(args.fifo_in, os.O_RDONLY)
-    out_fd = os.open(args.fifo_out, os.O_WRONLY)
-    _log(f"fifos open: in_fd={in_fd} out_fd={out_fd}")
+    in_fd = args.rpc_in_fd
+    out_fd = args.rpc_out_fd
+    # Re-arm FD_CLOEXEC on the inherited RPC fds before ANY handler
+    # can spawn a target. CLOEXEC was cleared at spawn time only so
+    # the fds survive our own exec chain; a target that inherited
+    # them could forge daemon→parent frames or read parent requests.
+    # Also serves as validation that the fds are actually open.
+    for fd in (in_fd, out_fd):
+        try:
+            os.set_inheritable(fd, False)
+        except OSError as e:
+            _log(f"rpc fd {fd} is not usable: {e}")
+            return 1
+    _log(f"rpc fds inherited pid={os.getpid()} "
+         f"in_fd={in_fd} out_fd={out_fd}")
 
     try:
         while True:
@@ -748,7 +768,7 @@ def main() -> int:
                 _log(f"read_frame failed: {type(e).__name__}: {e}")
                 return 1
             if frame is None:
-                _log("in FIFO EOF — exiting")
+                _log("rpc-in EOF — exiting")
                 return 0
             cmd = frame.get("cmd")
             if cmd == "close":

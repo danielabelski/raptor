@@ -428,7 +428,7 @@ class TestTracerRoutesToObserveFilename:
     land in .sandbox-denials.jsonl with `"audit": True`."""
 
     def test_observe_mode_routes_to_observe_filename(self, tmp_path):
-        from core.sandbox.tracer import _write_record, _OBSERVE_FILENAME
+        from core.sandbox.tracer import _OBSERVE_FILENAME, _write_record
         ok = _write_record(
             tmp_path, "openat", 257, [0, 0, 0, 0, 0, 0], 1234,
             path="/etc/passwd",
@@ -436,11 +436,12 @@ class TestTracerRoutesToObserveFilename:
             mode_field="observe",
         )
         assert ok is True
-        observe_file = tmp_path / _OBSERVE_FILENAME
+        from core.sandbox.evidence import AUDIT_SUBDIR
+        observe_file = tmp_path / AUDIT_SUBDIR / _OBSERVE_FILENAME
         assert observe_file.exists()
         # Denials file should NOT exist — observe-mode never writes
         # there.
-        denials_file = tmp_path / ".sandbox-denials.jsonl"
+        denials_file = tmp_path / AUDIT_SUBDIR / ".sandbox-denials.jsonl"
         assert not denials_file.exists()
         rec = json.loads(observe_file.read_text().strip())
         assert rec["observe"] is True
@@ -449,15 +450,16 @@ class TestTracerRoutesToObserveFilename:
         assert rec["path"] == "/etc/passwd"
 
     def test_default_routes_to_denials_filename(self, tmp_path):
-        from core.sandbox.tracer import _write_record, _DENIALS_FILENAME
+        from core.sandbox.tracer import _DENIALS_FILENAME, _write_record
         ok = _write_record(
             tmp_path, "openat", 257, [0, 0, 0, 0, 0, 0], 1234,
             path="/etc/passwd",
         )
         assert ok is True
-        denials_file = tmp_path / _DENIALS_FILENAME
+        from core.sandbox.evidence import AUDIT_SUBDIR
+        denials_file = tmp_path / AUDIT_SUBDIR / _DENIALS_FILENAME
         assert denials_file.exists()
-        observe_file = tmp_path / ".sandbox-observe.jsonl"
+        observe_file = tmp_path / AUDIT_SUBDIR / ".sandbox-observe.jsonl"
         assert not observe_file.exists()
         rec = json.loads(denials_file.read_text().strip())
         assert rec["audit"] is True
@@ -469,10 +471,10 @@ class TestTracerRoutesToObserveFilename:
         signs (e.g., observe_mode=True returning the denials
         filename) is caught immediately."""
         from core.sandbox.tracer import (
-            _resolve_output_filename,
-            _resolve_record_mode_field,
             _DENIALS_FILENAME,
             _OBSERVE_FILENAME,
+            _resolve_output_filename,
+            _resolve_record_mode_field,
         )
         assert _resolve_output_filename(True) == _OBSERVE_FILENAME
         assert _resolve_output_filename(False) == _DENIALS_FILENAME
@@ -504,6 +506,7 @@ class TestPublicObserveKwarg:
         # observe_mode=True. Cheap probe: monkeypatch the spy on
         # the _spawn entry point and trigger a no-op run().
         from unittest.mock import patch
+
         from core.sandbox import context as ctx_mod
 
         seen_kwargs = {}
@@ -528,11 +531,10 @@ class TestPublicObserveKwarg:
              patch("core.sandbox._spawn.mount_ns_available",
                    return_value=True), \
              patch("core.sandbox.context.check_mount_available",
-                   return_value=True):
-            with ctx_mod.sandbox(target=str(tmp_path),
-                                 output=str(tmp_path),
-                                 observe=True) as run:
-                run(["true"])
+                   return_value=True), ctx_mod.sandbox(target=str(tmp_path),
+                             output=str(tmp_path),
+                             observe=True) as run:
+            run(["true"])
         assert spy.called
         assert seen_kwargs.get("audit_mode") is True, (
             "observe=True must force audit_mode upstream"
@@ -550,6 +552,7 @@ class TestPublicObserveKwarg:
     )
     def test_observe_off_by_default(self, tmp_path):
         from unittest.mock import patch
+
         from core.sandbox import context as ctx_mod
 
         seen_kwargs = {}
@@ -565,10 +568,9 @@ class TestPublicObserveKwarg:
              patch("core.sandbox._spawn.mount_ns_available",
                    return_value=True), \
              patch("core.sandbox.context.check_mount_available",
-                   return_value=True):
-            with ctx_mod.sandbox(target=str(tmp_path),
-                                 output=str(tmp_path)) as run:
-                run(["true"])
+                   return_value=True), ctx_mod.sandbox(target=str(tmp_path),
+                             output=str(tmp_path)) as run:
+            run(["true"])
         # observe_mode kwarg should default to False so non-observe
         # callers don't accidentally engage the trace-set extension.
         assert seen_kwargs.get("observe_mode") in (False, None), (

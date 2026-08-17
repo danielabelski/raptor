@@ -124,6 +124,7 @@ def build_profile(*,
                   audit_mode: bool = False,
                   audit_verbose: bool = False,
                   seccomp_profile: str | None = None,
+                  audit_evidence_dir: str | None = None,
                   ) -> str:
     """Generate an SBPL profile string from logical sandbox kwargs.
 
@@ -175,6 +176,16 @@ def build_profile(*,
         and an `audit_summary` record at stop-time. SBPL is
         coarser than seccomp: records are action-category +
         path/target rather than per-syscall + argv.
+      audit_evidence_dir: the run's sandbox-evidence directory
+        (``<run_dir>/.audit`` — see core/sandbox/evidence.py). When
+        set, an unconditional ``(deny file-write* (subpath ...))``
+        clause is emitted for it. SBPL evaluation makes an explicit
+        deny outrank allows regardless of clause order (module
+        docstring point 3), so the target cannot append to /
+        truncate / replace the denial/observe JSONL even in audit
+        mode where writes are otherwise allow-with-report. This is
+        the macOS expression of the same exclusion the Linux
+        backends implement via the mount-ns shadow tmpfs.
       seccomp_profile: name of the requested Linux seccomp profile
         ("full"/"debug"/"network-only"/"none"/None). macOS has no
         direct seccomp equivalent, but we approximate the closest
@@ -261,6 +272,18 @@ def build_profile(*,
                 f"(deny file-write* (require-not (require-any "
                 f"{subpath_clauses} {literal_clauses})))"
             )
+
+    # --- Sandbox-evidence directory protection ---
+    # Emitted unconditionally when the caller declared an evidence
+    # dir: the deny must hold in enforcement mode (where the
+    # require-not exception for output would otherwise cover the
+    # subpath) AND in audit mode (where writes are allow-with-report).
+    # Explicit deny outranks both — see module docstring point 3.
+    ev_real = _realpath_or_none(audit_evidence_dir)
+    if ev_real:
+        parts.append(
+            f"(deny file-write* (subpath {_quote_sbpl(ev_real)}))"
+        )
 
     # --- Filesystem read restriction (only when explicitly requested) ---
     if restrict_reads:

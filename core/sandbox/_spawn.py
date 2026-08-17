@@ -56,7 +56,7 @@ import subprocess
 import sys
 import time
 import traceback
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -547,8 +547,26 @@ def run_sandboxed(
     skip_mount_ns: bool = False,
     proxy_unix_socket: str | None = None,
     proxy_forwarder_port: int | None = None,
+    exec_pid_callback: Callable[[int], None] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run `cmd` inside a fully-isolated sandbox.
+
+    exec_pid_callback: optional callable invoked in the PARENT with the
+    pid of the exec'ing grandchild while it is still running. The pid is
+    valid in the parent's pid namespace (fork(2) returns caller-namespace
+    pids, and /proc/<pid> stays host-visible even when the grandchild
+    unshares its own pid-ns). Intended for callers that must observe a
+    live sandboxed child — e.g. /proc/<pid>/maps sampling — without
+    running it outside the sandbox. The callback runs before output
+    collection starts, so it should return promptly (a child writing more
+    than a pipe buffer of output stalls until the callback returns) and
+    is itself responsible for terminating the child if it wants the call
+    to return early (SIGKILL is fine; the normal reap flow handles the
+    rest). Callback exceptions are logged and swallowed. Note the
+    callback may be invoked slightly before the target's execve
+    completes — callers reading /proc should poll for the state they
+    need. If sandbox setup fails before the grandchild fork, the
+    callback is not invoked.
 
     Sets up (in order inside the forked child): user-ns + mount-ns + ipc-ns
     [+ net-ns], newuidmap/newgidmap applied from parent, mount pivot_root
@@ -591,7 +609,17 @@ def run_sandboxed(
     # target on its first traced syscall. The probe + warning is
     # idempotent (cached + warn-once).
     _audit_engaged = False
-    _audit_config_path: str | None = None
+    # Anonymous fd holding the tracer's audit-config JSON (F31: the
+    # config carries the observe nonce, so it must never exist at a
+    # filesystem path the target can name). Passed to the tracer as
+    # /proc/self/fd/N; CLOEXEC everywhere except the tracer's exec.
+    _audit_config_fd: int | None = None
+    # argv spelling of the config fd for the tracer child.
+    _audit_config_arg: str | None = None
+    # Parent-held evidence file (F11): <run_dir>/.audit/<jsonl>,
+    # created O_EXCL before the sandbox starts; the tracer inherits
+    # the fd and appends through it; inode verified at finalisation.
+    _evidence_file = None
     if audit_mode:
         if audit_run_dir is None:
             # Clean up the just-created mkdtemp stub before raising.
@@ -728,7 +756,28 @@ def run_sandboxed(
             # state._cli_sandbox_audit_budget; we must serialise
             # the value through the same JSON channel as the
             # filter config. None = use the AuditBudget default.
+            from . import evidence as _evidence_mod
             from . import state as _state
+            from .tracer import _resolve_output_filename as _out_name
+            # F11: create the evidence JSONL up-front in
+            # <run_dir>/.audit/ — a directory excluded from the
+            # target's writable view (mount-ns shadows it with a
+            # read-only tmpfs; Landlock never grants it explicitly).
+            # O_EXCL defeats a pre-created file/symlink; the tracer
+            # inherits the held fd and appends through it, so a path-
+            # level swap cannot redirect records; the inode recorded
+            # here is verified when the file is closed at the end of
+            # this call.
+            try:
+                _evidence_file = _evidence_mod.EvidenceFile.open(
+                    audit_run_dir, _out_name(bool(observe_mode)),
+                )
+            except BaseException:
+                # Same inline cleanup contract as the config-fd
+                # failure below: the fork try/except that normally
+                # owns stub cleanup hasn't been entered yet.
+                _cleanup_stub(_root_dir)
+                raise
             audit_config = {
                 "verbose": bool(audit_verbose),
                 "writable_paths": _writable,
@@ -759,65 +808,44 @@ def run_sandboxed(
                 # tracer, never by sandboxed tools, so no nonce
                 # needed).
                 "observe_nonce": observe_nonce,
+                # Held evidence fd the tracer inherits across its
+                # exec (F11). The number is the parent-side fd value;
+                # the tracer-child branch below clears CLOEXEC on it
+                # so it survives the tracer's execvpe (never the
+                # target's — the target's exec keeps default CLOEXEC).
+                "evidence_fd": _evidence_file.fd,
             }
-            # mkstemp under /tmp; cleaned up after tracer exits.
-            # If the write fails (disk full, EIO mid-flight), the
-            # tracer would later read an empty/partial JSON file →
-            # decode error → exit 1 → parent times out waiting for
-            # ready → audit silently disabled. Better: catch the
-            # write failure HERE, unlink the partial file, raise so
-            # the operator sees an error AT spawn-time rather than
-            # an ambiguous "tracer attach failed" minutes later.
+            # F31: the config (which carries the observe nonce) goes
+            # into an ANONYMOUS fd — memfd on Linux — instead of a
+            # /tmp tempfile a same-UID target could glob and read.
+            # The tracer receives it as /proc/self/fd/N in argv; N is
+            # meaningless to any process other than the tracer, and
+            # the tracer closes it immediately after parsing. If the
+            # write fails (memfd size limit, EIO), raise HERE so the
+            # operator sees an error AT spawn-time rather than an
+            # ambiguous "tracer attach failed" minutes later.
             import json as _json
-            import tempfile as _tf
-            _cfd, _audit_config_path = _tf.mkstemp(
-                prefix="raptor-audit-cfg-", suffix=".json",
-            )
             # sort_keys=True — same rationale as _landlock_audit.py:
             # the serialised audit config is hashed elsewhere for
             # cache lookups; stable ordering keeps the identity
             # contract intact across Python versions.
             _serialised = _json.dumps(audit_config, sort_keys=True).encode("utf-8")
             try:
-                # os.write may write fewer bytes than requested
-                # (rare on local fs, possible on network mounts).
-                # Loop until done or error.
-                _written = 0
-                while _written < len(_serialised):
-                    n = os.write(_cfd, _serialised[_written:])
-                    if n <= 0:
-                        raise OSError(
-                            "audit-config write returned 0 bytes — "
-                            "filesystem may be full or read-only"
-                        )
-                    _written += n
+                _audit_config_fd = _evidence_mod.anonymous_fd(_serialised)
+                _audit_config_arg = _evidence_mod.fd_path(_audit_config_fd)
             except BaseException:
-                # Partial / failed write — unlink the empty/partial
-                # file AND the mkdtemp stub created above, then
+                # Failed to mint the config fd — close the evidence
+                # file AND remove the mkdtemp stub created above, then
                 # propagate so the operator sees the error immediately
                 # rather than an ambiguous tracer timeout later. The
                 # fork try/except below would re-cleanup if reached,
                 # but it isn't reached when we raise here, so do both
                 # cleanups inline.
-                try:
-                    os.close(_cfd)
-                except OSError:
-                    pass
-                try:
-                    os.unlink(_audit_config_path)
-                except OSError:
-                    pass
+                _evidence_file.close(verify=False)
+                _evidence_file = None
                 _cleanup_stub(_root_dir)
-                _audit_config_path = None
                 _audit_engaged = False
                 raise
-            finally:
-                # Close the fd — only if not already closed by the
-                # except branch above.
-                try:
-                    os.close(_cfd)
-                except OSError:
-                    pass
         else:
             # Probe already logged the once-per-process warning with
             # workaround pointers; nothing more to say here. Workflow
@@ -912,6 +940,17 @@ def run_sandboxed(
         death_r, death_w = os.pipe()
         _parent_fds.update({death_r, death_w})
 
+        # Exec-pid pipe (optional): when exec_pid_callback is supplied,
+        # the intermediate child writes the grandchild's pid here right
+        # after forking it; the parent reads it post-go-signal and hands
+        # it to the callback. Data (not EOF) is the success signal — a
+        # child that dies before the fork closes its copies and the
+        # parent reads EOF, degrading to "no callback".
+        pid_r = pid_w = None
+        if exec_pid_callback is not None:
+            pid_r, pid_w = os.pipe()
+            _parent_fds.update({pid_r, pid_w})
+
         # Precompute Landlock / seccomp preexec callables in parent so
         # import errors surface before fork. Each returns a callable we
         # can invoke in the child.
@@ -993,17 +1032,19 @@ def run_sandboxed(
             )
             child_pid = os.fork()
     except BaseException:
-        # Any failure before fork returns: close opened pipes, unlink
-        # the audit-config tempfile if it was created, and remove the
-        # mkdtemp stub. Without this, a pipe-exhaustion OSError or
-        # import-time failure in preexec construction would leak FDs,
-        # the audit-config file, and a .raptor-sbx-* dir on every call.
+        # Any failure before fork returns: close opened pipes, release
+        # the audit-config fd and evidence file if created, and remove
+        # the mkdtemp stub. Without this, a pipe-exhaustion OSError or
+        # import-time failure in preexec construction would leak FDs
+        # and a .raptor-sbx-* dir on every call.
         _close_leftover()
-        if _audit_config_path is not None:
-            try:
-                os.unlink(_audit_config_path)
-            except OSError:
-                pass
+        if _audit_config_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(_audit_config_fd)
+            _audit_config_fd = None
+        if _evidence_file is not None:
+            _evidence_file.close(verify=False)
+            _evidence_file = None
         _cleanup_stub(_root_dir)
         raise
     if child_pid == 0:
@@ -1018,6 +1059,10 @@ def run_sandboxed(
         # Death pipe: child watches death_r; close the write end so only
         # the parent holds it. Parent dying → death_w closes → EOF.
         os.close(death_w)
+        # Exec-pid pipe: the child side only WRITES (pid_w, from the
+        # intermediate after the grandchild fork); close the read end.
+        if pid_r is not None:
+            os.close(pid_r)
         # Which setup step we're about to attempt — the BaseException
         # catch-all below writes this category to status_w so the parent
         # knows whether to degrade (mount) or fail loud (Landlock/seccomp/
@@ -1467,6 +1512,15 @@ def run_sandboxed(
                     os._exit(126)
                 os._exit(125)  # unreachable
             else:
+                # Report the exec'ing grandchild's pid to the parent.
+                # One short ASCII write is atomic (well under PIPE_BUF);
+                # best-effort — if the parent went away the observation
+                # is simply lost and the run proceeds normally.
+                if pid_w is not None:
+                    with contextlib.suppress(OSError):
+                        os.write(pid_w, str(grand).encode("ascii"))
+                    with contextlib.suppress(OSError):
+                        os.close(pid_w)
                 # Intermediate (pid 1's parent-in-parent-ns). Wait
                 # for grandchild and mirror its exit status so the
                 # top-level parent sees the same returncode shape
@@ -1579,6 +1633,12 @@ def run_sandboxed(
         # (BEFORE the tracer fork) so the tracer can't inherit it.
         os.close(death_r)
         _parent_fds.discard(death_r)
+        # Exec-pid pipe: the parent only READS (pid_r); close the write
+        # end now (BEFORE the tracer fork) so only the children hold it
+        # and EOF reaches the parent when they exit pre-fork.
+        if pid_w is not None:
+            os.close(pid_w)
+            _parent_fds.discard(pid_w)
         if capture_output:
             os.close(out_w)
             _parent_fds.discard(out_w)
@@ -1611,6 +1671,13 @@ def run_sandboxed(
             )
         try:
             _run_newuidmap(child_pid, newuidmap, ["0", str(host_uid), "1"])
+            # Argument contract with raptor-gidmap-allow (see the header
+            # comment in helpers/raptor-gidmap-allow.c): exactly this
+            # shape — one strictly-numeric triple mapping gid 0 inside
+            # the namespace to the invoker's own gid, on a namespace the
+            # invoker just created. The helper refuses foreign gids,
+            # namespaces owned by other uids, and non-numeric or
+            # oversized mappings (exit 3).
             _run_newuidmap(child_pid, newgidmap, ["0", str(host_gid), "1"])
         except Exception:
             _kill_and_reap(child_pid)
@@ -1673,19 +1740,36 @@ def run_sandboxed(
                 soft, _hard = _resource.getrlimit(
                     _resource.RLIMIT_NOFILE)
                 upper = min(soft, 65536)
-                sync_fd = t_ready_w
-                # Three cases, all handled by the split:
-                #   sync_fd in [3, upper):  two ranges, gap at sync_fd
-                #   sync_fd >= upper:       single range [3, upper)
-                #   sync_fd < 3:            (impossible — pipe()
-                #                            returns >=3 once stdio
-                #                            is open) treat as
-                #                            single range
-                if 3 <= sync_fd < upper:
-                    os.closerange(3, sync_fd)
-                    os.closerange(sync_fd + 1, upper)
-                else:
-                    os.closerange(3, upper)
+                # fds the tracer legitimately needs across its exec:
+                # the sync write end, the audit-config anonymous fd,
+                # and the held evidence fd. closerange over the gaps
+                # between them — one close_range(2) syscall per gap
+                # on Linux 5.9+.
+                _keep = sorted(
+                    fd for fd in (
+                        t_ready_w,
+                        _audit_config_fd,
+                        _evidence_file.fd if _evidence_file is not None
+                        else None,
+                    )
+                    if fd is not None and 3 <= fd < upper
+                )
+                _lo = 3
+                for _k in _keep:
+                    os.closerange(_lo, _k)
+                    _lo = _k + 1
+                os.closerange(_lo, upper)
+                # Clear CLOEXEC on the config + evidence fds so THEY
+                # survive the tracer's execvpe. Only ever done in
+                # this post-fork tracer branch — the target child's
+                # exec keeps the default close-on-exec, so the
+                # nonce-carrying config and the evidence fd never
+                # reach the target's fd table.
+                for _fd in (_audit_config_fd,
+                            _evidence_file.fd if _evidence_file is not None
+                            else None):
+                    if _fd is not None:
+                        os.set_inheritable(_fd, True)
                 # Replace argv via execvpe so the tracer runs as a
                 # clean Python module without inheriting the parent's
                 # complicated state. Pass the target_pid, audit_run_dir,
@@ -1715,16 +1799,18 @@ def run_sandboxed(
                         "PATH": "/usr/bin:/bin",
                     }
                     # Build tracer argv: pid, run_dir, sync_fd,
-                    # optional config_path. Config path tells the
-                    # tracer which audit mode (filtered vs verbose)
-                    # to run.
+                    # optional config arg. The config arg is the
+                    # /proc/self/fd/N spelling of the anonymous
+                    # config fd — "self" resolves in the TRACER when
+                    # it opens the path, so the argv value (visible
+                    # in /proc/<pid>/cmdline) discloses nothing.
                     tracer_argv = [
                         sys.executable, "-m", "core.sandbox.tracer",
                         str(child_pid), str(audit_run_dir),
                         str(t_ready_w),
                     ]
-                    if _audit_config_path is not None:
-                        tracer_argv.append(_audit_config_path)
+                    if _audit_config_arg is not None:
+                        tracer_argv.append(_audit_config_arg)
                     # nosemgrep: python.lang.security.audit.dangerous-os-exec-tainted-env-args.dangerous-os-exec-tainted-env-args
                     # tracer_env is hand-crafted: 2 keys
                     # (PYTHONPATH + PATH), no inheritance. Explicitly
@@ -1749,6 +1835,16 @@ def run_sandboxed(
                     # from the documented codes so it's not
                     # confused with a successful run.
                     os._exit(125)
+
+            # Parent: drop our copy of the anonymous config fd now —
+            # the tracer holds its own inherited copy (and closes it
+            # right after parsing). Closing here minimises the window
+            # in which /proc/<parent-pid>/fd exposes the nonce-
+            # carrying config to same-UID processes.
+            if _audit_config_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(_audit_config_fd)
+                _audit_config_fd = None
 
             # Parent: close the write end now (tracer has its own copy).
             # Without this close, the parent's `os.read(t_ready_r, ...)`
@@ -1835,6 +1931,42 @@ def run_sandboxed(
         finally:
             os.close(p_go_w)
             _parent_fds.discard(p_go_w)
+
+        # Step 8.9: deliver the live grandchild pid to the caller.
+        # Blocks (bounded) until the intermediate has forked the
+        # grandchild and written its pid — i.e. after mount/Landlock/
+        # seccomp setup completed. A select timeout (child wedged in
+        # setup) or EOF-without-data (child failed pre-fork; the exec-
+        # status pipe carries the real diagnostic) both degrade to
+        # "callback not invoked".
+        if pid_r is not None:
+            _exec_pid = None
+            try:
+                import select as _pid_sel
+                _pid_ready, _, _ = _pid_sel.select([pid_r], [], [], 15.0)
+                if _pid_ready:
+                    _pid_raw = os.read(pid_r, 64)
+                    if _pid_raw:
+                        try:
+                            _exec_pid = int(_pid_raw)
+                        except ValueError:
+                            _exec_pid = None
+            except OSError:
+                _exec_pid = None
+            finally:
+                try:
+                    os.close(pid_r)
+                except OSError:
+                    pass
+                _parent_fds.discard(pid_r)
+            if _exec_pid is not None and _exec_pid > 0:
+                try:
+                    exec_pid_callback(_exec_pid)
+                except Exception:
+                    logger.warning(
+                        "exec_pid_callback raised; continuing with the "
+                        "sandboxed run", exc_info=True,
+                    )
     except BaseException:
         # Any failure above: kill+reap the target child if it's not
         # already dead, reap the audit tracer if forked, close
@@ -1867,16 +1999,19 @@ def run_sandboxed(
             except Exception:
                 logger.debug("tracer reap during cleanup failed",
                              exc_info=True)
-        if _audit_config_path is not None:
-            try:
-                os.unlink(_audit_config_path)
-            except OSError:
-                pass
-            # Mark unlinked so the final-finally below doesn't try
-            # to unlink an already-removed file. Avoids the
-            # silent-OSError swallowed-and-discarded path AND
-            # keeps the audit lifecycle bookkeeping honest.
-            _audit_config_path = None
+        if _audit_config_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(_audit_config_fd)
+            # Mark closed so the final-finally below doesn't try to
+            # close an already-released fd. Keeps the audit lifecycle
+            # bookkeeping honest.
+            _audit_config_fd = None
+        if _evidence_file is not None:
+            # Finalise the evidence file — the inode verification
+            # inside close() fires its loud warning here too, so a
+            # tamper attempt isn't masked by an unrelated failure.
+            _evidence_file.close()
+            _evidence_file = None
         _close_leftover()
         _cleanup_stub(_root_dir)
         raise
@@ -1976,15 +2111,17 @@ def run_sandboxed(
         # the right thing for any surviving tracees).
         if tracer_pid is not None:
             _reap_tracer(tracer_pid)
-        # Clean up the audit-config file we wrote for the tracer.
-        # The tracer has already read it and finished, so this is
-        # safe even if the tracer is technically still in its post-
-        # _reap_tracer cleanup phase.
-        if _audit_config_path is not None:
-            try:
-                os.unlink(_audit_config_path)
-            except OSError:
-                pass
+        # Release the anonymous config fd (normally already closed
+        # right after the tracer fork; this covers early-exit paths).
+        if _audit_config_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(_audit_config_fd)
+        # Finalise the evidence file AFTER the tracer is reaped so no
+        # writer shares the description any more: verify the on-disk
+        # path still names the inode created at sandbox start (loud
+        # warning on a swap), then close the held fd.
+        if _evidence_file is not None:
+            _evidence_file.close()
         _cleanup_stub(_root_dir)
 
     if os.WIFEXITED(status):

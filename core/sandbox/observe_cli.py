@@ -37,9 +37,8 @@ import argparse
 import json
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
-
 
 _USAGE_EX = 64       # EX_USAGE — bad argv
 _SOFTWARE_EX = 70    # EX_SOFTWARE — observe didn't engage
@@ -204,7 +203,7 @@ def _profile_to_json(profile, *, run_dir: Path, kept: bool,
     return json.dumps(payload, indent=2)
 
 
-def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
+def _cli_main(argv: Sequence[str] | None = None) -> int:
     """Argparse → spawn → parse → render. Lives in this module so the
     libexec shim is a thin trust-marker + sys.exit wrapper.
 
@@ -225,12 +224,14 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
 
     # Lazy-import the sandbox layer — argparse setup + --help should
     # not require libseccomp / ctypes probing.
+    import contextlib
+
     from core.sandbox import (
-        run as sandbox_run,
         parse_observe_log,
     )
-
-    import contextlib
+    from core.sandbox import (
+        run as sandbox_run,
+    )
     with contextlib.ExitStack() as stack:
         run_dir, kept = _resolve_run_dir(args, stack)
         target_dir = Path(args.target).resolve() if args.target else run_dir
@@ -260,7 +261,10 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
         # records landed, surface a clear error rather than silently
         # printing an empty profile. Most likely cause: ptrace blocked
         # (Yama scope 3, container cap-drop) so audit-mode degraded.
-        observe_log = run_dir / ".sandbox-observe.jsonl"
+        from .evidence import resolve_read_path as _resolve_evidence_path
+        observe_log = _resolve_evidence_path(
+            run_dir, ".sandbox-observe.jsonl",
+        )
         if not observe_log.exists():
             sys.stderr.write(
                 "raptor-sandbox-observe: observe log not produced — "
@@ -271,7 +275,16 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
             )
             return _SOFTWARE_EX
 
-        profile = parse_observe_log(run_dir)
+        # Spoof-resistant parse: pin records to the per-run nonce when
+        # the sandbox stamped one, and hand over sandbox_info so the
+        # parser can refuse nonce trust on runs where the nonce was
+        # not delivered through a protected channel.
+        _sbx_info = getattr(result, "sandbox_info", None) or {}
+        profile = parse_observe_log(
+            run_dir,
+            expected_nonce=_sbx_info.get("observe_nonce"),
+            sandbox_info=_sbx_info,
+        )
 
         if args.json_output:
             sys.stdout.write(_profile_to_json(

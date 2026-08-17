@@ -453,6 +453,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "coccinelle": TierCounters(),
         "smt": TierCounters(),
         "smt_invariant": TierCounters(),
+        "api_boundary": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "adversarial_refute": TierCounters(),
@@ -9627,6 +9628,21 @@ def _hypothesis_to_tool_chain(
         chain.append({"type": "smt", "config": {"verb": smt_verb}})
         seen_types.add("smt")
 
+    # Caller-contract hypotheses ("only reachable if an external API
+    # consumer passes NULL host…"): flow tools answer "no in-tree
+    # triggering path" and the claim dies speculative — the boundary
+    # channel instead checks the asserted obligation at every in-repo
+    # call site (external-only callers stay inconclusive-with-reason).
+    if "api_boundary" not in seen_types:
+        try:
+            from .api_boundary import is_caller_contract_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_caller_contract_hypothesis(hypothesis):
+                chain.append({"type": "api_boundary", "config": {}})
+                seen_types.add("api_boundary")
+
     # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
     # the preservation harness checks the stated invariant against the
     # function's mutation sites — the channel gap that left every
@@ -9687,6 +9703,28 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "codeql", "config": {"query": codeql_query}})
 
     return chain
+
+
+def _record_api_boundary_receipt(
+    config: OrchestratorConfig,
+    file_path: str,
+    function_name: str,
+    ab_res: Any,
+) -> None:
+    """Persist the api-boundary receipt (per-call-site verdicts and
+    guard evidence) to the audit log."""
+    try:
+        if not config.out_dir:
+            return
+        record = {
+            "action": "api_boundary_check",
+            "file": file_path,
+            "function": function_name,
+        }
+        record.update(ab_res.to_dict())
+        append_audit_log(config.out_dir, record)
+    except Exception:
+        logger.debug("api-boundary receipt write failed", exc_info=True)
 
 
 def _record_invariant_receipt(
@@ -10102,6 +10140,56 @@ def _run_tool_chain(
                         confirmed[:] = [c for c in confirmed if not c.startswith("smt:")]
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "smt", "refuted")
+
+            elif tool_type == "api_boundary":
+                from .api_boundary import run_api_boundary_check
+
+                _ab_line_end = _checklist_line_end(
+                    config, file_path, function_name,
+                )
+                ab_res = run_api_boundary_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    def_span=(
+                        (line_start, _ab_line_end)
+                        if line_start and _ab_line_end else None
+                    ),
+                )
+                _record_api_boundary_receipt(
+                    config, file_path, function_name, ab_res,
+                )
+                if ab_res.outcome == "confirmed":
+                    confirmed.append("api_boundary:caller-contract")
+                    logger.info(
+                        "api-boundary confirmed %s:%s — %s",
+                        file_path, function_name, ab_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "api_boundary", "confirmed",
+                        )
+                elif ab_res.outcome == "refuted":
+                    logger.info(
+                        "api-boundary refuted %s:%s — %s",
+                        file_path, function_name, ab_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "api_boundary", "refuted",
+                        )
+                else:
+                    logger.info(
+                        "api-boundary inconclusive %s:%s — %s",
+                        file_path, function_name, ab_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "api_boundary",
+                            "inconclusive",
+                        )
 
             elif tool_type == "smt_invariant":
                 from .invariant_smt import check_invariant_preservation

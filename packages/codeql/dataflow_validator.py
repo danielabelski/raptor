@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 CodeQL Dataflow Validator
 
@@ -8,9 +7,10 @@ if dataflow paths are truly exploitable beyond theoretical detection.
 
 import re
 import sys
-from dataclasses import dataclass, fields as _dataclass_fields
+from collections.abc import Callable
+from dataclasses import dataclass
+from dataclasses import fields as _dataclass_fields
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from core.smt_solver import BVProfile
 from core.smt_solver.path_feasibility import (
@@ -22,9 +22,10 @@ from core.smt_solver.path_feasibility import (
 # packages/codeql/dataflow_validator.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
-from core.llm.methodology import load_methodology
 from core.dataflow.evidence_renderer import render_evidence_for_prompt
 from core.dataflow.sanitizer_evidence import SanitizerEvidence
+from core.llm.methodology import load_methodology
+from core.llm.scorecard import fast_tier_model_name, run_cheap_fp_check
 from core.llm.task_types import TaskType
 from core.logging import get_logger
 from core.security.prompt_defense_profiles import CONSERVATIVE
@@ -51,7 +52,7 @@ logger = get_logger()
 #   * ``None`` — no evidence to contribute for this finding (skip).
 EvidenceCollector = Callable[
     ["DataflowPath", Path],
-    Optional[Union[SanitizerEvidence, UntrustedBlock]],
+    SanitizerEvidence | UntrustedBlock | None,
 ]
 
 
@@ -110,11 +111,11 @@ SANITIZER_EVIDENCE_INSTRUCTIONS = (
 
 
 def _build_sanitizer_evidence_block(
-    collector: Optional[EvidenceCollector],
+    collector: EvidenceCollector | None,
     dataflow: "DataflowPath",
     repo_path: Path,
     log,
-) -> Optional[UntrustedBlock]:
+) -> UntrustedBlock | None:
     """Build the optional evidence ``UntrustedBlock``.
 
     Returns ``None`` when:
@@ -138,7 +139,7 @@ def _build_sanitizer_evidence_block(
         return None
     try:
         evidence = collector(dataflow, repo_path)
-    except Exception as e:  # pragma: no cover - defensive
+    except Exception as e:  # noqa: BLE001 — pragma: no cover - defensive
         log.warning(
             "Evidence collection failed: %s; "
             "proceeding without evidence block",
@@ -178,8 +179,8 @@ class DataflowPath:
     """Complete dataflow path from source to sink."""
     source: DataflowStep
     sink: DataflowStep
-    intermediate_steps: List[DataflowStep]
-    sanitizers: List[str]
+    intermediate_steps: list[DataflowStep]
+    sanitizers: list[str]
     rule_id: str
     message: str
 
@@ -191,11 +192,11 @@ class DataflowValidation:
     confidence: float  # 0.0-1.0
     sanitizers_effective: bool
     bypass_possible: bool
-    bypass_strategy: Optional[str]
+    bypass_strategy: str | None
     attack_complexity: str  # "low", "medium", "high"
     reasoning: str
-    barriers: List[str]
-    prerequisites: List[str]
+    barriers: list[str]
+    prerequisites: list[str]
 
 
 PATH_CONDITIONS_SCHEMA = {
@@ -261,7 +262,7 @@ def _is_overflow_rule(rule_id: str) -> bool:
     return bool(_OVERFLOW_MARKERS_RE.search(rule_id or ""))
 
 
-def _infer_bv_profile(rule_id: Optional[str], llm_hint: Dict) -> BVProfile:
+def _infer_bv_profile(rule_id: str | None, llm_hint: dict) -> BVProfile:
     """Build a BVProfile from the LLM's per-path hint, falling back to a
     rule-id heuristic when the hint is missing or invalid.
 
@@ -347,7 +348,7 @@ class DataflowValidator:
     def __init__(
         self,
         llm_client,
-        evidence_collector: Optional[EvidenceCollector] = None,
+        evidence_collector: EvidenceCollector | None = None,
     ):
         """
         Initialize dataflow validator.
@@ -367,23 +368,14 @@ class DataflowValidator:
         self.logger = get_logger()
 
     def _fast_tier_model_name(self) -> str:
-        """Return the model_name routed to for ``TaskType.VERDICT_BINARY``.
-        Falls back to primary_model when no specialized fast model is
-        configured. Mirrors :meth:`AutonomousCodeQLAnalyzer._fast_tier_model_name`
-        — kept duplicated rather than extracted because both consumers
-        live near the LLM client surface and a shared utility would
-        muddy the dependency direction (codeql → core, not core → codeql)."""
-        cfg = self.llm.config
-        specialized = cfg.specialized_models.get(TaskType.VERDICT_BINARY)
-        if specialized is not None and specialized.enabled:
-            return specialized.model_name
-        if cfg.primary_model is not None:
-            return cfg.primary_model.model_name
-        return ""
+        """The model whose track record the scorecard accumulates
+        against. Delegates to the shared helper (codeql → core.llm —
+        the correct dependency direction)."""
+        return fast_tier_model_name(self.llm.config)
 
     def _cheap_dataflow_fp_check(
         self, dataflow: "DataflowPath",
-    ) -> Optional[Tuple[str, str]]:
+    ) -> tuple[str, str] | None:
         """Ask the fast-tier model whether this dataflow is a clear
         false positive — source not attacker-controlled, sink not
         reachable, sanitizers definitively block. Returns
@@ -392,7 +384,9 @@ class DataflowValidator:
         Deliberately minimal context: rule_id + source/sink labels +
         sanitizer list. The cheap model isn't being asked to do path
         analysis — it's asked to spot the obvious-FP cases (hardcoded
-        sources, locked-down sinks) where a label scan suffices."""
+        sources, locked-down sinks) where a label scan suffices. The
+        envelope + structured-call + verdict-validation mechanics are
+        the shared :func:`core.llm.scorecard.run_cheap_fp_check`."""
         system = (
             "You are reviewing a CodeQL dataflow finding. Your job is "
             "to identify CLEAR false positives — cases where the "
@@ -428,36 +422,14 @@ class DataflowValidator:
                 kind="scanner-message",
                 origin=f"{dataflow.rule_id}:dataflow-validation",
             ),)
-        bundle = build_prompt(
+        return run_cheap_fp_check(
+            self.llm,
             system=system,
-            profile=CONSERVATIVE,
+            schema=DATAFLOW_FP_PREFILTER_SCHEMA,
             untrusted_blocks=blocks,
             slots=slots,
+            log=self.logger,
         )
-        system_prompt = next(
-            (m.content for m in bundle.messages if m.role == "system"), None,
-        )
-        prompt = next(
-            (m.content for m in bundle.messages if m.role == "user"), "",
-        )
-        try:
-            response, _ = self.llm.generate_structured(
-                prompt=prompt,
-                schema=DATAFLOW_FP_PREFILTER_SCHEMA,
-                system_prompt=system_prompt,
-                task_type=TaskType.VERDICT_BINARY,
-            )
-        except Exception as e:                         # noqa: BLE001
-            self.logger.debug("Cheap dataflow FP check failed (falling through): %s", e)
-            return None
-        verdict = (response.get("verdict") or "").strip().lower()
-        reasoning = response.get("reasoning") or ""
-        if verdict not in ("clear_fp", "needs_analysis"):
-            self.logger.debug(
-                "Cheap dataflow FP check returned unexpected verdict %r — falling through", verdict
-            )
-            return None
-        return verdict, reasoning
 
     def _short_circuit_fp_dataflow_result(
         self, reasoning: str,
@@ -481,7 +453,7 @@ class DataflowValidator:
             prerequisites=[],
         )
 
-    def extract_dataflow_from_sarif(self, result: Dict) -> Optional[DataflowPath]:
+    def extract_dataflow_from_sarif(self, result: dict) -> DataflowPath | None:
         """
         Extract dataflow path from SARIF result.
 
@@ -545,12 +517,12 @@ class DataflowValidator:
                 message=(result.get("message") or {}).get("text", "")
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
             self.logger.warning("Failed to extract dataflow path: %s", e)
             return None
 
     def read_source_context(self, file_path: str, line: int, context_lines: int = 10,
-                            repo_root: Optional[Path] = None) -> str:
+                            repo_root: Path | None = None) -> str:
         """
         Read source code context around a location.
 
@@ -609,7 +581,7 @@ class DataflowValidator:
                 context.append(f"{marker}{i + 1:4d}: {lines[i].rstrip()}")
 
             return "\n".join(context)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
             self.logger.warning("Failed to read source context: %s", e)
             return ""
 
@@ -617,7 +589,7 @@ class DataflowValidator:
         self,
         dataflow: DataflowPath,
         repo_path: Path,
-    ) -> Tuple[List[PathCondition], Dict]:
+    ) -> tuple[list[PathCondition], dict]:
         """Ask the LLM to extract branch conditions + bitvector type hint.
 
         Returns ``(conditions, hint)`` where ``hint`` is a dict with
@@ -715,7 +687,7 @@ class DataflowValidator:
                 "signed": response.get("path_signed"),
             }
             return conditions, hint
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
             self.logger.debug("Path condition extraction failed: %s", e)
             return [], {}
 
@@ -945,7 +917,7 @@ class DataflowValidator:
 
             return validation
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
             self.logger.error("Dataflow validation failed: %s", e)
 
             # Return conservative default
@@ -956,16 +928,16 @@ class DataflowValidator:
                 bypass_possible=False,
                 bypass_strategy=None,
                 attack_complexity="high",
-                reasoning=f"Validation failed: {str(e)}",
+                reasoning=f"Validation failed: {e!s}",
                 barriers=["Analysis failed"],
                 prerequisites=[]
             )
 
     def validate_finding(
         self,
-        sarif_result: Dict,
+        sarif_result: dict,
         repo_path: Path
-    ) -> Optional[DataflowValidation]:
+    ) -> DataflowValidation | None:
         """
         Validate a SARIF finding if it contains dataflow.
 

@@ -100,6 +100,7 @@ VALID_EVIDENCE_TOOLS: frozenset = frozenset({
 _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "prefilter", "critique", "sweep", "sarif_cache",
     "dynamic", "frida", "dark_verify", "precondition",
+    "fail_open",
 })
 
 
@@ -174,6 +175,47 @@ _RECEIPT_MAP: dict[str, tuple] = {
     "compilation": (EvidenceSource.COMPILATION, "confirmed by compilation and execution"),
     "compiler": (EvidenceSource.COMPILER_ANALYZER, "confirmed by compiler static-analyzer diagnostic"),
     "critique": (EvidenceSource.PREFILTER, "confirmed by critique prefilter"),
+    # Fail-open channel receipts (per rule-id; the bare namespace
+    # covers the -naming detection variants).
+    "fail_open:handler-outcome": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a permissive error handler swallows failures of a "
+            "security-role call (role + handler + fallibility receipts)"
+        ),
+    ),
+    "fail_open:ignored-return": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "the return value of a security-role call is neither "
+            "assigned nor compared at the flagged site"
+        ),
+    ),
+    "fail_open:tristate": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "the error value of a tri-state security API is accepted "
+            "by the comparison shape"
+        ),
+    ),
+    "fail_open:recover-continue": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a recover()-style handler swallows a security panic and "
+            "control continues"
+        ),
+    ),
+    "fail_open:unawaited": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a security-role async call's rejection is unobserved "
+            "(unawaited / empty catch)"
+        ),
+    ),
+    "fail_open": (
+        EvidenceSource.TREE_SITTER,
+        "fail-open shape confirmed by the handler-outcome channel",
+    ),
     "sarif_cache": (EvidenceSource.SEMGREP, "matched prior SARIF result"),
     "precondition": (
         EvidenceSource.PRECONDITION,

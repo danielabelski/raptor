@@ -214,6 +214,10 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
                   "set"],
     },
     # Error handling
+    # CWE-252 keeps its cocci entry; the fail_open channel joins its
+    # fallback chain via fail_open_verify.FAIL_OPEN_CWES (role-bound
+    # hypothesis adjudication — the contract/majority census sweep is
+    # the consistency channel's leg of the CWE-252 premise split).
     "CWE-252": {
         "smt": None,
         "cocci": "unchecked_return.cocci",
@@ -221,6 +225,18 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # Improper handling of exceptional conditions — the fail-open
+    # family. The fail_open channel (fallback chain, see
+    # fail_open_verify.FAIL_OPEN_CWES) is the verifier; these keys
+    # cover the corroborating stock tools only.
+    "CWE-703": {"smt": None, "cocci": None, "joern": False,
+                "codeql": None, "sinks": []},
+    "CWE-636": {"smt": None, "cocci": None, "joern": False,
+                "codeql": None, "sinks": []},   # not failing securely
+    "CWE-391": {"smt": None, "cocci": None, "joern": False,
+                "codeql": None, "sinks": []},   # unchecked error condition
+    "CWE-390": {"smt": None, "cocci": None, "joern": False,
+                "codeql": None, "sinks": []},   # detected error, no action
     "CWE-476": {
         "smt": "check-null-propagation",
         "cocci": "missing_null_check.cocci",
@@ -415,6 +431,12 @@ _HYPOTHESIS_CWE_MAP = [
       r"(?:inconsisten|mismatch|truncat|exceed|larger|shorter)"),
      "CWE-130"),
     (r"sign(?:ed)?.to.unsign|unsigned.conversion|negative.*(?:length|size|count).*(?:unsigned|size_t)", "CWE-195"),
+    # Fail-open family. Appended after all existing entries
+    # (first-match-wins, so pre-existing behaviour is unchanged).
+    (r"fail[s\-]?.?open|swallow\w*.{0,20}(?:exception|error)", "CWE-703"),
+    (r"empty.{0,10}catch|except.{0,10}pass", "CWE-703"),
+    ((r"(?:ignor|discard|unchecked)\w*.{0,20}"
+      r"(?:error|return value|\berr\b)"), "CWE-252"),
 ]
 
 _HYPOTHESIS_CWE_RE = None

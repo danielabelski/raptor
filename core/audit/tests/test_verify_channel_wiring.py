@@ -63,7 +63,8 @@ class TestChainEmission:
 
     def test_new_tier_counters_exist(self):
         counters = orch._make_tier_counters()
-        for key in ("joern_guard", "joern_flow", "coccinelle_flow"):
+        for key in ("joern_guard", "joern_flow", "coccinelle_flow",
+                    "fail_open"):
             assert key in counters
 
 

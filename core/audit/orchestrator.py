@@ -462,6 +462,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "smt": TierCounters(),
         "smt_invariant": TierCounters(),
         "api_boundary": TierCounters(),
+        "fail_open": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "adversarial_refute": TierCounters(),
@@ -10897,6 +10898,21 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "api_boundary", "config": {}})
                 seen_types.add("api_boundary")
 
+    # Fail-open hypotheses ("the broad except swallows verification
+    # errors and the request proceeds", "setuid return ignored"): the
+    # channel adjudicates role x permissive-handler-outcome x
+    # fallibility mechanically — the class that previously had no
+    # verifying tool and died suspicious-without-receipts.
+    if "fail_open" not in seen_types:
+        try:
+            from .fail_open_verify import is_fail_open_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_fail_open_hypothesis(hypothesis):
+                chain.append({"type": "fail_open", "config": {}})
+                seen_types.add("fail_open")
+
     # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
     # the preservation harness checks the stated invariant against the
     # function's mutation sites — the channel gap that left every
@@ -10979,6 +10995,29 @@ def _record_api_boundary_receipt(
         append_audit_log(config.out_dir, record)
     except Exception:
         logger.debug("api-boundary receipt write failed", exc_info=True)
+
+
+def _record_fail_open_receipt(
+    config: OrchestratorConfig,
+    file_path: str,
+    function_name: str,
+    fo_res: Any,
+) -> None:
+    """Persist the fail-open receipt (role provenance/grade, handler
+    idiom, fallibility evidence, per-site verdicts, reachability
+    escalator) to the audit log."""
+    try:
+        if not config.out_dir:
+            return
+        record = {
+            "action": "fail_open_check",
+            "file": file_path,
+            "function": function_name,
+        }
+        record.update(fo_res.to_dict())
+        append_audit_log(config.out_dir, record)
+    except Exception:
+        logger.debug("fail-open receipt write failed", exc_info=True)
 
 
 def _record_invariant_receipt(
@@ -11077,6 +11116,18 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         # verification-role for its mapped families.
         if compiler_applicable(cwe):
             chain.append({"type": "compiler", "config": {"cwe": cwe}})
+
+    try:
+        from .fail_open_verify import fail_open_applicable
+    except ImportError:
+        pass
+    else:
+        # Improper-handling-of-exceptional-conditions family
+        # (CWE-703/636/391/390/252/248): the fail_open channel is the
+        # verifier — pure static analysis, cheap, before the heavier
+        # engines.
+        if fail_open_applicable(cwe):
+            chain.append({"type": "fail_open", "config": {}})
 
     smt_verb = smt_verb_for_cwe(cwe)
     if smt_verb:
@@ -11442,6 +11493,67 @@ def _run_tool_chain(
                     if tier_counters:
                         _increment_tier_dict(
                             tier_counters, "api_boundary",
+                            "inconclusive",
+                        )
+
+            elif tool_type == "fail_open":
+                from .fail_open_roles import RoleContext
+                from .fail_open_verify import run_fail_open_check
+
+                fo_ctx = RoleContext(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                )
+                fo_res = run_fail_open_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    role_context=fo_ctx,
+                )
+                # Corroborating receipts already earned by earlier
+                # chain steps (e.g. the CWE-252 compiler family's
+                # -Wunused-result diagnostic) ride on the receipt; the
+                # consistency programme's PeerEvidence dicts join the
+                # same list once that channel lands.
+                fo_res.corroboration.extend(
+                    c for c in confirmed
+                    if not c.startswith("fail_open")
+                )
+                _record_fail_open_receipt(
+                    config, file_path, function_name, fo_res,
+                )
+                if fo_res.outcome == "confirmed":
+                    confirmed.append(fo_res.rule_id)
+                    logger.info(
+                        "fail-open confirmed %s:%s — %s",
+                        file_path, function_name, fo_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "fail_open", "confirmed",
+                        )
+                elif fo_res.outcome == "refuted":
+                    logger.info(
+                        "fail-open refuted %s:%s — %s",
+                        file_path, function_name, fo_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "fail_open", "refuted",
+                        )
+                else:
+                    logger.info(
+                        "fail-open inconclusive %s:%s — %s",
+                        file_path, function_name, fo_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "fail_open",
                             "inconclusive",
                         )
 
@@ -14662,6 +14774,14 @@ def _is_detection_only(tool_id: str) -> bool:
         from core.audit.sweep import get_smt_verb_role
         return get_smt_verb_role(verb) == "detection"
 
+    if tool_id.startswith("fail_open:"):
+        # Detection-variant rule-ids (naming-only / uncorroborated
+        # role evidence) may not promote alone; they participate in
+        # _aggregate_channel_confirmations like other detection-role
+        # channels. Registry-grade confirmations promote directly.
+        from core.audit.fail_open_verify import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
+
     return False
 
 
@@ -14692,6 +14812,7 @@ def _source_has_arithmetic(source: str) -> bool:
 # refuted class is a demoted-priority queue, not a zero-priority one.
 _REFUTED_CHEAP_CHANNELS = frozenset({
     "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
+    "fail_open",
 })
 
 # Bound the extra tool work per function: at most this many hypotheses

@@ -127,6 +127,18 @@ _DEGRADATION_MATRIX: list[Fallback] = [
                "generation. Joern/CodeQL may miss includes and macros.",
         fallback_description="Scan for Makefile/CMakeLists/meson.build and infer flags",
     ),
+    Fallback(
+        tool="tree-sitter",
+        fallback_tool="ast + line-regex heuristics",
+        impact="fail_open channel: Python handler classification is "
+               "unaffected (stdlib ast); the C ignored-return and "
+               "tri-state legs degrade to line-regex shape matching "
+               "with parser=\"regex\" recorded on every receipt — "
+               "comparison shapes the regex cannot classify gate to "
+               "inconclusive('handler-undecided') rather than guessing.",
+        fallback_description="ast for Python handlers, line-regex for "
+                             "C call-site shapes",
+    ),
 ]
 
 _FALLBACK_BY_TOOL = {f.tool: f for f in _DEGRADATION_MATRIX}

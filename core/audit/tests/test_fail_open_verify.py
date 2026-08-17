@@ -1029,6 +1029,225 @@ class TestReceiptShape:
         assert res.reachability is None
 
 
+# ── dispatch wiring ─────────────────────────────────────────────────
+
+
+class _Cfg:
+    """Minimal OrchestratorConfig stand-in for _run_tool_chain."""
+
+    def __init__(self, target, out_dir=None):
+        self.target_path = target
+        self.out_dir = out_dir
+        self.codeql_db_path = None
+        self.project_sinks = None
+        self.annotations_dir = None
+        self.inventory = None
+
+
+class TestDispatchWiring:
+    def test_hypothesis_chain_adds_fail_open(self):
+        from core.audit.orchestrator import _hypothesis_to_tool_chain
+        chain = _hypothesis_to_tool_chain(
+            "the broad except swallows the exception from "
+            "verify_token and the request proceeds",
+            "src/auth.py",
+        )
+        assert {"type": "fail_open", "config": {}} in chain
+
+    def test_unrelated_hypothesis_does_not_dispatch(self):
+        from core.audit.orchestrator import _hypothesis_to_tool_chain
+        chain = _hypothesis_to_tool_chain(
+            "unchecked memcpy overflow of the notification buffer",
+            "src/a.c",
+        )
+        assert all(e["type"] != "fail_open" for e in chain)
+
+    def test_cwe_fallback_chain_carries_fail_open(self):
+        from core.audit.orchestrator import _cwe_fallback_chain
+        for cwe in ("CWE-703", "CWE-636", "CWE-391", "CWE-390",
+                    "CWE-252", "CWE-248"):
+            types = [e["type"] for e in _cwe_fallback_chain(cwe)]
+            assert "fail_open" in types, cwe
+
+    def test_fail_open_family_no_longer_unmapped(self):
+        # Regression: CWE-703/636/391/390 used to hit
+        # _warn_unmapped_cwe (empty chain) and drain checker-synthesis
+        # attempts.
+        from core.audit.cwe_dispatch import lookup
+        from core.audit.orchestrator import _cwe_fallback_chain
+        for cwe in ("CWE-703", "CWE-636", "CWE-391", "CWE-390"):
+            assert lookup(cwe) is not None, cwe
+            assert _cwe_fallback_chain(cwe), cwe
+
+    def test_hypothesis_cwe_inference_routes_fail_open_family(self):
+        from core.audit.cwe_dispatch import infer_cwe_from_hypothesis
+        assert infer_cwe_from_hypothesis(
+            "the handler swallows the exception silently",
+        ) == "CWE-703"
+        assert infer_cwe_from_hypothesis(
+            "empty catch around the certificate check",
+        ) == "CWE-703"
+        assert infer_cwe_from_hypothesis(
+            "ignored error from the privilege drop",
+        ) == "CWE-252"
+
+    def test_no_duplicate_with_cwe_and_keywords(self):
+        from core.audit.orchestrator import _hypothesis_to_tool_chain
+        chain = _hypothesis_to_tool_chain(
+            "verification errors are swallowed and processing "
+            "continues",
+            "src/a.py",
+            cwe="CWE-703",
+        )
+        assert [e["type"] for e in chain].count("fail_open") == 1
+
+    def test_tier_counter_exists(self):
+        from core.audit.orchestrator import _make_tier_counters
+        assert "fail_open" in _make_tier_counters()
+
+    def test_cheap_lane_membership(self):
+        from core.audit.orchestrator import _REFUTED_CHEAP_CHANNELS
+        assert "fail_open" in _REFUTED_CHEAP_CHANNELS
+
+    def _run_chain(self, tmp_path, file_path, function, hypothesis,
+                   out_dir=None):
+        from core.audit.orchestrator import (
+            TierCounters,
+            _run_tool_chain,
+        )
+        counters = {"fail_open": TierCounters()}
+        confirmed = _run_tool_chain(
+            [{"type": "fail_open", "config": {}}],
+            config=_Cfg(tmp_path, out_dir=out_dir),
+            file_path=file_path,
+            function_name=function,
+            source="",
+            hypothesis=hypothesis,
+            tier_counters=counters,
+        )
+        return confirmed, counters
+
+    def test_run_tool_chain_confirms_and_counts(self, tmp_path):
+        _write(tmp_path, "src/priv.c", TestVerdictsC.SETUID_VULN)
+        out = tmp_path / "out"
+        out.mkdir()
+        confirmed, counters = self._run_chain(
+            tmp_path, "src/priv.c", "handler_main",
+            TestVerdictsC.HYP_SETUID, out_dir=out,
+        )
+        assert confirmed == [RULE_IGNORED_RETURN]
+        assert counters["fail_open"].confirmed == 1
+        # Receipt persisted via append_audit_log.
+        log = (out / ".audit-log.jsonl").read_text()
+        record = json.loads(log.splitlines()[-1])
+        assert record["action"] == "fail_open_check"
+        assert record["outcome"] == "confirmed"
+        assert record["rule_id"] == RULE_IGNORED_RETURN
+        assert record["role"]["grade"] == "registry"
+        assert record["sites"][0]["verdict"] == "unguarded"
+
+    def test_run_tool_chain_refuted_counts(self, tmp_path):
+        _write(tmp_path, "src/priv.c", TestVerdictsC.SETUID_SAFE)
+        confirmed, counters = self._run_chain(
+            tmp_path, "src/priv.c", "handler_main",
+            TestVerdictsC.HYP_SETUID,
+        )
+        assert confirmed == []
+        assert counters["fail_open"].refuted == 1
+
+    def test_run_tool_chain_inconclusive_counts(self, tmp_path):
+        _write(tmp_path, "src/main.rs", "fn main() {}\n")
+        confirmed, counters = self._run_chain(
+            tmp_path, "src/main.rs", "main",
+            "session store error discarded",
+        )
+        assert confirmed == []
+        assert counters["fail_open"].inconclusive == 1
+
+    def test_prior_confirmations_ride_as_corroboration(self, tmp_path):
+        import core.audit.compiler_sweep as cs
+        from core.audit.orchestrator import (
+            TierCounters,
+            _run_tool_chain,
+        )
+        from core.audit.sweep import SweepResult
+
+        _write(tmp_path, "src/priv.c", TestVerdictsC.SETUID_VULN)
+        out = tmp_path / "out"
+        out.mkdir()
+
+        def _fake_compiler(**kw):
+            return SweepResult(
+                tool="compiler", file_path="src/priv.c",
+                function_name="handler_main", outcome="confirmed",
+                rule_id="compiler:-Wunused-result",
+            )
+
+        original = cs.run_compiler_analyzer_sweep
+        cs.run_compiler_analyzer_sweep = _fake_compiler
+        try:
+            confirmed = _run_tool_chain(
+                [
+                    {"type": "compiler", "config": {"cwe": "CWE-252"}},
+                    {"type": "fail_open", "config": {}},
+                ],
+                config=_Cfg(tmp_path, out_dir=out),
+                file_path="src/priv.c",
+                function_name="handler_main",
+                source="",
+                hypothesis=TestVerdictsC.HYP_SETUID,
+                tier_counters={
+                    "fail_open": TierCounters(),
+                    "compiler": TierCounters(),
+                },
+            )
+        finally:
+            cs.run_compiler_analyzer_sweep = original
+        assert "compiler:-Wunused-result" in confirmed
+        assert RULE_IGNORED_RETURN in confirmed
+        record = json.loads(
+            (out / ".audit-log.jsonl").read_text().splitlines()[-1],
+        )
+        assert record["corroboration"] == ["compiler:-Wunused-result"]
+
+    def test_rule_ids_are_tool_evidence(self):
+        from core.audit.evidence_grade import is_tool_evidence
+        assert is_tool_evidence(RULE_HANDLER_OUTCOME)
+        assert is_tool_evidence(RULE_IGNORED_RETURN)
+        assert is_tool_evidence(RULE_TRISTATE)
+        assert is_tool_evidence(RULE_HANDLER_OUTCOME + "-naming")
+
+    def test_detection_variant_is_detection_only(self):
+        from core.audit.orchestrator import _is_detection_only
+        assert _is_detection_only(RULE_HANDLER_OUTCOME + "-naming")
+        assert not _is_detection_only(RULE_HANDLER_OUTCOME)
+        assert not _is_detection_only(RULE_TRISTATE)
+
+    def test_receipt_map_entries_render(self):
+        from core.audit.evidence_grade import grade_review_result
+        for rule_id, needle in (
+            (RULE_HANDLER_OUTCOME, "permissive error handler"),
+            (RULE_IGNORED_RETURN, "neither assigned nor compared"),
+            (RULE_TRISTATE, "tri-state"),
+            (RULE_HANDLER_OUTCOME + "-naming", "fail-open"),
+        ):
+            items = grade_review_result(
+                {"hypothesis": "h"}, evidence_tool=rule_id,
+            )
+            tool_items = [
+                i for i in items
+                if i.source.value == "mechanical:tree_sitter"
+            ]
+            assert tool_items, rule_id
+            assert needle in tool_items[0].description, rule_id
+
+    def test_degradation_row_present(self):
+        from core.audit.degradation import get_fallback
+        fb = get_fallback("tree-sitter")
+        assert fb is not None
+        assert "fail_open" in fb.impact
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
     sys.exit(pytest.main([__file__, "-q"]))

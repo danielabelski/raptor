@@ -313,8 +313,9 @@ Once running, `/sage` exposes the operator CLI: `status`, `recall`,
 into each conversation turn automatically.
 
 SAGE is not required.  Without it, RAPTOR works identically but has no
-cross-session memory.  See [commands](commands.md#sage) for the full
-subcommand reference.
+cross-session memory.  See the [SAGE guide](sage.md) for setup, the HMAC
+row-authentication key, CPU/GPU behaviour, and upgrade paths, and
+[commands](commands.md#sage) for the full subcommand reference.
 
 
 ## Offline and airgapped use

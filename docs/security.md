@@ -630,4 +630,5 @@ rotation machinery: deleting the key simply demotes every existing
 row to a human-visible hint, and rows re-earn mechanical status as
 new outcomes are stored — memories decay anyway, so key loss is a
 graceful reset, not an incident. Enforced in `core/sage/rowmac.py` /
-`hooks.py`.
+`hooks.py`. Operator-facing key setup and rotation guidance:
+[sage.md](sage.md#hmac-key-setup).

@@ -68,7 +68,7 @@ Pinned versions are in `requirements.txt`. Install with
 | playwright | Apache 2.0 | Browser automation for web scanning (commented in requirements.txt) |
 | z3-solver | MIT | SMT-based constraint analysis (one-gadget feasibility, path validation) |
 | tree-sitter + grammars | MIT | Rich inventory metadata (decorators, typed params) |
-| sage-agent-sdk | -- | SAGE persistent memory |
+| sage-agent-sdk | -- | SAGE persistent memory (see [sage.md](sage.md)) |
 | tomli | MIT | TOML reader on Python <3.11 (stdlib `tomllib` from 3.11+) |
 
 

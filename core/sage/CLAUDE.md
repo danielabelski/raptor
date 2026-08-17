@@ -4,6 +4,9 @@ Loaded on demand by RAPTOR's root `CLAUDE.md` when the `sage_inception`
 MCP tool is present (i.e. when the user has run `libexec/raptor-sage-setup`).
 If this file is loaded, SAGE is available — use it.
 
+Operator-facing documentation (setup, HMAC key, CPU/GPU behaviour, use
+cases, upgrades) lives in `docs/sage.md`.
+
 ## Boot sequence
 
 1. Call `sage_inception` to initialize persistent memory.

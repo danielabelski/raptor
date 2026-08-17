@@ -1097,7 +1097,8 @@ knowledge layer.
 | `get <id>` | Show a single memory in full |
 
 Requires the SAGE Docker sidecar.  Run `libexec/raptor-sage-setup` to
-install it.
+install it.  See the [SAGE guide](sage.md) for setup, the HMAC
+row-authentication key, and upgrade paths.
 
 ---
 

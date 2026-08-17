@@ -68,6 +68,7 @@ overview:
 | [Frida](frida.md) | Dynamic instrumentation |
 | [Sandbox](sandbox.md) | Process isolation and sandboxing |
 | [LLM Providers](llm.md) | Provider configuration, Bedrock, multi-model workflows, cost management |
+| [SAGE](sage.md) | Persistent memory: setup, HMAC key, CPU/GPU, use cases, upgrades |
 | [Security](security.md) | RAPTOR's own security model |
 | [Threat Model](threat-model.md) | Per-project threat model feature |
 | [Configuration](configuration.md) | tuning.json, env vars, sandbox calibration |

@@ -489,6 +489,24 @@ def _get_dangerous_flows(approx) -> Optional[dict]:
     return getattr(approx, "dangerous_flows", None) or None
 
 
+def _taint_approx_has_flow(approx) -> bool:
+    """True when a taint approximation carries any dangerous or direct
+    flow.  Like ``_get_dangerous_flows``, handles both ``TaintApprox``
+    objects and the plain dicts the cache round-trips through JSON on
+    resumed runs.
+    """
+    if approx is None:
+        return False
+    if isinstance(approx, dict):
+        return bool(
+            approx.get("dangerous_flows") or approx.get("direct_flows")
+        )
+    return bool(
+        getattr(approx, "has_any_dangerous_flow", lambda: False)()
+        or getattr(approx, "direct_flows", None)
+    )
+
+
 def get_reviewed_set(out_dir: Path) -> set:
     """Load set of already-reviewed keys from audit log.
 
@@ -2494,8 +2512,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     taint_path_keys = frozenset(
         k
         for k, approx in (taint_approx_results or {}).items()
-        if getattr(approx, "has_any_dangerous_flow", lambda: False)()
-        or getattr(approx, "direct_flows", None)
+        if _taint_approx_has_flow(approx)
     )
     from .triage import detect_generated_files
 

@@ -4046,3 +4046,51 @@ class TestGapIndex:
             ],
         }
         assert "a.py:f" in _gap_index(checklist)
+
+
+class TestTaintApproxHasFlow:
+    """_taint_approx_has_flow must handle both TaintApprox objects and
+    the plain dicts the taint-approx cache round-trips through JSON on
+    resumed runs (previously dicts always read as no-flow, dropping the
+    taint-path priority signal on every resumed run)."""
+
+    def test_cached_dict_with_dangerous_flows(self):
+        from core.audit.orchestrator import _taint_approx_has_flow
+
+        assert _taint_approx_has_flow(
+            {"dangerous_flows": {"0": [["memcpy", 1]]}, "direct_flows": {}},
+        )
+
+    def test_cached_dict_with_direct_flows_only(self):
+        from core.audit.orchestrator import _taint_approx_has_flow
+
+        assert _taint_approx_has_flow(
+            {"dangerous_flows": {}, "direct_flows": {"1": [["helper", 0]]}},
+        )
+
+    def test_cached_dict_without_flows(self):
+        from core.audit.orchestrator import _taint_approx_has_flow
+
+        assert not _taint_approx_has_flow(
+            {"dangerous_flows": {}, "direct_flows": {}},
+        )
+
+    def test_object_shapes(self):
+        from core.audit.orchestrator import _taint_approx_has_flow
+
+        class FakeApprox:
+            def __init__(self, dangerous, direct):
+                self._dangerous = dangerous
+                self.direct_flows = direct
+
+            def has_any_dangerous_flow(self):
+                return self._dangerous
+
+        assert _taint_approx_has_flow(FakeApprox(True, {}))
+        assert _taint_approx_has_flow(FakeApprox(False, {0: [("f", 1)]}))
+        assert not _taint_approx_has_flow(FakeApprox(False, {}))
+
+    def test_none(self):
+        from core.audit.orchestrator import _taint_approx_has_flow
+
+        assert not _taint_approx_has_flow(None)

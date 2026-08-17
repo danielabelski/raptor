@@ -5540,6 +5540,18 @@ def _run_audit_body(
         except Exception:
             logger.debug("prefilter kill ledger failed", exc_info=True)
 
+    # Fuzz handoff: dictionary tokens + seed hints mined from audit
+    # knowledge (unique constants, parse-shape string literals,
+    # dispatch keys, IRIS specs), written where /fuzz auto-discovers
+    # them (fuzz.dict / fuzz-dict.json, sibling-run lookup).
+    if config.out_dir:
+        try:
+            from .fuzz_handoff import emit_fuzz_dict
+
+            emit_fuzz_dict(config.target_path, config.out_dir)
+        except Exception:
+            logger.debug("fuzz dict handoff failed", exc_info=True)
+
     # Pre-export hooks: outcome-level post-processing (e.g. the ensemble
     # pipeline's file-pile-up dampener) runs BEFORE the journal
     # correction pass and the graded export so stats, journal and

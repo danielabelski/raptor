@@ -76,6 +76,25 @@ def _clamp_parallel(requested: int) -> int:
     return requested
 
 
+def _resolve_dict_path(args, out_dir):
+    """Resolve the AFL/libFuzzer dictionary for this run.
+
+    An operator-supplied ``--dict`` always wins. Otherwise, auto-
+    discover an audit-generated ``fuzz.dict`` (own run dir first, then
+    the newest sibling run — see ``packages.fuzzing.audit_dict``).
+    Returns None when neither exists, exactly as before.
+    """
+    if args.dict:
+        return Path(args.dict)
+    try:
+        from packages.fuzzing.audit_dict import discover_audit_dict
+
+        return discover_audit_dict(out_dir)
+    except Exception as e:  # noqa: BLE001 — discovery is best-effort
+        logger.debug("audit dictionary discovery failed: %s", e)
+        return None
+
+
 def main() -> None:
     # So much more needed here but this is a start for us. :-)
     ap = argparse.ArgumentParser(
@@ -385,7 +404,7 @@ Examples:
                 out_dir=out_dir,
                 duration_seconds=args.duration,
                 corpus_dir=corpus_dir,
-                dict_path=Path(args.dict) if args.dict else None,
+                dict_path=_resolve_dict_path(args, out_dir),
                 source_context_dir=binary_path.parent,
                 seed_profile=args.seed_profile,
             )
@@ -556,7 +575,7 @@ Examples:
             binary_path=binary_path,
             corpus_dir=corpus_dir,
             output_dir=out_dir / "afl_output",
-            dict_path=Path(args.dict) if args.dict else None,
+            dict_path=_resolve_dict_path(args, out_dir),
             input_mode=args.input_mode,
             check_sanitizers=args.check_sanitizers,
             recompile_guide=args.recompile_guide,

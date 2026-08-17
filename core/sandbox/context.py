@@ -943,7 +943,19 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # ``python3 -S`` exploits don't write pyc cache, but a normal
         # ``python3`` import will.
         import tempfile as _tempfile
-        writable_paths = [] if exclude_tmp_baseline else [_tempfile.gettempdir()]
+        if exclude_tmp_baseline:
+            writable_paths = []
+        else:
+            writable_paths = [_tempfile.gettempdir()]
+            # When TMPDIR points somewhere custom, ALSO keep /tmp in
+            # the baseline: tools fall back to it (gcc's "Cannot
+            # create temporary file in /tmp/" path), and in mount-ns
+            # mode the private tmpfs lives at /tmp regardless of what
+            # the host TMPDIR says. This is not a widening — with the
+            # default TMPDIR the baseline IS /tmp; a custom TMPDIR
+            # previously just broke that same posture.
+            if os.path.realpath(_tempfile.gettempdir()) != "/tmp":
+                writable_paths.append("/tmp")
         if output:
             # Absolutize: a relative path like "out/foo" fails Landlock
             # open in the mount-ns child after pivot_root (the new

@@ -386,6 +386,30 @@ def setup_mount_ns(target: str | None, output: str | None,
     _mount("tmpfs", f"{root}/tmp", "tmpfs")
     _mount("tmpfs", f"{root}/run", "tmpfs")
 
+    # 7b. Re-create inherited temp-dir env paths inside the fresh
+    # tmpfs. The child inherits TMPDIR/TEMP/TMP from the host; a value
+    # under /tmp (operator TMPDIR, nested pytest basetemp) would
+    # otherwise name a directory that doesn't exist in the private
+    # /tmp — gcc et al. then fail with "Cannot create temporary
+    # file". normpath first so "/tmp/../etc" can't escape the
+    # prefix check. Mode 0o1777 matches the /tmp contract the child
+    # expects. Best-effort: a failure here degrades to the pre-fix
+    # behaviour, never aborts setup.
+    for _var in ("TMPDIR", "TEMP", "TMP"):
+        _val = os.environ.get(_var, "")
+        if not _val:
+            continue
+        _norm = os.path.normpath(_val)
+        if not _norm.startswith("/tmp/"):
+            continue
+        try:
+            os.makedirs(f"{root}{_norm}", mode=0o1777, exist_ok=True)
+        except OSError as exc:
+            warn_post_fork(
+                b"RAPTOR: mount_ns: temp-env dir re-create failed "
+                b"(errno=%d)\n" % (exc.errno or 0)
+            )
+
     # 8. Bind target and output at their ORIGINAL absolute paths.
     # After pivot_root, the child still refers to /tmp/vulns (or whatever
     # the caller passed) — no argv rewriting needed. If the caller's
@@ -428,7 +452,20 @@ def setup_mount_ns(target: str | None, output: str | None,
     # overlay bind. This is a precise predicate: we only skip
     # creation when *we* know the parent was bound, not for arbitrary
     # pre-existing paths.
-    _bound_dirs: set = set(_SHADOW_PATHS)
+    #
+    # NOT the full _SHADOW_PATHS set: /tmp and /run are fresh EMPTY
+    # tmpfs (step 7), not host binds — nothing populated their
+    # subtrees, so mount-point stubs beneath them must still be
+    # created. Pre-fix, seeding with _SHADOW_PATHS made a FILE bind
+    # under /tmp (e.g. a repo checkout under /tmp naming its own
+    # libexec helpers via readable_paths) skip stub creation and fail
+    # with ENOENT at mount(2). "/" is harmless either way (the
+    # `d + "/"` prefix test never matches it) but excluded for
+    # accuracy.
+    _bound_dirs: set = {
+        "/dev", "/proc", "/sys",
+        *(f"/{d}" for d in _SYSTEM_RO_DIRS),
+    }
     if extra_ro_paths:
         for path in extra_ro_paths:
             if not path or _shadows_per_ns(path):

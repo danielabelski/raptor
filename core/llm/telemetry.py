@@ -108,6 +108,35 @@ class TelemetrySink:
 
     # ── Reporting ─────────────────────────────────────────────────
 
+    def mean_call_cost(self, call_class: str) -> float | None:
+        """Mean cost of completed calls in ``call_class``, or None when
+        the class has no completed calls yet. Feeds the LLM client's
+        per-call budget reservation estimate (cache hits count no call
+        and ~zero cost; failed attempts carry no ``cost_usd`` record —
+        neither skews the mean)."""
+        with self._lock:
+            st = self._by_class.get(str(call_class))
+            if st is None or st.calls <= 0:
+                return None
+            return st.cost_usd / st.calls
+
+    def class_costs(self) -> dict[str, tuple[int, float]]:
+        """Snapshot of per-class completed-call counts and spend:
+        ``{call_class: (calls, cost_usd)}``. Used by end-of-run ledger
+        reconciliation to book call classes no phase captured."""
+        with self._lock:
+            return {
+                cls: (s.calls, s.cost_usd)
+                for cls, s in self._by_class.items()
+            }
+
+    def total_cost_usd(self) -> float:
+        """Total spend across every class (completed calls; failed
+        attempts and cache hits contribute whatever ``cost_usd`` their
+        records carried, usually zero)."""
+        with self._lock:
+            return sum(s.cost_usd for s in self._by_class.values())
+
     @property
     def total_records(self) -> int:
         with self._lock:

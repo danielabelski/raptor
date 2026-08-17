@@ -67,13 +67,35 @@ def _model_banner_shown() -> bool:
 # spamming the log after a few thousand subsequent writes.
 _CACHE_WRITE_FAILURE_THRESHOLD = 3
 
-# Per-call budget reservation amount. Acquired before each provider
-# call to close the check-then-act window that lets concurrent
+# Floor for the per-call budget reservation. Acquired before each
+# provider call to close the check-then-act window that lets concurrent
 # dispatchers individually pass the cap and collectively overshoot.
 # Reconciled to the actual response cost on success; released on
-# exception. The value is small relative to a real call so the
-# pre-debit doesn't materially shorten the effective cap.
+# exception. The actual reservation is sized per call class from
+# observed history (see ``LLMClient._estimate_call_cost``); this floor
+# only guards against degenerate near-zero estimates.
 _BUDGET_RESERVATION = 0.10
+
+# Conservative per-call cost estimate used before any completed call of
+# a class has been observed (locally or in the run's telemetry sink).
+# Sized for the expensive end of real call classes (full-context review
+# calls land in the $3-5 range; most classes are far cheaper and their
+# history takes over after the first completion). A too-small default
+# recreates the overshoot this machinery exists to prevent: with N
+# workers, N in-flight calls that each reserved $0.10 but cost $4 land
+# ~N × $4 past the cap.
+_DEFAULT_CALL_COST_ESTIMATE = 2.00
+
+# The DEFAULT (no-history) estimate never exceeds this fraction of the
+# cap: a conservative constant must not brick runs whose whole budget
+# is smaller than one estimated call, and a refused reservation raises
+# the TERMINAL budget error — a fresh class's first concurrent burst
+# must not kill workers on a guess. History-derived estimates are
+# evidence, so they get the looser _RESERVATION_CAP_MAX_FRACTION
+# clamp (which only guarantees a fresh client can admit its first
+# call).
+_RESERVATION_CAP_FRACTION = 0.20
+_RESERVATION_CAP_MAX_FRACTION = 0.95
 
 
 class LLMBudgetExceededError(RuntimeError):
@@ -721,6 +743,12 @@ class LLMClient:
         # so we skip straight to fallback instead of burning
         # 3 retries on guaranteed 429s.
         self._daily_quota_exhausted: set[tuple[str, str]] = set()
+        # Per-call-class completed-call cost history:
+        # call_class → (count, total_cost). Feeds the reservation
+        # estimate so in-flight calls pre-debit roughly what they will
+        # actually cost instead of a token $0.10. Guarded by
+        # _stats_lock.
+        self._call_cost_history: dict[str, tuple[int, float]] = {}
         self._stats_lock = threading.RLock()
         # Per-cache-key locks. Two threads issuing the same cache key
         # serialise on its lock so only one calls the provider; the
@@ -1521,6 +1549,64 @@ class LLMClient:
                 > self.config.max_cost_per_scan
             )
 
+    def _estimate_call_cost(self, call_class: str) -> float:
+        """Reservation size for one call of ``call_class``.
+
+        Priority: this client's own completed-call mean for the class,
+        then the run telemetry sink's cross-client mean, then the
+        conservative ``_DEFAULT_CALL_COST_ESTIMATE``. The result is
+        floored at ``_BUDGET_RESERVATION`` (degenerate near-zero
+        estimates would reopen the concurrency window) and capped at
+        ``_RESERVATION_CAP_FRACTION`` of the cap (a conservative
+        default must not refuse every call on a small-cap run).
+
+        Reserving the estimate before dispatch is what bounds budget
+        overshoot to ONE call's estimate error instead of
+        workers × call cost: each in-flight call's expected spend is
+        visible to every other dispatcher via the pre-debit.
+        """
+        if not self.config.enable_cost_tracking:
+            return 0.0
+        estimate = 0.0
+        with self._stats_lock:
+            hist = self._call_cost_history.get(call_class)
+            if hist and hist[0] > 0:
+                estimate = hist[1] / hist[0]
+        if estimate <= 0.0:
+            # No local history — the run-wide telemetry sink may have
+            # observed this class through another client instance.
+            try:
+                from core.llm.telemetry import current_sink
+                sink = current_sink()
+                if sink is not None:
+                    mean = sink.mean_call_cost(call_class)
+                    if mean is not None and mean > 0.0:
+                        estimate = mean
+            except Exception:  # telemetry is advisory
+                logger.debug(
+                    "telemetry cost-estimate probe failed", exc_info=True,
+                )
+        from_history = estimate > 0.0
+        if not from_history:
+            estimate = _DEFAULT_CALL_COST_ESTIMATE
+        cap = self.config.max_cost_per_scan
+        if cap and cap > 0:
+            fraction = (
+                _RESERVATION_CAP_MAX_FRACTION if from_history
+                else _RESERVATION_CAP_FRACTION
+            )
+            estimate = min(estimate, cap * fraction)
+        return max(_BUDGET_RESERVATION, estimate)
+
+    def _note_call_cost(self, call_class: str, cost: float) -> None:
+        """Record one completed call's actual cost for ``call_class``
+        so subsequent reservations track observed reality."""
+        with self._stats_lock:
+            n, total = self._call_cost_history.get(call_class, (0, 0.0))
+            self._call_cost_history[call_class] = (
+                n + 1, total + max(0.0, float(cost or 0.0)),
+            )
+
     def _acquire_budget(self, reservation: float) -> bool:
         """Atomically check + pre-debit ``reservation`` against the budget.
         Returns True if the reservation was held, False if it would breach.
@@ -1758,11 +1844,16 @@ class LLMClient:
                         # check-then-act window so concurrent dispatchers
                         # see this one's pending spend instead of all
                         # reading the same baseline and individually
-                        # passing the cap. Reconciled to actual cost
-                        # below; released on exception.
-                        if not self._acquire_budget(_BUDGET_RESERVATION):
+                        # passing the cap. Sized per call class from
+                        # observed history so overshoot is bounded by
+                        # one call's estimate error, not workers × call
+                        # cost. Reconciled to actual cost below;
+                        # released on exception.
+                        reservation = self._estimate_call_cost(call_class)
+                        if not self._acquire_budget(reservation):
                             raise LLMBudgetExceededError(
-                                f"LLM budget exceeded: ${self.total_cost:.4f} spent > "
+                                f"LLM budget exceeded: ${self.total_cost:.4f} spent "
+                                f"+ ${reservation:.4f} estimated > "
                                 f"${self.config.max_cost_per_scan:.4f} limit. Increase budget "
                                 f"with: LLMConfig(max_cost_per_scan="
                                 f"{self.config.max_cost_per_scan * 2:.1f})"
@@ -1773,7 +1864,7 @@ class LLMClient:
                         try:
                             response = provider.generate(prompt, system_prompt, **kwargs)
                         except Exception:
-                            self._release_budget(_BUDGET_RESERVATION)
+                            self._release_budget(reservation)
                             raise
                         duration = time.monotonic() - t_start
 
@@ -1786,12 +1877,13 @@ class LLMClient:
                         # reservation amount per call.
                         with self._stats_lock:
                             if self.config.enable_cost_tracking:
-                                self.total_cost += response.cost - _BUDGET_RESERVATION
+                                self.total_cost += response.cost - reservation
                             else:
                                 self.total_cost += response.cost
                             self.request_count += 1
                             if task_type:
                                 self.task_type_costs[task_type] = self.task_type_costs.get(task_type, 0.0) + response.cost
+                        self._note_call_cost(call_class, response.cost)
 
                         # Cache response
                         self._save_to_cache(cache_key, response)
@@ -2201,9 +2293,13 @@ class LLMClient:
 
                         # See `generate` for the acquire/reconcile rationale —
                         # same race shape applies to structured calls.
-                        if not self._acquire_budget(_BUDGET_RESERVATION):
+                        # History-sized reservation: overshoot bounded
+                        # by one call's estimate error.
+                        reservation = self._estimate_call_cost(call_class)
+                        if not self._acquire_budget(reservation):
                             raise LLMBudgetExceededError(
-                                f"LLM budget exceeded: ${self.total_cost:.4f} spent > "
+                                f"LLM budget exceeded: ${self.total_cost:.4f} spent "
+                                f"+ ${reservation:.4f} estimated > "
                                 f"${self.config.max_cost_per_scan:.4f} limit. Increase budget "
                                 f"with: LLMConfig(max_cost_per_scan="
                                 f"{self.config.max_cost_per_scan * 2:.1f})"
@@ -2249,7 +2345,7 @@ class LLMClient:
                                     # reservation per failed call
                                     # (mirrors the success path below).
                                     if self.config.enable_cost_tracking:
-                                        self.total_cost += cost_delta - _BUDGET_RESERVATION
+                                        self.total_cost += cost_delta - reservation
                                     else:
                                         self.total_cost += cost_delta
                                     self.request_count += 1
@@ -2258,7 +2354,7 @@ class LLMClient:
                                             self.task_type_costs.get(task_type, 0.0) + cost_delta
                                         )
                             else:
-                                self._release_budget(_BUDGET_RESERVATION)
+                                self._release_budget(reservation)
                             raise
                         duration = time.monotonic() - t_start
 
@@ -2287,12 +2383,13 @@ class LLMClient:
                         # disabled (see ``generate`` for the rationale).
                         with self._stats_lock:
                             if self.config.enable_cost_tracking:
-                                self.total_cost += cost_delta - _BUDGET_RESERVATION
+                                self.total_cost += cost_delta - reservation
                             else:
                                 self.total_cost += cost_delta
                             self.request_count += 1
                             if task_type:
                                 self.task_type_costs[task_type] = self.task_type_costs.get(task_type, 0.0) + cost_delta
+                        self._note_call_cost(call_class, cost_delta)
 
                         logger.debug("Structured generation successful: %s/%s (tokens: %s, cost: $%.4f, duration: %.1fs)", model.provider, model.model_name, tokens_delta, cost_delta, duration)
 

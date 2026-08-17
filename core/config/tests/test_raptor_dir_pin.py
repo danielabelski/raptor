@@ -22,8 +22,8 @@ import sys
 from unittest import mock
 
 from core.config import (
-    RaptorConfig,
     _RAPTOR_DIR_OVERRIDE_NOTICED,
+    RaptorConfig,
     pin_raptor_dir,
     pin_raptor_dir_in_environ,
 )
@@ -61,10 +61,10 @@ class TestPinRaptorDir:
         assert _OWN in notices[0].getMessage()
 
     def test_get_safe_env_pins_raptor_dir(self, tmp_path):
-        poisoned = dict(
-            PATH="/usr/bin", HOME="/home/x",
-            RAPTOR_DIR=str(tmp_path / "stale-tree"),
-        )
+        poisoned = {
+            "PATH": "/usr/bin", "HOME": "/home/x",
+            "RAPTOR_DIR": str(tmp_path / "stale-tree"),
+        }
         with mock.patch.dict("os.environ", poisoned, clear=True):
             env = RaptorConfig.get_safe_env()
         assert env["RAPTOR_DIR"] == _OWN

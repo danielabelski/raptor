@@ -45,6 +45,9 @@ class TestDirReaping:
             _make_old_dir(tmp_root, "raptor_git_frk_abc1"),
             _make_old_dir(tmp_root, "raptor_decomp_abc123"),
             _make_old_dir(tmp_root, "raptor-cocci-tmp-abc123"),
+            _make_old_dir(tmp_root, "trust-synth-work-abc123"),
+            _make_old_dir(tmp_root, "raptor-iris-codeql-abc123"),
+            _make_old_dir(tmp_root, "raptor_recon_abc123"),
         ]
         reaped = reap_stale_tmp()
         assert sorted(reaped) == sorted(dirs)

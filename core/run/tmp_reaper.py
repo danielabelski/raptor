@@ -82,6 +82,16 @@ _DIR_PREFIXES = (
     # rmtree'd in the runner's finally, so survival past the floor
     # means the whole RAPTOR process died mid-sweep.
     "raptor-cocci-tmp-",
+    # Barrier-synthesis scratch (core/dataflow/barrier_synth.py);
+    # rmtree'd in the CLI's finally when auto-created.
+    "trust-synth-work-",
+    # IRIS per-refinement CodeQL pack scratch (core/iris/codeql_runner.py);
+    # rmtree'd in the runner's finally.
+    "raptor-iris-codeql-",
+    # Recon-agent clone scratch (packages/recon/agent.py); rmtree'd on
+    # exit unless --keep. A --keep dir surviving past the age floor is
+    # forgotten debug output — the sweep reclaims it like any other.
+    "raptor_recon_",
     # CPython multiprocessing's own resource dir — leaks when a process
     # (e.g. a sandboxed child we SIGKILL) dies without cleanup.
     "pymp-",

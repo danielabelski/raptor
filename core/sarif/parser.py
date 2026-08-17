@@ -493,11 +493,14 @@ def parse_sarif_findings(
     findings: list[dict[str, Any]] = []
 
     runs = data.get("runs") or []
-    logger.info("SARIF parser: found %d run(s) in SARIF file", len(runs))
-    
+    # Debug: parsing internals — this fires for every SARIF file every
+    # pipeline stage touches, so at INFO it was per-finding chatter in
+    # the audit trail. Malformed-input warnings above stay WARNING.
+    logger.debug("SARIF parser: found %d run(s) in SARIF file", len(runs))
+
     for run_idx, run in enumerate(runs):
         results = run.get("results", [])
-        logger.info("SARIF parser: run %d: %d result(s)", run_idx + 1, len(results))
+        logger.debug("SARIF parser: run %d: %d result(s)", run_idx + 1, len(results))
 
         tool_name = get_tool_name(run)
 

@@ -562,6 +562,9 @@ def run_orchestrator(
     if prep_cache is None or not prep_cache.get("_caches_cleared"):
         _sink_guard_cache.clear()
         _file_lines_cache.clear()
+        # line_end values come from the run's inventory — stale bounds
+        # from a previous in-process run mis-window the sweeps.
+        _line_end_cache.clear()
         if prep_cache is not None:
             prep_cache["_caches_cleared"] = True
 
@@ -8333,7 +8336,7 @@ def _cwe_fallback_chain(cwe: str) -> List[Dict[str, Any]]:
     return chain
 
 
-_line_end_cache: Dict[Tuple[str, str], int] = {}
+_line_end_cache: Dict[Tuple[str, str, str], int] = {}
 
 
 def _checklist_line_end(
@@ -8347,7 +8350,10 @@ def _checklist_line_end(
     bounds — use them. Returns 0 when unresolvable (callers keep their
     +50 fallback).
     """
-    key = (file_path, function_name)
+    # Keyed by target as well: the corpus runner calls the pipeline
+    # repeatedly in-process, and two targets sharing a relative path +
+    # function name must not read each other's bounds.
+    key = (str(config.target_path), file_path, function_name)
     cached = _line_end_cache.get(key)
     if cached is not None:
         return cached

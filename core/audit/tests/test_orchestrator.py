@@ -4377,3 +4377,39 @@ class TestRecordExecutorStop:
         result = OrchestratorResult()
         _record_executor_stop(result, ExecutorStats(budget_stopped=False))
         assert result.terminated_by == "complete"
+
+
+class TestChecklistLineEndCache:
+    """The line_end cache must not leak values across targets that
+    share a relative path + function name (corpus runner executes
+    multiple targets in one process)."""
+
+    @staticmethod
+    def _config(target, line_end):
+        return OrchestratorConfig(
+            target_path=target,
+            out_dir=target,
+            inventory={
+                "files": [
+                    {
+                        "path": "src/util.c",
+                        "items": [
+                            {"name": "init", "line_end": line_end},
+                        ],
+                    },
+                ],
+            },
+        )
+
+    def test_no_cross_target_leak(self, tmp_path):
+        from core.audit.orchestrator import _checklist_line_end
+
+        target_a = tmp_path / "a"
+        target_b = tmp_path / "b"
+
+        assert _checklist_line_end(
+            self._config(target_a, 42), "src/util.c", "init",
+        ) == 42
+        assert _checklist_line_end(
+            self._config(target_b, 99), "src/util.c", "init",
+        ) == 99

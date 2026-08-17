@@ -50,6 +50,13 @@ except ImportError:  # pragma: no cover — only triggers on Windows
 import logging
 
 from .models import Annotation
+from .provenance import (
+    INTERACTIVE_TTY,
+    NON_TTY,
+    PROVENANCE_KEY,
+    TTY_KEY,
+    valid_tty_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +172,11 @@ _MAX_META_VALUE_LEN = 4096
 
 def _validate_metadata(metadata) -> None:
     """Reject metadata key/value pairs that would corrupt the
-    HTML-comment frontmatter on disk."""
+    HTML-comment frontmatter on disk, and reject enum-valued keys
+    (``source``, ``provenance``, ``tty``) carrying values outside
+    their enums — a typoed ``source=humman`` or a hand-rolled
+    provenance stamp must fail the write, not silently skew every
+    consumer that branches on the value."""
     if metadata is None:
         return
     for k, v in dict(metadata).items():
@@ -198,6 +209,21 @@ def _validate_metadata(metadata) -> None:
                     f"(would corrupt the on-disk HTML-comment format): "
                     f"{v_str!r}"
                 )
+        if k == "source" and v_str not in _VALID_ANNOTATION_SOURCES:
+            raise ValueError(
+                f"invalid annotation source {v_str!r}; expected one of "
+                f"{sorted(_VALID_ANNOTATION_SOURCES)}"
+            )
+        if k == PROVENANCE_KEY and v_str not in (INTERACTIVE_TTY, NON_TTY):
+            raise ValueError(
+                f"invalid provenance tag {v_str!r}; expected "
+                f"{INTERACTIVE_TTY!r} or {NON_TTY!r}"
+            )
+        if k == TTY_KEY and not valid_tty_value(v_str):
+            raise ValueError(
+                f"invalid tty stamp {v_str!r}; expected 'none' or a "
+                f"comma-joined subset of stdin,stdout,stderr"
+            )
 
 
 def annotation_path(base_dir: Path, source_file: str) -> Path:
@@ -268,7 +294,12 @@ def _file_lock(path: Path):
         os.close(fd)
 
 
-_VALID_ANNOTATION_SOURCES = frozenset({"human", "llm"})
+# Who authored the annotation. ``human`` — operator via an
+# interactive CLI (see ``provenance`` for how the claim is graded);
+# ``agent`` — a non-interactive / agent-driven CLI invocation (the
+# default when no fd is a TTY); ``llm`` — legacy pre-migration LLM
+# annotations (new LLM verdicts go to the review journal instead).
+_VALID_ANNOTATION_SOURCES = frozenset({"human", "llm", "agent"})
 
 
 def _parse_meta(comment_body: str) -> dict[str, str]:
@@ -277,9 +308,10 @@ def _parse_meta(comment_body: str) -> dict[str, str]:
     Escaped double-quotes (``\\"``) inside quoted values are unescaped.
 
     Amendment §6 (Phase 3.5): warn when ``source=`` carries a value
-    outside the ``{human, llm}`` enum. Silent acceptance let a
-    typoed ``source=humman`` bypass the human-veto path in
-    consumers that check ``source == "human"`` — surface those now.
+    outside the ``{human, llm, agent}`` enum. The read path stays
+    permissive (legacy / hand-edited files must remain readable);
+    the write path (``_validate_metadata``) rejects such values
+    outright.
     """
     import logging as _log
     out: dict[str, str] = {}

@@ -40,6 +40,15 @@ Companion design doc: the design memo (sections "Annotations
 from __future__ import annotations
 
 from .models import Annotation
+from .provenance import (
+    INTERACTIVE_TTY,
+    LEGACY,
+    NON_TTY,
+    PROVENANCE_KEYS,
+    classify_provenance,
+    detect_invocation_context,
+    is_human_grade,
+)
 from .storage import (
     annotation_path,
     compute_function_hash,
@@ -51,9 +60,16 @@ from .storage import (
 )
 
 __all__ = [
+    "INTERACTIVE_TTY",
+    "LEGACY",
+    "NON_TTY",
+    "PROVENANCE_KEYS",
     "Annotation",
     "annotation_path",
+    "classify_provenance",
     "compute_function_hash",
+    "detect_invocation_context",
+    "is_human_grade",
     "iter_all_annotations",
     "read_annotation",
     "read_file_annotations",

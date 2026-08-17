@@ -368,6 +368,28 @@ class TestWriteAndLoad(unittest.TestCase):
 
 
 class TestTrackReadHook(unittest.TestCase):
+    """Hook tests run against a per-test fake HOME.
+
+    The hook resolves the active project via
+    ``Path.home()/.raptor/projects/.active`` — a GLOBAL symlink. Under
+    pytest-xdist, tests in this class land on different workers, and
+    one worker's teardown (or test_skips_without_active_project's
+    unlink) raced another worker's mid-test resolution, flaking
+    test_appends_to_manifest. Pointing HOME at a private tmpdir makes
+    every test see its own projects dir; the save/restore logic in
+    _setup_project then only ever touches the fake home."""
+
+    def setUp(self):
+        self._home_tmp = TemporaryDirectory()
+        self._old_home = os.environ.get("HOME")
+        os.environ["HOME"] = self._home_tmp.name
+
+    def tearDown(self):
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
+        self._home_tmp.cleanup()
 
     def _setup_project(self, project_dir, run_dir, target=None):
         """Plant a synthetic project + active symlink under

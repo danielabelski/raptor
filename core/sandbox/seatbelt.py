@@ -296,6 +296,19 @@ def build_profile(*,
         SYSTEM_READ_DIRS = (
             "/usr", "/System", "/Library/Frameworks",
             "/private/etc", "/private/var/db/timezone",
+            # Homebrew prefixes (ARM and Intel). These are the de-facto
+            # /usr/local of macOS: interpreters and their dylibs live
+            # here, and dyld resolves framework paths through them.
+            # Without these, restrict_reads=True kills ANY
+            # Homebrew-installed tool at dyld stage — observed
+            # empirically (2026-08-15 probe: Homebrew python3 dies
+            # "Library not loaded ... file system sandbox blocked
+            # open()"; Homebrew bash likewise via libreadline). The
+            # macOS twin of the Linux finding that user-local
+            # interpreter runtimes need read grants; software-install
+            # trees, not credential stores, so the grant matches the
+            # /usr philosophy.
+            "/opt/homebrew", "/usr/local",
             # /bin and /sbin host real binaries on macOS — they are
             # NOT symlinks to /usr/bin / /usr/sbin (unlike most modern
             # Linux distros). PATH lookups commonly resolve to
@@ -374,10 +387,15 @@ def build_profile(*,
         #
         # Earlier code lumped both under (deny file-read*), which
         # required a hack — `(literal "/")` allow so dyld didn't
-        # SIGABRT. That hack also allowed readdir("/") which leaks
-        # the top-level directory listing (/Users, /Volumes, etc).
-        # The split below keeps metadata permissive (no SIGABRT)
-        # while denying readdir-of-/ as a data read.
+        # SIGABRT.
+        #
+        # Known residual (empirically confirmed 2026-08-15): with
+        # file-read-metadata allowed universally, `ls /` SUCCEEDS —
+        # the kernel serves readdir under the metadata class, so the
+        # top-level directory listing (/Users, /Volumes, ...) is
+        # visible under restrict_reads. Directory NAMES leak;
+        # file CONTENT outside the allowlist stays denied. Accepted:
+        # denying metadata breaks dyld path-walks outright.
         if not audit_mode:
             parts.append("(allow file-read-metadata)")
             data_allow_clauses = " ".join(

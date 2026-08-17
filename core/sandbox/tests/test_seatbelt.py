@@ -452,6 +452,15 @@ def test_debug_profile_omits_iokit_deny():
     assert "iokit-open" not in p
 
 
+def test_restrict_reads_allows_homebrew_prefixes():
+    """Homebrew trees must be readable under restrict_reads —
+    Homebrew-installed interpreters die at dyld stage otherwise
+    (observed: python3 "Library not loaded", bash via libreadline)."""
+    p = seatbelt.build_profile(output="/tmp", restrict_reads=True)
+    assert '(subpath "/opt/homebrew")' in p
+    assert '(subpath "/usr/local")' in p
+
+
 def test_seccomp_profile_none_string_omits_deny():
     """`seccomp_profile="none"` is the explicit "no syscall filter"
     sentinel — must NOT engage the macOS hardening either."""

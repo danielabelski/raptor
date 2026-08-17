@@ -509,3 +509,30 @@ def test_cache_cap_defaults_to_bounded():
     cfg = LLMConfig()
     assert cfg.cache_max_entries is not None
     assert cfg.cache_max_entries > 0
+
+
+class TestCacheTtlDefault:
+    """TTL defaults to 24h (operator decision 2026-08-15: most targets
+    aren't re-audited across days, and the cache key already pins the
+    model name — the TTL guards same-name behaviour drift)."""
+
+    def test_default_is_24h(self, monkeypatch):
+        monkeypatch.delenv("RAPTOR_LLM_CACHE_TTL_S", raising=False)
+        from core.llm.config import LLMConfig
+        assert LLMConfig().cache_ttl_seconds == 86_400.0
+
+    def test_env_overrides_seconds(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_LLM_CACHE_TTL_S", "3600")
+        from core.llm.config import LLMConfig
+        assert LLMConfig().cache_ttl_seconds == 3600.0
+
+    def test_env_none_disables_expiry(self, monkeypatch):
+        for raw in ("none", "off", "0", "-1"):
+            monkeypatch.setenv("RAPTOR_LLM_CACHE_TTL_S", raw)
+            from core.llm.config import LLMConfig
+            assert LLMConfig().cache_ttl_seconds is None, raw
+
+    def test_garbled_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_LLM_CACHE_TTL_S", "tomorrow")
+        from core.llm.config import LLMConfig
+        assert LLMConfig().cache_ttl_seconds == 86_400.0

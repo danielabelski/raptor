@@ -1166,6 +1166,27 @@ def _shared_prefix_len(a: str, b: str) -> int:
     return n
 
 
+def _default_cache_ttl() -> float | None:
+    """Default LLM-cache TTL: 24h, env-overridable.
+
+    ``RAPTOR_LLM_CACHE_TTL_S`` accepts a number of seconds, or
+    ``none`` / ``off`` / ``0`` (or any non-positive value) to disable
+    expiry entirely. A garbled value falls back to the 24h default —
+    unlike audit-data deletion, cache expiry only costs a re-query, so
+    defaulting on a bad value is safe.
+    """
+    raw = os.environ.get("RAPTOR_LLM_CACHE_TTL_S", "").strip().lower()
+    if not raw:
+        return 86_400.0
+    if raw in ("none", "off"):
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        return 86_400.0
+    return val if val > 0 else None
+
+
 @dataclass
 class LLMConfig:
     """Main LLM configuration for RAPTOR."""
@@ -1186,10 +1207,16 @@ class LLMConfig:
     retry_delay_remote: float = 5.0
     enable_caching: bool = True
     cache_dir: Path = Path("out/llm_cache")
-    # Optional: drop cache entries older than this on read. None = no
-    # TTL. Useful when an upgraded model would now produce different
-    # output for a previously-cached prompt.
-    cache_ttl_seconds: float | None = None
+    # Drop cache entries older than this on read. Default 24h: repeat
+    # queries within a working day stay free and deterministic, while a
+    # verdict from last month's model behaviour doesn't silently steer
+    # today's analysis (the cache key pins the model NAME, so this
+    # guards same-name drift — alias re-points, provider-side updates —
+    # not model switches, which miss naturally). Entries without a
+    # timestamp predate the TTL field and are honoured rather than
+    # mass-evicted on upgrade. Override via RAPTOR_LLM_CACHE_TTL_S:
+    # seconds, or "none"/"off"/0 to never expire.
+    cache_ttl_seconds: float | None = field(default_factory=_default_cache_ttl)
     # Cap cache size by number of entries. After each successful save
     # the oldest files (by mtime) are evicted until at or under this
     # cap. None = no eviction (cache grows unboundedly — the pre-cap

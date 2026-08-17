@@ -69,7 +69,10 @@ It blocks credential helpers, hooks, dangerous env vars, `RAPTOR_*` and
 `SAGE_*` prefixes, stdio MCP servers, symlinks, and malformed files.
 The trust override is a process-wide flag, not an env var, specifically
 because a target repo's `env` dict propagates into subprocesses and
-could forge an env var override.
+could forge an env var override. Trust can also be persisted per
+project as an operator assertion (`raptor project trust config`, never
+auto-set and never read from the scanned repo); per-run flags win in
+both directions (`--no-trust-repo` > `--trust-repo` > marker > off).
 
 ### 4. Module Shadowing
 
@@ -185,6 +188,7 @@ approval before execution.
 | oss-hypothesis-former-agent | Read, Write | Y | N | N | 1 | floor-safe |
 | oss-hypothesis-checker-agent | Read, Write | N | N | N | 0 | tight |
 | oss-report-generator-agent | Read, Write | N | N | N | 0 | tight |
+| audit-reviewer | all tools | Y | Y | N | 2 | needs-tightening |
 | coverage-analyzer | all tools | Y | Y | N | 2 | needs-tightening |
 | crash-analyzer | all tools | Y | Y | N | 2 | needs-tightening |
 | crash-analysis-checker | all tools | Y | Y | N | 2 | needs-tightening |
@@ -204,7 +208,7 @@ approval before execution.
 - **floor-safe** (1 agent) -- reads untrusted data but has no dangerous
   tools.
 - **tight** (2 agents) -- properly constrained; no changes needed.
-- **needs-tightening** (9 agents) -- Rule of Two score of 2; tool
+- **needs-tightening** (10 agents) -- Rule of Two score of 2; tool
   access could be narrowed.
 - **needs-HITL** (4 agents) -- Rule of Two score of 3 (all three axes);
   requires human-in-the-loop approval.
@@ -373,9 +377,12 @@ scanner findings.
 `.claude/settings.local.json`, `.mcp.json` patterns that would override
 the sub-agent's hooks, tool list, env, or load malicious MCP servers.
 This is a different threat from source-level prompt injection. The
-`--trust-repo` CLI flag overrides cc_trust for operators who have
-manually verified a target. It does not relax I2 -- LLM-driven
-sandboxes still treat source as adversarial.
+`--trust-repo` CLI flag overrides cc_trust (and the CodeQL pack/config
+check, `core/security/codeql_trust.py`) for operators who have manually
+verified a target; the project `config` trust marker persists the same
+assertion, and the separate `build` marker gates `--traced-build` repo
+code execution. It does not relax I2 -- LLM-driven sandboxes still
+treat source as adversarial.
 
 ### Common Confusions
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -72,17 +73,20 @@ def make_test_client(
     cache_ttl_seconds: float | None = None,
     cache_max_entries: int | None = None,
     max_retries: int = 1,
+    provider: str = "anthropic",
 ) -> LLMClient:
     """Build a minimally-configured ``LLMClient`` backed by nothing.
 
     Skips the real constructor's health-check + provider-creation +
     egress paths so suites run without API keys or network. Pair with
     :func:`install_provider` to wire a fake under the primary-model
-    key.
+    key. ``provider`` lets casing-sensitivity suites configure a
+    mixed-case provider name (downstream lookups are
+    case-insensitive).
     """
     cfg = LLMConfig.__new__(LLMConfig)
     cfg.primary_model = ModelConfig(
-        provider="anthropic",
+        provider=provider,
         model_name="test-primary",
         max_context=200000,
         api_key="not-used",
@@ -128,7 +132,16 @@ def install_provider(client: LLMClient, provider: Any) -> None:
     client.providers[f"{pm.provider}:{pm.model_name}"] = provider
 
 
+@dataclass
+class FakeModel:
+    """One-field stand-in for a multi-model ``ModelHandle`` — the
+    ``model_name``-only dataclass four suites re-declared."""
+
+    model_name: str
+
+
 __all__ = [
+    "FakeModel",
     "FakeStructuredProvider",
     "install_provider",
     "make_test_client",

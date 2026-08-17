@@ -309,7 +309,7 @@ def main():
     logger.info("Output: %s", out_dir)
 
     # Initialize LLM client with multi-model support, fallback, and retry
-    from packages.llm_analysis import get_client
+    from core.llm.factory import get_client
     llm = get_client()
     if llm:
         logger.info("LLM client initialized")

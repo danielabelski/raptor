@@ -27,6 +27,7 @@ rather than deleting-and-reinventing.
 """
 
 from core.testing.fake_llm import (
+    FakeModel,
     FakeStructuredProvider,
     install_provider,
     make_test_client,
@@ -41,6 +42,7 @@ from core.testing.llm_env import (
 __all__ = [
     "DEFAULT_OLLAMA_HOST",
     "PROXY_ENV_VARS",
+    "FakeModel",
     "FakeStructuredProvider",
     "git_run",
     "init_scratch_repo",

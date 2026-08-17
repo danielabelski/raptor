@@ -17,12 +17,8 @@ from core.llm.multi_model import (
 # ---------------------------------------------------------------------------
 # Test fixtures: minimal fake handles, adapters, reviewers, gates
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class FakeModel:
-    """Satisfies ModelHandle protocol."""
-    model_name: str
+# FakeModel (ModelHandle stand-in) comes from core.testing.
+from core.testing import FakeModel
 
 
 class IdentityAdapter:

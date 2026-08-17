@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.llm.coerce import structured_result
+
 logger = logging.getLogger(__name__)
 
 CORPUS_DIR = Path(__file__).parent
@@ -895,7 +897,7 @@ def _run_probe(
                 system_prompt=item["system_prompt"],
                 **kwargs,
             )
-            result = response.result if hasattr(response, "result") else {}
+            result = structured_result(response, default={})
             cost = response.cost if hasattr(response, "cost") else 0.0
             cached = getattr(response, "cached", False)
         except Exception as exc:  # noqa: BLE001 — per-label probe isolation
@@ -1591,7 +1593,7 @@ def _run_phase2_classify(
                 ),
                 **kwargs,
             )
-            result = response.result if hasattr(response, "result") else {}
+            result = structured_result(response, default={})
             cost = response.cost if hasattr(response, "cost") else 0.0
             total_cost += cost
         except Exception:
@@ -1687,7 +1689,7 @@ def _run_phase2b_chains(
                 ),
                 **kwargs,
             )
-            result = response.result if hasattr(response, "result") else {}
+            result = structured_result(response, default={})
         except Exception:
             logger.warning("Chain eval failed for %s + %s",
                            a["function_id"], b["function_id"],

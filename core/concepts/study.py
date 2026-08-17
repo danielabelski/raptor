@@ -20,6 +20,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from core.llm.coerce import structured_result
 from core.paths import confine
 
 from .model import (
@@ -1742,10 +1743,7 @@ def _run_one_batch(
     )
     try:
         response = future.result(timeout=_BATCH_WALL_TIMEOUT)
-        result = (
-            response.result if hasattr(response, "result")
-            else response[0]
-        )
+        result = structured_result(response)
     except concurrent.futures.TimeoutError:
         future.cancel()
         ex.shutdown(wait=False, cancel_futures=True)

@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from core.llm.coerce import structured_result
+
 logger = logging.getLogger(__name__)
 
 
@@ -184,7 +186,7 @@ def classify_security_impact(
                 system_prompt=system_prompt,
                 **kwargs,
             )
-            result = response.result if hasattr(response, "result") else response[0]
+            result = structured_result(response)
             cost = response.cost if hasattr(response, "cost") else 0.0
             total_cost += cost
         except Exception:

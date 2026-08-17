@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.llm.coerce import structured_result
 from core.paths import strip_file_uri
 from core.security.prompt_envelope import neutralize_tag_forgery
 from packages.hypothesis_validation import Hypothesis
@@ -2215,15 +2216,11 @@ def _ask_llm_for_predicates(
     except Exception as e:  # noqa: BLE001 — fail-open validation loop
         logger.warning("LLM call for predicates failed: %s", e)
         return None
-    if not isinstance(response, dict):
-        # DispatchClient returns a dict on success, None on failure.
-        # Other client implementations may return objects with .result.
-        result = getattr(response, "result", None)
-        if isinstance(result, dict):
-            response = result
-        else:
-            return None
-    return response
+    # DispatchClient returns a dict on success, None on failure; other
+    # client implementations return objects with .result — one
+    # spelling of that tolerance lives in core.llm.coerce.
+    result = structured_result(response)
+    return result if isinstance(result, dict) else None
 
 
 def _pick_adapter_for_finding(

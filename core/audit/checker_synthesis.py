@@ -148,6 +148,101 @@ def _seed_from_outcome(outcome: Any) -> Any | None:
     )
 
 
+def _sage_replay_rule(
+    engine: str,
+    cwe: str,
+    seed: Any,
+    target_path: Path,
+) -> tuple[Any, str] | None:
+    """Replay a SAGE-recalled proven rule against the target.
+
+    Consumes ``recall_verified_proven_rules`` — HMAC-verified,
+    replay-gated rows only. The referenced rule body must still exist
+    on disk and hash to the stamped ``rule_body_hash`` (the recall row
+    is an index, not the rule). Returns ``(CheckerSynthesisResult,
+    provenance)`` with provenance ``sage:<rule_id>``, or None.
+    """
+    import hashlib
+
+    try:
+        from core.sage import recall_verified_proven_rules
+    except ImportError:
+        return None
+    try:
+        metas = recall_verified_proven_rules(engine, cwe)
+    except Exception:
+        logger.debug("SAGE proven-rule recall failed", exc_info=True)
+        return None
+    if not metas:
+        return None
+
+    try:
+        from packages.checker_synthesis.models import (
+            CheckerSynthesisResult,
+            SynthesisedRule,
+        )
+        from packages.checker_synthesis.synthesise import (
+            _is_seed_match,
+            _run_engine,
+        )
+    except ImportError:
+        return None
+
+    for meta in metas:
+        rule_id = str(meta.get("rule_id") or "")
+        rule_path = Path(str(meta.get("rule_path") or ""))
+        stored_hash = str(meta.get("rule_body_hash") or "")
+        if not rule_id or len(stored_hash) < 16 or not rule_path.is_file():
+            continue
+        try:
+            body = rule_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if not digest.startswith(stored_hash):
+            logger.debug(
+                "SAGE rule %s: on-disk body no longer matches stamped "
+                "hash — skipping replay", rule_id,
+            )
+            continue
+        try:
+            rule = SynthesisedRule(
+                engine=engine,
+                rule_id=rule_id,
+                body=body,
+                rationale="SAGE-recalled proven rule",
+            )
+            matches, errors = _run_engine(rule, rule_path, target_path)
+            if errors:
+                logger.warning(
+                    "audit synthesis: engine errors for SAGE rule %s: %s",
+                    rule_id, "; ".join(errors),
+                )
+            matches = [m for m in matches if not _is_seed_match(seed, m)]
+            if len(matches) > MAX_SWEEP_HITS_PER_RULE:
+                matches = matches[:MAX_SWEEP_HITS_PER_RULE]
+            cs_result = CheckerSynthesisResult(seed=seed)
+            cs_result.rule = rule
+            cs_result.rule_path = rule_path
+            cs_result.matches = matches
+            cs_result.dual_control = bool(meta.get("dual_control", False))
+            # Verified replay of a rule whose mechanical controls
+            # passed at promotion time (dual control is part of the
+            # should_replay_rule gate).
+            cs_result.rule_tier = "library"
+            logger.info(
+                "audit synthesis: replayed SAGE-recalled rule %s — "
+                "%d match(es)", rule_id, len(matches),
+            )
+            return cs_result, f"sage:{rule_id}"
+        except Exception:
+            logger.warning(
+                "audit synthesis: SAGE rule replay failed for %s",
+                rule_id, exc_info=True,
+            )
+    return None
+
+
 def synthesize_and_sweep(
     outcome: Any,
     config: Any,
@@ -249,6 +344,16 @@ def synthesize_and_sweep(
                     seed.file, seed.function, exc_info=True,
                 )
 
+    # No local library rule — try SAGE-recalled proven rules. Only
+    # HMAC-verified rows join sweeps (unverified recall is hint-only
+    # per operator policy); the rule body on disk must still match the
+    # stamped body hash.
+    sage_provenance = ""
+    if cs_result is None and engine and seed.cwe:
+        replay = _sage_replay_rule(engine, seed.cwe, seed, Path(target_path))
+        if replay is not None:
+            cs_result, sage_provenance = replay
+
     if cs_result is None:
         try:
             from packages.checker_synthesis import synthesise_with_refinement
@@ -295,14 +400,17 @@ def synthesize_and_sweep(
     # vulnerable line, and is 0 when the inventory recorded none.
     new_hits = []
     for m in cs_result.matches:
-        new_hits.append({
+        hit = {
             "file": m.file,
             "line": m.line,
             "function": "",
             "snippet": m.snippet or "",
             "origin_file": file_path,
             "origin_function": function,
-        })
+        }
+        if sage_provenance:
+            hit["provenance"] = sage_provenance
+        new_hits.append(hit)
 
     logger.info(
         "synthesis %s: %d sweep matches emitted "

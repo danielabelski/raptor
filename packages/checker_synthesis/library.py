@@ -276,8 +276,53 @@ class RuleLibrary:
             return None
 
         with self._lock:
-            return self._promote_locked(result, target_hash=target_hash,
-                                        timestamp=timestamp, source=source)
+            entry = self._promote_locked(result, target_hash=target_hash,
+                                         timestamp=timestamp, source=source)
+        if entry is not None:
+            self._store_metadata_in_sage(entry, result)
+        return entry
+
+    def _store_metadata_in_sage(
+        self,
+        entry: LibraryEntry,
+        result: CheckerSynthesisResult,
+    ) -> None:
+        """Index the graduated rule in SAGE (best-effort, never raises).
+
+        The library manifest stays the local source of truth; SAGE
+        holds an index row so future runs can replay proven rules via
+        ``core.audit.checker_synthesis._sage_replay_rule``. That recall
+        side only trusts HMAC-verified rows, so the store hook stamps
+        the decision fields (engine/cwe/rule_id/body-hash/counts) at
+        write time.
+        """
+        try:
+            from core.sage.hooks import store_proven_rule_metadata
+        except ImportError:
+            return
+        try:
+            classified = [
+                t for t in result.triage
+                if t.status in ("variant", "false_positive")
+            ]
+            tp_count = sum(1 for t in classified if t.status == "variant")
+            fp_count = sum(
+                1 for t in classified if t.status == "false_positive"
+            )
+            store_proven_rule_metadata(
+                engine=entry.engine,
+                cwe=entry.cwe,
+                rule_id=entry.rule_id,
+                rule_body_hash=entry.body_hash,
+                rule_path=str(self.rule_path(entry)),
+                tp_count=tp_count,
+                fp_count=fp_count,
+                total_matches=len(result.matches),
+                dual_control_passed=entry.dual_control,
+                targets_tested=max(len(entry.targets), 1),
+            )
+        except Exception:
+            logger.debug("SAGE proven-rule store failed", exc_info=True)
 
     def _promote_locked(
         self,

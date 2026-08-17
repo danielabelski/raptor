@@ -996,6 +996,114 @@ class TestRuleLibraryHooks(unittest.TestCase):
         self.assertIn("||tp_count=2||", content)
 
 
+def _stamped_rule_row(
+    engine="semgrep", cwe="CWE-89", rule_id="sqli-001",
+    rule_body_hash="a" * 16, rule_path="/tmp/rules/sqli-001.yaml",
+    tp_count=9, fp_count=1, total_matches=10,
+    dual_control=True, targets_tested=4, confidence=0.9,
+    stamp=True, tamper=False,
+):
+    """Build a proven-rule row exactly as store_proven_rule_metadata does."""
+    content = (
+        f"Proven checker rule: "
+        f"||engine={engine}|| ||cwe={cwe}|| "
+        f"||rule_id={rule_id}|| "
+        f"||rule_body_hash={rule_body_hash}|| "
+        f"||rule_path={rule_path}|| "
+        f"||tp_count={tp_count}|| "
+        f"||fp_count={fp_count}|| "
+        f"||total_matches={total_matches}|| "
+        f"||dual_control={dual_control}|| "
+        f"||targets_tested={targets_tested}||"
+    )
+    fields = {
+        "kind": "proven_rule",
+        "engine": engine,
+        "cwe": cwe,
+        "rule_id": rule_id,
+        "rule_body_hash": rule_body_hash,
+        "rule_path": rule_path,
+        "tp_count": str(tp_count),
+        "fp_count": str(fp_count),
+        "total_matches": str(total_matches),
+        "dual_control": str(dual_control),
+        "targets_tested": str(targets_tested),
+    }
+    if stamp:
+        content = rowmac.stamp(content, fields)
+    if tamper:
+        content = content.replace(
+            f"||tp_count={tp_count}||", "||tp_count=99||",
+        )
+    return {"content": content, "confidence": confidence}
+
+
+class TestRecallVerifiedProvenRules(unittest.TestCase):
+    """Only HMAC-verified, replay-gated rows are mechanically usable."""
+
+    @patch("core.sage.hooks._get_client")
+    def test_verified_row_returned(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.return_value = [_stamped_rule_row()]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_verified_proven_rules
+        metas = recall_verified_proven_rules("semgrep", "CWE-89")
+        self.assertEqual(len(metas), 1)
+        self.assertTrue(metas[0]["verified"])
+        self.assertEqual(metas[0]["rule_id"], "sqli-001")
+        self.assertEqual(metas[0]["rule_body_hash"], "a" * 16)
+
+    @patch("core.sage.hooks._get_client")
+    def test_unstamped_row_excluded(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.return_value = [_stamped_rule_row(stamp=False)]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_verified_proven_rules
+        self.assertEqual(recall_verified_proven_rules("semgrep", "CWE-89"), [])
+
+    @patch("core.sage.hooks._get_client")
+    def test_tampered_row_excluded(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.return_value = [_stamped_rule_row(tamper=True)]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_verified_proven_rules
+        self.assertEqual(recall_verified_proven_rules("semgrep", "CWE-89"), [])
+
+    @patch("core.sage.hooks._get_client")
+    def test_replay_gate_applies_to_verified_rows(self, mock_gc):
+        # Authentic row, but tested on too few targets — hint-only.
+        mock_client = MagicMock()
+        mock_client.query.return_value = [_stamped_rule_row(targets_tested=1)]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_verified_proven_rules
+        self.assertEqual(recall_verified_proven_rules("semgrep", "CWE-89"), [])
+
+    @patch("core.sage.hooks._get_client")
+    def test_mixed_rows_only_verified_survive(self, mock_gc):
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            _stamped_rule_row(rule_id="good-001"),
+            _stamped_rule_row(rule_id="bad-001", stamp=False),
+            _stamped_rule_row(rule_id="bad-002", tamper=True),
+        ]
+        mock_gc.return_value = mock_client
+
+        from core.sage.hooks import recall_verified_proven_rules
+        metas = recall_verified_proven_rules("semgrep", "CWE-89")
+        self.assertEqual([m["rule_id"] for m in metas], ["good-001"])
+
+    @patch("core.sage.hooks._get_client")
+    def test_no_client_returns_empty(self, mock_gc):
+        mock_gc.return_value = None
+
+        from core.sage.hooks import recall_verified_proven_rules
+        self.assertEqual(recall_verified_proven_rules("semgrep", "CWE-89"), [])
+
+
 class TestStoreStudyConcepts(unittest.TestCase):
     """Tests for store_study_concepts (N1 study → SAGE)."""
 

@@ -846,8 +846,9 @@ def store_proven_rule_metadata(
             f"||dual_control={dual_control_passed}|| "
             f"||targets_tested={targets_tested}||"
         )
-        # Deprecated pair: stamped for forward compatibility only — the
-        # recall side has no production caller and adds no verification.
+        # The MAC gates mechanical replay on the recall side
+        # (``recall_verified_proven_rules``): only rows minted by this
+        # install may join sweeps; everything else is hint-only.
         content = _stamp_row(
             "proven_rule",
             content,
@@ -951,6 +952,52 @@ def should_replay_rule(meta: dict[str, Any]) -> bool:
         and meta.get("dual_control", False)
         and meta.get("targets_tested", 0) >= _RULE_REPLAY_MIN_TARGETS
     )
+
+
+def recall_verified_proven_rules(engine: str, cwe: str) -> list[dict[str, Any]]:
+    """Recall proven rules, keeping only HMAC-verified replay-worthy rows.
+
+    Mechanical consumers (sweep replay in
+    ``core.audit.checker_synthesis``) must call THIS, not
+    ``recall_proven_rules``: unverified recall is hint-only per
+    operator policy. A row is returned (as parsed metadata, see
+    ``parse_rule_metadata``) only when
+
+    * it carries a row MAC minted by THIS install over exactly the
+      parsed decision fields (``_row_mac_ok``), and
+    * it passes the ``should_replay_rule`` quality gate (TP rate,
+      dual control, targets tested).
+
+    Never raises; returns ``[]`` when SAGE is unavailable.
+    """
+    verified: list[dict[str, Any]] = []
+    for row in recall_proven_rules(engine, cwe):
+        try:
+            content = str(row.get("content") or "")
+            clean, token = rowmac.strip(content)
+            meta = parse_rule_metadata({**row, "content": clean})
+            fields = {
+                "kind": "proven_rule",
+                "engine": str(meta.get("engine", "")),
+                "cwe": str(meta.get("cwe", "")),
+                "rule_id": str(meta.get("rule_id", "")),
+                "rule_body_hash": str(meta.get("rule_body_hash", "")),
+                "rule_path": str(meta.get("rule_path", "")),
+                "tp_count": str(meta.get("tp_count", 0)),
+                "fp_count": str(meta.get("fp_count", 0)),
+                "total_matches": str(meta.get("total_matches", 0)),
+                "dual_control": str(meta.get("dual_control", False)),
+                "targets_tested": str(meta.get("targets_tested", 0)),
+            }
+            if not _row_mac_ok("proven_rule", fields, token):
+                continue
+            if not should_replay_rule(meta):
+                continue
+            meta["verified"] = True
+            verified.append(meta)
+        except Exception:
+            logger.debug("SAGE proven-rule row parse failed", exc_info=True)
+    return verified
 
 
 # ─────────────────────────────────────────────────────────────────────────────

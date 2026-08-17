@@ -500,3 +500,58 @@ class TestTargetProfile:
         data = json.loads((tmp_path / "lib" / "manifest.json").read_text())
         target = data["rules"][0]["targets"][0]
         assert "target_profile" not in target
+
+
+class TestPromoteStoresSageMetadata:
+    """Graduation indexes the proven rule in SAGE (P33 write side)."""
+
+    def test_promote_stores_rule_metadata(self, tmp_path):
+        from unittest.mock import patch
+
+        lib = RuleLibrary(library_dir=tmp_path)
+        result = _result(matches=3, triage_status="variant")
+
+        with patch(
+            "core.sage.hooks.store_proven_rule_metadata", return_value=True,
+        ) as mock_store:
+            entry = lib.promote(result, target_hash="t1", timestamp="ts")
+
+        assert entry is not None
+        assert mock_store.call_count == 1
+        kw = mock_store.call_args.kwargs
+        assert kw["engine"] == "semgrep"
+        assert kw["cwe"] == "CWE-89"
+        assert kw["rule_id"] == entry.rule_id
+        assert kw["rule_body_hash"] == entry.body_hash
+        assert kw["rule_path"] == str(lib.rule_path(entry))
+        assert kw["tp_count"] == 3
+        assert kw["fp_count"] == 0
+        assert kw["dual_control_passed"] is True
+        assert kw["targets_tested"] == 1
+
+    def test_promote_survives_sage_failure(self, tmp_path):
+        from unittest.mock import patch
+
+        lib = RuleLibrary(library_dir=tmp_path)
+        result = _result()
+
+        with patch(
+            "core.sage.hooks.store_proven_rule_metadata",
+            side_effect=RuntimeError("sidecar down"),
+        ):
+            entry = lib.promote(result, target_hash="t1", timestamp="ts")
+
+        assert entry is not None  # SAGE failure never blocks graduation
+
+    def test_refused_promotion_stores_nothing(self, tmp_path):
+        from unittest.mock import patch
+
+        lib = RuleLibrary(library_dir=tmp_path)
+        result = _result(dual_control=False)
+
+        with patch(
+            "core.sage.hooks.store_proven_rule_metadata", return_value=True,
+        ) as mock_store:
+            assert lib.promote(result) is None
+
+        mock_store.assert_not_called()

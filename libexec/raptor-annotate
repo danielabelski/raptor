@@ -289,7 +289,33 @@ def cmd_add(opts: argparse.Namespace) -> int:
         )
         return 1
     print(f"wrote {path}")
+    _promote_iris_spec(base, opts, metadata)
     return 0
+
+
+def _promote_iris_spec(base: Path, opts: argparse.Namespace,
+                       metadata: dict) -> None:
+    """Close the annotation→IRIS loop: an operator-confirmed
+    ``sink`` / ``entry_point`` / ``finding`` annotation promotes any
+    matching IRIS taint spec so next-run taint coverage widens.
+
+    Best-effort — a missing IRIS store or promotion failure never
+    fails the add. The annotations base lives directly under the
+    project output dir, matching the IRIS store convention of
+    resolving the project dir from a run-level child, so ``base``
+    doubles as the store lookup hint.
+    """
+    if metadata.get("source") != "human" or not opts.status:
+        return
+    try:
+        from core.iris import promote_spec_on_annotation
+
+        if promote_spec_on_annotation(
+            opts.file, opts.function, opts.status, out_dir=base,
+        ):
+            print("promoted matching IRIS taint spec(s) to xref_backed")
+    except Exception:
+        logger.debug("IRIS spec promotion failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

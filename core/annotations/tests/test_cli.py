@@ -12,8 +12,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CLI = REPO_ROOT / "libexec" / "raptor-annotate"
 
@@ -30,6 +28,7 @@ def _run(*args, env=None, input_text=None):
         capture_output=True,
         text=True,
         input=input_text,
+        check=False,
     )
     return result
 
@@ -48,6 +47,7 @@ class TestTrustMarker:
             env=env,
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 2
         assert "internal dispatch" in result.stderr
@@ -525,3 +525,87 @@ class TestBaseResolution:
         # command harness; here, just ensure the explicit-base path works.
         # Skip this assertion if a project is active in the dev env.
         pass
+
+
+# ---------------------------------------------------------------------------
+# IRIS spec promotion on operator-confirmed annotations (P33)
+# ---------------------------------------------------------------------------
+
+
+class TestIrisPromotionOnAdd:
+    def _write_store(self, project_dir):
+        from core.evidence import EvidenceTier
+        from core.iris.specs import TaintSpec
+        from core.iris.store import save_specs
+
+        spec = TaintSpec(
+            function="write_out",
+            file="src/io.c",
+            role="sink",
+            evidence_tier=EvidenceTier.HEURISTIC,
+        )
+        # save_specs resolves the project dir as out_dir.parent — the
+        # annotations base is a direct child of the project dir, so it
+        # doubles as the run-level hint.
+        save_specs(project_dir / "annotations", [spec])
+
+    def test_sink_annotation_promotes_spec(self, tmp_path):
+        from core.evidence import EvidenceTier
+        from core.iris.store import load_specs
+
+        base = tmp_path / "annotations"
+        base.mkdir()
+        self._write_store(tmp_path)
+
+        r = _run("add", "src/io.c", "write_out",
+                 "--base", str(base), "--status", "sink",
+                 "-m", "confirmed sink wrapper")
+        assert r.returncode == 0, r.stderr
+        assert "promoted matching IRIS taint spec" in r.stdout
+
+        specs = load_specs(base)
+        assert specs[0].evidence_tier == EvidenceTier.XREF_BACKED
+        assert specs[0].source == "operator_confirmed"
+
+    def test_clean_annotation_does_not_promote(self, tmp_path):
+        from core.evidence import EvidenceTier
+        from core.iris.store import load_specs
+
+        base = tmp_path / "annotations"
+        base.mkdir()
+        self._write_store(tmp_path)
+
+        r = _run("add", "src/io.c", "write_out",
+                 "--base", str(base), "--status", "clean",
+                 "-m", "reviewed, fine")
+        assert r.returncode == 0, r.stderr
+        assert "promoted" not in r.stdout
+
+        specs = load_specs(base)
+        assert specs[0].evidence_tier == EvidenceTier.HEURISTIC
+
+    def test_llm_source_does_not_promote(self, tmp_path):
+        from core.evidence import EvidenceTier
+        from core.iris.store import load_specs
+
+        base = tmp_path / "annotations"
+        base.mkdir()
+        self._write_store(tmp_path)
+
+        r = _run("add", "src/io.c", "write_out",
+                 "--base", str(base), "--status", "sink",
+                 "--source", "llm", "-m", "scripted add")
+        assert r.returncode == 0, r.stderr
+        assert "promoted" not in r.stdout
+
+        specs = load_specs(base)
+        assert specs[0].evidence_tier == EvidenceTier.HEURISTIC
+
+    def test_missing_store_never_fails_add(self, tmp_path):
+        base = tmp_path / "annotations"
+        base.mkdir()
+        r = _run("add", "src/io.c", "write_out",
+                 "--base", str(base), "--status", "sink",
+                 "-m", "no IRIS store present")
+        assert r.returncode == 0, r.stderr
+        assert "wrote " in r.stdout

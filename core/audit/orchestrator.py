@@ -3988,6 +3988,13 @@ def _run_audit_body(
     )
 
     session_observations: list[dict[str, str]] = []
+    if config.enable_session_context:
+        try:
+            session_observations.extend(
+                _seed_observations_from_sage(config)
+            )
+        except Exception:
+            logger.debug("SAGE observation seeding failed", exc_info=True)
     discovered_evidence: dict[str, Any] = {}
     reviewed_before_joern: list[dict[str, Any]] = []
     joern_submit_time = time.monotonic() if joern_future is not None else None
@@ -8798,6 +8805,56 @@ def _sage_store_observation(text: str, kind: str, source: str) -> None:
 
 
 _MAX_OBSERVATION_LEN = 500
+
+# How many prior-run observations SAGE may seed into session context.
+_MAX_SAGE_SEED_OBSERVATIONS = 5
+
+
+def _seed_observations_from_sage(config: OrchestratorConfig) -> list[dict[str, str]]:
+    """Seed session context with prior-run audit observations from SAGE.
+
+    Closes the read half of the observation loop
+    (``_sage_store_observation`` writes; nothing recalled until now).
+    Hint-only by design: observations are prose, not MAC-stamped rows,
+    so they inform prompts but never drive mechanical decisions.
+    Recalled text passes through ``_sanitise_observation`` — the same
+    injection scan live observations get — before it can re-enter a
+    prompt. Never raises; returns ``[]`` when SAGE is unavailable.
+    """
+    try:
+        from core.sage.hooks import recall_audit_observations
+    except ImportError:
+        return []
+    try:
+        subject = Path(config.target_path).name
+    except Exception:  # noqa: BLE001 — defensive: config may be a stub
+        return []
+    if not subject:
+        return []
+    try:
+        rows = recall_audit_observations(
+            subject, top_k=_MAX_SAGE_SEED_OBSERVATIONS,
+        )
+    except Exception:
+        logger.debug("SAGE observation recall failed", exc_info=True)
+        return []
+
+    seeded: list[dict[str, str]] = []
+    for row in rows[:_MAX_SAGE_SEED_OBSERVATIONS]:
+        text = _sanitise_observation(str(row.get("content") or ""))
+        if not text:
+            continue
+        seeded.append({
+            "source": "sage:prior-run",
+            "text": text,
+            "kind": "sage_recall",
+        })
+    if seeded:
+        logger.info(
+            "session context: seeded %d prior-run observation(s) from SAGE",
+            len(seeded),
+        )
+    return seeded
 
 
 def _sanitise_observation(text: str) -> str:

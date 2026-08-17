@@ -423,25 +423,33 @@ def _reap_tracer(tracer_pid: int, timeout_s: float = 2.0) -> None:
     _kill_and_reap(tracer_pid)
 
 
-def _sweep_stale_audit_configs() -> None:
+def _sweep_stale_audit_configs(max_age_s: float = 3600.0) -> None:
     """Remove stale raptor-audit-cfg-* tempfiles in /tmp owned by
     the current UID, dating from prior crashed runs.
 
     Audit-config tempfiles get unlinked in the normal lifecycle path
-    (BaseException + final finally in run_sandboxed). But if the
-    parent process gets SIGKILL'd mid-audit (OOM, kernel panic,
-    operator's session terminated externally), the tempfile leaks.
-    Accumulation is slow but real on long-lived dev machines.
+    (BaseException + final finally in run_sandboxed) AND by the tracer
+    itself right after it parses the config. But if both processes get
+    SIGKILL'd mid-audit (OOM, kernel panic, operator's session
+    terminated externally), the tempfile leaks. Accumulation is slow
+    but real on long-lived dev machines.
 
-    Sweep on first engaged-audit per process (idempotent — no-op
-    when no stale files exist). Same-UID-only — never touch other
-    operators' files. Best-effort: any unlink failure is silently
-    ignored (file may have been cleaned up by another process,
-    or ownership changed).
+    Runs on EVERY engaged-audit spawn. That is safe because of the
+    ``max_age_s`` floor: a live config belongs to a concurrent spawn
+    and exists only for the seconds between mkstemp and the tracer
+    parsing (then deleting) it — an hour-old file is unambiguously an
+    orphan. (The floor also fixes a latent race in the previous
+    once-per-process form, which could delete a concurrent process's
+    just-minted config.) Same-UID-only — never touch other operators'
+    files. Best-effort: any unlink failure is silently ignored (file
+    may have been cleaned up by another process, or ownership
+    changed).
     """
     import glob
     import tempfile as _tempfile
+    import time as _time
     my_uid = os.getuid()
+    now = _time.time()
     # Sweep ``$TMPDIR`` when set, not the hardcoded ``/tmp``. On macOS
     # ``tempfile`` defaults to a per-UID ``/var/folders/...`` path; on
     # space-constrained Linux dev boxes ``TMPDIR=/data/tmp``. Pre-fix
@@ -454,12 +462,11 @@ def _sweep_stale_audit_configs() -> None:
             st = os.lstat(path)
             if st.st_uid != my_uid:
                 continue
+            if now - st.st_mtime < max_age_s:
+                continue  # possibly a concurrent spawn's live config
             os.unlink(path)
         except OSError:
             continue
-
-
-_audit_swept = False
 
 
 def _cleanup_stub(root_dir: str) -> None:
@@ -650,14 +657,16 @@ def run_sandboxed(
             )
         elif check_ptrace_available():
             _audit_engaged = True
-            # First engaged-audit per process: sweep stale config
-            # tempfiles from prior crashed runs (SIGKILL'd parent
-            # leaves the mkstemp file behind). Idempotent; no-op
-            # when no stale files exist.
-            global _audit_swept
-            if not _audit_swept:
-                _sweep_stale_audit_configs()
-                _audit_swept = True
+            # Sweep stale config tempfiles from prior crashed runs
+            # (SIGKILL'd parent leaves the mkstemp file behind) on
+            # EVERY engaged-audit spawn. The sweep's age floor makes
+            # per-spawn safe — files younger than an hour may belong
+            # to a concurrent spawn and are left alone, so orphans
+            # created after process start no longer outlive it (the
+            # previous once-per-process guard missed them for the
+            # rest of a long-lived session). Idempotent; no-op when
+            # no stale files exist.
+            _sweep_stale_audit_configs()
             # Build the tracer's filter config. Filtered mode (the
             # `audit` profile) drops openat/connect events that match
             # the Landlock allowlist; verbose mode (`audit-verbose`)

@@ -12,17 +12,16 @@ from __future__ import annotations
 import json
 import os
 import platform
+import time
 from pathlib import Path
 
 import pytest
 
-from core.sandbox import probes
-from core.sandbox import ptrace_probe
+from core.sandbox import probes, ptrace_probe
 from core.sandbox import proxy as proxy_mod
 from core.sandbox import tracer as tracer_mod
 from core.sandbox._spawn import run_sandboxed
 from core.sandbox.context import sandbox
-
 
 pytestmark = [
     pytest.mark.skipif(
@@ -453,17 +452,21 @@ class TestStaleAuditConfigSweep:
     """Finding MM: audit-config tempfiles in /tmp/raptor-audit-cfg-*
     leak when the parent process gets SIGKILL'd mid-audit (OOM, etc.).
     The normal lifecycle paths unlink them, but SIGKILL bypasses
-    finally blocks. Sweep on first engaged-audit per process."""
+    finally blocks. Sweep runs on every engaged-audit spawn, gated by
+    an age floor so a concurrent spawn's just-minted config (alive for
+    the seconds between mkstemp and the tracer parsing it) is never
+    deleted."""
 
     def test_sweep_removes_same_uid_stale_files(self, tmp_path):
         # Create some fake stale config files (own UID).
-        from core.sandbox._spawn import _sweep_stale_audit_configs
         # Put them where the sweep actually looks: tempfile.gettempdir()
         # (TMPDIR-aware), NOT a hardcoded "/tmp". On a box with
         # TMPDIR=/tmp/<something> the sweep globs $TMPDIR while a hardcoded
         # /tmp would never match — the test would fail spuriously even
         # though the sweep is correct.
         import tempfile
+
+        from core.sandbox._spawn import _sweep_stale_audit_configs
         stale_paths = []
         for _ in range(3):
             fd, p = tempfile.mkstemp(
@@ -472,6 +475,10 @@ class TestStaleAuditConfigSweep:
             )
             os.write(fd, b"{}")
             os.close(fd)
+            # Age past the sweep's floor — fresh files are presumed to
+            # belong to a live concurrent spawn and must survive.
+            old = time.time() - 2 * 3600
+            os.utime(p, (old, old))
             stale_paths.append(p)
         try:
             # Now sweep — same-UID files matching the glob should go.
@@ -487,6 +494,55 @@ class TestStaleAuditConfigSweep:
                     os.unlink(p)
                 except OSError:
                     pass
+
+
+    def test_sweep_keeps_fresh_files(self):
+        # A just-minted config may belong to a concurrent spawn — the
+        # age floor must protect it no matter how often the sweep runs.
+        import tempfile
+
+        from core.sandbox._spawn import _sweep_stale_audit_configs
+        fd, p = tempfile.mkstemp(
+            prefix="raptor-audit-cfg-test-", suffix=".json",
+            dir=tempfile.gettempdir(),
+        )
+        os.write(fd, b"{}")
+        os.close(fd)
+        try:
+            _sweep_stale_audit_configs()
+            assert os.path.exists(p), "sweep deleted a fresh config"
+        finally:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    def test_tracer_unlinks_parsed_config(self, tmp_path, monkeypatch):
+        # The tracer deletes the parent-minted config right after
+        # parsing it, so a later SIGKILL of the parent can no longer
+        # strand it. Operator-supplied config files (different name
+        # shape) are kept.
+        import json
+
+        from core.sandbox import tracer as tracer_mod
+
+        monkeypatch.setattr(tracer_mod, "trace",
+                            lambda *a, **kw: 0)
+        cfg = tmp_path / "raptor-audit-cfg-abc123.json"
+        cfg.write_text(json.dumps({"mode": "filtered"}))
+        rc = tracer_mod._cli_main(
+            ["1", str(tmp_path), "3", str(cfg)],
+        )
+        assert rc == 0
+        assert not cfg.exists(), "tracer left the parsed config behind"
+
+        keep = tmp_path / "my-operator-config.json"
+        keep.write_text("{}")
+        rc = tracer_mod._cli_main(
+            ["1", str(tmp_path), "3", str(keep)],
+        )
+        assert rc == 0
+        assert keep.exists(), "tracer deleted an operator-supplied config"
 
     def test_sweep_is_idempotent_when_nothing_to_clean(self):
         from core.sandbox._spawn import _sweep_stale_audit_configs
@@ -512,8 +568,7 @@ class TestAuditConfigWriteFailureHandling:
     """
 
     def test_partial_write_propagates_oserror(self, monkeypatch, tmp_path):
-        from core.sandbox import _spawn
-        from core.sandbox import probes
+        from core.sandbox import _spawn, probes
         if not probes.check_net_available():
             pytest.skip()
         if not probes.check_mount_available():
@@ -573,14 +628,15 @@ class TestAuditMissingOutputBehaviour:
 
     def test_explicit_kwarg_audit_no_output_raises(self):
         from core.sandbox.context import sandbox
-        with sandbox(audit=True) as run:
-            with pytest.raises(ValueError, match="output="):
-                run(["true"])
+        with sandbox(audit=True) as run, \
+                pytest.raises(ValueError, match="output="):
+            run(["true"])
 
     def test_cli_flag_audit_no_output_silently_demotes(self, monkeypatch):
         # CLI --audit set, but THIS sandbox call has no output= →
         # don't kill the workflow; just skip audit for this call.
-        from core.sandbox import state, context as ctx
+        from core.sandbox import context as ctx
+        from core.sandbox import state
         monkeypatch.setattr(state, "_cli_sandbox_audit", True)
         # Call sandbox WITHOUT explicit audit= kwarg — just CLI flag.
         # Should NOT raise on the run() call.
@@ -641,7 +697,9 @@ class TestAuditDegradationWarning:
         omission of target/output is a deliberate caller choice
         (helper sandbox), not an audit prereq failure."""
         import logging
-        from core.sandbox import state, context as ctx
+
+        from core.sandbox import context as ctx
+        from core.sandbox import state
         # Simulate CLI --audit set process-wide.
         monkeypatch.setattr(state, "_cli_sandbox_audit", True)
         # Reset warn-once so the test is independent of suite ordering.
@@ -746,8 +804,8 @@ class TestAuditRunDirKwarg:
         run_sandboxed entry point — the kwargs that arrive there tell
         us exactly what Landlock will see.
         """
-        from core.sandbox import context as ctx
         from core.sandbox import _spawn as _spawn_mod
+        from core.sandbox import context as ctx
         captured = {}
 
         def fake_run_sandboxed(*args, **kwargs):
@@ -797,8 +855,8 @@ class TestAuditRunDirKwarg:
         audit_run_dir=, audit JSONL still lands at output (the
         pre-existing behaviour). audit_run_dir= is a NEW option,
         not a replacement."""
-        from core.sandbox import context as ctx
         from core.sandbox import _spawn as _spawn_mod
+        from core.sandbox import context as ctx
         from core.sandbox.probes import check_mount_available
         # mount_ns_available() alone is insufficient — see comment in
         # test_audit_run_dir_does_not_add_to_writable_paths above.
@@ -850,6 +908,7 @@ class TestAuditAcquireOrdering:
         # between the `try:` that wraps the yield and the `yield run`
         # itself — no other meaningful code can fail between them.
         import inspect
+
         from core.sandbox import context as ctx
         src = inspect.getsource(ctx.sandbox)
         # Find the exact two lines and assert ordering.
@@ -973,7 +1032,8 @@ class TestAuditWithExistingSandboxFlows:
         # code didn't pass `audit=True`. Prompt-injection-safe
         # contract: target repo can't disable audit if operator
         # asked for it.
-        from core.sandbox import state, context as ctx
+        from core.sandbox import context as ctx
+        from core.sandbox import state
         ok, reason = _audit_prereqs_ok()
         if not ok:
             pytest.skip(reason)
@@ -1090,14 +1150,13 @@ class TestProxyAuditAcquireReleaseIntegration:
         try:
             proxy_inst = proxy_mod.get_proxy(["api.example.com"])
 
-            with pytest.raises(RuntimeError, match="simulated"):
-                with sandbox(
-                    audit=True,
-                    use_egress_proxy=True,
-                    proxy_hosts=["api.example.com"],
-                ):
-                    assert proxy_inst._audit_count == 1
-                    raise RuntimeError("simulated workflow failure")
+            with pytest.raises(RuntimeError, match="simulated"), sandbox(
+                audit=True,
+                use_egress_proxy=True,
+                proxy_hosts=["api.example.com"],
+            ):
+                assert proxy_inst._audit_count == 1
+                raise RuntimeError("simulated workflow failure")
 
             # Cleanup ran despite the exception
             assert proxy_inst._audit_count == 0

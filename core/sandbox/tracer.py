@@ -95,14 +95,13 @@ import ctypes.util
 import json
 import logging
 import os
-import time
 import platform
 import signal
 import struct
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from . import audit_budget
 
@@ -328,7 +327,7 @@ def _is_supported_arch() -> bool:
     return _ARCH in _ARCH_INFO
 
 
-def _arch_info() -> Optional[dict]:
+def _arch_info() -> dict | None:
     """Return the active arch's info dict, or None if unsupported."""
     return _ARCH_INFO.get(_ARCH)
 
@@ -380,7 +379,7 @@ _LIBC_UNAVAILABLE = object()
 _libc: object = None
 
 
-def _get_libc() -> Optional[ctypes.CDLL]:
+def _get_libc() -> ctypes.CDLL | None:
     """Resolve libc via find_library, lazy and cached.
 
     Caches BOTH success (the CDLL handle) AND failure (the
@@ -462,7 +461,7 @@ def _ptrace_seize(pid: int) -> bool:
 
 
 def _read_tracee_string(pid: int, addr: int,
-                        max_bytes: int = 4096) -> Optional[str]:
+                        max_bytes: int = 4096) -> str | None:
     """Read a NUL-terminated string from the tracee's address space.
 
     Used to dereference path pointers in syscall args (open's arg0,
@@ -534,7 +533,7 @@ def _read_tracee_string(pid: int, addr: int,
         return repr(raw)
 
 
-def _read_tracee_bytes(pid: int, addr: int, n_bytes: int) -> Optional[bytes]:
+def _read_tracee_bytes(pid: int, addr: int, n_bytes: int) -> bytes | None:
     """Read exactly ``n_bytes`` from the tracee's address space.
 
     Used for fixed-size struct reads where _read_tracee_string's
@@ -575,7 +574,7 @@ def _read_tracee_bytes(pid: int, addr: int, n_bytes: int) -> Optional[bytes]:
     return bytes(buf[:n])
 
 
-def _path_arg_index(syscall_name: str) -> Optional[int]:
+def _path_arg_index(syscall_name: str) -> int | None:
     """Return the index of the path argument for a given syscall, or
     None if the syscall has no path argument worth dereferencing.
 
@@ -699,10 +698,8 @@ def _is_write_intent(flags: int) -> bool:
     """
     if flags & (_O_WRONLY | _O_RDWR):
         return True
-    if flags & (_O_CREAT | _O_TRUNC | _O_APPEND):
-        # CREAT/TRUNC/APPEND imply write even with O_RDONLY=0.
-        return True
-    return False
+    # CREAT/TRUNC/APPEND imply write even with O_RDONLY=0.
+    return bool(flags & (_O_CREAT | _O_TRUNC | _O_APPEND))
 
 
 def _path_in_allowlist(path: str, allowlist: list) -> bool:
@@ -728,7 +725,7 @@ def _path_in_allowlist(path: str, allowlist: list) -> bool:
 
 
 def _decode_sockaddr(pid: int, addr: int,
-                    addrlen: int) -> Optional[tuple]:
+                    addrlen: int) -> tuple | None:
     """Decode a sockaddr struct from the tracee's address space.
 
     Returns (family_name, port, ip_str) for AF_INET / AF_INET6, or
@@ -803,7 +800,7 @@ def _decode_sockaddr(pid: int, addr: int,
     return None
 
 
-def _ptrace_get_event_msg(pid: int) -> Optional[int]:
+def _ptrace_get_event_msg(pid: int) -> int | None:
     """PTRACE_GETEVENTMSG — fetch the event-specific data from the
     most recent ptrace event on `pid`.
 
@@ -823,7 +820,7 @@ def _ptrace_get_event_msg(pid: int) -> Optional[int]:
     return msg.value
 
 
-def _read_regs(pid: int, arch_info: dict) -> Optional[bytes]:
+def _read_regs(pid: int, arch_info: dict) -> bytes | None:
     """Read the target's user_regs_struct via PTRACE_GETREGSET.
 
     Returns the raw bytes (caller decodes via _decode_syscall + arch_info)
@@ -940,11 +937,11 @@ def _ptrace_detach(pid: int) -> bool:
 
 def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
                   args: list, target_pid: int,
-                  path: Optional[str] = None,
+                  path: str | None = None,
                   *,
                   filename: str = _DENIALS_FILENAME,
                   mode_field: str = "audit",
-                  nonce: Optional[str] = None) -> bool:
+                  nonce: str | None = None) -> bool:
     """Append one denial record to the run's JSONL file.
 
     Returns True on successful write, False otherwise. Open/write/close
@@ -1108,7 +1105,7 @@ def _write_record_dict(run_dir: Path, record: dict,
 
 # ----- Event loop -----
 
-def _signal_ready(sync_fd: Optional[int]) -> None:
+def _signal_ready(sync_fd: int | None) -> None:
     """Signal the parent that we're attached and ready to trace.
 
     The parent writes a "go" byte on the OTHER end of this pipe to
@@ -1135,8 +1132,8 @@ def _signal_ready(sync_fd: Optional[int]) -> None:
 
 
 def trace(target_pid: int, run_dir: Path,
-          sync_fd: Optional[int] = None,
-          audit_filter: Optional[dict] = None) -> int:
+          sync_fd: int | None = None,
+          audit_filter: dict | None = None) -> int:
     """Main tracer loop. Returns process exit code.
 
     1. PTRACE_SEIZE the target with TRACESECCOMP + TRACEEXIT +
@@ -1316,12 +1313,12 @@ def _handle_waitpid_event(
     wpid: int, status: int,
     traced: set, target_pid: int,
     arch_info: dict, run_dir: Path,
-    budget: "audit_budget.AuditBudget",
+    budget: audit_budget.AuditBudget,
     *,
-    audit_filter: Optional[dict] = None,
+    audit_filter: dict | None = None,
     output_filename: str = _DENIALS_FILENAME,
     mode_field: str = "audit",
-    observe_nonce: Optional[str] = None,
+    observe_nonce: str | None = None,
     # Injection points so tests can substitute synthetic helpers
     # without forking real children. Defaults are the production
     # implementations; tests pass mocks.
@@ -1414,9 +1411,9 @@ def _handle_waitpid_event(
             # connect_targets. Hoisting the data extraction out;
             # filtering (allowlist / allowed_ports) stays gated on
             # filter-mode below.
-            abs_path: Optional[str] = None
+            abs_path: str | None = None
             write_intent: bool = False
-            sock: Optional[tuple] = None
+            sock: tuple | None = None
             if name in ("openat", "open", "openat2") and path is not None:
                 # Resolve path argument to an absolute string the
                 # parser can match against context-map records.
@@ -1587,7 +1584,7 @@ def _handle_waitpid_event(
     return
 
 
-def _cli_main(argv: Optional[list] = None) -> int:
+def _cli_main(argv: list | None = None) -> int:
     """CLI entry point:
     ``python -m core.sandbox.tracer <pid> <run_dir> [<sync_fd> [<config_path>]]``
 
@@ -1670,6 +1667,17 @@ def _cli_main(argv: Optional[list] = None) -> int:
                 f"error: invalid JSON in audit config {config_path}: {e}\n"
             )
             return 1
+        # Parsed — the tempfile has served its purpose, so remove it
+        # HERE rather than relying only on the spawn parent's cleanup
+        # paths: a SIGKILL'd parent never reaches its finally blocks
+        # and the config strands in the temp dir. Best-effort, and
+        # only for the parent-minted mkstemp shape — an operator
+        # passing their own config file keeps it.
+        if os.path.basename(config_path).startswith("raptor-audit-cfg-"):
+            try:
+                os.unlink(config_path)
+            except OSError:
+                pass
 
     return trace(pid, run_dir, sync_fd, audit_filter)
 

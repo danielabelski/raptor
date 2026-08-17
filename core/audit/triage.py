@@ -8,10 +8,11 @@ All classification is deterministic — no LLM calls.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Sequence
+from typing import Any
 
 from ._util import safe_join
 from .prefilter import PrefilterResult
@@ -24,7 +25,7 @@ class TriageBucket(str, Enum):
     DEEP_DIVE = "deep_dive"
 
 
-TOKEN_BUDGETS: Dict[TriageBucket, int] = {
+TOKEN_BUDGETS: dict[TriageBucket, int] = {
     TriageBucket.SKIP: 0,
     TriageBucket.GLANCE: 500,
     TriageBucket.INVESTIGATE: 6000,
@@ -61,7 +62,7 @@ def classify_function(
     has_dangerous_callees: bool = False,
     binary_absent: bool = False,
     sink_unreachable: bool = False,
-    prefilter: Optional[PrefilterResult] = None,
+    prefilter: PrefilterResult | None = None,
     branch_count: int = 0,
     caller_count: int = 0,
 ) -> TriageResult:
@@ -81,15 +82,43 @@ def classify_function(
             priority_score=priority_score,
         )
 
-    if sink_unreachable and not is_entry_point and not is_sink and not is_trust_boundary:
-        if not has_dangerous_callees and sloc <= 30:
-            reasons.append("no sink path, no dangerous callees, small")
-            return TriageResult(
-                bucket=TriageBucket.SKIP,
-                reasons=tuple(reasons),
-                token_budget=TOKEN_BUDGETS[TriageBucket.SKIP],
-                priority_score=priority_score,
-            )
+    if (
+        sink_unreachable
+        and not is_entry_point
+        and not is_sink
+        and not is_trust_boundary
+        and not has_dangerous_callees
+        and sloc <= 30
+    ):
+        reasons.append("no sink path, no dangerous callees, small")
+        return TriageResult(
+            bucket=TriageBucket.SKIP,
+            reasons=tuple(reasons),
+            token_budget=TOKEN_BUDGETS[TriageBucket.SKIP],
+            priority_score=priority_score,
+        )
+
+    # Binary-oracle absent (suppression-earning: callers pass keys only
+    # for full-DWARF-tier verdicts on trusted binaries — see the
+    # chokepoint rules in core.analysis.reachability). The compiler
+    # removed the function from every analysed binary: spending
+    # hypothesis budget on it wastes review slots. Entry points, sinks
+    # and trust boundaries stay exempt.
+    if (
+        binary_absent
+        and not is_entry_point
+        and not is_sink
+        and not is_trust_boundary
+    ):
+        reasons.append(
+            "binary_oracle_absent (not present in any analysed binary)"
+        )
+        return TriageResult(
+            bucket=TriageBucket.SKIP,
+            reasons=tuple(reasons),
+            token_budget=TOKEN_BUDGETS[TriageBucket.SKIP],
+            priority_score=priority_score,
+        )
 
     if binary_absent and sink_unreachable and not is_entry_point:
         reasons.append("binary absent + no sink path")
@@ -153,19 +182,19 @@ def classify_function(
 
 
 def classify_all(
-    gaps: Sequence[Dict[str, Any]],
+    gaps: Sequence[dict[str, Any]],
     *,
-    entry_points: FrozenSet[str] = frozenset(),
-    sinks: FrozenSet[str] = frozenset(),
-    trust_boundaries: FrozenSet[str] = frozenset(),
-    taint_path_keys: FrozenSet[str] = frozenset(),
-    joern_flow_keys: FrozenSet[str] = frozenset(),
-    binary_absent_keys: FrozenSet[str] = frozenset(),
-    sink_unreachable_keys: FrozenSet[str] = frozenset(),
-    dangerous_callee_keys: FrozenSet[str] = frozenset(),
-    priority_scores: Optional[Dict[str, float]] = None,
-    prefilter_results: Optional[Dict[str, PrefilterResult]] = None,
-) -> Dict[str, TriageResult]:
+    entry_points: frozenset[str] = frozenset(),
+    sinks: frozenset[str] = frozenset(),
+    trust_boundaries: frozenset[str] = frozenset(),
+    taint_path_keys: frozenset[str] = frozenset(),
+    joern_flow_keys: frozenset[str] = frozenset(),
+    binary_absent_keys: frozenset[str] = frozenset(),
+    sink_unreachable_keys: frozenset[str] = frozenset(),
+    dangerous_callee_keys: frozenset[str] = frozenset(),
+    priority_scores: dict[str, float] | None = None,
+    prefilter_results: dict[str, PrefilterResult] | None = None,
+) -> dict[str, TriageResult]:
     """Classify all gap functions. Returns {file:function: TriageResult}."""
     scores = priority_scores or {}
     prefilters = prefilter_results or {}
@@ -199,7 +228,7 @@ def classify_all(
     return results
 
 
-def format_triage_summary(results: Dict[str, TriageResult]) -> str:
+def format_triage_summary(results: dict[str, TriageResult]) -> str:
     """One-line summary of triage distribution."""
     counts = {b: 0 for b in TriageBucket}
     for tr in results.values():
@@ -218,12 +247,12 @@ def format_triage_summary(results: Dict[str, TriageResult]) -> str:
 # ── Generated code detection ─────────────────────────────────────────
 
 _GENERATED_MARKERS = [
-    re.compile(r"DO NOT EDIT", re.I),
+    re.compile(r"DO NOT EDIT", re.IGNORECASE),
     re.compile(r"@generated"),
-    re.compile(r"auto-generated", re.I),
-    re.compile(r"generated by\s+\w+", re.I),
-    re.compile(r"Code generated by\s+\w+", re.I),
-    re.compile(r"THIS FILE IS GENERATED", re.I),
+    re.compile(r"auto-generated", re.IGNORECASE),
+    re.compile(r"generated by\s+\w+", re.IGNORECASE),
+    re.compile(r"Code generated by\s+\w+", re.IGNORECASE),
+    re.compile(r"THIS FILE IS GENERATED", re.IGNORECASE),
 ]
 
 _GENERATED_EXTENSIONS = frozenset({
@@ -234,10 +263,10 @@ _GENERATED_EXTENSIONS = frozenset({
 
 
 def detect_generated_files(
-    gaps: Sequence[Dict[str, Any]],
+    gaps: Sequence[dict[str, Any]],
     *,
-    target_path: Optional[Path] = None,
-) -> List[str]:
+    target_path: Path | None = None,
+) -> list[str]:
     """Identify generated files that should get reduced review depth."""
     generated: list[str] = []
     seen: set[str] = set()

@@ -62,6 +62,7 @@ SCORE_BINARY_SURFACE = 4
 SCORE_PARSER_BOUNDARY = 3
 SCORE_VALIDATE_CONFIRMED = 6
 SCORE_VALIDATE_RULED_OUT = -3
+SCORE_BINARY_ABSENT = -10
 
 _COMPLEX_SLOC = 80
 _MODERATE_SLOC = 30
@@ -92,6 +93,7 @@ def score_functions(
     binary_bridge: Any | None = None,
     validate_confirmed_keys: set[str] | None = None,
     validate_ruled_out_keys: set[str] | None = None,
+    binary_absent_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Score and re-sort gaps by attack-surface proximity.
 
@@ -134,6 +136,11 @@ def score_functions(
             run ruled out with strong receipts on unchanged source.
             Mildly deprioritised (SCORE_VALIDATE_RULED_OUT) — never
             skipped; a fresh hypothesis may differ in mechanism.
+        binary_absent_keys: file:function keys the binary oracle says
+            are absent from every analysed binary (full-DWARF tier,
+            suppression-earning). Hard-deprioritised with
+            SCORE_BINARY_ABSENT so live functions win budget slots;
+            the triage classifier separately skips them.
 
     Returns:
         Gaps sorted by (priority ASC, priority_score DESC, sloc DESC).
@@ -241,6 +248,9 @@ def score_functions(
             score += SCORE_VALIDATE_CONFIRMED
         elif validate_ruled_out_keys and key in validate_ruled_out_keys:
             score += SCORE_VALIDATE_RULED_OUT
+
+        if binary_absent_keys and key in binary_absent_keys:
+            score += SCORE_BINARY_ABSENT
 
         func_name = gap.get("name", "")
         if key in binary_sink_callers or func_name in binary_sink_callers:

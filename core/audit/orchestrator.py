@@ -900,16 +900,29 @@ def review_one_function(
     triage = triage_results.get(gap_key_lined) or triage_results.get(gap_key)
     if triage and triage.bucket == TriageBucket.SKIP and not gap.get("force_review"):
         _increment_tier(result, "triage_skip", "confirmed")
+        # Oracle-earned skips are dead code, not reviewed-clean: the
+        # compiler removed the function from every analysed binary.
+        _oracle_skip = any(
+            "binary_oracle_absent" in r for r in triage.reasons
+        )
         outcome = ReviewOutcome(
             file=gap["file"],
             function=gap["name"],
-            status="clean",
+            status="dormant" if _oracle_skip else "clean",
             body=(
                 f"[triage: {', '.join(triage.reasons)}] "
-                f"Triage classifier determined this function "
-                f"does not need LLM review."
+                + (
+                    "Binary oracle: absent from every analysed binary "
+                    "— skipped without spending hypothesis budget."
+                    if _oracle_skip else
+                    "Triage classifier determined this function "
+                    "does not need LLM review."
+                )
             ),
-            evidence_tool="triage:classifier",
+            evidence_tool=(
+                "reachability:binary_oracle_absent" if _oracle_skip
+                else "triage:classifier"
+            ),
         )
         outcome.line = gap.get("line_start", 0)
         with result._lock:
@@ -960,6 +973,30 @@ def review_one_function(
             evidence_tool="reachability:dead_code",
         )
         outcome.line = gap.get("line_start", 0)
+        if _dead_reason.startswith("binary_oracle_absent") and config.out_dir:
+            with contextlib.suppress(Exception):
+                from core.analysis.reach_chokepoint import record_suppression
+
+                record_suppression(
+                    config.out_dir,
+                    finding={
+                        "finding_id": (
+                            f"audit-deadcode:{gap_key}:"
+                            f"{gap.get('line_start', 0)}"
+                        ),
+                        "rule_id": "audit:dead-code-gate",
+                        "file_path": gap["file"],
+                        "line": gap.get("line_start", 0),
+                        "function": gap["name"],
+                    },
+                    verdict="binary_oracle_absent",
+                    reason=(
+                        "dead-code gate (G7): function absent from the "
+                        "compiled binary — LLM review skipped"
+                    ),
+                    dropped=False,
+                    extra={"stage": "dead-code-gate"},
+                )
         try:
             if collector is not None:
                 collector.submit(outcome, gap)
@@ -2223,6 +2260,121 @@ def review_one_function(
     return outcome
 
 
+_HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
+
+
+def _binary_absent_gap_keys(
+    gaps: list[dict[str, Any]],
+    checklist: dict[str, Any] | None,
+    config: OrchestratorConfig,
+    context_map: dict[str, Any] | None,
+) -> set[str]:
+    """file:function keys the binary oracle proves absent.
+
+    Suppression-earning only: when an enriched inventory is available
+    the chokepoint helper ``core.analysis.reachability.
+    binary_oracle_absent`` decides (full-DWARF tier on EVERY
+    contributing binary, multi-binary alive-in-any combined upstream);
+    otherwise the pre-extracted ``config.binary_verdicts`` map is used
+    (``extract_verdicts`` already withholds absent without a full-tier
+    contributor). Binary trust (git-untracked provenance, source-
+    coverage floor) is enforced upstream where the verdicts are
+    produced. Header files and context-map entry points are exempt —
+    mirrors the G7 dead-code gate.
+    """
+    keys: set[str] = set()
+    inventory = next(
+        (
+            c for c in (config.inventory, checklist)
+            if isinstance(c, dict) and c.get("binary_oracle")
+        ),
+        None,
+    )
+    if inventory is None and not config.binary_verdicts:
+        return keys
+
+    absent_fn = None
+    if inventory is not None:
+        try:
+            from core.analysis.reachability import (
+                binary_oracle_absent as absent_fn,
+            )
+        except ImportError:
+            absent_fn = None
+
+    entry_exempt = extract_context_map_set(context_map, "entry_points")
+    for gap in gaps:
+        file_path = gap.get("file", "")
+        name = gap.get("name", "")
+        if not file_path or not name:
+            continue
+        if file_path.endswith(_HEADER_SUFFIXES):
+            continue
+        key = f"{file_path}:{name}"
+        if key in entry_exempt:
+            continue
+        is_absent = False
+        if absent_fn is not None:
+            try:
+                is_absent = absent_fn(
+                    inventory, file_path, name,
+                    gap.get("line_start", 0) or 0,
+                )
+            except Exception:  # noqa: BLE001
+                is_absent = False
+        elif config.binary_verdicts:
+            is_absent = config.binary_verdicts.get(name, "") == "absent"
+        if is_absent:
+            keys.add(key)
+    return keys
+
+
+def _record_triage_suppressions(
+    gaps: list[dict[str, Any]],
+    triage_results: dict,
+    binary_absent_keys: set[str],
+    out_dir: Path | None,
+) -> int:
+    """suppressions.jsonl audit trail for oracle-earned triage skips."""
+    if not binary_absent_keys or not out_dir:
+        return 0
+    try:
+        from core.analysis.reach_chokepoint import record_suppression
+    except ImportError:
+        return 0
+    written = 0
+    for gap in gaps:
+        key = f"{gap['file']}:{gap['name']}"
+        if key not in binary_absent_keys:
+            continue
+        line = gap.get("line_start", 0) or 0
+        tr = triage_results.get(f"{key}:{line}") or triage_results.get(key)
+        if tr is None or tr.bucket != TriageBucket.SKIP:
+            continue
+        if not any("binary_oracle_absent" in r for r in tr.reasons):
+            continue
+        record_suppression(
+            out_dir,
+            finding={
+                "finding_id": f"audit-triage:{key}:{line}",
+                "rule_id": "audit:hypothesis-triage",
+                "file_path": gap["file"],
+                "line": line,
+                "function": gap["name"],
+            },
+            verdict="binary_oracle_absent",
+            reason=(
+                "hypothesis triage: function absent from every analysed "
+                "binary (full-DWARF tier) — no hypothesis/synthesis "
+                "budget spent"
+            ),
+            dropped=False,
+            extra={"stage": "hypothesis-triage"},
+        )
+        written += 1
+    return written
+
+
 def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     """Compute all mode-independent prep for the audit loop.
 
@@ -2767,6 +2919,20 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             logger.debug("prior-scan-hit key scan failed", exc_info=True)
             prior_scan_keys = set()
 
+    binary_absent_keys: set[str] = set()
+    try:
+        binary_absent_keys = _binary_absent_gap_keys(
+            gaps, checklist, config, context_map,
+        )
+        if binary_absent_keys:
+            logger.info(
+                "binary oracle: %d gap functions absent from all analysed"
+                " binaries — hard-deprioritised and skipped at triage",
+                len(binary_absent_keys),
+            )
+    except Exception:
+        logger.debug("binary-absent gap key scan failed", exc_info=True)
+
     gaps = score_functions(
         gaps,
         context_map=context_map,
@@ -2782,6 +2948,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         new_functions=new_fn_keys or None,
         validate_confirmed_keys=validate_confirmed_keys,
         validate_ruled_out_keys=validate_ruled_out_keys,
+        binary_absent_keys=binary_absent_keys or None,
     )
 
     # Fix-history mining: the target's past security fixes become
@@ -2911,12 +3078,25 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         trust_boundaries=frozenset(trust_boundary_set),
         taint_path_keys=taint_path_keys,
         joern_flow_keys=joern_flow_keys,
+        binary_absent_keys=frozenset(binary_absent_keys),
         sink_unreachable_keys=sink_unreachable_keys,
         dangerous_callee_keys=dangerous_callee_keys,
         priority_scores=priority_scores,
         prefilter_results=gen_prefilters or None,
     )
     logger.info(format_triage_summary(triage_results))
+    try:
+        n_suppressed = _record_triage_suppressions(
+            gaps, triage_results, binary_absent_keys, config.out_dir,
+        )
+        if n_suppressed:
+            logger.info(
+                "binary oracle: %d triage suppressions recorded in"
+                " suppressions.jsonl",
+                n_suppressed,
+            )
+    except Exception:
+        logger.debug("triage suppression records failed", exc_info=True)
 
     from .negative_space import (
         check_sibling_negative_space,
@@ -5237,6 +5417,20 @@ def _run_audit_body(
         )
     except Exception:
         logger.debug("dark verification pass failed", exc_info=True)
+
+    # --- Binary-oracle demotion of promotions in absent functions ---
+    # After dark verification so witness-confirmed outcomes carry the
+    # runtime evidence that vetoes the absent verdict.
+    try:
+        n_demoted = _demote_absent_promotions(result, config)
+        if n_demoted:
+            logger.info(
+                "binary oracle: %d sweep promotions demoted (absent"
+                " functions)",
+                n_demoted,
+            )
+    except Exception:
+        logger.debug("absent-promotion demotion failed", exc_info=True)
 
     # --- Phase 2: security impact classification (bug_first mode) ---
     if config.mode.has_security_phase:
@@ -14746,6 +14940,130 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
             "high-confidence hypothesis(es) despite clean verdict (%s)",
             outcome.file, outcome.function, len(unrefuted), mechanism,
         )
+
+
+def _demote_absent_promotions(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+) -> int:
+    """Demote sweep-promoted findings inside oracle-absent functions.
+
+    A static sweep promotion (semgrep/cocci/joern/SMT) proves the code
+    pattern exists, not that the code runs — the binary oracle's
+    full-DWARF absent verdict is mechanical proof the compiler removed
+    the function. Runtime-confirmed evidence (dark-verify witness,
+    dynamic crash, frida, imported /validate runtime) vetoes the
+    demotion — chokepoint precedence: runtime evidence beats a stale
+    absent verdict. Each demotion carries the verdict as mechanical
+    evidence and one suppressions.jsonl record.
+    """
+    if not (config.binary_verdicts or (
+        isinstance(config.inventory, dict)
+        and config.inventory.get("binary_oracle")
+    )):
+        return 0
+
+    promoted_idx = [
+        i for i, o in enumerate(result.outcomes)
+        if o.status == "finding"
+        and o.body.startswith("[sweep promoted via ")
+    ]
+    if not promoted_idx:
+        return 0
+
+    context_map = None
+    with contextlib.suppress(Exception):
+        context_map = load_context_map(config.out_dir)
+    fake_gaps = [
+        {
+            "file": result.outcomes[i].file,
+            "name": result.outcomes[i].function,
+            "line_start": result.outcomes[i].line or 0,
+        }
+        for i in promoted_idx
+    ]
+    absent_keys = _binary_absent_gap_keys(
+        fake_gaps, None, config, context_map,
+    )
+    if not absent_keys:
+        return 0
+
+    demoted_count = 0
+    for i in promoted_idx:
+        outcome = result.outcomes[i]
+        key = f"{outcome.file}:{outcome.function}"
+        if key not in absent_keys:
+            continue
+        if outcome.compute_tier() == VerificationTier.CONFIRMED.value:
+            # Runtime evidence vetoes the absent verdict.
+            continue
+
+        demoted = ReviewOutcome(
+            file=outcome.file,
+            function=outcome.function,
+            status="dormant",
+            body=(
+                "[binary-oracle demotion: promoted finding is in a "
+                "function absent from every analysed binary "
+                "(full-DWARF tier)]\n\n" + outcome.body
+            ),
+            hypothesis=outcome.hypothesis,
+            hypotheses=outcome.hypotheses,
+            evidence_tool=outcome.evidence_tool,
+            cost_usd=outcome.cost_usd,
+            model=outcome.model,
+            duration_s=outcome.duration_s,
+            review_result=outcome.review_result,
+            line=outcome.line,
+        )
+        demoted.tools_dispatched = outcome.tools_dispatched
+        demoted.tools_errored = outcome.tools_errored
+        with contextlib.suppress(Exception):
+            from .evidence_grade import EvidenceSource, grade_evidence
+
+            ev = grade_evidence(
+                EvidenceSource.BINARY_ORACLE,
+                "binary oracle: function absent from every analysed "
+                "binary (full-DWARF tier) — sweep promotion demoted",
+            )
+            if isinstance(demoted.review_result, dict):
+                demoted.review_result.setdefault(
+                    "evidence_chain", [],
+                ).append(ev.to_dict())
+
+        result.outcomes[i] = demoted
+        with result._lock:
+            result.findings -= 1
+            result.dormant += 1
+        demoted_count += 1
+
+        if config.out_dir:
+            with contextlib.suppress(Exception):
+                from core.analysis.reach_chokepoint import record_suppression
+
+                record_suppression(
+                    config.out_dir,
+                    finding={
+                        "finding_id": f"audit-promotion:{key}:{outcome.line or 0}",
+                        "rule_id": "audit:sweep-promotion",
+                        "file_path": outcome.file,
+                        "line": outcome.line or 0,
+                        "function": outcome.function,
+                    },
+                    verdict="binary_oracle_absent",
+                    reason=(
+                        "sweep promotion demoted to dormant: binary "
+                        "oracle says the function is absent from every "
+                        "analysed binary (full-DWARF tier)"
+                    ),
+                    dropped=False,
+                    extra={"stage": "promotion-demotion"},
+                )
+        logger.info(
+            "binary oracle: demoted promoted finding %s (absent)", key,
+        )
+
+    return demoted_count
 
 
 def _promote_outcome(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:

@@ -593,6 +593,7 @@ def run_cc_streaming(
     surface when the cwd is not operator-controlled. Pass an explicit
     path only when a caller genuinely wants project context loaded.
     """
+    import os
     import select
     import subprocess
     import time as _time
@@ -608,10 +609,29 @@ def run_cc_streaming(
     )
 
     if proc.stdin:
-        proc.stdin.write(prompt)
-        proc.stdin.close()
+        # A child that exits at startup (bad flag, missing backend)
+        # closes its end before consuming the prompt — the write then
+        # raises BrokenPipeError. Swallow it so control reaches the
+        # returncode path below, which reports "claude -p exited N"
+        # with the child's stderr instead of crashing the caller.
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
 
     collected: list[str] = []
+    # Drain stderr WHILE the child runs. A child that writes more
+    # than the 64KB pipe buffer to stderr (network retry spew, node
+    # warnings) otherwise blocks in write(2) forever and the call
+    # dies as a timeout instead of surfacing the real error. Read via
+    # os.read on the raw fd — readline() on the text wrapper could
+    # block on a partial line even after select() reports readiness.
+    stderr_chunks: list[bytes] = []
+    stderr_fd = proc.stderr.fileno() if proc.stderr else None
     start = _time.monotonic()
     deadline = start + timeout_s if timeout_s else None
 
@@ -623,19 +643,34 @@ def run_cc_streaming(
                 proc.kill()
                 proc.wait()
                 raise subprocess.TimeoutExpired(cmd, timeout_s or 0)
+        read_set = [s for s in (proc.stdout, proc.stderr) if s]
         ready, _, _ = select.select(
-            [proc.stdout], [], [], min(remaining or 1.0, 1.0),
+            read_set, [], [], min(remaining or 1.0, 1.0),
         )
-        if ready and proc.stdout:
+        if proc.stdout in ready:
             line = proc.stdout.readline()
             if line:
                 collected.append(line)
+        if proc.stderr in ready and stderr_fd is not None:
+            chunk = os.read(stderr_fd, 65536)
+            if chunk:
+                stderr_chunks.append(chunk)
 
     if proc.stdout:
         collected.extend(proc.stdout)
+    # Drain whatever stderr remains without blocking (zero-timeout
+    # select guards against a grandchild holding the pipe open).
+    while stderr_fd is not None:
+        ready, _, _ = select.select([stderr_fd], [], [], 0)
+        if not ready:
+            break
+        chunk = os.read(stderr_fd, 65536)
+        if not chunk:
+            break
+        stderr_chunks.append(chunk)
 
     if proc.returncode != 0:
-        stderr_text = proc.stderr.read() if proc.stderr else ""
+        stderr_text = b"".join(stderr_chunks).decode("utf-8", "replace")
         from core.security.prompt_output_sanitise import escape_nonprintable
         partial = parse_stream_json_lines(collected)
         # Aborts (budget cap, API refusal) exit nonzero with EMPTY

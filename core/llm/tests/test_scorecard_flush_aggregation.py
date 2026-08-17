@@ -167,6 +167,89 @@ class TestProcessAggregation:
         assert client_mod._SCORECARD_FLUSH_CLIENTS.count(c) == 1
 
 
+class TestAtexitPytestSuppression:
+    """The atexit entrypoint must not WRITE to the scorecard under
+    pytest.
+
+    Per-test scorecard isolation (the conftest's autouse flush stub,
+    tmp scorecard paths) unwinds at test teardown — before atexit —
+    so an exit-time flush would write mock usage windows into the
+    real out/llm_scorecard.json on every dev pytest run. The
+    live-API-leak diagnostic (paid calls under pytest) must survive
+    the suppression: it is how the operator finds unstubbed tests.
+    """
+
+    def test_atexit_entry_suppressed_under_pytest(self, capsys, monkeypatch):
+        monkeypatch.delenv("RAPTOR_SCORECARD_TEST_FLUSH", raising=False)
+        c = _make_client("haiku", calls=1, cost=0.0)
+        _register_scorecard_flush(c)
+
+        client_mod._atexit_flush_scorecards()
+
+        # This test session IS pytest: no scorecard write, and a
+        # zero-cost window prints nothing (same anti-noise rule as
+        # _print_scorecard_summary).
+        assert not c._scorecard.register_uses.called
+        assert "scorecard:" not in capsys.readouterr().err
+
+    def test_paid_leak_banner_survives_suppression(self, capsys, monkeypatch):
+        """A PAID window under pytest is a live-API leak from an
+        unstubbed test: the scorecard write is still suppressed, but
+        the summary + offending-test banner must emit."""
+        monkeypatch.delenv("RAPTOR_SCORECARD_TEST_FLUSH", raising=False)
+        c = _make_client("haiku", calls=2, cost=1.25)
+        c._paid_test_ctxs = {"tests/test_leaky.py::test_unstubbed"}
+        _register_scorecard_flush(c)
+
+        client_mod._atexit_flush_scorecards()
+
+        assert not c._scorecard.register_uses.called   # no write
+        err = capsys.readouterr().err
+        assert "scorecard: 2 calls across 1 model(s) " in err
+        assert "$1.2500" in err
+        assert "paid call(s) fired from test(s): " in err
+        assert "tests/test_leaky.py::test_unstubbed" in err
+
+    def test_opt_in_env_reenables_atexit_flush(self, capsys, monkeypatch):
+        monkeypatch.setenv("RAPTOR_SCORECARD_TEST_FLUSH", "1")
+        c = _make_client("haiku", calls=1, cost=0.3)
+        _register_scorecard_flush(c)
+
+        client_mod._atexit_flush_scorecards()
+
+        assert c._scorecard.register_uses.call_count == 1
+        err = capsys.readouterr().err
+        assert "scorecard: 1 calls across 1 model(s) " in err
+
+    def test_direct_flush_unaffected_by_guard(self, capsys, monkeypatch):
+        """Direct callers keep working under pytest without opt-in."""
+        monkeypatch.delenv("RAPTOR_SCORECARD_TEST_FLUSH", raising=False)
+        c = _make_client("haiku", calls=1, cost=0.3)
+        _register_scorecard_flush(c)
+
+        _flush_all_scorecards()
+
+        assert c._scorecard.register_uses.call_count == 1
+
+    def test_scorecard_path_env_override(self, monkeypatch, tmp_path):
+        """RAPTOR_SCORECARD_PATH redirects the config default so the
+        flush target itself is test-isolatable."""
+        import dataclasses
+        from pathlib import Path
+
+        from core.llm.config import LLMConfig
+
+        fld = {f.name: f for f in dataclasses.fields(LLMConfig)}[
+            "scorecard_path"
+        ]
+        monkeypatch.setenv(
+            "RAPTOR_SCORECARD_PATH", str(tmp_path / "sc.json"),
+        )
+        assert fld.default_factory() == tmp_path / "sc.json"
+        monkeypatch.delenv("RAPTOR_SCORECARD_PATH")
+        assert fld.default_factory() == Path("out/llm_scorecard.json")
+
+
 class TestSummaryLineSuppression:
     def test_quiet_env_suppresses(self, capsys, monkeypatch):
         monkeypatch.setenv("RAPTOR_LLM_QUIET", "1")

@@ -161,8 +161,88 @@ def _register_scorecard_flush(client: Any) -> None:
         _SCORECARD_FLUSH_CLIENTS.append(client)
         if not _SCORECARD_ATEXIT_ARMED:
             import atexit
-            atexit.register(_flush_all_scorecards)
+            atexit.register(_atexit_flush_scorecards)
             _SCORECARD_ATEXIT_ARMED = True
+
+
+def _scorecard_atexit_suppressed() -> bool:
+    """True when the process-exit scorecard flush must not run.
+
+    Under pytest, per-test scorecard isolation (monkeypatched flush
+    methods, tmp scorecard paths) is torn down at test teardown —
+    BEFORE interpreter exit — so the atexit flush would write every
+    registered test client's mock usage window into the real
+    ``out/llm_scorecard.json``, corrupting the reliability data that
+    ``/scorecard`` and the calibrated cross-model merge weights
+    consume, a little more on every dev pytest run.
+
+    ``"pytest" in sys.modules`` rather than ``PYTEST_CURRENT_TEST``:
+    atexit handlers run at interpreter shutdown, after pytest has
+    already unset the per-test env var (same reasoning as the
+    zero-cost summary suppression in :func:`_print_scorecard_summary`).
+
+    ``RAPTOR_SCORECARD_TEST_FLUSH=1`` opts back in — for tests that
+    exercise the atexit path end-to-end against an isolated
+    ``RAPTOR_SCORECARD_PATH``.
+    """
+    import os as _os
+    import sys as _sys
+
+    if _os.environ.get("RAPTOR_SCORECARD_TEST_FLUSH"):
+        return False
+    return "pytest" in _sys.modules
+
+
+def _atexit_flush_scorecards() -> None:
+    """Process-exit entrypoint: honour the pytest suppression guard,
+    then delegate to :func:`_flush_all_scorecards`. Direct callers
+    (manual flushes, tests) use ``_flush_all_scorecards`` and are
+    unaffected by the guard.
+
+    When suppressed, the usage windows are read WITHOUT writing to the
+    scorecard, and the live-API-leak diagnostic is preserved: a paid
+    call recorded during a pytest session means an unstubbed test hit
+    a real provider, so the operator still gets the summary line plus
+    the offending test names even though the leaked window itself
+    never reaches ``out/llm_scorecard.json``."""
+    if not _scorecard_atexit_suppressed():
+        _flush_all_scorecards()
+        return
+    with _SCORECARD_FLUSH_LOCK:
+        clients = list(_SCORECARD_FLUSH_CLIENTS)
+        _SCORECARD_FLUSH_CLIENTS.clear()
+    total: dict[str, Any] = {
+        "calls": 0, "cost_usd": 0.0, "latency_ms_sum": 0, "models": {},
+        "paid_test_ctxs": set(),
+    }
+    for client in clients:
+        try:
+            with client._stats_lock:
+                fired = dict(getattr(client, "_fired_models", {}) or {})
+                usage = {
+                    k: dict(v)
+                    for k, v in (
+                        getattr(client, "_fired_usage", {}) or {}
+                    ).items()
+                }
+            ctxs = set(getattr(client, "_paid_test_ctxs", None) or ())
+        except Exception as exc:  # noqa: BLE001 — atexit best-effort
+            logger.debug("suppressed scorecard summary read failed: %s", exc)
+            continue
+        for (_prov, alias, _resolved, _role), n in fired.items():
+            if not alias:
+                continue
+            total["calls"] += int(n or 0)
+            total["models"][alias] = (
+                total["models"].get(alias, 0) + int(n or 0)
+            )
+        for metrics in usage.values():
+            total["cost_usd"] += float(metrics.get("cost_usd") or 0.0)
+            total["latency_ms_sum"] += int(
+                metrics.get("latency_ms_sum") or 0)
+        total["paid_test_ctxs"].update(ctxs)
+    if total["cost_usd"] > 0.0:
+        _print_scorecard_summary(total)
 
 
 def _flush_all_scorecards() -> None:

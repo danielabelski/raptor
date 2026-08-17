@@ -1231,8 +1231,15 @@ class LLMConfig:
     # reliability across decision classes and use measured miss-rate
     # to gate fast-tier short-circuit decisions. None or False
     # means consumers run their full path without scorecard
-    # consultation.
-    scorecard_path: Path = Path("out/llm_scorecard.json")
+    # consultation. RAPTOR_SCORECARD_PATH overrides the default so
+    # tests and sandboxed runs can isolate the on-disk reliability
+    # data (read at construction time, per config instance).
+    scorecard_path: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get("RAPTOR_SCORECARD_PATH")
+            or "out/llm_scorecard.json"
+        )
+    )
     scorecard_enabled: bool = True
     # When False, do not retain disagreement-sample reasoning text.
     # Defense-in-depth privacy switch for operators on shared

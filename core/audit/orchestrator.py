@@ -13170,11 +13170,20 @@ def _re_review_study_enriched(
     When *throttle* is provided, each LLM call acquires a slot first.
     """
     candidates = []
+    seen_candidate_keys: set[str] = set()
     for key in reading_list_functions:
         parts = key.split(":", 1)
         if len(parts) != 2:
             continue
         file_path, func_name = parts
+
+        # Duplicate entries (same function listed twice) resolve to the
+        # same prior outcome — without dedupe the second replace would
+        # raise ValueError from outcomes.index() (same pattern as
+        # _re_review_joern_enriched).
+        candidate_key = f"{file_path}:{func_name}"
+        if candidate_key in seen_candidate_keys:
+            continue
 
         prior = next(
             (
@@ -13192,6 +13201,7 @@ def _re_review_study_enriched(
             "name": func_name,
             "line_start": getattr(prior, "line", 0),
         }
+        seen_candidate_keys.add(candidate_key)
         candidates.append((gap, prior))
 
     if not candidates:
@@ -13313,10 +13323,17 @@ def _re_review_study_enriched(
                     )
 
         if outcome.status != prior_outcome.status:
-            _untally_outcome(result, prior_outcome)
-            oi = result.outcomes.index(prior_outcome)
-            result.outcomes[oi] = outcome
-            _tally_outcome(result, outcome, append=False)
+            # Guarded like the sibling passes (_re_review_joern_enriched,
+            # _callee_contract_requeue): the prior outcome may no longer
+            # be in the list by replace time.
+            if prior_outcome in result.outcomes:
+                _untally_outcome(result, prior_outcome)
+                oi = result.outcomes.index(prior_outcome)
+                result.outcomes[oi] = outcome
+                _tally_outcome(result, outcome, append=False)
+            else:
+                result.outcomes.append(outcome)
+                _tally_outcome(result, outcome, append=False)
 
             try:
                 _commit_outcome(config, outcome, gap)

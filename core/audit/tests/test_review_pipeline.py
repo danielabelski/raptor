@@ -2387,6 +2387,73 @@ class TestStudyReReviewParallel:
         assert serial_count == call_count == 2
         assert result_serial.suspicious == result_parallel.suspicious
 
+    def test_duplicate_gap_entries_do_not_crash(self, monkeypatch, tmp_path):
+        """Duplicate reading-list entries resolve to the same prior
+        outcome; the second replace used to raise ValueError from
+        outcomes.index() once the first iteration had swapped the prior
+        out of the list. Candidates are now deduped and the replace is
+        guarded (same shape as _re_review_joern_enriched)."""
+        import copy
+        import time
+
+        import core.audit.orchestrator as _orch
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            OrchestratorResult,
+            _re_review_study_enriched,
+        )
+
+        outcomes = [
+            self._make_outcome("a.c", "foo", "clean"),
+            self._make_outcome("b.c", "bar", "clean"),
+        ]
+        checklist = {
+            "files": [
+                {"path": "a.c", "functions": [{"name": "foo", "line_start": 1, "line_end": 50}]},
+                {"path": "b.c", "functions": [{"name": "bar", "line_start": 1, "line_end": 50}]},
+            ],
+        }
+        config = OrchestratorConfig(
+            target_path=tmp_path,
+            out_dir=tmp_path,
+            sweep_validate_findings=False,
+            enable_session_context=False,
+        )
+        monkeypatch.setattr(
+            _orch, "_build_context",
+            lambda cfg, gap, *a, **kw: {"file": gap["file"], "function": gap["name"]},
+        )
+        monkeypatch.setattr(
+            _orch, "_commit_outcome", lambda *a, **kw: None,
+        )
+
+        call_count = 0
+        def mock_review(ctx, cfg):
+            nonlocal call_count
+            call_count += 1
+            return self._make_outcome(ctx["file"], ctx["function"], "suspicious")
+
+        # A list (not a set) so the duplicate entries actually reach
+        # the candidate loop — the signature says set, but nothing
+        # enforces it and the dedupe must hold either way.
+        reading_list = ["a.c:foo", "a.c:foo", "b.c:bar"]
+
+        result = OrchestratorResult(
+            outcomes=copy.deepcopy(outcomes), clean=2,
+        )
+        _re_review_study_enriched(
+            result, config, mock_review, checklist, None, {},
+            None, set(), reading_list, time.time(), None,
+            max_workers=1,
+        )
+
+        # Each function reviewed exactly once; no duplicate outcomes.
+        assert call_count == 2
+        assert len(result.outcomes) == 2
+        statuses = {(o.file, o.function): o.status for o in result.outcomes}
+        assert statuses[("a.c", "foo")] == "suspicious"
+        assert statuses[("b.c", "bar")] == "suspicious"
+
 
 # ── Pre-loop SMT screen ──────────────────────────────────────────────
 

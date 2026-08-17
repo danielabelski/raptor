@@ -1410,15 +1410,17 @@ def _bridge_understand_output(out_dir, checklist, target,
 
 
 def _bridge_audit_output(out_dir, target=None):
-    """Import /audit constraints, attack chains, and summaries into the validate run."""
+    """Import /audit constraints, chains, summaries, and dark outcomes into the validate run."""
     try:
         from core.orchestration.audit_bridge import (
             enrich_attack_paths,
             enrich_with_summaries,
             find_audit_output,
             inject_chains_as_hypotheses,
+            inject_dark_as_hypotheses,
             load_attack_chains,
             load_audit_constraints,
+            load_dark_findings,
             load_summaries,
         )
     except ImportError:
@@ -1441,6 +1443,15 @@ def _bridge_audit_output(out_dir, target=None):
         attack_surface_file = Path(out_dir) / "attack-surface.json"
         injected = inject_chains_as_hypotheses(chains, attack_surface_file)
         print(f"  Audit bridge: injected {injected} chain hypotheses into attack-surface")
+
+    # Dark outcomes: /audit's "tool-blind, needs concrete verification"
+    # bucket — /validate is exactly the pipeline built to judge them.
+    dark = load_dark_findings(audit_dir)
+    if dark:
+        attack_surface_file = Path(out_dir) / "attack-surface.json"
+        injected_dark = inject_dark_as_hypotheses(dark, attack_surface_file)
+        print(f"  Audit bridge: injected {injected_dark} dark-outcome hypotheses"
+              f" (needs_validation) into attack-surface")
 
     summaries = load_summaries(audit_dir)
     if summaries:

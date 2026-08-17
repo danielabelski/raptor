@@ -20,6 +20,7 @@ from .evidence_grade import (
     finding_confidence,
     grade_evidence_record,
     grade_review_result,
+    is_tool_evidence,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,14 @@ def build_graded_finding(
     Combines mechanical evidence (from EvidenceRecord) with LLM review
     evidence (from ReviewOutcome.review_result) into a single ordered
     chain with source tags and confidence levels.
+
+    The exported ``confidence`` is computed only from
+    hypothesis-correlated evidence: the review-derived items plus tool
+    receipts (which pass correlation gates before they are stamped).
+    Ambient mechanical signals from the evidence record — e.g. a Joern
+    flow that exists somewhere in the function but was never matched
+    to THIS hypothesis — stay in the exported chain as context but no
+    longer export an LLM-only guess as ``confidence=high``.
     """
     chain: list[GradedEvidence] = []
 
@@ -42,9 +51,13 @@ def build_graded_finding(
 
     review_result = getattr(outcome, "review_result", None) or {}
     evidence_tool = getattr(outcome, "evidence_tool", "")
-    chain.extend(grade_review_result(review_result, evidence_tool))
+    review_items = grade_review_result(review_result, evidence_tool)
+    chain.extend(review_items)
 
-    confidence = finding_confidence(chain)
+    if is_tool_evidence(evidence_tool):
+        confidence = finding_confidence(chain)
+    else:
+        confidence = finding_confidence(review_items)
 
     file_val = getattr(outcome, "file", "")
     func_val = getattr(outcome, "function", "")
@@ -55,6 +68,18 @@ def build_graded_finding(
     finding_id = getattr(outcome, "finding_id", "")
     if not finding_id:
         finding_id = f"{file_val}:{func_val}:{line_val}"
+
+    # Verification tier: prefer a live recompute (post-resolution
+    # dispatch state), fall back to the journaled attribute.
+    tier = ""
+    compute = getattr(outcome, "compute_tier", None)
+    if callable(compute):
+        try:
+            tier = compute() or ""
+        except Exception:  # noqa: BLE001 — export must not fail the run
+            tier = ""
+    if not tier:
+        tier = getattr(outcome, "verification_tier", "") or "speculative"
 
     finding: dict[str, Any] = {
         "id": finding_id,
@@ -67,8 +92,13 @@ def build_graded_finding(
         "vuln_type": review_result.get("vuln_type", ""),
         "depth": getattr(outcome, "depth", "L1"),
         "confidence": confidence.value,
+        "verification_tier": tier,
         "evidence_chain": [e.to_dict() for e in chain],
     }
+    if status_val == "dark":
+        # Tool-blind bucket: no mechanical channel can decide this
+        # class — exactly the findings /validate exists to judge.
+        finding["needs_validation"] = True
 
     if review_result.get("cwe_class"):
         finding["cwe_class"] = review_result["cwe_class"]
@@ -173,7 +203,12 @@ def export_findings(
     findings: list[dict[str, Any]] = []
     for outcome in outcomes:
         status = getattr(outcome, "status", "clean")
-        if status not in ("finding", "suspicious"):
+        # "dark" is exported alongside finding/suspicious: it is the
+        # "tool-blind, needs concrete verification" bucket — excluding
+        # it made every hypothesis the gates routed to dark invisible
+        # to the operator and to /validate, the one pipeline built to
+        # judge tool-blind findings.
+        if status not in ("finding", "suspicious", "dark"):
             continue
 
         key = f"{getattr(outcome, 'file', '')}:{getattr(outcome, 'function', '')}"
@@ -193,6 +228,9 @@ def export_findings(
             ),
             "low_confidence": sum(
                 1 for f in findings if f["confidence"] == "low"
+            ),
+            "dark": sum(
+                1 for f in findings if f["status"] == "dark"
             ),
         },
     }
@@ -249,6 +287,13 @@ def format_findings_summary(export: dict[str, Any]) -> str:
         parts.append(f"{low} low-confidence")
     if parts:
         lines.append(f"Confidence: {', '.join(parts)}")
+
+    dark = stats.get("dark", 0)
+    if dark:
+        lines.append(
+            f"Dark (tool-blind, needs concrete verification): {dark} "
+            f"— route to /validate"
+        )
 
     chains = export.get("attack_chains", [])
     if chains:

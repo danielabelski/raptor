@@ -4607,6 +4607,14 @@ def _run_audit_body(
     except Exception:
         logger.debug("tier diagnostics output failed", exc_info=True)
 
+    # Journal entries were committed mid-loop, pre-resolution — append
+    # corrective entries so the journal reflects final statuses (dark
+    # included) before the export and report read it.
+    try:
+        _rejournal_final_statuses(result, config)
+    except Exception:
+        logger.debug("re-journal pass failed", exc_info=True)
+
     try:
         from .findings_export import export_findings, write_graded_findings
 
@@ -12389,6 +12397,62 @@ def _promote_outcome(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:
     if promoted.review_result:
         promoted.review_result["evidence_tool"] = tool
     return promoted
+
+
+def _rejournal_final_statuses(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+) -> int:
+    """Append updated journal entries for post-resolution status changes.
+
+    Journal entries are committed mid-loop, BEFORE the post-loop passes
+    (sweep promotion, gate resolution, dark verification) change
+    statuses — so the journal said "suspicious" for outcomes the run
+    finally resolved to clean/dark/finding. Append one corrective entry
+    per drifted outcome; ``latest_entries`` semantics make the newest
+    entry authoritative. Returns the number of entries appended.
+    """
+    if not config.out_dir:
+        return 0
+    try:
+        from .collector import append_journal_for_outcome
+        from .journal import latest_entries, make_function_key
+    except ImportError:
+        return 0
+    try:
+        entries = latest_entries(config.out_dir)
+    except Exception:
+        logger.debug("re-journal: latest_entries failed", exc_info=True)
+        return 0
+
+    updated = 0
+    for outcome in result.outcomes:
+        if outcome.status == "error":
+            continue
+        key = make_function_key(outcome.file, outcome.function)
+        prior = entries.get(key)
+        if prior is None or prior.verdict == outcome.status:
+            continue
+        try:
+            append_journal_for_outcome(
+                out_dir=config.out_dir,
+                target_path=config.target_path,
+                run_id=(config.out_dir.name if config.out_dir else ""),
+                outcome=outcome,
+                gap={"line_start": outcome.line or 0},
+            )
+            updated += 1
+        except Exception:
+            logger.debug(
+                "re-journal failed for %s:%s",
+                outcome.file, outcome.function, exc_info=True,
+            )
+    if updated:
+        logger.info(
+            "re-journal: %d post-resolution final statuses appended",
+            updated,
+        )
+    return updated
 
 
 _GATE_DEMOTED_PREFIXES = (

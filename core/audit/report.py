@@ -90,6 +90,13 @@ def generate_report(
         "unrecorded_reads": unrecorded,
     }
 
+    # Dark outcomes ("tool-blind, needs concrete verification") from
+    # the graded export — surfaced so the bucket reaches the operator
+    # instead of being tallied invisibly as dormant.
+    dark_findings = _load_dark_findings(out_dir)
+    if dark_findings:
+        report["dark_findings"] = dark_findings
+
     # Finding-survival metric: per-evidence-channel /validate outcomes
     # (pure read-side aggregation over the journal — empty until a
     # /validate feedback import has run).
@@ -231,6 +238,27 @@ def write_markdown_report(
                 f"**Evidence:** {tier}"
             )
             lines.append("")
+
+    # Dark findings — tool-blind hypotheses that need concrete
+    # verification. Not findings, not refuted: route to /validate.
+    dark = report.get("dark_findings", [])
+    if dark:
+        lines.append(f"## Dark findings ({len(dark)}) — need concrete verification")
+        lines.append("")
+        lines.append(
+            "No mechanical channel can decide these classes. They are "
+            "exported in findings-graded.json with `needs_validation: "
+            "true` — run `/validate` to judge them."
+        )
+        lines.append("")
+        for f in dark[:20]:
+            title = _line(f.get("title", "Untitled"))
+            file_loc = _line(f.get("file", "?"))
+            line_no = _line(f.get("line", "?"), max_chars=20)
+            lines.append(f"- {title} ({file_loc}:{line_no})")
+        if len(dark) > 20:
+            lines.append(f"- ... and {len(dark) - 20} more")
+        lines.append("")
 
     # Evidence distribution
     lines.append("## Evidence distribution")
@@ -414,6 +442,23 @@ def _apply_journal_verdict_overrides(
     return out
 
 
+def _load_dark_findings(out_dir: Path) -> list[dict[str, Any]]:
+    """Load status=dark entries from findings-graded.json."""
+    path = out_dir / "findings-graded.json"
+    if not path.exists():
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    findings = data.get("findings", []) if isinstance(data, dict) else []
+    return [
+        f for f in findings
+        if isinstance(f, dict) and f.get("status") == "dark"
+    ]
+
+
 def _load_findings(out_dir: Path) -> list[dict[str, Any]]:
     path = out_dir / "findings.json"
     if not path.exists():
@@ -450,7 +495,7 @@ def _compute_stats(audit_data: dict[str, Any]) -> dict[str, int]:
     """
     counts = {
         "reviewed": 0, "clean": 0, "suspicious": 0, "finding": 0,
-        "dormant": 0, "error": 0, "mechanical": 0,
+        "dormant": 0, "dark": 0, "error": 0, "mechanical": 0,
     }
 
     if "files" in audit_data:
@@ -588,6 +633,7 @@ def _format_summary(report: dict[str, Any]) -> str:
         f"Functions LLM-reviewed: {stats.get('reviewed', 0)}{mech_s}",
         f"  Clean: {stats.get('clean', 0)}",
         f"  Dormant: {stats.get('dormant', 0)}",
+        f"  Dark: {stats.get('dark', 0)}",
         f"  Suspicious: {stats.get('suspicious', 0)}",
         f"  Finding: {stats.get('finding', 0)}",
         f"  Error: {stats.get('error', 0)}",
@@ -595,6 +641,27 @@ def _format_summary(report: dict[str, Any]) -> str:
         f"Tool-confirmed findings: {report.get('findings_count', 0)}",
         f"Gaps remaining: {report.get('gaps_remaining', 0)}",
     ]
+
+    dark_findings = report.get("dark_findings", [])
+    if dark_findings:
+        lines.append("")
+        lines.append(
+            f"### Dark findings ({len(dark_findings)}) — "
+            f"need concrete verification"
+        )
+        lines.append(
+            "Tool-blind classes (auth bypass, logic, IDOR, ...) no "
+            "mechanical channel can decide. Exported with "
+            "needs_validation: true — run /validate on them."
+        )
+        for f in dark_findings[:10]:
+            lines.append(
+                f"- {_line(f.get('title', 'Untitled'))} "
+                f"({_line(f.get('file', '?'))}:"
+                f"{_line(f.get('line', '?'), max_chars=20)})"
+            )
+        if len(dark_findings) > 10:
+            lines.append(f"  ... and {len(dark_findings) - 10} more")
 
     findings = report.get("findings", [])
     if findings:

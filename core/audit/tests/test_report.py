@@ -493,3 +493,66 @@ class TestWriteMarkdownReport:
         path = write_markdown_report(report, tmp_path)
         content = path.read_text()
         assert "| HEURISTIC | 2 |" in content
+
+
+class TestDarkSurfacing:
+    """Dark outcomes must reach the operator: stats, summary, and a
+    dedicated report section (previously tallied invisibly)."""
+
+    def test_compute_stats_counts_dark(self):
+        audit_data = {
+            "functions_analysed": [
+                {"file": "a.c", "function": "f1", "status": "dark"},
+                {"file": "a.c", "function": "f2", "status": "clean"},
+            ],
+        }
+        stats = _compute_stats(audit_data)
+        assert stats["dark"] == 1
+
+    def test_summary_lists_dark_findings(self):
+        report = {
+            "stats": {"reviewed": 2, "dark": 1},
+            "findings_count": 0,
+            "gaps_remaining": 0,
+            "findings": [],
+            "dark_findings": [
+                {"title": "auth bypass in role check",
+                 "file": "auth.py", "line": 12},
+            ],
+        }
+        text = _format_summary(report)
+        assert "Dark: 1" in text
+        assert "need concrete verification" in text
+        assert "auth bypass in role check" in text
+        assert "/validate" in text
+
+    def test_markdown_report_dark_section(self, tmp_path):
+        report = {
+            "stats": {},
+            "findings": [],
+            "dark_findings": [
+                {"title": "auth bypass in role check",
+                 "file": "auth.py", "line": 12},
+            ],
+        }
+        path = write_markdown_report(report, tmp_path)
+        content = path.read_text()
+        assert "## Dark findings (1)" in content
+        assert "needs_validation" in content
+        assert "auth bypass in role check" in content
+
+    def test_generate_report_loads_dark_from_graded_export(self, tmp_path):
+        graded = {
+            "findings": [
+                {"status": "dark", "title": "idor in order lookup",
+                 "file": "orders.py", "line": 4},
+                {"status": "finding", "title": "overflow",
+                 "file": "a.c", "line": 9},
+            ],
+            "stats": {"total": 2},
+        }
+        (tmp_path / "findings-graded.json").write_text(json.dumps(graded))
+        report = generate_report(tmp_path)
+        dark = report.get("dark_findings", [])
+        assert len(dark) == 1
+        assert dark[0]["title"] == "idor in order lookup"

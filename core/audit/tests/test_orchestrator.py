@@ -2123,6 +2123,82 @@ class TestResolveGateDemoted:
         assert result.outcomes[0].status == "suspicious"
 
 
+class TestRejournalFinalStatuses:
+    """Journal entries are committed mid-loop, pre-resolution — the
+    end-of-run pass appends corrective entries so the journal (and
+    everything reading it) reflects final statuses, dark included."""
+
+    def _setup(self, tmp_path: Path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        return OrchestratorConfig(target_path=target, out_dir=out)
+
+    def _journal_initial(self, config, status="suspicious"):
+        from core.audit.collector import append_journal_for_outcome
+        initial = ReviewOutcome(
+            file="a.c", function="f", status=status,
+            body="initial", hypothesis="auth bypass", line=1,
+        )
+        append_journal_for_outcome(
+            out_dir=config.out_dir,
+            target_path=config.target_path,
+            run_id="run-1",
+            outcome=initial,
+            gap={"line_start": 1},
+        )
+
+    def test_drifted_status_rejournaled(self, tmp_path: Path):
+        from core.audit.journal import latest_entries, make_function_key
+        from core.audit.orchestrator import _rejournal_final_statuses
+
+        config = self._setup(tmp_path)
+        self._journal_initial(config, status="suspicious")
+
+        final = ReviewOutcome(
+            file="a.c", function="f", status="dark",
+            body="resolved dark", hypothesis="auth bypass", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        updated = _rejournal_final_statuses(result, config)
+        assert updated == 1
+        entries = latest_entries(config.out_dir)
+        key = make_function_key("a.c", "f")
+        assert entries[key].verdict == "dark"
+
+    def test_unchanged_status_not_rejournaled(self, tmp_path: Path):
+        from core.audit.orchestrator import _rejournal_final_statuses
+
+        config = self._setup(tmp_path)
+        self._journal_initial(config, status="suspicious")
+
+        final = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="still suspicious", hypothesis="auth bypass", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _rejournal_final_statuses(result, config) == 0
+
+    def test_never_journaled_outcome_skipped(self, tmp_path: Path):
+        from core.audit.orchestrator import _rejournal_final_statuses
+
+        config = self._setup(tmp_path)
+        final = ReviewOutcome(
+            file="a.c", function="f", status="dark",
+            body="resolved dark", hypothesis="auth bypass", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _rejournal_final_statuses(result, config) == 0
+
+
 class TestRefutationGateWirePoint:
     """Refutation gates demote findings/suspicious via the orchestrator wire point."""
 

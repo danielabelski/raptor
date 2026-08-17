@@ -36,6 +36,10 @@ INDEX_SCHEMA_VERSION = 1
 
 VALID_VERDICTS = frozenset({
     "clean", "suspicious", "finding", "error", "dormant",
+    # Gate-resolution bucket: tool-blind, needs concrete verification.
+    # Journaled when the end-of-run resolution passes re-journal final
+    # statuses (entries were committed mid-loop, pre-resolution).
+    "dark",
 })
 
 

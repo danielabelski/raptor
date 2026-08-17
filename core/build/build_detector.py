@@ -1043,7 +1043,7 @@ Compiles each source file individually via subprocess.run (no shell).
 CodeQL traces the compiler invocations through its preload tracer.
 Tolerates individual compilation failures.
 """
-import os, subprocess, sys
+import os, subprocess, sys, threading
 
 # Strip dynamic-loader injection vars from the env we pass to each
 # compile subprocess. CodeQL's tracer wraps the build script with
@@ -1132,19 +1132,31 @@ for i, src in enumerate(FILES):
     # Use Popen + bounded read(N) so each compile's stderr is
     # capped at 256 KB — enough for a useful diagnostic
     # excerpt, hard upper bound. Drain remaining bytes via
-    # /dev/null so the child can finish without SIGPIPE.
+    # the reader loop so the child can finish without SIGPIPE.
+    #
+    # The bounded read + drain run in a helper THREAD: read()
+    # blocks until N bytes or EOF, so doing it inline before
+    # wait(timeout) let a hung compiler that held stderr open
+    # (while writing little) pin the script at the read forever
+    # — the documented kill-after-timeout below never fired.
+    # With the reader threaded, wait(timeout) is always reached;
+    # on kill the reader sees EOF and exits.
     proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, env=_BUILD_ENV)
     _STDERR_CAP = 256 * 1024
-    captured = b""
-    if proc.stderr is not None:
-        captured = proc.stderr.read(_STDERR_CAP)
+    _cap = {{"data": b""}}
+    def _read_stderr(p=proc, out=_cap):
+        if p.stderr is None:
+            return
+        out["data"] = p.stderr.read(_STDERR_CAP)
         # Drain any remainder so the child unblocks on its
         # next stderr write rather than hanging on a full
         # pipe buffer (PIPE_BUF is 64 KB on Linux; without
         # the drain, a child writing > 256 KB sleeps in
         # write(2) waiting for a reader).
-        while proc.stderr.read(64 * 1024):
+        while p.stderr.read(64 * 1024):
             pass
+    _reader = threading.Thread(target=_read_stderr, daemon=True)
+    _reader.start()
     # Per-file compile timeout. Pre-fix `proc.wait()` had no
     # bound — a runaway compile (gcc on a pathological template
     # instantiation, javac on infinite annotation processing,
@@ -1155,7 +1167,12 @@ for i, src in enumerate(FILES):
     # compile (the slowest C++ template compiles in real
     # codebases run ~30s); a hung compile gets killed and
     # counted as a failure so the rest of the pass continues.
-    _COMPILE_TIMEOUT_S = 120
+    # RAPTOR_COMPILE_TIMEOUT_S overrides for tests / unusual
+    # toolchains.
+    try:
+        _COMPILE_TIMEOUT_S = int(os.environ.get("RAPTOR_COMPILE_TIMEOUT_S", "120"))
+    except ValueError:
+        _COMPILE_TIMEOUT_S = 120
     try:
         proc.wait(timeout=_COMPILE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
@@ -1169,6 +1186,8 @@ for i, src in enumerate(FILES):
             f"\\n[compile timeout {{_COMPILE_TIMEOUT_S}}s on {{src!r}}]\\n".encode()
         )
         continue
+    _reader.join(timeout=5)
+    captured = _cap["data"]
     if proc.returncode == 0:
         ok += 1
     else:

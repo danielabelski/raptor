@@ -741,6 +741,94 @@ class TestAsyncGlanceBatch:
         assert sum(batch_calls) == 3
 
 
+class TestGlanceFallbackBudget:
+    """Budget exhaustion inside the glance-batch fallback path."""
+
+    @staticmethod
+    def _glance_setup(monkeypatch, n):
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeBucket:
+            value: str
+
+        @dataclass
+        class FakeTriageResult:
+            bucket: FakeBucket
+
+        wq = [_gap("a.py", f"f{i}") for i in range(n)]
+        graph = TaskGraph.from_workqueue(wq, [])
+        shared = MagicMock()
+        shared.triage_results = {
+            f"a.py:f{i}:1": FakeTriageResult(FakeBucket("glance"))
+            for i in range(n)
+        }
+
+        def failing_batch_review_fn(contexts, config):
+            raise ValueError("batch parse error")  # forces the fallback
+
+        import core.audit.executor as executor_mod
+        monkeypatch.setattr(executor_mod, "_get_batch_review_fn",
+                            lambda shared, config: failing_batch_review_fn)
+
+        import core.audit.orchestrator as orch_mod
+        monkeypatch.setattr(
+            orch_mod, "_build_context",
+            lambda config, gap, *a, **kw: {
+                "file": gap["file"], "function": gap["name"],
+            },
+        )
+        return graph, shared
+
+    def test_sync_budget_exceeded_in_fallback_stops_gracefully(
+        self, monkeypatch,
+    ) -> None:
+        """A budget RuntimeError from the per-function fallback must set
+        budget_stopped/terminated_by, not propagate out of
+        run_executor_sync."""
+        graph, shared = self._glance_setup(monkeypatch, 3)
+        result = _FakeResult()
+
+        def budget_review(gap, shared, config, review_fn, result_obj, **kw):
+            raise RuntimeError("LLM budget exceeded")
+
+        stats = run_executor_sync(
+            graph, MagicMock(), shared, MagicMock(), result,
+            ExecutorConfig(max_workers=1),
+            review_one_fn=budget_review,
+        )
+
+        assert stats.budget_stopped
+        assert result.terminated_by == "llm_budget_exceeded"
+        assert stats.completed == 0
+
+    def test_sync_non_budget_runtime_error_logged(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """A non-budget RuntimeError in the fallback is logged as a
+        per-function failure and the batch continues."""
+        import logging
+
+        graph, shared = self._glance_setup(monkeypatch, 2)
+        result = _FakeResult()
+
+        def broken_review(gap, shared, config, review_fn, result_obj, **kw):
+            raise RuntimeError("segfault in helper")
+
+        with caplog.at_level(logging.WARNING, logger="core.audit.executor"):
+            stats = run_executor_sync(
+                graph, MagicMock(), shared, MagicMock(), result,
+                ExecutorConfig(max_workers=1),
+                review_one_fn=broken_review,
+            )
+
+        assert not stats.budget_stopped
+        assert stats.completed == 2  # marked complete despite failures
+        assert any(
+            "glance fallback failed" in r.message for r in caplog.records
+        )
+
+
 class TestExecutorStatsToDict:
     def test_to_dict_round_trips(self) -> None:
         from core.audit.executor import ExecutorStats

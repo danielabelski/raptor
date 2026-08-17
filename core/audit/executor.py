@@ -129,31 +129,44 @@ def run_executor_sync(
     glance_batch: list[Any] = []
     batch_review_fn = _get_batch_review_fn(shared, config)
 
-    def _flush_glance_batch() -> None:
+    def _flush_glance_batch() -> bool:
+        """Flush queued glance tasks.  Returns True when the batch hit
+        budget exhaustion — the caller must stop the run gracefully
+        (the same handling direct review calls get) instead of letting
+        the RuntimeError abort before ``collector.flush()``."""
         nonlocal review_idx
         if not glance_batch or batch_review_fn is None:
-            return
-        _process_glance_batch(
-            glance_batch, batch_review_fn, shared, config,
-            result, review_one_fn, review_fn,
-            joern_server=joern_server,
-            audit_log=audit_log,
-            workqueue=workqueue,
-            reviewed_set=reviewed_set,
-            start_time=start_time,
-            layer_disagreements=layer_disagreements,
-            on_progress=on_progress,
-            review_idx=review_idx,
-            total=total,
-            collector=collector,
-            graph=graph,
-            reviewed_outcomes=reviewed_outcomes,
-        )
+            return False
+        try:
+            _process_glance_batch(
+                glance_batch, batch_review_fn, shared, config,
+                result, review_one_fn, review_fn,
+                joern_server=joern_server,
+                audit_log=audit_log,
+                workqueue=workqueue,
+                reviewed_set=reviewed_set,
+                start_time=start_time,
+                layer_disagreements=layer_disagreements,
+                on_progress=on_progress,
+                review_idx=review_idx,
+                total=total,
+                collector=collector,
+                graph=graph,
+                reviewed_outcomes=reviewed_outcomes,
+            )
+        except RuntimeError as exc:
+            if not is_budget_exceeded_error(exc):
+                raise
+            stats.budget_stopped = True
+            result.terminated_by = "llm_budget_exceeded"
+            glance_batch.clear()
+            return True
         for t in glance_batch:
             graph.mark_complete(t.key)
             stats.completed += 1
             review_idx += 1
         glance_batch.clear()
+        return False
 
     from .orchestrator import is_shutdown_requested, _update_run_progress
     last_checkpoint = time.monotonic()
@@ -188,11 +201,15 @@ def run_executor_sync(
             and not task.gap.get("force_review")
         ):
             glance_batch.append(task)
-            if len(glance_batch) >= _GLANCE_BATCH_SIZE:
-                _flush_glance_batch()
+            if (
+                len(glance_batch) >= _GLANCE_BATCH_SIZE
+                and _flush_glance_batch()
+            ):
+                break
             continue
 
-        _flush_glance_batch()
+        if _flush_glance_batch():
+            break
 
         if on_tick:
             on_tick(task.gap)
@@ -853,10 +870,9 @@ def _process_glance_batch(
                     graph=graph,
                     reviewed_outcomes=reviewed_outcomes,
                 )
-            except RuntimeError as exc:
-                if is_budget_exceeded_error(exc):
+            except Exception as exc:
+                if isinstance(exc, RuntimeError) and is_budget_exceeded_error(exc):
                     raise
-            except Exception:
                 logger.warning(
                     "glance fallback failed for %s:%s",
                     task.gap.get("file", "?"),

@@ -128,7 +128,11 @@ traversal.
 `_RAPTOR_TRUSTED` at the top before any imports. The check is inlined
 (not imported) so it fires before `sys.path` is modified and cannot be
 bypassed by module shadowing. Direct invocation without the marker exits
-with code 2.
+with code 2. Additionally, `run_untrusted()` /
+`run_untrusted_networked()` strip both markers from the child
+environment (the pid1 shim path already stripped them before the
+target exec), so a target-spawned process inside the sandbox cannot
+replay them to pass this gate.
 
 ### Defence-in-Depth Summary
 
@@ -147,19 +151,35 @@ with code 2.
 
 ### What Is Not Fully Defended
 
-- **Natural language injection in code comments and strings** is the
-  largest remaining gap. The nonce envelope defeats structural tag
-  escapes, but plain English instructions in source code need only be
-  persuasive enough to influence a language model's reasoning.
-- **LLM-generated autofetch markup.** Stripping occurs on input, not
-  output.
+- **Natural language injection in code comments and strings** remains
+  the fundamental gap — per the adaptive-attacker literature, no
+  input-side stack fully defeats persuasive plain-English instructions.
+  What bounds it in practice is the mechanical-verdict principle:
+  findings are promoted by tool evidence, never by LLM claims, and the
+  promotion-without-tool-evidence alarm (`promotion-alarms.jsonl`, a
+  CRITICAL event class that is empty on every legitimate run) detects
+  the one move that matters — an injected self-promotion. The inverse
+  attack (an injected false-"clean") is narrowed by negative controls
+  and the finding-survival machinery, not eliminated.
+- **LLM-generated autofetch markup** is stripped on OUTPUT as well as
+  input: every registered report writer routes free text through the
+  output sanitiser, and a report-writer AST lint
+  (`core/security/report_writer_audit.py`) fails the build when an
+  LLM-derived value reaches a write sink unsanitised. Structured LLM
+  output is schema-validated with unknown fields rejected at the
+  generation chokepoint, and LLM-derived artifacts carry a
+  `provenance.untrusted` stamp enforced by `raptor-validate-schema`.
+  The residual: semantically poisoned content inside valid structure.
 - **Subtly backdoored patches.** If the researcher copy-pastes an
   LLM-suggested patch, a prompt-injected patch corrupts the output text,
   not the running RAPTOR process. There is no output-layer semantic
-  analysis of patch content.
+  analysis of patch content — the honest residual after hunk-scope and
+  detector-quiet checks.
 - **Side-channel resource exhaustion.** rlimits bound memory, file size
   and CPU time, but a crafted input maximising LLM token consumption is
   a slow denial-of-service against API budget, not a security bypass.
+  Budget caps are the mitigation; nothing smarter passes the
+  no-false-positive bar.
 
 ---
 
@@ -188,12 +208,12 @@ approval before execution.
 | oss-hypothesis-former-agent | Read, Write | Y | N | N | 1 | floor-safe |
 | oss-hypothesis-checker-agent | Read, Write | N | N | N | 0 | tight |
 | oss-report-generator-agent | Read, Write | N | N | N | 0 | tight |
-| audit-reviewer | all tools | Y | Y | N | 2 | needs-tightening |
-| coverage-analyzer | all tools | Y | Y | N | 2 | needs-tightening |
-| crash-analyzer | all tools | Y | Y | N | 2 | needs-tightening |
-| crash-analysis-checker | all tools | Y | Y | N | 2 | needs-tightening |
+| audit-reviewer | Read, Grep, Glob, Bash | Y | Y | N | 2 | needs-tightening |
+| coverage-analyzer | Read, Write, Edit, Bash, Grep, Glob | Y | Y | N | 2 | needs-tightening |
+| crash-analyzer | Read, Write, Edit, Bash, Grep, Glob | Y | Y | N | 2 | needs-tightening |
+| crash-analysis-checker | Read, Write, Bash, Grep, Glob | Y | Y | N | 2 | needs-tightening |
 | exploitability-validator-agent | Read, Write, Edit, Bash, Grep, Glob, Task | Y | Y | N | 2 | needs-tightening |
-| function-trace-generator | all tools | Y | Y | N | 2 | needs-tightening |
+| function-trace-generator | Read, Write, Edit, Bash, Grep, Glob | Y | Y | N | 2 | needs-tightening |
 | oss-evidence-verifier-agent | Read, Write, Bash | Y | Y | N | 2 | needs-tightening |
 | oss-investigator-ioc-extractor-agent | Read, Write, WebFetch | Y | Y | N | 2 | needs-tightening |
 | oss-investigator-local-git-agent | Bash, Read, Write, Glob, Grep | Y | Y | N | 2 | needs-tightening |
@@ -226,16 +246,31 @@ approval before execution.
    passing to checker agents.
 
 3. **Network-reaching agents without domain restriction** --
-   `oss-investigator-github-agent`, `oss-investigator-wayback-agent`,
-   `oss-investigator-ioc-extractor-agent` all have unrestricted
-   WebFetch. Recommendation: add domain allowlists (github.com,
-   web.archive.org, etc.).
+   ADDRESSED: `oss-investigator-github-agent`,
+   `oss-investigator-wayback-agent`, and
+   `oss-investigator-ioc-extractor-agent` now enforce WebFetch
+   restrictions via per-agent `PreToolUse` hooks
+   (`.claude/hooks/webfetch-domain-allowlist.py`, wired in each
+   agent's `hooks:` frontmatter). The github agent is pinned to
+   {github.com, api.github.com, raw.githubusercontent.com}, the
+   wayback agent to {web.archive.org, archive.org}; the
+   ioc-extractor fetches operator-supplied vendor reports on
+   arbitrary domains, so it is constrained to https-only plus a
+   body-level instruction to fetch only the supplied report and its
+   internal links. Note: the hook constrains WebFetch, not Bash-level
+   network access (`curl`), which remains bounded by the sandbox /
+   permission layers.
 
 4. **Default "all tools" agents** --
-   `coverage-analyzer`, `crash-analyzer`, `crash-analysis-checker`,
-   `function-trace-generator`, `offsec-specialist` default to all tools.
-   Recommendation: explicitly specify tool lists rather than relying on
-   defaults.
+   ADDRESSED for the pipeline agents: `coverage-analyzer`,
+   `crash-analyzer`, `crash-analysis-checker`,
+   `function-trace-generator`, and `audit-reviewer` now declare
+   explicit `tools:` lists matching their documented workflows
+   (dropping the WebFetch/WebSearch/Task grants the all-tools default
+   silently included). `offsec-specialist` deliberately remains
+   all-tools: its job inherently spans untrusted input, exploitation
+   tooling, and network reach, so it stays in the needs-HITL class
+   rather than pretending a narrower list fits.
 
 ---
 
@@ -247,8 +282,10 @@ snippets, crash data) that flows into LLM prompts.
 
 ### Attack Surface
 
-An audit of the codebase identified **42 distinct LLM prompt callsites**
-across five packages:
+A 2026 audit identified **42 distinct LLM prompt callsites** across
+five packages (historical snapshot — kept because it shaped the
+envelope programme; see the lint-enforced current state below the
+table):
 
 | Package | Callsites | Classification |
 |---------|-----------|----------------|
@@ -259,16 +296,23 @@ across five packages:
 | `packages/web/` | 1 | Untrusted-touching |
 | `packages/diagram/` | 4 | Non-prompt: LLM visualisation hints (not security-critical) |
 
-Of the 42 callsites:
+The callsite census above is historical (it motivated the envelope
+work); the current state is lint-enforced rather than hand-counted:
 
-- **23** directly interpolate untrusted content (scanner output, code
-  snippets, file paths, crash data) via f-strings.
-- **10** are mixed -- task-based dispatch with delegated prompt builders
-  where CC tools provide code-reading isolation.
-- **9** are trusted-only -- system prompts, hardcoded instructions,
-  infrastructure.
-- **0** apply active sanitisation (XML wrapping, escaping, or base64
-  encoding of untrusted content).
+- `core/security/prompt_envelope_audit.py` registers **33 prompt-
+  construction files**; every interpolation in them is either
+  envelope-constructed (`build_prompt` with UntrustedBlocks and slots)
+  or carries an audited allowlist entry with a written justification.
+  The lint fails on any unregistered interpolation, so the census
+  cannot silently regress — read the registry for the authoritative
+  file list.
+- Fragment builders that inject sections into a larger enveloped
+  prompt use tag-forgery neutralisation, which the lint recognises as
+  an accepted defence.
+- Prompt-side coverage is complemented output-side by the report-
+  writer lint, the strict schema floor at the structured-generation
+  chokepoint, and provenance stamping (see "What Is Not Fully
+  Defended" above).
 
 ### Existing Defences
 

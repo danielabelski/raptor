@@ -983,6 +983,19 @@ def _build_fuzz_phase_summary(fuzzing_result: dict | None, fuzz_out: Path | None
 
 
 
+def _should_run_mechanical_sca(sca_agent, deep_sca_requested: bool) -> bool:
+    """Gate for the always-on mechanical SCA subprocess phase.
+
+    Run it only when an SCA agent is installed AND the deep --sca
+    pipeline is not going to analyse the same dependency set later in
+    the run. Running both would produce the same dependency findings
+    twice — once via the mechanical phase's findings.sarif and once via
+    the deep phase's findings.json merged during validation — and add
+    both counts into total_findings.
+    """
+    return bool(sca_agent) and not deep_sca_requested
+
+
 def _build_completion_manifest(orch_meta, import_result, import_sarif_files,
                                reanalyze_dir=None):
     manifest = {
@@ -2414,7 +2427,15 @@ Examples:
     except ImportError:
         sca_agent = None
 
-    if sca_agent:
+    run_mechanical_sca = _should_run_mechanical_sca(sca_agent, args.sca)
+    if sca_agent and not run_mechanical_sca:
+        # Deferred: the opt-in deep SCA phase (PHASE 1b below) analyses
+        # the same dependency set with LLM review + triage. Running the
+        # mechanical subprocess phase too would double-produce and
+        # double-count dependency findings.
+        sca_findings_count = 0
+        logger.info("--sca set — deferring dependency analysis to the deep SCA phase")
+    elif run_mechanical_sca:
         print("\n" + "=" * 70)
         print("SOFTWARE COMPOSITION ANALYSIS")
         print("=" * 70)

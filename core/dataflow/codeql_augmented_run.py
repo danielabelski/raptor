@@ -34,13 +34,13 @@ pack content was already validated at emission time.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence, Tuple
+from typing import Any
 
 from core.config import RaptorConfig
 from packages.codeql.tunables import CodeQLTunables
-
 
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_CODEQL_BIN = "codeql"
@@ -62,8 +62,8 @@ class AnalysisResult:
     """Outcome of one CodeQL analyze invocation."""
 
     sarif_path: Path
-    queries: Tuple[str, ...]
-    extension_pack: Optional[Path]
+    queries: tuple[str, ...]
+    extension_pack: Path | None
     elapsed_seconds: float
 
 
@@ -72,10 +72,10 @@ def analyze(
     queries: Sequence[str],
     output_path: Path,
     *,
-    extension_pack: Optional[Path] = None,
+    extension_pack: Path | None = None,
     codeql_bin: str = DEFAULT_CODEQL_BIN,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
-    runner: Optional[RunnerFn] = None,
+    runner: RunnerFn | None = None,
     extra_args: Sequence[str] = (),
 ) -> AnalysisResult:
     """Run ``codeql database analyze`` once.
@@ -173,8 +173,8 @@ def run_baseline_and_augmented(
     *,
     codeql_bin: str = DEFAULT_CODEQL_BIN,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
-    runner: Optional[RunnerFn] = None,
-) -> Tuple[AnalysisResult, AnalysisResult]:
+    runner: RunnerFn | None = None,
+) -> tuple[AnalysisResult, AnalysisResult]:
     """Convenience: run baseline and augmented analyses in sequence,
     write both SARIFs under ``out_dir``, return both results.
 

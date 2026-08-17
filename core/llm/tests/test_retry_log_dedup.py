@@ -94,7 +94,7 @@ class TestClientRetryLogCluster:
                 "simulated 503 from upstream",
             )
             mock_get.return_value = prov
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: B017 — wrapper re-raises the provider's own error
                 client.generate("test prompt")
 
         # Operator-visible WARNINGs: 3 'Attempt N/3 failed' + 1
@@ -150,7 +150,7 @@ class TestClientRetryLogCluster:
             prov = MagicMock()
             prov.generate.side_effect = RuntimeError("simulated timeout")
             mock_get.return_value = prov
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: B017 — wrapper re-raises the provider's own error
                 client.generate("test")
 
         attempt_warnings = [

@@ -48,15 +48,6 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import (
-    Dict,
-    FrozenSet,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Union,
-)
 
 from core.analysis.cfg_builder import (
     PyCFGNode,
@@ -66,7 +57,6 @@ from core.analysis.dataflow import reaching_defs
 from core.analysis.python_module_callgraph import (
     PyModuleCallGraph,
 )
-
 
 # ---------------------------------------------------------------------------
 # Public dataclass
@@ -114,9 +104,9 @@ class TaintSummary:
     ``summary_unknown`` by Phase 14.
     """
     function: str
-    params: Tuple[str, ...]
-    return_effects: FrozenSet[Tuple[int, str, int]] = frozenset()
-    call_arg_taint: FrozenSet[Tuple[str, int, int]] = frozenset()
+    params: tuple[str, ...]
+    return_effects: frozenset[tuple[int, str, int]] = frozenset()
+    call_arg_taint: frozenset[tuple[str, int, int]] = frozenset()
     summary_unknown: bool = False
     summary_unknown_reason: str = ""
     summary_unconverged: bool = False
@@ -129,7 +119,7 @@ class TaintSummary:
 
     def return_sanitizers_for_param(
         self, param_idx: int,
-    ) -> FrozenSet[Tuple[str, int]]:
+    ) -> frozenset[tuple[str, int]]:
         """``(callable_name, arg_idx)`` pairs through which
         ``param_idx``'s taint passed on its way to the return.
         Excludes the direct-return sentinel — only callable
@@ -143,7 +133,7 @@ class TaintSummary:
 
     def params_tainting_call_arg(
         self, callee: str, arg_idx: int,
-    ) -> FrozenSet[int]:
+    ) -> frozenset[int]:
         """Param indices whose taint reaches the ``arg_idx``
         argument of any call to ``callee`` inside this function."""
         return frozenset(
@@ -166,7 +156,7 @@ _UNKNOWN_CALLABLES = frozenset({
 })
 
 
-def _detect_summary_unknown(fn_ast: ast.AST) -> Optional[str]:
+def _detect_summary_unknown(fn_ast: ast.AST) -> str | None:
     """Return a short reason string if the function should be marked
     ``summary_unknown``, otherwise None.
 
@@ -223,10 +213,10 @@ def _inside_nested_function(
     return bool(found)
 
 
-def _attribute_chain_str(node: ast.AST) -> Optional[str]:
+def _attribute_chain_str(node: ast.AST) -> str | None:
     """Return the dotted name for an attribute chain over ``ast.Name``.
     Used for matching against the ``_UNKNOWN_CALLABLES`` set."""
-    parts: List[str] = []
+    parts: list[str] = []
     cur = node
     while isinstance(cur, ast.Attribute):
         parts.append(cur.attr)
@@ -247,9 +237,9 @@ def _attribute_chain_str(node: ast.AST) -> Optional[str]:
 # arg_idx) effects its taint has passed through so far. Effects are
 # stored as a frozenset because order doesn't matter for Phase 14's
 # "is this a sanitizer for CWE X" check — only presence does.
-TaintAtom = Tuple[int, FrozenSet[Tuple[str, int]]]
+TaintAtom = tuple[int, frozenset[tuple[str, int]]]
 # Per-symbol taint state at a CFG node IN: a frozenset of atoms.
-TaintState = FrozenSet[TaintAtom]
+TaintState = frozenset[TaintAtom]
 
 
 def _empty_state() -> TaintState:
@@ -264,7 +254,7 @@ def _merge_states(a: TaintState, b: TaintState) -> TaintState:
         return b
     if not b:
         return a
-    by_param: Dict[int, Set[Tuple[str, int]]] = {}
+    by_param: dict[int, set[tuple[str, int]]] = {}
     for atom in a:
         by_param.setdefault(atom[0], set()).update(atom[1])
     for atom in b:
@@ -288,10 +278,10 @@ def _add_effect(state: TaintState, callable_name: str, arg_idx: int) -> TaintSta
 
 
 def _expr_taint(
-    expr: Optional[ast.AST],
+    expr: ast.AST | None,
     cfg_node: PyCFGNode,
     in_state_fn,
-    summaries: Dict[str, TaintSummary],
+    summaries: dict[str, TaintSummary],
 ) -> TaintState:
     """Compute the :data:`TaintState` produced by evaluating an
     arbitrary expression at ``cfg_node``'s IN.
@@ -329,7 +319,7 @@ def _expr_taint(
     if isinstance(expr, ast.Call):
         callable_name = _attribute_chain_str(expr.func) or ""
         # Per-positional-arg taint states.
-        arg_states: List[TaintState] = [
+        arg_states: list[TaintState] = [
             _expr_taint(a, cfg_node, in_state_fn, summaries)
             for a in expr.args
         ]
@@ -384,7 +374,7 @@ def _expr_taint(
 
 def _find_assignment_value_at(
     fn_ast: ast.AST, lineno: int, target_name: str,
-) -> Optional[ast.AST]:
+) -> ast.AST | None:
     """Find an ``Assign`` / ``AugAssign`` / ``AnnAssign`` /
     ``NamedExpr`` at ``lineno`` whose target is ``target_name``, and
     return the value expression. None if not found."""
@@ -403,15 +393,16 @@ def _find_assignment_value_at(
                     and node.target.id == target_name
                     and node.value is not None):
                 return node.value
-        elif isinstance(node, ast.NamedExpr):
-            if isinstance(node.target, ast.Name) and node.target.id == target_name:
-                return node.value
+        elif (isinstance(node, ast.NamedExpr)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == target_name):
+            return node.value
     return None
 
 
 def _find_return_value_at(
     fn_ast: ast.AST, lineno: int,
-) -> Optional[ast.AST]:
+) -> ast.AST | None:
     """Find a ``Return`` at ``lineno`` and return its value
     expression. None for bare ``return`` (value is None)."""
     for node in ast.walk(fn_ast):
@@ -424,7 +415,7 @@ def _compute_one_summary(
     cg: PyModuleCallGraph,
     source_text: str,
     qualified_name: str,
-    summaries_so_far: Dict[str, TaintSummary],
+    summaries_so_far: dict[str, TaintSummary],
 ) -> TaintSummary:
     """Compute a fresh summary for one function using the current
     state of in-module callees' summaries.
@@ -478,7 +469,7 @@ def _compute_one_summary(
     # Initialise per-(node, symbol) taint OUT state. The fixed-point
     # iterates until no changes.
     # State key: (node, symbol) -> TaintState
-    out_state: Dict[Tuple[PyCFGNode, str], TaintState] = {}
+    out_state: dict[tuple[PyCFGNode, str], TaintState] = {}
 
     # Seed: at entry, each param p_i has TaintState {(i, frozenset())}.
     for i, p in enumerate(params):
@@ -531,8 +522,8 @@ def _compute_one_summary(
     # Pre-compute return-node line numbers and call-site AST nodes by
     # line so the collection loop below does O(1) lookups instead of
     # walking the full function AST at every CFG node.
-    _return_linenos: Set[int] = set()
-    _calls_by_line: Dict[int, List[ast.Call]] = {}
+    _return_linenos: set[int] = set()
+    _calls_by_line: dict[int, list[ast.Call]] = {}
     for ast_n in ast.walk(fn_ast):
         if isinstance(ast_n, ast.Return) and hasattr(ast_n, "lineno"):
             _return_linenos.add(ast_n.lineno)
@@ -540,8 +531,8 @@ def _compute_one_summary(
             _calls_by_line.setdefault(ast_n.lineno, []).append(ast_n)
 
     # Collect return_effects and call_arg_taint.
-    return_effects: Set[Tuple[int, str, int]] = set()
-    call_arg_taint: Set[Tuple[str, int, int]] = set()
+    return_effects: set[tuple[int, str, int]] = set()
+    call_arg_taint: set[tuple[str, int, int]] = set()
 
     for n in cfg.nodes():
         # Returns: walk the return value's AST and produce its
@@ -605,8 +596,8 @@ _TAINT_SUMMARY_OUTER_ITER_PER_FN = 3
 
 def build_taint_summaries(
     cg: PyModuleCallGraph,
-    source: Union[str, Path],
-) -> Dict[str, TaintSummary]:
+    source: str | Path,
+) -> dict[str, TaintSummary]:
     """Compute taint summaries for every function in ``cg``.
 
     Returns a dict keyed by qualified function name. The synthetic
@@ -634,7 +625,7 @@ def build_taint_summaries(
     # Skip lambdas — they don't expose a FunctionDef AST and Phase
     # 13 doesn't try to summarise them. They'll get an empty summary
     # with summary_unknown="not a function def".
-    summaries: Dict[str, TaintSummary] = {
+    summaries: dict[str, TaintSummary] = {
         node.name: TaintSummary(function=node.name, params=node.params)
         for node in target_nodes
     }

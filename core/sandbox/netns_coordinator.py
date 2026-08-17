@@ -360,15 +360,15 @@ def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
         env_caller_filtered = spec.get("env_caller_filtered")
         observe = spec.get("observe")
 
-        kwargs = dict(
-            profile=profile,
-            block_network=block_network,
-            inherit_netns=True,
-            env=env if env else None,
-            capture_output=True,
-            timeout=timeout,
-            restrict_reads=restrict_reads,
-        )
+        kwargs = {
+            "profile": profile,
+            "block_network": block_network,
+            "inherit_netns": True,
+            "env": env if env else None,
+            "capture_output": True,
+            "timeout": timeout,
+            "restrict_reads": restrict_reads,
+        }
         if allowed_tcp_ports is not None:
             kwargs["allowed_tcp_ports"] = list(allowed_tcp_ports)
         if stdin_bytes is not None:

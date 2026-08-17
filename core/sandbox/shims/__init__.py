@@ -14,7 +14,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ def _content_hash(src: Path) -> str:
     return hashlib.sha256(src.read_bytes()).hexdigest()[:12]
 
 
-def build_setgroups_stub() -> Optional[Path]:
+def build_setgroups_stub() -> Path | None:
     """Compile ``setgroups_stub.c`` into a shared library.
 
     Returns the path to the ``.so`` on success, ``None`` on failure

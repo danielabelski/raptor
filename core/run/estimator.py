@@ -15,7 +15,6 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +41,8 @@ def estimate_from_scorecard(
     n_findings: int,
     *,
     max_parallel: int = 3,
-    scorecard_path: Optional[Path] = None,
-) -> Optional[RunEstimate]:
+    scorecard_path: Path | None = None,
+) -> RunEstimate | None:
     """Derive a cost + time estimate from the model's scorecard history.
 
     Aggregates ``calls``, ``cost_usd``, and ``latency_ms_sum`` across
@@ -71,7 +70,7 @@ def estimate_from_scorecard(
     try:
         sc = ModelScorecard(scorecard_path)
         stats = sc.get_stats()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug(
             "scorecard estimate unavailable (%s)", scorecard_path,
             exc_info=True,
@@ -115,7 +114,7 @@ def estimate_from_scorecard(
     )
 
 
-def format_estimate(est: Optional[RunEstimate]) -> str:
+def format_estimate(est: RunEstimate | None) -> str:
     """Operator-facing one-liner. Empty string when ``est`` is
     None — caller can unconditionally append to output, no None
     check needed at the print site.

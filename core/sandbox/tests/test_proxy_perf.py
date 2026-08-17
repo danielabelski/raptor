@@ -88,7 +88,7 @@ class TestDnsCache:
                     # Force the cache entry to be expired by rewriting
                     # its expiry timestamp.
                     key = ("example.com", 443)
-                    expires, addrs = proxy._dns_cache[key]
+                    _expires, addrs = proxy._dns_cache[key]
                     proxy._dns_cache[key] = (time.monotonic() - 1.0, addrs)
                     await proxy._cached_getaddrinfo("example.com", 443)
 
@@ -160,7 +160,7 @@ class TestHappyEyeballs:
                         addrinfo, 443,
                     )
 
-            r, w, ip = asyncio.run_coroutine_threadsafe(
+            _r, _w, ip = asyncio.run_coroutine_threadsafe(
                 driver(), proxy._loop,
             ).result(timeout=5)
             assert ip == "1.2.3.4"
@@ -191,7 +191,7 @@ class TestHappyEyeballs:
                         addrinfo, 443,
                     )
 
-            r, w, ip = asyncio.run_coroutine_threadsafe(
+            _r, _w, ip = asyncio.run_coroutine_threadsafe(
                 driver(), proxy._loop,
             ).result(timeout=5)
             assert ip == "2606:2800:220:1::"
@@ -222,7 +222,7 @@ class TestHappyEyeballs:
                     )
 
             t0 = time.monotonic()
-            r, w, ip = asyncio.run_coroutine_threadsafe(
+            _r, _w, ip = asyncio.run_coroutine_threadsafe(
                 driver(), proxy._loop,
             ).result(timeout=5)
             elapsed = time.monotonic() - t0
@@ -372,7 +372,7 @@ class TestHappyEyeballs:
                         addrinfo, 443,
                     )
 
-            r, w, ip = asyncio.run_coroutine_threadsafe(
+            _r, _w, ip = asyncio.run_coroutine_threadsafe(
                 driver(), proxy._loop,
             ).result(timeout=5)
             assert ip == "1.2.3.4"
@@ -472,7 +472,7 @@ class TestBufferSnapshot:
                     while not stop.is_set():
                         proxy._record({"host": "h", "port": 1,
                                         "result": "allowed"})
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — hammer thread: collect for the assertion
                     errors.append(e)
 
             def hammer_register():
@@ -480,7 +480,7 @@ class TestBufferSnapshot:
                     while not stop.is_set():
                         t = proxy.register_sandbox()
                         proxy.unregister_sandbox(t)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — hammer thread: collect for the assertion
                     errors.append(e)
 
             ts = [threading.Thread(target=hammer_record) for _ in range(4)]

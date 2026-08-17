@@ -43,9 +43,9 @@ def understand_dir(tmp_path):
 
 def _stub_heavy_stages(monkeypatch):
     """Make every stage before sink discovery a fast no-op."""
-    import core.inventory.builder as builder
     import core.orchestration.context_map_callgraph as cg
     import packages.source_intel as si
+    from core.inventory import builder
 
     def _zero(*a, **kw):
         return 0

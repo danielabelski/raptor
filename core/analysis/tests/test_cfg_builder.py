@@ -28,7 +28,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest import mock
 
-
 from core.analysis.cfg_builder import (
     ENTRY_LINENO,
     EXIT_LINENO,
@@ -37,7 +36,6 @@ from core.analysis.cfg_builder import (
     build_python_cfg,
 )
 from core.analysis.dominators import build_dom_tree
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -383,7 +381,8 @@ def test_build_from_path(tmp_path: Path):
 
 def _stub_edge_index(binary_path, edges):
     from core.analysis.binary_oracle_edges import (
-        BinaryCallEdge, BinaryEdgeIndex,
+        BinaryCallEdge,
+        BinaryEdgeIndex,
     )
     return BinaryEdgeIndex(
         binary_path=str(binary_path),

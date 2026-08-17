@@ -3399,6 +3399,57 @@ def _review_duration_hints(
     return hints
 
 
+_IRIS_JOERN_PAIR_BUDGET = 64
+
+
+def _make_iris_joern_tool_runner(joern_server) -> Callable:
+    """Build the IRIS refinement ToolRunner backed by the live Joern server.
+
+    Mirrors ``core.iris.codeql_runner.make_codeql_tool_runner``: the
+    returned callable takes the current spec list, exercises the tool,
+    and reports which specs the tool confirmed (``RefinementFeedback``
+    keyed by the persistent-store spec key).  Source specs are checked
+    pairwise against sink specs via targeted live taint queries; a
+    flow confirms both endpoints.  The pair walk is budgeted so a
+    spec-heavy round cannot monopolise the single-threaded REPL.
+    """
+
+    def joern_tool_runner(specs):
+        from core.iris.refine import RefinementFeedback
+        from core.iris.store import _spec_key
+
+        sources = [s for s in specs if s.role == "source"]
+        sinks = [s for s in specs if s.role == "sink"]
+        if not sources or not sinks:
+            return RefinementFeedback()
+        confirmed: list[str] = []
+        seen: set[str] = set()
+        budget = _IRIS_JOERN_PAIR_BUDGET
+        for src in sources:
+            if budget <= 0:
+                break
+            for snk in sinks:
+                if budget <= 0:
+                    break
+                budget -= 1
+                flows = _joern_live_query(
+                    joern_server,
+                    src.function,
+                    [snk.function],
+                    label="iris-refine",
+                )
+                if not flows:
+                    continue
+                for spec in (src, snk):
+                    key = _spec_key(spec)
+                    if key not in seen:
+                        seen.add(key)
+                        confirmed.append(key)
+        return RefinementFeedback(confirmed_keys=confirmed)
+
+    return joern_tool_runner
+
+
 def _heuristic_bypass_findings(
     gaps: list[dict[str, Any]],
     bypass_runner: Callable | None,
@@ -5102,25 +5153,7 @@ def _run_audit_body(
         if iris_candidates:
             joern_tool_runner = None
             if joern_server is not None:
-                from .iris_specs import compile_joern_config as _iris_compile
-
-                def joern_tool_runner(specs):
-                    cfg = _iris_compile(specs)
-                    if not cfg.strip():
-                        from core.iris.refine import RefinementFeedback
-
-                        return RefinementFeedback([], [], [])
-                    hits = _joern_live_query(joern_server, cfg, label="iris-refine")
-                    from core.iris.refine import RefinementFeedback
-
-                    confirmed = [
-                        h.get("key", "") for h in (hits or []) if h.get("flows")
-                    ]
-                    return RefinementFeedback(
-                        confirmed_keys=confirmed,
-                        refuted_keys=[],
-                        tool_errors=[],
-                    )
+                joern_tool_runner = _make_iris_joern_tool_runner(joern_server)
 
             bypass_runner = None
             try:

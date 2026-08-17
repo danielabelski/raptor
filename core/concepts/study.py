@@ -70,6 +70,21 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
         if isinstance(kf, dict) and kf.get("path"):
             kf_map[kf["path"]] = kf
 
+    def _merge_vocab(attr: str) -> list:
+        """Merge a vocabulary list — new wins on the entry key."""
+        merged: dict[Any, Any] = {}
+        for source_model in (prior, new):
+            for entry in getattr(source_model, attr):
+                if isinstance(entry, dict):
+                    key: Any = (
+                        entry.get("acquire"), entry.get("release"),
+                        entry.get("kind"),
+                    ) if attr == "paired_operations" else entry.get("name")
+                else:
+                    key = entry
+                merged[key] = entry
+        return list(merged.values())
+
     return DomainModel(
         version=new.version,
         target=new.target or prior.target,
@@ -80,6 +95,10 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
         bug_patterns=list(bp_map.values()),
         security_context=new.security_context or prior.security_context,
         key_files=list(kf_map.values()),
+        paired_operations=_merge_vocab("paired_operations"),
+        nullable_returns=_merge_vocab("nullable_returns"),
+        auth_predicates=_merge_vocab("auth_predicates"),
+        security_fields=_merge_vocab("security_fields"),
     )
 
 
@@ -391,6 +410,29 @@ behaviour, unchecked caller obligations. For each contract, include \
 a security_note if the function does NOT validate something its \
 callers might assume (no bounds check, no NULL check in production, \
 loops forever on bad input, dereferences NULL on exhaustion).
+
+**API vocabulary**: classify API names from the study items into the \
+vocabulary classes below. This vocabulary feeds RAPTOR's mechanical \
+checkers, so precision beats recall: name ONLY functions and fields \
+that literally appear in the provided items (a mechanical check \
+discards any name that does not), and omit any class you cannot \
+support from the provided material — do not guess, and never fill a \
+class from training knowledge. If a partner or the semantics cannot \
+be resolved from the provided items, leave the entry out (or raise \
+it in `unresolved_references`).
+- `paired_operations`: acquire/release pairs — alloc/free \
+  (kind `alloc`), lock/unlock (kind `lock`), refcount get/put \
+  (kind `refcount`), and async-callback register vs cancel — timer \
+  arm/disarm, work-item queue/cancel, handler register/unregister \
+  (kind `callback`).
+- `nullable_returns`: functions whose return value can be \
+  NULL/None/error and must be checked before use.
+- `auth_predicates`: privilege/permission gate functions — the \
+  return value decides allow vs deny (kind: `capability`, \
+  `permission`, `uid`, or `domain`).
+- `security_fields`: struct fields holding privilege, credential, \
+  or access-control state (uid/gid fields, capability masks, \
+  security flags, ACL pointers).
 
 **Struct annotations**: cover EVERY struct in the focus items — \
 1-3 fields per struct, breadth first. Do not annotate 4 fields on \
@@ -845,6 +887,83 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
                     },
                 },
                 "required": ["struct_name", "fields"],
+            },
+        },
+        "api_vocabulary": {
+            "type": "object",
+            "description": (
+                "API-name vocabulary for RAPTOR's mechanical checkers. "
+                "Name ONLY functions/fields that literally appear in "
+                "the provided study items — a mechanical check discards "
+                "unverifiable names. Omit classes you cannot support "
+                "from the provided material; never answer from "
+                "training knowledge."
+            ),
+            "properties": {
+                "paired_operations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "acquire": {"type": "string"},
+                            "release": {"type": "string"},
+                            "kind": {
+                                "type": "string",
+                                "enum": [
+                                    "alloc", "lock", "refcount",
+                                    "callback",
+                                ],
+                            },
+                            "note": {"type": "string"},
+                        },
+                        "required": ["acquire", "release", "kind"],
+                    },
+                },
+                "nullable_returns": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "when": {
+                                "type": "string",
+                                "description": (
+                                    "When the NULL/error return "
+                                    "occurs, if known."
+                                ),
+                            },
+                        },
+                        "required": ["name"],
+                    },
+                },
+                "auth_predicates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "kind": {
+                                "type": "string",
+                                "enum": [
+                                    "capability", "permission",
+                                    "uid", "domain",
+                                ],
+                            },
+                        },
+                        "required": ["name"],
+                    },
+                },
+                "security_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "why": {"type": "string"},
+                        },
+                        "required": ["name"],
+                    },
+                },
             },
         },
         "unresolved_references": {
@@ -1709,6 +1828,253 @@ def _queue_unresolved(
     return queued
 
 
+# ------------------------------------------------------------------
+# API vocabulary (elicited per batch, name-verified, tier-stamped)
+# ------------------------------------------------------------------
+
+_VOCAB_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _batch_identifier_universe(items: list[StudyItem]) -> set[str]:
+    """Identifiers visible to the LLM in a batch's study items.
+
+    Mirrors what ``_format_item`` actually rendered into the prompt
+    (including its truncations) — the honest-boundaries check for
+    vocabulary claims is "could the LLM have read this name in the
+    provided material?".
+    """
+    names: set[str] = set()
+
+    def _collect(text: str) -> None:
+        if text:
+            names.update(_VOCAB_IDENT_RE.findall(text))
+
+    for it in items:
+        _collect(it.name)
+        _collect(it.doc_comment)
+        _collect(it.definition[:800] if it.definition else "")
+        for str_list in (
+            it.fields[:30], it.refcount_fields, it.owned_types,
+            it.flexible_arrays, it.paired_with, it.calls[:20],
+            it.callers[:20], it.lock_sites, it.rcu_usage,
+            it.ordering_annotations, it.bounds_guards, it.error_gotos,
+            it.clamping_patterns, it.flag_checks, it.alloc_frees,
+            it.state_transitions, it.gate_checks, it.dispatch_tables,
+            it.null_guards, it.validation_bounds, it.related_items,
+        ):
+            for s in str_list:
+                _collect(s)
+    return names
+
+
+def _names_in_signal(items: list[StudyItem], attr: str) -> set[str]:
+    """Identifiers appearing in one mechanically extracted signal list."""
+    names: set[str] = set()
+    for it in items:
+        for s in getattr(it, attr, []) or []:
+            names.update(_VOCAB_IDENT_RE.findall(s))
+    return names
+
+
+def _bare_name(value: str) -> str:
+    """``foo_lock(dev)`` → ``foo_lock``."""
+    return value.split("(")[0].strip()
+
+
+def _parse_api_vocabulary(
+    raw: dict[str, Any],
+    items: list[StudyItem],
+    discard_sink: list | None = None,
+) -> list[dict[str, Any]]:
+    """Parse and name-verify a batch response's ``api_vocabulary``.
+
+    Enforcement mirrors the receipts discipline for prose answers:
+
+    - Every name must appear in the batch's study items (the material
+      the LLM was shown). A name that does not is DISCARDED — the LLM
+      can only have it from training memory. Discards are recorded in
+      *discard_sink*.
+    - Kept entries are stamped with a provenance tier: ``mechanical``
+      when the claim is corroborated by a study-prep-extracted signal
+      (``paired_with``/``lock_sites``/``alloc_frees`` for pairs,
+      ``null_guards`` for nullable returns, ``gate_checks`` for auth
+      predicates), ``llm_summarized`` otherwise (name verified, but
+      the classification is the LLM's judgement).
+
+    Returns flat entries carrying a ``class`` key (one of
+    paired_operations / nullable_returns / auth_predicates /
+    security_fields) for :func:`_assemble_vocabulary`.
+    """
+    from .receipts import TIER_LLM_SUMMARIZED, TIER_MECHANICAL
+
+    vocab_raw = raw.get("api_vocabulary")
+    if not isinstance(vocab_raw, dict):
+        return []
+
+    universe = _batch_identifier_universe(items)
+
+    def _discard(vclass: str, name: str) -> None:
+        logger.warning(
+            "study vocabulary: discarding %s %r — name not present in "
+            "the provided study items", vclass, name,
+        )
+        if discard_sink is not None:
+            discard_sink.append({
+                "kind": f"vocab:{vclass}",
+                "id": name,
+                "reason": "name not present in study items",
+                "names": [name],
+            })
+
+    entries: list[dict[str, Any]] = []
+
+    pair_signal = (
+        _names_in_signal(items, "paired_with")
+        | _names_in_signal(items, "lock_sites")
+        | _names_in_signal(items, "alloc_frees")
+    )
+    for pair in vocab_raw.get("paired_operations") or []:
+        if not isinstance(pair, dict):
+            continue
+        acq = _bare_name(str(pair.get("acquire") or ""))
+        rel = _bare_name(str(pair.get("release") or ""))
+        kind = str(pair.get("kind") or "").lower()
+        if not acq or not rel or not kind:
+            continue
+        missing = [n for n in (acq, rel) if n not in universe]
+        if missing:
+            _discard("paired_operations", " / ".join(missing))
+            continue
+        tier = (
+            TIER_MECHANICAL
+            if acq in pair_signal and rel in pair_signal
+            else TIER_LLM_SUMMARIZED
+        )
+        entry: dict[str, Any] = {
+            "class": "paired_operations",
+            "acquire": acq,
+            "release": rel,
+            "kind": kind,
+            "provenance": tier,
+        }
+        if pair.get("note"):
+            entry["note"] = str(pair["note"])
+        entries.append(entry)
+
+    null_signal = _names_in_signal(items, "null_guards")
+    for ret in vocab_raw.get("nullable_returns") or []:
+        if not isinstance(ret, dict):
+            continue
+        name = _bare_name(str(ret.get("name") or ""))
+        if not name:
+            continue
+        if name not in universe:
+            _discard("nullable_returns", name)
+            continue
+        tier = (
+            TIER_MECHANICAL if name in null_signal else TIER_LLM_SUMMARIZED
+        )
+        entry = {
+            "class": "nullable_returns",
+            "name": name,
+            "provenance": tier,
+        }
+        if ret.get("when"):
+            entry["when"] = str(ret["when"])
+        entries.append(entry)
+
+    gate_signal = _names_in_signal(items, "gate_checks")
+    for pred in vocab_raw.get("auth_predicates") or []:
+        if not isinstance(pred, dict):
+            continue
+        name = _bare_name(str(pred.get("name") or ""))
+        if not name:
+            continue
+        if name not in universe:
+            _discard("auth_predicates", name)
+            continue
+        tier = (
+            TIER_MECHANICAL if name in gate_signal else TIER_LLM_SUMMARIZED
+        )
+        entries.append({
+            "class": "auth_predicates",
+            "name": name,
+            "kind": str(pred.get("kind") or "domain").lower(),
+            "provenance": tier,
+        })
+
+    for fld in vocab_raw.get("security_fields") or []:
+        if not isinstance(fld, dict):
+            continue
+        name = str(fld.get("name") or "").strip()
+        if not name:
+            continue
+        if name not in universe:
+            _discard("security_fields", name)
+            continue
+        # Field membership is mechanical, but "security-sensitive" is
+        # purely the LLM's judgement — always llm_summarized.
+        entry = {
+            "class": "security_fields",
+            "name": name,
+            "provenance": TIER_LLM_SUMMARIZED,
+        }
+        if fld.get("why"):
+            entry["why"] = str(fld["why"])
+        entries.append(entry)
+
+    return entries
+
+
+def _assemble_vocabulary(
+    entries: list[dict[str, Any]],
+) -> tuple[
+    list[dict[str, Any]], list[dict[str, Any]],
+    list[dict[str, Any]], list[dict[str, Any]],
+]:
+    """Dedup flat vocab entries into the four DomainModel lists.
+
+    Keyed by (acquire, release, kind) for pairs and name for the name
+    classes; the higher provenance tier wins on collision
+    (mechanical > llm_summarized).
+    """
+    from .receipts import tier_rank
+
+    def _better(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+        return min(
+            (a, b), key=lambda e: tier_rank(e.get("provenance", "")),
+        )
+
+    by_class: dict[str, dict[Any, dict[str, Any]]] = {
+        "paired_operations": {},
+        "nullable_returns": {},
+        "auth_predicates": {},
+        "security_fields": {},
+    }
+    for entry in entries:
+        vclass = entry.get("class")
+        bucket = by_class.get(vclass)
+        if bucket is None:
+            continue
+        entry = {k: v for k, v in entry.items() if k != "class"}
+        if vclass == "paired_operations":
+            key: Any = (
+                entry.get("acquire"), entry.get("release"),
+                entry.get("kind"),
+            )
+        else:
+            key = entry.get("name")
+        prior = bucket.get(key)
+        bucket[key] = entry if prior is None else _better(prior, entry)
+
+    return (
+        list(by_class["paired_operations"].values()),
+        list(by_class["nullable_returns"].values()),
+        list(by_class["auth_predicates"].values()),
+        list(by_class["security_fields"].values()),
+    )
+
+
 def _run_one_batch(
     idx: int,
     total: int,
@@ -1722,6 +2088,7 @@ def _run_one_batch(
     doc_context: str = "",
     correlate: list[str] | None = None,
     discard_sink: list | None = None,
+    vocab_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1793,6 +2160,13 @@ def _run_one_batch(
         )
     )
 
+    if vocab_sink is not None:
+        # list.extend is atomic under the GIL — safe for the shared
+        # sink in the parallel path (same convention as discard_sink).
+        vocab_sink.extend(
+            _parse_api_vocabulary(result, focus + context, discard_sink)
+        )
+
     if reading_list is not None:
         _queue_unresolved(reading_list, result, context)
 
@@ -1816,6 +2190,7 @@ def run_phase2(
     doc_context: str = "",
     correlate: list[str] | None = None,
     discard_sink: list | None = None,
+    vocab_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1858,6 +2233,7 @@ def run_phase2(
             batches, target, source_root, llm_client,
             on_batch, reading_list, doc_context=doc_context,
             correlate=correlate, discard_sink=discard_sink,
+            vocab_sink=vocab_sink,
         )
 
     logger.info("Phase 2: parallel dispatch, max_workers=%d", max_workers)
@@ -1865,6 +2241,7 @@ def run_phase2(
         batches, target, source_root, llm_client,
         on_batch, reading_list, max_workers, doc_context=doc_context,
         correlate=correlate, discard_sink=discard_sink,
+        vocab_sink=vocab_sink,
     )
 
 
@@ -1878,6 +2255,7 @@ def _run_phase2_serial(
     doc_context: str = "",
     correlate: list[str] | None = None,
     discard_sink: list | None = None,
+    vocab_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1897,6 +2275,7 @@ def _run_phase2_serial(
                     idx, total, focus, context, target, source_root,
                     llm_client, reading_list, on_batch, doc_context=doc_context,
                     correlate=correlate, discard_sink=discard_sink,
+                    vocab_sink=vocab_sink,
                 )
             )
         except _BatchLLMError:
@@ -1931,6 +2310,7 @@ def _run_phase2_parallel(
     doc_context: str = "",
     correlate: list[str] | None = None,
     discard_sink: list | None = None,
+    vocab_sink: list | None = None,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -1952,7 +2332,7 @@ def _run_phase2_parallel(
             idx, total, focus, ctx, target, source_root,
             llm_client, reading_list, on_batch,
             doc_context=doc_context, correlate=correlate,
-            discard_sink=discard_sink,
+            discard_sink=discard_sink, vocab_sink=vocab_sink,
         )
         with _fail_lock:
             _consecutive_failures[0] = 0
@@ -2730,6 +3110,7 @@ def run_study(
             )
 
     receipt_discards: list[dict] = []
+    vocab_entries: list[dict] = []
     concepts, invariants, contracts, bug_patterns, struct_annots = run_phase2(
         items, target, llm_client,
         source_root=source_root,
@@ -2738,6 +3119,7 @@ def run_study(
         doc_context=combined_doc,
         correlate=correlate,
         discard_sink=receipt_discards,
+        vocab_sink=vocab_entries,
     )
     _record_discards(output_dir, receipt_discards)
     if receipt_discards and on_progress:
@@ -2791,6 +3173,22 @@ def run_study(
         source_root=source_root,
         security_context=sc,
     )
+
+    if vocab_entries:
+        (
+            model.paired_operations,
+            model.nullable_returns,
+            model.auth_predicates,
+            model.security_fields,
+        ) = _assemble_vocabulary(vocab_entries)
+        if on_progress:
+            on_progress(
+                "vocabulary",
+                f"API vocabulary: {len(model.paired_operations)} pairs, "
+                f"{len(model.nullable_returns)} nullable returns, "
+                f"{len(model.auth_predicates)} auth predicates, "
+                f"{len(model.security_fields)} security fields",
+            )
 
     out_path = output_dir / "domain-model.json"
     if out_path.is_file():

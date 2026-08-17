@@ -190,6 +190,19 @@ class DomainModel:
     bug_patterns: list[BugPattern] = field(default_factory=list)
     security_context: SecurityContext | None = None
     key_files: list[dict[str, str]] = field(default_factory=list)
+    # API vocabulary elicited from study answers, name-verified against
+    # the mechanically extracted study items and stamped with a
+    # provenance tier (core.concepts.receipts convention). Consumed by
+    # DomainVocabulary.from_domain_model (core.audit.condition_smt).
+    # Entry shapes:
+    #   paired_operations: {acquire, release, kind[, note, provenance]}
+    #   nullable_returns:  {name[, when, provenance]} or bare string
+    #   auth_predicates:   {name[, kind, provenance]} or bare string
+    #   security_fields:   {name[, why, provenance]} or bare string
+    paired_operations: list[dict[str, Any]] = field(default_factory=list)
+    nullable_returns: list[Any] = field(default_factory=list)
+    auth_predicates: list[Any] = field(default_factory=list)
+    security_fields: list[Any] = field(default_factory=list)
 
     # ----- persistence -------------------------------------------
 
@@ -234,6 +247,12 @@ class DomainModel:
             BugPattern(**_filter_fields(BugPattern, bp))
             for bp in raw.get("bug_patterns", [])
         ]
+        def _vocab_list(key: str) -> list:
+            value = raw.get(key, [])
+            if not isinstance(value, list):
+                return []
+            return [v for v in value if isinstance(v, (dict, str))]
+
         return cls(
             version=raw.get("version", "1"),
             target=raw.get("target", ""),
@@ -244,6 +263,13 @@ class DomainModel:
             bug_patterns=bug_patterns,
             security_context=security_context,
             key_files=raw.get("key_files", []),
+            paired_operations=[
+                p for p in _vocab_list("paired_operations")
+                if isinstance(p, dict)
+            ],
+            nullable_returns=_vocab_list("nullable_returns"),
+            auth_predicates=_vocab_list("auth_predicates"),
+            security_fields=_vocab_list("security_fields"),
         )
 
     # ----- query helpers -----------------------------------------

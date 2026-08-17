@@ -641,3 +641,42 @@ class TestStallMonitorStdoutDrain:
         # JoernCPG carried no languages and no build time.
         assert cpg.languages == {"c"}
         assert cpg.build_time_ms < 20_000
+
+
+class TestDefaultSandboxRunnerFailClosed:
+    """The try-import-sandbox-except-bare-subprocess shape is gone:
+    sandbox unimportable -> raise naming the remedy, unless the
+    operator explicitly opted into unsandboxed execution."""
+
+    def test_raises_when_sandbox_unimportable(self, monkeypatch):
+        import sys as _sys
+
+        from unittest.mock import patch as _patch
+
+        from core.run.sandbox_policy import (
+            ALLOW_UNSANDBOXED_ENV,
+            SandboxUnavailableError,
+        )
+        from packages.joern.runner import _default_sandbox_runner
+        monkeypatch.delenv(ALLOW_UNSANDBOXED_ENV, raising=False)
+        with _patch.dict(_sys.modules, {"core.sandbox": None}):
+            with pytest.raises(SandboxUnavailableError, match="joern"):
+                _default_sandbox_runner()
+
+    def test_optout_returns_bare_subprocess_with_event(self, monkeypatch):
+        import sys as _sys
+
+        from unittest.mock import patch as _patch
+
+        import core.run.sandbox_policy as policy_mod
+        from packages.joern.runner import _default_sandbox_runner
+        monkeypatch.setenv(policy_mod.ALLOW_UNSANDBOXED_ENV, "1")
+        events: list = []
+        monkeypatch.setattr(
+            policy_mod, "log_security_event",
+            lambda etype, msg, **kw: events.append(etype),
+        )
+        with _patch.dict(_sys.modules, {"core.sandbox": None}):
+            runner = _default_sandbox_runner()
+        assert runner is subprocess.run
+        assert events == ["unsandboxed_tool_fallback"]

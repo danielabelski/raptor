@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from packages.hypothesis_validation.adapters import (
@@ -253,16 +255,42 @@ class TestMakeSandboxRunner:
         runner = make_sandbox_runner(target=tmp_path)
         assert callable(runner)
 
-    def test_falls_back_to_subprocess_run_when_sandbox_unavailable(self, tmp_path):
-        # Force the import of core.sandbox to fail
+    def test_fails_closed_when_sandbox_unavailable(self, tmp_path,
+                                                    monkeypatch):
+        """Silent bare-subprocess fallback is gone: sandbox
+        unimportable -> SandboxUnavailableError naming the remedy."""
         import sys
 
+        from core.run.sandbox_policy import (
+            ALLOW_UNSANDBOXED_ENV,
+            SandboxUnavailableError,
+        )
         from packages.hypothesis_validation.adapters import base as base_mod
-        # Re-import with sandbox unavailable
+        monkeypatch.delenv(ALLOW_UNSANDBOXED_ENV, raising=False)
+        with patch.dict(sys.modules, {"core.sandbox": None}):
+            with pytest.raises(SandboxUnavailableError, match="refuses"):
+                base_mod.make_sandbox_runner(target=tmp_path)
+
+    def test_explicit_optout_falls_back_with_security_event(
+        self, tmp_path, monkeypatch,
+    ):
+        """RAPTOR_ALLOW_UNSANDBOXED_TOOLS=1 is the only degraded path:
+        returns subprocess.run and records a security event."""
+        import subprocess
+        import sys
+
+        import core.run.sandbox_policy as policy_mod
+        from packages.hypothesis_validation.adapters import base as base_mod
+        monkeypatch.setenv(policy_mod.ALLOW_UNSANDBOXED_ENV, "1")
+        events: list = []
+        monkeypatch.setattr(
+            policy_mod, "log_security_event",
+            lambda etype, msg, **kw: events.append(etype),
+        )
         with patch.dict(sys.modules, {"core.sandbox": None}):
             runner = base_mod.make_sandbox_runner(target=tmp_path)
-            import subprocess
-            assert runner is subprocess.run
+        assert runner is subprocess.run
+        assert events == ["unsandboxed_tool_fallback"]
 
 
 # MEDIUM: Untrusted-block delimiting ------------------------------------------

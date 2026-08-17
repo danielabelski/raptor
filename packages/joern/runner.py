@@ -73,11 +73,22 @@ def _escape_scala_string(value: str) -> str:
 
 
 def _default_sandbox_runner():
-    """Return the default sandbox runner for subprocess calls."""
+    """Return the default sandbox runner for subprocess calls.
+
+    Fail-closed: when ``core.sandbox`` cannot be imported this raises
+    ``core.run.sandbox_policy.SandboxUnavailableError`` instead of
+    silently degrading to bare ``subprocess.run`` (joern parses
+    untrusted source; its CPG frontends are a code-execution surface).
+    Operators on hosts without sandbox support can explicitly opt in
+    via ``RAPTOR_ALLOW_UNSANDBOXED_TOOLS=1`` (loud warning +
+    security-event emission).
+    """
     try:
         from core.sandbox import run as sandbox_run
         return sandbox_run
-    except ImportError:
+    except ImportError as exc:
+        from core.run.sandbox_policy import require_sandbox_or_optout
+        require_sandbox_or_optout("joern (CPG build / query runner)", exc)
         return subprocess.run
 
 

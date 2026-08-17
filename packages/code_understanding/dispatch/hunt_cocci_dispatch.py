@@ -345,12 +345,17 @@ def cocci_hunt_dispatch(
             )
         except ImportError:
             # hypothesis_validation isn't a hard dependency of
-            # /understand. If it's missing, fall back to unsandboxed
-            # plain subprocess.run via the runner's default. Log so
-            # operators can audit.
+            # /understand. If it's missing, fall through to
+            # packages/coccinelle's OWN default runner, which is also
+            # sandbox-routed (core.sandbox.run, network blocked) and
+            # fails loudly if core.sandbox itself is unimportable —
+            # this branch is a substrate swap, not an isolation
+            # downgrade. Log so operators can audit which runner
+            # served the hunt.
             logger.warning(
                 "cocci_hunt: make_sandbox_runner unavailable; "
-                "spatch will run unsandboxed",
+                "spatch uses packages/coccinelle's default sandboxed "
+                "runner",
             )
 
     try:

@@ -433,6 +433,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "precondition_promotion": TierCounters(),
         "synthesis_on_demand": TierCounters(),
         "adapter_aggregation": TierCounters(),
+        "secondary_sweep": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
         "joern_guard": TierCounters(),
@@ -497,6 +498,9 @@ class OrchestratorResult:
     # Glance-suspicious outcomes escalated to a full individual review
     # instead of committing the 500-token guess (capped per run).
     glance_escalated: int = 0
+    # Non-primary medium/high-confidence hypotheses that a mechanical
+    # tool confirmed (secondary-hypothesis dispatch lane).
+    secondary_confirmed: int = 0
     refinement_rounds: int = 0
     clean_checks: int = 0
     clean_check_rescues: int = 0
@@ -4024,6 +4028,12 @@ def _run_audit_body(
             result, config, checklist, joern_server=joern_server,
         )
         logger.debug("exited _promote_clean_refuted")
+
+        logger.debug("entering _dispatch_secondary_hypotheses")
+        _dispatch_secondary_hypotheses(
+            result, config, checklist, joern_server=joern_server,
+        )
+        logger.debug("exited _dispatch_secondary_hypotheses")
 
         logger.debug("entering _demote_self_contradictions")
         _demote_self_contradictions(result)
@@ -12089,8 +12099,13 @@ _REFUTED_CHEAP_CHANNELS = frozenset({
     "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
 })
 
-# Bound the extra tool work per function: at most this many refuted
-# hypotheses are dispatched, ranked by mechanism specificity.
+# Bound the extra tool work per function: at most this many hypotheses
+# are dispatched, ranked by mechanism specificity. SHARED budget across
+# the hypothesis dispatch lanes — the refuted lane
+# (_promote_clean_refuted, clean outcomes) and the secondary lane
+# (_dispatch_secondary_hypotheses, finding/suspicious outcomes). The
+# statuses are disjoint, so a function never exceeds this many extra
+# dispatches in total.
 _MAX_REFUTED_DISPATCHES_PER_FN = 3
 
 _IDENTIFIER_TOKEN_RE = re.compile(r"\b\w+_\w+\b|\b[A-Za-z_]\w*\(")
@@ -12362,6 +12377,234 @@ def _promote_clean_refuted(
                 "clean → suspicious (LLM self-refutation overridden by "
                 "tool receipt)",
                 outcome.file, outcome.function, tool,
+            )
+            promoted = True
+
+
+_SECONDARY_CONFIDENCES = frozenset({"high", "medium"})
+
+
+def _dispatch_secondary_hypotheses(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+    checklist: dict[str, Any] | None = None,
+    joern_server=None,
+) -> None:
+    """Post-loop pass: dispatch non-primary hypotheses through tool chains.
+
+    Reviews return a ``hypotheses`` array, but only the primary
+    hypothesis ever drove dispatch — a function with an integer
+    overflow AND a missing bounds check got exactly one mechanical
+    test. This pass walks the preserved array on finding/suspicious
+    outcomes and dispatches the top-N non-primary medium/high-confidence
+    entries through the standard tool chains (refuted-confidence
+    entries belong to ``_promote_clean_refuted``; clean outcomes with
+    live hypotheses are handled by ``_promote_hypothesis_inconsistent``).
+
+    Confirmation handling mirrors the sweep discipline:
+
+    - suspicious outcome + non-detection-role confirmation → promote to
+      finding with the tool receipt, the confirmed mechanism as the
+      lead hypothesis, and a distinct body marker;
+    - finding outcome → already promoted; the extra confirmation is
+      recorded under ``review_result.secondary_confirmations`` so the
+      export surfaces the additional mechanism;
+    - detection-role-only confirmations never promote.
+
+    Bounded per function by ``_MAX_REFUTED_DISPATCHES_PER_FN`` (the
+    budget shared with the refuted lane — statuses are disjoint, so the
+    per-function total stays capped), ranked by confidence then
+    mechanism specificity. Dispatches are counted in tier telemetry
+    under ``secondary_sweep``.
+    """
+    for i, outcome in enumerate(result.outcomes):
+        if outcome.status not in ("finding", "suspicious"):
+            continue
+        if outcome.body.startswith(
+            (
+                "[gate violation:",
+                "[sink-unreachability:",
+                "[guarded-sink:",
+                "[smt-infeasible:",
+                "[entry-unreachability:",
+                "[self-contradiction:",
+            )
+        ):
+            continue
+
+        hypotheses = getattr(outcome, "hypotheses", None) or []
+        if not hypotheses and outcome.review_result:
+            hypotheses = outcome.review_result.get("hypotheses") or []
+
+        primary = (
+            (outcome.review_result or {}).get("hypothesis")
+            or outcome.hypothesis
+            or ""
+        ).strip().lower()
+
+        secondary = []
+        seen_mechanisms = {primary} if primary else set()
+        for h in hypotheses:
+            if not isinstance(h, dict):
+                continue
+            mechanism = (h.get("mechanism") or "").strip()
+            if not mechanism:
+                continue
+            if (h.get("confidence") or "").lower() not in _SECONDARY_CONFIDENCES:
+                continue
+            norm = mechanism.lower()
+            if norm in seen_mechanisms:
+                continue
+            seen_mechanisms.add(norm)
+            secondary.append(h)
+        if not secondary:
+            continue
+
+        ranked = sorted(
+            secondary,
+            key=lambda h: (
+                (h.get("confidence") or "").lower() == "high",
+                _mechanism_specificity(h.get("mechanism", "")),
+            ),
+            reverse=True,
+        )[:_MAX_REFUTED_DISPATCHES_PER_FN]
+
+        gap = _find_gap_in_checklist(
+            checklist or {}, outcome.file, outcome.function,
+        )
+        line_end = gap.get("line_end") if gap else None
+        source = _read_raw_source(
+            config.target_path,
+            outcome.file,
+            outcome.line,
+            line_end,
+        )
+        fallback_cwe = _effective_cwe(outcome, result.tier_counters)
+
+        promoted = False
+        for h in ranked:
+            if promoted:
+                break
+            mechanism = h.get("mechanism", "")
+
+            # Per-hypothesis CWE: the secondary mechanism may belong to
+            # a different class than the review-level tag.
+            cwe = ""
+            try:
+                from .cwe_dispatch import infer_cwe_from_hypothesis
+                cwe = infer_cwe_from_hypothesis(mechanism) or ""
+            except ImportError:
+                pass
+            if not cwe:
+                cwe = fallback_cwe
+
+            chain = _hypothesis_to_tool_chain(mechanism, outcome.file, cwe=cwe)
+            if not chain:
+                _increment_tier_dict(
+                    result.tier_counters, "secondary_sweep", "skipped",
+                )
+                continue
+
+            confirmed = _run_tool_chain(
+                chain,
+                config=config,
+                file_path=outcome.file,
+                function_name=outcome.function,
+                source=source,
+                hypothesis=mechanism,
+                line_start=outcome.line,
+                sarif_cache=None,
+                tier_counters=result.tier_counters,
+                joern_server=joern_server,
+                cwe=cwe,
+            )
+            _increment_tier_dict(
+                result.tier_counters, "secondary_sweep",
+                "confirmed" if confirmed else "inconclusive",
+            )
+            if not confirmed:
+                continue
+
+            high_prec = [t for t in confirmed if not _is_detection_only(t)]
+            if not high_prec:
+                logger.info(
+                    "secondary-hypothesis promotion blocked %s:%s — only "
+                    "detection-role rules (%s)",
+                    outcome.file, outcome.function, "+".join(confirmed),
+                )
+                continue
+            if _check_sink_guarded_cached(
+                    outcome.function, joern_server) == "guarded":
+                logger.info(
+                    "secondary-hypothesis promotion blocked %s:%s via %s — "
+                    "all sink calls guarded",
+                    outcome.file, outcome.function, "+".join(high_prec),
+                )
+                continue
+
+            tool = "+".join(high_prec)
+            if outcome.review_result is not None:
+                outcome.review_result.setdefault(
+                    "secondary_confirmations", [],
+                ).append({
+                    "mechanism": mechanism[:200],
+                    "evidence_tool": tool,
+                    "confidence": (h.get("confidence") or "").lower(),
+                })
+            result.secondary_confirmed += 1
+
+            if outcome.status == "finding":
+                # Already promoted — the extra mechanism is recorded
+                # above and exported; nothing else to change.
+                logger.info(
+                    "secondary hypothesis confirmed on finding %s:%s "
+                    "via %s: %s",
+                    outcome.file, outcome.function, tool, mechanism[:120],
+                )
+                continue
+
+            rescued = ReviewOutcome(
+                file=outcome.file,
+                function=outcome.function,
+                status="finding",
+                body=(
+                    f"[secondary-hypothesis-confirmed via {tool}] "
+                    f"A non-primary hypothesis was mechanically "
+                    f"confirmed: {mechanism[:200]}\n\n{outcome.body}"
+                ),
+                hypothesis=mechanism,
+                hypotheses=outcome.hypotheses,
+                evidence_tool=tool,
+                cost_usd=outcome.cost_usd,
+                model=outcome.model,
+                duration_s=outcome.duration_s,
+                review_result=outcome.review_result,
+                line=outcome.line,
+            )
+            rescued.tools_dispatched = outcome.tools_dispatched
+            rescued.tools_errored = outcome.tools_errored
+            rescued.semantic_confidence = outcome.semantic_confidence
+            if rescued.review_result is not None:
+                rescued.review_result["evidence_tool"] = tool
+                rescued.review_result["secondary_hypothesis_confirmed"] = True
+            result.outcomes[i] = rescued
+            result.sweep_promoted += 1
+            result.suspicious -= 1
+            result.findings += 1
+            append_audit_log(config.out_dir, {
+                "action": "secondary_hypothesis_confirmed",
+                "key": f"{outcome.file}:{outcome.function}:{outcome.line or 0}",
+                "file": outcome.file,
+                "function": outcome.function,
+                "status": "finding",
+                "prior_status": "suspicious",
+                "evidence_tool": tool,
+                "hypothesis": mechanism,
+            })
+            logger.info(
+                "secondary hypothesis confirmed %s:%s via %s — promoted "
+                "suspicious → finding: %s",
+                outcome.file, outcome.function, tool, mechanism[:120],
             )
             promoted = True
 

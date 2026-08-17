@@ -100,6 +100,34 @@ def build_graded_finding(
         # class — exactly the findings /validate exists to judge.
         finding["needs_validation"] = True
 
+    # Hypothesis multiplicity: the review's full hypotheses array.
+    # A multi-bug function used to export as one finding with one
+    # hypothesis string — the sibling mechanisms (and their
+    # confidences) were invisible to the operator and to /validate.
+    hyp_entries = getattr(outcome, "hypotheses", None) or []
+    if not hyp_entries and review_result:
+        hyp_entries = review_result.get("hypotheses") or []
+    hyp_entries = [
+        h for h in hyp_entries
+        if isinstance(h, dict) and h.get("mechanism")
+    ]
+    if hyp_entries:
+        finding["hypothesis_multiplicity"] = {
+            "count": len(hyp_entries),
+            "mechanisms": [
+                {
+                    "mechanism": (h.get("mechanism") or "")[:200],
+                    "confidence": (h.get("confidence") or "").lower(),
+                }
+                for h in hyp_entries[:8]
+            ],
+        }
+
+    # Secondary-hypothesis tool confirmations (dispatch lane receipts).
+    secondary = review_result.get("secondary_confirmations")
+    if secondary:
+        finding["secondary_confirmations"] = secondary
+
     if review_result.get("cwe_class"):
         finding["cwe_class"] = review_result["cwe_class"]
 

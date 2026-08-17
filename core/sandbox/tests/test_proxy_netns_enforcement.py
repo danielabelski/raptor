@@ -268,6 +268,108 @@ class TestProxyBridge:
             os.close(death_w)
             os.waitpid(fwd_pid, 0)
 
+    def test_forwarder_concurrent_connections_with_churn(self):
+        """Multiple simultaneous relays with interleaved teardown must
+        not cross-contaminate. Regression cover for the readable-
+        snapshot restructure: a relay fd closed earlier in a select
+        iteration must be skipped (not read/closed again), and accepts
+        are deferred until after the snapshot is processed so a fresh
+        connection can't alias a just-closed fd number."""
+        sock_path = str(self.tmp / "churn.sock")
+        echo_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        echo_srv.bind(sock_path)
+        echo_srv.listen(64)
+        stop = threading.Event()
+
+        def _echo_loop():
+            # Echo each connection's bytes back until EOF.
+            conns = []
+            echo_srv.settimeout(0.1)
+            while not stop.is_set():
+                try:
+                    conn, _ = echo_srv.accept()
+                except OSError:
+                    pass
+                else:
+                    conn.setblocking(False)
+                    conns.append(conn)
+                for c in list(conns):
+                    try:
+                        data = c.recv(4096)
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        conns.remove(c)
+                        c.close()
+                        continue
+                    if not data:
+                        conns.remove(c)
+                        c.close()
+                        continue
+                    try:
+                        c.sendall(data)
+                    except OSError:
+                        conns.remove(c)
+                        c.close()
+            for c in conns:
+                c.close()
+            echo_srv.close()
+
+        echo_thread = threading.Thread(target=_echo_loop, daemon=True)
+        echo_thread.start()
+
+        port = _free_loopback_port()
+        death_r, death_w = os.pipe()
+        from core.sandbox._proxy_bridge import _run_forwarder
+
+        fwd_pid = os.fork()
+        if fwd_pid == 0:
+            os.close(death_w)
+            try:
+                _run_forwarder(port, sock_path, death_r)
+            finally:
+                os._exit(0)
+        os.close(death_r)
+
+        try:
+            # Rapid rounds of: open several connections, exchange a
+            # unique payload on each, abruptly close some while others
+            # are mid-flight, verify the survivors' payloads are
+            # intact (no bytes from a torn-down relay leak in).
+            for round_no in range(10):
+                socks = []
+                for i in range(6):
+                    s = _connect_with_retry(port)
+                    s.settimeout(5.0)
+                    socks.append(s)
+                # Abruptly close half BEFORE any traffic — their
+                # teardown lands in the same select snapshots as the
+                # survivors' data + new accepts.
+                for s in socks[::2]:
+                    s.close()
+                survivors = socks[1::2]
+                for i, s in enumerate(survivors):
+                    payload = f"r{round_no}-c{i}".encode() * 50
+                    s.sendall(payload)
+                    got = b""
+                    while len(got) < len(payload):
+                        chunk = s.recv(4096)
+                        assert chunk, (
+                            f"round {round_no} conn {i}: relay died "
+                            f"mid-payload (got {len(got)} bytes)"
+                        )
+                        got += chunk
+                    assert got == payload, (
+                        f"round {round_no} conn {i}: payload corrupted"
+                    )
+                for s in survivors:
+                    s.close()
+        finally:
+            stop.set()
+            os.close(death_w)
+            os.waitpid(fwd_pid, 0)
+            echo_thread.join(timeout=5)
+
     def test_forwarder_exits_on_death_pipe(self):
         """Forwarder exits when death pipe write end is closed."""
         sock_path = str(self.tmp / "noop.sock")

@@ -82,35 +82,24 @@ def _run_forwarder(listen_port, unix_socket_path, death_r):
             except (ValueError, OSError):
                 break
 
+            if death_r in readable:
+                # Parent died or signalled shutdown.
+                return
+
+            listener_ready = False
             for fd in readable:
-                if fd == death_r:
-                    # Parent died or signalled shutdown.
-                    return
-
                 if fd == listener.fileno():
-                    try:
-                        client_sock, _ = listener.accept()
-                    except OSError:
-                        continue
-                    client_sock.setblocking(False)
+                    listener_ready = True
+                    continue
 
-                    unix_sock = socket.socket(
-                        socket.AF_UNIX, socket.SOCK_STREAM,
-                    )
-                    try:
-                        unix_sock.connect(unix_socket_path)
-                    except OSError:
-                        client_sock.close()
-                        unix_sock.close()
-                        continue
-                    unix_sock.setblocking(False)
-
-                    c_fd = client_sock.detach()
-                    u_fd = unix_sock.detach()
-                    pairs[c_fd] = u_fd
-                    pairs[u_fd] = c_fd
-                    all_fds.add(c_fd)
-                    all_fds.add(u_fd)
+                # `readable` is a snapshot: an entry whose relay was
+                # torn down earlier in THIS iteration (its partner hit
+                # EOF/error first) is stale. Without this guard the
+                # stale fd would be read from / closed again — and if
+                # the fd number had been reused by a fresh connection,
+                # that unrelated connection would be corrupted or
+                # killed.
+                if fd not in all_fds:
                     continue
 
                 partner = pairs.get(fd)
@@ -131,6 +120,36 @@ def _run_forwarder(listen_port, unix_socket_path, death_r):
                     _write_all(partner, data)
                 except OSError:
                     _close_pair(fd)
+
+            # Accept LAST: fds created here (accept + unix connect)
+            # can reuse numbers closed by _close_pair above. Deferring
+            # the accept until every relay entry from this snapshot is
+            # processed means no stale `readable` entry can alias a
+            # fresh connection's fd number.
+            if listener_ready:
+                try:
+                    client_sock, _ = listener.accept()
+                except OSError:
+                    continue
+                client_sock.setblocking(False)
+
+                unix_sock = socket.socket(
+                    socket.AF_UNIX, socket.SOCK_STREAM,
+                )
+                try:
+                    unix_sock.connect(unix_socket_path)
+                except OSError:
+                    client_sock.close()
+                    unix_sock.close()
+                    continue
+                unix_sock.setblocking(False)
+
+                c_fd = client_sock.detach()
+                u_fd = unix_sock.detach()
+                pairs[c_fd] = u_fd
+                pairs[u_fd] = c_fd
+                all_fds.add(c_fd)
+                all_fds.add(u_fd)
     finally:
         for fd in all_fds:
             if fd != death_r:

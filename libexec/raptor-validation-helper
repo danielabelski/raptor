@@ -1140,7 +1140,24 @@ def _discover_executables(target):
         from core.config import RaptorConfig
         _env = RaptorConfig.get_safe_env()
     except Exception:  # noqa: BLE001
-        _env = os.environ.copy()
+        # Fail closed: the child `find` walks the UNTRUSTED target
+        # tree, so a sanitisation failure must never hand it the
+        # ambient environment. Mirror the minimal inline allowlist the
+        # PoC-compile stage uses as its own last resort.
+        _minimal_keep = {
+            "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM",
+            "TMPDIR", "LANG", "TZ",
+        }
+        _env = {
+            k: v for k, v in os.environ.items()
+            if k in _minimal_keep or k.startswith("LC_")
+        }
+        print(
+            "WARNING: RaptorConfig.get_safe_env() failed — binary "
+            "discovery env stripped to a minimal inline allowlist "
+            "instead of the ambient environment",
+            file=sys.stderr,
+        )
     result = {}
     with contextlib.suppress(Exception):
         proc = _sp.run(

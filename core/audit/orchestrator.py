@@ -196,7 +196,6 @@ from .shared_state import SharedState
 from .sweep import (
     SarifCache,
     run_coccinelle_sweep,
-    run_consistency_check,
     run_semgrep_sweep,
     run_smt_verb_direct,
 )
@@ -463,6 +462,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "smt_invariant": TierCounters(),
         "api_boundary": TierCounters(),
         "fail_open": TierCounters(),
+        "consistency": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "adversarial_refute": TierCounters(),
@@ -1135,6 +1135,11 @@ def review_one_function(
     if mech_list:
         ctx["mechanical_detector_findings"] = mech_list
 
+    # Consistency-census leads seeded onto the gap by the prep phase
+    # (gap-extra-key pattern; renderer caps + envelopes them).
+    if gap.get("consistency_leads"):
+        ctx["consistency_leads"] = list(gap["consistency_leads"])
+
     # --- Mechanical gates: per-function context enrichment ---
     if provenance_map and gap_key_mech in provenance_map:
         with contextlib.suppress(Exception):
@@ -1251,6 +1256,7 @@ def review_one_function(
             checklist=checklist,
             tests=discovered_tests or None,
             summaries=summaries_for_spec,
+            census=getattr(shared, "consistency_census", None),
         )
         if spec and spec.intent:
             ctx["inferred_spec"] = spec
@@ -3206,9 +3212,30 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         for g in gaps
         if g.get("name")
     ]
+    # Dispatch tables extracted from the hydrated gaps — the L2
+    # (dispatch-site) layer's first producer at this call site. The
+    # remaining optional resolver inputs (binary_edge_index,
+    # type_ref_index) still lack producers: L1 needs the r2
+    # --binary-edges cache wired through prep and L4 needs a type
+    # cohort index from the inventory extractors — both stay
+    # unproduced in phase 1, documented, not silently wired.
+    prep_dispatch_tables = None
+    try:
+        from .dispatch_table import build_dispatch_tables
+
+        prep_dispatch_tables = build_dispatch_tables(detector_gaps)
+        if prep_dispatch_tables:
+            logger.info(
+                "dispatch tables: %d extracted for peer-group L2",
+                len(prep_dispatch_tables),
+            )
+    except Exception:
+        logger.debug("dispatch-table extraction failed", exc_info=True)
+
     peer_groups = resolve_peer_groups(
         gap_func_dicts,
         joern_server=joern_server,
+        dispatch_tables=prep_dispatch_tables or None,
         domain_model=prep_domain_model,
         checklist=checklist,
     )
@@ -3322,6 +3349,63 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 "semantic-consistency routing failed", exc_info=True,
             )
 
+    # Standing consistency pre-pass (§2.3/§2.4): usage-enum census +
+    # return-census.json, LLM-free verdicts on census deviants,
+    # flag/mode + cleanup comparators, capped checklist leads, and the
+    # acknowledged-discard → fail_open handoff hypotheses.
+    consistency_prepass: dict[str, Any] = {}
+    try:
+        from .consistency_prepass import (
+            run_consistency_prepass,
+            seed_consistency_leads,
+            seed_fail_open_handoffs,
+        )
+
+        prepass_texts: dict[str, str] = {}
+        for gap in gaps:
+            fp = gap.get("file", "")
+            if fp and fp not in prepass_texts:
+                with contextlib.suppress(Exception):
+                    src_path = config.target_path / fp
+                    if src_path.is_file():
+                        prepass_texts[fp] = src_path.read_text(
+                            errors="replace",
+                        )
+        if prepass_texts:
+            consistency_prepass = run_consistency_prepass(
+                prepass_texts,
+                target_path=config.target_path,
+                out_dir=config.out_dir,
+                annotations_dir=getattr(config, "annotations_dir", None),
+                inventory=getattr(config, "inventory", None),
+                context_map=context_map,
+                domain_model=prep_domain_model,
+                joern_server=joern_server,
+            )
+            for mf in consistency_prepass.get("mechanical", []):
+                key = f"{mf['file']}:{mf['function']}"
+                mechanical_findings.setdefault(key, []).append(mf)
+            n_leads = seed_consistency_leads(
+                gaps, consistency_prepass.get("leads", []),
+            )
+            n_handoffs = seed_fail_open_handoffs(
+                gaps, consistency_prepass.get("handoffs", []),
+            )
+            if n_leads or n_handoffs:
+                logger.info(
+                    "consistency prepass: %d leads seeded, %d "
+                    "fail-open handoff hypotheses injected",
+                    n_leads, n_handoffs,
+                )
+            if config.out_dir:
+                with contextlib.suppress(Exception):
+                    append_audit_log(config.out_dir, {
+                        "action": "consistency_prepass",
+                        **(consistency_prepass.get("telemetry") or {}),
+                    })
+    except Exception:
+        logger.debug("consistency prepass failed", exc_info=True)
+
     if mechanical_findings and config.out_dir:
         try:
             mech_path = config.out_dir / "mechanical-findings.json"
@@ -3382,6 +3466,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "struct_accessor_index": struct_accessor_index,
         "semantic_findings": semantic_findings,
         "mechanical_findings": mechanical_findings,
+        "consistency_prepass": consistency_prepass,
         "guard_clean_keys": guard_clean_keys,
         "detector_gaps": detector_gaps,
         "provenance_map": provenance_map,
@@ -3697,6 +3782,135 @@ def _bypass_findings_to_gaps(
     return gaps
 
 
+def _fail_open_adjudicated_sites(out_dir: Path | None) -> set:
+    """(file, line) pairs the fail_open channel already adjudicated —
+    the CWE-252 premise-split dedup (§5.1): the census defers, the
+    fail_open verdict wins (deeper role+fallibility receipts)."""
+    sites: set = set()
+    if not out_dir:
+        return sites
+    try:
+        for record in load_audit_log(out_dir):
+            if record.get("action") != "fail_open_check":
+                continue
+            if record.get("outcome") not in ("confirmed", "refuted"):
+                continue
+            fp = record.get("file", "")
+            handler = record.get("handler") or {}
+            if fp and handler.get("line"):
+                sites.add((fp, int(handler["line"])))
+            for s in record.get("sites") or []:
+                if isinstance(s, dict) and fp and s.get("line"):
+                    sites.add((fp, int(s["line"])))
+    except Exception:
+        logger.debug("fail_open site collection failed", exc_info=True)
+    return sites
+
+
+def _consistency_synthetic_outcomes(
+    consistency_prepass: dict[str, Any],
+    outcomes: list[Any],
+    out_dir: Path | None,
+) -> list[Any]:
+    """Synthesized-hypothesis outcomes for the census pre-pass's
+    LLM-free confirmations (§2.3, the ``fix_history``
+    mechanically-injected-hypothesis precedent — G1 holds because the
+    hypothesis exists before the finding). Registry-grade
+    confirmations carry their promote-capable ``consistency:*``
+    receipt; detection-grade (majority-only) stay ``suspicious``.
+    Deduplicates against functions that already export an outcome and
+    against fail_open-adjudicated (file, line) sites."""
+    findings = (consistency_prepass or {}).get("findings") or []
+    if not findings:
+        return []
+    existing = {
+        (getattr(o, "file", ""), getattr(o, "function", ""))
+        for o in outcomes
+        if getattr(o, "status", "") in ("finding", "suspicious", "dark")
+    }
+    fail_open_sites = _fail_open_adjudicated_sites(out_dir)
+    extra: list[Any] = []
+    for f in findings:
+        file_path = f.get("file", "")
+        func = f.get("function", "")
+        line = int(f.get("line") or 0)
+        if not file_path or not func:
+            continue
+        if (file_path, func) in existing:
+            continue
+        if (file_path, line) in fail_open_sites:
+            logger.info(
+                "consistency finding at %s:%d deferred — fail_open "
+                "adjudicated this site (premise-split dedup)",
+                file_path, line,
+            )
+            continue
+        existing.add((file_path, func))
+        extra.append(SimpleNamespace(
+            file=file_path,
+            function=func,
+            line=line,
+            status=f.get("status", "suspicious"),
+            body=f"[consistency:{f.get('dimension', '')}] "
+                 f"{f.get('description', '')}",
+            hypothesis=f.get("hypothesis", ""),
+            hypotheses=None,
+            review_result={
+                "hypothesis": f.get("hypothesis", ""),
+                "cwe_class": f.get("cwe", ""),
+                "consistency_receipts": f.get("receipts") or {},
+            },
+            evidence_tool=f.get("evidence_tool", ""),
+            tools_dispatched={"consistency"},
+            discovered_by="consistency_census",
+            model="",
+            cost_usd=0.0,
+            duration_s=0.0,
+        ))
+    return extra
+
+
+def _journal_undischarged_leads(
+    consistency_prepass: dict[str, Any],
+    outcomes: list[Any],
+    out_dir: Path | None,
+) -> None:
+    """``consistency_lead:undischarged`` telemetry (§2.4.2): leads
+    seeded onto gaps whose function never reached a review."""
+    if not out_dir:
+        return
+    leads = (consistency_prepass or {}).get("leads") or []
+    if not leads:
+        return
+    reviewed = {
+        (getattr(o, "file", ""), getattr(o, "function", ""))
+        for o in outcomes
+    }
+    undischarged = [
+        ld for ld in leads
+        if (ld.get("file", ""), ld.get("function", "")) not in reviewed
+    ]
+    if not undischarged:
+        return
+    try:
+        append_audit_log(out_dir, {
+            "action": "consistency_lead:undischarged",
+            "count": len(undischarged),
+            "leads": [
+                {
+                    "dimension": ld.get("dimension", ""),
+                    "callee": ld.get("callee", ""),
+                    "file": ld.get("file", ""),
+                    "function": ld.get("function", ""),
+                    "line": ld.get("line", 0),
+                }
+                for ld in undischarged[:20]
+            ],
+        })
+    except Exception:
+        logger.debug("undischarged-lead telemetry failed", exc_info=True)
+
+
 def _checklist_function_line(
     checklist: dict[str, Any],
     file_path: str,
@@ -3888,7 +4102,22 @@ def _run_audit_body(
     struct_accessor_index = _prep.get("struct_accessor_index", {})
     semantic_findings = _prep["semantic_findings"]
     mechanical_findings = _prep["mechanical_findings"]
+    consistency_prepass = _prep.get("consistency_prepass") or {}
     guard_clean_keys = _prep.get("guard_clean_keys", set())
+
+    # Pre-pass verdict counts surface in tier-diagnostics alongside the
+    # in-loop channel adjudications (§4.4).
+    try:
+        for counts in (
+            (consistency_prepass.get("telemetry") or {})
+            .get("dimensions") or {}
+        ).values():
+            tc = result.tier_counters["consistency"]
+            tc.confirmed += counts.get("confirmed", 0)
+            tc.refuted += counts.get("refuted", 0)
+            tc.inconclusive += counts.get("inconclusive", 0)
+    except Exception:
+        logger.debug("consistency tier seeding failed", exc_info=True)
     provenance_map = _prep["provenance_map"]
     security_decision_keys = _prep["security_decision_keys"]
     feeds_security_keys = _prep["feeds_security_keys"]
@@ -4287,6 +4516,7 @@ def _run_audit_body(
         expansion_budget=expansion_budget,
     )
     shared.inject_resolver = inject_resolver
+    shared.consistency_census = consistency_prepass.get("census")
     shared.discovered_evidence = discovered_evidence
     shared.session_observations = session_observations
     shared.reviewed_before_joern = reviewed_before_joern
@@ -5473,6 +5703,54 @@ def _run_audit_body(
                     exc_info=True,
                 )
 
+    # --- Consistency pre-pass outcomes (LLM-free promote path) ---
+    #
+    # Census confirmations become synthesized-hypothesis outcomes:
+    # journaled here, merged into the graded export below. Registry-
+    # grade receipts promote (status decided by the reachability
+    # escalator at prep time); majority-only stay suspicious.
+    consistency_outcomes: list[Any] = []
+    try:
+        consistency_outcomes = _consistency_synthetic_outcomes(
+            consistency_prepass, result.outcomes, config.out_dir,
+        )
+        for co in consistency_outcomes:
+            try:
+                from .collector import append_journal_for_outcome
+
+                append_journal_for_outcome(
+                    out_dir=config.out_dir,
+                    target_path=config.target_path,
+                    run_id=(config.out_dir.name if config.out_dir else ""),
+                    outcome=co,
+                    gap={
+                        "line_start": co.line,
+                        "line_end": None,
+                        "strategies": ["consistency-census"],
+                    },
+                    checked_by=["consistency:census"],
+                )
+                with result._lock:
+                    result.post_loop_mechanical += 1
+            except Exception:
+                logger.debug(
+                    "consistency journal append failed for %s:%s",
+                    co.file, co.function, exc_info=True,
+                )
+        if consistency_outcomes:
+            logger.info(
+                "consistency census: %d LLM-free outcomes journaled "
+                "(%d promote-capable findings)",
+                len(consistency_outcomes),
+                sum(1 for o in consistency_outcomes
+                    if o.status == "finding"),
+            )
+        _journal_undischarged_leads(
+            consistency_prepass, result.outcomes, config.out_dir,
+        )
+    except Exception:
+        logger.debug("consistency outcome export failed", exc_info=True)
+
     # --- Bypass-finding review pass (bounded) ---
     #
     # Refine-loop bypass findings resolve to reviewable functions and
@@ -5675,6 +5953,12 @@ def _run_audit_body(
             )
         except Exception:
             logger.debug("bypass export outcomes failed", exc_info=True)
+        try:
+            export_outcomes.extend(consistency_outcomes)
+        except Exception:
+            logger.debug(
+                "consistency export outcomes failed", exc_info=True,
+            )
         graded = export_findings(
             export_outcomes,
             evidence_index=evidence_index,
@@ -10913,6 +11197,20 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "fail_open", "config": {}})
                 seen_types.add("fail_open")
 
+    # Peer-majority hypotheses ("9/10 callers check do_auth()'s
+    # return; this one discards it"): the consistency channel
+    # recomputes the census arithmetic and the exhibits mechanically
+    # instead of trusting the claimed majority.
+    if "consistency" not in seen_types:
+        try:
+            from .consistency_verify import is_consistency_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_consistency_hypothesis(hypothesis):
+                chain.append({"type": "consistency", "config": {}})
+                seen_types.add("consistency")
+
     # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
     # the preservation harness checks the stated invariant against the
     # function's mutation sites — the channel gap that left every
@@ -11018,6 +11316,29 @@ def _record_fail_open_receipt(
         append_audit_log(config.out_dir, record)
     except Exception:
         logger.debug("fail-open receipt write failed", exc_info=True)
+
+
+def _record_consistency_receipt(
+    config: OrchestratorConfig,
+    file_path: str,
+    function_name: str,
+    cs_res: Any,
+) -> None:
+    """Persist the consistency receipt (PeerEvidence majority
+    arithmetic + exhibits, contract source/provenance, reachability
+    escalator) to the audit log."""
+    try:
+        if not config.out_dir:
+            return
+        record = {
+            "action": "consistency_check",
+            "file": file_path,
+            "function": function_name,
+        }
+        record.update(cs_res.to_dict())
+        append_audit_log(config.out_dir, record)
+    except Exception:
+        logger.debug("consistency receipt write failed", exc_info=True)
 
 
 def _record_invariant_receipt(
@@ -11128,6 +11449,17 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         # engines.
         if fail_open_applicable(cwe):
             chain.append({"type": "fail_open", "config": {}})
+
+    try:
+        from .consistency_verify import consistency_applicable
+    except ImportError:
+        pass
+    else:
+        # Consistency-outlier family (CONSISTENCY_CWES — CWE-252 keeps
+        # its cocci entry, the consistency channel joins its chain):
+        # pure static analysis, cheap, before the heavier engines.
+        if consistency_applicable(cwe):
+            chain.append({"type": "consistency", "config": {}})
 
     smt_verb = smt_verb_for_cwe(cwe)
     if smt_verb:
@@ -11554,6 +11886,65 @@ def _run_tool_chain(
                     if tier_counters:
                         _increment_tier_dict(
                             tier_counters, "fail_open",
+                            "inconclusive",
+                        )
+
+            elif tool_type == "consistency":
+                from .consistency_verify import run_consistency_check
+                from .fail_open_roles import RoleContext as _CsRoleCtx
+
+                cs_ctx = _CsRoleCtx(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                )
+                cs_res = run_consistency_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    context=cs_ctx,
+                )
+                # Receipts already earned by earlier chain steps
+                # corroborate (compiler -Wunused-result, cocci,
+                # fail_open confirmations on the same claim).
+                cs_res.corroboration.extend(
+                    c for c in confirmed
+                    if not c.startswith("consistency")
+                )
+                _record_consistency_receipt(
+                    config, file_path, function_name, cs_res,
+                )
+                if cs_res.outcome == "confirmed":
+                    confirmed.append(cs_res.rule_id)
+                    logger.info(
+                        "consistency confirmed %s:%s — %s",
+                        file_path, function_name, cs_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "consistency", "confirmed",
+                        )
+                elif cs_res.outcome == "refuted":
+                    logger.info(
+                        "consistency refuted %s:%s — %s",
+                        file_path, function_name, cs_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "consistency", "refuted",
+                        )
+                else:
+                    logger.info(
+                        "consistency inconclusive %s:%s — %s",
+                        file_path, function_name, cs_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "consistency",
                             "inconclusive",
                         )
 
@@ -14142,6 +14533,22 @@ def _correlated_mech_detector_tool(
         if not isinstance(hit, dict):
             continue
         detector = hit.get("detector", "")
+        if detector in ("flag_mode_deviation", "cleanup_deviation"):
+            # Consistency comparator hits carry their rule-id on the
+            # entry. Same discipline as cocci hits: detection-role
+            # rule-ids (-majority variants) never promote — they stay
+            # review context / aggregation members. Correlation: the
+            # hypothesis names the deviant callee, or the CWE matches.
+            rule = hit.get("rule_id") or ""
+            callee = hit.get("callee") or ""
+            if not rule or _is_detection_only(rule):
+                continue
+            from .consistency_verify import consistency_applicable
+            named = bool(callee) and callee in (hypothesis or "")
+            if named or consistency_applicable(cwe) \
+                    or (hit.get("cwe") and hit["cwe"] == cwe):
+                return rule
+            continue
         if not detector.startswith("cocci:"):
             continue
         stem = detector.split(":", 1)[1]
@@ -14822,7 +15229,7 @@ def _source_has_arithmetic(source: str) -> bool:
 # refuted class is a demoted-priority queue, not a zero-priority one.
 _REFUTED_CHEAP_CHANNELS = frozenset({
     "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
-    "fail_open",
+    "fail_open", "consistency",
 })
 
 # Bound the extra tool work per function: at most this many hypotheses

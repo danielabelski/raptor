@@ -18,8 +18,10 @@ lifecycle classification.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set
+from pathlib import PurePosixPath
+from typing import Any
 
 _OPS_TABLE_PATTERNS = [
     # C kernel: struct file_operations, proto_ops, etc.
@@ -83,17 +85,17 @@ class CapabilityDisplacement:
 
 
 def find_dispatch_members(
-    gaps: Sequence[Dict[str, Any]],
-) -> Dict[str, List[DispatchMember]]:
+    gaps: Sequence[dict[str, Any]],
+) -> dict[str, list[DispatchMember]]:
     """Find functions registered in ops/dispatch tables.
 
     Scans all gaps for struct ops assignments and ioctl case
     dispatch patterns.  Returns a dict keyed by file path.
     """
-    members_by_file: Dict[str, List[DispatchMember]] = {}
+    members_by_file: dict[str, list[DispatchMember]] = {}
 
-    file_sources: Dict[str, str] = {}
-    func_files: Dict[str, str] = {}
+    file_sources: dict[str, str] = {}
+    func_files: dict[str, str] = {}
     for gap in gaps:
         f = gap.get("file", "")
         name = gap.get("name", "")
@@ -136,14 +138,54 @@ def find_dispatch_members(
     return members_by_file
 
 
+@dataclass
+class DispatchTableRecord:
+    """One dispatch table in the shape the peer-group resolver's L2
+    layer consumes (``handlers`` values are the member functions)."""
+
+    file: str
+    function: str
+    handlers: dict[str, str] = field(default_factory=dict)
+
+
+def build_dispatch_tables(
+    gaps: Sequence[dict[str, Any]],
+) -> list[DispatchTableRecord]:
+    """Producer for ``resolve_peer_groups(dispatch_tables=…)`` (L2).
+
+    The resolver's L2 layer previously had no producer at the prep
+    call site — dispatch-site peer groups never formed. One record
+    per file with registered members; the table field (``.read =``,
+    ``ioctl_case``) keys each handler.
+    """
+    tables: list[DispatchTableRecord] = []
+    for file_path, members in sorted(find_dispatch_members(gaps).items()):
+        handlers: dict[str, str] = {}
+        for m in members:
+            key = m.table_field or m.name
+            candidate = key
+            suffix = 2
+            while candidate in handlers:
+                candidate = f"{key}#{suffix}"
+                suffix += 1
+            handlers[candidate] = m.name
+        if len(handlers) >= 2:
+            tables.append(DispatchTableRecord(
+                file=file_path,
+                function=PurePosixPath(file_path).stem,
+                handlers=handlers,
+            ))
+    return tables
+
+
 def find_capability_checks(
-    gaps: Sequence[Dict[str, Any]],
-) -> Dict[str, Dict[str, List[str]]]:
+    gaps: Sequence[dict[str, Any]],
+) -> dict[str, dict[str, list[str]]]:
     """Find capability/permission checks per function.
 
     Returns {file: {function_name: [capability, ...]}}.
     """
-    result: Dict[str, Dict[str, List[str]]] = {}
+    result: dict[str, dict[str, list[str]]] = {}
 
     for gap in gaps:
         f = gap.get("file", "")
@@ -166,10 +208,10 @@ def find_capability_checks(
 
 
 def check_capability_displacement(
-    gaps: Sequence[Dict[str, Any]],
+    gaps: Sequence[dict[str, Any]],
     *,
     min_dispatch_members: int = 2,
-) -> List[CapabilityDisplacement]:
+) -> list[CapabilityDisplacement]:
     """Detect temporally displaced capability checks.
 
     A capability is "displaced" when:
@@ -195,7 +237,7 @@ def check_capability_displacement(
 
         member_names = {m.name for m in members}
 
-        non_member_caps: Dict[str, List[str]] = {}
+        non_member_caps: dict[str, list[str]] = {}
         for func_name, caps in file_caps.items():
             if func_name not in member_names:
                 for cap in caps:
@@ -204,7 +246,7 @@ def check_capability_displacement(
         if not non_member_caps:
             continue
 
-        member_caps: Dict[str, Set[str]] = {}
+        member_caps: dict[str, set[str]] = {}
         for func_name, caps in file_caps.items():
             if func_name in member_names:
                 for cap in caps:
@@ -233,8 +275,8 @@ def check_capability_displacement(
 
 
 def format_displacement_context(
-    displacements: List[CapabilityDisplacement],
-) -> Optional[str]:
+    displacements: list[CapabilityDisplacement],
+) -> str | None:
     """Format displacements for injection into the LLM review context."""
     if not displacements:
         return None

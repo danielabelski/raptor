@@ -114,8 +114,15 @@ def infer_spec_mechanical(
     checklist: dict[str, Any] | None = None,
     tests: dict[str, Any] | None = None,
     summaries: dict[str, Any] | None = None,
+    census: dict[str, Any] | None = None,
 ) -> InferredSpec:
-    """Infer a function's specification from mechanical signals only."""
+    """Infer a function's specification from mechanical signals only.
+
+    *census*: the prep phase's return-usage census
+    (``callee → CalleeCensus``). When present, caller-usage inference
+    consumes it instead of recomputing caller checks from checklist
+    sources — one majority computation in the tree (design §2.2.5).
+    """
     file_path = gap.get("file", "")
     function_name = gap.get("name", "")
 
@@ -126,7 +133,9 @@ def infer_spec_mechanical(
     _infer_from_attributes(spec, gap)
     _infer_from_docstring(spec, gap)
     _infer_from_tests(spec, function_name, tests)
-    _infer_from_caller_usage(spec, function_name, checklist, summaries)
+    _infer_from_caller_usage(
+        spec, function_name, checklist, summaries, census=census,
+    )
     _infer_negative_specs(spec, function_name, gap)
     _infer_from_assertions(spec, gap)
 
@@ -332,25 +341,35 @@ def _infer_from_caller_usage(
     function_name: str,
     checklist: dict[str, Any] | None,
     summaries: dict[str, Any] | None,
+    census: dict[str, Any] | None = None,
 ) -> None:
-    """Infer spec from how callers use the return value."""
-    if not checklist:
-        return
+    """Infer spec from how callers use the return value.
 
-    items = checklist.get("items", [])
+    When the prep census carries an entry for this function, its
+    counts ARE the caller-usage majority (same thresholds, one
+    computation in the tree); the checklist recomputation remains the
+    fallback for census-less callers.
+    """
     caller_count = 0
     callers_that_check_return = 0
 
-    for item in items:
-        callees = item.get("callees", [])
-        for callee in callees:
-            callee_name = callee.get("name", "") if isinstance(callee, dict) else str(callee)
-            if callee_name == function_name:
-                caller_count += 1
-                source = item.get("source", "")
-                if _checks_return_value(source, function_name):
-                    callers_that_check_return += 1
-                break
+    entry = (census or {}).get(function_name)
+    considered = getattr(entry, "considered", 0) if entry else 0
+    if considered >= 3:
+        caller_count = considered
+        callers_that_check_return = entry.count("tested")
+    elif checklist:
+        items = checklist.get("items", [])
+        for item in items:
+            callees = item.get("callees", [])
+            for callee in callees:
+                callee_name = callee.get("name", "") if isinstance(callee, dict) else str(callee)
+                if callee_name == function_name:
+                    caller_count += 1
+                    source = item.get("source", "")
+                    if _checks_return_value(source, function_name):
+                        callers_that_check_return += 1
+                    break
 
     if caller_count >= 3:
         check_rate = callers_that_check_return / caller_count

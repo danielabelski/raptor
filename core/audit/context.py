@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 # the review context.
 MECHANICAL_FINDINGS_PROMPT_CAP = 10
 
+# Bounds on the consistency-leads prompt section (§2.4.1): at most
+# this many leads per function, at most this many quoted peer sites
+# per lead — the full receipts always live in the audit log and
+# return-census.json.
+CONSISTENCY_LEADS_PROMPT_CAP = 5
+CONSISTENCY_SITES_PROMPT_CAP = 5
+
 
 def _safe_path(target_path: Path, file_path: str) -> Path | None:
     """Join target_path / file_path with traversal guard.
@@ -763,6 +770,42 @@ def format_context_for_prompt(
         )
         sections.append(PromptSection(
             "mechanical_detector_findings", "\n".join(lines_mdf), 1,
+        ))
+
+    if ctx.get("consistency_leads"):
+        leads = ctx["consistency_leads"][:CONSISTENCY_LEADS_PROMPT_CAP]
+        # Callee names, descriptions and peer-site snippets are
+        # target-derived — defang and envelope like every other
+        # untrusted section, and bound the volume (§2.4.1: cap 5
+        # peer sites per lead).
+        lines_cl = [
+            "\n### Consistency outliers vs peers",
+            ('<untrusted kind="consistency-leads"'
+             ' origin="audit-consistency-census">'),
+        ]
+        for lead in leads:
+            dim = neutralize_tag_forgery(str(lead.get("dimension", "?")))
+            callee = neutralize_tag_forgery(str(lead.get("callee", "")))
+            desc = neutralize_tag_forgery(str(lead.get("description", "")))
+            n = lead.get("n")
+            conforming = lead.get("conforming")
+            stat = (
+                f" ({conforming}/{n} peers conform)"
+                if n and conforming is not None else ""
+            )
+            lines_cl.append(f"- [{dim}] `{callee}`{stat}: {desc}")
+            for site in (lead.get("sites") or [])[:CONSISTENCY_SITES_PROMPT_CAP]:
+                lines_cl.append(
+                    f"  peer: {neutralize_tag_forgery(str(site))}",
+                )
+        lines_cl.append("</untrusted>")
+        lines_cl.append(
+            "\nConfirm intent or form a hypothesis: if the peers' "
+            "behaviour is the convention, the deviation above is the "
+            "bug. These are majority statistics, not proof."
+        )
+        sections.append(PromptSection(
+            "consistency_leads", "\n".join(lines_cl), 1,
         ))
 
     if ctx.get("callee_contract_violation"):

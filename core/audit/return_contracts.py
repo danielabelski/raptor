@@ -133,6 +133,35 @@ def harvest_wur_declarations(
     return frozenset(names)
 
 
+_WUR_SCAN_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
+_MAX_WUR_SCAN_FILES = 400
+_MAX_WUR_FILE_BYTES = 400_000
+
+
+def harvest_wur_from_target(target_path: Path) -> frozenset[str]:
+    """Bounded header sweep: the census's source set is the gap files,
+    but warn_unused_result attributes live in headers no gap covers —
+    harvest those too (declarations only, no call sites)."""
+    texts: dict[str, str] = {}
+    try:
+        paths = sorted(
+            p for p in Path(target_path).rglob("*")
+            if p.is_file() and p.suffix in _WUR_SCAN_SUFFIXES
+        )
+    except OSError:
+        return frozenset()
+    for p in paths[:_MAX_WUR_SCAN_FILES]:
+        try:
+            if p.stat().st_size > _MAX_WUR_FILE_BYTES:
+                continue
+            texts[str(p)] = p.read_text(
+                encoding="utf-8", errors="replace",
+            )
+        except OSError:
+            continue
+    return harvest_wur_declarations(texts)
+
+
 def _wur_contract(callee: str, ctx: RoleContext) -> ContractEvidence | None:
     tail = callee.rsplit(".", 1)[-1]
     if tail in ctx.wur_functions:

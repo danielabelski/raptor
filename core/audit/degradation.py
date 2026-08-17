@@ -135,9 +135,14 @@ _DEGRADATION_MATRIX: list[Fallback] = [
                "tri-state legs degrade to line-regex shape matching "
                "with parser=\"regex\" recorded on every receipt — "
                "comparison shapes the regex cannot classify gate to "
-               "inconclusive('handler-undecided') rather than guessing.",
+               "inconclusive('handler-undecided') rather than guessing. "
+               "consistency channel: the return census keeps its coarse "
+               "regex classes (no read-scan, no acknowledged/tested "
+               "split beyond line shapes); the flag/mode and cleanup "
+               "comparators need trees and report "
+               "inconclusive('extractor-unavailable') / detect nothing.",
         fallback_description="ast for Python handlers, line-regex for "
-                             "C call-site shapes",
+                             "C call-site shapes and the coarse census",
     ),
 ]
 

@@ -1891,3 +1891,363 @@ def _apply_relevance_gate(
             scored.append(row_copy)
 
     return scored
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic remember — free-form observation storage
+# ─────────────────────────────────────────────────────────────────────────────
+
+def sage_remember(
+    *,
+    domain: str,
+    content: str,
+    tags: list[str] | None = None,
+    memory_type: str = "observation",
+    confidence: float = 0.8,
+) -> bool:
+    """Store a free-form memory to an explicit domain.
+
+    Prose-only convenience for callers with no mechanical recall side
+    (e.g. corpus-learning summaries).  Rows stored here never earn
+    mechanical effect — they carry no row MAC by design.
+    """
+    if not content:
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        return _propose_redacted(
+            client=client,
+            content=content,
+            memory_type=memory_type,
+            domain_tag=domain,
+            confidence=confidence,
+            tags=tags,
+        )
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE remember failed: %s", e)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Code understanding (/understand) — cross-run result persistence
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _understand_domain(repo_path: str) -> str:
+    return f"raptor-understand-{_repo_key(repo_path)}"
+
+
+def _clip(text: str, limit: int = 200) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def store_map_results(repo_path: str, payload: dict[str, Any]) -> bool:
+    """Persist a /understand --map summary for cross-run recall.
+
+    Stores counts plus a bounded sample of entry points and sinks as a
+    prose observation (hint-only on recall — no mechanical effect).
+    """
+    if not isinstance(payload, dict):
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        entry_points = payload.get("entry_points") or []
+        sinks = payload.get("sinks") or []
+        boundaries = payload.get("trust_boundaries") or []
+
+        def _names(items: list[Any], limit: int = 5) -> str:
+            out = []
+            for it in items[:limit]:
+                if isinstance(it, dict):
+                    out.append(str(it.get("name") or it.get("function")
+                                   or it.get("file") or "?"))
+                else:
+                    out.append(str(it))
+            return ", ".join(out) or "none"
+
+        content = (
+            f"Attack-surface map for repo {_repo_key(repo_path)}: "
+            f"{len(entry_points)} entry points, {len(sinks)} sinks, "
+            f"{len(boundaries)} trust boundaries.\n"
+            f"  Entry points: {_clip(_names(entry_points))}\n"
+            f"  Sinks: {_clip(_names(sinks))}"
+        )
+        return _propose_redacted(
+            client=client,
+            content=content,
+            memory_type="observation",
+            domain_tag=_understand_domain(repo_path),
+            confidence=0.8,
+            tags=["understand", "map"],
+        )
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE map store failed: %s", e)
+        return False
+
+
+def store_trace_result(repo_path: str, trace: dict[str, Any]) -> bool:
+    """Persist one /understand --trace flow for cross-run recall."""
+    if not isinstance(trace, dict):
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        entry = trace.get("entry") or trace.get("source") or "?"
+        sink = trace.get("sink") or "?"
+        if isinstance(sink, dict):
+            sink = sink.get("name") or sink.get("function") or "?"
+        verdict = trace.get("verdict") or trace.get("attacker_control") or ""
+        steps = trace.get("steps") or trace.get("call_chain") or []
+        content = (
+            f"Flow trace for repo {_repo_key(repo_path)}: "
+            f"{_clip(str(entry), 120)} → {_clip(str(sink), 120)} "
+            f"({len(steps)} steps)"
+        )
+        if verdict:
+            content += f"\n  Assessment: {_clip(str(verdict))}"
+        return _propose_redacted(
+            client=client,
+            content=content,
+            memory_type="observation",
+            domain_tag=_understand_domain(repo_path),
+            confidence=0.8,
+            tags=["understand", "trace"],
+        )
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE trace store failed: %s", e)
+        return False
+
+
+def store_hunt_results(repo_path: str, hunt_data: dict[str, Any]) -> bool:
+    """Persist a /understand --hunt variant sweep for cross-run recall."""
+    if not isinstance(hunt_data, dict):
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        meta = hunt_data.get("meta") or {}
+        pattern = meta.get("pattern") or "unknown"
+        total = meta.get("total_matches", 0)
+        groups = hunt_data.get("root_cause_groups") or []
+        content = (
+            f"Variant hunt for repo {_repo_key(repo_path)}: "
+            f"pattern {_clip(str(pattern), 120)} — {total} match(es), "
+            f"{len(groups)} root-cause group(s)."
+        )
+        return _propose_redacted(
+            client=client,
+            content=content,
+            memory_type="observation",
+            domain_tag=_understand_domain(repo_path),
+            confidence=0.8,
+            tags=["understand", "hunt"],
+        )
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE hunt store failed: %s", e)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Validation pipeline (/validate) — verdict history across runs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _validation_domain(repo_path: str) -> str:
+    return f"raptor-validation-{_repo_key(repo_path)}"
+
+
+_VALIDATION_STORE_CAP = 20
+
+_MAC_FIELD_RE = re.compile(r"\|\|(\w+)=([^|]*)\|\|")
+
+
+def store_validation_verdicts(
+    repo_path: str,
+    findings: list[dict[str, Any]],
+    summary: dict[str, Any] | None = None,
+) -> bool:
+    """Store validation verdicts to SAGE for cross-run recall.
+
+    One MAC-stamped row per finding (bounded) plus one prose summary
+    row.  The MAC lets a future mechanical consumer trust the verdict
+    fields; recall today is hint-only.
+    """
+    if not findings:
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    stored = False
+    try:
+        _s = _sanitise_delim
+        repo_key = _repo_key(repo_path)
+        for finding in findings[:_VALIDATION_STORE_CAP]:
+            if not isinstance(finding, dict):
+                continue
+            file_path = _s(finding.get("file") or finding.get("file_path") or "")
+            fn = _s(finding.get("function") or finding.get("function_name") or "")
+            verdict = _s(
+                finding.get("status") or finding.get("verdict") or "unknown",
+            )
+            title = _clip(
+                str(finding.get("title") or finding.get("rule_id")
+                    or finding.get("type") or "finding"), 120,
+            )
+            content = (
+                f"Validation verdict: {title} "
+                f"||file={file_path}|| ||fn={fn}|| ||verdict={verdict}||"
+            )
+            content = _stamp_row(
+                "validation_verdict",
+                content,
+                {
+                    "kind": "validation_verdict",
+                    "repo": repo_key,
+                    "file": file_path,
+                    "fn": fn,
+                    "verdict": verdict,
+                },
+            )
+            if _propose_redacted(
+                client=client,
+                content=content,
+                memory_type="fact",
+                domain_tag=_validation_domain(repo_path),
+                confidence=0.85,
+                tags=["validation", "verdict", verdict],
+            ):
+                stored = True
+        if summary:
+            counts = ", ".join(
+                f"{k}={v}" for k, v in sorted(summary.items())
+                if isinstance(v, (int, float, str))
+            )
+            if counts and _propose_redacted(
+                client=client,
+                content=(
+                    f"Validation run summary for repo {repo_key}: "
+                    f"{_clip(counts, 400)}"
+                ),
+                memory_type="observation",
+                domain_tag=_validation_domain(repo_path),
+                confidence=0.8,
+                tags=["validation", "summary"],
+            ):
+                stored = True
+        return stored
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE validation verdict store failed: %s", e)
+        return stored
+
+
+def store_validation_disproven(
+    repo_path: str,
+    disproven: list[dict[str, Any]],
+) -> bool:
+    """Store disproven validation hypotheses so future runs skip them."""
+    if not disproven:
+        return False
+    client = _get_client()
+    if client is None:
+        return False
+    stored = False
+    try:
+        _s = _sanitise_delim
+        repo_key = _repo_key(repo_path)
+        for item in disproven[:_VALIDATION_STORE_CAP]:
+            if not isinstance(item, dict):
+                continue
+            file_path = _s(item.get("file") or item.get("file_path") or "")
+            fn = _s(item.get("function") or item.get("function_name") or "")
+            reason = _s(_clip(
+                str(item.get("reason") or item.get("why") or "disproven"),
+            ))
+            desc = _clip(
+                str(item.get("hypothesis") or item.get("title")
+                    or item.get("description") or "hypothesis"), 120,
+            )
+            content = (
+                f"Validation disproven: {desc} "
+                f"||file={file_path}|| ||fn={fn}|| ||reason={reason}||"
+            )
+            content = _stamp_row(
+                "validation_disproven",
+                content,
+                {
+                    "kind": "validation_disproven",
+                    "repo": repo_key,
+                    "file": file_path,
+                    "fn": fn,
+                    "reason": reason,
+                },
+            )
+            if _propose_redacted(
+                client=client,
+                content=content,
+                memory_type="fact",
+                domain_tag=_validation_domain(repo_path),
+                confidence=0.85,
+                tags=["validation", "disproven"],
+            ):
+                stored = True
+        return stored
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE validation disproven store failed: %s", e)
+        return stored
+
+
+def recall_context_for_validation(
+    repo_path: str,
+    top_k: int = 8,
+) -> list[dict[str, Any]]:
+    """Recall prior validation verdicts + disproven hypotheses.
+
+    Hint-only: rows are returned for prompt/report context, annotated
+    with ``mac_verified`` so a consumer can distinguish rows minted by
+    this install from arbitrary recall text.  Never raises.
+    """
+    client = _get_client()
+    if client is None:
+        return []
+    try:
+        _metric_inc("recall_attempted")
+        results = client.query(
+            text="Validation verdict and disproven hypothesis history",
+            domain_tag=_validation_domain(repo_path),
+            top_k=top_k,
+            min_confidence=0.7,
+        )
+        repo_key = _repo_key(repo_path)
+        out: list[dict[str, Any]] = []
+        for row in results:
+            raw = str(row.get("content") or "")
+            if "Validation verdict" not in raw and "Validation disproven" not in raw:
+                continue
+            content, token = rowmac.strip(raw)
+            parsed = dict(_MAC_FIELD_RE.findall(content))
+            if "Validation disproven" in content:
+                kind, extra = "validation_disproven", "reason"
+            else:
+                kind, extra = "validation_verdict", "verdict"
+            fields = {
+                "kind": kind,
+                "repo": repo_key,
+                "file": parsed.get("file", ""),
+                "fn": parsed.get("fn", ""),
+                extra: parsed.get(extra, ""),
+            }
+            out.append({
+                "content": content,
+                "confidence": recall_row_confidence(row),
+                "mac_verified": _row_mac_ok(kind, fields, token),
+            })
+        _metric_inc("recall_hits", len(out))
+        return out
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE validation recall failed: %s", e)
+        return []

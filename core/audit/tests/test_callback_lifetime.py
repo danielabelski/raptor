@@ -216,54 +216,207 @@ class TestCallbackLifetimeResultToDict:
         assert d["violations"][0]["free_func"] == "release"
 
 
+# Pre-shrink name tuples (captured against the hardcoded-list build) —
+# the equivalence baselines for the seeds + linux_kernel pack union.
+_PRE_SHRINK_REGISTER = {
+    "timer_setup", "setup_timer", "INIT_WORK", "INIT_DELAYED_WORK",
+    "init_waitqueue_func_entry", "tasklet_init",
+    "hrtimer_init", "mod_timer", "add_timer",
+    "schedule_work", "schedule_delayed_work", "queue_work",
+}
+
+_PRE_SHRINK_CANCEL = {
+    "del_timer_sync", "del_timer", "timer_delete_sync",
+    "cancel_work_sync", "cancel_delayed_work_sync", "flush_work",
+    "flush_delayed_work", "tasklet_kill", "hrtimer_cancel",
+    "cancel_work", "remove_wait_queue",
+}
+
+
+def _kernel_pack():
+    from core.audit.vocab_packs import load_pack
+
+    pack = load_pack("linux_kernel")
+    assert pack is not None
+    return pack
+
+
+class TestSeedShrinkEquivalence:
+    """Seeds + linux_kernel pack reproduce the pre-shrink vocabulary.
+
+    The kernel facility bulk moved to the pack's callback_registers /
+    callback_cancels; on kernel targets (pack supplied) both tiers see
+    exactly the names the hardcoded tuples used to carry.
+    """
+
+    def test_register_names_with_pack_match_pre_shrink(self):
+        from core.audit.callback_lifetime import _register_names
+
+        assert set(_register_names(_kernel_pack())) == _PRE_SHRINK_REGISTER
+
+    def test_cancel_names_with_pack_match_pre_shrink(self):
+        from core.audit.callback_lifetime import _cancel_names
+
+        assert set(_cancel_names(_kernel_pack())) == _PRE_SHRINK_CANCEL
+
+    def test_pack_tier_verdict_matches_pre_shrink(self):
+        # mod_timer / del_timer are pack-tier names: with the pack the
+        # pre-shrink verdict (registered, cancelled, freed → clean and
+        # registered, freed → violation) is reproduced.
+        armed = (
+            "void teardown(struct foo *f) {\n"
+            "    mod_timer(&f->timer, jiffies + 1);\n"
+            "    kfree(f);\n"
+            "}\n"
+        )
+        r = check_callback_lifetime_local(armed, _kernel_pack())
+        assert r.violation_found and r.cancel_missing
+
+        cancelled = (
+            "void teardown(struct foo *f) {\n"
+            "    mod_timer(&f->timer, jiffies + 1);\n"
+            "    del_timer(&f->timer);\n"
+            "    kfree(f);\n"
+            "}\n"
+        )
+        r = check_callback_lifetime_local(cancelled, _kernel_pack())
+        assert not r.violation_found
+
+
+class TestSeedsOnlyFloor:
+    """Without vocab, pack-tier names are no longer recognised
+    (proving the shrink is real) while seed exemplars still fire."""
+
+    def test_pack_tier_register_not_recognised_without_vocab(self):
+        src = (
+            "void teardown(struct foo *f) {\n"
+            "    mod_timer(&f->timer, jiffies + 1);\n"
+            "    kfree(f);\n"
+            "}\n"
+        )
+        r = check_callback_lifetime_local(src)
+        assert not r.violation_found
+
+    def test_seed_sets_stay_seed_sized(self):
+        from core.audit import callback_lifetime as cl
+
+        assert len(cl._SEED_REGISTER_NAMES) <= 9
+        assert len(cl._SEED_CANCEL_NAMES) <= 9
+        assert len(cl._SEED_FREE_NAMES) <= 9
+
+
+class TestLearnedVocabCoverageGain:
+    """Study-learned register/cancel pairs extend both tiers —
+    coverage the seeds and the pack lack."""
+
+    @staticmethod
+    def _learned():
+        from core.audit.condition_smt import DomainVocabulary
+
+        return DomainVocabulary.from_domain_model({
+            "paired_operations": [
+                {
+                    "acquire": "proj_arm_watchdog",
+                    "release": "proj_disarm_watchdog",
+                    "kind": "callback",
+                },
+            ],
+            "security_fields": [],
+        })
+
+    def test_learned_register_without_cancel_fires(self):
+        src = (
+            "void teardown(struct proj *p) {\n"
+            "    proj_arm_watchdog(&p->wd, cb);\n"
+            "    kfree(p);\n"
+            "}\n"
+        )
+        assert not check_callback_lifetime_local(src).violation_found
+        r = check_callback_lifetime_local(src, self._learned())
+        assert r.violation_found and r.cancel_missing
+
+    def test_learned_cancel_suppresses_violation(self):
+        src = (
+            "void teardown(struct proj *p) {\n"
+            "    proj_arm_watchdog(&p->wd, cb);\n"
+            "    proj_disarm_watchdog(&p->wd);\n"
+            "    kfree(p);\n"
+            "}\n"
+        )
+        r = check_callback_lifetime_local(src, self._learned())
+        assert not r.violation_found
+
+    def test_learned_deallocator_extends_free_set(self):
+        from core.audit.condition_smt import DomainVocabulary
+
+        vocab = DomainVocabulary.from_domain_model({
+            "paired_operations": [
+                {
+                    "acquire": "proj_arm_watchdog",
+                    "release": "proj_disarm_watchdog",
+                    "kind": "callback",
+                },
+                {
+                    "acquire": "proj_alloc_ctx",
+                    "release": "proj_release_ctx",
+                    "kind": "alloc",
+                },
+            ],
+        })
+        src = (
+            "void teardown(struct proj *p) {\n"
+            "    proj_arm_watchdog(&p->wd, cb);\n"
+            "    proj_release_ctx(p);\n"
+            "}\n"
+        )
+        r = check_callback_lifetime_local(src, vocab)
+        assert r.violation_found and r.cancel_missing
+
+
 class TestSingleSourcedNameAuthority:
-    """Drift guard: both tiers derive from the same name tuples.
+    """Drift guard: both tiers derive from the same merged name sets.
 
     The Tier 2 Joern query used to hand-copy the Tier 1 regex
     alternations as string literals; these pins keep the derived
-    forms identical to the (verified-equivalent) originals so an
-    edit to one tier cannot silently diverge from the other.
+    forms equivalent so an edit to one tier cannot silently diverge
+    from the other.
     """
 
-    def test_tier1_regexes_derive_from_authority(self):
+    def test_tier1_regexes_derive_from_merged_sets(self):
         from core.audit import callback_lifetime as cl
 
-        for name in cl._REGISTER_NAMES:
-            assert cl._REGISTER_RE.search(f"{name}(&f->w, cb);")
-        for name in cl._CANCEL_NAMES:
-            assert cl._CANCEL_RE.search(f"{name}(&f->w);")
-        for name in cl._FREE_NAMES:
-            assert cl._FREE_RE.search(f"{name}(f);")
+        pack = _kernel_pack()
+        for name in cl._register_names(pack):
+            assert cl._call_re(cl._register_names(pack)).search(
+                f"{name}(&f->w, cb);"
+            )
+        for name in cl._cancel_names(pack):
+            assert cl._call_re(cl._cancel_names(pack)).search(f"{name}(&f->w);")
+        for name in cl._free_names(pack):
+            assert cl._call_re(cl._free_names(pack)).search(f"{name}(f);")
 
-    def test_joern_subsets_are_authority_subsets(self):
+    def test_regex_requires_call_shape(self):
         from core.audit import callback_lifetime as cl
 
-        assert set(cl._JOERN_REGISTER_NAMES) <= set(cl._REGISTER_NAMES)
-        assert set(cl._JOERN_CANCEL_NAMES) <= set(cl._CANCEL_NAMES)
-        assert set(cl._JOERN_FREE_NAMES) <= set(cl._FREE_NAMES)
-        # Documented exclusions, nothing else.
-        assert set(cl._REGISTER_NAMES) - set(cl._JOERN_REGISTER_NAMES) == {
+        re_ = cl._call_re(cl._register_names())
+        assert not re_.search("my_timer_setup_helper(x);")
+        assert not re_.search("timer_setup_count = 3;")
+
+    def test_joern_alternations_cover_pre_split_literals_with_pack(self):
+        from core.audit import callback_lifetime as cl
+
+        pack = _kernel_pack()
+        joern_reg = set(cl._register_names(pack)) - cl._JOERN_REGISTER_EXCLUDE
+        joern_cancel = set(cl._cancel_names(pack))
+        joern_free = set(cl._free_names(pack)) - cl._JOERN_FREE_EXCLUDE
+
+        assert joern_reg == _PRE_SHRINK_REGISTER - {
             "init_waitqueue_func_entry",
         }
-        assert set(cl._CANCEL_NAMES) == set(cl._JOERN_CANCEL_NAMES)
-        assert set(cl._FREE_NAMES) - set(cl._JOERN_FREE_NAMES) == {
-            "free", "kfree_rcu",
-        }
-
-    def test_joern_alternations_match_pre_split_literals(self):
-        from core.audit import callback_lifetime as cl
-
-        assert "|".join(cl._JOERN_REGISTER_NAMES) == (
-            "timer_setup|setup_timer|INIT_WORK|INIT_DELAYED_WORK|"
-            "tasklet_init|hrtimer_init|mod_timer|add_timer|"
-            "schedule_work|schedule_delayed_work|queue_work"
-        )
-        assert "|".join(cl._JOERN_CANCEL_NAMES) == (
-            "del_timer_sync|del_timer|timer_delete_sync|"
-            "cancel_work_sync|cancel_delayed_work_sync|flush_work|"
-            "flush_delayed_work|tasklet_kill|hrtimer_cancel|"
-            "cancel_work|remove_wait_queue"
-        )
-        assert "|".join(cl._JOERN_FREE_NAMES) == (
-            "kfree|vfree|kvfree|kfree_sensitive|devm_kfree"
-        )
+        assert joern_cancel == _PRE_SHRINK_CANCEL
+        # Free superset: pack deallocators extend the pre-split free
+        # list; the documented exclusions stay excluded.
+        assert {"kfree", "vfree", "kvfree", "kfree_sensitive",
+                "devm_kfree"} <= joern_free
+        assert "free" not in joern_free
+        assert "kfree_rcu" not in joern_free

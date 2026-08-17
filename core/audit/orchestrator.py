@@ -6600,7 +6600,7 @@ class _InjectModeResolver:
         if self._check_callback_cross is not None and is_c:
             try:
                 clr = self._check_callback_cross(
-                    self._joern_server, file, function,
+                    self._joern_server, file, function, self._vocab,
                 )
                 if clr.violation_found:
                     for v in clr.violations:
@@ -7042,6 +7042,15 @@ def _run_mechanical_detectors(
     try:
         from .callback_lifetime import check_callback_lifetime_local
 
+        cb_vocab = None
+        with contextlib.suppress(Exception):
+            from .condition_smt import DomainVocabulary
+            from .journal import load_domain_model
+            cb_vocab = DomainVocabulary.from_domain_model(
+                load_domain_model(config.out_dir),
+                target_path=config.target_path,
+            )
+
         for fp in source_texts:
             if not any(fp.endswith(ext) for ext in _C_EXTS):
                 continue
@@ -7056,7 +7065,7 @@ def _run_mechanical_detectors(
                 )
                 if not func_src:
                     continue
-                clr = check_callback_lifetime_local(func_src)
+                clr = check_callback_lifetime_local(func_src, cb_vocab)
                 if clr.violation_found:
                     desc = clr.reasoning
                     detector = "callback_lifetime_local"
@@ -16287,7 +16296,7 @@ def _pre_loop_smt_screen(
         if not tool_hit and is_c:
             with contextlib.suppress(Exception):
                 from .callback_lifetime import check_callback_lifetime_local
-                clr = check_callback_lifetime_local(source)
+                clr = check_callback_lifetime_local(source, vocab)
                 if clr.violation_found:
                     tool_hit = "smt:check-callback-lifetime"
 
@@ -16501,7 +16510,7 @@ def _promote_smt_clean(
         if not tool_hit and is_c:
             try:
                 from .callback_lifetime import check_callback_lifetime_local
-                clr = check_callback_lifetime_local(source)
+                clr = check_callback_lifetime_local(source, vocab)
                 if clr.violation_found:
                     tool_hit = "smt:check-callback-lifetime"
             except Exception:

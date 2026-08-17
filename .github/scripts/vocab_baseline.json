@@ -187,14 +187,6 @@
     "count": 10,
     "kind": "literal"
   },
-  "core/audit/callback_lifetime.py::_CANCEL_NAMES": {
-    "count": 11,
-    "kind": "literal"
-  },
-  "core/audit/callback_lifetime.py::_REGISTER_NAMES": {
-    "count": 12,
-    "kind": "literal"
-  },
   "core/audit/callsite_consistency.py::_KEYWORDS": {
     "count": 78,
     "kind": "literal"

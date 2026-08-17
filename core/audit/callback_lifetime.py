@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -72,53 +73,64 @@ class CallbackLifetimeResult:
         return d
 
 
-# Single authority for the async-callback API names used by BOTH
-# detector tiers. The Tier 1 regexes and the Tier 2 Joern query
-# alternations are derived from these tuples — edit here, both tiers
-# follow (they used to be two hand-copied literals that could drift).
-_REGISTER_NAMES = (
-    "timer_setup", "setup_timer", "INIT_WORK", "INIT_DELAYED_WORK",
-    "init_waitqueue_func_entry", "tasklet_init",
-    "hrtimer_init", "mod_timer", "add_timer",
-    "schedule_work", "schedule_delayed_work", "queue_work",
+# SEED SET — canonical exemplars of the async-callback pattern, the
+# single authority for BOTH detector tiers (Tier 1 regexes and Tier 2
+# Joern alternations derive from the merged sets — edit here, both
+# tiers follow). The kernel facility bulk (setup_timer, mod_timer,
+# schedule_work, del_timer, flush_delayed_work, ...) lives in the
+# linux_kernel vocab pack's callback_registers / callback_cancels;
+# project register/cancel verbs arrive via the study-learned
+# DomainVocabulary. Do not grow these tuples — teach the study loop /
+# pack instead.
+_SEED_REGISTER_NAMES = (
+    "timer_setup", "INIT_WORK", "INIT_DELAYED_WORK",
+    "tasklet_init", "hrtimer_init",
 )
 
-_CANCEL_NAMES = (
-    "del_timer_sync", "del_timer", "timer_delete_sync",
-    "cancel_work_sync", "cancel_delayed_work_sync", "flush_work",
-    "flush_delayed_work", "tasklet_kill", "hrtimer_cancel",
-    "cancel_work", "remove_wait_queue",
+_SEED_CANCEL_NAMES = (
+    "del_timer_sync", "cancel_work_sync", "cancel_delayed_work_sync",
+    "flush_work", "tasklet_kill", "hrtimer_cancel",
 )
 
-_FREE_NAMES = (
+_SEED_FREE_NAMES = (
     "kfree", "vfree", "kvfree", "kfree_rcu", "kfree_sensitive",
     "free", "devm_kfree",
 )
 
-# Tier 2 (Joern) subsets — the exclusions preserve the original
-# embedded query literals: waitqueue registration lacks the
-# (member, callback) argument shape the register query destructures;
-# "free" is too generic for a whole-CPG name query and kfree_rcu is
-# the safe variant (its presence is what sub-pattern 6c *wants*).
-_JOERN_REGISTER_NAMES = tuple(
-    n for n in _REGISTER_NAMES if n != "init_waitqueue_func_entry"
-)
-_JOERN_CANCEL_NAMES = _CANCEL_NAMES
-_JOERN_FREE_NAMES = tuple(
-    n for n in _FREE_NAMES if n not in ("free", "kfree_rcu")
-)
+# Tier 2 (Joern) exclusions — preserve the original embedded query
+# literals: waitqueue registration lacks the (member, callback)
+# argument shape the register query destructures; "free" is too
+# generic for a whole-CPG name query and kfree_rcu is the safe
+# variant (its presence is what sub-pattern 6c *wants*).
+_JOERN_REGISTER_EXCLUDE = frozenset({"init_waitqueue_func_entry"})
+_JOERN_FREE_EXCLUDE = frozenset({"free", "kfree_rcu"})
 
-_REGISTER_RE = re.compile(
-    r"\b(" + "|".join(_REGISTER_NAMES) + r")\s*\("
-)
 
-_CANCEL_RE = re.compile(
-    r"\b(" + "|".join(_CANCEL_NAMES) + r")\s*\("
-)
+def _register_names(vocab: Any = None) -> tuple[str, ...]:
+    """Merged register verbs: seeds < pack < learned (all unioned)."""
+    extra = getattr(vocab, "callback_registers", None) or frozenset()
+    return tuple(sorted(set(_SEED_REGISTER_NAMES) | set(extra)))
 
-_FREE_RE = re.compile(
-    r"\b(" + "|".join(_FREE_NAMES) + r")\s*\("
-)
+
+def _cancel_names(vocab: Any = None) -> tuple[str, ...]:
+    """Merged cancel verbs: seeds < pack < learned (all unioned)."""
+    extra = getattr(vocab, "callback_cancels", None) or frozenset()
+    return tuple(sorted(set(_SEED_CANCEL_NAMES) | set(extra)))
+
+
+def _free_names(vocab: Any = None) -> tuple[str, ...]:
+    """Merged free verbs: seeds plus learned/pack deallocators."""
+    extra = getattr(vocab, "deallocators", None) or frozenset()
+    return tuple(sorted(set(_SEED_FREE_NAMES) | set(extra)))
+
+
+@lru_cache(maxsize=128)
+def _call_re(names: tuple[str, ...]) -> re.Pattern:
+    """``\\b(name|...)\\s*(`` matcher for a merged name tuple (cached)."""
+    alts = "|".join(
+        re.escape(n) for n in sorted(names, key=len, reverse=True)
+    )
+    return re.compile(r"\b(" + alts + r")\s*\(")
 
 _RCU_DEREF_RE = re.compile(
     r"(\w+)\s*=\s*rcu_dereference\w*\s*\("
@@ -131,10 +143,23 @@ _KFREE_VAR_RE = re.compile(
 _STRUCT_VAR_RE = re.compile(r"&(\w+)->")
 
 
-def check_callback_lifetime_local(source: str) -> CallbackLifetimeResult:
-    """Tier 1: detect free-without-cancel in a single function body."""
+def check_callback_lifetime_local(
+    source: str,
+    vocab: Any = None,
+) -> CallbackLifetimeResult:
+    """Tier 1: detect free-without-cancel in a single function body.
+
+    *vocab* is an optional :class:`~core.audit.condition_smt.
+    DomainVocabulary`; its ``callback_registers`` / ``callback_cancels``
+    / ``deallocators`` extend the seed verbs additively (kernel bulk
+    via the linux_kernel pack, project verbs via the study loop).
+    """
     from .safety_contract import assert_boost_only
     assert_boost_only("callback_lifetime")
+
+    register_re = _call_re(_register_names(vocab))
+    cancel_re = _call_re(_cancel_names(vocab))
+    free_re = _call_re(_free_names(vocab))
 
     lines = source.split("\n")
 
@@ -143,11 +168,11 @@ def check_callback_lifetime_local(source: str) -> CallbackLifetimeResult:
     cancels: set[int] = set()
 
     for i, line in enumerate(lines):
-        if _REGISTER_RE.search(line):
+        if register_re.search(line):
             registrations.append(i)
-        if _FREE_RE.search(line):
+        if free_re.search(line):
             frees.append(i)
-        if _CANCEL_RE.search(line):
+        if cancel_re.search(line):
             cancels.add(i)
 
     for reg_line in registrations:
@@ -217,14 +242,25 @@ def check_callback_lifetime_cross(
     joern: Any,
     file_path: str,
     func_name: str,
+    vocab: Any = None,
 ) -> CallbackLifetimeResult:
-    """Tier 2: cross-function callback-lifetime check via Joern CPG."""
+    """Tier 2: cross-function callback-lifetime check via Joern CPG.
+
+    *vocab* extends the seed verbs exactly as in the Tier 1 check; the
+    Joern alternations derive from the same merged sets minus the
+    query-shape exclusions.
+    """
     from .safety_contract import assert_boost_only
     assert_boost_only("callback_lifetime")
 
-    reg_names = "|".join(_JOERN_REGISTER_NAMES)
-    cancel_names = "|".join(_JOERN_CANCEL_NAMES)
-    free_names = "|".join(_JOERN_FREE_NAMES)
+    reg_names = "|".join(
+        n for n in _register_names(vocab)
+        if n not in _JOERN_REGISTER_EXCLUDE
+    )
+    cancel_names = "|".join(_cancel_names(vocab))
+    free_names = "|".join(
+        n for n in _free_names(vocab) if n not in _JOERN_FREE_EXCLUDE
+    )
 
     escaped_file = file_path.replace("\\", "\\\\").replace('"', '\\"')
 

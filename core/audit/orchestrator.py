@@ -414,6 +414,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "coccinelle": TierCounters(),
         "smt": TierCounters(),
         "compiler": TierCounters(),
+        "refuted_sweep": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
         "joern_guard": TierCounters(),
@@ -460,6 +461,9 @@ class OrchestratorResult:
     sweep_validated: int = 0
     sweep_demoted: int = 0
     sweep_promoted: int = 0
+    # Self-refuted hypotheses that a mechanical tool subsequently
+    # confirmed (clean → suspicious promotions with a tool receipt).
+    refuted_rescued: int = 0
     synthesis_amplified: int = 0
     refinement_rounds: int = 0
     clean_checks: int = 0
@@ -11478,19 +11482,84 @@ def _source_has_arithmetic(source: str) -> bool:
     return bool(_ARITHMETIC_RE.search(cleaned))
 
 
+# Cheap mechanical channels eligible for refuted-hypothesis
+# re-verification.  Joern/CodeQL are excluded for confidently-refuted
+# hypotheses: a CPG query or database sweep costs orders of magnitude
+# more than a semgrep/SMT/coccinelle/compiler dispatch, and the
+# refuted class is a demoted-priority queue, not a zero-priority one.
+_REFUTED_CHEAP_CHANNELS = frozenset({
+    "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
+})
+
+# Bound the extra tool work per function: at most this many refuted
+# hypotheses are dispatched, ranked by mechanism specificity.
+_MAX_REFUTED_DISPATCHES_PER_FN = 3
+
+_IDENTIFIER_TOKEN_RE = re.compile(r"\b\w+_\w+\b|\b[A-Za-z_]\w*\(")
+_CWE_TAG_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
+_LINE_REF_RE = re.compile(r"\bline\s+\d+|\b\d{2,}\b")
+
+
+def _mechanism_specificity(mechanism: str) -> int:
+    """Rank how mechanically testable a hypothesis mechanism is.
+
+    Named identifiers, call sites, CWE tags, and line references make a
+    mechanism concrete enough for a tool sweep; generic prose does not.
+    Used only for ORDERING under the per-function dispatch cap — the
+    absolute value carries no meaning.
+    """
+    if not mechanism:
+        return 0
+    score = min(len(mechanism), 200) // 20
+    score += 4 * min(len(_IDENTIFIER_TOKEN_RE.findall(mechanism)), 5)
+    if _CWE_TAG_RE.search(mechanism):
+        score += 3
+    if _LINE_REF_RE.search(mechanism):
+        score += 2
+    return score
+
+
+def _refutation_is_high_confidence(h: dict[str, Any]) -> bool:
+    """True when the self-refutation carries a substantive counter.
+
+    A refuted hypothesis with a specific, non-dismissive counter-argument
+    is a considered retraction — the cheap channels still get to test it,
+    but the expensive Joern/CodeQL channels are skipped. A refutation
+    with no counter (or a dismissive one-liner) is a weak retraction and
+    keeps the full chain.
+    """
+    counter = (h.get("counter") or "").strip()
+    if len(counter) < 20:
+        return False
+    lower = counter.lower()
+    return not any(d in lower for d in _DISMISSIVE_COUNTERS)
+
+
 def _promote_clean_refuted(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     checklist: dict[str, Any] | None = None,
     joern_server=None,
 ) -> None:
-    """Post-loop pass: SMT-verify refuted hypotheses on clean outcomes.
+    """Post-loop pass: mechanically verify refuted hypotheses on clean outcomes.
 
-    When the LLM generates an arithmetic hypothesis (overflow, underflow,
-    OOB) then refutes it, the refutation may be wrong.  SMT can settle
-    the dispute mechanically.  Only SMT is used — Coccinelle and Semgrep
-    match syntactic patterns that fire on safe code and would introduce
-    false positives.
+    The LLM refuting its own hypothesis is exactly the claim tool
+    sweeps exist to test — self-refutation demotes PRIORITY, not
+    eligibility. Two verification lanes per refuted hypothesis with a
+    concrete mechanism (capped at ``_MAX_REFUTED_DISPATCHES_PER_FN``
+    per function, ranked by mechanism specificity):
+
+    1. SMT verification-role verb (the historical lane): a confirm is
+       strong enough to promote clean → finding.
+    2. Cheap-channel tool chain (semgrep/SMT/coccinelle/compiler; the
+       expensive Joern/CodeQL channels are included only when the
+       refutation is NOT high-confidence): a confirm on a self-refuted
+       hypothesis is a strong signal but pattern channels alone don't
+       mint findings — promote clean → suspicious with the tool
+       receipt, surfaced distinctly (body marker, audit log, counter),
+       never silently.
+
+    Dispatches are counted in tier telemetry under ``refuted_sweep``.
     """
     for i, outcome in enumerate(result.outcomes):
         if outcome.status != "clean":
@@ -11502,7 +11571,9 @@ def _promote_clean_refuted(
 
         refuted = [
             h for h in hypotheses
-            if isinstance(h, dict) and (h.get("confidence") or "").lower() == "refuted"
+            if isinstance(h, dict)
+            and (h.get("confidence") or "").lower() == "refuted"
+            and h.get("mechanism")
         ]
         if not refuted:
             continue
@@ -11528,10 +11599,19 @@ def _promote_clean_refuted(
                 or ""
             )
 
-        for h in refuted:
+        ranked = sorted(
+            refuted,
+            key=lambda h: _mechanism_specificity(h.get("mechanism", "")),
+            reverse=True,
+        )[:_MAX_REFUTED_DISPATCHES_PER_FN]
+
+        promoted = False
+        for h in ranked:
+            if promoted:
+                break
             mechanism = h.get("mechanism", "")
-            if not mechanism:
-                continue
+
+            # ── Lane 1: SMT verification-role verb (historical) ────
             smt_verb = None
             if cwe:
                 try:
@@ -11541,26 +11621,76 @@ def _promote_clean_refuted(
                     pass
             if not smt_verb:
                 smt_verb = _hypothesis_to_smt_verb(mechanism)
-            if not smt_verb:
-                continue
 
             from core.audit.sweep import get_smt_verb_role
-            if get_smt_verb_role(smt_verb) == "detection":
+            if smt_verb and get_smt_verb_role(smt_verb) == "detection":
                 logger.debug(
                     "clean-refuted skipped %s:%s — %s is detection-role "
                     "(cannot override LLM clean)",
                     outcome.file, outcome.function, smt_verb,
                 )
+                smt_verb = None
+
+            if smt_verb:
+                # No per-callsite vacuous-verb list here: the vacuity
+                # policy for check-overflow / check-oob /
+                # check-overflow-to-oob lives in the sweep layer
+                # (core.audit.sweep.VACUOUS_SMT_VERBS).  SAT without
+                # source-level guard premises comes back "inconclusive",
+                # so _run_tool_chain reports no confirmation and the
+                # promotion below never fires on a vacuous result.
+                chain = [{"type": "smt", "config": {"verb": smt_verb}}]
+                confirmed = _run_tool_chain(
+                    chain,
+                    config=config,
+                    file_path=outcome.file,
+                    function_name=outcome.function,
+                    source=source,
+                    hypothesis=mechanism,
+                    line_start=outcome.line,
+                    joern_server=joern_server,
+                )
+                _increment_tier_dict(
+                    result.tier_counters, "refuted_sweep",
+                    "confirmed" if confirmed else "inconclusive",
+                )
+                if confirmed:
+                    if _check_sink_guarded_cached(
+                            outcome.function, joern_server) == "guarded":
+                        logger.info(
+                            "clean-refuted promotion blocked %s:%s via %s — guarded",
+                            outcome.file, outcome.function, "+".join(confirmed),
+                        )
+                        continue
+
+                    tool = "+".join(confirmed)
+                    result.outcomes[i] = _promote_outcome(
+                        outcome, f"clean-refuted:{tool}",
+                    )
+                    result.sweep_promoted += 1
+                    result.clean -= 1
+                    result.findings += 1
+                    logger.info(
+                        "clean-refuted promoted %s:%s via %s (LLM refuted, SMT confirmed)",
+                        outcome.file, outcome.function, tool,
+                    )
+                    promoted = True
+                    continue
+
+            # ── Lane 2: cheap-channel chain (new) ──────────────────
+            chain = _hypothesis_to_tool_chain(mechanism, outcome.file, cwe=cwe)
+            # SMT already dispatched above for this hypothesis; don't
+            # re-run it inside the chain.
+            if smt_verb:
+                chain = [e for e in chain if e.get("type") != "smt"]
+            if _refutation_is_high_confidence(h):
+                chain = [
+                    e for e in chain
+                    if e.get("type") in _REFUTED_CHEAP_CHANNELS
+                ]
+            if not chain:
                 continue
 
-            # No per-callsite vacuous-verb list here: the vacuity
-            # policy for check-overflow / check-oob /
-            # check-overflow-to-oob lives in the sweep layer
-            # (core.audit.sweep.VACUOUS_SMT_VERBS).  SAT without
-            # source-level guard premises comes back "inconclusive",
-            # so _run_tool_chain reports no confirmation and the
-            # promotion below never fires on a vacuous result.
-            chain = [{"type": "smt", "config": {"verb": smt_verb}}]
             confirmed = _run_tool_chain(
                 chain,
                 config=config,
@@ -11569,30 +11699,79 @@ def _promote_clean_refuted(
                 source=source,
                 hypothesis=mechanism,
                 line_start=outcome.line,
+                sarif_cache=None,
+                tier_counters=result.tier_counters,
                 joern_server=joern_server,
+                cwe=cwe,
+            )
+            _increment_tier_dict(
+                result.tier_counters, "refuted_sweep",
+                "confirmed" if confirmed else "inconclusive",
             )
             if not confirmed:
                 continue
 
-            if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
+            high_prec = [t for t in confirmed if not _is_detection_only(t)]
+            if not high_prec:
                 logger.info(
-                    "clean-refuted promotion blocked %s:%s via %s — guarded",
+                    "refuted-hypothesis promotion blocked %s:%s — only "
+                    "detection-role rules (%s)",
                     outcome.file, outcome.function, "+".join(confirmed),
                 )
                 continue
+            if _check_sink_guarded_cached(
+                    outcome.function, joern_server) == "guarded":
+                logger.info(
+                    "refuted-hypothesis promotion blocked %s:%s via %s — "
+                    "all sink calls guarded",
+                    outcome.file, outcome.function, "+".join(high_prec),
+                )
+                continue
 
-            tool = "+".join(confirmed)
-            result.outcomes[i] = _promote_outcome(
-                outcome, f"clean-refuted:{tool}",
+            tool = "+".join(high_prec)
+            rescued = ReviewOutcome(
+                file=outcome.file,
+                function=outcome.function,
+                status="suspicious",
+                body=(
+                    f"[refuted-hypothesis-confirmed via {tool}] "
+                    f"LLM self-refuted this hypothesis; a mechanical "
+                    f"tool confirmed it: {mechanism[:200]}\n\n"
+                    f"{outcome.body}"
+                ),
+                hypothesis=mechanism,
+                hypotheses=outcome.hypotheses,
+                evidence_tool=tool,
+                cost_usd=outcome.cost_usd,
+                model=outcome.model,
+                duration_s=outcome.duration_s,
+                review_result=outcome.review_result,
+                line=outcome.line,
             )
-            result.sweep_promoted += 1
+            if rescued.review_result is not None:
+                rescued.review_result["evidence_tool"] = tool
+                rescued.review_result["refuted_hypothesis_confirmed"] = True
+            result.outcomes[i] = rescued
+            result.refuted_rescued += 1
             result.clean -= 1
-            result.findings += 1
+            result.suspicious += 1
+            append_audit_log(config.out_dir, {
+                "action": "refuted_hypothesis_confirmed",
+                "key": f"{outcome.file}:{outcome.function}:{outcome.line or 0}",
+                "file": outcome.file,
+                "function": outcome.function,
+                "status": "suspicious",
+                "prior_status": "clean",
+                "evidence_tool": tool,
+                "hypothesis": mechanism,
+            })
             logger.info(
-                "clean-refuted promoted %s:%s via %s (LLM refuted, SMT confirmed)",
+                "refuted-hypothesis confirmed %s:%s via %s — promoted "
+                "clean → suspicious (LLM self-refutation overridden by "
+                "tool receipt)",
                 outcome.file, outcome.function, tool,
             )
-            break
+            promoted = True
 
 
 _C_EXTS = frozenset({".c", ".h", ".cc", ".cpp", ".cxx"})

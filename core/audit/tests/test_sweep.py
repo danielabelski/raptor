@@ -785,18 +785,19 @@ class TestPromoteCleanRefuted:
         assert result.outcomes[0].status == "finding"
         assert len(calls) == 1
 
-    @pytest.mark.parametrize("mechanism,verb,chain_runs", [
+    @pytest.mark.parametrize("mechanism,verb,smt_lane_runs", [
         # Verification-role vacuous verbs now REACH the tool chain —
         # the vacuity policy lives in the sweep layer, which returns
         # inconclusive (never confirmed) without guard premises, so
         # the chain reports no confirmation and clean stands.
         ("integer overflow in size calc", "check-overflow", True),
         ("buffer overflow in memcpy", "check-oob", True),
-        # Detection-role verbs are still skipped before the chain.
+        # Detection-role verbs are still skipped before the SMT lane;
+        # the cheap-channel lane still gets to test the hypothesis.
         ("integer overflow leading to heap", "check-overflow-to-oob", False),
     ])
     def test_vacuous_verbs_cannot_promote(
-        self, tmp_path, monkeypatch, mechanism, verb, chain_runs,
+        self, tmp_path, monkeypatch, mechanism, verb, smt_lane_runs,
     ):
         """Guardless overflow/OOB SAT must not override LLM clean."""
         from core.audit.orchestrator import _promote_clean_refuted
@@ -813,6 +814,13 @@ class TestPromoteCleanRefuted:
             return []
 
         monkeypatch.setattr("core.audit.orchestrator._run_tool_chain", chain)
+        # Deterministic cheap-channel lane: one semgrep entry.
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_tool_chain",
+            lambda *a, **kw: [
+                {"type": "semgrep", "config": {"rule": "r.yaml"}},
+            ],
+        )
         monkeypatch.setattr(
             "core.audit.orchestrator._read_raw_source",
             lambda *a, **kw: "int f(int x) { return x + 1; }",
@@ -820,7 +828,227 @@ class TestPromoteCleanRefuted:
         _promote_clean_refuted(result, self._config(tmp_path))
         assert result.outcomes[0].status == "clean"
         assert result.sweep_promoted == 0
-        assert len(calls) == (1 if chain_runs else 0)
+        # SMT lane (verification-role verbs only) plus the
+        # cheap-channel lane; the vacuity policy holds in both.
+        assert len(calls) == (2 if smt_lane_runs else 1)
+
+
+class TestRefutedHypothesisDispatch:
+    """Self-refuted hypotheses with concrete mechanisms still get
+    mechanical verification through cheap channels (bounded per
+    function), and a tool confirmation surfaces distinctly as a
+    clean → suspicious promotion with the tool receipt."""
+
+    def _outcome(self, hypotheses, line=0):
+        from core.audit.orchestrator import ReviewOutcome
+        o = ReviewOutcome(
+            file="a.c", function="f", status="clean",
+            body="prior body", hypothesis="", line=line,
+        )
+        o.hypotheses = hypotheses
+        o.review_result = {"hypotheses": hypotheses}
+        return o
+
+    def _result(self, outcomes):
+        from core.audit.orchestrator import OrchestratorResult
+        r = OrchestratorResult()
+        r.outcomes = list(outcomes)
+        r.clean = sum(1 for o in outcomes if o.status == "clean")
+        return r
+
+    def _config(self, tmp_path):
+        from core.audit.orchestrator import OrchestratorConfig
+        out = tmp_path / "out"
+        out.mkdir(exist_ok=True)
+        return OrchestratorConfig(target_path=tmp_path, out_dir=out)
+
+    def _no_smt(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_smt_verb",
+            lambda h: None,
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._read_raw_source",
+            lambda *a, **kw: "int f(int x) { return x + 1; }",
+        )
+
+    def test_cheap_channel_confirmation_promotes_to_suspicious(
+        self, tmp_path, monkeypatch,
+    ):
+        """Refuted hypothesis + no SMT verb → cheap chain dispatch;
+        confirmation promotes clean → suspicious with the receipt."""
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome([{
+            "mechanism": "missing bounds check before memcpy(dst, src, len)",
+            "confidence": "refuted",
+            "counter": "",
+        }])
+        result = self._result([outcome])
+        self._no_smt(monkeypatch)
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_tool_chain",
+            lambda *a, **kw: [
+                {"type": "semgrep", "config": {"rule": "r.yaml"}},
+            ],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: ["semgrep:audit_sweep_x"],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._check_sink_guarded_cached",
+            lambda fn, js: "unguarded",
+        )
+        _promote_clean_refuted(result, self._config(tmp_path))
+        rescued = result.outcomes[0]
+        assert rescued.status == "suspicious"
+        assert rescued.evidence_tool == "semgrep:audit_sweep_x"
+        assert rescued.body.startswith("[refuted-hypothesis-confirmed")
+        assert rescued.review_result["refuted_hypothesis_confirmed"] is True
+        assert result.refuted_rescued == 1
+        assert result.clean == 0
+        assert result.suspicious == 1
+        assert result.tier_counters["refuted_sweep"].confirmed == 1
+
+    def test_high_confidence_refutation_skips_expensive_channels(
+        self, tmp_path, monkeypatch,
+    ):
+        """A substantive counter-argument demotes to cheap channels only:
+        Joern/CodeQL entries are stripped from the dispatched chain."""
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome([{
+            "mechanism": "tainted index reaches array write in parse_hdr()",
+            "confidence": "refuted",
+            "counter": (
+                "the caller validates idx against table_size on every "
+                "path before this function is reached"
+            ),
+        }])
+        result = self._result([outcome])
+        self._no_smt(monkeypatch)
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_tool_chain",
+            lambda *a, **kw: [
+                {"type": "semgrep", "config": {"rule": "r.yaml"}},
+                {"type": "joern", "config": {"sinks": ["memcpy"]}},
+                {"type": "codeql", "config": {"query": "q"}},
+                {"type": "coccinelle", "config": {"rule": "r.cocci"}},
+            ],
+        )
+        dispatched = []
+
+        def chain(chain_arg, **kw):
+            dispatched.extend(e["type"] for e in chain_arg)
+            return []
+
+        monkeypatch.setattr("core.audit.orchestrator._run_tool_chain", chain)
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert dispatched == ["semgrep", "coccinelle"]
+        assert result.outcomes[0].status == "clean"
+
+    def test_weak_refutation_keeps_full_chain(self, tmp_path, monkeypatch):
+        """No counter-argument → weak retraction → full chain allowed."""
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome([{
+            "mechanism": "tainted index reaches array write in parse_hdr()",
+            "confidence": "refuted",
+            "counter": "",
+        }])
+        result = self._result([outcome])
+        self._no_smt(monkeypatch)
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_tool_chain",
+            lambda *a, **kw: [
+                {"type": "semgrep", "config": {"rule": "r.yaml"}},
+                {"type": "joern", "config": {"sinks": ["memcpy"]}},
+                {"type": "codeql", "config": {"query": "q"}},
+            ],
+        )
+        dispatched = []
+
+        def chain(chain_arg, **kw):
+            dispatched.extend(e["type"] for e in chain_arg)
+            return []
+
+        monkeypatch.setattr("core.audit.orchestrator._run_tool_chain", chain)
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert dispatched == ["semgrep", "joern", "codeql"]
+
+    def test_dispatch_cap_and_specificity_ranking(self, tmp_path, monkeypatch):
+        """At most _MAX_REFUTED_DISPATCHES_PER_FN hypotheses dispatch,
+        picked by mechanism specificity (most concrete first)."""
+        from core.audit.orchestrator import (
+            _MAX_REFUTED_DISPATCHES_PER_FN,
+            _promote_clean_refuted,
+        )
+        hyps = [
+            {"mechanism": "bad", "confidence": "refuted", "counter": ""},
+            {"mechanism": "maybe wrong somewhere", "confidence": "refuted",
+             "counter": ""},
+            {"mechanism": (
+                "integer overflow in alloc_size = count * elem_size at "
+                "line 142 feeding kmalloc()"
+            ), "confidence": "refuted", "counter": ""},
+            {"mechanism": (
+                "use-after-free of ctx->buf when process_packet() frees "
+                "it on the error path (CWE-416)"
+            ), "confidence": "refuted", "counter": ""},
+            {"mechanism": (
+                "missing null_check() on ret of parse_config() before "
+                "deref at line 88"
+            ), "confidence": "refuted", "counter": ""},
+        ]
+        outcome = self._outcome(hyps)
+        result = self._result([outcome])
+        self._no_smt(monkeypatch)
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_tool_chain",
+            lambda *a, **kw: [
+                {"type": "semgrep", "config": {"rule": "r.yaml"}},
+            ],
+        )
+        seen = []
+
+        def chain(chain_arg, **kw):
+            seen.append(kw.get("hypothesis", ""))
+            return []
+
+        monkeypatch.setattr("core.audit.orchestrator._run_tool_chain", chain)
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert len(seen) == _MAX_REFUTED_DISPATCHES_PER_FN
+        # The two vague mechanisms lost the specificity ranking.
+        assert "bad" not in seen
+        assert "maybe wrong somewhere" not in seen
+
+    def test_detection_only_confirmation_does_not_promote(
+        self, tmp_path, monkeypatch,
+    ):
+        """Detection-role confirmations never override an LLM clean."""
+        from core.audit.orchestrator import _promote_clean_refuted
+        outcome = self._outcome([{
+            "mechanism": "overflow in size calc feeding memcpy at line 20",
+            "confidence": "refuted",
+            "counter": "",
+        }])
+        result = self._result([outcome])
+        self._no_smt(monkeypatch)
+        monkeypatch.setattr(
+            "core.audit.orchestrator._hypothesis_to_tool_chain",
+            lambda *a, **kw: [
+                {"type": "smt", "config": {"verb": "check-overflow-to-oob"}},
+            ],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._run_tool_chain",
+            lambda *a, **kw: ["smt:check-overflow-to-oob"],
+        )
+        monkeypatch.setattr(
+            "core.audit.orchestrator._is_detection_only",
+            lambda t: True,
+        )
+        _promote_clean_refuted(result, self._config(tmp_path))
+        assert result.outcomes[0].status == "clean"
+        assert result.refuted_rescued == 0
 
 
 class TestSweepValidateDetectionFilter:

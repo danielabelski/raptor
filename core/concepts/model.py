@@ -31,6 +31,9 @@ class Evidence:
     line: int | None = None
     item: str | None = None
     hash: str | None = None
+    # Verbatim source quote supporting the observation (receipt raw
+    # material; verified by core.concepts.receipts.verify_receipt).
+    quote: str | None = None
 
 
 # ------------------------------------------------------------------
@@ -60,6 +63,11 @@ class Concept:
     derived_version: str | None = None
     qualified_by: list[str] = field(default_factory=list)
     derived_from: list[dict[str, Any]] = field(default_factory=list)
+    # Provenance tier (core.concepts.receipts): verbatim | mechanical
+    # | llm_summarized | llm_prior. Empty = pre-tier legacy entry —
+    # treated as non-actionable by tier-gated consumers.
+    provenance: str = ""
+    receipt: dict[str, Any] | None = None
 
 
 # ------------------------------------------------------------------
@@ -78,6 +86,8 @@ class Invariant:
     confidence: str = "inferred"
     mechanical_rule: str | None = None
     relevant_cwes: list[str] = field(default_factory=list)
+    provenance: str = ""
+    receipt: dict[str, Any] | None = None
 
 
 # ------------------------------------------------------------------
@@ -95,6 +105,8 @@ class Contract:
     implication: str = ""
     security_note: str = ""
     hash: str | None = None
+    provenance: str = ""
+    receipt: dict[str, Any] | None = None
 
 
 # ------------------------------------------------------------------
@@ -137,6 +149,9 @@ class StudyItem:
     validation_bounds: list[str] = field(default_factory=list)
     relevance_tier: int | None = None
     usage_class: str | None = None  # writer | reader | passthru
+    # Mechanically detected doc/code disagreement (code wins) — see
+    # core.concepts.receipts.detect_stale_doc.
+    stale_doc: str = ""
 
 
 # ------------------------------------------------------------------

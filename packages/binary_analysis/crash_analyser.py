@@ -12,7 +12,9 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.binary.inspect import inspect_binary as _inspect_binary
 from core.binary.inspect import nm as _nm
+from core.binary.inspect import objdump as _objdump
 from core.binary.inspect import readelf as _readelf
 from core.config import RaptorConfig
 from core.hash import sha256_string
@@ -136,17 +138,9 @@ class CrashAnalyser:
         """Detect the appropriate debugger for this platform and binary type."""
         system = platform.system().lower()
         
-        # Check binary type first
-        try:
-            result = _run_trusted(
-                ["file", str(self.binary)],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            binary_type = result.stdout.lower()
-        except (OSError, subprocess.SubprocessError):
-            binary_type = ""
+        # Check binary type first (sandboxed; never raises).
+        result = _inspect_binary("file", (), self.binary, timeout=5)
+        binary_type = result.stdout.lower()
 
         # For macOS binaries (Mach-O), prefer LLDB. Version probes go
         # through core.run.toolprobe (sanitised env, resolved-path
@@ -1144,10 +1138,10 @@ class CrashAnalyser:
 
         try:
             # Use objdump for simple disassembly with more context
-            result = _run_trusted(
-                ["objdump", "-d", "--start-address=" + address, "-C", str(self.binary)],  # -C demangles
-                capture_output=True,
-                text=True,
+            # (-C demangles). Sandboxed via core.binary.inspect — the
+            # bytes parsed come from the analysed binary.
+            result = _objdump(
+                self.binary, "-d", "--start-address=" + address, "-C",
                 timeout=10,
             )
 
@@ -1182,19 +1176,10 @@ class CrashAnalyser:
         info = {}
         
         if self._available_tools.get("file", False):
-            try:
-                # Get file type
-                result = _run_trusted(
-                    ["file", str(self.binary)],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    info["file_type"] = result.stdout.strip()
-                    
-            except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the analysis
-                logger.debug("file command failed: %s", e)
+            # Get file type (sandboxed; never raises).
+            result = _inspect_binary("file", (), self.binary, timeout=5)
+            if result.returncode == 0:
+                info["file_type"] = result.stdout.strip()
         else:
             logger.debug("file tool not available - skipping binary type detection")
         

@@ -147,6 +147,20 @@ _BUG_CLASS_FIELD = {
     "description": "Category of the defect found.",
 }
 
+# Languages the study loop can resolve reading_list assumptions in.
+# C/C++ resolve via the study-prep corpus; the others via
+# core.concepts.lang_resolve (per-language identifier/concept
+# resolution).  Extend BOTH this tuple and the resolution layer when
+# lifting the gate for another language.
+STUDY_SUPPORTED_LANGUAGES = (
+    "C", "C++", "Python", "Go", "Java", "JavaScript", "TypeScript",
+    "Rust",
+)
+
+_STUDY_LANGS_TEXT = (
+    "C/C++, Python, Go, Java, JavaScript/TypeScript, and Rust"
+)
+
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -478,17 +492,19 @@ REVIEW_SCHEMA = {
         "reading_list": {
             "type": "array",
             "description": (
-                "C/C++ targets only — omit for all other languages. "
-                "Domain knowledge you relied on for your verdict that "
-                "was NOT defined in the provided source context. List "
-                "every type, macro, API contract, or invariant whose "
-                "semantics you assumed from training knowledge rather "
-                "than reading in the provided code. The study loop "
-                "will verify these assumptions against the actual "
-                "source. Most non-trivial C functions reference at "
-                "least one external contract — an empty list means "
-                "you made zero assumptions beyond what was shown, "
-                "which is rare."
+                f"{_STUDY_LANGS_TEXT} targets only — omit for other "
+                "languages; the study loop cannot resolve assumptions "
+                "there. Domain knowledge you relied on for your "
+                "verdict that was NOT defined in the provided source "
+                "context. List every type, macro, API contract, "
+                "library call, or invariant whose semantics you "
+                "assumed from training knowledge rather than reading "
+                "in the provided code. The study loop will verify "
+                "these assumptions against the actual source. Most "
+                "non-trivial functions reference at least one "
+                "external contract — an empty list means you made "
+                "zero assumptions beyond what was shown, which is "
+                "rare."
             ),
             "items": {
                 "type": "object",
@@ -499,9 +515,10 @@ REVIEW_SCHEMA = {
                             "The assumption phrased as a verifiable "
                             "question. Be precise: name the type, macro, "
                             "function, or contract. E.g. 'Does rcu_read_lock "
-                            "prevent the task_struct from being freed?' or "
+                            "prevent the task_struct from being freed?', "
                             "'Does skb_cow_data handle shared frags by "
-                            "copying them?'"
+                            "copying them?', or 'Does parse_config validate "
+                            "the schema before returning?'"
                         ),
                     },
                     "priority": {
@@ -782,20 +799,22 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "your final status value. The status must follow from the "
     "reasoning, never the reverse. Do not generate empty arrays or "
     "objects as placeholder values — omit optional fields entirely "
-    "when they do not apply (exception: reading_list for C/C++ "
-    "targets — see ASSUMED KNOWLEDGE).\n\n"
-    "ASSUMED KNOWLEDGE (C/C++ only): When reviewing C or C++ code, "
-    "state in reading_list every domain fact you relied on that was "
-    "NOT defined in the provided source context — type semantics, "
-    "API contracts, macro expansions, locking invariants, allocator "
-    "contracts, error-handling conventions. Phrase each as a "
+    "when they do not apply (exception: reading_list for "
+    "study-supported languages — see ASSUMED KNOWLEDGE).\n\n"
+    "ASSUMED KNOWLEDGE (" + _STUDY_LANGS_TEXT + "): When reviewing "
+    "code in these languages, state in reading_list every domain "
+    "fact you relied on that was NOT defined in the provided source "
+    "context — type semantics, API contracts, macro expansions, "
+    "locking invariants, allocator contracts, error-handling "
+    "conventions, framework and library behaviour. Phrase each as a "
     "verifiable question: 'Does rcu_read_lock prevent the "
-    "task_struct from being freed here?' or 'Does EVP_CIPHER_CTX_new "
-    "return NULL on allocation failure?'. Most non-trivial C "
-    "functions reference at least one external contract. If your "
-    "verdict would change if any assumption is wrong, mark it "
-    "critical. For non-C/C++ targets, omit reading_list entirely — "
-    "the study loop cannot resolve assumptions in other languages.\n\n"
+    "task_struct from being freed here?', 'Does EVP_CIPHER_CTX_new "
+    "return NULL on allocation failure?', or 'Does json.loads accept "
+    "duplicate keys without error?'. Most non-trivial functions "
+    "reference at least one external contract. If your verdict would "
+    "change if any assumption is wrong, mark it critical. For other "
+    "languages, omit reading_list entirely — the study loop cannot "
+    "resolve assumptions there.\n\n"
     "OPERATOR NOTES: The operator may attach advisory notes in "
     "``<operator_note>`` blocks (visible in your context under "
     "'Previous annotation'). Read these for context — the operator's "

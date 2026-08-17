@@ -4,22 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar
 
 import pytest
 
 from core.audit.llm_review import (
     REVIEW_SCHEMA,
-    _is_content_filter_error,
     _counter_hypothesis_is_compelling,
+    _is_content_filter_error,
     make_review_fn,
 )
-from core.audit.orchestrator import OrchestratorConfig, ReviewOutcome, _ContentFilterError
+from core.audit.orchestrator import (
+    OrchestratorConfig,
+    ReviewOutcome,
+    _ContentFilterError,
+)
 
 
 @dataclass
 class FakeStructuredResponse:
-    result: Dict[str, Any]
+    result: dict[str, Any]
     raw: str = ""
     cost: float = 0.01
     model: str = "test-model"
@@ -27,7 +31,7 @@ class FakeStructuredResponse:
 
 
 class FakeLLMClient:
-    def __init__(self, result: Dict[str, Any], *, raise_exc: Optional[Exception] = None):
+    def __init__(self, result: dict[str, Any], *, raise_exc: Exception | None = None):
         self._result = result
         self._raise_exc = raise_exc
         self.calls = []
@@ -64,7 +68,7 @@ class TestMakeReviewFn:
         out.mkdir()
         return OrchestratorConfig(target_path=target, out_dir=out)
 
-    def _ctx(self) -> Dict[str, Any]:
+    def _ctx(self) -> dict[str, Any]:
         return {
             "file": "src/auth.c",
             "function": "check_pw",
@@ -373,7 +377,9 @@ class TestDefaultSystemPrompt:
                 calls.append(system_prompt)
 
                 class R:
-                    result = {"status": "clean", "body": "ok", "hypotheses": []}
+                    result: ClassVar[dict] = {
+                        "status": "clean", "body": "ok", "hypotheses": [],
+                    }
                     model = "test"
                     cost = 0.0
                 return R()
@@ -401,7 +407,9 @@ class TestDefaultSystemPrompt:
                 calls.append(system_prompt)
 
                 class R:
-                    result = {"status": "clean", "body": "ok", "hypotheses": []}
+                    result: ClassVar[dict] = {
+                        "status": "clean", "body": "ok", "hypotheses": [],
+                    }
                     model = "test"
                     cost = 0.0
                 return R()
@@ -419,3 +427,62 @@ class TestDefaultSystemPrompt:
         review_fn(ctx, config)
         assert len(calls) == 1
         assert calls[0] == custom
+
+
+# ------------------------------------------------------------------
+# reading_list schema/prompt gating (P37 — study loop beyond C/C++)
+# ------------------------------------------------------------------
+
+
+class TestReadingListLanguageGate:
+    """The reading_list gate is lifted per-language as resolution
+    support lands: the schema and system prompt must name every
+    study-supported language, keep the omit instruction for the rest,
+    and keep the 'most functions reference at least one external
+    contract' guidance."""
+
+    def test_supported_language_registry(self) -> None:
+        from core.audit.llm_review import STUDY_SUPPORTED_LANGUAGES
+        for lang in ("C", "C++", "Python", "Go", "Java",
+                     "JavaScript", "TypeScript", "Rust"):
+            assert lang in STUDY_SUPPORTED_LANGUAGES
+
+    def test_schema_no_longer_c_only(self) -> None:
+        from core.audit.llm_review import REVIEW_SCHEMA
+        desc = REVIEW_SCHEMA["properties"]["reading_list"]["description"]
+        assert "C/C++ targets only" not in desc
+        for lang in ("Python", "Go", "Java", "Rust"):
+            assert lang in desc
+
+    def test_schema_keeps_omit_for_unsupported(self) -> None:
+        from core.audit.llm_review import REVIEW_SCHEMA
+        desc = REVIEW_SCHEMA["properties"]["reading_list"]["description"]
+        assert "omit for other languages" in desc
+
+    def test_schema_keeps_external_contract_guidance(self) -> None:
+        from core.audit.llm_review import REVIEW_SCHEMA
+        desc = REVIEW_SCHEMA["properties"]["reading_list"]["description"]
+        assert "at least one external contract" in desc
+
+    def test_blind_schema_shares_gate(self) -> None:
+        from core.audit.llm_review import REVIEW_SCHEMA_BLIND
+        desc = (
+            REVIEW_SCHEMA_BLIND["properties"]["reading_list"]["description"]
+        )
+        assert "C/C++ targets only" not in desc
+        assert "Python" in desc
+
+    def test_prompt_assumed_knowledge_lists_languages(self) -> None:
+        from core.audit.llm_review import (
+            _DEFAULT_SYSTEM_PROMPT,
+            _QUALITY_SYSTEM_PROMPT,
+        )
+        for prompt in (_DEFAULT_SYSTEM_PROMPT, _QUALITY_SYSTEM_PROMPT):
+            assert "ASSUMED KNOWLEDGE (C/C++, Python, Go, Java, " \
+                   "JavaScript/TypeScript, and Rust)" in prompt
+            assert "C/C++ only" not in prompt
+            assert "cannot resolve assumptions in other languages" \
+                   not in prompt
+            # omit rule retained for languages without a resolver
+            assert "For other languages, omit reading_list" in prompt
+            assert "at least one external contract" in prompt

@@ -217,15 +217,6 @@ def _enrich_finding_with_ast_view(
         )
 
 
-def get_vuln_type(rule_id: str) -> str | None:
-    """Map SARIF rule_id to vulnerability type for mitigation checks."""
-    try:
-        from packages.exploit_feasibility import get_vuln_type_for_rule
-        return get_vuln_type_for_rule(rule_id)
-    except ImportError:
-        return None
-
-
 class VulnerabilityContext:
     """Represents a vulnerability with full context for autonomous analysis."""
 

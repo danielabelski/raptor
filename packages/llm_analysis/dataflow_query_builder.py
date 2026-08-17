@@ -78,10 +78,6 @@ _KIND_PATH_PROBLEM_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Match `@id <ns>/<rest>` — used for stable identification of which
-# discovered query handled a particular finding (audit trail).
-_ID_RE = re.compile(r"@id\s+([\w.\-/]+)")
-
 # Bound how much of each .ql file we read when checking metadata. Real
 # headers fit in ~1 KB; reading more wastes IO on large dataflow query
 # bodies. 4 KB gives slack for queries with long descriptions.
@@ -212,11 +208,6 @@ def _extract_cwes(metadata: str) -> List[str]:
 
 def _is_path_problem(metadata: str) -> bool:
     return bool(_KIND_PATH_PROBLEM_RE.search(metadata))
-
-
-def _query_id(metadata: str) -> Optional[str]:
-    m = _ID_RE.search(metadata)
-    return m.group(1) if m else None
 
 
 def _language_from_pack_dir(pack_dir: Path) -> Optional[str]:

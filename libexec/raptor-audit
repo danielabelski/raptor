@@ -1224,6 +1224,21 @@ def cmd_run(args: argparse.Namespace) -> int:
                 f"{bo_counts.get('symbol_present', 0)} present)",
                 flush=True,
             )
+        # Persist the freshly-computed per-binary verdicts into the
+        # build-ID cache so later runs (and external consumers of the
+        # shared cache) skip re-analysis. Best-effort.
+        try:
+            from core.audit.build_id_cache import (
+                load_build_id_cache,
+                store_oracle_verdicts,
+            )
+            store_oracle_verdicts(
+                load_build_id_cache(), checklist_data,
+                source_command="raptor-audit",
+            )
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "build-id cache population failed", exc_info=True)
 
     # --- progress callback ---
     from core.audit._util import format_progress_line

@@ -448,6 +448,22 @@ def build_inventory(
         try:
             from core.analysis.binary_oracle import enrich_inventory_with_binary_oracle
             enrich_inventory_with_binary_oracle(inventory, bin_paths)
+            # Persist per-binary verdicts into the build-ID-keyed cache
+            # so later runs (and external consumers of the shared cache
+            # dir) can reuse them without re-analysing the binary.
+            # Best-effort — cache trouble never blocks the inventory.
+            try:
+                from core.audit.build_id_cache import (
+                    load_build_id_cache,
+                    store_oracle_verdicts,
+                )
+                store_oracle_verdicts(
+                    load_build_id_cache(), inventory,
+                    source_command="inventory-builder",
+                )
+            except Exception:
+                logger.debug("build-id cache population failed",
+                             exc_info=True)
         except Exception as exc:                          # noqa: BLE001
             logger.warning("binary_oracle enrichment failed for %r: %s",
                            bin_paths, exc)

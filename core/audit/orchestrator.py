@@ -2174,9 +2174,21 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     if config.no_binary_oracle:
         binary_bridge_early = None
     else:
+        # Build-ID cache: merges artifacts cached by prior runs (or by
+        # an external consumer sharing the cache dir) so a binary is
+        # not re-analysed. Best-effort — a missing/broken cache never
+        # blocks the bridge.
+        _build_id_cache = None
+        try:
+            from .build_id_cache import load_build_id_cache
+
+            _build_id_cache = load_build_id_cache()
+        except Exception:
+            logger.debug("build-id cache unavailable", exc_info=True)
         binary_bridge_early = load_binary_bridge(
             config.out_dir,
             target_path=config.target_path,
+            build_id_cache=_build_id_cache,
         )
 
     evidence_index = build_evidence_index(

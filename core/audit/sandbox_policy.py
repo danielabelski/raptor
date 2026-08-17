@@ -166,6 +166,9 @@ def all_policies() -> list[ToolPolicy]:
 
 _LLM_PHASES = frozenset({
     "review", "checker_synthesis", "error_retry", "re_review",
+    # Pre-loop LLM summary extraction (core.audit.llm_summaries),
+    # booked into the phase ledger as the "summary" call class.
+    "summary",
 })
 
 

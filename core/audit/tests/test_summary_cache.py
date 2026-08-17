@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 from core.audit.summary_cache import (
     CachedSummary,
@@ -128,7 +129,7 @@ class TestSummaryCache:
 class TestPathTraversalRejection:
     """All public methods must reject path-traversal components."""
 
-    _PAYLOADS = [
+    _PAYLOADS: ClassVar[list[tuple[str, str]]] = [
         ("../../etc", "passwd"),
         ("openssl", "../../etc"),
         ("../", "1.0"),

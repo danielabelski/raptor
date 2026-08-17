@@ -89,10 +89,10 @@ def _try_evaluate(body: str) -> int | None:
         return None
 
     try:
-        result = eval(cleaned, {"__builtins__": {}}, {})  # noqa: S307
+        result = eval(cleaned, {"__builtins__": {}}, {})
         if isinstance(result, int):
             return result
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — sandboxed eval of a candidate constant: any failure means not-a-constant
         pass
     return None
 
@@ -137,7 +137,7 @@ def _scan_definitions(target_path: Path) -> dict[str, list[_RawDefinition]]:
             # that is absent in text_joined.
             extra = 0
             orig_pos = joined_pos
-            for off in _cont_offsets:
+            for off in _cont_offsets:  # noqa: B023 — closure used only within this file's iteration
                 # In the joined text the continuation at original offset
                 # `off` becomes offset `off - extra` (each prior removal
                 # shifted by 1). If joined_pos is past that point, the
@@ -147,7 +147,7 @@ def _scan_definitions(target_path: Path) -> dict[str, list[_RawDefinition]]:
                     orig_pos += 1
                 else:
                     break
-            return text[:orig_pos].count("\n") + 1
+            return text[:orig_pos].count("\n") + 1  # noqa: B023 — closure used only within this file's iteration
 
         rel = str(p.relative_to(target_path)) if p.is_relative_to(target_path) else str(p)
 

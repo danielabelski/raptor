@@ -447,7 +447,7 @@ def _sage_recall_for_context(
     across prior runs.  Returns a formatted prompt section or None.
     """
     try:
-        from core.sage.hooks import _get_client, _concepts_domain
+        from core.sage.hooks import _concepts_domain, _get_client
     except ImportError:
         return None
 
@@ -557,9 +557,7 @@ def primers_from_domain_model(
         for po in paired:
             acq = po.get("acquire", "")
             rel = po.get("release", "")
-            if acq and re.search(r"\b" + re.escape(acq.lower()) + r"\b", source_lower):
-                relevant_pairs.append(po)
-            elif rel and re.search(r"\b" + re.escape(rel.lower()) + r"\b", source_lower):
+            if acq and re.search(r"\b" + re.escape(acq.lower()) + r"\b", source_lower) or rel and re.search(r"\b" + re.escape(rel.lower()) + r"\b", source_lower):
                 relevant_pairs.append(po)
         if relevant_pairs:
             score = 6.0 + len(relevant_pairs)

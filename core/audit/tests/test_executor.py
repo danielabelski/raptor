@@ -8,8 +8,8 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from core.audit.executor import ExecutorConfig, run_executor_sync
-from core.llm.concurrency import derive_max_workers
 from core.audit.task_graph import TaskGraph
+from core.llm.concurrency import derive_max_workers
 
 
 def _gap(file: str, name: str, priority: float = 0.5) -> dict[str, Any]:
@@ -383,6 +383,7 @@ class TestAsyncPath:
 
     def test_parallel_progress_checkpoint(self, tmp_path) -> None:
         import json
+
         import core.audit.executor as executor_mod
 
         meta = {"status": "running", "extra": {}}

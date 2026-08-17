@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 from core.audit.project_context import (
+    VALID_CATEGORIES,
     Learning,
     ProjectContext,
-    VALID_CATEGORIES,
     add_learning,
     load_project_context,
     save_project_context,

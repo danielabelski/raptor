@@ -16,8 +16,7 @@ from core.audit.strategy_stats import (
 def _write_audit_log(log_dir: Path, entries: list) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     with open(log_dir / ".audit-log.jsonl", "w") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
+        f.writelines(json.dumps(entry) + "\n" for entry in entries)
 
 
 class TestAggregateStrategyStats:

@@ -7,8 +7,8 @@ import pytest
 
 from core.concepts.audit_bridge import (
     _extract_cwe_id,
-    _guard_in_scope,
     _find_domain_model,
+    _guard_in_scope,
     _infer_repo_path,
     _match_pass_cwe,
     _relevance_score,

@@ -13,7 +13,6 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ class StaleItem:
 def find_stale_annotations(
     annotations_dir: Path,
     target_path: Path,
-) -> List[StaleItem]:
+) -> list[StaleItem]:
     """Find annotations whose source has changed or been deleted.
 
     Returns a list of StaleItem for each annotation where:
@@ -44,8 +43,8 @@ def find_stale_annotations(
     """
     try:
         from core.annotations.storage import (
-            iter_all_annotations,
             compute_function_hash,
+            iter_all_annotations,
         )
     except ImportError:
         logger.debug("annotations module not available")
@@ -99,9 +98,9 @@ def find_stale_annotations(
 
 
 def stale_as_gaps(
-    stale_items: List[StaleItem],
-    existing_gaps: Optional[List[dict]] = None,
-) -> List[dict]:
+    stale_items: list[StaleItem],
+    existing_gaps: list[dict] | None = None,
+) -> list[dict]:
     """Convert stale annotations into gap-format dicts for the orchestrator.
 
     Merges stale items with existing gaps, marking stale items with

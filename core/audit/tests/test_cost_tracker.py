@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from core.audit.cost_tracker import PhaseCostLedger, PhaseCost
+from core.audit.cost_tracker import PhaseCost, PhaseCostLedger
 
 
 class TestPhaseCost:

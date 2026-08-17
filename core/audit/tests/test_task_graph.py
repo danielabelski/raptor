@@ -208,7 +208,7 @@ class TestCycleBreaking:
         scores = {"a.py:high": 0.9, "a.py:low": 0.1}
         dropped = _break_cycles(adj, scores)
         assert len(dropped) == 1
-        caller, callee = next(iter(dropped))
+        _caller, callee = next(iter(dropped))
         assert callee == "a.py:low"
 
     def test_cycle_preserves_tree_edges(self) -> None:

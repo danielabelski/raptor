@@ -18,7 +18,7 @@ import os
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .strategy_stats import _safe_mtime
 
@@ -31,9 +31,9 @@ _FP_CATEGORY_PATTERNS = [
             r"caller|upstream|invoke|passes?\s+(?:null|invalid|bad)",
             re.IGNORECASE,
         ),
-        "Do not flag a function as suspicious solely because a caller "
+        ("Do not flag a function as suspicious solely because a caller "
         "COULD pass invalid input — check whether any actual caller "
-        "shown in context does.",
+        "shown in context does."),
     ),
     (
         "speculative_race",
@@ -42,9 +42,9 @@ _FP_CATEGORY_PATTERNS = [
             r"without.*lock|after.*unlock",
             re.IGNORECASE,
         ),
-        "Do not flag race conditions when the code is protected by a "
+        ("Do not flag race conditions when the code is protected by a "
         "lock that covers the critical section — verify the lock scope "
-        "before hypothesising.",
+        "before hypothesising."),
     ),
     (
         "wrapper_distrust",
@@ -53,9 +53,9 @@ _FP_CATEGORY_PATTERNS = [
             r"callee.*not.*visible|unknown.*callee",
             re.IGNORECASE,
         ),
-        "Thin wrapper functions that only call one callee without "
+        ("Thin wrapper functions that only call one callee without "
         "transforming arguments are clean — do not flag them because "
-        "the callee is not visible in context.",
+        "the callee is not visible in context."),
     ),
     (
         "arithmetic_speculation",
@@ -64,9 +64,9 @@ _FP_CATEGORY_PATTERNS = [
             r"arithmetic.*on.*kernel|bounded.*value",
             re.IGNORECASE,
         ),
-        "Do not hypothesise integer overflow on kernel-bounded values "
+        ("Do not hypothesise integer overflow on kernel-bounded values "
         "(page counts, CPU indices, small enums) without checking the "
-        "actual type width and value range.",
+        "actual type width and value range."),
     ),
     (
         "crypto_hygiene",
@@ -75,17 +75,17 @@ _FP_CATEGORY_PATTERNS = [
             r"hash|encrypt|decrypt",
             re.IGNORECASE,
         ),
-        "Do not flag crypto-hygiene issues on functions that do not "
+        ("Do not flag crypto-hygiene issues on functions that do not "
         "handle secret material — verify the data flow reaches a "
-        "secret before raising timing or side-channel concerns.",
+        "secret before raising timing or side-channel concerns."),
     ),
 ]
 
 
 def extract_fp_patterns(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     min_count: int = 3,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Extract FP patterns from scored corpus results.
 
     Each result dict must have at least:
@@ -108,7 +108,7 @@ def extract_fp_patterns(
         return []
 
     category_counts: Counter = Counter()
-    category_examples: Dict[str, List[str]] = {}
+    category_examples: dict[str, list[str]] = {}
 
     for fp in fps:
         hyp_text = fp.get("hypothesis", "")
@@ -144,7 +144,7 @@ def extract_fp_patterns(
 
 
 def save_corrections(
-    patterns: List[Dict[str, Any]],
+    patterns: list[dict[str, Any]],
     out_path: Path,
     *,
     store_to_sage: bool = True,
@@ -182,7 +182,7 @@ def save_corrections(
 
 
 def _store_corrections_to_sage(
-    patterns: List[Dict[str, Any]],
+    patterns: list[dict[str, Any]],
     out_path: Path,
 ) -> None:
     """Store correction metadata to SAGE for cross-run learning."""
@@ -217,8 +217,8 @@ def _store_corrections_to_sage(
 
 
 def load_corrections(
-    out_dir: Optional[Path] = None,
-) -> List[str]:
+    out_dir: Path | None = None,
+) -> list[str]:
     """Load correction rules from the most recent corpus run.
 
     Searches for prompt-corrections.json in:
@@ -228,7 +228,7 @@ def load_corrections(
 
     Returns a list of correction rule strings.
     """
-    candidates: List[Path] = []
+    candidates: list[Path] = []
     if out_dir:
         candidates.append(out_dir / "prompt-corrections.json")
 
@@ -264,13 +264,13 @@ def load_corrections(
     return []
 
 
-def format_corrections_for_prompt(corrections: List[str]) -> str:
+def format_corrections_for_prompt(corrections: list[str]) -> str:
     """Format correction rules as a system prompt addendum."""
     if not corrections:
         return ""
     lines = [
-        "\nLEARNED CORRECTIONS (from prior corpus calibration — "
-        "these patterns caused false positives):\n"
+        ("\nLEARNED CORRECTIONS (from prior corpus calibration — "
+        "these patterns caused false positives):\n")
     ]
     for i, rule in enumerate(corrections, 1):
         lines.append(f"{i}. {rule}")

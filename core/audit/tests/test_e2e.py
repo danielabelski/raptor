@@ -25,7 +25,7 @@ def _run(args, **kwargs):
                PYTHONPATH=str(_RAPTOR_DIR))
     return subprocess.run(
         [sys.executable] + args,
-        env=env, capture_output=True, text=True, **kwargs,
+        env=env, capture_output=True, text=True, check=False, **kwargs,
     )
 
 
@@ -530,7 +530,7 @@ class TestAuditE2E:
 
     def test_rules_save_and_list(self, setup):
         """Rules subcommand: save and list."""
-        target, out_dir = setup
+        _target, out_dir = setup
 
         rule_content = (
             "rules:\n"

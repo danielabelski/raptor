@@ -645,3 +645,27 @@ def test_osssfuzz_query_key_injective() -> None:
     a = OsvClient._osssfuzz_query_key(d, "lib/name")
     b = OsvClient._osssfuzz_query_key(d, "lib_name")
     assert a != b
+
+
+# ---------------------------------------------------------------------------
+# CWE extraction (P40 — audit-side advisory priors)
+# ---------------------------------------------------------------------------
+
+def test_parse_osv_record_extracts_cwe_ids() -> None:
+    record = dict(_LOG4J_RECORD)
+    record["database_specific"] = {
+        "cwe_ids": ["CWE-502", "cwe-400", "CWE-502", "not-a-cwe", 7],
+    }
+    a = parse_osv_record(record)
+    assert a.cwe_ids == ["CWE-502", "CWE-400"]
+
+
+def test_parse_osv_record_no_database_specific() -> None:
+    a = parse_osv_record(_LOG4J_RECORD)
+    assert a.cwe_ids == []
+
+
+def test_parse_osv_record_malformed_cwe_field() -> None:
+    record = dict(_LOG4J_RECORD)
+    record["database_specific"] = {"cwe_ids": "CWE-79"}
+    assert parse_osv_record(record).cwe_ids == []

@@ -3022,6 +3022,26 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     except Exception:
         logger.debug("fix-history enrichment failed", exc_info=True)
 
+    # SCA advisory priors: gaps in files that import a component with
+    # advisory history get a boost, per-CWE-family strategy hints and
+    # a defanged context note (see core.audit.sca_bridge). Applied
+    # before the budget cap so boosted gaps compete for review slots.
+    try:
+        from .sca_bridge import apply_sca_advisories
+
+        if apply_sca_advisories(gaps, config.out_dir):
+            gaps.sort(
+                key=lambda g: (
+                    g["priority"],
+                    -(g.get("priority_score") or 0),
+                    -g.get("sloc", 0),
+                    g["file"],
+                    g["name"],
+                )
+            )
+    except Exception:
+        logger.debug("SCA advisory enrichment failed", exc_info=True)
+
     if config.budget and config.budget > 0:
         # Records the dropped tail in not-attempted.json so the run
         # summary reports it as "not attempted (budget)" instead of

@@ -45,6 +45,7 @@ Advisory list.
 from __future__ import annotations
 
 import logging
+import re
 import urllib.parse
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -556,7 +557,34 @@ def _record_to_advisory(rec: OsvRecord) -> Advisory:
         modified=rec.modified,
         ecosystem_specific=ecosystem_specific,
         informational=informational,
+        cwe_ids=_cwe_ids_from_record(rec),
     )
+
+
+_CWE_ID_RE = re.compile(r"^CWE-\d{1,5}$")
+
+
+def _cwe_ids_from_record(rec: OsvRecord) -> list[str]:
+    """Extract normalised CWE ids from ``database_specific.cwe_ids``.
+
+    GHSA records carry them at the top level of the raw JSON; values
+    are validated against the ``CWE-NNN`` shape (the field comes from
+    an external feed — never trust free-form strings).
+    """
+    ds = rec.raw.get("database_specific")
+    if not isinstance(ds, dict):
+        return []
+    raw_ids = ds.get("cwe_ids")
+    if not isinstance(raw_ids, list):
+        return []
+    out: list[str] = []
+    for item in raw_ids:
+        if not isinstance(item, str):
+            continue
+        cwe = item.strip().upper()
+        if _CWE_ID_RE.match(cwe) and cwe not in out:
+            out.append(cwe)
+    return out[:8]
 
 
 def _affected_from_record(rec: OsvRecord) -> list[AffectedRange]:

@@ -131,6 +131,24 @@ class TestProxyUnixSocket:
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning:multiprocessing")
 @pytest.mark.filterwarnings("ignore:This process.*fork:DeprecationWarning")
+
+def _free_loopback_port() -> int:
+    """Ephemeral free port on 127.0.0.1.
+
+    The forwarder tests used FIXED ports (19876/19877): a concurrent
+    session running the same suite collides outright, and even a
+    solo back-to-back rerun used to fail on the TIME_WAIT remnant
+    before _run_forwarder gained SO_REUSEADDR. A kernel-assigned
+    port sidesteps both.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
 class TestProxyBridge:
     """TCP-to-Unix forwarder integration."""
 
@@ -166,7 +184,7 @@ class TestProxyBridge:
         )
         result = subprocess.run(
             [sys.executable, "-c", script],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
             env={"PYTHONPATH": str(RAPTOR_DIR), "PATH": os.environ["PATH"]},
         )
         if result.returncode != 0 and "PermissionError" in result.stderr:
@@ -180,6 +198,7 @@ class TestProxyBridge:
     def test_forwarder_relays_data(self):
         """_run_forwarder bridges TCP ↔ Unix socket."""
         sock_path = str(self.tmp / "relay.sock")
+        port = _free_loopback_port()
 
         # Stand up a simple unix socket echo server.
         echo_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -207,7 +226,7 @@ class TestProxyBridge:
         if fwd_pid == 0:
             os.close(death_w)
             try:
-                _run_forwarder(19876, sock_path, death_r)
+                _run_forwarder(port, sock_path, death_r)
             finally:
                 os._exit(0)
         os.close(death_r)
@@ -217,7 +236,7 @@ class TestProxyBridge:
 
             # Connect via TCP → forwarder → unix → echo server → back.
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect(("127.0.0.1", 19876))
+            s.connect(("127.0.0.1", port))
             s.sendall(b"hello-bridge")
             s.settimeout(5.0)
             got = s.recv(4096)
@@ -244,7 +263,7 @@ class TestProxyBridge:
         if fwd_pid == 0:
             os.close(death_w)
             try:
-                _run_forwarder(19877, sock_path, death_r)
+                _run_forwarder(_free_loopback_port(), sock_path, death_r)
             finally:
                 os._exit(0)
         os.close(death_r)
@@ -279,19 +298,18 @@ class TestProxyNetnsContextWiring:
         ), mock.patch(
             "core.sandbox.context.check_landlock_available",
             return_value=True,
-        ):
-            with sandbox(
-                target=self.out,
-                output=self.out,
-                use_egress_proxy=True,
-                proxy_hosts=["example.com"],
-            ) as run:
-                result = run(
-                    ["echo", "proxy-netns-test"],
-                    capture_output=True, text=True, timeout=15,
-                )
-                assert result.returncode == 0
-                assert result.sandbox_info.get("proxy_enforcement") == "netns"
+        ), sandbox(
+            target=self.out,
+            output=self.out,
+            use_egress_proxy=True,
+            proxy_hosts=["example.com"],
+        ) as run:
+            result = run(
+                ["echo", "proxy-netns-test"],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert result.returncode == 0
+            assert result.sandbox_info.get("proxy_enforcement") == "netns"
 
     def test_tcp_path_on_high_abi(self):
         """When ABI >= 4, sandbox_info reports landlock_tcp."""
@@ -303,19 +321,18 @@ class TestProxyNetnsContextWiring:
         ), mock.patch(
             "core.sandbox.context.check_landlock_available",
             return_value=True,
-        ):
-            with sandbox(
-                target=self.out,
-                output=self.out,
-                use_egress_proxy=True,
-                proxy_hosts=["example.com"],
-            ) as run:
-                result = run(
-                    ["echo", "proxy-tcp-test"],
-                    capture_output=True, text=True, timeout=15,
-                )
-                assert result.returncode == 0
-                assert result.sandbox_info.get("proxy_enforcement") == "landlock_tcp"
+        ), sandbox(
+            target=self.out,
+            output=self.out,
+            use_egress_proxy=True,
+            proxy_hosts=["example.com"],
+        ) as run:
+            result = run(
+                ["echo", "proxy-tcp-test"],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert result.returncode == 0
+            assert result.sandbox_info.get("proxy_enforcement") == "landlock_tcp"
 
     def test_fallback_on_unix_bind_failure(self):
         """If bind_unix fails, falls back to TCP-only without crash."""
@@ -332,16 +349,15 @@ class TestProxyNetnsContextWiring:
         ), mock.patch(
             "core.sandbox.proxy.EgressProxy.bind_unix",
             side_effect=_fail_bind,
-        ):
-            with sandbox(
-                target=self.out,
-                output=self.out,
-                use_egress_proxy=True,
-                proxy_hosts=["example.com"],
-            ) as run:
-                result = run(
-                    ["echo", "fallback-test"],
-                    capture_output=True, text=True, timeout=15,
-                )
-                assert result.returncode == 0
-                assert result.sandbox_info.get("proxy_enforcement") == "landlock_tcp"
+        ), sandbox(
+            target=self.out,
+            output=self.out,
+            use_egress_proxy=True,
+            proxy_hosts=["example.com"],
+        ) as run:
+            result = run(
+                ["echo", "fallback-test"],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert result.returncode == 0
+            assert result.sandbox_info.get("proxy_enforcement") == "landlock_tcp"

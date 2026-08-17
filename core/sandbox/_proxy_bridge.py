@@ -44,6 +44,12 @@ def _run_forwarder(listen_port, unix_socket_path, death_r):
     Uses only fork-safe primitives.
     """
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # SO_REUSEADDR: without it, a connection closed within the last
+    # ~60s leaves the port in TIME_WAIT and bind fails EADDRINUSE — a
+    # bridge restarted on the same port (sandbox re-spawn, back-to-back
+    # test runs) refused to come up. REUSEADDR only permits binding
+    # over TIME_WAIT remnants, not hijacking a live listener.
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", listen_port))
     listener.listen(128)
     listener.setblocking(False)
@@ -126,7 +132,7 @@ def _run_forwarder(listen_port, unix_socket_path, death_r):
                 except OSError:
                     _close_pair(fd)
     finally:
-        for fd in list(all_fds):
+        for fd in all_fds:
             if fd != death_r:
                 try:
                     os.close(fd)

@@ -23,6 +23,7 @@ from .detection import (
     _get_available_ollama_models,
     _read_config_models,
     _validate_ollama_url,
+    bedrock_sigv4_intent,
     detect_llm_availability,
 )
 
@@ -472,12 +473,18 @@ def _build_claudecode_config() -> Optional['ModelConfig']:
 
 
 def _build_bedrock_config() -> Optional['ModelConfig']:
-    """Builder for AWS Bedrock — fires when the explicit opt-in signal
-    (``AWS_BEARER_TOKEN_BEDROCK``) is present.  Returns a bare Bedrock
-    model id; Bedrock Mantle (the dispatcher's upstream) routes by
-    hostname (``bedrock-mantle.<region>.api.aws``), not by model-id
-    prefix — so model IDs are bare (``anthropic.claude-haiku-4-5``)
-    regardless of region.
+    """Builder for AWS Bedrock — fires on an explicit opt-in signal:
+    ``AWS_BEARER_TOKEN_BEDROCK`` (bearer auth), or one of the
+    RAPTOR-specific env vars ``RAPTOR_BEDROCK_MODEL`` /
+    ``RAPTOR_BEDROCK_PROFILE`` (SigV4 auth — the dispatcher signs with
+    the resolved AWS credential chain; ``api_key`` stays ``None`` by
+    design).  Ambient AWS credentials alone (AWS_PROFILE, credentials
+    file) never fire this builder — selection is always an explicit
+    statement.  Returns a bare Bedrock model id; Bedrock Mantle (the
+    dispatcher's upstream) routes by hostname
+    (``bedrock-mantle.<region>.api.aws``), not by model-id prefix — so
+    model IDs are bare (``anthropic.claude-haiku-4-5``) regardless of
+    region.
 
     Without this, ``has_bedrock=True`` in detection.py would report
     "LLM available" but ``_get_default_primary_model()`` would fall
@@ -500,14 +507,25 @@ def _build_bedrock_config() -> Optional['ModelConfig']:
     process boundary regardless.
     """
     bearer = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
-    if not bearer:
+    sigv4_selected = bool(
+        os.getenv("RAPTOR_BEDROCK_MODEL")
+        or os.getenv("RAPTOR_BEDROCK_PROFILE")
+    )
+    if not bearer and not sigv4_selected:
         return None
-    # Use the same bare default Anthropic chooses.  Operator can
-    # override via config file to pick a different Claude tier.
-    bare_default = PROVIDER_DEFAULT_MODELS.get("anthropic", "")
-    if not bare_default:
-        return None
-    model_name = f"anthropic.{bare_default}"
+    # Model: the operator's pinned id wins; otherwise the same bare
+    # default Anthropic chooses.  Config-file entries override both
+    # (they resolve via ``_model_config_from_entry``, not here).
+    pinned_model = os.getenv("RAPTOR_BEDROCK_MODEL")
+    if pinned_model:
+        from core.security.llm_family import bare_model_id
+        model_name = pinned_model
+        bare_default = bare_model_id(pinned_model)
+    else:
+        bare_default = PROVIDER_DEFAULT_MODELS.get("anthropic", "")
+        if not bare_default:
+            return None
+        model_name = f"anthropic.{bare_default}"
     limits = MODEL_LIMITS.get(bare_default, {})
     costs = MODEL_COSTS.get(bare_default, {})
     avg_cost_per_1k = (
@@ -524,8 +542,10 @@ def _build_bedrock_config() -> Optional['ModelConfig']:
     return ModelConfig(
         provider="bedrock",
         model_name=model_name,
-        # Bearer token IS the auth; carried in api_key so downstream
-        # providers can pick it up via the dispatcher.
+        # Bearer token IS the auth when present; carried in api_key so
+        # downstream providers can pick it up via the dispatcher.  In
+        # SigV4 mode this stays None — the dispatcher resolves the AWS
+        # credential chain and signs per request.
         api_key=bearer,
         max_tokens=limits.get("max_output", _DEFAULT_MAX_OUTPUT_FRONTIER),
         max_context=limits.get("max_context", _DEFAULT_MAX_CONTEXT_FRONTIER),
@@ -820,6 +840,25 @@ def _build_fast_model_for(primary: 'ModelConfig') -> Optional['ModelConfig']:
     )
 
 
+def _entry_auth_resolvable(mc: 'ModelConfig') -> bool:
+    """True when a config-file entry can authenticate at call time.
+
+    Most providers need ``api_key`` (inline or env-resolved).  Bedrock
+    is the exception: in SigV4 mode ``api_key`` is ``None`` by design —
+    the dispatcher resolves the AWS credential chain (profile / SSO /
+    IMDS / static keys) and signs per request — so the entry counts
+    when the environment carries either the bearer token or any SigV4
+    credential signal.
+    """
+    if mc.api_key:
+        return True
+    if mc.provider == "bedrock":
+        return bool(
+            os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+        ) or bedrock_sigv4_intent()
+    return False
+
+
 def _get_default_fallback_models() -> list['ModelConfig']:
     """
     Get default fallback models based on primary model tier.
@@ -859,7 +898,7 @@ def _get_default_fallback_models() -> list['ModelConfig']:
             continue
 
         mc = _model_config_from_entry(entry)
-        if mc.api_key:
+        if _entry_auth_resolvable(mc):
             fallbacks.append(mc)
             config_providers.add(provider)
 

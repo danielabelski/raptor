@@ -529,6 +529,31 @@ def _apply_anthropic_resolution(entries: list) -> list:
     return out
 
 
+def bedrock_sigv4_intent() -> bool:
+    """True when the environment carries a SigV4 credential signal for
+    Bedrock: a RAPTOR-pinned profile, an ambient AWS profile, env
+    access keys, or a shared credentials file.
+
+    This is the selection-side twin of the predicate inside
+    ``CredentialStore.bedrock_session_warnings`` — both must agree on
+    what counts as "the operator configured SigV4", so detection never
+    reports a Bedrock model the signer can't authenticate (or the
+    reverse).  It gates only *explicitly configured* Bedrock routes
+    (a config-file entry or a ``RAPTOR_BEDROCK_*`` env var); it is
+    never a selection signal by itself.  ``AWS_REGION`` alone is
+    deliberately NOT signal — it's set for unrelated reasons on any
+    AWS user's machine.
+    """
+    return bool(
+        os.getenv("RAPTOR_BEDROCK_PROFILE")
+        or os.getenv("AWS_PROFILE")
+        or (os.getenv("AWS_ACCESS_KEY_ID")
+            and os.getenv("AWS_SECRET_ACCESS_KEY"))
+        or os.getenv("AWS_SHARED_CREDENTIALS_FILE")
+        or (Path.home() / ".aws" / "credentials").is_file()
+    )
+
+
 def _config_has_keyed_models() -> bool:
     """Check if the RAPTOR config file has any usable model.
 
@@ -585,13 +610,17 @@ def _config_has_keyed_models() -> bool:
         env_key = PROVIDER_ENV_KEYS.get(provider)
         if env_key and os.getenv(env_key):
             return True
-        # Bedrock auth signals: bearer token OR AWS access keys.
-        # AWS_REGION alone is NOT signal — it's set for unrelated
-        # reasons on any AWS user's machine.
+        # Bedrock auth signals: bearer token OR any SigV4 credential
+        # source (env access keys, pinned/ambient profile, shared
+        # credentials file).  The operator opted in by writing the
+        # Bedrock entry; profile-backed SigV4 must count the same as
+        # static keys or detection contradicts the dispatcher's signer,
+        # which resolves profiles fine.  AWS_REGION alone is NOT
+        # signal — it's set for unrelated reasons on any AWS user's
+        # machine.
         if provider == "bedrock" and (
             os.getenv("AWS_BEARER_TOKEN_BEDROCK")
-            or (os.getenv("AWS_ACCESS_KEY_ID")
-                and os.getenv("AWS_SECRET_ACCESS_KEY"))
+            or bedrock_sigv4_intent()
         ):
             return True
 
@@ -645,7 +674,18 @@ def detect_llm_availability() -> LLMAvailability:
     # below) OR ``BOTOCORE_SDK_AVAILABLE`` for ``has_bedrock`` to count.
     # ``has_dispatcher_route`` is computed a few lines down; we wire
     # the join after both are known.
-    has_bedrock_signal = bool(os.getenv("AWS_BEARER_TOKEN_BEDROCK"))
+    #
+    # Signals, all explicit statements of intent: the bearer token,
+    # or a RAPTOR-specific Bedrock env var (``RAPTOR_BEDROCK_MODEL``
+    # pins a model, ``RAPTOR_BEDROCK_PROFILE`` pins a SigV4 profile).
+    # Ambient AWS credentials (AWS_PROFILE, ~/.aws/credentials) are
+    # NOT signal here — they gate only explicitly-configured Bedrock
+    # entries (see ``_config_has_keyed_models``), never selection.
+    has_bedrock_signal = bool(
+        os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+        or os.getenv("RAPTOR_BEDROCK_MODEL")
+        or os.getenv("RAPTOR_BEDROCK_PROFILE")
+    )
 
     has_cloud_keys = (
         has_anthropic or has_openai or has_gemini or has_mistral
@@ -732,17 +772,20 @@ def _warn_unusable_keys():
                     f"Install with: pip install {sdk_name.split(' or ')[0]}"
                 )
 
-    # Bedrock: warn ONLY when the operator has set the explicit
-    # AWS_BEARER_TOKEN_BEDROCK opt-in signal AND no usable path is
-    # available (no dispatcher route, no botocore).  Gating on bare
-    # AWS_REGION here would FP-warn every AWS user who happens to
-    # have the env var set for unrelated reasons; that's what we're
-    # avoiding by keying off the bearer-token signal.
-    if os.getenv("AWS_BEARER_TOKEN_BEDROCK"):
+    # Bedrock: warn ONLY when the operator has set an explicit opt-in
+    # signal (bearer token or a RAPTOR_BEDROCK_* env var) AND no
+    # usable path is available (no dispatcher route, no botocore).
+    # Gating on bare AWS_REGION here would FP-warn every AWS user who
+    # happens to have the env var set for unrelated reasons; that's
+    # what we're avoiding by keying off the explicit signals.
+    if (os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+            or os.getenv("RAPTOR_BEDROCK_MODEL")
+            or os.getenv("RAPTOR_BEDROCK_PROFILE")):
         has_dispatcher_route = bool(os.getenv("RAPTOR_LLM_SOCKET"))
         if not has_dispatcher_route and not BOTOCORE_SDK_AVAILABLE:
             logger.warning(
-                "AWS_BEARER_TOKEN_BEDROCK is set but neither the dispatcher "
+                "A Bedrock opt-in signal (AWS_BEARER_TOKEN_BEDROCK or a "
+                "RAPTOR_BEDROCK_* env var) is set but neither the dispatcher "
                 "(RAPTOR_LLM_SOCKET) nor botocore is available for Bedrock "
                 "calls.  Install botocore (pip install botocore; boto3 "
                 "also includes it) or run via the RAPTOR dispatcher."

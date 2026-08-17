@@ -1194,3 +1194,22 @@ def test_aws_secrets_popped_from_env(monkeypatch):
     # Region is not a secret and stays readable.
     assert store._aws_region == _REGION
     assert os.environ.get("AWS_REGION") == _REGION
+
+
+def test_credential_store_prefers_raptor_bedrock_profile(monkeypatch):
+    """``RAPTOR_BEDROCK_PROFILE`` outranks the ambient ``AWS_PROFILE``
+    so the operator can pin which identity signs Bedrock requests on a
+    box whose ambient profile serves unrelated tooling."""
+    monkeypatch.setenv("AWS_PROFILE", "unrelated-infra")
+    monkeypatch.setenv("RAPTOR_BEDROCK_PROFILE", "bedrock-access")
+    store = CredentialStore()
+    assert store._aws_profile == "bedrock-access"
+
+
+def test_credential_store_falls_back_to_ambient_profile(monkeypatch):
+    """Without the RAPTOR-specific var, the ambient profile is used —
+    today's behavior, unchanged."""
+    monkeypatch.setenv("AWS_PROFILE", "ambient-profile")
+    monkeypatch.delenv("RAPTOR_BEDROCK_PROFILE", raising=False)
+    store = CredentialStore()
+    assert store._aws_profile == "ambient-profile"

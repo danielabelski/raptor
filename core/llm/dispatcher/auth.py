@@ -278,11 +278,18 @@ class CredentialStore:
             os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
         )
         self._aws_endpoint: str | None = os.environ.get("AWS_ENDPOINT_URL_BEDROCK")
-        # Operator-pinned profile name (botocore picks up
-        # ``AWS_PROFILE`` automatically inside Session(), but reading it
-        # explicitly lets us prefer-chain-over-env when the operator
-        # set it deliberately — a profile is always refresh-capable).
-        self._aws_profile: str | None = os.environ.get("AWS_PROFILE")
+        # Operator-pinned profile name.  ``RAPTOR_BEDROCK_PROFILE``
+        # outranks the ambient ``AWS_PROFILE``: on a box whose ambient
+        # profile serves unrelated tooling, the RAPTOR-specific var
+        # pins which identity signs Bedrock requests.  (botocore picks
+        # up ``AWS_PROFILE`` automatically inside Session(), but
+        # reading it explicitly lets us prefer-chain-over-env when the
+        # operator set it deliberately — a profile is always
+        # refresh-capable).
+        self._aws_profile: str | None = (
+            os.environ.get("RAPTOR_BEDROCK_PROFILE")
+            or os.environ.get("AWS_PROFILE")
+        )
         # Resolved (credentials, region, endpoint) tuple, or None once we
         # know Bedrock isn't usable. ``_UNRESOLVED`` until first lookup.
         # The lock serialises first-resolution across the threading

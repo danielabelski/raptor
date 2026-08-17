@@ -180,8 +180,14 @@ def test_no_warning_when_only_aws_region_set(monkeypatch):
 # _build_bedrock_config — default-model surface (P1.5)
 # ---------------------------------------------------------------------------
 
-def test_bedrock_builder_returns_none_without_bearer(monkeypatch):
+def test_bedrock_builder_returns_none_without_opt_in(monkeypatch):
+    """No bearer and no RAPTOR_BEDROCK_* env var → the builder never
+    fires, even on a host with ambient AWS credentials (AWS_PROFILE).
+    Selection is always an explicit statement."""
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("RAPTOR_BEDROCK_MODEL", raising=False)
+    monkeypatch.delenv("RAPTOR_BEDROCK_PROFILE", raising=False)
+    monkeypatch.setenv("AWS_PROFILE", "bedrock-access")
     from core.llm.config import _build_bedrock_config
     assert _build_bedrock_config() is None
 
@@ -435,14 +441,34 @@ def test_config_has_keyed_models_bedrock_without_path_skipped(
         assert _config_has_keyed_models() is False
 
 
-def test_config_has_keyed_models_bare_aws_region_no_fire(monkeypatch):
-    """Bedrock config entry but only AWS_REGION (no bearer, no keys)
-    → no signal.  AWS_REGION alone is set for countless unrelated
-    reasons and must not FP-fire detection."""
+def _clear_sigv4_signal_env(monkeypatch, tmp_path):
+    """Remove every SigV4 credential signal from the environment so a
+    test observes the true no-credentials case regardless of the host
+    it runs on (ambient AWS_PROFILE, a real ~/.aws/credentials)."""
+    for var in (
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_PROFILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "RAPTOR_BEDROCK_PROFILE",
+        "RAPTOR_BEDROCK_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    # ``bedrock_sigv4_intent`` probes ~/.aws/credentials via
+    # ``Path.home()`` — redirect HOME so a real credentials file on
+    # the test host can't leak in.
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
+def test_config_has_keyed_models_bare_aws_region_no_fire(
+    monkeypatch, tmp_path,
+):
+    """Bedrock config entry but only AWS_REGION (no bearer, no keys,
+    no profile) → no signal.  AWS_REGION alone is set for countless
+    unrelated reasons and must not FP-fire detection."""
+    _clear_sigv4_signal_env(monkeypatch, tmp_path)
     monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
     fake_entries = [{"model": "us.anthropic.claude-opus-4-7"}]
     with patch("core.llm.detection._read_config_models",
@@ -530,3 +556,163 @@ def test_no_botocore_environment_is_not_detected(
     matching the signer, which cannot work either."""
     mod = _reload_detection(monkeypatch, hide=("botocore", "boto3"))
     assert mod.BOTOCORE_SDK_AVAILABLE is False
+
+
+# ---------------------------------------------------------------------------
+# Profile-based SigV4 opt-in (no bearer token, no static access keys).
+# Selection stays explicit: a models.json Bedrock entry or a
+# RAPTOR_BEDROCK_* env var.  Ambient AWS credentials only *gate*
+# explicitly-configured routes; they never select one.
+# ---------------------------------------------------------------------------
+
+def test_ambient_profile_alone_is_not_selection_signal(
+    monkeypatch, tmp_path,
+):
+    """AWS_PROFILE set (no bearer, no RAPTOR_BEDROCK_*, no config
+    entry) → no external LLM.  A profile serving unrelated tooling
+    must not flip RAPTOR onto the API route."""
+    _clear_sigv4_signal_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("AWS_PROFILE", "bedrock-access")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    with patch("core.llm.detection.shutil.which", return_value=None), \
+         patch("core.llm.detection._get_available_ollama_models",
+               return_value=[]), \
+         patch("core.llm.detection._config_has_keyed_models",
+               return_value=False):
+        from core.llm.detection import detect_llm_availability
+        av = detect_llm_availability()
+        assert av.external_llm is False
+
+
+def test_raptor_bedrock_profile_marks_external_llm(monkeypatch):
+    """RAPTOR_BEDROCK_PROFILE is an explicit opt-in: with a usable
+    path (botocore) it counts as an external LLM, no bearer needed."""
+    monkeypatch.setenv("RAPTOR_BEDROCK_PROFILE", "bedrock-access")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    with patch("core.llm.detection.shutil.which", return_value=None), \
+         patch("core.llm.detection._get_available_ollama_models",
+               return_value=[]), \
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", True):
+        from core.llm.detection import detect_llm_availability
+        av = detect_llm_availability()
+        assert av.external_llm is True
+
+
+def test_raptor_bedrock_model_without_path_not_detected(monkeypatch):
+    """RAPTOR_BEDROCK_MODEL set but no dispatcher route and no
+    botocore → same no-usable-path gate as the bearer signal."""
+    monkeypatch.setenv("RAPTOR_BEDROCK_MODEL", "anthropic.claude-sonnet-5")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    with patch("core.llm.detection.shutil.which", return_value=None), \
+         patch("core.llm.detection._get_available_ollama_models",
+               return_value=[]), \
+         patch("core.llm.detection._config_has_keyed_models",
+               return_value=False), \
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", False):
+        from core.llm.detection import detect_llm_availability
+        av = detect_llm_availability()
+        assert av.external_llm is False
+
+
+def test_config_has_keyed_models_bedrock_with_profile_only(monkeypatch):
+    """A config-file Bedrock entry + ambient AWS_PROFILE (no bearer,
+    no static keys) is usable: the operator opted in by writing the
+    entry, and the dispatcher's signer resolves profiles."""
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.setenv("AWS_PROFILE", "bedrock-access")
+    monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+    fake_entries = [{"provider": "bedrock"}]
+    with patch("core.llm.detection._read_config_models",
+               return_value=fake_entries), \
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", True):
+        from core.llm.detection import _config_has_keyed_models
+        assert _config_has_keyed_models() is True
+
+
+def test_config_has_keyed_models_bedrock_no_credential_signal(
+    monkeypatch, tmp_path,
+):
+    """A Bedrock entry with NO credential signal anywhere (no bearer,
+    keys, profile, or credentials file) stays unusable."""
+    _clear_sigv4_signal_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+    fake_entries = [{"provider": "bedrock"}]
+    with patch("core.llm.detection._read_config_models",
+               return_value=fake_entries), \
+         patch("core.llm.detection.BOTOCORE_SDK_AVAILABLE", True):
+        from core.llm.detection import _config_has_keyed_models
+        assert _config_has_keyed_models() is False
+
+
+def test_bedrock_builder_fires_on_pinned_model(monkeypatch):
+    """RAPTOR_BEDROCK_MODEL pins the model id verbatim and selects the
+    provider without a bearer; api_key stays None (SigV4 mode — the
+    dispatcher signs)."""
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("RAPTOR_BEDROCK_PROFILE", raising=False)
+    monkeypatch.setenv("RAPTOR_BEDROCK_MODEL", "anthropic.claude-sonnet-5")
+    from core.llm.config import _build_bedrock_config
+    cfg = _build_bedrock_config()
+    assert cfg is not None
+    assert cfg.provider == "bedrock"
+    assert cfg.model_name == "anthropic.claude-sonnet-5"
+    assert cfg.api_key is None
+    assert cfg.bedrock_api == "mantle"
+
+
+def test_bedrock_builder_fires_on_pinned_profile(monkeypatch):
+    """RAPTOR_BEDROCK_PROFILE alone selects the provider (default
+    model), no bearer required."""
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("RAPTOR_BEDROCK_MODEL", raising=False)
+    monkeypatch.setenv("RAPTOR_BEDROCK_PROFILE", "bedrock-access")
+    from core.llm.config import _build_bedrock_config
+    cfg = _build_bedrock_config()
+    assert cfg is not None
+    assert cfg.provider == "bedrock"
+    assert cfg.model_name.startswith("anthropic.")
+    assert cfg.api_key is None
+
+
+def test_entry_auth_resolvable_bedrock_sigv4(monkeypatch, tmp_path):
+    """The fallback-list gate accepts a keyless Bedrock entry exactly
+    when the environment carries a credential signal."""
+    from core.llm.config import ModelConfig, _entry_auth_resolvable
+
+    mc = ModelConfig(
+        provider="bedrock",
+        model_name="anthropic.claude-sonnet-5",
+        api_key=None,
+    )
+    monkeypatch.setenv("AWS_PROFILE", "bedrock-access")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    assert _entry_auth_resolvable(mc) is True
+
+    _clear_sigv4_signal_env(monkeypatch, tmp_path)
+    assert _entry_auth_resolvable(mc) is False
+
+    # Non-Bedrock providers still require a key.
+    keyless_other = ModelConfig(
+        provider="openai", model_name="gpt-5.2", api_key=None,
+    )
+    monkeypatch.setenv("AWS_PROFILE", "bedrock-access")
+    assert _entry_auth_resolvable(keyless_other) is False

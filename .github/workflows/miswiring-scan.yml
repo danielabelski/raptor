@@ -51,3 +51,28 @@ jobs:
       - name: Run miswiring detector against baseline
         run: |
           python3 .github/scripts/check_miswiring.py
+
+  # Hardcoded-vocabulary guardrail: flags NEW large literal
+  # function-name lists outside the taxonomy / data packs / tests —
+  # the regression class where library API vocabulary gets baked into
+  # code instead of learned (DomainVocabulary / IRIS / study loop) or
+  # shipped as data. Same baseline semantics as the miswiring job;
+  # deliberate additions go in .github/scripts/vocab_baseline.json
+  # with a review note.
+  vocab-lists:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run vocabulary-list guardrail against baseline
+        run: |
+          python3 .github/scripts/check_vocab_lists.py

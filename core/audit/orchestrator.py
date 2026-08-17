@@ -451,6 +451,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "semgrep": TierCounters(),
         "joern": TierCounters(),
         "codeql": TierCounters(),
+        "codeql_smt_prune": TierCounters(),
         "coccinelle": TierCounters(),
         "smt": TierCounters(),
         "smt_invariant": TierCounters(),
@@ -11086,7 +11087,15 @@ def _sweep_validate(
                 vr = validate_dataflow_claim(
                     claim,
                     db_path=Path(config.codeql_db_path),
+                    target_path=config.target_path,
                 )
+                if vr.smt_pruned and tier_counters:
+                    # Vacuous-checker matches killed mechanically —
+                    # counted whether or not other matches survived.
+                    for _ in range(vr.smt_pruned):
+                        _increment_tier_dict(
+                            tier_counters, "codeql_smt_prune", "refuted",
+                        )
                 if vr.confirmed:
                     return _stamp_evidence(outcome, "codeql:dataflow")
                 if tier_counters:

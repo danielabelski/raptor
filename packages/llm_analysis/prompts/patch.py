@@ -5,8 +5,9 @@ Builds the secure patch prompt from a finding/vulnerability context as a
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+from core.security.prompt_defense_profiles import CONSERVATIVE
 from core.security.prompt_envelope import (
     ModelDefenseProfile,
     PromptBundle,
@@ -14,8 +15,6 @@ from core.security.prompt_envelope import (
     UntrustedBlock,
     build_prompt,
 )
-from core.security.prompt_defense_profiles import CONSERVATIVE
-
 
 PATCH_SYSTEM_PROMPT = """You are a senior security engineer responsible for secure code reviews.
 Create patches that are:
@@ -42,15 +41,17 @@ Create a SECURE PATCH that:
 
 If the user message contains an attack-path block, prefer patching at the earliest step that breaks the chain.
 
-Provide BOTH:
-1. The complete fixed code (not just the diff)
+Provide:
+1. The fix as a UNIFIED DIFF in a single ```diff fenced code block.
+   - Standard unified diff format: `--- a/<file>` and `+++ b/<file>` headers (use the `file_path` slot value as the file), then `@@ -start,count +start,count @@` hunks with context lines.
+   - Diff against the vulnerable file only, and keep every hunk close to the flagged lines — the diff is mechanically validated (applied to a scratch copy, hunk scope checked against the finding span, and re-checked with the original detector). A free-form or malformed patch fails the format check.
 2. A clear explanation of what changed and why
 3. Testing recommendations
 
 Make this production-ready, not just a quick fix."""
 
 
-def _format_what_would_help(feasibility: Dict[str, Any]) -> str:
+def _format_what_would_help(feasibility: dict[str, Any]) -> str:
     what_would_help = feasibility.get("what_would_help") or []
     if not what_would_help:
         return ""
@@ -59,11 +60,11 @@ def _format_what_would_help(feasibility: Dict[str, Any]) -> str:
     )
 
 
-def _format_attack_path(attack_path: Dict[str, Any]) -> str:
+def _format_attack_path(attack_path: dict[str, Any]) -> str:
     path = attack_path.get("path") or []
     if not path:
         return ""
-    parts: List[str] = ["Attack path (consider patching at earliest step):"]
+    parts: list[str] = ["Attack path (consider patching at earliest step):"]
     for step in path:
         parts.append(
             f"  Step {step.get('step', '?')}: "
@@ -79,14 +80,14 @@ def build_patch_prompt_bundle(
     start_line: int,
     end_line: int,
     message: str,
-    analysis: Dict[str, Any],
+    analysis: dict[str, Any],
     code: str = "",
     full_file_content: str = "",
-    feasibility: Optional[Dict[str, Any]] = None,
-    attack_path: Optional[Dict[str, Any]] = None,
-    profile: Optional[ModelDefenseProfile] = None,
+    feasibility: dict[str, Any] | None = None,
+    attack_path: dict[str, Any] | None = None,
+    profile: ModelDefenseProfile | None = None,
     extra_blocks: tuple[UntrustedBlock, ...] = (),
-    ast_view: Optional[Dict[str, Any]] = None,
+    ast_view: dict[str, Any] | None = None,
 ) -> PromptBundle:
     """Build the patch prompt as a PromptBundle (system + user, role-separated)."""
     profile = profile or CONSERVATIVE
@@ -181,11 +182,11 @@ def build_patch_prompt_bundle(
 
 
 def build_patch_prompt_bundle_from_finding(
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     full_file_content: str = "",
-    attack_path: Optional[Dict[str, Any]] = None,
+    attack_path: dict[str, Any] | None = None,
     *,
-    profile: Optional[ModelDefenseProfile] = None,
+    profile: ModelDefenseProfile | None = None,
     extra_blocks: tuple[UntrustedBlock, ...] = (),
 ) -> PromptBundle:
     """Bundle equivalent of ``build_patch_prompt_from_finding``."""
@@ -231,9 +232,9 @@ Only change the one dependency — do not touch unrelated lines."""
 
 
 def build_sca_patch_prompt_bundle(
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     *,
-    profile: Optional[ModelDefenseProfile] = None,
+    profile: ModelDefenseProfile | None = None,
 ) -> PromptBundle:
     """Build a patch prompt for an SCA finding (manifest version bump)."""
     profile = profile or CONSERVATIVE

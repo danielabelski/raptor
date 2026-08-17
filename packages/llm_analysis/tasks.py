@@ -8,7 +8,7 @@ the mechanics (threading, progress, cost, errors).
 import json
 import logging
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.security.prompt_defense_profiles import CONSERVATIVE
 from core.security.prompt_envelope import ModelDefenseProfile, system_with_priming
@@ -131,7 +131,7 @@ def _budget_for_task(task, model) -> int:
     return context_budget_for_model(name or "fallback", sys_tokens)
 
 
-def _is_sca_finding(f: Dict) -> bool:
+def _is_sca_finding(f: dict) -> bool:
     """Canonical "is this an SCA finding?" check.
 
     Recognises three identification methods because the SCA pipeline
@@ -155,7 +155,7 @@ def _is_sca_finding(f: Dict) -> bool:
     )
 
 
-def _is_sca_vuln_finding(f: Dict) -> bool:
+def _is_sca_vuln_finding(f: dict) -> bool:
     """Narrower companion to ``_is_sca_finding``: only ``sca:
     vulnerable_dependency`` findings, NOT hygiene / license /
     supply-chain.
@@ -179,7 +179,7 @@ def _is_sca_vuln_finding(f: Dict) -> bool:
     )
 
 
-def _sca_exploit_priority(f: Dict) -> float:
+def _sca_exploit_priority(f: dict) -> float:
     """Score an SCA finding for exploit-target ranking (higher = better target)."""
     sca = f.get("sca", {})
     score = 0.0
@@ -239,9 +239,7 @@ class ExploitTask(DispatchTask):
                 sca = f.get("sca", {})
                 reachability = sca.get("reachability", "")
                 in_kev = sca.get("in_kev", False)
-                if reachability in self._SCA_REACHABILITY_FOR_EXPLOIT:
-                    selected.append(f)
-                elif in_kev and reachability != "not_reachable":
+                if reachability in self._SCA_REACHABILITY_FOR_EXPLOIT or in_kev and reachability != "not_reachable":
                     selected.append(f)
         # Highest-priority SCA findings first so a budget-cutoff
         # truncation upstream catches the most-actionable rows.
@@ -309,11 +307,30 @@ class PatchTask(DispatchTask):
     temperature = 0.3
     budget_cutoff = 0.85
 
-    def __init__(self, profile: ModelDefenseProfile = CONSERVATIVE):
+    def __init__(
+        self,
+        profile: ModelDefenseProfile = CONSERVATIVE,
+        checkers_dir: Any | None = None,
+    ):
         self.profile = profile
         self._tls = threading.local()
+        # Optional run-dir ``checkers/`` path so the gate can replay
+        # synthesized checkers; None degrades to registry-cache-only
+        # detector resolution.
+        self.checkers_dir = checkers_dir
+        # Populated by select_items; finalize's patch gate needs the
+        # full finding dicts, which its result records don't carry.
+        self._findings_by_id: dict[str, Any] = {}
 
     def select_items(self, findings, prior_results):
+        # Index the full finding dicts for finalize's patch gate —
+        # finalize only receives result records, which lack the
+        # file/line/repo context the gate anchors on. select_items
+        # always runs before dispatch (dispatch.py dispatch_task), so
+        # the index is in place by finalize time.
+        self._findings_by_id = {
+            f.get("finding_id", ""): f for f in findings
+        }
         selected = []
         for f in findings:
             fid = f.get("finding_id", "")
@@ -369,7 +386,69 @@ class PatchTask(DispatchTask):
                 if content:
                     prior_results[fid]["patch_code"] = content
                     prior_results[fid]["has_patch"] = True
+                    # Mechanical patch gate — same annotate-only
+                    # posture as agent.generate_patch: a gate crash
+                    # degrades to a warning and the patch is kept.
+                    gate = self._gate_patch(fid, content)
+                    if gate is not None:
+                        prior_results[fid]["patch_gate"] = gate
+                        r["patch_gate"] = gate
         return results
+
+    def _gate_patch(self, fid: str, content: str) -> dict | None:
+        """Run the mechanical patch gate over one accepted patch.
+
+        Returns the ``GateResult.to_dict()`` annotations, or None when
+        the gate itself failed (never blocks the save). Findings in
+        this flow carry ``repo_path`` (stamped by the orchestrator
+        before dispatch); flows that genuinely lack file or span
+        context get honest ``skipped`` annotations from the gate
+        rather than a guessed scope anchor.
+        """
+        finding = self._findings_by_id.get(fid) or {}
+        try:
+            from pathlib import Path
+
+            from packages.llm_analysis.patch_gate import run_patch_gate
+
+            repo_path = finding.get("repo_path") or ""
+            file_path = finding.get("file_path") or ""
+            try:
+                start_line = int(finding.get("start_line") or 0)
+            except (TypeError, ValueError):
+                start_line = 0
+            try:
+                end_line = int(finding.get("end_line") or start_line)
+            except (TypeError, ValueError):
+                end_line = start_line
+            if not repo_path:
+                # No repo anchor at all — only the format check is
+                # meaningful; run_patch_gate handles the empty
+                # file_path case the same way.
+                file_path = ""
+                repo_path = "."
+            checkers_dir = (
+                Path(self.checkers_dir) if self.checkers_dir else None
+            )
+            gate = run_patch_gate(
+                content,
+                repo_path=Path(repo_path),
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                rule_id=finding.get("rule_id") or "",
+                tool=finding.get("tool") or "",
+                checkers_dir=checkers_dir,
+            )
+            logger.info(
+                "   · Patch gate (%s): format=%s scope=%s detector=%s "
+                "control=%s",
+                fid, gate.format, gate.scope, gate.detector, gate.control,
+            )
+            return gate.to_dict()
+        except Exception as e:  # noqa: BLE001 — gate is annotate-only
+            logger.warning("   · Patch gate skipped for %s: %s", fid, e)
+            return None
 
 
 class ConsensusTask(DispatchTask):
@@ -448,7 +527,7 @@ class ConsensusTask(DispatchTask):
         - 1 consensus model: flag disagreement but preserve primary verdict
         - 2+ consensus models: majority across primary + all consensus
         """
-        consensus_by_finding: Dict[str, List[Dict]] = {}
+        consensus_by_finding: dict[str, list[dict]] = {}
         for r in results:
             fid = r.get("finding_id")
             if fid and "error" not in r:
@@ -613,7 +692,7 @@ class JudgeTask(DispatchTask):
 
     def finalize(self, results, prior_results):
         """Apply judge verdicts: preserve primary (single), majority (multi)."""
-        judge_by_finding: Dict[str, List[Dict]] = {}
+        judge_by_finding: dict[str, list[dict]] = {}
         for r in results:
             fid = r.get("finding_id")
             if fid and "error" not in r:
@@ -676,7 +755,7 @@ class AggregationTask(DispatchTask):
     budget_cutoff = 0.95
 
     def __init__(self, profile: ModelDefenseProfile = CONSERVATIVE,
-                 findings: Optional[List[Dict[str, Any]]] = None):
+                 findings: list[dict[str, Any]] | None = None):
         self.profile = profile
         # Original findings indexed by id so build_prompt can pull
         # SI evidence per memory-corruption finding — gives the
@@ -725,6 +804,8 @@ class AggregationTask(DispatchTask):
         from core.security.prompt_envelope import (
             TaintedString,
             UntrustedBlock,
+        )
+        from core.security.prompt_envelope import (
             build_prompt as _build_prompt,
         )
         from packages.llm_analysis.source_intel_inject import (
@@ -848,8 +929,8 @@ class GroupAnalysisTask(DispatchTask):
     model_role = "analysis"
     temperature = 0.3
 
-    def __init__(self, results_by_id: Optional[Dict[str, Dict]] = None,
-                 findings: Optional[List[Dict[str, Any]]] = None,
+    def __init__(self, results_by_id: dict[str, dict] | None = None,
+                 findings: list[dict[str, Any]] | None = None,
                  profile: ModelDefenseProfile = CONSERVATIVE):
         self.results_by_id = results_by_id or {}
         # Index original findings by finding_id so build_prompt can
@@ -868,8 +949,10 @@ class GroupAnalysisTask(DispatchTask):
 
     def build_prompt(self, group):
         from core.security.prompt_envelope import (
-            UntrustedBlock,
             TaintedString,
+            UntrustedBlock,
+        )
+        from core.security.prompt_envelope import (
             build_prompt as _build_prompt,
         )
         from packages.llm_analysis.source_intel_inject import (
@@ -966,7 +1049,7 @@ class RetryTask(AnalysisTask):
     LOW = 0.3
     HIGH = 0.7
 
-    def __init__(self, results_by_id: Optional[Dict[str, Dict]] = None,
+    def __init__(self, results_by_id: dict[str, dict] | None = None,
                  profile: ModelDefenseProfile = CONSERVATIVE,
                  *, allow_unreachable: bool = False):
         super().__init__(profile=profile, allow_unreachable=allow_unreachable)

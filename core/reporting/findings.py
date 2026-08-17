@@ -294,6 +294,23 @@ def build_finding_detail(finding: dict[str, Any], index: int) -> ReportSection:
     if patch_code:
         lines.append(f"\n**Patch:**\n```\n{sanitise_code(str(patch_code).strip())}\n```")
 
+    # Mechanical patch-gate annotations (packages/llm_analysis/patch_gate).
+    # Values come from the gate's closed vocabulary, but the dict shape is
+    # finding-supplied — sanitise like every other rendered field.
+    patch_gate = finding.get("patch_gate")
+    if patch_code and isinstance(patch_gate, dict):
+        gate_summary = ", ".join(
+            f"{key}: {patch_gate[key]}"
+            for key in ("format", "scope", "detector", "control", "compile")
+            if patch_gate.get(key)
+        )
+        if gate_summary:
+            if patch_gate.get("reliable") is False:
+                gate_summary += " (unreliable — see patch artifact)"
+            lines.append(
+                f"\n**Patch gate:** {sanitise_string(gate_summary, max_chars=400)}"
+            )
+
     # Key findings from feasibility
     feasibility = finding.get("feasibility", {})
     if isinstance(feasibility, dict):

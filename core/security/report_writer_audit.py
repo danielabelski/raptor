@@ -131,6 +131,7 @@ _REPORT_WRITER_FILES = (
     "core/project/report.py",
     "core/reporting/findings.py",
     "packages/exploitability_validation/report.py",
+    "packages/llm_analysis/patch_gate.py",
     "libexec/raptor-review",
     "libexec/raptor-annotate",
 )

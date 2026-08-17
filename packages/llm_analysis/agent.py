@@ -291,6 +291,11 @@ class VulnerabilityContext:
         # ``--no-judge-intent`` opt-out).
         self.intent_match: dict[str, Any] | None = None
         self.patch_code: str | None = None
+        # Mechanical patch-gate annotations for ``patch_code`` —
+        # ``GateResult.to_dict()`` from packages.llm_analysis.patch_gate.
+        # ``None`` means the gate never ran (no patch generated, or the
+        # gate itself errored and was skipped best-effort).
+        self.patch_gate: dict[str, Any] | None = None
         self.analysis: dict[str, Any] | None = None
 
     def get_full_file_path(self) -> Path | None:
@@ -525,6 +530,11 @@ class VulnerabilityContext:
         # there's no value in encoding that absence.
         if self.intent_match is not None:
             result["intent_match"] = dict(self.intent_match)
+
+        # Mechanical patch-gate annotations — only present when a patch
+        # was generated and the gate ran over it.
+        if self.patch_gate is not None:
+            result["patch_gate"] = dict(self.patch_gate)
 
         if self.function_name:
             result["function_name"] = self.function_name
@@ -1853,6 +1863,37 @@ class AutonomousSecurityAgentV2:
 
             patch_content = response.content
 
+            # Mechanical patch-validation gate — annotates the saved
+            # artifact (format / scope / detector / control / compile),
+            # never blocks the save and never applies anything. Gate
+            # failures degrade to a warning so patch generation keeps
+            # its existing behaviour.
+            gate_block = ""
+            try:
+                from packages.llm_analysis.patch_gate import (
+                    render_gate_block,
+                    run_patch_gate,
+                )
+                gate = run_patch_gate(
+                    patch_content,
+                    repo_path=vuln.repo_path,
+                    file_path=vuln.file_path or "",
+                    start_line=vuln.start_line or 0,
+                    end_line=vuln.end_line or vuln.start_line or 0,
+                    rule_id=vuln.rule_id or "",
+                    tool=vuln.tool or "",
+                    checkers_dir=self.out_dir / "checkers",
+                )
+                vuln.patch_gate = gate.to_dict()
+                gate_block = "\n" + render_gate_block(gate)
+                logger.info(
+                    "   · Patch gate: format=%s scope=%s detector=%s "
+                    "control=%s",
+                    gate.format, gate.scope, gate.detector, gate.control,
+                )
+            except Exception as e:  # noqa: BLE001 — gate is annotate-only
+                logger.warning("   · Patch gate skipped: %s", e)
+
             # Save patch
             patch_file = self.out_dir / "patches" / f"{_safe_id(vuln.finding_id)}_patch.md"
             patch_file.parent.mkdir(exist_ok=True, parents=True)
@@ -1864,7 +1905,7 @@ class AutonomousSecurityAgentV2:
 **File:** {vuln.file_path}
 **Lines:** {vuln.start_line}-{vuln.end_line}
 **Severity:** {vuln.level}
-
+{gate_block}
 ## Vulnerability Analysis
 {json.dumps(vuln.analysis, indent=2)}
 

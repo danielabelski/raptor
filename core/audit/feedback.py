@@ -1,25 +1,30 @@
 """/validate → /audit feedback loop (Reflexion pattern).
 
 Reads a /validate report (Stage-D ``stage-d.json`` or final
-``findings.json``), matches findings back to audit annotations
-by file+function, and updates:
+``findings.json``), matches findings back to prior audit review
+verdicts (from the review journal) by file+function, and writes:
 
-1. **Annotation status** — downgrades disproven findings, upgrades
-   missed ones, appends corroboration notes for confirmed findings.
-2. **Annotation body** — appends a ``### /validate feedback`` block
-   with the validation verdict, reason, and extracted lesson.
-3. **coverage-audit.json** — syncs the status change so the gap
-   list reflects the corrected state.
-4. **Audit log** — records each feedback action for the critique
-   pass and reporting.
+1. **Journal correction entries** — a NEW append-only
+   ``ReviewJournalEntry`` per corrected verdict, carrying the
+   validation verdict, ``prior_review`` provenance, and the
+   extracted lesson. ``latest_entries`` then returns the corrected
+   verdict on the next read; nothing is mutated in place.
+2. **Audit log** — a ``feedback`` event per transition for the
+   critique pass and reporting.
 
-Status transitions:
-  - ``ruled_out`` or ``is_true_positive=False`` → annotation
+Annotations are read-only veto inputs here: a human-authored
+annotation with a conclusion status blocks the Reflexion downgrade,
+but annotation files are never written back (amendment §1 D3 + A5),
+and coverage-audit.json no longer exists — the journal is
+authoritative.
+
+Verdict transitions (recorded in the correction entry):
+  - ``ruled_out`` or ``is_true_positive=False`` → prior
     ``finding``/``suspicious`` downgraded to ``clean``
-  - ``confirmed``/``exploitable`` when annotation was ``clean`` →
+  - ``confirmed``/``exploitable`` when prior verdict was ``clean`` →
     upgraded to ``finding``
-  - ``confirmed``/``exploitable`` when annotation was already
-    ``finding`` → no status change, corroboration appended
+  - ``confirmed``/``exploitable`` when prior verdict was already
+    ``finding`` → no status change, corroboration recorded
 """
 
 from __future__ import annotations
@@ -516,23 +521,6 @@ def _extract_lesson(
         )
 
     return ""
-
-
-def _format_feedback_block(
-    validate_verdict: str,
-    reason: str,
-    lesson: str,
-    transition: dict[str, Any],
-) -> str:
-    """Format the feedback block appended to the annotation body."""
-    lines = ["### /validate feedback"]
-    lines.append(f"Verdict: {validate_verdict}")
-    lines.append(f"Transition: {transition['description']}")
-    if reason:
-        lines.append(f"Reason: {reason}")
-    if lesson:
-        lines.append(lesson)
-    return "\n".join(lines)
 
 
 def _update_audit_state(

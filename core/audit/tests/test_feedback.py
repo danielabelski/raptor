@@ -12,7 +12,6 @@ from core.audit.feedback import (
     _extract_findings,
     _extract_lesson,
     _extract_reason,
-    _format_feedback_block,
     import_validation_results,
 )
 from core.coverage.journal import (
@@ -253,29 +252,6 @@ class TestExtractFindings:
 
     def test_none_like(self):
         assert _extract_findings("unexpected") == []
-
-
-# ---- _format_feedback_block ----
-
-class TestFormatFeedbackBlock:
-    def test_basic_format(self):
-        t = {"description": "Downgraded finding → clean"}
-        block = _format_feedback_block("disproven", "dead code", "", t)
-        assert "### /validate feedback" in block
-        assert "disproven" in block
-        assert "dead code" in block
-
-    def test_with_lesson(self):
-        t = {"description": "Upgraded clean → finding"}
-        block = _format_feedback_block(
-            "confirmed", "real bug", "Lesson: missed it", t,
-        )
-        assert "Lesson: missed it" in block
-
-    def test_no_reason(self):
-        t = {"description": "corroborated"}
-        block = _format_feedback_block("confirmed", "", "", t)
-        assert "Reason:" not in block
 
 
 # ---- Integration: import_validation_results ----

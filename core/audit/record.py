@@ -12,9 +12,14 @@ What remains here:
 - :func:`_compute_hash` — source-content hash for staleness detection.
   Called by :func:`core.audit.collector.append_journal_for_outcome`.
 - :func:`load_audit_log` / :func:`append_audit_log` — the
-  ``.audit-log.jsonl`` event log (context-load / tool-dispatch / batch-
-  flush events). Review outcomes went to the review journal from
-  2026-07-28 onwards; this log carries non-review events only.
+  ``.audit-log.jsonl`` event log. Carries non-review events
+  (context-load / tool-dispatch / batch-flush) PLUS per-review
+  telemetry: Collector.submit still appends one
+  ``action="orchestrator_review"`` record per review (status,
+  hypothesis, evidence_tool, cost) which strategy_stats aggregates
+  for cross-run strategy win rates. The review journal (from
+  2026-07-28 onwards) remains the sole AUTHORITY for verdicts —
+  these log records are telemetry, not review state.
 - :func:`_resolve_annotations_dir` — project-level annotations dir
   resolution, used by consumers that write / read human annotations.
 """
@@ -51,11 +56,13 @@ def _resolve_annotations_dir(out_dir: Path) -> Path:
 def load_audit_log(out_dir: Path) -> List[Dict[str, Any]]:
     """Load the audit event log (one JSON record per line).
 
-    Since 2026-07-28 this log carries non-review events only —
-    ``action=context``, ``action=tool_dispatch``, ``action=batch_flush``,
+    Carries operational events — ``action=context``,
+    ``action=tool_dispatch``, ``action=batch_flush``,
     ``action=record_migrated`` stub (one-shot per run for grep
-    discoverability), etc. Review outcomes moved to
-    ``review-journal.jsonl`` in the same directory.
+    discoverability) — plus one ``action=orchestrator_review``
+    telemetry record per review (written by Collector, consumed by
+    strategy_stats). Authoritative review VERDICTS live in
+    ``review-journal.jsonl`` in the same directory (since 2026-07-28).
     """
     log_path = out_dir / ".audit-log.jsonl"
     if not log_path.exists():

@@ -159,10 +159,12 @@ def collect_observed_functions(
 ) -> FrozenSet[str]:
     """Run a broad Frida session to observe which functions are hit.
 
-    Used pre-loop to populate the observation set for
-    ``assign_observation_status``.  Hooks up to ``_MAX_HOOKS``
-    functions and collects which ones fire during a test/exercise
-    window.
+    Intended pre-loop populator for the observation set consumed by
+    ``layer_resolution.assign_observation_status`` — NOT currently
+    invoked by the orchestrator (the only production frida entry
+    points are should_run_frida/run_frida_observation). Hooks up to
+    ``_MAX_HOOKS`` functions and collects which ones fire during a
+    test/exercise window.
     """
     if not _frida_available():
         return frozenset()
@@ -226,7 +228,9 @@ def _resolve_target_pid(config: Any) -> Optional[int]:
     Checks (in order):
     1. Explicit ``config.frida_pid``
     2. ``config.frida_process_name`` — find by name
-    3. ``config.target_container`` — find main process in container
+
+    (Container-based resolution is not implemented — setting a
+    ``target_container`` on the config has no effect here.)
     """
     pid = getattr(config, "frida_pid", None)
     if pid is not None:
@@ -297,7 +301,6 @@ var targets = {targets_json};
 var hooked = 0;
 
 targets.forEach(function(name) {{
-    var syms = Module.enumerateExports ? undefined : [];
     try {{
         var addrs = Module.findExportByName(null, name);
         if (!addrs) {{
@@ -317,7 +320,9 @@ targets.forEach(function(name) {{
         Interceptor.attach(addrs, {{
             onEnter: function(args) {{
                 var argv = [];
-                for (var i = 0; i < Math.min(6, 6); i++) {{
+                // Log a fixed 6 arg slots; args[i] beyond the real
+                // arity throws and is caught per-slot, padding with '?'.
+                for (var i = 0; i < 6; i++) {{
                     try {{
                         argv.push(args[i].toString());
                     }} catch(e) {{
@@ -395,61 +400,6 @@ def _run_frida_session(
 
     except subprocess.TimeoutExpired:
         logger.debug("Frida session timed out after %ds", _OBSERVE_TIMEOUT_S)
-        return log_file.exists() and log_file.stat().st_size > 0
-    except FileNotFoundError:
-        logger.debug("frida CLI not found")
-        return False
-    except Exception as exc:
-        logger.debug("Frida session error: %s", exc)
-        return False
-    finally:
-        if script_file and script_file.exists():
-            try:
-                script_file.unlink()
-            except OSError:
-                pass
-
-
-def _run_frida_session_pid(
-    pid: int,
-    script_source: str,
-    log_file: Path,
-    timeout: int = _OBSERVE_TIMEOUT_S,
-) -> bool:
-    """Run a Frida session by PID without requiring a config object.
-
-    Thin wrapper around the CLI invocation for use by auto-launch
-    callers that manage their own process lifecycle.
-    """
-    script_file = None
-    try:
-        fd, script_path = tempfile.mkstemp(suffix=".js", prefix="raptor_frida_")
-        os.close(fd)
-        script_file = Path(script_path)
-        script_file.write_text(script_source)
-
-        cmd = [
-            "frida",
-            "-p", str(pid),
-            "-l", str(script_file),
-            "--no-pause",
-            "-o", str(log_file),
-        ]
-
-        env = _safe_env()
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-
-        return result.returncode == 0 or log_file.stat().st_size > 0
-
-    except subprocess.TimeoutExpired:
-        logger.debug("Frida session timed out after %ds", timeout)
         return log_file.exists() and log_file.stat().st_size > 0
     except FileNotFoundError:
         logger.debug("frida CLI not found")

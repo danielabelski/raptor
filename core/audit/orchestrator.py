@@ -7502,17 +7502,45 @@ class _ClientBudgetGate:
         return spent / max_cost
 
 
+def _outcome_to_panel_result(
+    outcome: ReviewOutcome, model_name: str,
+) -> dict[str, Any]:
+    """Convert a ReviewOutcome to the multi_review panel result shape."""
+    result = {
+        "file": outcome.file,
+        "function": outcome.function,
+        "status": outcome.status,
+        "body": outcome.body,
+        "hypothesis": outcome.hypothesis,
+        "evidence_tool": outcome.evidence_tool,
+        "cost_usd": outcome.cost_usd,
+        "model": outcome.model or model_name,
+        "duration_s": outcome.duration_s,
+    }
+    if outcome.hypotheses:
+        result["hypotheses"] = outcome.hypotheses
+    if outcome.review_result:
+        result.update(outcome.review_result)
+    return result
+
+
 def _multi_pass_review(
     review_fn: Callable,
     ctx: dict[str, Any],
     config: OrchestratorConfig,
     passes: int,
 ) -> ReviewOutcome:
-    """Run review_fn N times and merge hypotheses across passes.
+    """Run review_fn across a panel and merge verdicts.
 
-    Delegates to multi_review.run_self_consistency when available,
-    falling back to an inline loop. Takes the highest-severity
-    outcome as the primary result, merges hypotheses across passes.
+    Cross-model consensus (multi_model + 2+ models) and single-model
+    self-consistency (review_passes > 1) both go through the
+    core.audit.multi_review substrate (run_audit_multi_review /
+    run_self_consistency). The former inline best-of-N loop — a third
+    "self-consistency" implementation — was removed in favour of the
+    substrate's majority-vote merge; hypothesis dedup across passes is
+    preserved caller-side from the panel's raw results. A single plain
+    pass remains as the last-resort fallback when the substrate fails
+    at runtime.
     """
     file_path = ctx.get("file", "")
     function_name = ctx.get("function", "")
@@ -7540,22 +7568,7 @@ def _multi_pass_review(
                 # map (tests, ensemble mode) on the old behaviour.
                 model_review_fn = review_fns.get(model_name, review_fn)
                 outcome = model_review_fn(context, config)
-                result = {
-                    "file": outcome.file,
-                    "function": outcome.function,
-                    "status": outcome.status,
-                    "body": outcome.body,
-                    "hypothesis": outcome.hypothesis,
-                    "evidence_tool": outcome.evidence_tool,
-                    "cost_usd": outcome.cost_usd,
-                    "model": outcome.model or model_name,
-                    "duration_s": outcome.duration_s,
-                }
-                if outcome.hypotheses:
-                    result["hypotheses"] = outcome.hypotheses
-                if outcome.review_result:
-                    result.update(outcome.review_result)
-                return result
+                return _outcome_to_panel_result(outcome, model_name)
 
             refute_fn = None
             if config.adversarial:
@@ -7692,66 +7705,131 @@ def _multi_pass_review(
                 exc_info=True,
             )
 
-    # Inline self-consistency: same model N times, best-of-N with
-    # hypothesis dedup (used for single-model review_passes > 1)
-    outcomes: list[ReviewOutcome] = []
-    for _ in range(passes):
+    # Single-model self-consistency: same model N times through the
+    # multi_review substrate (Wang-style majority-vote merge). This
+    # replaces the former inline best-of-N loop — the codebase's third
+    # "self-consistency" implementation. Hypothesis dedup across
+    # passes is preserved from the panel's raw results.
+    if passes >= 2:
         try:
-            outcome = review_fn(ctx, config)
-        except _ContentFilterError:
-            outcome = ReviewOutcome(
-                file=file_path,
-                function=function_name,
-                status="error",
-                body="blocked by content filter",
+            from .multi_review import consensus_status, run_self_consistency
+
+            def sc_context_fn(_file: str, _func: str) -> dict[str, Any]:
+                return ctx
+
+            def sc_review_fn(
+                context: dict[str, Any], _model_name: str,
+            ) -> dict[str, Any]:
+                # Per-pass failures become error results so one bad
+                # sample doesn't sink the whole panel (parity with the
+                # former inline loop's per-pass handling).
+                try:
+                    outcome = review_fn(context, config)
+                except _ContentFilterError:
+                    return {"file": file_path, "function": function_name,
+                            "status": "error",
+                            "body": "blocked by content filter"}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "review_fn pass failed for %s:%s: %s",
+                        file_path, function_name, exc,
+                    )
+                    return {"file": file_path, "function": function_name,
+                            "status": "error",
+                            "body": f"pass failed: {exc}"}
+                return _outcome_to_panel_result(outcome, model)
+
+            mr_result = run_self_consistency(
+                file_path=file_path,
+                function_name=function_name,
+                model=model,
+                n_samples=passes,
+                context_fn=sc_context_fn,
+                review_fn=sc_review_fn,
             )
-        except Exception as exc:  # noqa: BLE001
+            if mr_result.items:
+                primary = mr_result.items[0]
+                all_raw = [
+                    r
+                    for raw_list in mr_result.per_model_raw.values()
+                    for r in raw_list
+                ]
+                seen_mechanisms: set = set()
+                merged_hypotheses: list[dict[str, Any]] = []
+                for r in all_raw:
+                    for h in r.get("hypotheses") or []:
+                        mech = h.get("mechanism", "")
+                        if mech and mech not in seen_mechanisms:
+                            seen_mechanisms.add(mech)
+                            merged_hypotheses.append(h)
+                total_cost = sum(r.get("cost_usd", 0) or 0 for r in all_raw)
+                total_duration = max(
+                    (r.get("duration_s", 0) or 0 for r in all_raw),
+                    default=0,
+                )
+                return ReviewOutcome(
+                    file=primary.get("file", file_path),
+                    function=primary.get("function", function_name),
+                    status=(consensus_status(mr_result)
+                            or primary.get("status", "error")),
+                    body=primary.get("body", ""),
+                    hypothesis=primary.get("hypothesis", ""),
+                    hypotheses=merged_hypotheses or None,
+                    evidence_tool=_sanitize_llm_et(
+                        primary.get("evidence_tool", "")),
+                    cost_usd=total_cost,
+                    model=primary.get("model", model),
+                    duration_s=total_duration,
+                    review_result=primary,
+                )
             logger.warning(
-                "review_fn pass failed for %s:%s: %s",
-                file_path,
-                function_name,
-                exc,
+                "self-consistency produced no items for %s:%s — "
+                "falling back to a single pass",
+                file_path, function_name,
             )
-            outcome = ReviewOutcome(
-                file=file_path,
-                function=function_name,
-                status="error",
-                body=f"pass failed: {exc}",
+        except Exception:
+            logger.warning(
+                "self-consistency substrate failed for %s:%s — "
+                "falling back to a single pass",
+                file_path, function_name,
+                exc_info=True,
             )
-        outcomes.append(outcome)
 
-    best = max(
-        outcomes,
-        key=lambda o: (
-            _STATUS_SEVERITY.get(o.status, -1),
-            len(o.hypotheses or []),
-        ),
-    )
-
-    seen_mechanisms: set = set()
-    merged_hypotheses: list[dict[str, Any]] = []
-    for o in outcomes:
-        for h in o.hypotheses or []:
-            mech = h.get("mechanism", "")
-            if mech and mech not in seen_mechanisms:
-                seen_mechanisms.add(mech)
-                merged_hypotheses.append(h)
-
-    total_cost = sum(o.cost_usd for o in outcomes)
-    total_duration = sum(o.duration_s for o in outcomes)
-
+    # Last resort (passes == 1 fallback from the cross-model branch, or
+    # substrate failure above): one plain pass with the standard
+    # per-pass error handling.
+    try:
+        outcome = review_fn(ctx, config)
+    except _ContentFilterError:
+        outcome = ReviewOutcome(
+            file=file_path,
+            function=function_name,
+            status="error",
+            body="blocked by content filter",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "review_fn pass failed for %s:%s: %s",
+            file_path, function_name, exc,
+        )
+        outcome = ReviewOutcome(
+            file=file_path,
+            function=function_name,
+            status="error",
+            body=f"pass failed: {exc}",
+        )
     return ReviewOutcome(
-        file=best.file,
-        function=best.function,
-        status=best.status,
-        body=best.body,
-        hypothesis=best.hypothesis,
-        hypotheses=merged_hypotheses or None,
-        evidence_tool=_sanitize_llm_et(best.evidence_tool),
-        cost_usd=total_cost,
-        model=best.model,
-        duration_s=total_duration,
-        review_result=best.review_result,
+        file=outcome.file,
+        function=outcome.function,
+        status=outcome.status,
+        body=outcome.body,
+        hypothesis=outcome.hypothesis,
+        hypotheses=outcome.hypotheses,
+        evidence_tool=_sanitize_llm_et(outcome.evidence_tool),
+        cost_usd=outcome.cost_usd,
+        model=outcome.model,
+        duration_s=outcome.duration_s,
+        review_result=outcome.review_result,
     )
 
 

@@ -3362,6 +3362,56 @@ class TestDeepenSuspicious:
 
 class TestMultiPassReview:
 
+    def test_single_model_passes_use_substrate_majority_vote(
+            self, tmp_path: Path):
+        # The former inline best-of-N loop kept a lone "finding" out of
+        # 3 samples as the primary (severity-max). The substrate's
+        # majority-vote merge downgrades a 1-of-3 lone dissent to
+        # "suspicious" — asserting that proves single-model
+        # review_passes now go through multi_review.run_self_consistency
+        # rather than a third inline self-consistency implementation.
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        call_count = [0]
+
+        def review_fn(ctx, cfg):
+            call_count[0] += 1
+            status = "finding" if call_count[0] == 1 else "clean"
+            return ReviewOutcome(
+                file="a.c", function="f", status=status,
+                body=f"pass {call_count[0]}", cost_usd=0.01,
+            )
+
+        outcome = _multi_pass_review(
+            review_fn, {"file": "a.c", "function": "f"}, config, passes=3,
+        )
+        assert call_count[0] == 3
+        assert outcome.status == "suspicious"
+
+    def test_substrate_failure_falls_back_to_single_pass(
+            self, tmp_path: Path, monkeypatch):
+        import core.audit.multi_review as mr
+
+        def boom(**kwargs):
+            raise RuntimeError("substrate down")
+        monkeypatch.setattr(mr, "run_self_consistency", boom)
+
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        calls = [0]
+
+        def review_fn(ctx, cfg):
+            calls[0] += 1
+            return ReviewOutcome(
+                file="a.c", function="f", status="clean", body="ok",
+            )
+
+        outcome = _multi_pass_review(
+            review_fn, {"file": "a.c", "function": "f"}, config, passes=2,
+        )
+        assert outcome.status == "clean"
+        assert calls[0] == 1  # one plain pass, not an inline N-loop
+
     def test_merges_hypotheses_across_passes(self, tmp_path: Path):
         target, out = _setup_target(tmp_path)
         config = OrchestratorConfig(target_path=target, out_dir=out)
@@ -3396,7 +3446,9 @@ class TestMultiPassReview:
         assert call_count[0] == 2
         assert outcome.status == "finding"
         assert outcome.cost_usd == 0.03
-        assert outcome.duration_s == 3.0
+        # Samples run in parallel through the multi_review substrate:
+        # duration is the max across passes (wall-clock), not the sum.
+        assert outcome.duration_s == 2.0
         assert outcome.hypotheses is not None
         mechanisms = {h["mechanism"] for h in outcome.hypotheses}
         assert "page-cache aliasing" in mechanisms

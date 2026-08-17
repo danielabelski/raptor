@@ -53,17 +53,22 @@ The modular architecture refactors the original monolithic structure into a clea
 ```
 raptor/
 ├── bin/                   # User-facing launcher scripts
-│   └── raptor             # Main entry point (launches Claude Code)
+│   ├── raptor             # Main entry point (launches Claude Code)
+│   ├── raptor-sca         # SCA launcher
+│   └── cve-diff           # CVE diff launcher
 ├── libexec/               # Internal helper scripts (not user-facing)
 │   ├── raptor-agentic     # Agentic workflow wrapper
 │   ├── raptor-annotate    # Annotation management
 │   ├── raptor-ast         # AST enrichment
+│   ├── raptor-audit       # Audit mechanical helpers + orchestrator
 │   ├── raptor-binary      # Binary investigation
 │   ├── raptor-binary-graph-query  # Binary call-graph queries
 │   ├── raptor-binary-oracle-e2e   # Binary oracle end-to-end audit
 │   ├── raptor-binary-oracle-precision  # Binary oracle precision measurement
 │   ├── raptor-build-checklist     # Build checklist generation
+│   ├── raptor-build-cpg-cache     # Joern CPG cache builder
 │   ├── raptor-cc-trust-check      # C compiler trust check
+│   ├── raptor-compile-invariants  # Compile-invariant checks
 │   ├── raptor-coverage-summary    # Coverage summary reporting
 │   ├── raptor-cve-diff            # CVE patch diffing
 │   ├── raptor-describe            # Pre-flight target inspection
@@ -71,16 +76,22 @@ raptor/
 │   ├── raptor-enrich-flow-trace-*   # Flow trace enrichment passes
 │   ├── raptor-frida               # Frida instrumentation
 │   ├── raptor-lifecycle-hook      # Run lifecycle hook
+│   ├── raptor-llm-ask             # Free-form single-model prompt CLI
 │   ├── raptor-llm-scorecard       # LLM scorecard queries
+│   ├── raptor-migrate-journal     # Review-journal migration
 │   ├── raptor-normalize-context-map  # Context map normalisation
 │   ├── raptor-pick-strategies     # Strategy selection
 │   ├── raptor-pid1-shim           # PID 1 shim for sandboxed processes
 │   ├── raptor-project-manager     # Project workspace management
 │   ├── raptor-r2-sandboxed        # Sandboxed radare2 wrapper
 │   ├── raptor-render-diagrams     # Mermaid diagram generation
+│   ├── raptor-resolve-mode        # Audit execution-mode detection
+│   ├── raptor-review              # Unified review CLI
 │   ├── raptor-run-feasibility     # Run feasibility check
 │   ├── raptor-run-lifecycle       # Run lifecycle management
 │   ├── raptor-run-sandboxed       # Sandboxed subprocess runner
+│   ├── raptor-sage                # SAGE memory operator CLI
+│   ├── raptor-sage-mcp            # SAGE MCP server shim
 │   ├── raptor-sage-setup          # SAGE memory layer setup
 │   ├── raptor-sandbox-*           # Sandbox calibration and observation
 │   ├── raptor-sca-*               # SCA helpers
@@ -89,6 +100,8 @@ raptor/
 │   ├── raptor-smt-*               # SMT constraint checkers
 │   ├── raptor-startup-check       # Startup environment validation
 │   ├── raptor-strategy-eval       # Strategy evaluation
+│   ├── raptor-study-*             # Concept-study pipeline (prep/run/loop)
+│   ├── raptor-synthesise-checker  # Checker synthesis helper
 │   ├── raptor-threat-model        # Threat model management
 │   ├── raptor-tune                # LLM tuning helpers
 │   ├── raptor-understand          # Code understanding workflow
@@ -114,13 +127,13 @@ raptor/
 │   ├── dockerfile/        # Dockerfile parsing helpers
 │   ├── evidence/          # Evidence collection and management
 │   ├── function_taxonomy/ # Function classification (source, sink, sanitiser)
-│   ├── git/               # Sandbox-routed clone + URL allowlist
+│   ├── git/               # Sandbox-routed git (clone, fetch_commit, ls_remote, read-only command wrappers, URL allowlist, security-fix classifier)
 │   ├── hash/              # SHA-256 helpers
 │   ├── http/              # EgressClient + per-host allowlists
 │   ├── inventory/         # Source inventory (file enumeration, extractors, call graph)
 │   ├── iris/              # Checker synthesis and specification inference
 │   ├── json/              # BOM-tolerant JSON utils + cache helpers
-│   ├── labeled_attempts/  # Labeled attempt tracking for iterative workflows
+│   ├── labeled_attempts/  # Labeled attempt tracking + verified-outcome view
 │   ├── license/           # Licence detection and analysis
 │   ├── llm/               # LLM substrate (clients, providers, scorecard, tool-use loop)
 │   ├── logging/           # Structured logging with JSONL audit trail
@@ -147,7 +160,6 @@ raptor/
 │   ├── tuning/            # LLM tuning parameters and configuration
 │   ├── upstream_latest/   # Upstream version resolution
 │   ├── url_patterns/      # URL pattern matching and validation
-│   ├── verified_outcome/  # Verified outcome tracking
 │   ├── witness/           # Witness collection + sandbox outcome tracking
 │   └── zip/               # Zip archive handling
 ├── packages/              # Independent security capabilities
@@ -161,7 +173,6 @@ raptor/
 │   ├── checker_synthesis/  # Automated checker synthesis
 │   ├── code_understanding/# Code comprehension (/understand)
 │   ├── cve_diff/          # CVE patch diffing
-│   ├── cve_env/           # CVE reproduction environments
 │   ├── cvss/              # CVSS scoring utilities
 │   ├── describe/          # Pre-flight target inspection (/describe)
 │   ├── diagram/           # Mermaid diagram generation (/diagram)
@@ -185,7 +196,6 @@ raptor/
 ├── engine/                # Analysis engines (CodeQL suites, Semgrep rules)
 ├── tiers/                 # Expert personas and recovery protocols
 ├── test/                  # Integration and end-to-end tests
-├── eval/                  # Evaluation harnesses and corpora
 ├── docs/                  # Documentation
 ├── out/                   # All outputs (scans, logs, reports)
 ├── raptor.py              # Main launcher (unified CLI)
@@ -225,21 +235,21 @@ Provide minimal shared utilities that all packages need.
 ```python
 class RaptorConfig:
     @staticmethod
-    def get_raptor_root() -> Path:
-        """Get RAPTOR installation root"""
-
-    @staticmethod
     def get_out_dir() -> Path:
         """Get output directory (raptor/out/)"""
 
     @staticmethod
-    def get_logs_dir() -> Path:
-        """Get logs directory (out/logs/)"""
+    def get_safe_env() -> dict:
+        """Allowlist-sanitised environment for subprocesses"""
+
+    @staticmethod
+    def get_git_env() -> dict:
+        """Safe env plus git config isolation"""
 ```
 
 **Key Decisions**:
 - Single source of truth for all paths
-- Environment variable support (RAPTOR_ROOT)
+- Environment variable support (`RAPTOR_OUT_DIR`, `RAPTOR_DIR`)
 - Graceful fallback to auto-detection
 
 #### `core/logging/` - Structured Logging
@@ -293,7 +303,7 @@ def get_logger(name: str = "raptor") -> logging.Logger:
 
 ### Design Principles
 1. **One responsibility per package**
-2. **No cross-package imports** (only import from core)
+2. **Cross-package imports kept minimal** (shared substrate lives in core; a few packages import sibling packages where capabilities compose, e.g. static-analysis → semgrep)
 3. **Standalone executability** (each agent.py can run independently)
 4. **Clear CLI interface** (argparse, help text, examples)
 
@@ -308,8 +318,8 @@ def get_logger(name: str = "raptor") -> logging.Logger:
 ```bash
 python3 packages/static-analysis/scanner.py \
   --repo /path/to/code \
-  --policy_groups secrets,owasp \
-  --output /path/to/output
+  --policy-groups secrets,injection \
+  --out /path/to/output
 ```
 
 **Responsibilities**:
@@ -348,8 +358,8 @@ from core.logging import get_logger
 ```bash
 python3 packages/codeql/agent.py \
   --repo /path/to/code \
-  --language python \
-  --output /path/to/output
+  --languages python \
+  --out /path/to/output
 ```
 
 **Components**:
@@ -371,8 +381,8 @@ python3 packages/codeql/agent.py \
 **Outputs**:
 - `codeql_*.sarif` - CodeQL findings in SARIF format
 - `dataflow_*.json` - Validated dataflow paths
-- `dataflow_*.svg` - Visual dataflow diagrams
-- `codeql_analysis.json` - Analysis summary
+- `<finding_id>_dataflow.html/.mmd/.txt/.dot` - Dataflow visualisations
+- `codeql_report.json` - Analysis summary
 
 **Key Features**:
 - Automatic build command detection
@@ -420,7 +430,7 @@ python3 packages/llm_analysis/agent.py \
 - `exploits/` - Generated exploit code (if requested)
 - `patches/` - Proposed secure fixes (if requested)
 
-**Calibrated Aggregation Output** (Phase 3 of the calibrated-aggregation arc -- see `core/llm/scorecard/calibrated_aggregation.py`):
+**Calibrated Aggregation Output** (Phase 3 of the calibrated-aggregation arc -- see `core/llm/multi_model/calibrated_aggregation.py`):
 
 Each finding in `orchestrated_report.json` gains an additive `calibrated_aggregation` field carrying a Dawid--Skene calibrated posterior over the panel verdict. Shape:
 
@@ -446,7 +456,7 @@ Each finding in `orchestrated_report.json` gains an additive `calibrated_aggrega
 
 The existing `is_exploitable`, `multi_model_analyses`, and `ruling` fields are untouched; downstream consumers that don't read `calibrated_aggregation` keep working.
 
-The step is unconditional: it is purely additive (only ever adds the `calibrated_aggregation` field), so there is no opt-out to maintain. The block at `orchestrator.py:~830` is wrapped in a `try / except` -- if D--S fails for any reason, the field is dropped, a `WARNING` is logged, and the failure is recorded under `orchestration.calibrated_aggregation.failed` in `orchestrated_report.json`.
+The step is unconditional: it is purely additive (only ever adds the `calibrated_aggregation` field), so there is no opt-out to maintain. The attach step (`_attach_calibrated_aggregation` in `orchestrator.py`) is wrapped in a `try / except` -- if D--S fails for any reason, the field is dropped, a `WARNING` is logged, and the failure is recorded under `orchestration.calibrated_aggregation.failed` in `orchestrated_report.json`.
 
 **Phase 4 (deferred, follow-up PR)**: the posterior-weighted scorecard update is *not* in this PR. `core/llm/scorecard/consensus.py` still grades dissenters against the majority vote via `record_event` on the single `multi_model_consensus` slot. The follow-up -- gated on replay-harness validation because the Phase-1a audit returned no-data -- will collapse to one consensus mode that always records *soft* credits (the legacy discrete update being the `correct=1.0, incorrect=0.0` special case), grade against the Dawid--Skene posterior (`correct_credit = p if verdict else (1-p)`), and draw its priors from `/validate` ground truth rather than the scorecard. See `core/llm/scorecard/calibrated_aggregation.py` Phase 4.
 
@@ -552,7 +562,8 @@ python3 raptor.py sca --repo /path/to/code --out /path/to/output
 ```
 
 Sub-commands (`fix`, `check`, `upgrade`, `diff`, `verify`, `health`,
-`purl`, `render`, `clean-cache`) are documented in
+`purl`, `render`, `clean-cache`, `dt-push`, `suppress`, `bump`,
+`fingerprint`, `triage`) are documented in
 `.claude/commands/raptor-sca.md`. Threshold-based CI gating is exposed
 via `--fail-on-severity` / `--fail-on-kev` / `--fail-on-supply-chain` /
 `--fail-on-hygiene` flags on the main scan and on `render`.
@@ -571,7 +582,8 @@ via `--fail-on-severity` / `--fail-on-kev` / `--fail-on-supply-chain` /
 **Dependencies**:
 - `core.config` (paths)
 - `core.logging` (logging)
-- External: `safety`, `npm audit`, or equivalent
+- Advisory data: OSV.dev (querybatch API), CISA KEV, EPSS — no external
+  scanner binaries needed
 
 
 ### Package: `web`
@@ -790,9 +802,7 @@ claude-code raptor.py
 ```bash
 python3 raptor_codeql.py \
   --repo /path/to/code \
-  --language python \
-  --validate-dataflow \
-  --visualize
+  --languages python
 ```
 
 **Workflow**:
@@ -801,24 +811,23 @@ python3 raptor_codeql.py \
 3. **Phase 3**: Query execution with custom suites
 4. **Phase 4**: Dataflow path validation
 5. **Phase 5**: Visual dataflow diagram generation
-6. **Phase 6**: LLM exploitability analysis (optional)
+6. **Phase 6**: LLM exploitability analysis (unless `--scan-only`)
 
 **Parameters**:
 - `--repo`: Path to repository (required)
-- `--language`: Target language (auto-detected if not specified)
-- `--validate-dataflow`: Enable dataflow path validation
-- `--visualize`: Generate visual dataflow diagrams
-- `--analyze`: Enable LLM exploitability analysis
-- `--output`: Output directory (default: auto-generated)
+- `--languages`: Comma-separated languages (auto-detected if not specified)
+- `--scan-only`: SARIF only; skip LLM analysis, dataflow validation, and visualisations (the default when dispatched via `raptor.py codeql`; there `--analyze` is the launcher-level opt-in sentinel)
+- `--no-visualizations`: Disable dataflow visualisations
+- `--out`: Output directory (default: auto-generated)
 
 **Outputs**:
 ```
 out/codeql_<repo>_<timestamp>/
-├── database/              # CodeQL database
-├── codeql_*.sarif         # CodeQL findings
-├── dataflow_*.json        # Validated dataflow paths
-├── dataflow_*.svg         # Visual diagrams
-└── codeql_report.json     # Summary report
+├── database/                          # CodeQL database
+├── codeql_*.sarif                     # CodeQL findings
+├── dataflow_*.json                    # Validated dataflow paths
+├── <finding_id>_dataflow.html/.mmd/.txt/.dot  # Visualisations
+└── codeql_report.json                 # Summary report
 ```
 
 **Key Features**:
@@ -840,8 +849,7 @@ out/codeql_<repo>_<timestamp>/
 python3 raptor_agentic.py \
   --repo /path/to/code \
   --policy-groups all \
-  --max-findings 10 \
-  --mode thorough
+  --max-findings 10
 ```
 
 **Workflow**:
@@ -948,16 +956,14 @@ All package agents follow a consistent CLI pattern:
 
 **raptor_codeql.py**:
 - `--repo`: Path to repository (required)
-- `--language`: Target language (auto-detected if not specified)
-- `--validate-dataflow`: Enable dataflow validation
-- `--visualize`: Generate visual dataflow diagrams
-- `--analyze`: Enable LLM exploitability analysis
+- `--languages`: Comma-separated languages (auto-detected if not specified)
+- `--scan-only`: SARIF only, skip LLM analysis and visualisations
+- `--no-visualizations`: Disable dataflow visualisations
 
 **raptor_agentic.py**:
 - `--policy-groups`: Policy groups for scanning
 - `--max-findings`: Limit findings processed
 - `--no-exploits`, `--no-patches`: Control LLM analysis behaviour
-- `--mode`: `fast` or `thorough`
 
 **raptor_fuzzing.py**:
 - `--binary`: Path to target binary (required)
@@ -985,15 +991,15 @@ Required Arguments:
   --repo PATH          Path to repository to scan
 
 Optional Arguments:
-  --policy_groups STR  Comma-separated policy groups (default: all)
-  --output PATH        Output directory (default: auto-generated)
+  --policy-groups STR  Comma-separated policy groups (default: all)
+  --out PATH           Output directory (default: auto-generated)
 
 Examples:
   # Scan with all policy groups
   python3 scanner.py --repo /path/to/code
 
   # Scan specific policy groups
-  python3 scanner.py --repo /path/to/code --policy_groups secrets,owasp
+  python3 scanner.py --repo /path/to/code --policy-groups secrets,injection
 ```
 
 
@@ -1132,9 +1138,8 @@ See [dependencies](dependencies.md) for the full tool and package reference.
 - Future: Language-specific tools (pip, npm, maven)
 
 **sca**:
-- `safety` (Python dependency checking)
-- `npm audit` (Node.js, if installed)
-- Future: Additional scanners (Snyk, etc.)
+- OSV.dev advisory matching (no external scanner binaries)
+- CISA KEV + EPSS enrichment (`core/cve/`)
 
 **web**:
 - `requests` (HTTP client)

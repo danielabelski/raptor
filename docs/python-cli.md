@@ -122,7 +122,6 @@ export AWS_REGION="eu-west-1"
 export AWS_BEARER_TOKEN_BEDROCK="..."
 
 # Optional overrides
-export RAPTOR_ROOT="/path/to/raptor"
 export RAPTOR_OUT_DIR="/custom/output/path"
 export RAPTOR_CALLER_DIR="/original/cwd"
 ```

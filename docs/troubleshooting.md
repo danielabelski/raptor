@@ -71,6 +71,13 @@ the path explicitly.
 RAPTOR retries with backoff and halves concurrency automatically. If it
 still exhausts, the run continues with the findings it has.
 
+### Timed-out calls
+
+Timeout-class failures are retried once by the client (per-call
+`timeout_retry_cap`, default 1); orchestrators may layer one
+reduced-context retry on top. Each call's disposition is recorded in
+the run's `llm-telemetry.jsonl` with its `call_class`.
+
 ### Temperature rejected (Anthropic >= 4.7)
 
 Anthropic dropped the `temperature` parameter for reasoning-tier models.
@@ -99,16 +106,18 @@ files.
 
 ### macOS
 
-macOS blocks AFL++'s fork server and shared memory. RAPTOR falls back to
-generating a crash test corpus, but for real fuzzing use Linux.
+macOS blocks AFL++'s fork server and shared memory. RAPTOR auto-routes
+to the orchestrator path (libFuzzer / radare2-assisted) when AFL++ is
+unusable, but for real AFL++ fuzzing use Linux.
 
 
 ## Validation pipeline
 
 ### Stage C hallucination
 
-A file path doesn't exist or code doesn't match source. The finding is
-automatically removed — check `disproven.json` for details.
+A file path doesn't exist or code doesn't match source. Stage C records
+the failed sanity check on the finding (it does not change statuses);
+Stage D then rules the finding out.
 
 ### Stage B stuck
 

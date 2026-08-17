@@ -111,12 +111,13 @@ Every command that performs analysis (`/scan`, `/agentic`, `/codeql`, `/fuzz`,
 directory under `out/` containing all artefacts for that execution.
 
 ```
-out/agentic_2026-07-23_14-30-00/
+out/agentic_myrepo_20260723_143000_pid12345/
 ├── agentic-report.md                  human-readable summary
 ├── autonomous_analysis_report.json    structured findings + analysis
 ├── findings.sarif                     scanner output
 ├── suppressions.jsonl                 binary-oracle audit trail
-├── coverage-record.json               which source files the LLM read
+├── coverage-read.json                 which source files the LLM read
+├── llm-telemetry.jsonl                per-call LLM telemetry
 └── annotations/                       per-function annotations
 ```
 
@@ -219,7 +220,7 @@ requires:
 | Validation error | `tiers/validation-recovery.md` -- stage-specific recovery |
 | Developing exploits | `tiers/exploit-guidance.md` -- constraints and techniques |
 | Any error | `tiers/recovery.md` -- general recovery protocol |
-| Running `/understand` | `.claude/skills/code-understanding/SKILL.md` plus the mode file (`map`, `trace`, `hunt`, `teach`) |
+| Running `/understand` | `.claude/skills/code-understanding/SKILL.md` plus the mode file (`map`, `trace`, `hunt`, `teach`, `study`) |
 | Operator requests persona | `tiers/personas/<name>.md` -- expert perspective |
 
 This keeps the context window small for simple tasks (`/scan` loads almost
@@ -255,7 +256,8 @@ The coverage plugin (`plugins/coverage/`) records which source files the LLM
 reads during analysis via a `PostToolUse` hook.  It runs automatically when a
 run is active and has zero overhead otherwise.
 
-Coverage produces `coverage-record.json` in the run directory -- a manifest of
+Coverage produces per-tool records (`coverage-read.json` for LLM reads,
+`coverage-<tool>.json` for scanners) in the run directory -- a manifest of
 every file the LLM examined.  Use this to answer "what did the analysis
 actually look at?" and to find gaps:
 
@@ -272,16 +274,12 @@ running `/scan` then `/codeql` on the same project gives a combined view.
 ## Annotations
 
 Annotations attach free-form prose to individual functions, stored as markdown
-files that mirror the source tree.  They come from two sources:
-
-- **LLM passes** (`/agentic`, `/understand`) emit annotations automatically --
-  one per analysed finding or mapped element, with status derived from the
-  LLM's verdict.
-- **Operators** write manual review notes with `/annotate add`, marked
-  `source=human`.
-
-LLM-generated annotations never overwrite operator notes (`overwrite=
-"respect-manual"`).
+files that mirror the source tree.  They are human-only: operators write
+manual review notes with `/annotate add`, marked `source=human`.  LLM
+review outcomes go to the review journal (`review-journal.jsonl`)
+instead -- the annotation → journal migration removed the LLM writer
+path, and the storage layer's `overwrite="respect-manual"` mode keeps
+any programmatic writer from clobbering operator notes.
 
 Each annotation carries a status:
 
@@ -290,11 +288,7 @@ Each annotation carries a status:
 | `clean` | Reviewed, no concern |
 | `suspicious` | Real bug, not exploitable |
 | `finding` | Exploitable |
-| `entry_point` | Attack surface entry |
-| `sink` | Dangerous function |
-| `trust_boundary` | Privilege or trust transition |
-| `flow_step` | Step in a traced data flow |
-| `unchecked_flow` | Data flow with no validation |
+| `dormant` | Real bug, currently unreachable |
 | `error` | Analysis failed on this function |
 
 Annotations are stamped with a hash of the function's source, so `/annotate
@@ -325,7 +319,7 @@ RAPTOR's capabilities degrade gracefully without network access:
 
 | Component | Online | Offline |
 |-----------|--------|---------|
-| Custom rules (185 across Semgrep, Coccinelle, CodeQL) | works | works |
+| Custom rules (192 across Semgrep, Coccinelle, CodeQL) | works | works |
 | Registry Semgrep packs (~950 rules) | fetched from semgrep.dev | requires pre-cached bundle (see below) |
 | Analysis dispatch (Ollama) | not needed | works (free, local) |
 | Analysis dispatch (cloud LLM) | works | unavailable |

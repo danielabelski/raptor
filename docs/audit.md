@@ -128,7 +128,8 @@ alongside the target code.
 Semgrep, Coccinelle, CodeQL, SMT, and compilation invocations run through
 `libexec/raptor-audit sweep` so results are logged to the audit trail
 automatically.  Joern, the compiler analyzers, the expanded-view Semgrep
-pass, and the git-history oracle run as orchestrator channels.
+pass, the fail-open channel, and the git-history oracle run as
+orchestrator channels.
 
 | Tool | What it validates | Example use |
 |------|-------------------|-------------|
@@ -140,6 +141,7 @@ pass, and the git-history oracle run as orchestrator channels.
 | **Compiler analyzers** | Mechanical verification sweep (gcc `-fanalyzer` / clang `--analyze`) over hypothesis TUs | "Analyzer confirms the null-deref path the hypothesis names" |
 | **Expanded-view Semgrep** | Re-runs rules over fidelity-3 preprocessor-expanded views of macro-heavy C/C++ | "Sink hidden behind a macro expansion" |
 | **Git history** | Corroboration only -- prior security fixes touching the function (never a verdict by itself) | "This function was patched for the same bug class before" |
+| **Fail-open channel** | Swallowed-error hypotheses (CWE-703/636/391/390/252): security role x permissive handler outcome x fallibility, all mechanical with receipts. Phase 1: Python handlers, C ignored-return + tri-state shapes | "The broad `except` around token verification swallows signature errors and the request proceeds" |
 
 ### SMT verbs
 

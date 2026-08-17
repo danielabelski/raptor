@@ -53,8 +53,17 @@ class TestCapabilityReport(unittest.TestCase):
 
 
 class TestProbe(unittest.TestCase):
-    def test_probe_returns_report(self):
-        report = probe()
+    @patch("packages.fuzzing.capability.shutil.which")
+    def test_probe_returns_report(self, mock_which):
+        # Pin the tool probes (same seams as the no-fuzzer test
+        # below): the real probe runs shutil.which over the fuzzing
+        # toolchain plus a live clang sanitiser-compile per sanitiser
+        # — host-dependent latency and side effects inside a unit
+        # test. The asserted fields are platform-derived either way.
+        mock_which.return_value = None
+        with patch("packages.fuzzing.capability._probe_clang_sanitiser",
+                   return_value=False):
+            report = probe()
         self.assertIsInstance(report, CapabilityReport)
         self.assertIsNotNone(report.platform)
         self.assertIsNotNone(report.arch)
@@ -95,10 +104,11 @@ class TestProbe(unittest.TestCase):
 
 class TestSelectFuzzer(unittest.TestCase):
     def _report_with(self, **kwargs):
-        defaults = dict(
-            platform="Linux", arch="x86_64", is_macos=False, is_linux=True,
-            afl_shmem_ok=True,
-        )
+        defaults = {
+            "platform": "Linux", "arch": "x86_64",
+            "is_macos": False, "is_linux": True,
+            "afl_shmem_ok": True,
+        }
         defaults.update(kwargs)
         return CapabilityReport(**defaults)
 

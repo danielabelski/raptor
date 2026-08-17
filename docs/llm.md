@@ -152,14 +152,112 @@ Endpoint: `bedrock-runtime.<region>.amazonaws.com`. Required for models not yet 
 Mantle, cross-region inference profile IDs (`us./eu./au./apac./global.` prefixes), and
 compliance-pinned ARN-versioned IDs. Non-streaming only.
 
+### Opt-In
+
+Bedrock is never selected implicitly. Ambient AWS credentials
+(`AWS_PROFILE`, a credentials file, an instance role) do not flip
+RAPTOR onto the API route — one of these explicit signals does:
+
+- a `models.json` entry resolving to `provider: bedrock` (the primary
+  path — see Minimal Configuration below);
+- `RAPTOR_BEDROCK_MODEL=<id>` or `RAPTOR_BEDROCK_PROFILE=<name>` for
+  env-driven one-shot runs;
+- `AWS_BEARER_TOKEN_BEDROCK` (bearer auth is its own statement of
+  intent).
+
+Once opted in, ambient credentials *gate* the route (an entry without
+any resolvable credential stays unusable) but never *select* it.
+
 ### Authentication
 
-Two auth modes:
-
-| Mode | Environment Variables | Notes |
+| Mode | Environment / config | Notes |
 |------|----------------------|-------|
-| Bearer token | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION` | Recommended; no SDK dependency |
-| SigV4 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | Uses AWS credential chain (env/profile/SSO/IMDS); signing and provider auto-detection both need only `botocore` (installing `boto3` also works — it includes `botocore`) |
+| Bearer token | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION` | No SDK dependency. JWT-shaped tokens get expiry countdown warnings; an expired token falls back to SigV4 when the chain resolves (one warning), else 401s with rotation guidance. |
+| SigV4 — profile / role | `AWS_PROFILE` or `RAPTOR_BEDROCK_PROFILE` (or per-entry `aws_profile`) | Recommended on AWS compute: no secret at rest, auto-refreshing (SSO / assume-role / IMDS), least-privilege scoping. Needs `botocore` in the parent. |
+| SigV4 — static keys | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | Standing secret; prefer a profile. Needs `botocore` (installing `boto3` also works — it includes `botocore`). |
+
+`RAPTOR_BEDROCK_PROFILE` outranks the ambient `AWS_PROFILE`, and a
+per-entry `aws_profile` pin outranks both — an entry-pinned profile
+also **forces SigV4 for that entry** even when a bearer token is
+present (the pin chooses which identity signs; a bearer has no
+identity choice). All credential resolution and signing happen in the
+dispatcher parent; workers never hold AWS credentials.
+
+### Minimal Configuration
+
+On a box where Claude Code itself runs against Bedrock, the working
+CC session is live proof of a valid surface/model/entitlement
+combination — so the minimal entry:
+
+```json
+{"models": [{"provider": "bedrock"}]}
+```
+
+backfills the surface from `CLAUDE_CODE_USE_MANTLE` and the model
+from the cc-probe cache (backend-resolved; authoritative) falling
+back to `ANTHROPIC_MODEL`. Backfill is same-surface only (bare vs
+prefixed id shapes differ per surface) and never happens when CC is
+on the direct Anthropic API — its model id is the wrong shape for
+Bedrock. Explicit entry fields always win; a fully-specified entry
+ignores CC entirely.
+
+A role-less Bedrock entry is the declared default for all API work
+(the standard first-entry convention). Give it `"role": "fallback"`
+(or any auxiliary role) to keep primary selection unchanged.
+
+### Region
+
+One region value drives both the endpoint hostname and the SigV4
+signing scope (they must agree). Resolution, most specific first:
+
+1. `region` field on the entry
+2. `RAPTOR_BEDROCK_REGION`
+3. entry-pinned `aws_profile`'s own configured region (the pin serves
+   the entry; the env serves the box)
+4. ambient `AWS_REGION` / `AWS_DEFAULT_REGION`
+5. the credential chain's region
+6. fail with a no-region diagnostic — never a silent default
+
+Two entries may pin different regions in one run (per-request
+signing). Since Bedrock quotas are per-account-per-region, pinning
+RAPTOR's entry to a different region than an interactive Claude Code
+session is the clean way to stop them competing for headroom.
+
+### Model IDs Per Surface
+
+Mantle accepts **only bare** `<provider>.<model>` ids; RAPTOR
+normalizes losslessly at config time (peels a regional prefix,
+prepends the provider segment for bare catalog names). Runtime ids
+pass verbatim — prefixed inference profiles, versioned ids and ARNs
+are all legal there — with a loud warning when a geographic prefix
+contradicts the configured region.
+
+### Operational Guards
+
+- **Worker cap:** Bedrock quota is shared account-wide (most visibly
+  with a live Claude Code session on the same account), so analysis
+  parallelism is clamped to 8 workers by default;
+  `RAPTOR_BEDROCK_MAX_WORKERS` overrides, `tuning.json`'s
+  `max_llm_workers` beats both.
+- **Entitlement preflight:** at dispatcher startup, one 1-token probe
+  per configured (model, surface, region, profile) combination turns
+  an un-entitled model into an actionable warning up front instead of
+  an AccessDenied mid-run. Successes cache for 24h; failures re-probe
+  next run; network problems never warn or block.
+- **Streaming:** Mantle streams natively; the runtime surface is
+  non-streaming (InvokeModel) — selecting it logs the capability
+  limit at construction time.
+- **Multi-model panels:** two entries that peel to the same
+  underlying model (e.g. a Bedrock id and its direct-API name) log a
+  same-weights warning — their agreement is transport consistency,
+  not independent consensus.
+
+### Standalone CLIs
+
+The Bedrock provider is dispatcher-only. Pipeline runs get the
+dispatcher from the launcher; standalone CLIs whose LLM call happens
+in the invoking process (`raptor-llm-ask`) self-serve an in-process
+dispatcher automatically.
 
 ### Switching API Surface
 
@@ -212,19 +310,28 @@ Entry fields:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `provider` | No | Inferred from model name if unambiguous (`claude-*` = anthropic, `gpt-*` = openai, `us.anthropic.*` = bedrock) |
-| `model` | Yes | Model identifier. Anthropic aliases auto-resolve to dated snapshots. |
-| `api_key` | No | Falls back to provider env var |
+| `provider` | No | Inferred from model name if unambiguous (`claude-*` = anthropic, `gpt-*` = openai, `us.anthropic.*` / `anthropic.*` = bedrock) |
+| `model` | Mostly | Model identifier. Anthropic aliases auto-resolve to dated snapshots. Optional for `bedrock` (backfilled — see Minimal Configuration) and `claudecode` (session default). |
+| `api_key` | No | Falls back to provider env var. Not needed for Bedrock SigV4 (the dispatcher signs) or claudecode (the CLI authenticates itself). |
 | `role` | No | `analysis`, `code`, `consensus`, `fallback`, `judge`, `aggregate` |
 | `max_context` | No | Context window size (tokens) |
 | `max_output` | No | Maximum output tokens |
 | `timeout` | No | Request timeout (seconds) |
 | `bedrock_api` | No | `mantle` or `runtime` (Bedrock only) |
+| `aws_profile` | No | Signing profile name for this entry (Bedrock only; non-secret). Forces SigV4 for the entry and outranks env profiles. |
+| `region` | No | Endpoint + signing region for this entry (Bedrock only). See the Region ladder. |
+
+A `{"provider": "claudecode", "role": "fallback"}` entry declares the
+Claude Code CLI transport as an explicit safety net behind an API
+primary — resolvable whenever the `claude` binary is installed.
 
 ### Model Selection Logic
 
 1. `--model <name>` on CLI pins a specific model (bypasses auto-selection).
 2. Operator `models.json` entries are scored by tier (Opus > GPT-5.4-pro > o3 > Sonnet > Gemini Pro).
+   A Bedrock entry without an auxiliary role gets its own step here —
+   the tier table can't score Bedrock ids, so the entry itself is the
+   declared default for API work.
 3. Provider auto-detect: first configured provider in the default order wins.
 4. Shorthand resolution: bare tokens like `haiku`, `opus`, `sonnet` match against
    configured model names. Ambiguous matches raise an error.

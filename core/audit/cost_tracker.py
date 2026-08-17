@@ -158,6 +158,41 @@ class CostTracker:
         """Inject the authoritative end-of-run LLM-client ledger."""
         self._total_spend_usd = max(0.0, float(spend_usd))
 
+    # Call classes booked at outcome level into phases whose names
+    # don't match the class ("review" outcomes land in the review /
+    # re_review / error_retry / refinement phases). Every other class
+    # is matched to a phase by name.
+    _OUTCOME_BOOKED_CLASSES = frozenset({"review"})
+
+    def book_unbooked_classes(
+        self, class_costs: dict[str, tuple[int, float]],
+    ) -> dict[str, float]:
+        """Book telemetry call classes that no phase captured.
+
+        ``class_costs`` is the telemetry sink's per-class snapshot
+        (``{call_class: (calls, cost_usd)}``). Classes that already
+        map to a phase — by name, or via the outcome-level booking of
+        review calls — are skipped; everything else (iris, audit,
+        glance_batch, summary, …) is booked as a phase named after the
+        class. Pre-fix these were SUCCESSFUL calls whose spend either
+        surfaced under the "failed/timed-out" console label
+        (unattributed residual) or vanished from the summary entirely
+        (standalone-client spend outside the budget ledger).
+
+        Returns ``{class: cost}`` for the classes booked.
+        """
+        booked: dict[str, float] = {}
+        for cls, (calls, cost) in sorted(class_costs.items()):
+            if calls <= 0 and cost <= 0:
+                continue
+            if cls in self._OUTCOME_BOOKED_CLASSES or cls in self.phases:
+                continue
+            pc = self._ensure_phase(cls)
+            pc.calls += max(0, int(calls))
+            pc.cost_usd += max(0.0, float(cost))
+            booked[cls] = float(cost)
+        return booked
+
     @property
     def total_cost_usd(self) -> float:
         return sum(p.cost_usd for p in self.phases.values())
@@ -241,9 +276,24 @@ class CostTracker:
                 pc = self.phases[name]
                 if pc.calls > 0:
                     parts.append(f"{name}={pc.calls}calls/${pc.cost_usd:.2f}")
-        failed = self.total_failed_attempts_cost_usd + self.unattributed_cost_usd
+        # Phases outside the known set — call classes booked by
+        # book_unbooked_classes and any future ad-hoc phase names.
+        for name in sorted(self.phases):
+            if name in self._KNOWN_PHASES:
+                continue
+            pc = self.phases[name]
+            if pc.calls > 0:
+                parts.append(f"{name}={pc.calls}calls/${pc.cost_usd:.2f}")
+        # Failed/timed-out spend and unattributed residual are DIFFERENT
+        # things — the residual is usually spend from successful calls
+        # no phase captured, and labelling it "failed/timed-out" (as a
+        # single lumped figure once did) misreports healthy runs.
+        failed = self.total_failed_attempts_cost_usd
         if failed > 0:
             parts.append(f"failed/timed-out=${failed:.2f}")
+        unattributed = self.unattributed_cost_usd
+        if unattributed >= 0.005:
+            parts.append(f"unattributed=${unattributed:.2f}")
         total = self.total_spend_usd
         return f"cost: ${total:.2f} ({', '.join(parts)})"
 
@@ -268,12 +318,19 @@ class CostTracker:
             f"${self.total_cost_usd:.4f}, "
             f"{self.total_wall_time_s:.1f}s wall"
         )
-        failed = self.total_failed_attempts_cost_usd + self.unattributed_cost_usd
-        if failed > 0:
+        failed = self.total_failed_attempts_cost_usd
+        unattributed = self.unattributed_cost_usd
+        if failed > 0 or unattributed >= 0.005:
+            detail: list[str] = []
+            if failed > 0:
+                detail.append(
+                    f"${failed:.4f} on failed/timed-out attempts"
+                )
+            if unattributed >= 0.005:
+                detail.append(f"${unattributed:.4f} unattributed")
             lines.append(
-                f"**Total spend incl. failed/timed-out attempts**: "
-                f"${self.total_spend_usd:.4f} (${failed:.4f} produced "
-                f"no outcome)"
+                f"**Total spend**: ${self.total_spend_usd:.4f} "
+                f"({'; '.join(detail)})"
             )
         cr = self.total_cache_read_tokens
         cw = self.total_cache_write_tokens
@@ -305,10 +362,23 @@ def format_cost_summary(result: Any) -> str | None:
     )
     if total_spend <= 0:
         return None
-    # Everything the client billed beyond completed calls was consumed
-    # by attempts that produced no outcome.
-    failed_spend = max(0.0, total_spend - completed_cost)
-    if failed_spend < 0.005:
+    # Spend the client billed beyond completed outcomes splits into
+    # KNOWN failed-attempt spend and the unattributed residual. The
+    # residual is typically successful call classes no outcome carried
+    # (audit/iris/summary support calls) — labelling it "failed/
+    # timed-out" (as the pre-fix single lump did) misreported healthy
+    # runs whose telemetry showed zero failures.
+    failed_spend = min(failed_cost, total_spend)
+    other_spend = max(0.0, total_spend - completed_cost - failed_spend)
+    detail: list[str] = []
+    if failed_spend >= 0.005:
+        detail.append(f"${failed_spend:.2f} on failed/timed-out attempts")
+    if other_spend >= 0.005:
+        detail.append(
+            f"${other_spend:.2f} on unattributed calls "
+            f"(see cost-breakdown.json)"
+        )
+    if not detail:
         return f"Cost: ${total_spend:.2f}"
     completed_reviews = max(
         0,
@@ -318,6 +388,5 @@ def format_cost_summary(result: Any) -> str | None:
     noun = "review" if completed_reviews == 1 else "reviews"
     return (
         f"Cost: ${total_spend:.2f} (${completed_cost:.2f} across "
-        f"{completed_reviews} completed {noun}; ${failed_spend:.2f} on "
-        f"failed/timed-out attempts)"
+        f"{completed_reviews} completed {noun}; {'; '.join(detail)})"
     )

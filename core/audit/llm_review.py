@@ -1268,6 +1268,7 @@ def call_llm_for_rule_refinement(
             prompt,
             system_prompt="You are a Semgrep rule author. Return only YAML.",
             task_type="audit",
+            call_class="rule_refinement",
         )
         if hasattr(response, "text"):
             return response.text

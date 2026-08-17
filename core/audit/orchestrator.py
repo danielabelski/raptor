@@ -4694,22 +4694,7 @@ def _run_audit_body(
             logger.debug("summaries.json write failed", exc_info=True)
 
     try:
-        # ── Ledger reconciliation ────────────────────────────────────
-        # The LLM client's ledger is the authoritative total spend: it
-        # includes failed/timed-out attempts and anything the phase
-        # ledgers missed. Inject it so cost-breakdown.json carries
-        # totals.total_spend_usd / failed_attempts_cost_usd /
-        # unattributed_cost_usd, and stash it on the result for the
-        # operator-facing "Cost:" summary line. Without this, one run
-        # produced three unexplained numbers: $8.08 (client), $4.52
-        # (review phase), $2.82 (summary).
-        _client = getattr(config, "llm_budget_client", None)
-        if _client is not None:
-            _spent = float(getattr(_client, "total_cost", 0.0) or 0.0)
-            result.cost_tracker.set_total_spend(_spent)
-            result.llm_spend_usd = result.cost_tracker.total_spend_usd
-        result.cost_tracker.write(config.out_dir)
-        logger.info(result.cost_tracker.summary())
+        _reconcile_cost_ledgers(config, result)
     except Exception:
         logger.debug("cost breakdown write failed", exc_info=True)
 
@@ -4728,6 +4713,67 @@ def _run_audit_body(
         logger.debug("sandbox policy validation failed", exc_info=True)
 
     return result
+
+
+def _reconcile_cost_ledgers(config, result) -> None:
+    """End-of-run cost ledger reconciliation.
+
+    The LLM client's ledger is the authoritative total spend: it
+    includes failed/timed-out attempts and anything the phase ledgers
+    missed. Inject it so cost-breakdown.json carries
+    totals.total_spend_usd / failed_attempts_cost_usd /
+    unattributed_cost_usd, and stash it on the result for the
+    operator-facing "Cost:" summary line. Without this, one run
+    produced three unexplained numbers: $8.08 (client), $4.52 (review
+    phase), $2.82 (summary).
+
+    Before injecting, book call classes no phase captured (audit,
+    iris, summary, glance_batch, …) from the telemetry sink's
+    per-class ledger. Pre-fix their spend either printed under
+    "failed/timed-out" (budget-client spend the phases missed) or
+    vanished from the summary entirely (standalone-client spend
+    outside the budget ledger — one run reported $36.85 while
+    telemetry showed $38.84). Afterwards, assert the telemetry ledger
+    and the summary ledger describe the same money: warn when they
+    diverge by more than 1% (unbooked or double-booked spend).
+    """
+    from core.llm.telemetry import current_sink as _current_sink
+
+    sink = _current_sink()
+    if sink is not None:
+        booked = result.cost_tracker.book_unbooked_classes(
+            sink.class_costs(),
+        )
+        if booked:
+            logger.info(
+                "cost: booked %d call class(es) outside the phase "
+                "ledger: %s",
+                len(booked),
+                ", ".join(
+                    f"{c}=${v:.2f}" for c, v in sorted(booked.items())
+                ),
+            )
+    client = getattr(config, "llm_budget_client", None)
+    if client is not None:
+        spent = float(getattr(client, "total_cost", 0.0) or 0.0)
+        result.cost_tracker.set_total_spend(spent)
+    result.llm_spend_usd = result.cost_tracker.total_spend_usd
+    if config.out_dir:
+        result.cost_tracker.write(config.out_dir)
+    logger.info(result.cost_tracker.summary())
+    if sink is not None:
+        tel_total = sink.total_cost_usd()
+        ledger_total = result.cost_tracker.total_spend_usd
+        scale = max(tel_total, ledger_total)
+        if scale > 0 and abs(tel_total - ledger_total) > 0.01 * scale:
+            logger.warning(
+                "cost reconciliation: telemetry ledger $%.2f vs "
+                "summary ledger $%.2f (%.1f%% divergence) — some "
+                "spend is unbooked or double-booked",
+                tel_total,
+                ledger_total,
+                100.0 * abs(tel_total - ledger_total) / scale,
+            )
 
 
 def _composite_tool_runner(joern_runner, codeql_runner):
@@ -4934,6 +4980,7 @@ def _run_concept_discovery(
                 schema=schema,
                 system_prompt=system_prompt,
                 task_type=TaskType.AUDIT,
+                call_class="concept_discovery",
             )
             return data
         except Exception as exc:  # noqa: BLE001

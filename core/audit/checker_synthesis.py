@@ -72,6 +72,10 @@ def _build_llm_callable(config: Any):
                 schema=schema,
                 system_prompt=system_prompt,
                 task_type=TaskType.AUDIT,
+                # Telemetry class matches the "checker_synthesis"
+                # phase the orchestrator books this spend into, so
+                # end-of-run class booking doesn't double-count it.
+                call_class="checker_synthesis",
                 # See SYNTHESIS_TIMEOUT_S — the provider default kills
                 # this call class before it completes.
                 timeout_s=SYNTHESIS_TIMEOUT_S,

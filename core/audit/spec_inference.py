@@ -843,6 +843,7 @@ def infer_spec_with_llm_sync(
         )
         response = client.generate(
             prompt, system_prompt=system_prompt, task_type="audit",
+            call_class="spec_inference",
         )
         text = response.text if hasattr(response, "text") else str(response)
     except Exception:  # noqa: BLE001 — inference is best-effort; fall back to mechanical spec

@@ -19,19 +19,20 @@ automatically.
 
 The primary engine on Linux.  RAPTOR wraps `afl-fuzz` with support for:
 
-- **CmpLog** (`--cmplog-binary`): input-to-state correspondence for bypassing
-  multi-byte comparisons.  Requires a separate CmpLog-instrumented binary
-  compiled with `AFL_LLVM_CMPLOG=1`.
-- **Power schedules** (`--power-schedule`): `fast` (default), `explore`,
-  `exploit`, `seek`, `rare`, `mmopt`, `coe`.
-- **Custom mutators** (`--custom-mutator`): path to a shared library loaded by
-  AFL++ for domain-specific mutation.
+- **CmpLog** (`AFLRunner(cmplog_binary=...)`): input-to-state correspondence
+  for bypassing multi-byte comparisons.  Requires a separate
+  CmpLog-instrumented binary compiled with `AFL_LLVM_CMPLOG=1`.
+  API-level only — no CLI flag.
+- **Power schedules** (`AFLRunner(power_schedule=...)`): `fast` (default),
+  `explore`, `exploit`, `coe`, `lin`, `quad`, `rare`, `seek`.
+  API-level only.
+- **Custom mutators** (`AFLRunner(custom_mutator=...)`): path to a shared
+  library loaded by AFL++ for domain-specific mutation.  API-level only.
 - **Dictionaries** (`--dict`): AFL dictionary files for structured input
   formats (JSON tokens, HTTP keywords, etc.).
-- **Deterministic mode** (`--deterministic`): enables AFL++'s deterministic
-  mutation stage.  Off by default for faster startup.
-- **Extra flags** (`--extra-afl-flags`): pass-through for any AFL++ flag not
-  covered above.
+- **Deterministic mode** (`AFLRunner(deterministic=True)`): enables AFL++'s
+  deterministic mutation stage.  Off by default for faster startup.
+  API-level only.
 - **Parallel instances** (`--parallel N`): runs N AFL++ instances (one main,
   N-1 secondary) for faster coverage.
 

@@ -21,10 +21,10 @@ Fully autonomous CodeQL security analysis with intelligent language detection, b
 packages/codeql/
 ├── agent.py                  # Main orchestrator (CLI entry point)
 ├── language_detector.py      # Auto-detect languages in repos
-├── build_detector.py         # Auto-detect build systems & generate commands
 ├── database_manager.py       # Database lifecycle management with caching
 ├── query_runner.py           # CodeQL suite execution & SARIF generation
-└── __init__.py              # Package exports
+└── __init__.py              # Package exports (re-exports BuildDetector
+                              #   from core/build/build_detector.py)
 
 codeql_dbs/                   # Database cache directory (gitignored)
 └── <repo_hash>/
@@ -241,7 +241,7 @@ that vector entirely.
 **Test build detection:**
 
 ```bash
-python3 packages/codeql/build_detector.py --repo /path/to/code --language java --json
+python3 core/build/build_detector.py --repo /path/to/code --language java --json
 ```
 
 ## Database Caching

@@ -4004,3 +4004,45 @@ class TestPromoteHypothesisInconsistent:
         _promote_hypothesis_inconsistent(r)
         assert r.outcomes[0].status == "clean"
 
+
+
+class TestGapIndex:
+    """_gap_index must round-trip the real checklist shape, whose file
+    records carry "path" (inventory builder) — not "file"."""
+
+    def test_indexes_real_checklist_shape(self):
+        from core.audit.orchestrator import _gap_index
+
+        checklist = {
+            "files": [
+                {
+                    "path": "src/auth.c",
+                    "language": "c",
+                    "items": [
+                        {
+                            "name": "check_pw",
+                            "line_start": 10,
+                            "line_end": 42,
+                            "source": "int check_pw(...) {}",
+                        },
+                    ],
+                },
+            ],
+        }
+        index = _gap_index(checklist)
+        assert "src/auth.c:check_pw" in index
+        gap = index["src/auth.c:check_pw"]
+        assert gap["file"] == "src/auth.c"
+        assert gap["name"] == "check_pw"
+        assert gap["line_start"] == 10
+        assert gap["line_end"] == 42
+
+    def test_legacy_functions_key(self):
+        from core.audit.orchestrator import _gap_index
+
+        checklist = {
+            "files": [
+                {"path": "a.py", "functions": [{"name": "f"}]},
+            ],
+        }
+        assert "a.py:f" in _gap_index(checklist)

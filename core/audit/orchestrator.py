@@ -10164,10 +10164,13 @@ def _gap_index(checklist: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Build file:function → gap dict from checklist."""
     index: Dict[str, Dict[str, Any]] = {}
     for item in checklist.get("files", []):
+        # Checklist file records carry "path" (see the inventory
+        # builder and _find_gap_in_checklist) — not "file".
+        file_path = item.get("path", item.get("file", ""))
         for func in item.get("items", item.get("functions", [])):
-            key = f"{item.get('file', '')}:{func.get('name', '')}"
+            key = f"{file_path}:{func.get('name', '')}"
             index[key] = {
-                "file": item.get("file", ""),
+                "file": file_path,
                 "name": func.get("name", ""),
                 "line": func.get("line", 0),
                 "line_start": func.get("line_start", 0),

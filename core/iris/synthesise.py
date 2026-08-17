@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from collections.abc import Sequence
 
 from core.evidence import EvidenceTier
 
@@ -288,11 +288,18 @@ def _build_user_prompt(
             parts.append("Refinement feedback:\n" + "\n".join(fb_lines))
 
     parts.append("Classify these functions:\n")
+    # Function source (and inventory-derived names/reasons) come from
+    # the target repo — neutralise envelope/role forgery before
+    # interpolation.
+    from core.security.prompt_envelope import neutralize_tag_forgery
     for cand, source in zip(batch.candidates, batch.sources, strict=False):
-        parts.append(f"### {cand.function} ({cand.file})")
+        parts.append(
+            f"### {neutralize_tag_forgery(cand.function)} "
+            f"({neutralize_tag_forgery(cand.file)})")
         if cand.reason:
-            parts.append(f"Candidate reason: {cand.reason}")
-        parts.append(f"```\n{source}\n```\n")
+            parts.append(
+                f"Candidate reason: {neutralize_tag_forgery(cand.reason)}")
+        parts.append(f"```\n{neutralize_tag_forgery(source)}\n```\n")
 
     return "\n\n".join(parts)
 
@@ -484,11 +491,14 @@ def _build_assumption_prompt(
     parts.append(
         "Extract safety assumptions for these functions:\n"
     )
+    from core.security.prompt_envelope import neutralize_tag_forgery
     for cand, source in zip(batch.candidates, batch.sources, strict=False):
-        parts.append(f"### {cand.function} ({cand.file})")
+        parts.append(
+            f"### {neutralize_tag_forgery(cand.function)} "
+            f"({neutralize_tag_forgery(cand.file)})")
         if cand.reason:
-            parts.append(f"Context: {cand.reason}")
-        parts.append(f"```\n{source}\n```\n")
+            parts.append(f"Context: {neutralize_tag_forgery(cand.reason)}")
+        parts.append(f"```\n{neutralize_tag_forgery(source)}\n```\n")
 
     return "\n\n".join(parts)
 
@@ -520,7 +530,7 @@ def _parse_assumption_response(response: str) -> list[SafetyAssumption]:
         entry["source"] = "llm"
         try:
             result.append(assumption_from_dict(entry))
-        except Exception:
+        except Exception:  # noqa: BLE001 — LLM-shaped item; skip, don't crash
             logger.debug("iris.synthesise: skipping malformed assumption item")
     return result
 

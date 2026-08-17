@@ -118,6 +118,9 @@ _PROMPT_CONSTRUCTION_FILES = (
     # fuzzing harness generator (target headers → compiled+executed
     # harness source; enveloped via build_prompt + CONSERVATIVE)
     "packages/fuzzing/harness_generator.py",
+    # binary understanding (decompiled untrusted-binary output →
+    # fuzz-priority ranking; enveloped via build_prompt + CONSERVATIVE)
+    "packages/binary_analysis/radare2_understand.py",
 )
 
 

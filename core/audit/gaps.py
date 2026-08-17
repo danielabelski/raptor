@@ -372,9 +372,78 @@ def compute_gaps(
     gaps.sort(key=lambda g: (g["priority"], -g.get("sloc", 0)))
 
     if budget is not None and budget > 0:
-        gaps = gaps[:budget]
+        gaps = truncate_gaps_to_budget(gaps, budget, out_dir)
 
     return gaps
+
+
+def truncate_gaps_to_budget(
+    gaps: list[dict[str, Any]],
+    budget: int | None,
+    out_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Apply ``--budget`` to an ordered gap list, RECORDING the dropped
+    tail instead of silently discarding it.
+
+    The dropped functions are written to ``not-attempted.json`` (reason
+    ``budget``) so the run summary and coverage accounting can report
+    them as "not attempted (budget)" — they were never reviewed, and
+    without a record they were indistinguishable from reviewed-clean.
+    They stay gap-eligible: nothing here marks them covered.
+    """
+    if not budget or budget <= 0 or len(gaps) <= budget:
+        return gaps
+    dropped = gaps[budget:]
+    logger.info(
+        "budget: %d of %d gaps scheduled — %d not attempted (budget)",
+        budget, len(gaps), len(dropped),
+    )
+    if out_dir is not None:
+        try:
+            write_not_attempted(dropped, Path(out_dir))
+        except Exception:
+            logger.warning(
+                "could not record budget-truncated tail — %d functions "
+                "will be missing from the run summary", len(dropped),
+                exc_info=True,
+            )
+    return gaps[:budget]
+
+
+def write_not_attempted(
+    dropped: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    reason: str = "budget",
+) -> Path:
+    """Write ``not-attempted.json`` for functions a truncation dropped."""
+    path = out_dir / "not-attempted.json"
+    payload = {
+        "reason": reason,
+        "count": len(dropped),
+        "functions": [
+            {
+                "file": g.get("file", ""),
+                "name": g.get("name", ""),
+                "line_start": g.get("line_start"),
+                "line_end": g.get("line_end"),
+                "priority": g.get("priority"),
+            }
+            for g in dropped
+        ],
+    }
+    fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
 
 
 def load_checklist(out_dir: Path) -> dict[str, Any]:

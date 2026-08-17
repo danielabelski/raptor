@@ -54,6 +54,7 @@ def cmd_gaps(args: argparse.Namespace) -> int:
         compute_gaps,
         load_checklist,
         load_context_map,
+        truncate_gaps_to_budget,
         write_gaps,
     )
     from core.coverage.record import load_records
@@ -111,7 +112,8 @@ def cmd_gaps(args: argparse.Namespace) -> int:
             gaps, context_map=context_map, flow_traces=flow_traces,
         )
         if args.budget and args.budget > 0:
-            gaps = gaps[:args.budget]
+            # Records the dropped tail as not attempted (budget).
+            gaps = truncate_gaps_to_budget(gaps, args.budget, out_dir)
 
     path = write_gaps(gaps, out_dir)
     print(f"gaps: {len(gaps)} unreviewed functions → {path}")

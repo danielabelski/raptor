@@ -98,6 +98,7 @@ from .gaps import (
     hydrate_live_gaps_for_detectors,
     load_checklist,
     load_context_map,
+    truncate_gaps_to_budget,
     write_gaps,
 )
 from .hypothesis_mapping import (
@@ -2530,7 +2531,10 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     )
 
     if config.budget and config.budget > 0:
-        gaps = gaps[: config.budget]
+        # Records the dropped tail in not-attempted.json so the run
+        # summary reports it as "not attempted (budget)" instead of
+        # silently conflating it with reviewed code.
+        gaps = truncate_gaps_to_budget(gaps, config.budget, config.out_dir)
 
     entry_points = extract_context_map_set(context_map, "entry_points")
 

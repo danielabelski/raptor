@@ -81,6 +81,15 @@ def generate_report(
 
     unrecorded = _find_unrecorded_reads(out_dir, audit_data, target_path)
 
+    # Budget-truncated tail: functions the --budget cut dropped before
+    # scheduling. They are absent from gaps.json (which holds the
+    # scheduled list), so without this they would be silently missing
+    # from every count — conflated with reviewed code. They count as
+    # remaining gaps (never attempted, still gap-eligible next run).
+    not_attempted = _load_not_attempted(out_dir)
+    not_attempted_count = int(not_attempted.get("count", 0) or 0)
+    gaps_remaining += not_attempted_count
+
     report = {
         "stats": stats,
         "findings_count": len(findings),
@@ -89,6 +98,11 @@ def generate_report(
         "findings": findings,
         "unrecorded_reads": unrecorded,
     }
+    if not_attempted_count:
+        report["not_attempted"] = {
+            "reason": not_attempted.get("reason", "budget"),
+            "count": not_attempted_count,
+        }
 
     # Dark outcomes ("tool-blind, needs concrete verification") from
     # the graded export — surfaced so the bucket reaches the operator
@@ -189,6 +203,13 @@ def write_markdown_report(
         pct = reviewed * 100.0 / total_funcs
         lines.append(
             f"**Functions reviewed:** {reviewed:,} of {total_funcs:,} ({pct:.1f}%)"
+        )
+    not_attempted = report.get("not_attempted")
+    if not_attempted:
+        lines.append(
+            f"**Not attempted ({_line(not_attempted.get('reason', 'budget'), max_chars=40)}):** "
+            f"{int(not_attempted.get('count', 0) or 0):,} functions "
+            "(see not-attempted.json; gap-eligible next run)"
         )
     lines.append("")
 
@@ -482,6 +503,19 @@ def _load_gaps(out_dir: Path) -> dict[str, Any]:
         return {}
 
 
+def _load_not_attempted(out_dir: Path) -> dict[str, Any]:
+    """Load not-attempted.json (budget-truncated tail), or {}."""
+    path = out_dir / "not-attempted.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def _compute_stats(audit_data: dict[str, Any]) -> dict[str, int]:
     """Count statuses across all reviewed functions.
 
@@ -662,6 +696,13 @@ def _format_summary(report: dict[str, Any]) -> str:
             )
         if len(dark_findings) > 10:
             lines.append(f"  ... and {len(dark_findings) - 10} more")
+    not_attempted = report.get("not_attempted")
+    if not_attempted:
+        lines.append(
+            f"Not attempted ({not_attempted.get('reason', 'budget')}): "
+            f"{not_attempted.get('count', 0)} functions — see "
+            "not-attempted.json; they stay gap-eligible next run"
+        )
 
     findings = report.get("findings", [])
     if findings:

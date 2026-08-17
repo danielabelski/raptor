@@ -109,27 +109,27 @@ def stale_as_gaps(
     Avoids duplicates — if a stale function is already in the gap list,
     just sets is_stale=True on the existing entry.
     """
-    existing_keys = set()
+    by_key: dict = {}
     result = []
 
     if existing_gaps:
         for gap in existing_gaps:
             key = f"{gap['file']}:{gap['name']}"
-            existing_keys.add(key)
+            # First occurrence wins for collision marking, matching the
+            # previous first-match scan.
+            by_key.setdefault(key, gap)
             result.append(gap)
 
     for item in stale_items:
         if item.reason == "deleted":
             continue
         key = f"{item.file}:{item.function}"
-        if key in existing_keys:
-            for gap in result:
-                if f"{gap['file']}:{gap['name']}" == key:
-                    gap["is_stale"] = True
-                    gap["priority"] = 0
-                    break
+        existing = by_key.get(key)
+        if existing is not None:
+            existing["is_stale"] = True
+            existing["priority"] = 0
         else:
-            result.append({
+            gap = {
                 "file": item.file,
                 "name": item.function,
                 "line_start": item.line_start,
@@ -138,7 +138,8 @@ def stale_as_gaps(
                 "strategies": [],
                 "is_stale": True,
                 "sloc": max(0, item.line_end - item.line_start + 1) if item.line_end else 0,
-            })
-            existing_keys.add(key)
+            }
+            result.append(gap)
+            by_key[key] = gap
 
     return result

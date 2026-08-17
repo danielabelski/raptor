@@ -317,7 +317,6 @@ def detect_widely_used(
         return set()
 
     widely_used: Set[str] = set()
-    _caller_count_cache: Dict[str, int] = {}
     files_data = checklist.get("files", {})
     if isinstance(files_data, list):
         file_iter = ((f["path"], f.get("items", [])) for f in files_data if isinstance(f, dict))
@@ -328,30 +327,31 @@ def detect_widely_used(
         )
     else:
         return widely_used
+    # No memoisation: each (file, name) checklist item is visited
+    # exactly once per call, so a per-call cache could never hit —
+    # and a duplicate name within one file would silently reuse the
+    # first definition's count.
     for file_path, items in file_iter:
         for item in items:
             name = item.get("name", "")
             if not name:
                 continue
-            cache_key = f"{file_path}:{name}"
-            count = _caller_count_cache.get(cache_key)
-            if count is None:
-                line = item.get("line_start", 0) or 0
-                try:
-                    target = InternalFunction(
-                        file_path=file_path, name=name, line=line,
-                    )
-                    r = callers_of(checklist, target)
-                    count = len(r.all_callers)
-                except Exception:
-                    logger.debug(
-                        "callers_of failed for %s:%s", file_path, name,
-                        exc_info=True,
-                    )
-                    count = 0
-                _caller_count_cache[cache_key] = count
+            key = f"{file_path}:{name}"
+            line = item.get("line_start", 0) or 0
+            try:
+                target = InternalFunction(
+                    file_path=file_path, name=name, line=line,
+                )
+                r = callers_of(checklist, target)
+                count = len(r.all_callers)
+            except Exception:
+                logger.debug(
+                    "callers_of failed for %s:%s", file_path, name,
+                    exc_info=True,
+                )
+                count = 0
             if count >= threshold:
-                widely_used.add(cache_key)
+                widely_used.add(key)
     return widely_used
 
 

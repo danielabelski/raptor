@@ -273,9 +273,9 @@ def synthesize_and_sweep(
         })
 
     logger.info(
-        "synthesis %s: %d sweep matches, %d new (deduped against %d seen)",
-        cs_result.rule.rule_id, len(cs_result.matches),
-        len(new_hits), len(seen_keys),
+        "synthesis %s: %d sweep matches emitted "
+        "(site-level dedup happens downstream; seen_keys=%d)",
+        cs_result.rule.rule_id, len(new_hits), len(seen_keys),
     )
 
     return SynthesisResult(

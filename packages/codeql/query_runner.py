@@ -378,20 +378,21 @@ class QueryRunner:
                     codeql_cache = Path.home() / ".codeql"
                     codeql_cache.mkdir(parents=True, exist_ok=True)
                     # Retry the download up to 3x with exponential
-                    # backoff. Pre-fix a single attempt — if the
-                    # registry was momentarily slow / a transient
-                    # 503 from ghcr.io / network blip, the whole
-                    # analysis dispatch failed and the operator
-                    # had to re-run the entire scan. Retries are
-                    # cheap (at most 3 sub-2-minute calls) and
-                    # cover the common transient failure modes.
-                    import time as _time
-                    dl = None
+                    # backoff (1s, 2s) via core.run.retry. Pre-fix a
+                    # single attempt — if the registry was
+                    # momentarily slow / a transient 503 from
+                    # ghcr.io / network blip, the whole analysis
+                    # dispatch failed and the operator had to re-run
+                    # the entire scan. Retries are cheap (at most 3
+                    # sub-2-minute calls) and cover the common
+                    # transient failure modes.
+                    from core.run.retry import RetryPolicy, retry_call
                     from packages.codeql.codeql_proxy_hosts import (
                         proxy_hosts_for_codeql,
                     )
-                    for attempt in range(3):
-                        dl = sandbox_run(
+
+                    def _download():
+                        return sandbox_run(
                             [self.codeql_cli, "pack", "download", pack_name],
                             use_egress_proxy=True,
                             # Hostname allowlist auto-discovered from
@@ -412,15 +413,24 @@ class QueryRunner:
                             tool_paths=self._sandbox_tool_paths(),
                             capture_output=True, text=True, timeout=120,
                         )
-                        if dl.returncode == 0:
-                            break
-                        if attempt < 2:
-                            backoff = 2 ** attempt  # 1s, 2s
-                            logger.info(
-                                "Pack download attempt %d failed (rc=%d); "
-                                "retrying in %ds", attempt + 1, dl.returncode, backoff,
-                            )
-                            _time.sleep(backoff)
+
+                    dl = retry_call(
+                        _download,
+                        policy=RetryPolicy(
+                            attempts=3,
+                            # Result-based retry only: sandbox_run
+                            # returns a CompletedProcess; a raised
+                            # exception is a hard failure, not a
+                            # registry blip.
+                            retryable=lambda exc: False,
+                            base_delay=1.0, multiplier=2.0,
+                        ),
+                        retry_result=lambda r: r.returncode != 0,
+                        on_retry=lambda i, exc, delay: logger.info(
+                            "Pack download attempt %d failed; "
+                            "retrying in %ds", i + 1, int(delay),
+                        ),
+                    )
                     if dl.returncode == 0:
                         logger.info("✓ Downloaded %s — retrying analysis", pack_name)
                         result = sandbox_run(

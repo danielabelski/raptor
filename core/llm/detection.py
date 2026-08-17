@@ -151,9 +151,20 @@ def _get_available_ollama_models() -> list[str]:
             ]
             _ollama_checked = True
             return _cached_ollama_models
+        # Non-200: Ollama-shaped endpoint that isn't serving models.
+        # Cache the negative result — without this, every LLMConfig()
+        # construction on a key-less install re-paid the probe (up to
+        # the 2s connect timeout on filtered/proxied hosts), defeating
+        # the per-process cache this function promises.
+        _cached_ollama_models = []
+        _ollama_checked = True
     except Exception as e:  # noqa: BLE001
         ollama_display = RaptorConfig.OLLAMA_HOST if _host_is_local(RaptorConfig.OLLAMA_HOST) else '[REMOTE-OLLAMA]'
         logger.debug("Could not connect to Ollama at %s: %s", ollama_display, e)
+        # Cache the unreachable result too (see the non-200 branch) —
+        # an absent Ollama is the common case on cloud-key installs.
+        _cached_ollama_models = []
+        _ollama_checked = True
     return []
 
 

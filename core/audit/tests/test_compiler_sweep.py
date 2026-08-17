@@ -157,6 +157,34 @@ class TestFamilyOutcomes:
         )
         assert result.outcome == "confirmed"
 
+    def test_unused_result_confirmed(self, tmp_path, sandbox_spy):
+        # CWE-252 family: -Wunused-result on a warn_unused_result-
+        # attributed callee whose result is discarded. Corroborates
+        # the fail_open channel's ignored-return leg.
+        result = _sweep(
+            tmp_path, "unused_result.c", "CWE-252",
+            "the return value of `must_check` is ignored in "
+            "ignores_result",
+            function_name="ignores_result", line_start=5, line_end=8,
+        )
+        assert result.outcome == "confirmed"
+        assert "-Wunused-result" in result.rule_id
+        assert is_tool_evidence(result.rule_id)
+
+    def test_unused_result_checked_is_inconclusive_not_refuted(
+        self, tmp_path, sandbox_spy,
+    ):
+        # The checked caller produces no diagnostic in range; the
+        # family is confirm-only (fires only for TU-visible attributed
+        # callees) so silence must never read as refutation.
+        result = _sweep(
+            tmp_path, "unused_result.c", "CWE-252",
+            "the return value of `must_check` is ignored in "
+            "checks_result",
+            function_name="checks_result", line_start=10, line_end=14,
+        )
+        assert result.outcome == "inconclusive"
+
 
 # ---------------------------------------------------------------------------
 # In-range / out-of-range

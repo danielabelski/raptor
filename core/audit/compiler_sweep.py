@@ -177,6 +177,20 @@ COMPILER_CWE_MAP: dict[str, FamilySpec] = {
         clang_message_re=r"uninitial|garbage|undefined",
         reliable=False,
     ),
+    # Unchecked return value: corroborates the fail_open channel's
+    # ignored-return leg (the diagnostic is receipt material on its
+    # confirmations).
+    "CWE-252": FamilySpec(
+        gcc_ids=("-Wunused-result",),
+        gcc_flags=("-Wunused-result",),
+        clang_engine="warning",
+        clang_ids=("-Wunused-result",),
+        clang_flags=("-Wunused-result",),
+        clang_message_re="",
+        # Fires only for warn_unused_result-attributed callees visible
+        # in this TU; silence proves nothing — confirm-only.
+        reliable=False,
+    ),
 }
 
 

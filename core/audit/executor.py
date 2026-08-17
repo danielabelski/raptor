@@ -74,11 +74,13 @@ def run_executor_sync(
     study_queue: Any | None = None,
     concept_index_ref: list | None = None,
 ) -> ExecutorStats:
-    """Serial executor — drop-in replacement for the current ``for gap`` loop.
+    """Executor entry point — drop-in replacement for the old ``for gap`` loop.
 
-    Consumes tasks from *graph* in topological order one at a time.
-    When ``executor_config.max_workers > 1``, use ``run_executor_async``
-    instead (not yet implemented).
+    With ``max_workers == 1`` (default) tasks are consumed from *graph*
+    in topological order one at a time, serially and deterministically.
+    When ``executor_config.max_workers > 1`` this transparently
+    dispatches to the bounded-concurrency async path (``_run_async``)
+    on a private event loop.
 
     *on_tick* is called once per iteration with the current gap, before
     the review function runs.  The orchestrator uses it for Joern

@@ -1053,6 +1053,11 @@ _SMT_VERBS = {
 }
 
 _SMT_VERB_ROLES = {
+    # Invariant-preservation harness (core.audit.invariant_smt): a sat
+    # model shows one mutation site can break the stated invariant
+    # ASSUMING it held before — real evidence, but blind to caller
+    # context and the base case, so it may not promote on its own.
+    "invariant-preservation": "detection",
     "check-overflow": "verification",
     "check-oob": "verification",
     "check-null-deref": "verification",

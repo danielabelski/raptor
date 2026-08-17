@@ -452,6 +452,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "codeql": TierCounters(),
         "coccinelle": TierCounters(),
         "smt": TierCounters(),
+        "smt_invariant": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "adversarial_refute": TierCounters(),
@@ -9626,6 +9627,24 @@ def _hypothesis_to_tool_chain(
         chain.append({"type": "smt", "config": {"verb": smt_verb}})
         seen_types.add("smt")
 
+    # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
+    # the preservation harness checks the stated invariant against the
+    # function's mutation sites — the channel gap that left every
+    # invariant-refuted verdict permanently inconclusive.
+    if "smt_invariant" not in seen_types:
+        try:
+            from .invariant_smt import extract_invariants
+        except ImportError:
+            pass
+        else:
+            _invs = extract_invariants(hypothesis)
+            if _invs:
+                chain.append({
+                    "type": "smt_invariant",
+                    "config": {"invariant": _invs[0]},
+                })
+                seen_types.add("smt_invariant")
+
     cocci_rule = _hypothesis_to_cocci_check(hypothesis)
     if cocci_rule and "coccinelle" not in seen_types:
         chain.append({"type": "coccinelle", "config": {"rule": cocci_rule}})
@@ -9668,6 +9687,30 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "codeql", "config": {"query": codeql_query}})
 
     return chain
+
+
+def _record_invariant_receipt(
+    config: OrchestratorConfig,
+    file_path: str,
+    function_name: str,
+    inv_res: Any,
+) -> None:
+    """Persist the invariant-preservation receipt (per-site verdicts,
+    violating model when sat) to the audit log — the receipt is the
+    channel's whole value; a bare confirmed/refuted counter would be
+    unauditable."""
+    try:
+        if not config.out_dir:
+            return
+        record = {
+            "action": "invariant_preservation",
+            "file": file_path,
+            "function": function_name,
+        }
+        record.update(inv_res.to_dict())
+        append_audit_log(config.out_dir, record)
+    except Exception:
+        logger.debug("invariant receipt write failed", exc_info=True)
 
 
 # Whether the codeql-tier degradation skip was already announced (log
@@ -10059,6 +10102,48 @@ def _run_tool_chain(
                         confirmed[:] = [c for c in confirmed if not c.startswith("smt:")]
                     if tier_counters:
                         _increment_tier_dict(tier_counters, "smt", "refuted")
+
+            elif tool_type == "smt_invariant":
+                from .invariant_smt import check_invariant_preservation
+
+                inv_res = check_invariant_preservation(
+                    tool_cfg.get("invariant", ""),
+                    source or "",
+                )
+                _record_invariant_receipt(
+                    config, file_path, function_name, inv_res,
+                )
+                if inv_res.outcome == "violable":
+                    # A model breaks the stated invariant at a concrete
+                    # mutation site — detection-role confirmation (see
+                    # sweep._SMT_VERB_ROLES: promotion still needs LLM
+                    # agreement / non-detection corroboration).
+                    confirmed.append("smt:invariant-preservation")
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "smt_invariant", "confirmed",
+                        )
+                elif inv_res.outcome == "preserved":
+                    logger.info(
+                        "invariant preserved %s:%s — %s (%s)",
+                        file_path, function_name,
+                        inv_res.invariant, inv_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "smt_invariant", "refuted",
+                        )
+                else:
+                    logger.info(
+                        "invariant check inconclusive %s:%s — %s (%s)",
+                        file_path, function_name,
+                        inv_res.invariant, inv_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "smt_invariant",
+                            "inconclusive",
+                        )
 
             elif tool_type == "coccinelle":
                 if tool_cfg.get("cross_file"):

@@ -20,7 +20,8 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any
 
 from .condition_extraction import GuardCondition, SinkGuard
 
@@ -39,20 +40,74 @@ class DomainVocabulary:
     Built from ``paired_operations`` entries discovered by study-prep's
     Layer 1 transitive wrapper analysis.  Passed to mechanical checks so
     they use project vocabulary instead of only hardcoded seed names.
+
+    ``lock_pairs`` preserves the exact acquire→release pairing (the
+    name sets alone force a lossy heuristic re-pairing downstream).
+    ``nullable_returns`` / ``auth_predicates`` / ``boundary_transfers``
+    are populated from the corresponding domain-model keys when the
+    study loop emits them, and by target-kind vocab packs
+    (:mod:`core.audit.vocab_packs`).
     """
 
     allocators: frozenset = field(default_factory=frozenset)
     deallocators: frozenset = field(default_factory=frozenset)
     lock_acquires: frozenset = field(default_factory=frozenset)
     lock_releases: frozenset = field(default_factory=frozenset)
+    lock_pairs: frozenset = field(default_factory=frozenset)
     refcount_gets: frozenset = field(default_factory=frozenset)
     refcount_puts: frozenset = field(default_factory=frozenset)
     security_fields: frozenset = field(default_factory=frozenset)
+    nullable_returns: frozenset = field(default_factory=frozenset)
+    auth_predicates: frozenset = field(default_factory=frozenset)
+    boundary_transfers: frozenset = field(default_factory=frozenset)
+
+    def merged(self, other: DomainVocabulary) -> DomainVocabulary:
+        """Union of two vocabularies (learned model + target pack)."""
+        return DomainVocabulary(
+            allocators=self.allocators | other.allocators,
+            deallocators=self.deallocators | other.deallocators,
+            lock_acquires=self.lock_acquires | other.lock_acquires,
+            lock_releases=self.lock_releases | other.lock_releases,
+            lock_pairs=self.lock_pairs | other.lock_pairs,
+            refcount_gets=self.refcount_gets | other.refcount_gets,
+            refcount_puts=self.refcount_puts | other.refcount_puts,
+            security_fields=self.security_fields | other.security_fields,
+            nullable_returns=self.nullable_returns | other.nullable_returns,
+            auth_predicates=self.auth_predicates | other.auth_predicates,
+            boundary_transfers=(
+                self.boundary_transfers | other.boundary_transfers
+            ),
+        )
 
     @classmethod
     def from_domain_model(
-        cls, domain_model: Optional[Dict[str, Any]],
-    ) -> "DomainVocabulary":
+        cls, domain_model: dict[str, Any] | None,
+        target_path: str | Path | None = None,
+    ) -> DomainVocabulary:
+        """Build from a domain model, merged with any target-kind pack.
+
+        ``target_path`` gates the vocab packs: when the target looks
+        like a Linux kernel tree, the kernel pack supplies the kernel
+        API bulk that used to be hardcoded in the checkers. Without a
+        domain model AND without a matching pack this returns the empty
+        vocabulary (checkers fall back to their universal seeds).
+        """
+        vocab = cls._from_domain_model_only(domain_model)
+        if target_path is not None:
+            try:
+                from .vocab_packs import pack_for_target
+                pack = pack_for_target(target_path)
+            except Exception:
+                logger.debug("vocab pack load failed", exc_info=True)
+                pack = None
+            if pack is not None:
+                vocab = vocab.merged(pack)
+        return vocab
+
+    @classmethod
+    def _from_domain_model_only(
+        cls, domain_model: dict[str, Any] | None,
+    ) -> DomainVocabulary:
         if not domain_model:
             return cls()
         pairs = domain_model.get("paired_operations", [])
@@ -61,6 +116,7 @@ class DomainVocabulary:
         dealloc: set[str] = set()
         lock_acq: set[str] = set()
         lock_rel: set[str] = set()
+        lock_pairs: set[tuple[str, str]] = set()
         ref_get: set[str] = set()
         ref_put: set[str] = set()
 
@@ -90,6 +146,9 @@ class DomainVocabulary:
             if buckets:
                 buckets[0].add(acq_name)
                 buckets[1].add(rel_name)
+                if buckets[0] is lock_acq:
+                    # Preserve the exact pairing the study discovered.
+                    lock_pairs.add((acq_name, rel_name))
 
         sec_fields: set[str] = set()
         for name in domain_model.get("security_fields", []):
@@ -102,14 +161,32 @@ class DomainVocabulary:
             if isinstance(attr, str):
                 sec_fields.add(attr)
 
+        nullable: set[str] = set()
+        for name in domain_model.get("nullable_returns", []):
+            if isinstance(name, str):
+                nullable.add(name.split("(")[0].strip())
+
+        auth: set[tuple[str, str]] = set()
+        for entry in domain_model.get("auth_predicates", []):
+            if isinstance(entry, str):
+                auth.add((entry.split("(")[0].strip(), "domain"))
+            elif isinstance(entry, dict) and entry.get("name"):
+                auth.add((
+                    str(entry["name"]).split("(")[0].strip(),
+                    str(entry.get("kind", "domain")),
+                ))
+
         return cls(
             allocators=frozenset(alloc),
             deallocators=frozenset(dealloc),
             lock_acquires=frozenset(lock_acq),
             lock_releases=frozenset(lock_rel),
+            lock_pairs=frozenset(lock_pairs),
             refcount_gets=frozenset(ref_get),
             refcount_puts=frozenset(ref_put),
             security_fields=frozenset(sec_fields),
+            nullable_returns=frozenset(nullable),
+            auth_predicates=frozenset(auth),
         )
 
     @property
@@ -117,7 +194,10 @@ class DomainVocabulary:
         return bool(
             self.allocators or self.deallocators
             or self.lock_acquires or self.lock_releases
+            or self.lock_pairs
             or self.refcount_gets or self.refcount_puts
+            or self.nullable_returns or self.auth_predicates
+            or self.boundary_transfers
         )
 
 
@@ -129,21 +209,21 @@ class SmtSufficiencyResult:
     """Result of SMT check on guard sufficiency."""
 
     guard_text: str
-    feasible: Optional[bool] = None  # True=guard insufficient, False=guard sufficient
+    feasible: bool | None = None  # True=guard insufficient, False=guard sufficient
     reasoning: str = ""
-    concrete_values: Dict[str, str] = field(default_factory=dict)
-    witness: Optional[Dict[str, int]] = None
+    concrete_values: dict[str, str] = field(default_factory=dict)
+    witness: dict[str, int] | None = None
     error: str = ""
 
     @property
-    def guard_sufficient(self) -> Optional[bool]:
+    def guard_sufficient(self) -> bool | None:
         """True if the guard provably prevents the bug."""
         if self.feasible is None:
             return None
         return not self.feasible  # infeasible overflow = sufficient guard
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "guard_text": self.guard_text,
             "reasoning": self.reasoning,
         }
@@ -163,13 +243,13 @@ class SmtSufficiencyResult:
 class PathFeasibilityResult:
     """Result of checking whether a path to a sink is satisfiable."""
 
-    feasible: Optional[bool] = None  # True=path reachable, False=dead path
+    feasible: bool | None = None  # True=path reachable, False=dead path
     reasoning: str = ""
-    witness: Optional[Dict[str, int]] = None
+    witness: dict[str, int] | None = None
     guard_count: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"reasoning": self.reasoning, "guard_count": self.guard_count}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"reasoning": self.reasoning, "guard_count": self.guard_count}
         if self.feasible is not None:
             d["feasible"] = self.feasible
         if self.witness:
@@ -184,10 +264,10 @@ class SignedMismatchResult:
     mismatch: bool = False
     variable: str = ""
     reasoning: str = ""
-    witness: Optional[Dict[str, int]] = None
+    witness: dict[str, int] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"mismatch": self.mismatch, "reasoning": self.reasoning}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"mismatch": self.mismatch, "reasoning": self.reasoning}
         if self.variable:
             d["variable"] = self.variable
         if self.witness:
@@ -223,12 +303,12 @@ class BoundsConstraint:
 
 def extract_bounds_constraints(
     guard: GuardCondition,
-) -> List[BoundsConstraint]:
+) -> list[BoundsConstraint]:
     """Extract numeric bounds constraints from a guard condition.
 
     Uses concrete_values when available for constant resolution.
     """
-    constraints: List[BoundsConstraint] = []
+    constraints: list[BoundsConstraint] = []
     text = guard.text
 
     # Resolve constants in the text
@@ -261,17 +341,17 @@ def extract_bounds_constraints(
     return constraints
 
 
-def _try_parse_int(s: str) -> Optional[int]:
+def _try_parse_int(s: str) -> int | None:
     """Try to parse an integer from string (decimal or hex)."""
     try:
-        if s.startswith("0x") or s.startswith("0X"):
+        if s.startswith(("0x", "0X")):
             return int(s, 16)
         return int(s)
     except (ValueError, TypeError):
         return None
 
 
-def _flip_operator(op: str) -> Optional[str]:
+def _flip_operator(op: str) -> str | None:
     """Flip a comparison operator for reversed operands."""
     flips = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
     return flips.get(op)
@@ -288,7 +368,7 @@ def constraints_for_guard(
     guard: GuardCondition,
     *,
     respect_polarity: bool = True,
-) -> List[BoundsConstraint]:
+) -> list[BoundsConstraint]:
     """Extract constraints with polarity awareness.
 
     When polarity is "excluded" (sink is in the else-branch), the
@@ -314,7 +394,7 @@ def constraints_for_guard(
 
 
 def check_path_feasibility(
-    guards: List[GuardCondition],
+    guards: list[GuardCondition],
 ) -> PathFeasibilityResult:
     """Check whether the conjunction of guard conditions is satisfiable.
 
@@ -324,7 +404,7 @@ def check_path_feasibility(
     from .safety_contract import assert_boost_only
     assert_boost_only("condition_smt")
 
-    all_constraints: List[BoundsConstraint] = []
+    all_constraints: list[BoundsConstraint] = []
     for g in guards:
         all_constraints.extend(constraints_for_guard(g, respect_polarity=True))
 
@@ -348,8 +428,8 @@ def check_path_feasibility(
 
 
 def _try_z3_path_feasibility(
-    constraints: List[BoundsConstraint],
-) -> Optional[Tuple[bool, str, Optional[Dict[str, int]]]]:
+    constraints: list[BoundsConstraint],
+) -> tuple[bool, str, dict[str, int] | None] | None:
     """Z3 path feasibility check. Returns None if Z3 unavailable."""
     try:
         import importlib.util
@@ -363,32 +443,33 @@ def _try_z3_path_feasibility(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 return pickle.loads(proc.stdout)
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("z3 child timed out")
     return None
 
 
 def _arithmetic_path_feasibility(
-    constraints: List[BoundsConstraint],
+    constraints: list[BoundsConstraint],
     guard_count: int,
 ) -> PathFeasibilityResult:
     """Simple arithmetic path-feasibility check without Z3.
 
     Detects contradictions like ``x < 10 && x > 20``.
     """
-    per_var: Dict[str, List[BoundsConstraint]] = {}
+    per_var: dict[str, list[BoundsConstraint]] = {}
     for c in constraints:
         per_var.setdefault(c.variable, []).append(c)
 
     for var, cs in per_var.items():
-        lower: Optional[int] = None
-        upper: Optional[int] = None
+        lower: int | None = None
+        upper: int | None = None
         for c in cs:
             if c.operator in ("<", "<="):
                 ub = c.bound_value - 1 if c.operator == "<" else c.bound_value
@@ -465,7 +546,7 @@ def _try_z3_signed_mismatch(
     operator: str,
     bound: int,
     bit_width: int,
-) -> Optional[SignedMismatchResult]:
+) -> SignedMismatchResult | None:
     """Z3 check for signed/unsigned mismatch. Returns None if Z3 unavailable."""
     try:
         import importlib.util
@@ -479,14 +560,15 @@ def _try_z3_signed_mismatch(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 return pickle.loads(proc.stdout)
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("z3 child timed out")
     return None
 
 
@@ -498,9 +580,9 @@ def _try_z3_signed_mismatch(
 def check_off_by_one(
     sink_guard: SinkGuard,
     *,
-    buffer_size: Optional[int] = None,
+    buffer_size: int | None = None,
     copies_null_terminator: bool = True,
-) -> List[SmtSufficiencyResult]:
+) -> list[SmtSufficiencyResult]:
     """Detect off-by-one when guard allows exactly buffer_size but sink appends.
 
     Pattern: ``if (len <= buf_size) strncpy(dst, src, len)``
@@ -519,7 +601,7 @@ def check_off_by_one(
     if api_base not in null_term_sinks:
         return []
 
-    results: List[SmtSufficiencyResult] = []
+    results: list[SmtSufficiencyResult] = []
     for guard in sink_guard.guards:
         if not guard.resolvable or not guard.concrete_values:
             continue
@@ -560,9 +642,9 @@ def check_off_by_one(
 def check_guard_sufficiency(
     sink_guard: SinkGuard,
     *,
-    buffer_size: Optional[int] = None,
-    sink_context: Optional[Dict[str, Any]] = None,
-) -> List[SmtSufficiencyResult]:
+    buffer_size: int | None = None,
+    sink_context: dict[str, Any] | None = None,
+) -> list[SmtSufficiencyResult]:
     """Check whether guard conditions are sufficient via SMT.
 
     For each resolvable guard with concrete values, formulates a query:
@@ -579,7 +661,7 @@ def check_guard_sufficiency(
     from .safety_contract import assert_boost_only
     assert_boost_only("condition_smt")
 
-    results: List[SmtSufficiencyResult] = []
+    results: list[SmtSufficiencyResult] = []
 
     for guard in sink_guard.guards:
         if not guard.resolvable or not guard.concrete_values:
@@ -602,11 +684,11 @@ def check_guard_sufficiency(
 
 
 def _check_constraints_vs_safety(
-    constraints: List[BoundsConstraint],
+    constraints: list[BoundsConstraint],
     guard: GuardCondition,
-    buffer_size: Optional[int],
+    buffer_size: int | None,
     sink_api: str,
-    sink_context: Optional[Dict[str, Any]],
+    sink_context: dict[str, Any] | None,
 ) -> SmtSufficiencyResult:
     """Check if constraints are sufficient for the safety property.
 
@@ -630,10 +712,10 @@ def _check_constraints_vs_safety(
 
 
 def _try_z3_check(
-    constraints: List[BoundsConstraint],
-    buffer_size: Optional[int],
+    constraints: list[BoundsConstraint],
+    buffer_size: int | None,
     sink_api: str,
-) -> Optional[Tuple[bool, str, Optional[Dict[str, int]]]]:
+) -> tuple[bool, str, dict[str, int] | None] | None:
     """Try Z3 SMT check. Returns None if Z3 unavailable.
 
     Runs in a forked subprocess so Z3 assertion failures (segfaults in
@@ -667,12 +749,12 @@ _Z3_CHILD_SCRIPT_V2 = (
 
 
 def _z3_in_subprocess(
-    constraints: List["BoundsConstraint"],
-    buffer_size: Optional[int],
+    constraints: list[BoundsConstraint],
+    buffer_size: int | None,
     sink_api: str,
     *,
     timeout: int = 10,
-) -> Optional[Tuple[bool, str, Optional[Dict[str, int]]]]:
+) -> tuple[bool, str, dict[str, int] | None] | None:
     """Run Z3 in a subprocess; return None on crash or timeout.
 
     Uses subprocess.Popen (fork+exec) rather than bare os.fork() so the
@@ -684,12 +766,13 @@ def _z3_in_subprocess(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT],
             input=payload, capture_output=True, timeout=timeout,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 return pickle.loads(proc.stdout)
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
         logger.debug("Z3 subprocess exited with code %d", proc.returncode)
     except subprocess.TimeoutExpired:
         logger.debug("Z3 subprocess timed out after %ds", timeout)
@@ -697,10 +780,10 @@ def _z3_in_subprocess(
 
 
 def _z3_dispatch(
-    constraints: List["BoundsConstraint"],
-    buffer_size: Optional[int],
+    constraints: list[BoundsConstraint],
+    buffer_size: int | None,
     sink_api: str,
-) -> Optional[Tuple[bool, str, Optional[Dict[str, int]]]]:
+) -> tuple[bool, str, dict[str, int] | None] | None:
     """Route to the appropriate Z3 check."""
     memcpy_sinks = {
         "memcpy", "memmove", "strncpy", "strncat", "bcopy",
@@ -722,9 +805,9 @@ def _z3_dispatch(
 
 
 def _z3_overflow_check(
-    constraints: List[BoundsConstraint],
+    constraints: list[BoundsConstraint],
     buffer_size: int,
-) -> Tuple[bool, str, Optional[Dict[str, int]]]:
+) -> tuple[bool, str, dict[str, int] | None]:
     """Z3: Can length still overflow given the guard constraints?"""
     import z3
 
@@ -732,7 +815,7 @@ def _z3_overflow_check(
     solver.set("timeout", 5000)
 
     # Create variables for each constraint's subject
-    vars_map: Dict[str, z3.ArithRef] = {}
+    vars_map: dict[str, z3.ArithRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.Int(c.variable)
@@ -754,7 +837,7 @@ def _z3_overflow_check(
             solver.add(v != c.bound_value)
 
     # Ask: can any constrained variable exceed buffer_size?
-    for name, v in vars_map.items():
+    for v in vars_map.values():
         solver.push()
         solver.add(v > buffer_size)
         result = solver.check()
@@ -780,15 +863,15 @@ def _z3_overflow_check(
 
 
 def _z3_alloc_overflow_check(
-    constraints: List[BoundsConstraint],
-) -> Tuple[bool, str, Optional[Dict[str, int]]]:
+    constraints: list[BoundsConstraint],
+) -> tuple[bool, str, dict[str, int] | None]:
     """Z3: Can an allocation size integer-overflow given the constraints?"""
     import z3
 
     solver = z3.Solver()
     solver.set("timeout", 5000)
 
-    vars_map: Dict[str, z3.BitVecRef] = {}
+    vars_map: dict[str, z3.BitVecRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.BitVec(c.variable, 64)
@@ -844,15 +927,15 @@ def _z3_alloc_overflow_check(
 
 
 def _z3_consistency_check(
-    constraints: List[BoundsConstraint],
-) -> Tuple[bool, str, Optional[Dict[str, int]]]:
+    constraints: list[BoundsConstraint],
+) -> tuple[bool, str, dict[str, int] | None]:
     """Z3: Are the constraints internally consistent?"""
     import z3
 
     solver = z3.Solver()
     solver.set("timeout", 5000)
 
-    vars_map: Dict[str, z3.ArithRef] = {}
+    vars_map: dict[str, z3.ArithRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.Int(c.variable)
@@ -902,8 +985,8 @@ def _z3_dispatch_v2(args: tuple):
 
 
 def _z3_path_feasibility_check(
-    constraints: List["BoundsConstraint"],
-) -> Tuple[bool, str, Optional[Dict[str, int]]]:
+    constraints: list[BoundsConstraint],
+) -> tuple[bool, str, dict[str, int] | None]:
     """Z3: Check if all constraints can be satisfied simultaneously.
 
     Uses z3.Int (integer sort) rather than bitvectors because guards
@@ -911,12 +994,12 @@ def _z3_path_feasibility_check(
     bit-width-bounded.  Uses core.smt_solver.session for solver
     construction with timeout.
     """
-    from core.smt_solver.session import new_solver
     from core.smt_solver.availability import z3
+    from core.smt_solver.session import new_solver
 
     solver = new_solver()
 
-    vars_map: Dict[str, z3.ArithRef] = {}
+    vars_map: dict[str, z3.ArithRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.Int(c.variable)
@@ -958,16 +1041,16 @@ def _z3_signed_mismatch_check(
     operator: str,
     bound: int,
     bit_width: int,
-) -> "SignedMismatchResult":
+) -> SignedMismatchResult:
     """Z3: Check if signed comparison allows negative values that wrap unsigned.
 
     Uses core.smt_solver bitvec primitives for variable/value
     construction and signedness-aware comparison routing.
     """
-    from core.smt_solver.session import new_solver
-    from core.smt_solver.bitvec import mk_var, mk_val, lt, le, gt
-    from core.smt_solver.witness import bv_to_int
     from core.smt_solver.availability import z3
+    from core.smt_solver.bitvec import gt, le, lt, mk_val, mk_var
+    from core.smt_solver.session import new_solver
+    from core.smt_solver.witness import bv_to_int
 
     signed_var = mk_var(f"{variable}_signed", bit_width)
     unsigned_var = mk_var(f"{variable}_unsigned", bit_width)
@@ -994,7 +1077,7 @@ def _z3_signed_mismatch_check(
         try:
             sv = bv_to_int(signed_val.as_long(), bit_width, signed=True)
             uv = bv_to_int(unsigned_val.as_long(), bit_width, signed=False)
-        except (AttributeError, ValueError, Exception):
+        except Exception:  # noqa: BLE001 — any model-extraction failure falls back to sentinel witnesses
             sv, uv = -1, (1 << bit_width) - 1
         return SignedMismatchResult(
             mismatch=True,
@@ -1012,8 +1095,8 @@ def _z3_signed_mismatch_check(
 
 def _z3_auth_bypass_check(
     guard_text: str,
-    bypassed_checks: List[str],
-) -> "AuthBypassResult":
+    bypassed_checks: list[str],
+) -> AuthBypassResult:
     """Z3: Check if an early-return guard condition is satisfiable.
 
     If SAT, the early return can be taken, bypassing the later auth
@@ -1021,13 +1104,13 @@ def _z3_auth_bypass_check(
     as Z3 integer constraints.  A satisfying assignment is the witness
     that demonstrates the bypass.
     """
-    from core.smt_solver.session import new_solver
     from core.smt_solver.availability import z3
+    from core.smt_solver.session import new_solver
 
     comparisons = _COMPARISON_RE.findall(guard_text)
     comparisons_rev = _COMPARISON_REV_RE.findall(guard_text)
 
-    constraints: List[BoundsConstraint] = []
+    constraints: list[BoundsConstraint] = []
     for var, op, val_str in comparisons:
         val = _try_parse_int(val_str)
         if val is not None:
@@ -1052,7 +1135,7 @@ def _z3_auth_bypass_check(
         )
 
     solver = new_solver()
-    vars_map: Dict[str, "z3.ArithRef"] = {}
+    vars_map: dict[str, z3.ArithRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.Int(c.variable)
@@ -1075,7 +1158,7 @@ def _z3_auth_bypass_check(
     result = solver.check()
     if result == z3.sat:
         model = solver.model()
-        witness: Dict[str, Any] = {}
+        witness: dict[str, Any] = {}
         for name, var in vars_map.items():
             val = model[var]
             if val is not None:
@@ -1111,9 +1194,9 @@ def _z3_auth_bypass_check(
 
 
 def _arithmetic_check(
-    constraints: List[BoundsConstraint],
+    constraints: list[BoundsConstraint],
     guard: GuardCondition,
-    buffer_size: Optional[int],
+    buffer_size: int | None,
     sink_api: str,
 ) -> SmtSufficiencyResult:
     """Simple arithmetic reasoning when Z3 is unavailable.
@@ -1132,20 +1215,21 @@ def _arithmetic_check(
             concrete_values=guard.concrete_values,
         )
 
-    tightest_max: Optional[int] = None
+    tightest_max: int | None = None
     tightest_var: str = ""
 
     for c in constraints:
-        max_allowed: Optional[int] = None
+        max_allowed: int | None = None
         if c.operator == "<":
             max_allowed = c.bound_value - 1
         elif c.operator == "<=":
             max_allowed = c.bound_value
 
-        if max_allowed is not None:
-            if tightest_max is None or max_allowed < tightest_max:
-                tightest_max = max_allowed
-                tightest_var = c.variable
+        if max_allowed is not None and (
+            tightest_max is None or max_allowed < tightest_max
+        ):
+            tightest_max = max_allowed
+            tightest_var = c.variable
 
     if tightest_max is None:
         return SmtSufficiencyResult(
@@ -1183,10 +1267,10 @@ def _arithmetic_check(
 
 
 def check_all_sufficiency(
-    guards: List[SinkGuard],
+    guards: list[SinkGuard],
     *,
-    buffer_sizes: Optional[Dict[int, int]] = None,
-) -> List[List[SmtSufficiencyResult]]:
+    buffer_sizes: dict[int, int] | None = None,
+) -> list[list[SmtSufficiencyResult]]:
     """Check sufficiency for all guards.
 
     Args:
@@ -1242,12 +1326,12 @@ class AuthBypassResult:
     bypass_found: bool = False
     early_return_line: int = 0
     guard_text: str = ""
-    bypassed_checks: List[str] = field(default_factory=list)
+    bypassed_checks: list[str] = field(default_factory=list)
     reasoning: str = ""
-    witness: Optional[Dict[str, Any]] = None
+    witness: dict[str, Any] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "bypass_found": self.bypass_found,
             "reasoning": self.reasoning,
         }
@@ -1339,17 +1423,17 @@ def check_auth_bypass(source: str) -> AuthBypassResult:
 
 
 def _extract_auth_checks(
-    lines: List[str],
-) -> List[Tuple[int, str, str]]:
+    lines: list[str],
+) -> list[tuple[int, str, str]]:
     """Extract (line_idx, check_type, call_text) for auth checks.
 
     call_text includes function name and arguments so that e.g.
     capable(CAP_SYS_ADMIN) and capable(CAP_NET_ADMIN) are distinct.
     """
-    results: List[Tuple[int, str, str]] = []
+    results: list[tuple[int, str, str]] = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
         for pattern, check_type in _AUTH_CHECK_PATTERNS:
             m = pattern.search(line)
@@ -1373,16 +1457,16 @@ def _extract_call_text(line: str, start: int) -> str:
     return line[start:].strip()
 
 
-def _extract_success_returns(lines: List[str]) -> List[int]:
+def _extract_success_returns(lines: list[str]) -> list[int]:
     """Extract line indices of success returns."""
-    results: List[int] = []
+    results: list[int] = []
     for i, line in enumerate(lines):
         if _SUCCESS_RETURN_RE.match(line):
             results.append(i)
     return results
 
 
-def _find_enclosing_guard(lines: List[str], ret_line: int) -> str:
+def _find_enclosing_guard(lines: list[str], ret_line: int) -> str:
     """Walk backwards from ret_line to find the enclosing if-condition."""
     depth = 0
     for i in range(ret_line - 1, max(ret_line - 15, -1), -1):
@@ -1405,7 +1489,7 @@ def _find_enclosing_guard(lines: List[str], ret_line: int) -> str:
 
 
 def _guard_is_auth_check(
-    guard_text: str, auth_checks: List[Tuple[int, str, str]],
+    guard_text: str, auth_checks: list[tuple[int, str, str]],
 ) -> bool:
     """Check if the guard itself is one of the auth checks."""
     for _, _, func_name in auth_checks:
@@ -1416,8 +1500,8 @@ def _guard_is_auth_check(
 
 def _try_z3_auth_bypass(
     guard_text: str,
-    bypassed_checks: List[str],
-) -> Optional[AuthBypassResult]:
+    bypassed_checks: list[str],
+) -> AuthBypassResult | None:
     """Z3 feasibility check on the bypass guard. Returns None if Z3 unavailable."""
     try:
         import importlib.util
@@ -1431,14 +1515,15 @@ def _try_z3_auth_bypass(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 return pickle.loads(proc.stdout)
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("z3 child timed out")
     return None
 
 
@@ -1478,10 +1563,10 @@ class LockDisciplineResult:
     acquire_line: int = 0
     return_line: int = 0
     reasoning: str = ""
-    witness: Optional[Dict[str, Any]] = None
+    witness: dict[str, Any] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "violation_found": self.violation_found,
             "reasoning": self.reasoning,
         }
@@ -1596,7 +1681,7 @@ def _extract_lock_object(line: str, match_end: int) -> str:
     """
     rest = line[match_end:]
     depth = 0
-    buf: List[str] = []
+    buf: list[str] = []
     for ch in rest:
         if ch == "(":
             depth += 1
@@ -1617,9 +1702,9 @@ def _extract_lock_object(line: str, match_end: int) -> str:
 
 
 def _extract_lock_acquires(
-    lines: List[str],
+    lines: list[str],
     vocab: DomainVocabulary = _EMPTY_VOCAB,
-) -> List[Tuple[int, str, str, str]]:
+) -> list[tuple[int, str, str, str]]:
     """Extract (line_idx, lock_function, expected_unlock, lock_object).
 
     ``lock_object`` is the normalised first argument (e.g. ``ep->lock``).
@@ -1650,10 +1735,10 @@ def _extract_lock_acquires(
             pairs.append((re.compile(pat_str), unlock_name))
             known_acq.add(pat_str)
 
-    results: List[Tuple[int, str, str, str]] = []
+    results: list[tuple[int, str, str, str]] = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
         for pattern, unlock_name in pairs:
             m = pattern.search(line)
@@ -1679,15 +1764,15 @@ def _paired_name_match(acquire: str, release: str) -> bool:
 
 
 def _find_unlocks(
-    lines: List[str],
+    lines: list[str],
     unlock_name: str,
     lock_object: str = "",
-) -> List[int]:
+) -> list[int]:
     """Find line indices where unlock_name is called on lock_object."""
     pat = re.compile(
         rf"\b{re.escape(unlock_name)}(?:_irq(?:restore)?|_bh)?\s*\("
     )
-    results: List[int] = []
+    results: list[int] = []
     for i, line in enumerate(lines):
         m = pat.search(line)
         if not m:
@@ -1700,14 +1785,14 @@ def _find_unlocks(
     return results
 
 
-def _extract_returns(lines: List[str]) -> List[int]:
+def _extract_returns(lines: list[str]) -> list[int]:
     """Extract line indices of return statements."""
     return [i for i, line in enumerate(lines) if _RETURN_RE.match(line)]
 
 
-def _extract_goto_targets(lines: List[str]) -> Dict[int, str]:
+def _extract_goto_targets(lines: list[str]) -> dict[int, str]:
     """Map line_idx → goto target label."""
-    results: Dict[int, str] = {}
+    results: dict[int, str] = {}
     for i, line in enumerate(lines):
         m = _GOTO_RE.search(line)
         if m:
@@ -1715,9 +1800,9 @@ def _extract_goto_targets(lines: List[str]) -> Dict[int, str]:
     return results
 
 
-def _extract_labels(lines: List[str]) -> Dict[str, int]:
+def _extract_labels(lines: list[str]) -> dict[str, int]:
     """Map label_name → line_idx."""
-    results: Dict[str, int] = {}
+    results: dict[str, int] = {}
     for i, line in enumerate(lines):
         m = _LABEL_RE.match(line)
         if m and m.group(1) not in ("default", "case"):
@@ -1727,13 +1812,13 @@ def _extract_labels(lines: List[str]) -> Dict[str, int]:
 
 def _return_is_in_error_goto_block(
     ret_line: int,
-    lines: List[str],
-    goto_targets: Dict[int, str],
-    labels: Dict[str, int],
+    lines: list[str],
+    goto_targets: dict[int, str],
+    labels: dict[str, int],
     unlock_name: str,
 ) -> bool:
     """Check if the return is in a goto-target block that unlocks."""
-    for label_name, label_line in labels.items():
+    for label_line in labels.values():
         if label_line > ret_line:
             continue
         if ret_line - label_line > 10:
@@ -1748,8 +1833,8 @@ def _try_z3_lock_discipline(
     guard_text: str,
     lock_func: str,
     ret_line: int,
-    bypassed_unlocks: List[str],
-) -> Optional[LockDisciplineResult]:
+    bypassed_unlocks: list[str],
+) -> LockDisciplineResult | None:
     """Z3 feasibility check on the guard of a lock-held return."""
     if not guard_text:
         return None
@@ -1765,14 +1850,15 @@ def _try_z3_lock_discipline(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 return pickle.loads(proc.stdout)
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("z3 child timed out")
     return None
 
 
@@ -1780,15 +1866,15 @@ def _z3_lock_discipline_check(
     guard_text: str,
     lock_func: str,
     ret_line: int,
-) -> "LockDisciplineResult":
+) -> LockDisciplineResult:
     """Z3: Check if a lock-held return guard is satisfiable."""
-    from core.smt_solver.session import new_solver
     from core.smt_solver.availability import z3
+    from core.smt_solver.session import new_solver
 
     comparisons = _COMPARISON_RE.findall(guard_text)
     comparisons_rev = _COMPARISON_REV_RE.findall(guard_text)
 
-    constraints: List[BoundsConstraint] = []
+    constraints: list[BoundsConstraint] = []
     for var, op, val_str in comparisons:
         val = _try_parse_int(val_str)
         if val is not None:
@@ -1812,7 +1898,7 @@ def _z3_lock_discipline_check(
         )
 
     solver = new_solver()
-    vars_map: Dict[str, "z3.ArithRef"] = {}
+    vars_map: dict[str, z3.ArithRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.Int(c.variable)
@@ -1835,7 +1921,7 @@ def _z3_lock_discipline_check(
     result = solver.check()
     if result == z3.sat:
         model = solver.model()
-        witness: Dict[str, Any] = {}
+        witness: dict[str, Any] = {}
         for name, var in vars_map.items():
             val = model[var]
             if val is not None:
@@ -1907,10 +1993,10 @@ class ResourceLeakResult:
     alloc_line: int = 0
     return_line: int = 0
     reasoning: str = ""
-    witness: Optional[Dict[str, Any]] = None
+    witness: dict[str, Any] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "leak_found": self.leak_found,
             "reasoning": self.reasoning,
         }
@@ -2000,9 +2086,9 @@ def check_resource_leak(
 
 
 def _extract_allocs(
-    lines: List[str],
+    lines: list[str],
     vocab: DomainVocabulary = _EMPTY_VOCAB,
-) -> List[Tuple[int, str, str]]:
+) -> list[tuple[int, str, str]]:
     """Extract (line_idx, variable_name, alloc_function) tuples."""
     patterns = list(_ALLOC_PATTERNS)
     if vocab.allocators:
@@ -2012,10 +2098,10 @@ def _extract_allocs(
         names = "|".join(re.escape(n) for n in sorted(vocab.refcount_gets))
         patterns.append(re.compile(rf"\b(\w+)\s*=\s*({names})\s*\("))
 
-    results: List[Tuple[int, str, str]] = []
+    results: list[tuple[int, str, str]] = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
         for pattern in patterns:
             m = pattern.search(line)
@@ -2025,9 +2111,9 @@ def _extract_allocs(
     return results
 
 
-def _extract_error_returns(lines: List[str]) -> List[int]:
+def _extract_error_returns(lines: list[str]) -> list[int]:
     """Extract line indices of error return statements."""
-    results: List[int] = []
+    results: list[int] = []
     for i, line in enumerate(lines):
         if _ERROR_RETURN_RE.match(line):
             results.append(i)
@@ -2037,7 +2123,7 @@ def _extract_error_returns(lines: List[str]) -> List[int]:
 def _build_free_patterns(
     var_name: str,
     vocab: DomainVocabulary = _EMPTY_VOCAB,
-) -> Tuple[re.Pattern, re.Pattern]:
+) -> tuple[re.Pattern, re.Pattern]:
     """Build free-detection regexes, extended with study-discovered names."""
     all_frees = _FREE_NAMES | vocab.deallocators | vocab.refcount_puts
     free_pat = re.compile(
@@ -2051,7 +2137,7 @@ def _build_free_patterns(
 
 
 def _var_freed_between(
-    lines: List[str], var_name: str, start: int, end: int,
+    lines: list[str], var_name: str, start: int, end: int,
     vocab: DomainVocabulary = _EMPTY_VOCAB,
 ) -> int:
     """Return line index where var_name is freed, or -1 if not found."""
@@ -2063,9 +2149,9 @@ def _var_freed_between(
 
 
 def _goto_bypasses_free(
-    lines: List[str],
-    goto_targets: Dict[int, str],
-    labels: Dict[str, int],
+    lines: list[str],
+    goto_targets: dict[int, str],
+    labels: dict[str, int],
     alloc_line: int,
     free_line: int,
     var_name: str,
@@ -2134,9 +2220,9 @@ def _goto_bypasses_free(
 
 def _return_gotos_to_free(
     ret_line: int,
-    lines: List[str],
-    goto_targets: Dict[int, str],
-    labels: Dict[str, int],
+    lines: list[str],
+    goto_targets: dict[int, str],
+    labels: dict[str, int],
     var_name: str,
     vocab: DomainVocabulary = _EMPTY_VOCAB,
 ) -> bool:
@@ -2159,7 +2245,7 @@ def _return_gotos_to_free(
 
 
 def _null_guarded_return(
-    lines: List[str], alloc_line: int, ret_line: int, var_name: str,
+    lines: list[str], alloc_line: int, ret_line: int, var_name: str,
 ) -> bool:
     """Check if the error return is guarded by a NULL check on the alloc var.
 
@@ -2177,9 +2263,8 @@ def _null_guarded_return(
     ]
     for i in range(alloc_line + 1, min(ret_line + 1, len(lines))):
         line = lines[i]
-        if any(p.search(line) for p in null_pats):
-            if ret_line <= i + 3:
-                return True
+        if any(p.search(line) for p in null_pats) and ret_line <= i + 3:
+            return True
     return False
 
 
@@ -2189,7 +2274,7 @@ def _try_z3_resource_leak(
     alloc_func: str,
     alloc_line: int,
     ret_line: int,
-) -> Optional[ResourceLeakResult]:
+) -> ResourceLeakResult | None:
     """Z3 feasibility check on the guard of a leak-path return."""
     if not guard_text:
         return None
@@ -2208,14 +2293,15 @@ def _try_z3_resource_leak(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 return pickle.loads(proc.stdout)
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("z3 child timed out")
     return None
 
 
@@ -2225,15 +2311,15 @@ def _z3_resource_leak_check(
     alloc_func: str,
     alloc_line: int,
     ret_line: int,
-) -> "ResourceLeakResult":
+) -> ResourceLeakResult:
     """Z3: Check if a leak-path guard is satisfiable."""
-    from core.smt_solver.session import new_solver
     from core.smt_solver.availability import z3
+    from core.smt_solver.session import new_solver
 
     comparisons = _COMPARISON_RE.findall(guard_text)
     comparisons_rev = _COMPARISON_REV_RE.findall(guard_text)
 
-    constraints: List[BoundsConstraint] = []
+    constraints: list[BoundsConstraint] = []
     for var, op, val_str in comparisons:
         val = _try_parse_int(val_str)
         if val is not None:
@@ -2260,7 +2346,7 @@ def _z3_resource_leak_check(
         )
 
     solver = new_solver()
-    vars_map: Dict[str, "z3.ArithRef"] = {}
+    vars_map: dict[str, z3.ArithRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.Int(c.variable)
@@ -2283,7 +2369,7 @@ def _z3_resource_leak_check(
     result = solver.check()
     if result == z3.sat:
         model = solver.model()
-        witness: Dict[str, Any] = {}
+        witness: dict[str, Any] = {}
         for name, zvar in vars_map.items():
             val = model[zvar]
             if val is not None:
@@ -2357,8 +2443,8 @@ class NullPropagationResult:
     deref_line: int = 0
     reasoning: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "null_deref_found": self.null_deref_found,
             "reasoning": self.reasoning,
         }
@@ -2374,7 +2460,7 @@ class NullPropagationResult:
 
 
 def check_null_propagation(
-    source: str, vocab: "DomainVocabulary | None" = None,
+    source: str, vocab: DomainVocabulary | None = None,
 ) -> NullPropagationResult:
     """Detect use of a possibly-NULL pointer without a null check."""
     from .safety_contract import assert_boost_only
@@ -2441,7 +2527,7 @@ _EXIT_RE = re.compile(
 )
 
 
-def _null_check_exits(lines: List[str], check_line: int) -> bool:
+def _null_check_exits(lines: list[str], check_line: int) -> bool:
     """Verify the null-check block contains an exit (return/goto/break)."""
     for i in range(check_line, min(check_line + 4, len(lines))):
         if _EXIT_RE.search(lines[i]):
@@ -2450,16 +2536,16 @@ def _null_check_exits(lines: List[str], check_line: int) -> bool:
 
 
 def _extract_nullable_assigns(
-    lines: List[str],
-    vocab: "DomainVocabulary | None" = None,
-) -> List[Tuple[int, str, str]]:
+    lines: list[str],
+    vocab: DomainVocabulary | None = None,
+) -> list[tuple[int, str, str]]:
     """Extract (line_idx, var_name, source_function) from nullable calls."""
     extra = vocab.allocators if vocab is not None else frozenset()
     nullable_re = _NULLABLE_CALLS if not extra else _build_nullable_re(extra)
-    results: List[Tuple[int, str, str]] = []
+    results: list[tuple[int, str, str]] = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
         m = nullable_re.search(line)
         if m:
@@ -2468,8 +2554,8 @@ def _extract_nullable_assigns(
 
 
 def _find_null_check(
-    lines: List[str], var_name: str, after_line: int,
-) -> Optional[int]:
+    lines: list[str], var_name: str, after_line: int,
+) -> int | None:
     """Find first null check of var_name after after_line."""
     pat = re.compile(
         _NULL_CHECK_RE_TEMPLATE.format(var=re.escape(var_name))
@@ -2481,15 +2567,15 @@ def _find_null_check(
 
 
 def _find_first_deref(
-    lines: List[str], var_name: str, after_line: int,
-) -> Optional[int]:
+    lines: list[str], var_name: str, after_line: int,
+) -> int | None:
     """Find first dereference of var_name after after_line."""
     pat = re.compile(
         _DEREF_RE_TEMPLATE.format(var=re.escape(var_name))
     )
     for i in range(after_line + 1, len(lines)):
         stripped = lines[i].lstrip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
         if pat.search(lines[i]):
             return i
@@ -2500,7 +2586,7 @@ def _find_first_deref(
 # Integer narrowing/widening detection
 # ---------------------------------------------------------------------------
 
-_TYPE_WIDTHS: Dict[str, int] = {
+_TYPE_WIDTHS: dict[str, int] = {
     "char": 8, "signed char": 8, "unsigned char": 8,
     "u8": 8, "s8": 8, "__u8": 8, "__s8": 8, "uint8_t": 8, "int8_t": 8,
     "short": 16, "unsigned short": 16,
@@ -2554,10 +2640,10 @@ class IntegerNarrowingResult:
     dest_width: int = 0
     assign_line: int = 0
     reasoning: str = ""
-    witness: Optional[Dict[str, Any]] = None
+    witness: dict[str, Any] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "narrowing_found": self.narrowing_found,
             "reasoning": self.reasoning,
         }
@@ -2595,7 +2681,7 @@ def check_integer_narrowing(source: str) -> IntegerNarrowingResult:
     params = _extract_param_types(source)
     decls = _extract_local_decls(lines)
 
-    all_vars: Dict[str, Tuple[str, int]] = {}
+    all_vars: dict[str, tuple[str, int]] = {}
     for name, type_str in {**params, **decls}.items():
         width = _type_to_width(type_str)
         if width:
@@ -2603,7 +2689,7 @@ def check_integer_narrowing(source: str) -> IntegerNarrowingResult:
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
 
         m = _NARROWING_ASSIGN_RE.search(line)
@@ -2656,13 +2742,13 @@ def check_integer_narrowing(source: str) -> IntegerNarrowingResult:
     )
 
 
-def _type_to_width(type_str: str) -> Optional[int]:
+def _type_to_width(type_str: str) -> int | None:
     """Map a C type string to its width in bits."""
     normalized = type_str.strip()
     return _TYPE_WIDTHS.get(normalized)
 
 
-_GO_TYPE_WIDTHS: Dict[str, int] = {
+_GO_TYPE_WIDTHS: dict[str, int] = {
     "byte": 8, "uint8": 8, "int8": 8,
     "uint16": 16, "int16": 16,
     "uint32": 32, "int32": 32, "rune": 32,
@@ -2685,9 +2771,9 @@ _GO_BOUNDS_CHECK_RE = re.compile(
 )
 
 
-def _check_integer_narrowing_go(lines: List[str]) -> IntegerNarrowingResult:
+def _check_integer_narrowing_go(lines: list[str]) -> IntegerNarrowingResult:
     """Go-specific integer narrowing via explicit type casts."""
-    wide_vars: Dict[str, Tuple[str, int]] = {}
+    wide_vars: dict[str, tuple[str, int]] = {}
 
     for i, line in enumerate(lines):
         am = _GO_ATOI_RE.search(line)
@@ -2725,10 +2811,11 @@ def _check_integer_narrowing_go(lines: List[str]) -> IntegerNarrowingResult:
             ):
                 has_check = True
                 break
-            if _GO_BOUNDS_CHECK_RE.search(lines[j]):
-                if re.search(rf"\b{re.escape(src_var)}\b", lines[j]):
-                    has_check = True
-                    break
+            if _GO_BOUNDS_CHECK_RE.search(lines[j]) and re.search(
+                rf"\b{re.escape(src_var)}\b", lines[j],
+            ):
+                has_check = True
+                break
         if has_check:
             continue
 
@@ -2751,9 +2838,9 @@ def _check_integer_narrowing_go(lines: List[str]) -> IntegerNarrowingResult:
     )
 
 
-def _extract_param_types(source: str) -> Dict[str, str]:
+def _extract_param_types(source: str) -> dict[str, str]:
     """Extract parameter name → type from function signature."""
-    results: Dict[str, str] = {}
+    results: dict[str, str] = {}
     sig_match = re.search(r"\([^)]*\)", source[:500])
     if not sig_match:
         return results
@@ -2769,9 +2856,9 @@ def _extract_param_types(source: str) -> Dict[str, str]:
     return results
 
 
-def _extract_local_decls(lines: List[str]) -> Dict[str, str]:
+def _extract_local_decls(lines: list[str]) -> dict[str, str]:
     """Extract local variable declarations with types."""
-    results: Dict[str, str] = {}
+    results: dict[str, str] = {}
     for line in lines:
         m = _NARROWING_ASSIGN_RE.search(line)
         if m:
@@ -2801,7 +2888,7 @@ def _var_only_in_call_args(rhs: str, var_name: str) -> bool:
 
 
 def _has_bounds_check_before(
-    lines: List[str], var_name: str, before_line: int,
+    lines: list[str], var_name: str, before_line: int,
 ) -> bool:
     """Check if there's a bounds check on var_name before the given line."""
     pat = re.compile(
@@ -2820,7 +2907,7 @@ def _try_z3_integer_narrowing(
     src_width: int,
     dest_width: int,
     assign_line: int,
-) -> Optional[IntegerNarrowingResult]:
+) -> IntegerNarrowingResult | None:
     """Z3 check: can a value outside dest range reach the narrowing?"""
     try:
         import importlib.util
@@ -2836,14 +2923,15 @@ def _try_z3_integer_narrowing(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 return pickle.loads(proc.stdout)
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("z3 child timed out")
     return None
 
 
@@ -2852,10 +2940,10 @@ def _z3_integer_narrowing_check(
     src_type: str,
     dest_type: str,
     assign_line: int,
-) -> "IntegerNarrowingResult":
+) -> IntegerNarrowingResult:
     """Z3: Prove narrowing can lose data."""
-    from core.smt_solver.session import new_solver
     from core.smt_solver.availability import z3
+    from core.smt_solver.session import new_solver
 
     src_width = _type_to_width(src_type) or 64
     dest_width = _type_to_width(dest_type) or 32
@@ -2870,7 +2958,7 @@ def _z3_integer_narrowing_check(
     if result == z3.sat:
         model = solver.model()
         witness_val = model[v]
-        w: Dict[str, Any] = {}
+        w: dict[str, Any] = {}
         if witness_val is not None:
             try:
                 w[var_name] = witness_val.as_long()
@@ -2912,8 +3000,8 @@ class EarlyReleaseResult:
     variable: str = ""
     reasoning: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "early_release_found": self.early_release_found,
             "reasoning": self.reasoning,
         }
@@ -2936,11 +3024,11 @@ _GUARD_EXIT_RE = re.compile(
 
 
 def _find_scope_unlock(
-    lines: List[str],
+    lines: list[str],
     acquire_line: int,
-    unlock_re: "re.Pattern[str]",
+    unlock_re: re.Pattern[str],
     search_limit: int = 80,
-) -> Optional[int]:
+) -> int | None:
     """Find the scope-ending unlock, skipping guard-exit unlocks.
 
     A guard-exit unlock is one that (a) is at a deeper brace depth than
@@ -2970,7 +3058,7 @@ def _find_scope_unlock(
             is_guard = False
             for look in range(j + 1, min(len(lines), j + 3)):
                 stripped = lines[look].lstrip()
-                if not stripped or stripped.startswith("//") or stripped.startswith("/*"):
+                if not stripped or stripped.startswith(("//", "/*")):
                     continue
                 if _GUARD_EXIT_RE.match(stripped):
                     is_guard = True
@@ -3019,7 +3107,7 @@ _GO_MULTI_RETURN_RE = re.compile(
 )
 
 
-def _check_early_release_go(lines: List[str]) -> EarlyReleaseResult:
+def _check_early_release_go(lines: list[str]) -> EarlyReleaseResult:
     """Go-specific early lock release detection."""
     lock_re = re.compile(r"(\w+)\.(RLock|Lock)\s*\(\s*\)")
     unlock_re_tpl = r"{name}\.(?:RUnlock|Unlock)\s*\(\s*\)"
@@ -3063,7 +3151,7 @@ def _check_early_release_go(lines: List[str]) -> EarlyReleaseResult:
         if unlock_line is None:
             continue
 
-        reads_under_lock: List[Tuple[int, str]] = []
+        reads_under_lock: list[tuple[int, str]] = []
         for j in range(i + 1, unlock_line):
             for rx in (_GO_MULTI_RETURN_RE, _GO_READ_RE):
                 fm = rx.search(lines[j])
@@ -3100,7 +3188,7 @@ def _check_early_release_go(lines: List[str]) -> EarlyReleaseResult:
 
 
 def _check_early_release_c(
-    lines: List[str],
+    lines: list[str],
     vocab: DomainVocabulary = _EMPTY_VOCAB,
 ) -> EarlyReleaseResult:
     """C-specific early lock release detection (RCU/spinlock/mutex)."""
@@ -3122,10 +3210,10 @@ def _check_early_release_c(
     if not acquires:
         # Release-only heuristic: if unlock calls exist but no acquires,
         # the caller holds the lock. Treat function entry as implicit hold.
-        release_only: List[Tuple[int, str, str]] = []
+        release_only: list[tuple[int, str, str]] = []
         for i, line in enumerate(lines):
             stripped = line.lstrip()
-            if stripped.startswith("//") or stripped.startswith("/*"):
+            if stripped.startswith(("//", "/*")):
                 continue
             for _, unlock_name in _LOCK_PAIRS:
                 unlock_pat = re.compile(
@@ -3148,11 +3236,11 @@ def _check_early_release_c(
         if unlock_line is None:
             continue
 
-        reads_under_lock: List[Tuple[int, str]] = []
+        reads_under_lock: list[tuple[int, str]] = []
 
         for j in range(acq_line + 1, unlock_line):
             stripped = lines[j].lstrip()
-            if stripped.startswith("//") or stripped.startswith("/*"):
+            if stripped.startswith(("//", "/*")):
                 continue
             fm = field_read_re.search(lines[j])
             if fm:
@@ -3185,7 +3273,7 @@ def _check_early_release_c(
             )
             for k in range(unlock_line + 1, min(len(lines), unlock_line + 30)):
                 stripped = lines[k].lstrip()
-                if stripped.startswith("//") or stripped.startswith("/*"):
+                if stripped.startswith(("//", "/*")):
                     continue
                 if var_deref_re.search(lines[k]):
                     return EarlyReleaseResult(
@@ -3216,7 +3304,7 @@ def _check_early_release_c(
             )
             for k in range(unlock_line + 1, min(len(lines), unlock_line + 20)):
                 stripped = lines[k].lstrip()
-                if stripped.startswith("//") or stripped.startswith("/*"):
+                if stripped.startswith(("//", "/*")):
                     continue
                 if branch_re.search(lines[k]):
                     has_side_effect = False
@@ -3266,8 +3354,8 @@ class LockDomainResult:
     access2_line: int = 0
     reasoning: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "mismatch_found": self.mismatch_found,
             "reasoning": self.reasoning,
         }
@@ -3311,13 +3399,13 @@ def check_lock_domain(
     return _check_lock_domain_c(lines, vocab)
 
 
-def _check_lock_domain_go(lines: List[str]) -> LockDomainResult:
+def _check_lock_domain_go(lines: list[str]) -> LockDomainResult:
     """Go-specific lock-domain mismatch detection."""
     lock_re = re.compile(r"(\w+)\.(RLock|Lock)\s*\(\s*\)")
     unlock_re_tpl = r"{name}\.(?:RUnlock|Unlock)\s*\(\s*\)"
     field_re = re.compile(r"(\w+)\.(\w+)")
 
-    lock_scopes: List[Tuple[int, int, str]] = []
+    lock_scopes: list[tuple[int, int, str]] = []
 
     i = 0
     while i < len(lines):
@@ -3337,7 +3425,7 @@ def _check_lock_domain_go(lines: List[str]) -> LockDomainResult:
     if len(lock_scopes) < 2:
         return LockDomainResult(reasoning="fewer than 2 lock scopes found")
 
-    field_accesses: Dict[str, List[Tuple[int, str]]] = {}
+    field_accesses: dict[str, list[tuple[int, str]]] = {}
     for scope_start, scope_end, lock_type in lock_scopes:
         for j in range(scope_start + 1, scope_end):
             for fm in field_re.finditer(lines[j]):
@@ -3348,7 +3436,7 @@ def _check_lock_domain_go(lines: List[str]) -> LockDomainResult:
                 field_accesses.setdefault(key, []).append((j, lock_type))
 
     for field_key, accesses in field_accesses.items():
-        locks_seen: Dict[str, int] = {}
+        locks_seen: dict[str, int] = {}
         for line_no, lock_type in accesses:
             if lock_type not in locks_seen:
                 locks_seen[lock_type] = line_no
@@ -3385,10 +3473,10 @@ _SECURITY_FIELDS = frozenset({
 
 
 def _check_correlated_field_access(
-    lines: List[str],
-    lock_scopes: List[Tuple[int, int, str, str]],
+    lines: list[str],
+    lock_scopes: list[tuple[int, int, str, str]],
     vocab: DomainVocabulary = _EMPTY_VOCAB,
-) -> Optional[LockDomainResult]:
+) -> LockDomainResult | None:
     """Detect security-relevant fields read under different locks.
 
     Fires when two or more security-relevant fields are each accessed
@@ -3405,12 +3493,12 @@ def _check_correlated_field_access(
         return None
 
     field_re = re.compile(r"(\w+)->(\w+)")
-    security_accesses: Dict[str, List[Tuple[int, str]]] = {}
+    security_accesses: dict[str, list[tuple[int, str]]] = {}
 
     for scope_start, scope_end, lock_func, _ in lock_scopes:
         for j in range(scope_start + 1, scope_end):
             stripped = lines[j].lstrip()
-            if stripped.startswith("//") or stripped.startswith("/*"):
+            if stripped.startswith(("//", "/*")):
                 continue
             for fm in field_re.finditer(lines[j]):
                 fld = fm.group(2)
@@ -3422,7 +3510,7 @@ def _check_correlated_field_access(
     if len(security_accesses) < 2:
         return None
 
-    by_lock: Dict[str, List[Tuple[str, int]]] = {}
+    by_lock: dict[str, list[tuple[str, int]]] = {}
     for fld, accesses in security_accesses.items():
         for line_no, lock_func in accesses:
             by_lock.setdefault(lock_func, []).append((fld, line_no))
@@ -3454,7 +3542,7 @@ def _check_correlated_field_access(
 
 
 def _check_lock_domain_c(
-    lines: List[str],
+    lines: list[str],
     vocab: DomainVocabulary = _EMPTY_VOCAB,
 ) -> LockDomainResult:
     """C-specific lock-domain mismatch detection."""
@@ -3462,7 +3550,7 @@ def _check_lock_domain_c(
 
     acquires = _extract_lock_acquires(lines, vocab)
 
-    lock_scopes: List[Tuple[int, int, str, str]] = []
+    lock_scopes: list[tuple[int, int, str, str]] = []
     for acq_line, lock_func, unlock_name, *_ in acquires:
         unlock_re = re.compile(
             r"\b" + re.escape(unlock_name) + r"(?:_irq(?:restore)?|_bh)?\s*\("
@@ -3513,18 +3601,18 @@ def _check_lock_domain_c(
             reasoning="fewer than 2 complete lock scopes found",
         )
 
-    field_accesses: Dict[str, List[Tuple[int, str]]] = {}
+    field_accesses: dict[str, list[tuple[int, str]]] = {}
     for scope_start, scope_end, lock_func, _ in lock_scopes:
         for j in range(scope_start + 1, scope_end):
             stripped = lines[j].lstrip()
-            if stripped.startswith("//") or stripped.startswith("/*"):
+            if stripped.startswith(("//", "/*")):
                 continue
             for fm in field_re.finditer(lines[j]):
                 key = f"{fm.group(1)}->{fm.group(2)}"
                 field_accesses.setdefault(key, []).append((j, lock_func))
 
     for field_key, accesses in field_accesses.items():
-        locks_seen: Dict[str, int] = {}
+        locks_seen: dict[str, int] = {}
         for line_no, lock_func in accesses:
             if lock_func not in locks_seen:
                 locks_seen[lock_func] = line_no
@@ -3825,7 +3913,7 @@ class RaceProtectionResult:
     lock_scopes: int = 0
     reasoning: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "protected": self.protected,
             "total_accesses": self.total_accesses,
@@ -3838,7 +3926,7 @@ class RaceProtectionResult:
 
 def check_race_protection(
     source: str,
-    vocab: "DomainVocabulary | None" = None,
+    vocab: DomainVocabulary | None = None,
 ) -> RaceProtectionResult:
     """Check whether shared-state accesses are protected by synchronisation.
 
@@ -3870,7 +3958,7 @@ def check_race_protection(
     if vocab is None:
         vocab = _EMPTY_VOCAB
     acquires = _extract_lock_acquires(lines, vocab)
-    lock_scopes: List[Tuple[int, int]] = []
+    lock_scopes: list[tuple[int, int]] = []
     for acq_line, _lock_func, unlock_name, *_ in acquires:
         unlock_re = re.compile(
             r"\b" + re.escape(unlock_name) + r"(?:_irq(?:restore)?|_bh)?\s*\("
@@ -3881,7 +3969,7 @@ def check_race_protection(
                 break
 
     # rcu_read_lock..rcu_read_unlock scopes
-    rcu_scopes: List[Tuple[int, int]] = []
+    rcu_scopes: list[tuple[int, int]] = []
     rcu_lock_re = re.compile(r"\brcu_read_lock\s*\(\s*\)")
     rcu_unlock_re = re.compile(r"\brcu_read_unlock\s*\(\s*\)")
     for i, line in enumerate(lines):
@@ -3893,7 +3981,7 @@ def check_race_protection(
     lock_scopes.extend(rcu_scopes)
 
     # preempt_disable / local_irq_save scopes (needed for per-CPU safety)
-    preempt_scopes: List[Tuple[int, int]] = []
+    preempt_scopes: list[tuple[int, int]] = []
     preempt_acq_re = re.compile(
         r"\b(preempt_disable|local_irq_save|local_irq_disable"
         r"|get_cpu|migrate_disable)\s*\(",
@@ -3943,11 +4031,11 @@ def check_race_protection(
 
     total = 0
     protected = 0
-    unprotected_lines: List[int] = []
+    unprotected_lines: list[int] = []
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
         if stripped.startswith("*") and not stripped.startswith("*/"):
             continue
@@ -3958,15 +4046,7 @@ def check_race_protection(
 
         for _fm in accesses:
             total += 1
-            if _in_lock_scope(i):
-                protected += 1
-            elif _ATOMIC_ACCESSOR_RE.search(line):
-                protected += 1
-            elif _RCU_ACCESSOR_RE.search(line) and _in_rcu_scope(i):
-                protected += 1
-            elif _PER_CPU_RE.search(line) and _in_preempt_scope(i):
-                protected += 1
-            elif i in init_lines:
+            if _in_lock_scope(i) or _ATOMIC_ACCESSOR_RE.search(line) or _RCU_ACCESSOR_RE.search(line) and _in_rcu_scope(i) or _PER_CPU_RE.search(line) and _in_preempt_scope(i) or i in init_lines:
                 protected += 1
             else:
                 unprotected_lines.append(i + 1)
@@ -4026,13 +4106,13 @@ class HypothesisDisproofResult:
     """Result of attempting to mechanically disprove a hypothesis."""
 
     hypothesis_class: str = ""
-    disproved: Optional[bool] = None
+    disproved: bool | None = None
     reasoning: str = ""
-    witness: Optional[Dict[str, Any]] = None
+    witness: dict[str, Any] | None = None
     error: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "hypothesis_class": self.hypothesis_class,
             "reasoning": self.reasoning,
         }
@@ -4048,7 +4128,7 @@ class HypothesisDisproofResult:
 def disprove_integer_overflow(
     hypothesis: str,
     source_context: str,
-    var_types: Optional[Dict[str, str]] = None,
+    var_types: dict[str, str] | None = None,
 ) -> HypothesisDisproofResult:
     """Attempt to disprove an integer overflow/underflow hypothesis via SMT.
 
@@ -4090,7 +4170,7 @@ def disprove_integer_overflow(
             reasoning=f"no variables found in expression '{expr_text}'",
         )
 
-    resolved_types: Dict[str, int] = {}
+    resolved_types: dict[str, int] = {}
     for vn in var_names:
         vtype = var_types.get(vn, "")
         if not vtype:
@@ -4119,14 +4199,15 @@ def disprove_integer_overflow(
         proc = subprocess.run(
             [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
             input=payload, capture_output=True, timeout=10,
+            check=False,
         )
         if proc.returncode == 0:
             try:
                 result = pickle.loads(proc.stdout)
                 if result is not None:
                     return result
-            except Exception:
-                pass
+            except Exception:  # malformed child output degrades to None
+                logger.debug("z3 child output unpicklable", exc_info=True)
         logger.debug("Z3 overflow subprocess exited with code %d", proc.returncode)
     except subprocess.TimeoutExpired:
         logger.debug("Z3 overflow subprocess timed out")
@@ -4138,10 +4219,10 @@ def disprove_integer_overflow(
 
 
 def _z3_integer_overflow_check(
-    resolved_types: Dict[str, int],
+    resolved_types: dict[str, int],
     op_char: str,
-    var_types: Dict[str, str],
-) -> Optional[HypothesisDisproofResult]:
+    var_types: dict[str, str],
+) -> HypothesisDisproofResult | None:
     """Z3: check whether an arithmetic overflow is feasible."""
     import z3
 

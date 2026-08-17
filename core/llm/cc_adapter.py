@@ -27,7 +27,15 @@ logger = logging.getLogger(__name__)
 # post-pass) run with tools enabled against hostile repos, and while
 # they inherently hold their own provider auth, there is no reason to
 # widen that to ambient AWS credentials on non-Bedrock setups.
-_CC_BACKEND_ENV_PREFIXES = ("CLAUDE_CODE_", "ANTHROPIC_")
+# RAPTOR_BEDROCK_/RAPTOR_CC_: RAPTOR's own LLM operator knobs
+# (model/profile/region pins, effort, budget). The pure-LLM substrate
+# child ignores them, but skill-pass children (skill_dispatch,
+# cc_dispatch) drive RAPTOR's libexec helpers whose model resolution
+# reads them - dropping the knobs at this hop silently reverts the
+# grandchildren to defaults. Names and flags only, never credentials.
+_CC_BACKEND_ENV_PREFIXES = (
+    "CLAUDE_CODE_", "ANTHROPIC_", "RAPTOR_BEDROCK_", "RAPTOR_CC_",
+)
 _CC_BEDROCK_ENV_PREFIX = "AWS_"
 
 

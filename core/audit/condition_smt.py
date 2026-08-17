@@ -817,10 +817,13 @@ def _z3_child_env() -> dict:
     making the child import the OTHER tree's ``core.audit.
     condition_smt`` (cross-checkout skew: wrong dispatch signatures,
     silent behavioural drift). Same chokepoint rule as
-    ``core.audit.sweep.smt_child_env``.
+    ``core.audit.sweep.smt_child_env``, including the LLM-env strip:
+    Z3 probe children make no LLM calls — no credentials, no backend
+    selection, no half-inherited dispatcher route.
     """
-    from core.config import pin_raptor_dir
-    return pin_raptor_dir(dict(os.environ))
+    from core.config import RaptorConfig, pin_raptor_dir
+    return RaptorConfig.strip_llm_env_vars(
+        pin_raptor_dir(dict(os.environ)))
 
 
 def _z3_in_subprocess(

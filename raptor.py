@@ -800,10 +800,12 @@ def mode_sca(args: list) -> int:
         # allowlist (in this branch) doesn't include the markers, so we
         # set the trust marker explicitly here. ``raptor.py`` is itself
         # a trusted entry point.
-        # preserve_proxy: the SCA child hosts the egress proxy for
-        # OSV / registry / KEV traffic; its upstream autodetect reads
-        # the child's env, so the operator's proxy must survive.
-        env = RaptorConfig.get_safe_env(preserve_proxy=True)
+        # get_llm_env (proxy always preserved): the SCA child hosts
+        # the egress proxy for OSV / registry / KEV traffic AND runs
+        # LLM triage / upgrade-impact review (packages/sca/llm/*) —
+        # it needs the operator's API keys and the transport-routing
+        # family, not just the safe baseline.
+        env = RaptorConfig.get_llm_env()
         env["_RAPTOR_TRUSTED"] = "1"
         result = subprocess.run(cmd, env=env, check=False)
         return result.returncode
@@ -840,9 +842,12 @@ def mode_binary(args: list) -> int:
     if not wrapper.exists():
         print(f"✗ Binary wrapper not found: {wrapper}", file=sys.stderr)
         return 1
-    # preserve_proxy: the binary surface dispatches `claude` CLI
-    # children whose route home is the operator's launch-time proxy.
-    env = RaptorConfig.get_safe_env(preserve_proxy=True)
+    # get_llm_env (proxy always preserved): the binary surface
+    # dispatches `claude` CLI children and spawns LLM-calling
+    # grandchildren (raptor_fuzzing.py crash analysis) — both build
+    # their env from THIS child's environ, so the keys and the
+    # transport-routing family must survive this hop.
+    env = RaptorConfig.get_llm_env()
     env["_RAPTOR_TRUSTED"] = "1"
     try:
         return subprocess.call([str(wrapper), *args], env=env)
@@ -1040,9 +1045,11 @@ def mode_frida(args: list) -> int:
     if not wrapper.exists():
         print(f"✗ Frida wrapper not found: {wrapper}", file=sys.stderr)
         return 1
-    # preserve_proxy: remote frida-server targets and any LLM-backed
-    # follow-on need the operator's launch-time proxy in the child.
-    env = RaptorConfig.get_safe_env(preserve_proxy=True)
+    # get_llm_env (proxy always preserved): remote frida-server
+    # targets need the operator's launch-time proxy, and the wrapper's
+    # LLM-backed follow-on needs the keys + transport-routing family
+    # in its own environ.
+    env = RaptorConfig.get_llm_env()
     env.setdefault("_RAPTOR_TRUSTED", "1")
     return subprocess.call([str(wrapper), *args], env=env)
 

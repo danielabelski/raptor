@@ -468,6 +468,14 @@ def run_command_streaming(
     # proxy is gone one level down and every outbound call dials
     # direct (and gets blocked).
     child_env = RaptorConfig.get_safe_env(preserve_proxy=True)
+    # Transport-routing family (CLAUDE_CODE_USE_*, ANTHROPIC_MODEL,
+    # AWS profile/region NAMES, RAPTOR_BEDROCK_*/RAPTOR_CC_*): the
+    # child's claudecode transport builds cc_subprocess_env() from
+    # ITS OWN environ, and Bedrock entry backfill reads these — a
+    # starved child flips the operator's backend selection. Names
+    # and flags only; API keys stay OUT of this env by design
+    # (Phase B relays the dispatcher session instead).
+    child_env.update(RaptorConfig.llm_routing_env())
     child_pass_fds: list[int] = []
     if os.environ.get("RAPTOR_LLM_SOCKET"):
         try:
@@ -889,7 +897,10 @@ def _run_fuzz_validation_smoke(findings_path: Path, target: Path, out_dir: Path)
             capture_output=True,
             text=True,
             timeout=120,
-            env=RaptorConfig.get_safe_env(),
+            # get_llm_env: the helper's witness stage builds an
+            # LLMClient — a bare safe env silently degrades it to
+            # "no LLM available" and strips the backend routing.
+            env=RaptorConfig.get_llm_env(),
             check=False,
         )
         stdout_path.write_text(proc.stdout or "", encoding="utf-8")

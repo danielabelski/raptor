@@ -1032,6 +1032,28 @@ class RaptorConfig:
         return env
 
     @staticmethod
+    def strip_llm_env_vars(env: dict) -> dict:
+        """Remove LLM credentials, the transport-routing family, and
+        the dispatcher route pair from *env*; returns *env*.
+
+        For RAPTOR's own NON-LLM helper children that are spawned
+        from full-environ copies rather than ``get_safe_env()``
+        (the SMT/Z3 probe children: they must mirror the parent's
+        interpreter environment to unpickle and run RAPTOR verbs,
+        so they can't take the safe-env baseline — but they make no
+        LLM calls and have no business holding keys, backend
+        selection, or a broken half-route).
+        """
+        drop = set(RaptorConfig.LLM_API_KEY_VARS)
+        drop.update(RaptorConfig.LLM_ROUTING_ENV_VARS)
+        drop.update(("RAPTOR_LLM_SOCKET", "RAPTOR_LLM_TOKEN_FD"))
+        prefixes = RaptorConfig.LLM_ROUTING_ENV_PREFIXES
+        for name in [k for k in env
+                     if k in drop or k.startswith(prefixes)]:
+            del env[name]
+        return env
+
+    @staticmethod
     def get_git_env() -> dict:
         """
         Create environment for safe git operations.

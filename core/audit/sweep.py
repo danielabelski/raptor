@@ -1351,9 +1351,15 @@ def smt_child_env() -> dict:
     (observed: ``TypeError: _run_smt_verb_inner() got an unexpected
     keyword argument 'target_path'`` — every SMT probe of a run exit
     1 because a stale checkout's ``core.audit.sweep`` was imported).
+
+    Full-environ copy MINUS the LLM env (credentials, transport-
+    routing family, dispatcher route): SMT children run only RAPTOR's
+    own solver code and make no LLM calls — the interpreter
+    environment must mirror the parent, the LLM surface must not.
     """
-    from core.config import pin_raptor_dir
-    return pin_raptor_dir(dict(os.environ))
+    from core.config import RaptorConfig, pin_raptor_dir
+    return RaptorConfig.strip_llm_env_vars(
+        pin_raptor_dir(dict(os.environ)))
 
 
 def _smt_verb_in_subprocess(

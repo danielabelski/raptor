@@ -9770,7 +9770,13 @@ def _study_consumer_loop(
 
             from core.config import RaptorConfig
 
-            study_env = RaptorConfig.get_safe_env()
+            # get_llm_env, not get_safe_env: study-prep's concept
+            # seeding is an LLM call — the child needs the operator's
+            # API keys AND the transport-routing family
+            # (CLAUDE_CODE_USE_*, AWS profile/region names,
+            # RAPTOR_BEDROCK_*/RAPTOR_CC_*) or Bedrock/CC-backed
+            # installs lose the domain model to a starved child.
+            study_env = RaptorConfig.get_llm_env()
             study_env["_RAPTOR_TRUSTED"] = "1"
             # Prep runs AT MOST ONCE per run. Any failure disables
             # the subsystem loudly and stops the consumer — the old
@@ -18639,8 +18645,11 @@ def _run_dark_verification(
     try:
         from .cwe_dispatch import dark_verify_applicable, dark_verify_statuses
     except ImportError:
-        dark_verify_applicable = lambda _cwe: False
-        dark_verify_statuses = lambda _cwe: None
+        def dark_verify_applicable(_cwe):
+            return False
+
+        def dark_verify_statuses(_cwe):
+            return None
 
     def _eligible(o: ReviewOutcome) -> bool:
         if o.status == "dark":

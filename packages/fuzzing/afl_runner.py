@@ -9,7 +9,6 @@ import re
 import shutil
 import subprocess
 
-from core.sandbox import run as _sandbox_run, run_trusted as _run_trusted, SandboxSetupError
 # _run_trusted: read-only tools (strings, --help checks) — no namespace overhead.
 # Full sandbox for afl-showmap (execute untrusted binary): network block +
 # Landlock (target=output=self.output_dir — AFL reads and writes the same
@@ -20,9 +19,12 @@ from core.sandbox import run as _sandbox_run, run_trusted as _run_trusted, Sandb
 # fuzzing.
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import ClassVar
 
 from core.logging import get_logger
+from core.sandbox import SandboxSetupError
+from core.sandbox import run as _sandbox_run
+from core.sandbox import run_trusted as _run_trusted
 from packages.fuzzing.seed_corpus import prepare_builtin_seed_corpus
 
 logger = get_logger()
@@ -36,27 +38,27 @@ class AFLRunner:
 
     # AFL++ power schedules: explore (default), exploit, coe, fast, lin, quad,
     # rare. See docs/AFLplusplus/docs/power_schedules.md.
-    _VALID_POWER_SCHEDULES = {
+    _VALID_POWER_SCHEDULES: ClassVar[set[str]] = {
         "explore", "exploit", "coe", "fast", "lin", "quad", "rare", "seek",
     }
 
     def __init__(
         self,
         binary_path: Path,
-        corpus_dir: Optional[Path] = None,
-        output_dir: Optional[Path] = None,
-        dict_path: Optional[Path] = None,
+        corpus_dir: Path | None = None,
+        output_dir: Path | None = None,
+        dict_path: Path | None = None,
         input_mode: str = "stdin",
         check_sanitizers: bool = False,
         recompile_guide: bool = False,
         use_showmap: bool = False,
-        cmplog_binary: Optional[Path] = None,
+        cmplog_binary: Path | None = None,
         power_schedule: str = "fast",
         use_laf_intel: bool = True,
         deterministic: bool = False,
-        custom_mutator: Optional[Path] = None,
+        custom_mutator: Path | None = None,
         seed_profile: str = "default",
-        extra_afl_flags: Optional[List[str]] = None,
+        extra_afl_flags: list[str] | None = None,
     ):
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
@@ -173,7 +175,7 @@ class AFLRunner:
                 "Created built-in default corpus with "
                 f"{manifest['seed_count']} seeds (profile={seed_profile})"
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort: emergency seeds below
             logger.warning(
                 "Built-in default corpus failed (%s); falling back to emergency "
                 "minimal seeds",
@@ -260,7 +262,7 @@ class AFLRunner:
             except FileNotFoundError:
                 logger.error("afl-fuzz not found in PATH")
                 raise RuntimeError("AFL++ not installed") from None
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — advisory pre-flight check only
                 logger.warning("AFL compatibility check failed: %s", e)
 
     def check_binary_sanitizers(self) -> bool:
@@ -361,8 +363,8 @@ class AFLRunner:
         duration: int = 3600,
         parallel_jobs: int = 1,
         timeout_ms: int = 1000,
-        max_crashes: Optional[int] = None,
-    ) -> Tuple[int, Path]:
+        max_crashes: int | None = None,
+    ) -> tuple[int, Path]:
         """
         Run AFL++ fuzzing campaign.
 
@@ -470,7 +472,7 @@ class AFLRunner:
                         stderr=stderr_fp,
                         text=True,
                         env=afl_env,
-                        preexec_fn=set_pdeathsig(),
+                        preexec_fn=set_pdeathsig(),  # noqa: PLW1509 — single-threaded at spawn time; pdeathsig is required
                     )
                 except BaseException:
                     stdout_fp.close()
@@ -822,7 +824,7 @@ class AFLRunner:
         is_main: bool,
         timeout_ms: int,
         use_qemu: bool = False,
-    ) -> List[str]:
+    ) -> list[str]:
         """Build AFL command line.
 
         Wires up advanced AFL++ features when configured:
@@ -937,8 +939,8 @@ class AFLRunner:
             # For stdin mode, need to provide input via stdin parameter
             if test_input:
                 try:
-                    stdin_input = open(test_input, 'rb')
-                except Exception as e:
+                    stdin_input = open(test_input, 'rb')  # noqa: SIM115 — closed in the finally below
+                except Exception as e:  # noqa: BLE001 — showmap is best-effort
                     logger.warning("Failed to open test input %s: %s", test_input, e)
                     return {}
             else:
@@ -1020,7 +1022,7 @@ class AFLRunner:
 
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — showmap is best-effort
             logger.warning("Error running afl-showmap: %s", e)
             return {}
         finally:

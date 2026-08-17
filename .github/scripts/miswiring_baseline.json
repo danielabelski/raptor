@@ -425,9 +425,6 @@
     "dead:dead_function:core/audit/frida_observe.py:collect_observed_functions": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:core/audit/llm_review.py:call_llm_for_rule_refinement": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_function:core/audit/orchestrator.py:request_shutdown": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },

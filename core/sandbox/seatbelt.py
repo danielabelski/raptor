@@ -72,6 +72,35 @@ SANDBOX_KEXT_SENDER = (
     "/System/Library/Extensions/Sandbox.kext/Contents/MacOS/Sandbox"
 )
 
+# mach services the strict profile still permits. Curated from Apple's
+# open-source profile base; the 2026-08-15 probe battery (clang, make,
+# git, python, venv, tar) passed even under a BLANKET mach-lookup deny
+# — the only services those tools requested (analyticsd, logd,
+# diagnosticd, notification_center, opendirectoryd, dirhelper) are
+# telemetry/directory lookups they tolerate losing. The allowlist is
+# retained as headroom for richer tools (Security.framework consumers,
+# codesign-adjacent flows) rather than because the battery needed it;
+# grow it from `log stream` census evidence, never speculatively.
+MACOS_STRICT_MACH_SERVICES = (
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.system.opendirectoryd.membership",
+    "com.apple.system.notification_center",
+    "com.apple.system.logger",
+    "com.apple.logd",
+    "com.apple.diagnosticd",
+    "com.apple.SecurityServer",
+    "com.apple.securityd.xpc",
+    "com.apple.trustd",
+    "com.apple.cfprefsd.daemon",
+    "com.apple.cfprefsd.agent",
+    "com.apple.FSEvents",
+    "com.apple.CoreServices.coreservicesd",
+    "com.apple.coreservices.launchservicesd",
+    "com.apple.bsd.dirhelper",
+    "com.apple.system.DirectoryService.libinfo_v1",
+    "com.apple.dyld.closured",
+)
+
 
 def _realpath_or_none(path: str | None) -> str | None:
     """Canonicalize ``path`` via os.path.realpath, or None if path is
@@ -125,6 +154,7 @@ def build_profile(*,
                   audit_verbose: bool = False,
                   seccomp_profile: str | None = None,
                   audit_evidence_dir: str | None = None,
+                  profile_name: str | None = None,
                   ) -> str:
     """Generate an SBPL profile string from logical sandbox kwargs.
 
@@ -453,6 +483,29 @@ def build_profile(*,
             # sibling candidate `(deny sysctl-write)` was REJECTED —
             # it breaks Apple's linker and ensurepip).
             parts.append("(deny iokit-open)")
+
+    # --- macos-strict extras (profile_name == "strict") ---
+    # The operator chose fail-closed semantics; layer the probe-
+    # validated denies the full profile deliberately leaves out. All
+    # three passed the 2026-08-15 toolchain battery with zero
+    # breakage (signal/nvram individually, mach-lookup even as a
+    # blanket deny — the curated allowlist is deliberate headroom).
+    if profile_name == "strict" and seccomp_profile not in (None, "none"):
+        if audit_mode:
+            parts.append("(allow signal (with report))")
+            parts.append("(allow nvram* (with report))")
+            parts.append("(allow mach-lookup (with report))")
+        else:
+            parts.append("(deny signal (target others))")
+            parts.append("(deny nvram*)")
+            _mach_names = " ".join(
+                f"(global-name {_quote_sbpl(s)})"
+                for s in MACOS_STRICT_MACH_SERVICES
+            )
+            parts.append(
+                f"(deny mach-lookup (require-not (require-any "
+                f"{_mach_names})))"
+            )
 
     # --- Verbose audit (Phase 2c — closest macOS analogue to Linux's
     # SCMP_ACT_TRACE-everywhere strace-style audit). When audit_verbose

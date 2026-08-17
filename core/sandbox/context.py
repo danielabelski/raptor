@@ -2011,6 +2011,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     # Linux-only kwargs accepted for signature parity
                     # with _spawn.run_sandboxed; ignored by SBPL backend.
                     seccomp_profile=seccomp_profile,
+                    # profile NAME so seatbelt can layer the
+                    # macos-strict extras (strict and full share
+                    # seccomp_profile="full").
+                    sandbox_profile=(profile if profile is not None
+                                     else DEFAULT_PROFILE),
                     seccomp_block_udp=seccomp_block_udp,
                     env=kwargs.get("env"),
                     cwd=kwargs.get("cwd"),

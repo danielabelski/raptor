@@ -150,6 +150,12 @@ def run_sandboxed(cmd: list[str], *,
                   # SBPL primitive). Use block_network=True for the
                   # macOS equivalent of "no UDP egress".
                   seccomp_profile: str | None = None,
+                  # sandbox_profile: the PROFILE NAME ("full"/"strict"/
+                  # "debug"/...). seccomp_profile alone cannot
+                  # distinguish strict from full (both map to "full");
+                  # seatbelt layers the probe-validated macos-strict
+                  # extras only for the strict name.
+                  sandbox_profile: str | None = None,
                   seccomp_block_udp: bool = False,
                   # map_root: Linux-only (`unshare --map-root-user`
                   # remaps caller UID to 0 inside the user-ns). macOS
@@ -314,6 +320,7 @@ def run_sandboxed(cmd: list[str], *,
         audit_verbose=audit_verbose,
         seccomp_profile=seccomp_profile,
         audit_evidence_dir=_evidence_dir,
+        profile_name=sandbox_profile,
     )
 
     # 2. fake_home: redirect HOME + XDG_*_HOME into output/.home/
@@ -492,6 +499,7 @@ def run_sandboxed(cmd: list[str], *,
     try:
         result = subprocess.run(
             sandbox_cmd,
+            check=False,
             env=child_env,
             cwd=cwd,
             timeout=timeout,
@@ -501,7 +509,6 @@ def run_sandboxed(cmd: list[str], *,
             preexec_fn=preexec,
             start_new_session=start_new_session,
             pass_fds=(status_w, death_r),
-            check=False,
         )
     finally:
         # Close our copies. status_w MUST be closed before reading status_r,

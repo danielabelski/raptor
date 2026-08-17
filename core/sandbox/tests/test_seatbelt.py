@@ -452,6 +452,38 @@ def test_debug_profile_omits_iokit_deny():
     assert "iokit-open" not in p
 
 
+def test_strict_profile_emits_macos_strict_extras():
+    """profile_name='strict' layers the probe-validated extras: scoped
+    signal deny, nvram deny, and the curated mach-lookup allowlist.
+    All three passed the 2026-08-15 toolchain battery (mach even as a
+    blanket deny — the allowlist is deliberate headroom)."""
+    p = seatbelt.build_profile(seccomp_profile="full",
+                               profile_name="strict")
+    assert "(deny signal (target others))" in p
+    assert "(deny nvram*)" in p
+    assert "(deny mach-lookup (require-not (require-any" in p
+    for svc in seatbelt.MACOS_STRICT_MACH_SERVICES:
+        assert svc in p
+
+
+def test_full_profile_omits_strict_extras():
+    """full stays the compatible default — no strict extras."""
+    p = seatbelt.build_profile(seccomp_profile="full",
+                               profile_name="full")
+    assert "mach-lookup" not in p
+    assert "nvram" not in p
+    assert "(deny signal" not in p
+
+
+def test_strict_extras_report_under_audit():
+    """Audit observes instead of blocking, strict extras included."""
+    p = seatbelt.build_profile(seccomp_profile="full",
+                               profile_name="strict", audit_mode=True)
+    assert "(allow mach-lookup (with report))" in p
+    assert "(deny mach-lookup" not in p
+    assert "(allow signal (with report))" in p
+
+
 def test_restrict_reads_allows_homebrew_prefixes():
     """Homebrew trees must be readable under restrict_reads —
     Homebrew-installed interpreters die at dyld stage otherwise

@@ -5304,6 +5304,9 @@ def _run_mechanical_detectors(
                         sr = _run_cocci_rule(
                             c_file, Path(rule_path_str),
                             no_includes=True, timeout=60,
+                            # In-repo standing engine/coccinelle rules
+                            # (code trust) — @script:python trusted.
+                            allow_scripting=True,
                         )
                         for match in sr.matches:
                             f_file = match.file or str(c_file)
@@ -7749,6 +7752,20 @@ def _write_decompilation_tmpfile(
 ) -> Optional[Path]:
     """Write decompilation to a temp directory so Semgrep can read it."""
     if not decompilation or decompilation.startswith("("):
+        return None
+    # Function names come from binary symbol tables (untrusted input)
+    # and become the tmpfile name — reject path separators and ``..``
+    # so the write cannot escape the temp directory (same pattern as
+    # rules.save_rule's rule_id check).
+    if (
+        "/" in function_name
+        or "\\" in function_name
+        or ".." in function_name
+    ):
+        logger.debug(
+            "refusing decompilation tmpfile for unsafe function name %r",
+            function_name,
+        )
         return None
     try:
         normalised = _normalise_r2_decompilation(decompilation)

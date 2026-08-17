@@ -357,3 +357,37 @@ class TestR2Normaliser:
         sym.imp.KERNEL32.dll_WriteFile ()"""
         result = _normalise_r2_decompilation(r2)
         assert "WriteFile(arg1, arg2)" in result
+
+
+class TestDecompilationTmpfileNameSanitisation:
+    """The function name comes from binary symbol tables — path
+    separators and ``..`` must not escape the temp directory (same
+    rule as rules.save_rule's rule_id check)."""
+
+    def test_slash_rejected(self):
+        from core.audit.orchestrator import _write_decompilation_tmpfile
+        assert _write_decompilation_tmpfile(
+            "void f() {}", "../../tmp/evil") is None
+        assert _write_decompilation_tmpfile(
+            "void f() {}", "sub/dir") is None
+
+    def test_backslash_rejected(self):
+        from core.audit.orchestrator import _write_decompilation_tmpfile
+        assert _write_decompilation_tmpfile(
+            "void f() {}", "..\\evil") is None
+
+    def test_dotdot_rejected(self):
+        from core.audit.orchestrator import _write_decompilation_tmpfile
+        assert _write_decompilation_tmpfile("void f() {}", "a..b") is None
+
+    def test_mangled_cpp_name_still_accepted(self):
+        """C++-mangled and colon-bearing names are legitimate symbol
+        names and must keep working."""
+        import shutil
+
+        from core.audit.orchestrator import _write_decompilation_tmpfile
+        tmp_dir = _write_decompilation_tmpfile(
+            "void f() {}", "_ZN3Foo3barEv")
+        assert tmp_dir is not None
+        assert (tmp_dir / "_ZN3Foo3barEv.c").is_file()
+        shutil.rmtree(tmp_dir)

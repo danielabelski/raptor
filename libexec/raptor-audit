@@ -6,10 +6,10 @@ Subcommands:
     gaps     — compute unreviewed functions from inventory + coverage
     context  — assemble context slice for one function
     sweep    — log a tool-grounded check (semgrep/coccinelle/codeql/smt/compilation)
-    record   — write annotation + update coverage-audit (enforces G1-G5 gates)
+    record   — append a review-journal entry + audit-log event (enforces G1-G5 gates)
     rules    — manage synthesized checker rules (Mode 2: save/list/run)
     report   — generate final summary
-    feedback — import /validate results into annotations
+    feedback — import /validate results into the review journal
     stale    — list annotations with stale source hashes
     ast      — extract function AST subtree and call targets
     critique — identify gaps in tool coverage
@@ -1484,7 +1484,7 @@ def main() -> int:
                        choices=sorted(VALID_EVIDENCE_TOOLS),
                        help="Required for --status finding")
     p_rec.add_argument("--hypothesis", default=None,
-                       help="Required for --status finding/suspicious")
+                       help="Required for --status finding/suspicious/dormant")
     p_rec.add_argument("--vuln-type", default=None,
                        help="Required for --status finding")
     p_rec.add_argument("--related-to", default=None,
@@ -1553,8 +1553,8 @@ def main() -> int:
     p_fb.add_argument("--annotations-dir", required=True,
                        help="Path to audit annotations directory")
     p_fb.add_argument("--audit-out",
-                       help="Audit output dir (updates coverage-audit.json "
-                            "and audit log)")
+                       help="Audit output dir (appends correction journal "
+                            "entries and audit-log events)")
 
     # critique
     p_crit = sub.add_parser("critique", help="Tool-grounded critique pass")

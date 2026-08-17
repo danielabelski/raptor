@@ -142,7 +142,7 @@ Examples:
     ap.add_argument("--parallel", type=int, default=1, help="Number of parallel AFL instances (default: 1, ceiling: tuning.json)")
     ap.add_argument("--max-crashes", type=int, default=10, help="Maximum crashes to analyse (default: 10)")
     ap.add_argument("--timeout", type=int, default=1000, help="Timeout per execution in ms (default: 1000)")
-    ap.add_argument("--out", help="Output directory (default: out/fuzz_<binary_name>)")
+    ap.add_argument("--out", help="Output directory (default: fuzz_<binary>_<timestamp>_pid<N>_<tail> under the configured output root)")
     ap.add_argument("--dict", help="Path to AFL dictionary file for structured input fuzzing")
     ap.add_argument("--input-mode", choices=["stdin", "file"], default="stdin", help="Input mode: stdin (default) or file (uses @@)")
     ap.add_argument("--check-sanitizers", action="store_true", help="Check if binary is compiled with sanitizers (ASAN, etc.)")

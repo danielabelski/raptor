@@ -18,7 +18,7 @@ Available Modes:
     binary      - Black-box binary investigation and evidence collection
     fuzz        - Binary fuzzing with AFL++
     web         - Web application security testing
-    agentic     - Full autonomous workflow (Semgrep + CodeQL + LLM analysis)
+    agentic     - Full autonomous workflow (Semgrep + LLM analysis; --codeql adds CodeQL)
     codeql      - CodeQL-only analysis
     analyze     - LLM-powered vulnerability analysis (requires SARIF input)
     describe    - Pre-flight inspection: target type, tool readiness, cost estimate
@@ -897,7 +897,7 @@ def mode_agentic(args: list) -> int:
         configure_run_logging(log_level=log_level, verbose=False)
 
     return _run_with_lifecycle("agentic", agentic_script, args,
-                              "Starting full autonomous workflow (Semgrep + CodeQL)...")
+                              "Starting full autonomous workflow...")
 
 
 def mode_codeql(args: list) -> int:
@@ -1125,7 +1125,7 @@ Available Modes:
   binary      - Black-box binary investigation and evidence collection
   fuzz        - Binary fuzzing with AFL++
   web         - Web application security testing
-  agentic     - Full autonomous workflow (Semgrep + CodeQL + LLM analysis)
+  agentic     - Full autonomous workflow (Semgrep + LLM analysis; --codeql adds CodeQL)
   codeql      - CodeQL-only analysis
   analyze     - LLM-powered vulnerability analysis (requires SARIF input)
   describe    - Pre-flight inspection: target type, tool readiness, cost estimate

@@ -399,10 +399,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         target: Path to target repo. Engages Landlock. Under Landlock, the
                path is an engagement marker only (Landlock does not restrict
                reads); under mount-namespace mode, it is bind-mounted read-
-               only at /target inside the namespace.
+               only at its original absolute path inside the namespace.
         output: Path to output dir (always writable inside the sandbox).
                Engages Landlock and — when mount is active — bind-mounted
-               at /output.
+               writable at its original absolute path.
         map_root: Map current UID to root inside namespace (needed by some
                  builds that check `getuid() == 0`).
         limits: Resource limit overrides (memory_mb, max_file_mb, cpu_seconds).

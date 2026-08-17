@@ -1085,7 +1085,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Full autonomous workflow (Semgrep + CodeQL - default when called via unified launcher)
+  # Full autonomous workflow (Semgrep + LLM analysis; CodeQL is opt-in via --codeql)
   python3 raptor.py agentic --repo /path/to/code
 
   # Semgrep only

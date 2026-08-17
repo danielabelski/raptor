@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """raptor-migrate-journal — one-shot legacy → review-journal migration.
 
 Consolidates three pre-migration sources of LLM review state into

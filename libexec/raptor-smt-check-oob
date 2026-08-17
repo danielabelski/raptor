@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Stage E SMT verb: CWE-125 / CWE-787 array out-of-bounds.
 
 Usage:

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Run all context-map enrichers in sequence, loading shared data once.
 
 Usage: raptor-enrich-context-map <understand_dir>

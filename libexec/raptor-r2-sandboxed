@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """raptor-r2-sandboxed — spawn radare2 under the host-fingerprint
 sandbox, transparently to r2pipe.
 

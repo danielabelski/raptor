@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Enrich every flow-trace-*.json file in an /understand run dir with
 per-step structured AST views.
 

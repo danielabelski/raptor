@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Verified-outcome operator CLI — unified view of what RAPTOR has confirmed.
 
     raptor-verified-outcomes <output_dir> [--project-root <dir>] [--json]

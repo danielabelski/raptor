@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """ZKPoX operator CLI — assemble bundles and reproduce witnesses.
 
 Two subcommands covering the dependency-free tiers:

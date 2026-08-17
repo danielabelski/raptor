@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """CLI for /audit — hypothesis-driven, tool-grounded security review.
 
 Subcommands:

@@ -1,4 +1,6 @@
 #!/usr/bin/python3 -I
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """RAPTOR seatbelt outer-watcher shim for the macOS sandbox-exec path.
 
 -I (isolated mode) is belt-and-braces: get_safe_env() strips PYTHON* env

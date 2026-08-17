@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Stage E SMT verb: CWE-839 signed comparison bypass via negative value.
 
 Usage:

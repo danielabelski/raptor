@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Retroactively finalize sandbox-summary.json for runs whose lifecycle
 didn't complete (hard kill, OOM, host reboot — anything that bypassed
 complete_run / fail_run / cancel_run).

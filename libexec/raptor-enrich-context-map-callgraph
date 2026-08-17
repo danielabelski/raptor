@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Enrich a context-map.json with substrate-derived forward-reachable
 closures per entry point. Runs after raptor-normalize-context-map.
 

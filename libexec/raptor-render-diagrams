@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Render Mermaid diagrams from JSON outputs in a directory.
 
 Usage: raptor-render-diagrams <output_dir> [--target <name>] [--force] [--stdout]

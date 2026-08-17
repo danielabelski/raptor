@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Run exploit feasibility analysis on a binary for a group of findings.
 
 Usage: raptor-run-feasibility <binary_path> <findings.json> <output_dir> [--vuln-type <type>]

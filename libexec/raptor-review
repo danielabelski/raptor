@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """Unified operator CLI for reviewing audit state across all layers.
 
 Assembles mechanical coverage, review journal, context-map roles, and

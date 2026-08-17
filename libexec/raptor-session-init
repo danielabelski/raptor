@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """SessionStart hook: env file setup and startup banner.
 
 Called automatically by Claude Code on session start (via .claude/settings.json).

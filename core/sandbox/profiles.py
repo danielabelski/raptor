@@ -64,7 +64,13 @@ FRIDA_PROFILE = "frida"
 # moved out of the profile dict to CLI flags / per-call kwargs.
 PROFILES = types.MappingProxyType({
     "full":         types.MappingProxyType({"block_network": True,  "use_landlock": True,  "seccomp": "full"}),
-    "strict":       types.MappingProxyType({"block_network": True,  "use_landlock": True,  "seccomp": "full"}),
+    # strict additionally defaults restrict_reads=True (and fake_home
+    # when output= is set): an operator choosing fail-closed semantics
+    # has accepted compatibility risk for guarantees, and read-
+    # everywhere leaves $HOME credentials exposed in Landlock-only
+    # mode (THREAT_MODEL.md I2-(a)). Explicit caller kwargs still win.
+    "strict":       types.MappingProxyType({"block_network": True,  "use_landlock": True,  "seccomp": "full",
+                                            "restrict_reads": True}),
     "target_run":   types.MappingProxyType({"block_network": False, "use_landlock": True,  "seccomp": "full"}),
     "debug":        types.MappingProxyType({"block_network": True,  "use_landlock": True,  "seccomp": "debug"}),
     FRIDA_PROFILE:  types.MappingProxyType({"block_network": False, "use_landlock": True,  "seccomp": "frida"}),

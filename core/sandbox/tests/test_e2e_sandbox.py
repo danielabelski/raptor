@@ -2784,5 +2784,78 @@ class TestE2EDeletionRestriction(unittest.TestCase):
             self.assertIn("DEL-OK", r.stdout)
 
 
+class TestStrictProfileDefaults(unittest.TestCase):
+    """strict defaults restrict_reads=True (+ fake_home with output=).
+
+    An operator choosing fail-closed semantics has accepted
+    compatibility risk for guarantees; read-everywhere leaves $HOME
+    credentials exposed in Landlock-only mode. Explicit kwargs must
+    still override the profile defaults.
+    """
+
+    def setUp(self):
+        if not check_net_available():
+            self.skipTest("User namespaces not available")
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+
+    def test_strict_implies_restrict_reads_and_fake_home(self):
+        secret = Path.home() / ".raptor_strict_secret.txt"
+        secret.write_text("SECRET-CREDENTIAL\n")
+        try:
+            with TemporaryDirectory() as out:
+                r = sandbox_run(
+                    ["bash", "-c",
+                     (f"cat {secret} 2>/dev/null && echo HOME-READ-OK; "
+                      "echo HOME=$HOME")],
+                    profile="strict", target=out, output=out,
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertTrue(r.sandbox_info.get("restrict_reads"),
+                                "strict must default restrict_reads=True")
+                self.assertNotIn("SECRET-CREDENTIAL", r.stdout)
+                self.assertNotIn("HOME-READ-OK", r.stdout)
+                # fake_home engaged: HOME points into {output}/.home
+                self.assertIn("/.home", r.stdout,
+                              f"fake HOME expected; stdout={r.stdout!r}")
+        finally:
+            try:
+                secret.unlink()
+            except OSError:
+                pass
+
+    def test_explicit_kwargs_override_strict_defaults(self):
+        with TemporaryDirectory() as out:
+            r = sandbox_run(
+                ["true"], profile="strict", target=out, output=out,
+                restrict_reads=False, fake_home=False,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(r.returncode, 0)
+            self.assertFalse(r.sandbox_info.get("restrict_reads"),
+                             "explicit restrict_reads=False must win")
+
+    def test_strict_without_output_skips_fake_home(self):
+        """fake_home needs output=; strict with target-only must not
+        raise the fake_home-requires-output ValueError."""
+        with TemporaryDirectory() as tgt:
+            r = sandbox_run(
+                ["true"], profile="strict", target=tgt,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(r.returncode, 0)
+            self.assertTrue(r.sandbox_info.get("restrict_reads"))
+
+    def test_full_profile_defaults_unchanged(self):
+        with TemporaryDirectory() as out:
+            r = sandbox_run(
+                ["true"], profile="full", target=out, output=out,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(r.returncode, 0)
+            self.assertFalse(r.sandbox_info.get("restrict_reads"),
+                             "full must stay read-everywhere by default")
+
+
 if __name__ == "__main__":
     unittest.main()

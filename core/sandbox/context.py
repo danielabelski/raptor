@@ -335,9 +335,9 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             allowed_tcp_ports: list | None = None, profile: str | None = None,
             disabled: bool = False,
             use_egress_proxy: bool = False, proxy_hosts: list | None = None,
-            restrict_reads: bool = False, readable_paths: list | None = None,
+            restrict_reads=_UNSET, readable_paths: list | None = None,
             caller_label: str | None = None,
-            fake_home: bool = False,
+            fake_home=_UNSET,
             tool_paths: list | None = None,
             audit: bool = False, audit_verbose: bool = False,
             audit_run_dir: str | None = None,
@@ -461,6 +461,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
 
     Profiles:
         full:         network blocked + Landlock + seccomp + rlimits (default)
+        strict:       full + fail-closed backend checks + restrict_reads
+                      defaulted True (and fake_home when output= is set).
+                      Explicit restrict_reads=/fake_home= kwargs override
+                      the profile defaults. Callers spawning user-local
+                      toolchains (pip --user, pyenv, ~/venv) under strict
+                      must pass tool_paths=[...] (see
+                      python_runtime_tool_paths()).
         debug:        full, but seccomp permits ptrace (for gdb/rr use cases
                       under /crash-analysis). All other seccomp blocks remain.
         network-only: network blocked + rlimits only (no Landlock, no seccomp)
@@ -563,6 +570,34 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     # require output for those cases. When run() IS called and audit
     # is engaged with no output, spawn raises ValueError with a
     # clear "audit_mode=True requires audit_run_dir=" message.
+
+    # Resolve profile-implied defaults for the _UNSET kwargs BEFORE the
+    # fake-home setup below consumes fake_home (the authoritative
+    # profile-override block further down runs too late for it). The
+    # profile choice mirrors that block exactly: CLI wins, then
+    # disabled, then the caller's profile=. Unknown profile strings
+    # resolve to no implications here; the authoritative block still
+    # raises ValueError for them.
+    if state._cli_sandbox_profile is not None:
+        _profile_for_defaults = state._cli_sandbox_profile
+    elif disabled or state._cli_sandbox_disabled:
+        _profile_for_defaults = "none"
+    else:
+        _profile_for_defaults = profile
+    _profile_defaults = (
+        PROFILES.get(_profile_for_defaults)
+        if _profile_for_defaults else None
+    ) or {}
+    if restrict_reads is _UNSET:
+        restrict_reads = bool(_profile_defaults.get("restrict_reads", False))
+    if fake_home is _UNSET:
+        # Profiles that imply restrict_reads imply the fake HOME too —
+        # the EACCES-vs-ENOENT pairing (git and friends hard-fail on an
+        # unreadable ~/.gitconfig but tolerate a missing one; verified
+        # 2026-08-15 in the Landlock-only battery). Only when output=
+        # is set: fake_home needs a writable location to materialise.
+        fake_home = bool(_profile_defaults.get("restrict_reads", False)
+                         and output)
 
     # Fake-HOME setup — create an empty home dir under `output` and
     # stage env overrides for the run() closure. Deferred to run-time
@@ -2643,9 +2678,9 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         profile: str | None = None, disabled: bool = False, limits: dict | None = None,
         map_root: bool = False,
         use_egress_proxy: bool = False, proxy_hosts: list | None = None,
-        restrict_reads: bool = False, readable_paths: list | None = None,
+        restrict_reads=_UNSET, readable_paths: list | None = None,
         caller_label: str | None = None,
-        fake_home: bool = False,
+        fake_home=_UNSET,
         tool_paths: list | None = None,
         audit: bool = False, audit_verbose: bool = False,
         audit_run_dir: str | None = None,

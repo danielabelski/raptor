@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 from packages.sca.llm.version_diff_review import (
     _archive_url,
     _diff_trees,
@@ -153,3 +152,73 @@ class TestExtractTextFiles:
         assert files is not None
         assert "main.py" in files
         assert "image.png" not in files
+
+
+class TestExtractionBudgets:
+    """Aggregate bomb defences: the per-member cap alone doesn't bound
+    the sum, so cumulative-bytes and member-count budgets must abort
+    the extraction (surfacing as the ``None`` failure result)."""
+
+    @staticmethod
+    def _make_zip(files: dict[str, bytes]) -> bytes:
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name, blob in files.items():
+                zf.writestr(name, blob)
+        return buf.getvalue()
+
+    @staticmethod
+    def _make_tar(files: dict[str, bytes]) -> bytes:
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for name, blob in files.items():
+                info = tarfile.TarInfo(name=name)
+                info.size = len(blob)
+                tf.addfile(info, io.BytesIO(blob))
+        return buf.getvalue()
+
+    def test_zip_cumulative_bytes_budget_aborts(self, monkeypatch):
+        import packages.sca.llm.version_diff_review as vdr
+
+        monkeypatch.setattr(vdr, "_MAX_TOTAL_EXTRACT_BYTES", 1_000)
+        # Each member is under the per-member cap; the sum is not.
+        data = self._make_zip({
+            f"pkg-1.0.0/f{i}.py": b"a" * 400 for i in range(10)
+        })
+        assert _extract_text_files(data, "Go") is None
+
+    def test_zip_member_count_budget_aborts(self, monkeypatch):
+        import packages.sca.llm.version_diff_review as vdr
+
+        monkeypatch.setattr(vdr, "_MAX_ARCHIVE_MEMBERS", 5)
+        data = self._make_zip({
+            f"pkg-1.0.0/f{i}.py": b"x" for i in range(10)
+        })
+        assert _extract_text_files(data, "Go") is None
+
+    def test_zip_under_budget_still_extracts(self):
+        data = self._make_zip({"pkg-1.0.0/main.py": b"print('ok')"})
+        files = _extract_text_files(data, "Go")
+        assert files is not None
+        assert "main.py" in files
+
+    def test_tar_cumulative_bytes_budget_aborts(self, monkeypatch):
+        import packages.sca.llm.version_diff_review as vdr
+
+        monkeypatch.setattr(vdr, "_MAX_TOTAL_EXTRACT_BYTES", 1_000)
+        data = self._make_tar({
+            f"pkg-1.0.0/f{i}.py": b"a" * 400 for i in range(10)
+        })
+        assert _extract_text_files(data, "PyPI") is None
+
+    def test_tar_under_budget_still_extracts(self):
+        data = self._make_tar({"pkg-1.0.0/main.py": b"print('ok')"})
+        files = _extract_text_files(data, "PyPI")
+        assert files is not None
+        assert "main.py" in files

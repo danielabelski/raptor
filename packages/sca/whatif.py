@@ -30,17 +30,18 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
 
-from core.json import JsonCache
-from . import SCA_CACHE_ROOT
-from core.cve import EpssClient
-from .findings import build_vuln_findings, severity_rank
+from core.cve import EpssClient, KevClient
 from core.http import HttpClient
-from . import default_client
-from core.cve import KevClient
+from core.json import JsonCache
+from core.security.log_sanitisation import escape_nonprintable
+from core.security.prompt_output_sanitise import sanitise_string
+
+from . import SCA_CACHE_ROOT, default_client
+from .findings import build_vuln_findings, severity_rank
 from .models import (
     Advisory,
     Confidence,
@@ -56,8 +57,8 @@ logger = logging.getLogger(__name__)
 def main(
     argv: Sequence[str],
     *,
-    http: Optional[HttpClient] = None,
-    cache: Optional[JsonCache] = None,
+    http: HttpClient | None = None,
+    cache: JsonCache | None = None,
 ) -> int:
     from .cli import _configure_logging
 
@@ -219,12 +220,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def _modal_report(
     *,
-    adds: List[str],
-    removes: List[str],
-    from_file: Optional[str],
-    findings_path: Optional[str],
+    adds: list[str],
+    removes: list[str],
+    from_file: str | None,
+    findings_path: str | None,
     osv: OsvClient,
-) -> Tuple[str, int]:
+) -> tuple[str, int]:
     """Run the ``--add`` / ``--remove`` / ``--from`` shape.
 
     For each add, queries OSV for the proposed version and reports
@@ -235,8 +236,8 @@ def _modal_report(
     same handlers.
     """
     import json as _json
-    spec_adds: List[Tuple[str, str, str]] = []     # (eco, name, version)
-    spec_removes: List[Tuple[str, str]] = []        # (eco, name)
+    spec_adds: list[tuple[str, str, str]] = []     # (eco, name, version)
+    spec_removes: list[tuple[str, str]] = []        # (eco, name)
     for raw in adds:
         parsed = _parse_modal_spec(raw, expect_version=True)
         if parsed:
@@ -266,7 +267,7 @@ def _modal_report(
                 elif op == "remove":
                     spec_removes.append((eco, name))
 
-    lines: List[str] = ["# raptor-sca upgrade — proposed change set", ""]
+    lines: list[str] = ["# raptor-sca upgrade — proposed change set", ""]
 
     has_introduced = False
     if spec_adds:
@@ -349,7 +350,7 @@ def _query_one(osv: OsvClient, eco: str, name: str, version: str):
 
 
 def _findings_clearing(
-    findings_path: Optional[str], removes,
+    findings_path: str | None, removes,
 ) -> dict:
     """Map ``(eco, name) → [advisory_id, ...]`` for every advisory that
     would clear if the dep were removed (i.e., it's the only dep in
@@ -386,22 +387,23 @@ def _findings_clearing(
 def _pairwise_report(
     ecosystem: str, name: str, from_version: str, to_version: str,
     osv: OsvClient,
-    kev: Optional[KevClient],
-    epss: Optional[EpssClient],
-) -> Tuple[str, int]:
+    kev: KevClient | None,
+    epss: EpssClient | None,
+) -> tuple[str, int]:
     # Validate the version pair against the ecosystem comparator
     # before any network. Pre-fix: unparseable versions silently
     # produced "0 resolved, 0 regressed" with exit 0 — an operator
     # typo in a CI pipeline meant the gate falsely reported "safe
     # upgrade" on an upgrade that never even compared.
-    from .versions import VersionError, compare as _vcompare
+    from .versions import VersionError
+    from .versions import compare as _vcompare
     try:
         _vcompare(ecosystem, from_version, to_version)
     except VersionError as exc:
         return (
-            f"# raptor-sca upgrade — {ecosystem}:{name} "
-            f"{from_version} → {to_version}\n\n"
-            f"**Error:** unparseable version pair: {exc}\n",
+            (f"# raptor-sca upgrade — {ecosystem}:{name} "
+             f"{from_version} → {to_version}\n\n"
+             f"**Error:** unparseable version pair: {exc}\n"),
             2,
         )
     deps = [_synthesise(ecosystem, name, from_version),
@@ -409,7 +411,7 @@ def _pairwise_report(
     osv_results = osv.query_batch(deps)
     findings = build_vuln_findings(deps, osv_results, kev=kev, epss=epss)
 
-    by_version: Dict[str, List[VulnFinding]] = {from_version: [], to_version: []}
+    by_version: dict[str, list[VulnFinding]] = {from_version: [], to_version: []}
     for f in findings:
         by_version.setdefault(f.dependency.version or "", []).append(f)
 
@@ -460,20 +462,22 @@ def _pairwise_report(
 # ---------------------------------------------------------------------------
 
 def _candidates_report(
-    ecosystem: str, name: str, from_version: str, candidates: List[str],
+    ecosystem: str, name: str, from_version: str, candidates: list[str],
     osv: OsvClient,
-    kev: Optional[KevClient],
-    epss: Optional[EpssClient],
-) -> Tuple[str, int]:
-    from .versions import VersionError, compare as _vcompare
+    kev: KevClient | None,
+    epss: EpssClient | None,
+) -> tuple[str, int]:
+    from .versions import VersionError
+    from .versions import compare as _vcompare
     for cand in candidates:
         try:
             _vcompare(ecosystem, from_version, cand)
         except VersionError as exc:
             return (
-                f"# raptor-sca upgrade — {ecosystem}:{name} "
-                f"from {from_version}\n\n"
-                f"**Error:** unparseable candidate version {cand!r}: {exc}\n",
+                (f"# raptor-sca upgrade — {ecosystem}:{name} "
+                 f"from {from_version}\n\n"
+                 f"**Error:** unparseable candidate version "
+                 f"{cand!r}: {exc}\n"),
                 2,
             )
     versions = [from_version] + list(candidates)
@@ -481,7 +485,7 @@ def _candidates_report(
     osv_results = osv.query_batch(deps)
     findings = build_vuln_findings(deps, osv_results, kev=kev, epss=epss)
 
-    by_version: Dict[str, List[VulnFinding]] = {v: [] for v in versions}
+    by_version: dict[str, list[VulnFinding]] = {v: [] for v in versions}
     for f in findings:
         by_version.setdefault(f.dependency.version or "", []).append(f)
 
@@ -500,7 +504,7 @@ def _candidates_report(
         return buf.getvalue(), 0
 
     # Mark each base advisory: resolved by which candidate(s)?
-    resolution_table: Dict[str, Dict[str, bool]] = {}
+    resolution_table: dict[str, dict[str, bool]] = {}
     for adv_id, base_finding in base_ids.items():
         resolution_table[adv_id] = {}
         for cand in candidates:
@@ -534,7 +538,7 @@ def _candidates_report(
     buf.write("\n")
 
     # Summary row: count per candidate.
-    coverage: Dict[str, int] = {
+    coverage: dict[str, int] = {
         cand: sum(1 for adv in resolution_table.values() if adv[cand])
         for cand in candidates
     }
@@ -594,7 +598,7 @@ def _canonical_id(f: VulnFinding) -> str:
     return advisory.osv_id
 
 
-def _ranked(findings: List[VulnFinding]) -> List[VulnFinding]:
+def _ranked(findings: list[VulnFinding]) -> list[VulnFinding]:
     return sorted(
         findings,
         key=lambda f: (
@@ -610,16 +614,22 @@ def _advisory_line(f: VulnFinding) -> str:
     if not f.advisories:
         return f"- {f.dependency.name or '?'}\n"
     primary = f.advisories[0]
-    tags: List[str] = [f.severity.title()]
+    tags: list[str] = [f.severity.title()]
     if f.in_kev:
         tags.append("**KEV**")
     if f.cvss_score is not None:
         tags.append(f"CVSS {f.cvss_score:.1f}")
     if f.epss is not None:
         tags.append(f"EPSS {f.epss:.2f}")
-    aliases = ", ".join(primary.aliases[:2]) if primary.aliases else ""
-    summary = primary.summary or ""
-    return (f"- [{' / '.join(tags)}] **{primary.osv_id}**"
+    # OSV-sourced fields (id / aliases / summary) are untrusted
+    # registry content headed for stdout — same escaping treatment
+    # as report.py.
+    aliases = ", ".join(
+        escape_nonprintable(a) for a in primary.aliases[:2]
+    ) if primary.aliases else ""
+    summary = sanitise_string(primary.summary) if primary.summary else ""
+    return (f"- [{' / '.join(tags)}] "
+            f"**{escape_nonprintable(primary.osv_id)}**"
             + (f" ({aliases})" if aliases else "")
             + (f" — {summary}" if summary else "")
             + "\n")
@@ -631,7 +641,7 @@ def _explain_upgrade(
     from_version: str,
     to_version: str,
     *,
-    target: Optional[Path] = None,
+    target: Path | None = None,
 ) -> str:
     """Run LLM upgrade-impact analysis and return a markdown section."""
     if not to_version:
@@ -652,7 +662,7 @@ def _explain_upgrade(
     if verdict is None:
         return "\n## Upgrade impact (LLM)\n\nLLM analysis failed.\n"
 
-    lines: List[str] = [
+    lines: list[str] = [
         "",
         "## Upgrade impact (LLM)",
         "",

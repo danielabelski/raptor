@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import fields
-from typing import Set
 
 import pytest
 
@@ -31,10 +30,10 @@ def _parser_with_scan_args() -> argparse.ArgumentParser:
     return p
 
 
-def _registered_flag_names(p: argparse.ArgumentParser) -> Set[str]:
+def _registered_flag_names(p: argparse.ArgumentParser) -> set[str]:
     """Return every ``--flag`` option string the parser knows."""
-    out: Set[str] = set()
-    for action in p._actions:                          # noqa: SLF001
+    out: set[str] = set()
+    for action in p._actions:
         for opt in action.option_strings:
             if opt.startswith("--"):
                 out.add(opt)
@@ -51,6 +50,7 @@ def test_add_scan_args_registers_expected_flags() -> None:
         "--out", "--offline", "--no-cache",
         "--use-offline-db", "--offline-db-path",
         "--no-resolve-transitive", "--fallback-registry-metadata",
+        "--allow-sdist-builds",
         "--no-kev", "--no-epss", "--no-reachability",
         "--no-supply-chain",
         # Flags added in the UX-hardening batch that previously
@@ -176,6 +176,7 @@ def test_run_options_fields_covered_by_options_from_args() -> None:
     ("--no-inline-installs", "enable_inline_installs", False),
     ("--no-dockerfile-from", "enable_dockerfile_from", False),
     ("--no-resolve-transitive", "enable_transitive_expansion", False),
+    ("--allow-sdist-builds", "allow_sdist_builds", True),
     ("--fallback-registry-metadata", "fallback_registry_metadata", True),
     ("--use-offline-db", "use_offline_db", True),
     ("--skip-review", "enable_llm_review", False),

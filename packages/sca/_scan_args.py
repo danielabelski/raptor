@@ -35,7 +35,6 @@ from pathlib import Path
 
 from .pipeline import RunOptions
 
-
 _SCAN_HELP_EPILOG = """\
 Common invocations:
 
@@ -128,6 +127,15 @@ def add_scan_args(parser: argparse.ArgumentParser) -> None:
              "(default: run pip-compile / npm install --dry-run / "
              "cargo update / etc. in the sandbox to recover the "
              "transitive set)",
+    )
+    parser.add_argument(
+        "--allow-sdist-builds", action="store_true",
+        help="let the pip cascade resolver fall back to source "
+             "distributions. Default is wheels-only "
+             "(PIP_ONLY_BINARY=:all:) so a package's build backend "
+             "never executes; with this flag, sdist-only manifests "
+             "resolve at the cost of running build backends inside "
+             "the sandbox",
     )
     parser.add_argument(
         "--fallback-registry-metadata", action="store_true",
@@ -332,6 +340,7 @@ def options_from_args(args: argparse.Namespace) -> RunOptions:
         offline_db_path=(Path(args.offline_db_path)
                           if args.offline_db_path else None),
         enable_transitive_expansion=not args.no_resolve_transitive,
+        allow_sdist_builds=args.allow_sdist_builds,
         fallback_registry_metadata=args.fallback_registry_metadata,
         enable_llm_review=not args.skip_review,
         enable_triage=not args.skip_triage,

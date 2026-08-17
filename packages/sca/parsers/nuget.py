@@ -27,7 +27,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+
 # ``_ET`` kept for its ``ParseError`` exception type — defusedxml
 # raises the stdlib's ParseError subclass on malformed XML, so
 # catching ``_ET.ParseError`` works for both parsers. The actual
@@ -35,7 +35,7 @@ from typing import List, Optional, Tuple
 from xml.etree import ElementTree as _ET
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ _PURL_TYPE = "nuget"
 # ---------------------------------------------------------------------------
 
 @register(suffixes=[".csproj", ".fsproj", ".vbproj"])
-def parse_msbuild_project(path: Path) -> List[Dependency]:
+def parse_msbuild_project(path: Path) -> list[Dependency]:
     """Parse an MSBuild project file and emit one Dependency per
     ``<PackageReference>``.
 
@@ -129,10 +129,12 @@ def parse_msbuild_project(path: Path) -> List[Dependency]:
             "stdlib parser (XXE / billion-laughs exposure)", path,
         )
         return []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.nuget: cannot read %s: %s", path, e)
+    # Bounded read — same posture as sibling parsers: a hostile
+    # oversized (or symlinked) csproj is treated as unparseable
+    # rather than fed to the XML parser.
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     try:
@@ -141,7 +143,7 @@ def parse_msbuild_project(path: Path) -> List[Dependency]:
         logger.warning("sca.parsers.nuget: invalid XML in %s: %s", path, e)
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     seen_keys: set = set()
     # Extract the project's target framework(s). Modern SDK-style
     # csproj uses ``<TargetFramework>`` (singular) or
@@ -183,7 +185,7 @@ def parse_msbuild_project(path: Path) -> List[Dependency]:
             if override:
                 version = override.strip()
                 source_origin = "version_override"
-        cpm_resolved_in: Optional[Path] = None
+        cpm_resolved_in: Path | None = None
         if not version and cpm_map:
             # Fall through to the CPM map walked from the
             # csproj's directory. ``cpm_map`` carries (version, central_file)
@@ -257,10 +259,10 @@ def parse_msbuild_project(path: Path) -> List[Dependency]:
 
 def _build_msbuild_dep(
     *, name: str, version: str, scope: str, declared_in: Path,
-    source_extra: Optional[dict] = None,
+    source_extra: dict | None = None,
     source_origin: str = "inline_version",
     pin_style: PinStyle = PinStyle.EXACT,
-    resolved_in: Optional[Path] = None,
+    resolved_in: Path | None = None,
 ) -> Dependency:
     """Construct a Dependency carrying the MSBuild source-origin
     annotation. ``source_origin`` records where the version came
@@ -342,8 +344,11 @@ def _resolve_cpm_chain(start_dir: Path):
     Returns ``({}, [])`` for the no-MSBuild-auto-import case.
     """
     from .directory_packages_props import (
-        find_build_props_chain, find_build_targets_chain, find_cpm_chain,
-        parse_directory_build_props, parse_directory_packages_props,
+        find_build_props_chain,
+        find_build_targets_chain,
+        find_cpm_chain,
+        parse_directory_build_props,
+        parse_directory_packages_props,
     )
 
     cpm_paths = find_cpm_chain(start_dir)
@@ -406,7 +411,7 @@ def _resolve_cpm_chain(start_dir: Path):
     return merged, list(globals_by_name.values())
 
 
-def _extract_target_frameworks(root) -> List[str]:
+def _extract_target_frameworks(root) -> list[str]:
     """Pull the project's target frameworks from ``<TargetFramework>``
     or ``<TargetFrameworks>``. Returns a list of TFMs (e.g. ``["net6.0",
     "net8.0"]``); empty if neither element is present.
@@ -414,21 +419,22 @@ def _extract_target_frameworks(root) -> List[str]:
     Per-PackageReference TFM (`Condition="'$(TargetFramework)' == ..."`)
     isn't handled — for v1 we treat all package refs as applying to
     the full TFM set."""
-    out: List[str] = []
+    out: list[str] = []
     for elem in root.iter():
         tag = elem.tag
         if tag.endswith("}TargetFramework") or tag == "TargetFramework":
             if elem.text and elem.text.strip():
                 out.append(elem.text.strip())
-        elif tag.endswith("}TargetFrameworks") or tag == "TargetFrameworks":
-            if elem.text:
-                for t in elem.text.split(";"):
-                    t = t.strip()
-                    if t:
-                        out.append(t)
+        elif (
+            tag.endswith("}TargetFrameworks") or tag == "TargetFrameworks"
+        ) and elem.text:
+            for t in elem.text.split(";"):
+                t = t.strip()
+                if t:
+                    out.append(t)
     # Deduplicate preserving order.
     seen: set = set()
-    deduped: List[str] = []
+    deduped: list[str] = []
     for t in out:
         if t not in seen:
             seen.add(t)
@@ -472,7 +478,7 @@ def _scope_from_msbuild(el) -> str:
 # ---------------------------------------------------------------------------
 
 @register(filenames=["packages.config"])
-def parse_packages_config(path: Path) -> List[Dependency]:
+def parse_packages_config(path: Path) -> list[Dependency]:
     if not _AVAILABLE:
         logger.warning(
             "sca.parsers.nuget: skipping %s — 'defusedxml' not "
@@ -491,7 +497,7 @@ def parse_packages_config(path: Path) -> List[Dependency]:
         logger.warning("sca.parsers.nuget: invalid XML in %s: %s", path, e)
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     seen_keys: set = set()
     for el in root.iter():
         tag = el.tag.rsplit("}", 1)[-1]
@@ -533,7 +539,7 @@ def parse_packages_config(path: Path) -> List[Dependency]:
 # ---------------------------------------------------------------------------
 
 @register(filenames=["packages.lock.json"])
-def parse_lockfile(path: Path) -> List[Dependency]:
+def parse_lockfile(path: Path) -> list[Dependency]:
     """Parse a NuGet ``packages.lock.json`` and emit one Dependency per
     resolved entry.
 
@@ -557,12 +563,12 @@ def parse_lockfile(path: Path) -> List[Dependency]:
 
     if not isinstance(data, dict):
         return []
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     seen_keys: set = set()
     deps_block = data.get("dependencies") or {}
     if not isinstance(deps_block, dict):
         return []
-    for _target, entries in deps_block.items():
+    for entries in deps_block.values():
         if not isinstance(entries, dict):
             continue
         for name, spec in entries.items():
@@ -602,12 +608,25 @@ def parse_lockfile(path: Path) -> List[Dependency]:
 # NuGet version-spec grammar
 # ---------------------------------------------------------------------------
 
+# Deterministic bracket-range grammar. The previous form interleaved
+# ``\s*`` quantifiers with lazy value classes that ALSO matched
+# whitespace, so adjacent quantified subexpressions overlapped and a
+# hostile ``"[" + " "*N`` spec explored O(N^2)+ splits. Here each
+# value is captured greedily (its class excludes the structural
+# ``,[]()`` delimiters, so every position has exactly one match) and
+# surrounding whitespace is stripped in Python afterwards — same
+# accepted language, same outputs, linear-time matching.
 _BRACKET_RE = re.compile(
-    r"^\s*([\[\(])\s*([^,\[\]\(\)]*?)\s*(?:,\s*([^,\[\]\(\)]*?)\s*)?([\]\)])\s*$"
+    r"^\s*([\[\(])([^,\[\]\(\)]*)(?:,([^,\[\]\(\)]*))?([\]\)])\s*$"
 )
 
+# Length bound applied before the regex runs. Real NuGet version
+# specs are tens of characters; anything longer is hostile or
+# garbage and is classified UNKNOWN without touching the regex.
+_MAX_VERSION_SPEC_LEN = 256
 
-def _classify_version_spec(spec: Optional[str]) -> Tuple[PinStyle, Optional[str]]:
+
+def _classify_version_spec(spec: str | None) -> tuple[PinStyle, str | None]:
     """Return ``(pin_style, bare_version)`` for a NuGet version string.
 
     Rules:
@@ -623,12 +642,21 @@ def _classify_version_spec(spec: Optional[str]) -> Tuple[PinStyle, Optional[str]
     """
     if spec is None:
         return PinStyle.UNKNOWN, None
+    if len(spec) > _MAX_VERSION_SPEC_LEN:
+        return PinStyle.UNKNOWN, None
     s = spec.strip()
     if not s:
         return PinStyle.UNKNOWN, None
     m = _BRACKET_RE.match(s)
     if m:
         lb, lv, uv, ub = m.group(1), m.group(2), m.group(3), m.group(4)
+        # Values are captured with surrounding whitespace (the regex
+        # keeps its value classes delimiter-only for determinism);
+        # trim here. ``uv is None`` (no comma) stays distinct from
+        # ``uv == ""`` (open bound).
+        lv = lv.strip()
+        if uv is not None:
+            uv = uv.strip()
         if uv is None:
             # Single-value form. Only ``[V]`` (both inclusive) is a
             # valid EXACT pin per NuGet spec; ``(V)`` / ``[V)`` /
@@ -655,7 +683,7 @@ def _classify_version_spec(spec: Optional[str]) -> Tuple[PinStyle, Optional[str]
     return PinStyle.UNKNOWN, None
 
 
-def _build_purl(name: str, version: Optional[str]) -> str:
+def _build_purl(name: str, version: str | None) -> str:
     base = f"pkg:{_PURL_TYPE}/{name}"
     if version:
         return f"{base}@{version}"
@@ -663,7 +691,7 @@ def _build_purl(name: str, version: Optional[str]) -> str:
 
 
 __all__ = [
+    "parse_lockfile",
     "parse_msbuild_project",
     "parse_packages_config",
-    "parse_lockfile",
 ]

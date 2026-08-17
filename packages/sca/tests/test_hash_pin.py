@@ -20,7 +20,10 @@ def _patch_ls_remote(monkeypatch, mapping):
     def fake_run(cmd, **kwargs):
         if cmd[:2] != ["git", "ls-remote"]:
             return _FakeProc(returncode=1)
-        # ``git ls-remote https://github.com/owner/repo.git ref refs/tags/ref refs/heads/ref``
+        # ``git ls-remote -- https://github.com/owner/repo.git ref
+        # refs/tags/ref refs/heads/ref`` — drop the end-of-options
+        # separator before positional parsing.
+        cmd = [a for a in cmd if a != "--"]
         url = cmd[2]
         # Parse owner/repo from URL.
         slug = url.replace("https://github.com/", "").replace(
@@ -336,3 +339,72 @@ def test_tag_preferred_even_when_branch_listed_first(
     text = (workflows / "ci.yml").read_text()
     assert f"@{tag_sha}" in text
     assert f"@{branch_sha}" not in text
+
+
+# ---------------------------------------------------------------------------
+# Argument-injection hardening: ``--`` separator + leading-dash rejection
+# ---------------------------------------------------------------------------
+
+
+def test_ls_remote_argv_uses_end_of_options_separator(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The ``--`` separator must precede the URL so no component can
+    ever be parsed as a git option."""
+    seen_cmds = []
+
+    def fake_run(cmd, **kwargs):
+        seen_cmds.append(list(cmd))
+        return _FakeProc(
+            returncode=0, stdout=f"{'a' * 40}\trefs/tags/v4\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(
+        "jobs:\n  t:\n    steps:\n      - uses: actions/checkout@v4\n",
+        encoding="utf-8",
+    )
+    result = hash_pin_workflows(tmp_path, write=False)
+    assert len(result.changes) == 1
+    assert len(seen_cmds) == 1
+    cmd = seen_cmds[0]
+    i = cmd.index("ls-remote")
+    assert cmd[i + 1] == "--", f"missing -- separator in argv: {cmd}"
+    assert cmd[i + 2].startswith("https://github.com/")
+
+
+def test_leading_dash_ref_rejected_without_subprocess(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A ref with a leading dash could be parsed as a git option;
+    the resolver must skip it before any subprocess runs."""
+    def fake_run(cmd, **kwargs):
+        raise AssertionError(
+            f"subprocess must not run for dash-prefixed ref: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(
+        "jobs:\n  t:\n    steps:\n"
+        "      - uses: actions/checkout@-v4\n",
+        encoding="utf-8",
+    )
+    result = hash_pin_workflows(tmp_path, write=True)
+    assert result.changes == []
+    assert len(result.skipped) == 1
+
+
+def test_leading_dash_components_rejected_directly(monkeypatch) -> None:
+    """``_resolve_sha`` validates owner / repo / ref itself so it
+    stays safe for any future caller."""
+    from packages.sca.hash_pin import _resolve_sha
+
+    def fake_run(cmd, **kwargs):
+        raise AssertionError("subprocess must not run")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _resolve_sha("-owner", "repo", "v1", {}, None) is None
+    assert _resolve_sha("owner", "-repo", "v1", {}, None) is None
+    assert _resolve_sha("owner", "repo", "--upload-pack=x", {}, None) is None

@@ -18,16 +18,17 @@ for the operator.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import io
 import logging
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from core.http import HttpClient
 from core.llm.task_types import TaskType
 from core.tar import extract_files_from_tar
+
 from ..models import Dependency
 from . import (
     StageResult,
@@ -44,6 +45,11 @@ logger = logging.getLogger(__name__)
 _MAX_ARCHIVE_BYTES = 50 * 1024 * 1024  # 50 MB
 _MAX_DIFF_CHARS = 200_000               # ~200 KB to the LLM
 _MAX_FILE_SIZE = 512 * 1024             # skip files > 512 KB in diff
+# Aggregate extraction budget: the per-member cap alone doesn't bound
+# the sum, so many just-under-cap members (or millions of tiny ones)
+# could still exhaust memory. Either limit aborts the extraction.
+_MAX_TOTAL_EXTRACT_BYTES = 64 * 1024 * 1024  # cumulative across members
+_MAX_ARCHIVE_MEMBERS = 10_000                # member-count bound
 _TEXT_EXTENSIONS = frozenset({
     ".py", ".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx",
     ".java", ".kt", ".kts", ".scala", ".groovy",
@@ -55,7 +61,7 @@ _TEXT_EXTENSIONS = frozenset({
 })
 
 # Per-ecosystem source-archive URL templates.
-_ARCHIVE_URLS: Dict[str, str] = {
+_ARCHIVE_URLS: dict[str, str] = {
     "npm": "https://registry.npmjs.org/{name}/-/{basename}-{version}.tgz",
     "PyPI": "https://files.pythonhosted.org/packages/source/{initial}/{name}/{name}-{version}.tar.gz",
     "Cargo": "https://crates.io/api/v1/crates/{name}/{version}/download",
@@ -79,7 +85,7 @@ def review_version_diff(
     new_dep: Dependency,
     http: HttpClient,
     changelog: str = "",
-) -> Optional[VersionDiffVerdict]:
+) -> VersionDiffVerdict | None:
     """Diff two versions of a package and ask the LLM for a verdict.
 
     Returns ``None`` when archives can't be fetched or the LLM is
@@ -142,7 +148,7 @@ def _build_diff(
     old_dep: Dependency,
     new_dep: Dependency,
     http: HttpClient,
-) -> Optional[str]:
+) -> str | None:
     """Download, extract, and diff two package versions."""
     if not old_dep.version or not new_dep.version:
         return None
@@ -157,7 +163,7 @@ def _build_diff(
 
 def _download_and_extract(
     dep: Dependency, http: HttpClient,
-) -> Optional[Dict[str, str]]:
+) -> dict[str, str] | None:
     """Fetch archive → dict of {relative_path: text_content}."""
     # Composer: resolve the actual archive URL from packagist metadata.
     if dep.ecosystem == "Packagist":
@@ -192,7 +198,7 @@ def _download_and_extract(
     return _extract_text_files(data, eco)
 
 
-def _fetch(url: str, http: HttpClient) -> Optional[bytes]:
+def _fetch(url: str, http: HttpClient) -> bytes | None:
     """Download a URL, returning None on failure or oversize."""
     try:
         data = http.get_bytes(url, timeout=30)
@@ -205,7 +211,7 @@ def _fetch(url: str, http: HttpClient) -> Optional[bytes]:
     return data
 
 
-def _fetch_pypi_wheel(dep: Dependency, http: HttpClient) -> Optional[bytes]:
+def _fetch_pypi_wheel(dep: Dependency, http: HttpClient) -> bytes | None:
     """Fall back to the smallest wheel when no sdist is available."""
     if not dep.version:
         return None
@@ -227,7 +233,7 @@ def _fetch_pypi_wheel(dep: Dependency, http: HttpClient) -> Optional[bytes]:
         return None
 
 
-def _download_composer(dep: Dependency, http: HttpClient) -> Optional[Dict[str, str]]:
+def _download_composer(dep: Dependency, http: HttpClient) -> dict[str, str] | None:
     """Resolve Composer archive URL from packagist and extract."""
     meta_url = f"https://repo.packagist.org/p2/{dep.name.lower()}.json"
     try:
@@ -252,7 +258,7 @@ def _download_composer(dep: Dependency, http: HttpClient) -> Optional[Dict[str, 
         return None
 
 
-def _archive_url(dep: Dependency) -> Optional[str]:
+def _archive_url(dep: Dependency) -> str | None:
     """Build the source-archive URL for a dependency."""
     template = _ARCHIVE_URLS.get(dep.ecosystem)
     if template is None:
@@ -287,7 +293,7 @@ def _archive_url(dep: Dependency) -> Optional[str]:
     return template.format(name=name, version=version)
 
 
-def _maven_fallback_url(dep: Dependency) -> Optional[str]:
+def _maven_fallback_url(dep: Dependency) -> str | None:
     """Binary jar URL when sources jar is unavailable."""
     parts = dep.name.split(":")
     if len(parts) != 2 or not dep.version:
@@ -301,9 +307,9 @@ def _maven_fallback_url(dep: Dependency) -> Optional[str]:
 
 def _extract_text_files(
     data: bytes, ecosystem: str,
-) -> Optional[Dict[str, str]]:
+) -> dict[str, str] | None:
     """Extract text source files from an archive."""
-    files: Dict[str, str] = {}
+    files: dict[str, str] = {}
     try:
         if ecosystem in ("npm", "PyPI", "Cargo", "RubyGems"):
             _extract_tar(data, files)
@@ -311,13 +317,13 @@ def _extract_text_files(
             _extract_zip(data, files)
         else:
             _extract_tar(data, files)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("sca.llm.version_diff: extraction failed", exc_info=True)
         return None
     return files if files else None
 
 
-def _extract_tar(data: bytes, out: Dict[str, str]) -> None:
+def _extract_tar(data: bytes, out: dict[str, str]) -> None:
     """Pull text-source files out of a tar archive.
 
     Tar walking + safety filtering is centralised in
@@ -339,26 +345,60 @@ def _extract_tar(data: bytes, out: Dict[str, str]) -> None:
         selector=_select,
         mode="r:*",
         max_member_bytes=_MAX_FILE_SIZE,
+        # Aggregate-size bomb defence: raises when the cumulative
+        # extracted bytes exceed the budget (the per-member cap alone
+        # doesn't bound the sum). Surfaces through the caller's
+        # extraction-failure path. Entry-count bound is the helper's
+        # default (50k), well above _MAX_ARCHIVE_MEMBERS-scale sources.
+        max_total_bytes=_MAX_TOTAL_EXTRACT_BYTES,
     )
     for key, blob in raw.items():
-        try:
+        # ``errors="replace"`` decoding is effectively infallible;
+        # suppress is belt-and-braces against exotic bytes-likes.
+        with contextlib.suppress(Exception):
             out[key] = blob.decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
-            continue
 
 
-def _extract_zip(data: bytes, out: Dict[str, str]) -> None:
+def _extract_zip(data: bytes, out: dict[str, str]) -> None:
+    # Cumulative budgets: track member count, declared uncompressed
+    # sizes, AND actual bytes read (headers can lie in either
+    # direction). Exceeding any budget raises, which surfaces through
+    # the caller's extraction-failure path (``_extract_text_files``
+    # returns None).
+    members = 0
+    declared_total = 0
+    read_total = 0
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for info in zf.infolist():
+            members += 1
+            if members > _MAX_ARCHIVE_MEMBERS:
+                raise ValueError(
+                    f"zip exceeds {_MAX_ARCHIVE_MEMBERS} members "
+                    f"(bomb-shape); refusing")
             if info.is_dir() or info.file_size > _MAX_FILE_SIZE:
                 continue
             suffix = Path(info.filename).suffix.lower()
             if suffix not in _TEXT_EXTENSIONS:
                 continue
+            declared_total += info.file_size
+            if declared_total > _MAX_TOTAL_EXTRACT_BYTES:
+                raise ValueError(
+                    f"zip declares more than {_MAX_TOTAL_EXTRACT_BYTES} "
+                    f"cumulative bytes (bomb-shape); refusing")
             try:
-                content = zf.read(info).decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
+                blob = zf.read(info)
+            except Exception:
+                logger.debug(
+                    "sca.llm.version_diff: failed to read zip member "
+                    "%s; skipping", info.filename, exc_info=True,
+                )
                 continue
+            read_total += len(blob)
+            if read_total > _MAX_TOTAL_EXTRACT_BYTES:
+                raise ValueError(
+                    f"zip extraction exceeds {_MAX_TOTAL_EXTRACT_BYTES} "
+                    f"cumulative bytes (bomb-shape); refusing")
+            content = blob.decode("utf-8", errors="replace")
             parts = Path(info.filename).parts
             rel = "/".join(parts[1:]) if len(parts) > 1 else info.filename
             if "@v" in rel:
@@ -370,11 +410,11 @@ def _extract_zip(data: bytes, out: Dict[str, str]) -> None:
 
 
 def _diff_trees(
-    old: Dict[str, str], new: Dict[str, str],
+    old: dict[str, str], new: dict[str, str],
 ) -> str:
     """Produce a unified diff between two file trees, capped at _MAX_DIFF_CHARS."""
     all_paths = sorted(set(old) | set(new))
-    chunks: List[str] = []
+    chunks: list[str] = []
     total = 0
 
     for path in all_paths:

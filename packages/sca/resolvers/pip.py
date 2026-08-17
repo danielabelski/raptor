@@ -8,8 +8,16 @@ anything; ``pip install --dry-run`` (pip 23.0+) is the lighter
 alternative when pip-tools isn't installed.
 
 Neither path executes install hooks — pip doesn't run them on
-``--dry-run`` for wheel-only deps, and we don't allow source-dist
-fallback (``--only-binary=:all:`` where supported).
+``--dry-run`` for wheel-only deps, and source-dist fallback is
+disabled: ``PIP_ONLY_BINARY=:all:`` is set in the child environment
+at every invocation site (system pip-compile, venv pipeline, batch
+script), so pip never downloads an sdist and never runs a package's
+build backend. A manifest that genuinely needs an sdist fails the
+dry-run loudly with a clean non-success :class:`ResolverResult`.
+The ``allow_sdist_builds`` escape hatch (CLI:
+``--allow-sdist-builds``) skips the env var for operators who accept
+build-backend execution inside the sandbox — see
+:class:`PipResolver`.
 
 PEP 668 (externally-managed-environment) handling
 -------------------------------------------------
@@ -35,11 +43,38 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 from . import ResolverResult, _check_tool, _run
 
 logger = logging.getLogger(__name__)
+
+
+# Metadata-only resolution policy (see package docstring in
+# ``__init__.py``): force pip to consider wheels only. Building an
+# sdist runs the package's build backend — arbitrary code, even under
+# the sandbox — so the resolver refuses by default. ``PIP_ONLY_BINARY``
+# is pip's environment-variable form of ``--only-binary``; it reaches
+# pip through pip-compile at every invocation site, including the
+# shell pipelines.
+_ONLY_BINARY_ENV = "PIP_ONLY_BINARY=:all:"
+
+# Process-wide default for the ``allow_sdist_builds`` escape hatch.
+# The resolver registry constructs its ``PipResolver()`` singleton at
+# import time, so the per-run ``--allow-sdist-builds`` CLI flag flows
+# through this module-level default (same pattern as the parsers'
+# module-level setters toggled by ``pipeline.run_sca``).
+_ALLOW_SDIST_BUILDS_DEFAULT = False
+
+
+def set_allow_sdist_builds(value: bool) -> None:
+    """Set the process-wide default for :attr:`PipResolver.allow_sdist_builds`.
+
+    Instances constructed with an explicit ``allow_sdist_builds``
+    keep their pinned value; instances using the default (including
+    the registry singleton) pick this up on the next ``dry_run``.
+    """
+    global _ALLOW_SDIST_BUILDS_DEFAULT
+    _ALLOW_SDIST_BUILDS_DEFAULT = bool(value)
 
 
 def _real_python() -> str:
@@ -69,9 +104,31 @@ class PipResolver:
     (:meth:`dry_run_batch`) — one shared venv handles N manifests
     concurrently inside a single sandbox session. The ``SUPPORTS_BATCH``
     class flag is the opt-in marker the cascade orchestrator looks at.
+
+    ``PIP_ONLY_BINARY=:all:`` is **always** set in the child
+    environment — this is the metadata-only mode; pip never builds
+    an sdist (which would run the package's build backend) via this
+    path. A manifest whose deps only ship sdists fails the dry-run
+    loudly. ``allow_sdist_builds=True`` (CLI: ``--allow-sdist-builds``)
+    skips the env var — the trade-off is that pip may then execute
+    arbitrary build-backend code from the resolved packages, contained
+    only by the sandbox. Default is off.
     """
 
     SUPPORTS_BATCH = True
+
+    def __init__(self, *, allow_sdist_builds: bool | None = None) -> None:
+        # ``None`` defers to the process-wide default managed by
+        # :func:`set_allow_sdist_builds` (CLI flag plumbing); an
+        # explicit bool pins this instance regardless of the flag.
+        self._allow_sdist_builds = allow_sdist_builds
+
+    @property
+    def allow_sdist_builds(self) -> bool:
+        """True when sdist builds are permitted for this resolver."""
+        if self._allow_sdist_builds is not None:
+            return self._allow_sdist_builds
+        return _ALLOW_SDIST_BUILDS_DEFAULT
 
     ecosystem = "PyPI"
     # Files the resolver-cache wrapper hashes to key memoisation.
@@ -157,10 +214,17 @@ class PipResolver:
         responsible for retrying via the venv pipeline.
         """
         rel_manifest = str(manifest.relative_to(project_dir))
+        cmd = ["pip-compile", "--quiet", "--output-file", "-",
+               rel_manifest]
+        if not self.allow_sdist_builds:
+            # Wheels only — an sdist-requiring manifest fails the
+            # dry-run loudly instead of running its build backend.
+            # ``env(1)`` prefix adds the single variable while the
+            # sandbox's safe-env posture stays intact for the rest.
+            cmd = ["env", _ONLY_BINARY_ENV, *cmd]
         try:
             proc = _run(
-                ["pip-compile", "--quiet", "--output-file", "-",
-                 rel_manifest],
+                cmd,
                 cwd=project_dir, timeout=timeout,
                 proxy_hosts=self.proxy_hosts,
             )
@@ -213,7 +277,7 @@ class PipResolver:
 
     def _create_venv(
         self, project_dir: Path, timeout: int,
-    ) -> "tuple[Optional[Path], Optional[str]]":
+    ) -> tuple[Path | None, str | None]:
         """Create an ephemeral venv + bootstrap pip in a single sandbox call.
 
         Each ``_run`` call gets a fresh mount-ns with its own tmpfs at
@@ -246,11 +310,22 @@ class PipResolver:
         write their caches under ``/tmp`` (writable in the sandbox)
         rather than the sandbox's ``fake_home`` bind-mount, which is
         read-only on some configurations.
+
+        Exports ``PIP_ONLY_BINARY=:all:`` in the preamble (unless the
+        ``allow_sdist_builds`` escape hatch is set) so every pip /
+        pip-compile invocation in the pipeline — including the batch
+        script's per-manifest subshells — inherits the wheels-only
+        policy.
         """
         qvenv = shlex.quote(str(venv_dir))
         qpython = shlex.quote(_real_python())
+        only_binary = (
+            "" if self.allow_sdist_builds
+            else f"export {_ONLY_BINARY_ENV}; "
+        )
         return (
             f"set -e; "
+            f"{only_binary}"
             f"export HOME={qvenv}/.fake-home; "
             f"export XDG_CACHE_HOME={qvenv}/.fake-home/.cache; "
             f"mkdir -p $HOME $XDG_CACHE_HOME; "
@@ -270,10 +345,10 @@ class PipResolver:
     # ----- batched venv pipeline (one venv, N parallel pip-compile) -----
 
     def dry_run_batch(
-        self, project_dirs: "list[Path]", *,
-        common_root: Optional[Path] = None,
+        self, project_dirs: list[Path], *,
+        common_root: Path | None = None,
         timeout: int = 120,
-    ) -> "list[ResolverResult]":
+    ) -> list[ResolverResult]:
         """Resolve N PyPI manifests in a single sandbox call.
 
         Standard ``dry_run`` builds a fresh venv per manifest —
@@ -319,7 +394,7 @@ class PipResolver:
         # Resolve each manifest path relative to common_root. If any
         # project_dir is outside, we can't cover it with one
         # ``target=common_root`` sandbox — fall back to sequential.
-        manifests: "list[tuple[Path, Path, Path]]" = []
+        manifests: list[tuple[Path, Path, Path]] = []
         for pd in project_dirs:
             try:
                 rel_dir = pd.resolve().relative_to(common_root.resolve())
@@ -370,7 +445,7 @@ class PipResolver:
 
     def _build_batch_script(
         self, venv_dir: Path,
-        manifests: "list[tuple[Path, Path, Optional[Path]]]",
+        manifests: list[tuple[Path, Path, Path | None]],
     ) -> str:
         """Generate the combined sh script. One venv build, then N
         parallel pip-compile invocations writing to per-manifest
@@ -382,11 +457,11 @@ class PipResolver:
         # Stage 1: venv setup (the slow, network-bound part runs once).
         # ``set +e`` so a single pip-compile failure doesn't abort the
         # rest — we want per-manifest results.
-        parts: "list[str]" = [
+        parts: list[str] = [
             "set +e",
             self._venv_setup_script(venv_dir),
-            f"{venv_dir}/bin/python -m pip install --quiet pip-tools "
-            f"|| {{ echo '__BATCH_PIP_TOOLS_FAILED__' >&2; exit 90; }}",
+            (f"{venv_dir}/bin/python -m pip install --quiet pip-tools "
+             f"|| {{ echo '__BATCH_PIP_TOOLS_FAILED__' >&2; exit 90; }}"),
             f"mkdir -p {results_dir}",
         ]
         # Stage 2: per-manifest pip-compile in parallel. Each
@@ -428,8 +503,8 @@ class PipResolver:
 
     def _parse_batch_output(
         self, stdout: str, stderr: str, returncode: int,
-        manifests: "list[tuple[Path, Path, Optional[Path]]]",
-    ) -> "list[ResolverResult]":
+        manifests: list[tuple[Path, Path, Path | None]],
+    ) -> list[ResolverResult]:
         """Split the batch sh stdout back into per-manifest
         ResolverResults. The script emitted three markers per index
         (OUT, RC, ERR) plus a final BATCH_END; we scan for them in
@@ -466,7 +541,7 @@ class PipResolver:
 
         # Build a section index: for each i, find OUT_i, RC_i, ERR_i
         # marker offsets and slice the stdout between them.
-        results: "list[ResolverResult]" = []
+        results: list[ResolverResult] = []
         for i in range(len(manifests)):
             out_marker = f"===RAPTOR_BATCH_OUT_{i}==="
             rc_marker = f"===RAPTOR_BATCH_RC_{i}==="
@@ -566,7 +641,7 @@ class PipResolver:
 
 def _slice_between(
     text: str, m_start: str, m_mid1: str, m_mid2: str, m_end: str,
-) -> "Optional[tuple[str, str, str]]":
+) -> tuple[str, str, str] | None:
     """Pull three sub-strings out of ``text`` delimited by four markers.
     Returns ``(between m_start..m_mid1, m_mid1..m_mid2, m_mid2..m_end)``
     each with leading/trailing newlines stripped, or ``None`` when any
@@ -589,7 +664,7 @@ def _slice_between(
     return (a, b, c)
 
 
-def _find_pip_manifest(project_dir: Path) -> Optional[Path]:
+def _find_pip_manifest(project_dir: Path) -> Path | None:
     """Return the path to a top-level pip-style manifest, if any.
 
     Preference order:

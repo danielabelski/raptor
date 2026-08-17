@@ -185,6 +185,16 @@ def _resolve_sha(
     token: str | None,
 ) -> str | None:
     """Use ``git ls-remote`` to resolve a tag/branch/ref to a SHA."""
+    # A leading dash in any component could be parsed by git as an
+    # option rather than a URL / ref pattern. The ``_USES_RE`` grammar
+    # doesn't currently admit a leading ``-``, but validate here too so
+    # this function stays safe for any future caller.
+    if any(s.startswith("-") for s in (owner, repo, ref)):
+        logger.warning(
+            "sca.hash_pin: refusing to resolve %s/%s@%s "
+            "(leading dash in component)", owner, repo, ref,
+        )
+        return None
     key = (f"{owner}/{repo}", ref)
     if key in cache:
         return cache[key]
@@ -198,7 +208,9 @@ def _resolve_sha(
     cmd = ["git"]
     if token:
         cmd += ["-c", f"http.extraheader=Authorization: bearer {token}"]
-    cmd += ["ls-remote", url, ref,
+    # ``--`` ends option parsing so the URL and ref patterns can never
+    # be interpreted as git options.
+    cmd += ["ls-remote", "--", url, ref,
             f"refs/tags/{ref}", f"refs/heads/{ref}"]
     try:
         from core.config import RaptorConfig

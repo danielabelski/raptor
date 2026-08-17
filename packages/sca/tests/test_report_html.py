@@ -6,8 +6,13 @@ from pathlib import Path
 
 from packages.sca.findings import build_vuln_findings
 from packages.sca.models import (
-    AffectedRange, Advisory, CVSSScore, Confidence, Dependency,
-    HygieneFinding, PinStyle,
+    Advisory,
+    AffectedRange,
+    Confidence,
+    CVSSScore,
+    Dependency,
+    HygieneFinding,
+    PinStyle,
 )
 from packages.sca.osv import OsvResult
 from packages.sca.report_html import render_html_report
@@ -377,3 +382,60 @@ def test_filter_bar_omitted_section_header_handling() -> None:
     assert 'id="filters"' in html
     # Script still rendered.
     assert "applyFilters" in html
+
+
+# ---------------------------------------------------------------------------
+# Exploit-evidence rendering — href scheme allowlist
+# ---------------------------------------------------------------------------
+
+def _vuln_with_evidence(ev):
+    from packages.sca.models import Reachability, VulnFinding
+    return VulnFinding(
+        finding_id="sca:vuln:npm:lodash@4.17.20:GHSA-x",
+        dependency=_dep(),
+        advisories=[_adv()],
+        in_kev=False,
+        epss=None,
+        fixed_version="5.0.0",
+        reachability=Reachability(
+            verdict="not_evaluated",
+            confidence=Confidence("low", reason="t"),
+        ),
+        version_match_confidence=Confidence("high", reason="t"),
+        cvss_score=7.5,
+        cvss_vector="CVSS:3.1/...",
+        severity="high",
+        exposure_factor=0.0,
+        transitive_depth=0,
+        exploit_evidence=ev,
+    )
+
+
+def test_html_poc_href_scheme_allowlist() -> None:
+    """A javascript:/data: PoC URL must render as inert text —
+    html.escape alone leaves the hostile scheme clickable."""
+    from packages.sca.models import ExploitEvidence
+    ev = ExploitEvidence(
+        github_poc_urls=["javascript:alert(1)",
+                         "https://github.com/x/poc"],
+    )
+    html = render_html_report(
+        target=Path("/repo"), deps_analysed=1,
+        vuln_findings=[_vuln_with_evidence(ev)], hygiene_findings=[],
+    )
+    assert 'href="javascript:alert(1)"' not in html
+    assert "<code>javascript:alert(1)</code>" in html
+    assert 'href="https://github.com/x/poc"' in html
+
+
+def test_html_msf_modules_escape_nonprintables() -> None:
+    from packages.sca.models import ExploitEvidence
+    ev = ExploitEvidence(
+        msf_modules=["exploit/multi/http/\x1b[2Jwiped"],
+    )
+    html = render_html_report(
+        target=Path("/repo"), deps_analysed=1,
+        vuln_findings=[_vuln_with_evidence(ev)], hygiene_findings=[],
+    )
+    assert "\x1b" not in html
+    assert "\\x1b" in html

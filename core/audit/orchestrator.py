@@ -18,20 +18,45 @@ loop — here it's Python; in skill mode it's the human+Claude.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
-import tempfile
 import subprocess
 import sys
+import tempfile
 import threading as _threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any
 
+from core.analysis.reachability_gates import (
+    build_sink_reachable_set,
+    check_sink_guarded,
+    compute_demotion_verdict,
+)
+from core.evidence import (
+    EvidenceRecord,
+    build_evidence_index,
+    format_evidence_prose,
+    format_evidence_structured,
+)
+from packages.checker_synthesis.library import RuleLibrary
+
+from ._util import extract_context_map_set
+from .codeql_backend import (
+    build_sink_results as _build_sink_results_raw,
+)
+from .codeql_backend import (
+    build_taint_summary as _build_taint_summary_raw,
+)
+from .codeql_backend import (
+    codeql_pre_sweep as _codeql_pre_sweep_raw,
+)
 from .constraints import (
     extract_constraints_from_review,
     load_constraints,
@@ -40,6 +65,33 @@ from .constraints import (
     save_constraints,
 )
 from .context import assemble_context
+from .cost_tracker import CostTracker
+from .diagnostics import (
+    format_tier_diagnostics,
+    write_tier_diagnostics,
+)
+from .diagnostics import (
+    increment_tier as _increment_tier,
+)
+from .diagnostics import (
+    increment_tier_dict as _increment_tier_dict,
+)
+from .diagnostics import (
+    inject_discovered_evidence as _inject_discovered_evidence,
+)
+from .diagnostics import (
+    iris_candidate_to_spec as _iris_candidate_to_spec,
+)
+from .diagnostics import (
+    read_function_source as _read_function_source,
+)
+from .exploit_feedback import (
+    FeedbackState,
+    format_feedback_for_context,
+    format_feedback_summary,
+    load_feedback_state,
+)
+from .findings import write_findings
 from .gaps import (
     compute_gaps,
     gap_for_site,
@@ -48,30 +100,94 @@ from .gaps import (
     load_context_map,
     write_gaps,
 )
-from .priority import (
-    group_by_subsystem,
-    load_flow_traces,
-    load_fuzz_coverage as _load_fuzz_coverage_from_runs,
-    load_tool_failures,
-    score_functions,
+from .hypothesis_mapping import (
+    hypothesis_to_cocci_check as _hypothesis_to_cocci_check,
 )
-from .propagation import PropagationConfig, propagate_one_hop
+from .hypothesis_mapping import (
+    hypothesis_to_semgrep_rule_keyed as _hypothesis_to_semgrep_rule_keyed,
+)
+from .hypothesis_mapping import (
+    hypothesis_to_smt_verb as _hypothesis_to_smt_verb,
+)
+from .joern_backend import (
+    adaptive_max_depth as _adaptive_max_depth,
+)
+from .joern_backend import (
+    drain_joern_future as _drain_joern_future,
+)
+from .joern_backend import (
+    enrich_joern_evidence as _enrich_joern_evidence,
+)
+from .joern_backend import (
+    enrich_summaries_from_joern as _enrich_summaries_from_joern,
+)
+from .joern_backend import (
+    import_sibling_joern_flows as _import_sibling_joern_flows_raw,
+)
+from .joern_backend import (
+    joern_live_query as _joern_live_query,
+)
+from .joern_backend import (
+    joern_tunables as _joern_tunables,
+)
+from .joern_backend import (
+    merge_joern_flows as _merge_joern_flows,
+)
+from .joern_backend import (
+    resolve_joern_evidence as _resolve_joern_evidence_raw,
+)
+from .joern_backend import (
+    sibling_run_dirs as _sibling_run_dirs,
+)
+from .joern_backend import (
+    start_joern_server as _start_joern_server_raw,
+)
+from .joern_backend import (
+    stop_joern_server as _stop_joern_server,
+)
+from .loaders import (
+    fuzz_coverage_for as _fuzz_coverage_for,
+)
+from .loaders import (
+    load_coverage_records as _load_coverage_records,
+)
+from .loaders import (
+    load_exploit_feedback as _load_exploit_feedback_raw,
+)
+from .loaders import (
+    load_fuzz_coverage as _load_fuzz_coverage,
+)
+from .loaders import (
+    load_or_build_taint_approx as _load_or_build_taint_approx_raw,
+)
+from .loaders import (
+    load_variants as _load_variants,
+)
+from .pipeline import ReviewMode, VerificationTier
 from .prefilter import (
     PrefilterResult,
     evidence_matches_hypothesis,
     family_for_rule,
     run_prefilter,
 )
-from .pipeline import ReviewMode, VerificationTier
-from .shared_state import SharedState
-from .topo_order import topological_sort as _topological_sort
-from .triage import TriageBucket, classify_all, format_triage_summary
-from .findings import write_findings
+from .priority import (
+    group_by_subsystem,
+    load_flow_traces,
+    load_tool_failures,
+    score_functions,
+)
+from .priority import (
+    load_fuzz_coverage as _load_fuzz_coverage_from_runs,
+)
+from .propagation import PropagationConfig, propagate_one_hop
+from .record import (
+    _resolve_annotations_dir as _resolve_ann_dir,
+)
 from .record import (
     append_audit_log,
     load_audit_log,
-    _resolve_annotations_dir as _resolve_ann_dir,
 )
+from .shared_state import SharedState
 from .sweep import (
     SarifCache,
     run_coccinelle_sweep,
@@ -79,75 +195,15 @@ from .sweep import (
     run_semgrep_sweep,
     run_smt_verb_direct,
 )
-from core.evidence import (
-    EvidenceRecord,
-    build_evidence_index,
-    format_evidence_prose,
-    format_evidence_structured,
-)
-from .cost_tracker import CostTracker
-from packages.checker_synthesis.library import RuleLibrary
-from .exploit_feedback import (
-    FeedbackState,
-    load_feedback_state,
-    format_feedback_summary,
-    format_feedback_for_context,
-)
-from ._util import extract_context_map_set
-from core.analysis.reachability_gates import (
-    build_sink_reachable_set,
-    check_sink_guarded,
-    compute_demotion_verdict,
-)
-
-from .loaders import (
-    load_variants as _load_variants,
-    load_coverage_records as _load_coverage_records,
-    load_exploit_feedback as _load_exploit_feedback_raw,
-    load_fuzz_coverage as _load_fuzz_coverage,
-    fuzz_coverage_for as _fuzz_coverage_for,
-    load_or_build_taint_approx as _load_or_build_taint_approx_raw,
-)
-from .hypothesis_mapping import (
-    hypothesis_to_semgrep_rule_keyed as _hypothesis_to_semgrep_rule_keyed,
-    hypothesis_to_smt_verb as _hypothesis_to_smt_verb,
-    hypothesis_to_cocci_check as _hypothesis_to_cocci_check,
-)
-from .diagnostics import (
-    read_function_source as _read_function_source,
-    increment_tier_dict as _increment_tier_dict,
-    increment_tier as _increment_tier,
-    format_tier_diagnostics,
-    inject_discovered_evidence as _inject_discovered_evidence,
-    write_tier_diagnostics,
-    iris_candidate_to_spec as _iris_candidate_to_spec,
-)
-from .joern_backend import (
-    joern_tunables as _joern_tunables,
-    start_joern_server as _start_joern_server_raw,
-    stop_joern_server as _stop_joern_server,
-    joern_live_query as _joern_live_query,
-    enrich_joern_evidence as _enrich_joern_evidence,
-    enrich_summaries_from_joern as _enrich_summaries_from_joern,
-    resolve_joern_evidence as _resolve_joern_evidence_raw,
-    merge_joern_flows as _merge_joern_flows,
-    drain_joern_future as _drain_joern_future,
-    import_sibling_joern_flows as _import_sibling_joern_flows_raw,
-    sibling_run_dirs as _sibling_run_dirs,
-    adaptive_max_depth as _adaptive_max_depth,
-)
-from .codeql_backend import (
-    codeql_pre_sweep as _codeql_pre_sweep_raw,
-    build_sink_results as _build_sink_results_raw,
-    build_taint_summary as _build_taint_summary_raw,
-)
+from .topo_order import topological_sort as _topological_sort
+from .triage import TriageBucket, classify_all, format_triage_summary
 
 logger = logging.getLogger(__name__)
 
 _shutdown_event = _threading.Event()
 
 
-_active_target_path: Optional[Path] = None
+_active_target_path: Path | None = None
 
 
 def is_shutdown_requested() -> bool:
@@ -179,56 +235,56 @@ class OrchestratorConfig:
 
     target_path: Path
     out_dir: Path
-    budget: Optional[int] = None
-    scope: Optional[str | list[str]] = None
-    strategy_filter: Optional[str] = None
-    models: List[str] = field(default_factory=lambda: ["default"])
+    budget: int | None = None
+    scope: str | list[str] | None = None
+    strategy_filter: str | None = None
+    models: list[str] = field(default_factory=lambda: ["default"])
     multi_model: bool = False
     adversarial: bool = False
     critique_interval: int = 10
-    max_cost_usd: Optional[float] = None
-    max_seconds: Optional[float] = None
+    max_cost_usd: float | None = None
+    max_seconds: float | None = None
     resume: bool = True
-    annotations_dir: Optional[Path] = None
+    annotations_dir: Path | None = None
     include_stale: bool = True
     subsystem_depth: int = 0
     batch_sloc_threshold: int = 15
     propagate_constraints: bool = True
-    binary_verdicts: Optional[Dict[str, str]] = None
+    binary_verdicts: dict[str, str] | None = None
     no_binary_oracle: bool = False
-    inventory: Optional[Dict[str, Any]] = None
-    codeql_db_path: Optional[str] = None
-    threat_model: Optional[Dict[str, Any]] = None
+    inventory: dict[str, Any] | None = None
+    codeql_db_path: str | None = None
+    threat_model: dict[str, Any] | None = None
     validate: bool = True
     prefilter: bool = True
     sweep_validate_findings: bool = True
     deepen_suspicious: bool = True
     enable_session_context: bool = True
     review_passes: int = 1
-    max_propagation_depth: Optional[int] = None
+    max_propagation_depth: int | None = None
     force: bool = False
-    joern_overrides: Optional[Dict[str, Any]] = None
+    joern_overrides: dict[str, Any] | None = None
     blind_first_pass: bool = False
     max_refinements: int = 2
     clean_check: bool = True
     dynamic_validation: bool = False
-    caps: Optional[Any] = None
+    caps: Any | None = None
     max_workers: int = 0  # 0 = auto (derive from model RPM), 1 = serial
     # Additional item kinds to review beyond functions/methods
     # (e.g. {"top_level", "macro", "global"}). None = default set.
-    include_kinds: Optional[set] = None
-    functions: Optional[List[str]] = None
-    joern_server: Optional[Any] = None  # pre-started server; caller owns lifecycle
-    study_root: Optional[Path] = None  # full source root for study loop (when target_path is an excerpt)
+    include_kinds: set | None = None
+    functions: list[str] | None = None
+    joern_server: Any | None = None  # pre-started server; caller owns lifecycle
+    study_root: Path | None = None  # full source root for study loop (when target_path is an excerpt)
     mode: ReviewMode = ReviewMode.SECURITY
-    project_sinks: Optional[frozenset] = None  # IRIS-derived sink names for wrapper pre-filter
+    project_sinks: frozenset | None = None  # IRIS-derived sink names for wrapper pre-filter
     # The LLM client whose cost cap governs this run (core.llm.client.
     # LLMClient). Used ONLY for budget introspection: loop drivers poll
     # ``is_budget_exhausted()`` before expensive per-function prep, and
     # ``_check_budget`` consults its ledger — which, unlike
     # ``result.total_cost_usd``, includes spend from failed/timed-out
     # attempts that never produced an outcome.
-    llm_budget_client: Optional[Any] = None
+    llm_budget_client: Any | None = None
     # The LLM client the executor's batch-glance dispatch uses to send
     # ten GLANCE-tier functions in ONE call (see
     # executor._get_batch_review_fn / batch_glance.make_batch_review_fn).
@@ -265,7 +321,7 @@ class ReviewOutcome:
     status: str
     body: str
     hypothesis: str = ""
-    hypotheses: Optional[List[Dict[str, Any]]] = None
+    hypotheses: list[dict[str, Any]] | None = None
     evidence_tool: str = ""
     cost_usd: float = 0.0
     model: str = ""
@@ -278,7 +334,7 @@ class ReviewOutcome:
     tokens_out: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-    review_result: Optional[Dict[str, Any]] = None
+    review_result: dict[str, Any] | None = None
     line: int = 0
     error_class: str = ""
     # True when this verdict was produced by the reduced-context
@@ -292,7 +348,7 @@ class ReviewOutcome:
     reused: bool = False
     reused_from_run: str = ""
     verification_tier: str = "speculative"
-    tools_dispatched: Optional[set] = field(default=None, repr=False)
+    tools_dispatched: set | None = field(default=None, repr=False)
     semantic_confidence: str = ""
     provenance_all_trusted: bool = False
     caller_attributed: bool = False
@@ -346,7 +402,7 @@ class TierCounters:
     cpg_build_s: float = 0.0
 
 
-def _make_tier_counters() -> Dict[str, TierCounters]:
+def _make_tier_counters() -> dict[str, TierCounters]:
     return {
         "prefilter": TierCounters(),
         "sink_unreach": TierCounters(),
@@ -401,12 +457,12 @@ class OrchestratorResult:
     clean_checks: int = 0
     clean_check_rescues: int = 0
     sarif_clean_resolved: int = 0
-    outcomes: List[ReviewOutcome] = field(default_factory=list)
+    outcomes: list[ReviewOutcome] = field(default_factory=list)
     dormant: int = 0
-    error_counts: Dict[str, int] = field(default_factory=dict)
+    error_counts: dict[str, int] = field(default_factory=dict)
     error_retries: int = 0
     error_retry_recovered: int = 0
-    tier_counters: Dict[str, TierCounters] = field(
+    tier_counters: dict[str, TierCounters] = field(
         default_factory=_make_tier_counters,
     )
     cost_tracker: CostTracker = field(default_factory=CostTracker)
@@ -422,7 +478,7 @@ class _LockedOutcomes:
     __slots__ = ("_data", "_lock")
 
     def __init__(self) -> None:
-        self._data: Dict[str, ReviewOutcome] = {}
+        self._data: dict[str, ReviewOutcome] = {}
         self._lock = _threading.Lock()
 
     def __setitem__(self, key: str, value: ReviewOutcome) -> None:
@@ -433,7 +489,7 @@ class _LockedOutcomes:
         with self._lock:
             return self._data[key]
 
-    def get(self, key: str) -> Optional[ReviewOutcome]:
+    def get(self, key: str) -> ReviewOutcome | None:
         with self._lock:
             return self._data.get(key)
 
@@ -477,7 +533,7 @@ def _joern_target(config: OrchestratorConfig) -> Path:
     return config.target_path
 
 
-def _get_dangerous_flows(approx) -> Optional[dict]:
+def _get_dangerous_flows(approx) -> dict | None:
     """Extract dangerous_flows from a TaintApprox object or dict.
 
     The taint-approx cache round-trips through JSON, so on a resumed
@@ -540,10 +596,10 @@ def _line_near(line: int, target_lines: set, *, tolerance: int = 3) -> bool:
 
 def run_orchestrator(
     config: OrchestratorConfig,
-    review_fn: Callable[[Dict[str, Any], OrchestratorConfig], ReviewOutcome],
+    review_fn: Callable[[dict[str, Any], OrchestratorConfig], ReviewOutcome],
     *,
-    on_progress: Optional[Callable[[int, int, ReviewOutcome], None]] = None,
-    prep_cache: Optional[dict] = None,
+    on_progress: Callable[[int, int, ReviewOutcome], None] | None = None,
+    prep_cache: dict | None = None,
 ) -> OrchestratorResult:
     """Run the orchestrator loop.
 
@@ -779,7 +835,7 @@ def review_one_function(
                 collector.submit(outcome, gap)
             else:
                 _commit_outcome(config, outcome, gap)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "commit failed for %s:%s: %s",
                 gap["file"],
@@ -825,7 +881,7 @@ def review_one_function(
                 collector.submit(outcome, gap)
             else:
                 _commit_outcome(config, outcome, gap)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "commit failed for %s:%s: %s",
                 gap["file"],
@@ -840,7 +896,7 @@ def review_one_function(
         return outcome
 
     # ── SAGE: pre-compute source hash for hypothesis recall/store ────
-    try:
+    with contextlib.suppress(Exception):
         from core.sage.hooks import compute_finding_source_hash
 
         line_start = gap.get("line_start", 0)
@@ -851,8 +907,6 @@ def review_one_function(
             )
             if src_hash:
                 gap["_sage_source_hash"] = src_hash
-    except Exception:
-        pass
 
     # ── SAGE: recall prior hypothesis verdict → skip if clean/dormant ─
     if not config.force and not gap.get("force_review") and gap.get("_sage_source_hash"):
@@ -865,7 +919,7 @@ def review_one_function(
                 function=gap["name"],
                 source_hash=gap["_sage_source_hash"],
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             prior = None
         if prior and prior.get("status") in ("clean", "dormant"):
             prior_status = prior["status"]
@@ -890,7 +944,7 @@ def review_one_function(
                     collector.submit(outcome, gap)
                 else:
                     _commit_outcome(config, outcome, gap)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "commit failed for %s:%s: %s",
                     gap["file"],
@@ -935,14 +989,12 @@ def review_one_function(
 
     # --- Mechanical gates: per-function context enrichment ---
     if provenance_map and gap_key_mech in provenance_map:
-        try:
+        with contextlib.suppress(Exception):
             from .mechanical_gates import format_provenance_for_context
 
             ctx["entry_point_provenance"] = format_provenance_for_context(
                 provenance_map[gap_key_mech],
             )
-        except Exception:
-            pass
 
     if gap_key_mech in security_decision_keys:
         ctx["is_security_decision"] = True
@@ -950,7 +1002,7 @@ def review_one_function(
         ctx["feeds_security_decision"] = True
 
     if ctx.get("source") and gap.get("file", "").endswith(".py"):
-        try:
+        with contextlib.suppress(Exception):
             from .mechanical_gates import detect_constant_dangerous_calls
 
             const_calls = detect_constant_dangerous_calls(
@@ -959,19 +1011,15 @@ def review_one_function(
             )
             if const_calls:
                 ctx["constant_dangerous_calls"] = const_calls
-        except Exception:
-            pass
 
     if ctx.get("callers"):
-        try:
+        with contextlib.suppress(Exception):
             from .mechanical_gates import sort_callers_by_constraint
 
             ctx["callers"] = sort_callers_by_constraint(ctx["callers"])
-        except Exception:
-            pass
 
     if ctx.get("source"):
-        try:
+        with contextlib.suppress(Exception):
             from .mechanical_gates import extract_type_constraints
 
             tc = extract_type_constraints(
@@ -980,10 +1028,8 @@ def review_one_function(
             )
             if tc:
                 ctx["type_constraints"] = tc
-        except Exception:
-            pass
 
-    try:
+    with contextlib.suppress(Exception):
         from .condition_cpg import check_interprocedural_guards
 
         ipc_result = check_interprocedural_guards(
@@ -993,8 +1039,6 @@ def review_one_function(
         )
         if ipc_result.unguarded_callers > 0:
             ctx["interprocedural_guards"] = ipc_result.to_dict()
-    except Exception:
-        pass
 
     if taint_summary_results and ctx.get("callees"):
         callee_sums = []
@@ -1021,7 +1065,7 @@ def review_one_function(
 
     if ctx.get("callee_summaries"):
         try:
-            from .contracts import extract_callee_contracts, enforce_callee_contracts
+            from .contracts import enforce_callee_contracts, extract_callee_contracts
 
             summaries_dict = {
                 f"{getattr(s, 'file', '')}:{getattr(s, 'function', '')}": s
@@ -1063,7 +1107,7 @@ def review_one_function(
             ctx["inferred_spec"] = spec
             if spec.preconditions and ctx.get("source"):
                 try:
-                    from .contracts import enforce_callee_contracts, ContractContext
+                    from .contracts import ContractContext, enforce_callee_contracts
 
                     spec_contracts = [
                         ContractContext(
@@ -1182,19 +1226,17 @@ def review_one_function(
             if func_file == d.file
         ]
         if func_displacements:
-            try:
+            with contextlib.suppress(Exception):
                 from .dispatch_table import format_displacement_context
                 _dc = format_displacement_context(func_displacements)
                 if _dc:
                     ctx["capability_displacement"] = _dc
-            except Exception:
-                pass
 
     if shared.struct_accessor_index:
-        try:
+        with contextlib.suppress(Exception):
             from .struct_accessor_index import (
-                get_co_accessors,
                 format_co_accessor_context,
+                get_co_accessors,
             )
             co_groups = get_co_accessors(
                 shared.struct_accessor_index, func_name, func_file,
@@ -1202,8 +1244,6 @@ def review_one_function(
             _cac = format_co_accessor_context(co_groups)
             if _cac:
                 ctx["co_accessor_analysis"] = _cac
-        except Exception:
-            pass
 
     sib_viols = [
         v
@@ -1239,14 +1279,12 @@ def review_one_function(
     if project_learnings:
         ctx["project_context"] = project_learnings
     if fp_patterns:
-        try:
+        with contextlib.suppress(Exception):
             from .fp_feedback import format_fp_warnings
 
             fp_warn = format_fp_warnings(fp_patterns, gap["file"])
             if fp_warn:
                 ctx["fp_warnings"] = fp_warn
-        except Exception:
-            pass
     if feedback_state and feedback_state.source_precision:
         fb_text = format_feedback_for_context(feedback_state)
         if fb_text:
@@ -1296,7 +1334,7 @@ def review_one_function(
                     collector.submit(outcome, gap)
                 else:
                     _commit_outcome(config, outcome, gap)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "commit failed for %s:%s: %s",
                     gap["file"],
@@ -1335,14 +1373,15 @@ def review_one_function(
         )
 
     # ── Intra-function sibling analysis ─────────────────────────────
-    try:
-        from .intra_function import analyse_intra_function, format_intra_function_context
+    with contextlib.suppress(Exception):
+        from .intra_function import (
+            analyse_intra_function,
+            format_intra_function_context,
+        )
         _ifsa = analyse_intra_function(ctx.get("source", ""))
         _ifsa_ctx = format_intra_function_context(_ifsa)
         if _ifsa_ctx:
             ctx["intra_function_analysis"] = _ifsa_ctx
-    except Exception:
-        pass
 
     _fuse_all_evidence(ctx)
 
@@ -1492,7 +1531,11 @@ def review_one_function(
         try:
             from .refinement import (
                 build_clean_check_prompt,
+            )
+            from .refinement import (
                 merge_outcomes as _merge_clean,
+            )
+            from .refinement import (
                 should_clean_check as _should_cc,
             )
 
@@ -1578,11 +1621,15 @@ def review_one_function(
     if config.max_refinements > 0:
         try:
             from .refinement import (
+                RefinementContext,
                 build_refinement_prompt,
                 collect_tool_results,
                 dispatch_suggestion,
+            )
+            from .refinement import (
                 merge_outcomes as _merge_refined,
-                RefinementContext,
+            )
+            from .refinement import (
                 should_refine as _should_refine,
             )
 
@@ -1700,7 +1747,7 @@ def review_one_function(
 
     # ── Semantic confidence classification ──────────────────────────
     if outcome.status in ("finding", "suspicious") and not outcome.semantic_confidence:
-        try:
+        with contextlib.suppress(Exception):
             from .semantic_confidence import classify_semantic_confidence
             _sc = classify_semantic_confidence(
                 outcome.hypothesis or "",
@@ -1709,8 +1756,6 @@ def review_one_function(
             )
             if _sc == "high":
                 outcome.semantic_confidence = "high"
-        except Exception:
-            pass
 
     # ── Refutation gates ──────────────────────────────────────────────
     # Cheap mechanical checks that kill false-positive hypotheses.
@@ -1775,7 +1820,7 @@ def review_one_function(
     # ── Dynamic validation ────────────────────────────────────────────
     if config.dynamic_validation and outcome.status == "finding":
         try:
-            from .dynamic_sweep import should_run_dynamic, run_dynamic_sweep
+            from .dynamic_sweep import run_dynamic_sweep, should_run_dynamic
 
             if should_run_dynamic(outcome, config):
                 dyn_result = run_dynamic_sweep(outcome, ctx, config)
@@ -1799,7 +1844,7 @@ def review_one_function(
         # confirmed ("dynamic:sanitizer").
         if outcome.status == "finding" and outcome.evidence_tool != "dynamic:sanitizer":
             try:
-                from .frida_observe import should_run_frida, run_frida_observation
+                from .frida_observe import run_frida_observation, should_run_frida
 
                 if should_run_frida(outcome, config):
                     frida_result = run_frida_observation(outcome, ctx, config)
@@ -1873,8 +1918,8 @@ def review_one_function(
 
     if outcome.review_result and taint_summary_results is not None:
         from core.analysis.summaries import (
-            summary_from_review_result,
             propagate_taint_upward,
+            summary_from_review_result,
         )
 
         llm_summary = summary_from_review_result(
@@ -1941,7 +1986,7 @@ def review_one_function(
             collector.submit(outcome, gap)
         else:
             _commit_outcome(config, outcome, gap)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "commit failed for %s:%s: %s",
             gap["file"],
@@ -1991,9 +2036,8 @@ def review_one_function(
             checker_library.record_match(hit.rule_id, is_tp)
 
     disagree = _check_layer_disagreement(outcome, ctx, gap)
-    if disagree is not None:
-        if layer_disagreements is not None:
-            layer_disagreements.append(disagree)
+    if disagree is not None and layer_disagreements is not None:
+        layer_disagreements.append(disagree)
 
     if config.enable_session_context and outcome.review_result:
         with shared._observations_lock:
@@ -2078,7 +2122,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     if config.codeql_db_path and not sarif_cache:
         _codeql_pre_sweep_raw(config.codeql_db_path, config.out_dir, sarif_cache)
 
-    sarif_clean_files: Set[str] = set()
+    sarif_clean_files: set[str] = set()
     if sarif_cache:
         from .sweep import _normalize_sarif_path
 
@@ -2116,8 +2160,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
         _populate_sinks_array(context_map, sink_results)
 
-    joern_future: Optional[Future] = None
-    joern_flows: Optional[Dict[str, list]] = None
+    joern_future: Future | None = None
+    joern_flows: dict[str, list] | None = None
 
     imported_joern = _import_sibling_joern_flows_raw(
         config.out_dir, target_path=config.target_path
@@ -2176,9 +2220,11 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     try:
         from .binary_layer0 import (
-            scan_function as layer0_scan,
-            format_layer0_summary,
             Layer0Result,
+            format_layer0_summary,
+        )
+        from .binary_layer0 import (
+            scan_function as layer0_scan,
         )
 
         l0_result = Layer0Result()
@@ -2222,14 +2268,14 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             format_degradation_report(degradation_report),
         )
 
-    provenance_map: Dict[str, List[Dict[str, str]]] = {}
+    provenance_map: dict[str, list[dict[str, str]]] = {}
     security_decision_keys: frozenset = frozenset()
     feeds_security_keys: frozenset = frozenset()
     try:
         from .mechanical_gates import (
+            build_feeds_security_map,
             build_provenance_map,
             build_security_decision_set,
-            build_feeds_security_map,
         )
 
         if context_map:
@@ -2265,7 +2311,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     except Exception:
         logger.debug("summary_cache load failed", exc_info=True)
 
-    discovered_tests: Optional[Dict[str, Any]] = None
+    discovered_tests: dict[str, Any] | None = None
     try:
         from core.analysis.test_discovery import discover_tests
 
@@ -2278,7 +2324,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     except Exception:
         logger.debug("test_discovery failed", exc_info=True)
 
-    typestate_models: Optional[Dict[str, Any]] = None
+    typestate_models: dict[str, Any] | None = None
     try:
         from core.analysis.typestate import extract_typestate_models
 
@@ -2369,11 +2415,11 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     iris_taint_specs: list = []
     try:
-        from .iris_specs import identify_candidates, compile_joern_config, specs_to_json
+        from .iris_specs import compile_joern_config, identify_candidates, specs_to_json
 
-        taint_chain_callees: Set[str] = set()
+        taint_chain_callees: set[str] = set()
         if taint_summary_results:
-            for _ts_key, _ts_summ in taint_summary_results.items():
+            for _ts_summ in taint_summary_results.values():
                 for _ts_callee in getattr(_ts_summ, "callees", []):
                     taint_chain_callees.add(_ts_callee)
         iris_candidates = identify_candidates(
@@ -2452,16 +2498,14 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     try:
         from .ops_struct import collect_ops_entry_points
 
-        _ops_srcs: Dict[str, str] = {}
+        _ops_srcs: dict[str, str] = {}
         for gap in gaps:
             fp = gap.get("file", "")
             if fp and fp not in _ops_srcs:
-                try:
+                with contextlib.suppress(Exception):
                     sp = config.target_path / fp
                     if sp.is_file():
                         _ops_srcs[fp] = sp.read_text(errors="replace")
-                except Exception:
-                    pass
         _ops_eps = collect_ops_entry_points(_ops_srcs)
         if _ops_eps:
             entry_points = entry_points | _ops_eps
@@ -2527,7 +2571,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             "triage: %d generated files detected — functions will be skipped",
             len(generated_files),
         )
-    gen_prefilters: Dict[str, PrefilterResult] = {}
+    gen_prefilters: dict[str, PrefilterResult] = {}
     for gap in gaps:
         if gap["file"] in generated_files:
             key = f"{gap['file']}:{gap['name']}"
@@ -2552,8 +2596,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     logger.info(format_triage_summary(triage_results))
 
     from .negative_space import (
-        discover_conventions,
         check_sibling_negative_space,
+        discover_conventions,
     )
 
     detector_gaps = hydrate_live_gaps_for_detectors(
@@ -2644,7 +2688,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             len(sibling_postcond_violations),
         )
 
-    semantic_findings: List[Dict[str, Any]] = []
+    semantic_findings: list[dict[str, Any]] = []
     try:
         from .sibling_analysis import check_semantic_consistency
 
@@ -2662,7 +2706,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     except Exception:
         logger.debug("semantic consistency check failed", exc_info=True)
 
-    mechanical_findings: Dict[str, List[Dict[str, Any]]] = {}
+    mechanical_findings: dict[str, list[dict[str, Any]]] = {}
     guard_clean_keys: set[str] = set()
     try:
         mechanical_findings, guard_clean_keys = _run_mechanical_detectors(
@@ -2786,22 +2830,22 @@ def _review_duration_hints(
 
 
 def _heuristic_bypass_findings(
-    gaps: List[Dict[str, Any]],
-    bypass_runner: Optional[Callable],
-) -> List[Dict[str, Any]]:
+    gaps: list[dict[str, Any]],
+    bypass_runner: Callable | None,
+) -> list[dict[str, Any]]:
     """Stored-taint / config-provenance assumption bypass detection.
 
     *bypass_runner* is ``None`` when IRIS refinement did not build a
     compositional analyzer (no candidates, missing call graphs, or the
     refine imports failed) — nothing to check then.
     """
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     if bypass_runner is None:
         return findings
     try:
         from core.iris.synthesise import (
-            stored_taint_assumptions,
             config_provenance_assumptions,
+            stored_taint_assumptions,
         )
 
         heuristic_assumptions = stored_taint_assumptions(
@@ -3000,7 +3044,7 @@ def _run_audit_body(
             outcome.line = gap.get("line_start", 0)
             try:
                 _commit_outcome(config, outcome, gap)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "commit failed for guard-clean %s: %s", key, exc,
                 )
@@ -3168,9 +3212,9 @@ def _run_audit_body(
         evidence_index=evidence_index,
     )
 
-    session_observations: List[Dict[str, str]] = []
-    discovered_evidence: Dict[str, Any] = {}
-    reviewed_before_joern: List[Dict[str, Any]] = []
+    session_observations: list[dict[str, str]] = []
+    discovered_evidence: dict[str, Any] = {}
+    reviewed_before_joern: list[dict[str, Any]] = []
     joern_submit_time = time.monotonic() if joern_future is not None else None
 
     from .project_context import load_project_context
@@ -3186,6 +3230,8 @@ def _run_audit_body(
     try:
         from .live_classifications import (
             expand_wrapper_sinks,
+        )
+        from .live_classifications import (
             load_from_project_context as _load_live_from_project,
         )
 
@@ -3236,13 +3282,11 @@ def _run_audit_body(
                 "invariant prescreening: %d match(es) injected", n_inv_matches,
             )
             if config.out_dir:
-                try:
+                with contextlib.suppress(Exception):
                     mech_path = config.out_dir / "mechanical-findings.json"
                     mech_path.write_text(
                         json.dumps(mechanical_findings, indent=2),
                     )
-                except Exception:
-                    pass
     except Exception:
         logger.debug("invariant prescreening failed", exc_info=True)
 
@@ -3256,9 +3300,9 @@ def _run_audit_body(
 
     expansion_budget = ExpansionBudget(max_expansions=min(50, len(workqueue)))
 
-    fp_patterns: List[Any] = []
+    fp_patterns: list[Any] = []
     try:
-        from .fp_feedback import scan_fp_patterns, load_fp_patterns
+        from .fp_feedback import load_fp_patterns, scan_fp_patterns
 
         if config.annotations_dir and config.annotations_dir.is_dir():
             fp_patterns = scan_fp_patterns(
@@ -3323,8 +3367,9 @@ def _run_audit_body(
     shared.live_classifications = live_classifications
 
     # --- Executor config ---
-    from .executor import ExecutorConfig, run_executor_sync
     from core.llm.concurrency import derive_max_workers
+
+    from .executor import ExecutorConfig, run_executor_sync
     from .task_graph import TaskGraph
 
     if config.max_workers == 0:
@@ -3339,7 +3384,7 @@ def _run_audit_body(
         resolved_workers = config.max_workers
     executor_config = ExecutorConfig(max_workers=resolved_workers)
 
-    layer_disagreements: List[Any] = []
+    layer_disagreements: list[Any] = []
 
     # --- Glance batches (parallel) ---
     if batched:
@@ -3448,8 +3493,8 @@ def _run_audit_body(
     # A single AdaptiveThrottle gates all LLM calls across Thread A
     # (review executor) and Thread B (study consumer).  429 broadcasts
     # from any provider reach both consumers via the throttle registry.
-    from core.llm.throttle import AdaptiveThrottle
     from core.llm.concurrency import read_throttle_cooldown_s
+    from core.llm.throttle import AdaptiveThrottle
 
     throttle = AdaptiveThrottle(
         resolved_workers,
@@ -3480,22 +3525,22 @@ def _run_audit_body(
                 reviewed_outcomes,
                 result,
             ),
-            kwargs=dict(
-                checklist=checklist,
-                context_map=context_map,
-                evidence_index=evidence_index,
-                sarif_cache=sarif_cache,
-                entry_points=entry_points,
-                start_time=start_time,
-                on_progress=on_progress,
-                audit_log=audit_log,
-                session_observations=session_observations,
-                discovered_evidence=discovered_evidence,
-                joern_server=joern_server,
-                collector=collector,
-                throttle=throttle,
-                concept_index_ref=concept_index_ref,
-            ),
+            kwargs={
+                "checklist": checklist,
+                "context_map": context_map,
+                "evidence_index": evidence_index,
+                "sarif_cache": sarif_cache,
+                "entry_points": entry_points,
+                "start_time": start_time,
+                "on_progress": on_progress,
+                "audit_log": audit_log,
+                "session_observations": session_observations,
+                "discovered_evidence": discovered_evidence,
+                "joern_server": joern_server,
+                "collector": collector,
+                "throttle": throttle,
+                "concept_index_ref": concept_index_ref,
+            },
             daemon=True,
             name="study-consumer",
         )
@@ -3794,7 +3839,7 @@ def _run_audit_body(
             # gap (the pass was O(gaps x outcomes) — quadratic on
             # large audits).  First occurrence wins, matching the old
             # next() semantics.
-            ls_outcome_by_key: Dict[Tuple[str, str], ReviewOutcome] = {}
+            ls_outcome_by_key: dict[tuple[str, str], ReviewOutcome] = {}
             for o in result.outcomes:
                 ls_outcome_by_key.setdefault((o.file, o.function), o)
             live_sink_targets = []
@@ -3841,7 +3886,7 @@ def _run_audit_body(
                     try:
                         outcome = review_fn(ctx, config)
                         return (idx, outcome, None)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         return (idx, None, exc)
 
                 if effective_ls_workers <= 1:
@@ -4055,9 +4100,9 @@ def _run_audit_body(
     if layer_disagreements and config.out_dir:
         try:
             from .layer_resolution import (
-                write_disagreements,
-                format_disagreement_summary,
                 LayerVerdict,
+                format_disagreement_summary,
+                write_disagreements,
             )
 
             write_disagreements(layer_disagreements, config.out_dir)
@@ -4140,11 +4185,12 @@ def _run_audit_body(
     bypass_runner = None
     try:
         from core.iris.refine import refine_loop as iris_refine_loop
+
         from .iris_specs import identify_candidates
 
-        taint_chain_callees_post: Set[str] = set()
+        taint_chain_callees_post: set[str] = set()
         if taint_summary_results:
-            for _ts_key, _ts_summ in taint_summary_results.items():
+            for _ts_summ in taint_summary_results.values():
                 for _ts_callee in getattr(_ts_summ, "callees", []):
                     taint_chain_callees_post.add(_ts_callee)
         iris_candidates = identify_candidates(
@@ -4176,8 +4222,8 @@ def _run_audit_body(
 
             bypass_runner = None
             try:
-                from core.iris import CompositionalAnalyzer
                 from core.inventory.call_graph import load_call_graphs
+                from core.iris import CompositionalAnalyzer
 
                 call_graphs = load_call_graphs(config.target_path, checklist)
                 if call_graphs:
@@ -4287,9 +4333,9 @@ def _run_audit_body(
     if result.findings >= 2 and config.out_dir:
         try:
             from .attacker_synthesis import (
+                format_chains_summary,
                 synthesize_chains,
                 write_attack_chains,
-                format_chains_summary,
             )
 
             chains = synthesize_chains(result.outcomes, context_map)
@@ -4303,7 +4349,7 @@ def _run_audit_body(
     generated: list = []
 
     try:
-        from .taint_specs import check_stored_taint, check_config_dependent
+        from .taint_specs import check_config_dependent, check_stored_taint
 
         for tf in check_stored_taint(gaps, target_path=config.target_path):
             post_loop_findings.append(tf.to_dict())
@@ -4329,11 +4375,9 @@ def _run_audit_body(
 
         tp = Path(config.target_path)
         ns_vocab = None
-        try:
+        with contextlib.suppress(Exception):
             from .condition_smt import DomainVocabulary
             ns_vocab = DomainVocabulary.from_domain_model(domain_model)
-        except Exception:
-            pass
         for nf in check_resource_exhaustion(
             gaps, target_path=tp, domain_vocab=ns_vocab,
         ):
@@ -4449,7 +4493,7 @@ def _run_audit_body(
                     },
                     checked_by=["audit:post-loop"],
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug(
                     "post-loop journal append failed for %s:%s",
                     plf_file,
@@ -4572,10 +4616,10 @@ def _run_audit_body(
     if config.out_dir:
         try:
             from .measurement import (
-                load_ground_truth,
                 evaluate_run,
-                write_evaluation,
                 format_evaluation,
+                load_ground_truth,
+                write_evaluation,
             )
 
             ground_truth = load_ground_truth(config.target_path)
@@ -4589,10 +4633,10 @@ def _run_audit_body(
     if config.out_dir:
         try:
             from .adversarial_test import (
-                load_planted_bugs,
-                match_findings_to_bugs,
                 build_matrix,
                 format_matrix_report,
+                load_planted_bugs,
+                match_findings_to_bugs,
                 write_matrix,
             )
 
@@ -4706,9 +4750,9 @@ def _composite_tool_runner(joern_runner, codeql_runner):
 
 def _run_invariant_prescreening(
     domain_model: dict[str, Any] | None,
-    config: "OrchestratorConfig",
+    config: OrchestratorConfig,
     gaps: list[dict[str, Any]],
-    mechanical_findings: Dict[str, List[Dict[str, Any]]],
+    mechanical_findings: dict[str, list[dict[str, Any]]],
 ) -> int:
     """Run compiled invariant rules from the domain model as pre-screening.
 
@@ -4802,11 +4846,11 @@ def _run_invariant_prescreening(
 
 
 def _run_concept_discovery(
-    reviewed_outcomes: "_LockedOutcomes",
-    config: "OrchestratorConfig",
-    shared: "SharedState",
+    reviewed_outcomes: _LockedOutcomes,
+    config: OrchestratorConfig,
+    shared: SharedState,
     gaps: list[dict[str, Any]],
-    mechanical_findings: Dict[str, List[Dict[str, Any]]],
+    mechanical_findings: dict[str, list[dict[str, Any]]],
     reviewed_set: set,
 ) -> None:
     """Mine review outcomes for recurring patterns, compile into rules.
@@ -4880,7 +4924,7 @@ def _run_concept_discovery(
                 task_type=TaskType.AUDIT,
             )
             return data
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("concept discovery LLM call failed: %s", exc)
             return None
 
@@ -4946,12 +4990,12 @@ class _InjectModeResolver:
 
     def __init__(
         self,
-        config: "OrchestratorConfig",
+        config: OrchestratorConfig,
         joern_server: Any = None,
     ) -> None:
         self._config = config
         self._joern_server = joern_server
-        self._cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._cache: dict[str, list[dict[str, Any]]] = {}
 
         self._check_lock_domain = None
         self._check_uninit_leak = None
@@ -4965,11 +5009,9 @@ class _InjectModeResolver:
             )
             self._check_lock_domain = check_lock_domain
             dm = None
-            try:
+            with contextlib.suppress(Exception):
                 from .journal import load_domain_model
                 dm = load_domain_model(config.out_dir)
-            except Exception:
-                pass
             self._vocab = DomainVocabulary.from_domain_model(dm)
         except Exception:
             logger.debug("inject resolver: check_lock_domain unavailable", exc_info=True)
@@ -4998,14 +5040,14 @@ class _InjectModeResolver:
         return self._available
 
     def resolve(
-        self, file: str, function: str, line_start: int, line_end: Optional[int],
-    ) -> List[Dict[str, Any]]:
+        self, file: str, function: str, line_start: int, line_end: int | None,
+    ) -> list[dict[str, Any]]:
         """Return inject-mode findings for a single function (cached)."""
         key = f"{file}:{function}"
         if key in self._cache:
             return self._cache[key]
 
-        findings: List[Dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
         if not self._available:
             self._cache[key] = findings
             return findings
@@ -5091,12 +5133,12 @@ class _InjectModeResolver:
 
 
 def _run_mechanical_detectors(
-    gaps: List[Dict[str, Any]],
+    gaps: list[dict[str, Any]],
     config: OrchestratorConfig,
-    context_map: Optional[Dict[str, Any]] = None,
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
+    context_map: dict[str, Any] | None = None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
     joern_server: Any = None,
-) -> tuple[Dict[str, List[Dict[str, Any]]], set[str]]:
+) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
     """Run pre-loop mechanical detectors over all source files.
 
     Returns a tuple of:
@@ -5107,7 +5149,7 @@ def _run_mechanical_detectors(
 
     Design ref: ~/design/audit.md lines 782-813.
     """
-    mechanical_findings: Dict[str, List[Dict[str, Any]]] = {}
+    mechanical_findings: dict[str, list[dict[str, Any]]] = {}
     guard_clean_keys: set[str] = set()
     _guarded_funcs: set[str] = set()
     _sufficient_funcs: dict[str, bool] = {}
@@ -5115,16 +5157,14 @@ def _run_mechanical_detectors(
     _smt_insufficient_funcs: set[str] = set()
     total = 0
 
-    source_texts: Dict[str, str] = {}
+    source_texts: dict[str, str] = {}
     for gap in gaps:
         fp = gap.get("file", "")
         if fp and fp not in source_texts:
-            try:
+            with contextlib.suppress(Exception):
                 src_path = config.target_path / fp
                 if src_path.is_file():
                     source_texts[fp] = src_path.read_text(errors="replace")
-            except Exception:
-                pass
 
     if not source_texts:
         return mechanical_findings, guard_clean_keys
@@ -5150,7 +5190,7 @@ def _run_mechanical_detectors(
         sinks_set = frozenset(extract_context_map_set(context_map, "sinks"))
 
     # --- L0/L1/L2/L3: condition chain (parallelised per file) ---
-    guard_cache: Dict[str, list] = {}
+    guard_cache: dict[str, list] = {}
     _extract_sg = None
     _assess_guards = None
     _check_bindings = None
@@ -5160,16 +5200,20 @@ def _run_mechanical_detectors(
     _cpg_verify = None
 
     try:
-        from .condition_extraction import extract_sink_guards as _extract_sg
         from .condition_adequacy import assess_file_guards as _assess_guards
         from .condition_binding import check_all_bindings as _check_bindings
+        from .condition_extraction import extract_sink_guards as _extract_sg
     except Exception:
         logger.debug("mechanical: condition chain import failed", exc_info=True)
 
     try:
         from .condition_smt import (
             check_all_sufficiency as _check_sufficiency,
+        )
+        from .condition_smt import (
             check_path_feasibility as _check_pf,
+        )
+        from .condition_smt import (
             check_signed_mismatch as _check_sm,
         )
     except Exception:
@@ -5188,7 +5232,7 @@ def _run_mechanical_detectors(
                     guard_cache[fp] = _extract_sg(
                         src, fp, sink_names=sinks_set or None,
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     guard_cache[fp] = []
             else:
                 guard_cache[fp] = []
@@ -5228,9 +5272,11 @@ def _run_mechanical_detectors(
                     findings.append((
                         fp, asym.sink_function, "sink_guard_asymmetry",
                         asym.unguarded_line,
-                        f"asymmetric guarding of {asym.sink_api}: "
-                        f"guarded at L{asym.guarded_line}, "
-                        f"unguarded at L{asym.unguarded_line}",
+                        (
+                            f"asymmetric guarding of {asym.sink_api}: "
+                            f"guarded at L{asym.guarded_line}, "
+                            f"unguarded at L{asym.unguarded_line}"
+                        ),
                     ))
             except Exception:
                 logger.debug("condition adequacy failed for %s", fp, exc_info=True)
@@ -5245,8 +5291,10 @@ def _run_mechanical_detectors(
                         findings.append((
                             fp, sg.sink_function, "unbound_guard",
                             sg.sink_line,
-                            f"all {ba.decorative_guard_count} guard(s) "
-                            f"decorative for {ba.sink_api}",
+                            (
+                                f"all {ba.decorative_guard_count} guard(s) "
+                                f"decorative for {ba.sink_api}"
+                            ),
                         ))
             except Exception:
                 logger.debug("condition binding failed for %s", fp, exc_info=True)
@@ -5276,8 +5324,10 @@ def _run_mechanical_detectors(
                             findings.append((
                                 fp, sg.sink_function, detector,
                                 sg.sink_line,
-                                f"SMT: guard '{sr.guard_text}' insufficient "
-                                f"for {sg.sink_api}: {detail}",
+                                (
+                                    f"SMT: guard '{sr.guard_text}' insufficient "
+                                    f"for {sg.sink_api}: {detail}"
+                                ),
                             ))
                     if not has_insufficient:
                         _smt_cleared.add(idx)
@@ -5295,9 +5345,11 @@ def _run_mechanical_detectors(
                             findings.append((
                                 fp, sg.sink_function, "decorative_guard_cpg",
                                 sg.sink_line,
-                                f"CPG: guard '{cr.guard_text}' neither "
-                                f"on data-dep path nor dominates sink "
-                                f"{cr.sink_api}",
+                                (
+                                    f"CPG: guard '{cr.guard_text}' neither "
+                                    f"on data-dep path nor dominates sink "
+                                    f"{cr.sink_api}"
+                                ),
                             ))
             except Exception:
                 logger.debug("condition_cpg failed for %s", fp, exc_info=True)
@@ -5344,22 +5396,20 @@ def _run_mechanical_detectors(
                 pool.submit(_process_file_conditions, fp, src): fp
                 for fp, src in file_items
             }
-            for fut in futures:
+            for fut, fut_fp in futures.items():
                 try:
                     for finding_tuple in fut.result():
                         _add(*finding_tuple)
                 except Exception:
-                    fp = futures[fut]
+                    fp = fut_fp
                     logger.debug("condition chain failed for %s", fp, exc_info=True)
 
     # --- Structural detectors ---
     call_graphs = None
-    try:
+    with contextlib.suppress(Exception):
         from core.inventory.call_graph import load_call_graphs
 
         call_graphs = load_call_graphs(config.target_path, None)
-    except Exception:
-        pass
 
     try:
         from .sentinel_collapse import detect_sentinel_collapses
@@ -5464,7 +5514,7 @@ def _run_mechanical_detectors(
     try:
         from .callback_lifetime import check_callback_lifetime_local
 
-        for fp, src in source_texts.items():
+        for fp in source_texts:
             if not any(fp.endswith(ext) for ext in _C_EXTS):
                 continue
             for gap in gaps:
@@ -5492,6 +5542,8 @@ def _run_mechanical_detectors(
     try:
         from packages.coccinelle.runner import (
             is_available as _cocci_avail,
+        )
+        from packages.coccinelle.runner import (
             run_rule as _run_cocci_rule,
         )
 
@@ -5582,10 +5634,10 @@ def _run_mechanical_detectors(
 
 
 def _merge_stale(
-    gaps: List[Dict[str, Any]],
+    gaps: list[dict[str, Any]],
     annotations_dir: Path,
     target_path: Path,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Merge stale annotations into the gap list for re-review."""
     try:
         from .staleness import find_stale_annotations, stale_as_gaps
@@ -5604,14 +5656,14 @@ def _merge_stale(
 
 def _build_context(
     config: OrchestratorConfig,
-    gap: Dict[str, Any],
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
+    gap: dict[str, Any],
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
     *,
     blind: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Assemble context for one function.
 
     When *blind* is True, mechanical evidence is withheld from the prompt
@@ -5683,7 +5735,7 @@ def _build_context(
 def _commit_outcome(
     config: OrchestratorConfig,
     outcome: ReviewOutcome,
-    gap: Dict[str, Any],
+    gap: dict[str, Any],
     *,
     batch: bool = False,
 ) -> None:
@@ -5721,7 +5773,7 @@ def _commit_outcome(
     outcome.verification_tier = outcome.compute_tier()
 
     line_start = gap.get("line_start", 0)
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "action": "orchestrator_review",
         "key": f"{outcome.file}:{outcome.function}:{line_start}",
         "status": outcome.status,
@@ -5806,8 +5858,8 @@ def _commit_outcome(
 def _match_domain_model_invariants(
     hypothesis: str,
     file_path: str,
-    domain_model: Optional[Dict[str, Any]],
-) -> List[str]:
+    domain_model: dict[str, Any] | None,
+) -> list[str]:
     """Match a hypothesis against domain-model invariants.
 
     Returns list of matching invariant IDs. An invariant matches when
@@ -5874,10 +5926,10 @@ def _resolve_hypothesis(outcome: ReviewOutcome) -> str:
 def _check_finding_gates(
     outcome: ReviewOutcome,
     *,
-    audit_log: Optional[List[Dict[str, Any]]] = None,
-    domain_model: Optional[Dict[str, Any]] = None,
+    audit_log: list[dict[str, Any]] | None = None,
+    domain_model: dict[str, Any] | None = None,
     mode: ReviewMode = ReviewMode.SECURITY,
-) -> List[str]:
+) -> list[str]:
     """Check G1-G5 gates on a finding. Returns list of violations."""
     from .evidence_grade import is_tool_evidence
 
@@ -5969,7 +6021,7 @@ _STATUS_SEVERITY = {
 
 def _multi_pass_review(
     review_fn: Callable,
-    ctx: Dict[str, Any],
+    ctx: dict[str, Any],
     config: OrchestratorConfig,
     passes: int,
 ) -> ReviewOutcome:
@@ -5987,15 +6039,15 @@ def _multi_pass_review(
     # multiple distinct models are configured
     if config.multi_model and len(config.models) > 1:
         try:
-            from .multi_review import run_audit_multi_review, consensus_status
+            from .multi_review import consensus_status, run_audit_multi_review
 
-            def context_fn(_file: str, _func: str) -> Dict[str, Any]:
+            def context_fn(_file: str, _func: str) -> dict[str, Any]:
                 return ctx
 
             def adapted_review_fn(
-                context: Dict[str, Any],
+                context: dict[str, Any],
                 model_name: str,
-            ) -> Dict[str, Any]:
+            ) -> dict[str, Any]:
                 outcome = review_fn(context, config)
                 result = {
                     "file": outcome.file,
@@ -6017,7 +6069,7 @@ def _multi_pass_review(
             refute_fn = None
             if config.adversarial:
 
-                def refute_fn(finding: Dict[str, Any]) -> Dict[str, Any]:
+                def refute_fn(finding: dict[str, Any]) -> dict[str, Any]:
                     refute_ctx = dict(ctx)
                     refute_ctx["adversarial_target"] = finding
                     outcome = review_fn(refute_ctx, config)
@@ -6097,7 +6149,7 @@ def _multi_pass_review(
 
     # Inline self-consistency: same model N times, best-of-N with
     # hypothesis dedup (used for single-model review_passes > 1)
-    outcomes: List[ReviewOutcome] = []
+    outcomes: list[ReviewOutcome] = []
     for _ in range(passes):
         try:
             outcome = review_fn(ctx, config)
@@ -6108,7 +6160,7 @@ def _multi_pass_review(
                 status="error",
                 body="blocked by content filter",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "review_fn pass failed for %s:%s: %s",
                 file_path,
@@ -6132,7 +6184,7 @@ def _multi_pass_review(
     )
 
     seen_mechanisms: set = set()
-    merged_hypotheses: List[Dict[str, Any]] = []
+    merged_hypotheses: list[dict[str, Any]] = []
     for o in outcomes:
         for h in o.hypotheses or []:
             mech = h.get("mechanism", "")
@@ -6204,7 +6256,7 @@ def _classify_error(exc: Exception) -> str:
     return "internal"
 
 
-def _error_outcome(gap: Dict[str, Any], exc: Exception) -> ReviewOutcome:
+def _error_outcome(gap: dict[str, Any], exc: Exception) -> ReviewOutcome:
     return ReviewOutcome(
         file=gap["file"],
         function=gap["name"],
@@ -6285,7 +6337,7 @@ def _retry_error_outcomes(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     shared: Any,
     llm_client: Any,
     start_time: float,
@@ -6311,7 +6363,9 @@ def _retry_error_outcomes(
                 checklist,
                 None,
             )
-        except Exception:
+        # Silent skip is intentional: a context-build failure just drops
+        # this outcome from the error-retry pass.
+        except Exception:  # noqa: BLE001, S112
             continue
 
         if outcome.error_class == "truncation":
@@ -6321,7 +6375,7 @@ def _retry_error_outcomes(
 
         try:
             new_outcome = review_fn(ctx, config)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             from core.llm.client import is_budget_exceeded_error
 
             if is_budget_exceeded_error(exc):
@@ -6371,10 +6425,9 @@ def _check_budget(
     result: OrchestratorResult,
 ) -> bool:
     """Return True when budget is exhausted."""
-    if config.max_seconds:
-        if time.monotonic() - start_time >= config.max_seconds:
-            result.terminated_by = "max_seconds"
-            return True
+    if config.max_seconds and time.monotonic() - start_time >= config.max_seconds:
+        result.terminated_by = "max_seconds"
+        return True
     if config.max_cost_usd:
         with result._lock:
             if result.total_cost_usd >= config.max_cost_usd:
@@ -6403,7 +6456,7 @@ def _announce_budget_stop(
     result: OrchestratorResult,
     executor_stats: Any,
     graph: Any,
-    on_progress: Optional[Callable],
+    on_progress: Callable | None,
 ) -> None:
     """Emit ONE clear operator-facing line when the review loop stops
     on budget exhaustion, instead of a silent break (or, pre-fix, a
@@ -6886,6 +6939,7 @@ def _study_consumer_loop(
                     capture_output=True,
                     text=True,
                     timeout=prep_timeout,
+                    check=False,
                 )
                 if prep_result.returncode != 0:
                     _stderr_tail = (prep_result.stderr or "").strip()[:200]
@@ -7109,12 +7163,10 @@ def _study_consumer_loop(
 
 def _is_suspicious_outcome(key: str, outcomes: _LockedOutcomes) -> bool:
     """Check if a reviewed function has a suspicious verdict."""
-    try:
+    with contextlib.suppress(Exception):
         outcome = outcomes.get(key)
         if outcome and hasattr(outcome, "status"):
             return outcome.status == "suspicious"
-    except Exception:
-        pass
     return False
 
 
@@ -7239,9 +7291,7 @@ def _tally_outcome(
             result.suspicious += 1
         elif outcome.status == "clean":
             result.clean += 1
-        elif outcome.status == "dormant":
-            result.dormant += 1
-        elif outcome.status == "dark":
+        elif outcome.status == "dormant" or outcome.status == "dark":
             result.dormant += 1
         elif outcome.status == "error":
             result.errors += 1
@@ -7253,7 +7303,7 @@ def _tally_outcome(
 
 def _sage_store_observation(text: str, kind: str, source: str) -> None:
     """Best-effort store of a tool-confirmed observation to SAGE."""
-    try:
+    with contextlib.suppress(Exception):
         from core.sage.hooks import store_audit_observation
 
         store_audit_observation(
@@ -7262,8 +7312,6 @@ def _sage_store_observation(text: str, kind: str, source: str) -> None:
             kind=kind,
             source_function=source,
         )
-    except Exception:
-        pass
 
 
 _MAX_OBSERVATION_LEN = 500
@@ -7292,11 +7340,11 @@ def _sanitise_observation(text: str) -> str:
 
 
 def _accumulate_observations(
-    session_observations: List[Dict[str, str]],
+    session_observations: list[dict[str, str]],
     outcome: ReviewOutcome,
-    gap: Dict[str, Any],
+    gap: dict[str, Any],
     *,
-    sweep_pre_status: Optional[str] = None,
+    sweep_pre_status: str | None = None,
 ) -> None:
     """Extract LLM observations and add to session context.
 
@@ -7352,7 +7400,7 @@ def _accumulate_observations(
 
 
 def _batch_trivial(
-    workqueue: List[Dict[str, Any]],
+    workqueue: list[dict[str, Any]],
     sloc_threshold: int,
 ) -> tuple:
     """Split workqueue into trivial batches and normal items.
@@ -7363,7 +7411,7 @@ def _batch_trivial(
     if sloc_threshold <= 0:
         return [], workqueue
 
-    batches_by_file: Dict[str, List[Dict[str, Any]]] = {}
+    batches_by_file: dict[str, list[dict[str, Any]]] = {}
     remaining = []
 
     for gap in workqueue:
@@ -7382,10 +7430,10 @@ def _batch_trivial(
 
 
 def _synthesis_hits_to_gaps(
-    hits: List[Dict[str, Any]],
-    checklist: Dict[str, Any],
-    out_dir: Optional[Path] = None,
-) -> List[Dict[str, Any]]:
+    hits: list[dict[str, Any]],
+    checklist: dict[str, Any],
+    out_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     """Resolve Mode-2 sweep hits into reviewable gaps.
 
     Checker synthesis reports *sites* — ``{file, line, function: "",
@@ -7403,9 +7451,9 @@ def _synthesis_hits_to_gaps(
     skipped: a synthesized checker encodes a pattern that was unknown
     when they were reviewed, which is exactly when re-review pays.
     """
-    gaps: List[Dict[str, Any]] = []
-    seen: Set[str] = set()
-    unresolved: List[Dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    unresolved: list[dict[str, Any]] = []
 
     for hit in hits:
         file_path = hit.get("file", "")
@@ -7451,7 +7499,7 @@ def _synthesis_hits_to_gaps(
 
 
 def _write_unresolved_synthesis_hits(
-    hits: List[Dict[str, Any]],
+    hits: list[dict[str, Any]],
     out_dir: Path,
 ) -> None:
     """Persist synthesis sites that have no enclosing reviewable function."""
@@ -7461,7 +7509,7 @@ def _write_unresolved_synthesis_hits(
     # This is a diagnostic artifact: a malformed, mis-encoded or
     # unserialisable one must never take the run down with it.
     try:
-        existing: List[Dict[str, Any]] = []
+        existing: list[dict[str, Any]] = []
         if path.is_file():
             try:
                 prior = json.loads(
@@ -7499,16 +7547,16 @@ def _write_unresolved_synthesis_hits(
 
 
 def _review_items(
-    batch: List[Dict[str, Any]],
+    batch: list[dict[str, Any]],
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    fuzz_coverage: Optional[Dict[str, Any]],
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
-    domain_model: Optional[Dict[str, Any]] = None,
-) -> List[ReviewOutcome]:
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    fuzz_coverage: dict[str, Any] | None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
+    domain_model: dict[str, Any] | None = None,
+) -> list[ReviewOutcome]:
     """Review a group of trivial functions from the same file individually."""
     outcomes = []
     for gap in batch:
@@ -7527,7 +7575,7 @@ def _review_items(
             outcome.line = gap.get("line_start", 0)
             try:
                 _commit_outcome(config, outcome, gap, batch=True)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "commit failed for %s:%s: %s",
                     gap["file"],
@@ -7565,7 +7613,7 @@ def _review_items(
                 status="error",
                 body="blocked by content filter",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             from core.llm.client import is_budget_exceeded_error
 
             if is_budget_exceeded_error(exc):
@@ -7678,7 +7726,7 @@ def _review_items(
 
         try:
             _commit_outcome(config, outcome, gap, batch=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "commit failed for %s:%s: %s",
                 gap["file"],
@@ -7689,7 +7737,7 @@ def _review_items(
     return outcomes
 
 
-def _dead_code_reason(gap: Dict[str, Any]) -> Optional[str]:
+def _dead_code_reason(gap: dict[str, Any]) -> str | None:
     """Return a human-readable reason if the gap is provably dead code,
     else None. Checks flags propagated from the checklist by compute_gaps."""
     if gap.get("lexical_dead"):
@@ -7703,7 +7751,7 @@ def _dead_code_reason(gap: Dict[str, Any]) -> Optional[str]:
 
 def _apply_reachability_gate(
     outcome: ReviewOutcome,
-    ctx: Dict[str, Any],
+    ctx: dict[str, Any],
     entry_points: set,
     config: OrchestratorConfig,
 ) -> ReviewOutcome:
@@ -7809,12 +7857,12 @@ _PROTECTION_RE = re.compile(
     r"\b(?:protected\s+by|under\s+lock|held\s+(?:by\s+)?lock|rcu_read_lock"
     r"|single[_-]threaded|init[_-]only|seriali[sz]ed\s+by"
     r"|mutex[_\s]held|spin_lock|sequential[_\s]init)\b",
-    re.I,
+    re.IGNORECASE,
 )
 
 _NEGATION_BEFORE_RE = re.compile(
     r"\b(?:not|no|without|lacks?|missing|absent|never)\b",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -7930,7 +7978,7 @@ _MEMORY_SAFE_LANGS = frozenset(
 
 def _check_language_cwe_mismatch(
     outcome: ReviewOutcome,
-) -> Optional[str]:
+) -> str | None:
     """Detect CWE categories impossible in the file's language."""
     cwe = ""
     if outcome.review_result:
@@ -7952,9 +8000,9 @@ def _check_language_cwe_mismatch(
 
 def _run_prefilter_for_gap(
     config: OrchestratorConfig,
-    gap: Dict[str, Any],
-    ctx: Dict[str, Any],
-    domain_model: Optional[Dict[str, Any]] = None,
+    gap: dict[str, Any],
+    ctx: dict[str, Any],
+    domain_model: dict[str, Any] | None = None,
 ) -> PrefilterResult:
     """Run the mechanical pre-filter on a single gap function."""
     from .condition_smt import DomainVocabulary
@@ -7982,14 +8030,14 @@ def _run_prefilter_for_gap(
     )
 
 
-_file_lines_cache: Dict[str, Optional[list]] = {}
+_file_lines_cache: dict[str, list | None] = {}
 
 
 def _read_raw_source(
     target_path: Path,
     file_path: str,
     line_start: int,
-    line_end: Optional[int],
+    line_end: int | None,
 ) -> str:
     """Read raw source lines without line-number prefixes."""
     cache_key = str(target_path / file_path)
@@ -8012,7 +8060,7 @@ def _read_raw_source(
     return "\n".join(lines[start:end])
 
 
-_R2_ABI_TABLES: Dict[str, List[str]] = {
+_R2_ABI_TABLES: dict[str, list[str]] = {
     "amd64": ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
     "win64": ["rcx", "rdx", "r8", "r9"],
     # x86-32: r2 lifts cdecl stack pushes into register-assignment
@@ -8030,7 +8078,7 @@ _R2_ABI_TABLES: Dict[str, List[str]] = {
     "riscv": ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"],
 }
 
-_R2_ARG_REGS_BY_ABI: Dict[str, frozenset] = {}
+_R2_ARG_REGS_BY_ABI: dict[str, frozenset] = {}
 for _abi, _regs in _R2_ABI_TABLES.items():
     _all = set(_regs)
     if _abi == "amd64":
@@ -8040,7 +8088,7 @@ for _abi, _regs in _R2_ABI_TABLES.items():
     _R2_ARG_REGS_BY_ABI[_abi] = frozenset(_all)
 
 
-def _detect_r2_abi(source: str) -> Optional[str]:
+def _detect_r2_abi(source: str) -> str | None:
     """Detect calling convention from register names in r2 output.
 
     Checks most-specific first to avoid false matches (e.g. ARM r0-r3
@@ -8153,7 +8201,7 @@ def _normalise_r2_decompilation(source: str) -> str:
 def _write_decompilation_tmpfile(
     decompilation: str,
     function_name: str,
-) -> Optional[Path]:
+) -> Path | None:
     """Write decompilation to a temp directory so Semgrep can read it."""
     if not decompilation or decompilation.startswith("("):
         return None
@@ -8187,7 +8235,7 @@ def _hypothesis_to_tool_chain(
     hypothesis: str,
     file_path: str,
     cwe: str = "",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Build an ordered list of tools to try for a hypothesis.
 
     Each entry is ``{"type": "semgrep"|"smt"|"coccinelle"|"codeql",
@@ -8200,7 +8248,7 @@ def _hypothesis_to_tool_chain(
     signal), then string-matched tools augment with hypothesis-specific
     patterns.
     """
-    chain: List[Dict[str, Any]] = []
+    chain: list[dict[str, Any]] = []
     seen_types: set = set()
 
     if cwe:
@@ -8279,9 +8327,9 @@ def _hypothesis_to_tool_chain(
     return chain
 
 
-def _cwe_fallback_chain(cwe: str) -> List[Dict[str, Any]]:
+def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
     """Generate tool chain from CWE dispatch when string matching fails."""
-    chain: List[Dict[str, Any]] = []
+    chain: list[dict[str, Any]] = []
     try:
         from .cwe_dispatch import (
             cocci_rule_for_cwe,
@@ -8344,7 +8392,7 @@ def _cwe_fallback_chain(cwe: str) -> List[Dict[str, Any]]:
     return chain
 
 
-_line_end_cache: Dict[Tuple[str, str, str], int] = {}
+_line_end_cache: dict[tuple[str, str, str], int] = {}
 
 
 def _checklist_line_end(
@@ -8413,22 +8461,22 @@ def _joern_budget_timeout_s(config: OrchestratorConfig) -> int | None:
 
 
 def _run_tool_chain(
-    chain: List[Dict[str, Any]],
+    chain: list[dict[str, Any]],
     *,
     config: OrchestratorConfig,
     file_path: str,
     function_name: str,
-    source: Optional[str],
+    source: str | None,
     hypothesis: str,
     line_start: int = 0,
-    sarif_cache: Optional[SarifCache] = None,
-    tier_counters: Optional[Dict[str, "TierCounters"]] = None,
-    evidence_index: Optional[Dict[str, "EvidenceRecord"]] = None,
+    sarif_cache: SarifCache | None = None,
+    tier_counters: dict[str, TierCounters] | None = None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
     joern_server=None,
-    target_path_override: Optional[Path] = None,
+    target_path_override: Path | None = None,
     domain_vocab: Any = None,
     cwe: str = "",
-) -> List[str]:
+) -> list[str]:
     """Run tools from *chain* in order, collecting all confirmations.
 
     Returns a list of confirming tool IDs (e.g. ``["smt:check-oob",
@@ -8443,17 +8491,15 @@ def _run_tool_chain(
     lines proves nothing about this claim.
     """
     effective_target = target_path_override or config.target_path
-    confirmed: List[str] = []
+    confirmed: list[str] = []
 
     if domain_vocab is None and config.out_dir:
-        try:
+        with contextlib.suppress(Exception):
             from .condition_smt import DomainVocabulary
             from .journal import load_domain_model
             dm = load_domain_model(config.out_dir)
             if dm:
                 domain_vocab = DomainVocabulary.from_domain_model(dm)
-        except Exception:
-            pass
 
     for entry in chain:
         tool_type = entry["type"]
@@ -8858,7 +8904,7 @@ def _run_tool_chain(
                     )
 
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "tool_chain %s exception %s:%s: %s",
                 tool_type,
@@ -8870,7 +8916,7 @@ def _run_tool_chain(
     return confirmed
 
 
-_CWE_IMPLICIT_PRECONDITIONS: Dict[str, List[Dict[str, Any]]] = {
+_CWE_IMPLICIT_PRECONDITIONS: dict[str, list[dict[str, Any]]] = {
     "CWE-89": [
         {
             "check_type": "sink_reachable",
@@ -8895,7 +8941,7 @@ _CWE_IMPLICIT_PRECONDITIONS: Dict[str, List[Dict[str, Any]]] = {
 def _check_preconditions(
     outcome: ReviewOutcome,
     config: OrchestratorConfig,
-    context_map: Optional[Dict[str, Any]],
+    context_map: dict[str, Any] | None,
 ) -> ReviewOutcome:
     """Verify LLM-stated preconditions mechanically.
 
@@ -8968,11 +9014,11 @@ def _check_preconditions(
 def _sweep_validate(
     outcome: ReviewOutcome,
     config: OrchestratorConfig,
-    sarif_cache: Optional[SarifCache] = None,
-    tier_counters: Optional[Dict[str, "TierCounters"]] = None,
-    evidence_index: Optional[Dict[str, "EvidenceRecord"]] = None,
+    sarif_cache: SarifCache | None = None,
+    tier_counters: dict[str, TierCounters] | None = None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
     joern_server=None,
-    source_override: Optional[str] = None,
+    source_override: str | None = None,
     is_binary: bool = False,
 ) -> ReviewOutcome:
     """Post-LLM sweep validation: run mechanical checks on LLM findings.
@@ -9038,7 +9084,7 @@ def _sweep_validate(
             None,
         )
 
-    _decomp_tmp_dir: Optional[Path] = None
+    _decomp_tmp_dir: Path | None = None
     effective_file = outcome.file
     if is_binary and source:
         _decomp_tmp_dir = _write_decompilation_tmpfile(
@@ -9228,9 +9274,9 @@ def _sweep_validate(
 def _run_clean_check_sweep(
     outcome: ReviewOutcome,
     config: OrchestratorConfig,
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
     joern_server=None,
-) -> Optional[str]:
+) -> str | None:
     """Run a focused tool sweep for a clean verdict.
 
     Checks the evidence index for any flows the LLM may have missed.
@@ -9282,11 +9328,11 @@ def _run_clean_check_sweep(
 def _proactive_validate(
     outcome: ReviewOutcome,
     config: OrchestratorConfig,
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
-    dispatched_tools: Optional[set] = None,
-    tier_counters: Optional[Dict[str, "TierCounters"]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
-    flow_traces: Optional[List[Dict[str, Any]]] = None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
+    dispatched_tools: set | None = None,
+    tier_counters: dict[str, TierCounters] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
+    flow_traces: list[dict[str, Any]] | None = None,
     joern_server=None,
 ) -> ReviewOutcome:
     """Step 1e': proactive tool validation for findings/suspicious.
@@ -9620,7 +9666,7 @@ def _auto_synthesize_rules(
         return
 
     cwe_mechanism_counts: Counter = Counter()
-    cwe_mechanism_findings: Dict[str, List[ReviewOutcome]] = {}
+    cwe_mechanism_findings: dict[str, list[ReviewOutcome]] = {}
 
     for f in findings:
         review = f.review_result or {}
@@ -9662,7 +9708,7 @@ def _auto_synthesize_rules(
 def _run_critique(
     result: OrchestratorResult,
     config: OrchestratorConfig,
-    sarif_cache: Optional[SarifCache] = None,
+    sarif_cache: SarifCache | None = None,
     joern_server=None,
 ) -> None:
     """Periodic tool-grounded re-evaluation of recent findings.
@@ -9837,19 +9883,19 @@ def _deepen_suspicious(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    fuzz_coverage: Optional[Dict[str, Any]],
-    session_observations: List[Dict[str, str]],
-    sarif_cache: Optional[Any],
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    fuzz_coverage: dict[str, Any] | None,
+    session_observations: list[dict[str, str]],
+    sarif_cache: Any | None,
     entry_points: set,
     start_time: float,
-    on_progress: Optional[Callable],
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
-    audit_log: Optional[List[Dict[str, Any]]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
+    on_progress: Callable | None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
+    audit_log: list[dict[str, Any]] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
     joern_server=None,
-    project_learnings: Optional[List[Dict[str, str]]] = None,
+    project_learnings: list[dict[str, str]] | None = None,
     max_workers: int = 1,
 ) -> OrchestratorResult:
     """Re-review suspicious verdicts with enriched context.
@@ -9887,7 +9933,7 @@ def _deepen_suspicious(
     if not suspicious:
         return result
 
-    seen_hypotheses: Dict[str, str] = {}
+    seen_hypotheses: dict[str, str] = {}
     targets = []
     for o in suspicious:
         gap = _find_gap_in_checklist(checklist, o.file, o.function)
@@ -9967,11 +10013,11 @@ def _deepen_suspicious(
         prepared.append((deepen_idx, prior_outcome, gap, ctx))
 
     def _do_review(item):
-        idx, _prior, gap, ctx = item
+        idx, _prior, _gap, ctx = item
         try:
             outcome = review_fn(ctx, config)
             return (idx, outcome, None)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
     if effective_workers <= 1:
@@ -10144,15 +10190,15 @@ def _re_review_disagreements(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    evidence_index: Optional[Dict[str, EvidenceRecord]],
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    evidence_index: dict[str, EvidenceRecord] | None,
     start_time: float,
-    on_progress: Optional[Callable],
+    on_progress: Callable | None,
     *,
-    audit_log: Optional[List[Dict[str, Any]]] = None,
-    session_observations: Optional[List[Dict[str, str]]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
+    audit_log: list[dict[str, Any]] | None = None,
+    session_observations: list[dict[str, str]] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
     joern_server=None,
     max_workers: int = 1,
 ) -> OrchestratorResult:
@@ -10214,7 +10260,7 @@ def _re_review_disagreements(
         try:
             outcome = review_fn(ctx, config)
             return (idx, outcome, None)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
     if effective_workers <= 1:
@@ -10243,8 +10289,10 @@ def _re_review_disagreements(
         _, key, prior, _ctx = prepared[idx]
 
         if exc is not None:
+            # exc was captured in the worker; exc_info=True here predates
+            # the lint sweep and is kept as-is (behaviour-free sweep).
             logger.debug(
-                "disagreement re-review failed for %s", key, exc_info=True,
+                "disagreement re-review failed for %s", key, exc_info=True,  # noqa: LOG014
             )
             continue
 
@@ -10268,9 +10316,9 @@ def _re_review_disagreements(
     return result
 
 
-def _gap_index(checklist: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _gap_index(checklist: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Build file:function → gap dict from checklist."""
-    index: Dict[str, Dict[str, Any]] = {}
+    index: dict[str, dict[str, Any]] = {}
     for item in checklist.get("files", []):
         # Checklist file records carry "path" (see the inventory
         # builder and _find_gap_in_checklist) — not "file".
@@ -10293,19 +10341,19 @@ def _iterative_re_review(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    fuzz_coverage: Optional[Dict[str, Any]],
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    fuzz_coverage: dict[str, Any] | None,
     entry_points: set,
     constraints: list,
     prop_config: Any,
-    sarif_cache: Optional[SarifCache],
+    sarif_cache: SarifCache | None,
     start_time: float,
-    on_progress: Optional[Callable],
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
-    audit_log: Optional[List[Dict[str, Any]]] = None,
-    session_observations: Optional[List[Dict[str, str]]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
+    on_progress: Callable | None,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
+    audit_log: list[dict[str, Any]] | None = None,
+    session_observations: list[dict[str, str]] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
     joern_server=None,
     max_workers: int = 1,
 ) -> OrchestratorResult:
@@ -10446,8 +10494,8 @@ def _iterative_re_review(
                     body="blocked by content filter",
                 )
                 return (idx, outcome, None)
-            except Exception as exc:
-                return (idx, None, exc)
+            except Exception as review_exc:  # noqa: BLE001
+                return (idx, None, review_exc)
 
         if effective_workers <= 1:
             raw_results = []
@@ -10593,18 +10641,18 @@ def _iterative_re_review(
 
 
 def _find_re_review_targets(
-    findings: List[ReviewOutcome],
+    findings: list[ReviewOutcome],
     config: OrchestratorConfig,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    reviewed_outcomes: Dict[str, ReviewOutcome],
-) -> List[Dict[str, Any]]:
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    reviewed_outcomes: dict[str, ReviewOutcome],
+) -> list[dict[str, Any]]:
     """Find functions to re-review based on findings from the previous pass.
 
     Returns a list of dicts with 'gap' (checklist item) and
     'callee_findings' (the findings that triggered re-review).
     """
-    targets: Dict[str, Dict[str, Any]] = {}
+    targets: dict[str, dict[str, Any]] = {}
 
     for finding in findings:
         callers = _find_callers_from_inventory(
@@ -10642,10 +10690,10 @@ def _find_callers_from_inventory(
     file_path: str,
     function_name: str,
     line: int,
-    context_map: Optional[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    context_map: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     """Find 1-hop callers using the same logic as context._find_callers."""
-    callers: List[Dict[str, Any]] = []
+    callers: list[dict[str, Any]] = []
     if config.inventory:
         try:
             from core.analysis.reachability import (
@@ -10689,10 +10737,10 @@ def _find_callers_from_inventory(
 
 
 def _find_gap_in_checklist(
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     file_path: str,
     function_name: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Find a checklist item by file + function name."""
     for file_info in checklist.get("files", []):
         if file_info.get("path") != file_path:
@@ -10740,7 +10788,7 @@ def _run_phase2(result, config) -> None:
         logger.debug("Phase 2 classification failed", exc_info=True)
 
     try:
-        from .chain_detector import find_chain_candidates, evaluate_chains
+        from .chain_detector import evaluate_chains, find_chain_candidates
         candidates = find_chain_candidates(
             result.outcomes, config.out_dir, classifications,
         )
@@ -10791,9 +10839,9 @@ _MAX_CHAIN_CONTEXT_ITEMS = 5
 def _collect_chain_findings(
     fn_key: str,
     call_edges: list,
-    reviewed_outcomes: Dict[str, ReviewOutcome],
-    call_edge_index: Optional[Dict[str, list]] = None,
-) -> List[Dict[str, str]]:
+    reviewed_outcomes: dict[str, ReviewOutcome],
+    call_edge_index: dict[str, list] | None = None,
+) -> list[dict[str, str]]:
     """Collect findings from 1-hop neighbours for chain context.
 
     Returns a list of dicts suitable for the ``chain_findings`` context
@@ -10805,7 +10853,7 @@ def _collect_chain_findings(
     edge list.
     """
     edges = call_edge_index.get(fn_key, ()) if call_edge_index else call_edges
-    chain: List[Dict[str, str]] = []
+    chain: list[dict[str, str]] = []
     seen: set = set()
     for edge in edges:
         caller_bare = f"{edge.get('caller_file', '')}:{edge.get('caller', '')}"
@@ -10827,7 +10875,7 @@ def _collect_chain_findings(
 
         prior = reviewed_outcomes.get(neighbour)
         if prior and prior.status in ("finding", "suspicious"):
-            entry: Dict[str, str] = {
+            entry: dict[str, str] = {
                 "function": f"{prior.file}:{prior.function}",
                 "status": prior.status,
                 "direction": direction,
@@ -10848,11 +10896,11 @@ def _inject_chain_targets(
     outcome: ReviewOutcome,
     graph,
     call_edges: list,
-    checklist: Dict[str, Any],
-    reviewed_outcomes: Optional[Dict[str, ReviewOutcome]] = None,
+    checklist: dict[str, Any],
+    reviewed_outcomes: dict[str, ReviewOutcome] | None = None,
     finding_priority: float = 0.0,
-    call_edge_index: Optional[Dict[str, list]] = None,
-    checklist_index: Optional[Dict[tuple, dict]] = None,
+    call_edge_index: dict[str, list] | None = None,
+    checklist_index: dict[tuple, dict] | None = None,
 ) -> int:
     """Inject callers and callees of a confirmed finding into the TaskGraph.
 
@@ -10941,9 +10989,7 @@ def _untally_outcome(result: OrchestratorResult, outcome: ReviewOutcome) -> None
             result.suspicious -= 1
         elif outcome.status == "clean":
             result.clean -= 1
-        elif outcome.status == "dormant":
-            result.dormant -= 1
-        elif outcome.status == "dark":
+        elif outcome.status == "dormant" or outcome.status == "dark":
             result.dormant -= 1
         elif outcome.status == "error":
             result.errors -= 1
@@ -10993,7 +11039,7 @@ def _has_refuting_counter(outcome: ReviewOutcome) -> bool:
     return False
 
 
-_sink_guard_cache: Dict[str, str] = {}
+_sink_guard_cache: dict[str, str] = {}
 
 
 def _check_sink_guarded_cached(function_name: str, joern_server) -> str:
@@ -11049,8 +11095,8 @@ def _correlated_mech_detector_tool(
 def _promote_suspicious(
     result: OrchestratorResult,
     config: OrchestratorConfig,
-    sarif_cache: Optional[SarifCache] = None,
-    checklist: Optional[Dict[str, Any]] = None,
+    sarif_cache: SarifCache | None = None,
+    checklist: dict[str, Any] | None = None,
     joern_server=None,
     mechanical_findings: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
@@ -11290,7 +11336,7 @@ def _source_has_arithmetic(source: str) -> bool:
 def _promote_clean_refuted(
     result: OrchestratorResult,
     config: OrchestratorConfig,
-    checklist: Optional[Dict[str, Any]] = None,
+    checklist: dict[str, Any] | None = None,
     joern_server=None,
 ) -> None:
     """Post-loop pass: SMT-verify refuted hypotheses on clean outcomes.
@@ -11409,9 +11455,9 @@ _C_EXTS = frozenset({".c", ".h", ".cc", ".cpp", ".cxx"})
 
 def _pre_loop_smt_screen(
     workqueue: list,
-    config: "OrchestratorConfig",
+    config: OrchestratorConfig,
     result: OrchestratorResult,
-    checklist: Optional[Dict[str, Any]] = None,
+    checklist: dict[str, Any] | None = None,
 ) -> list:
     """Run SMT checks before the LLM loop.
 
@@ -11423,30 +11469,26 @@ def _pre_loop_smt_screen(
         from .condition_smt import (
             DomainVocabulary,
             check_auth_bypass,
-            check_lock_discipline,
-            check_resource_leak,
-            check_null_propagation,
-            check_integer_narrowing,
             check_early_release,
+            check_integer_narrowing,
+            check_lock_discipline,
+            check_null_propagation,
+            check_resource_leak,
             check_toctou,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         return workqueue
 
     _extract_sg = None
     _check_pf = None
-    try:
+    with contextlib.suppress(Exception):
         from .condition_extraction import extract_sink_guards as _extract_sg
         from .condition_smt import check_path_feasibility as _check_pf
-    except Exception:
-        pass
 
     dm = None
-    try:
+    with contextlib.suppress(Exception):
         from .journal import load_domain_model
         dm = load_domain_model(config.out_dir)
-    except Exception:
-        pass
     vocab = DomainVocabulary.from_domain_model(dm)
 
     kept: list = []
@@ -11470,81 +11512,65 @@ def _pre_loop_smt_screen(
             continue
 
         tool_hit = ""
-        try:
+        with contextlib.suppress(Exception):
             abr = check_auth_bypass(source)
             if abr.bypass_found:
                 tool_hit = "smt:check-auth-bypass"
                 if abr.witness:
                     tool_hit += ":witness"
-        except Exception:
-            pass
 
         if not tool_hit and is_c:
-            try:
+            with contextlib.suppress(Exception):
                 ldr = check_lock_discipline(source, vocab)
                 if ldr.violation_found:
                     tool_hit = "smt:check-lock-discipline"
                     if ldr.witness:
                         tool_hit += ":witness"
-            except Exception:
-                pass
 
         if not tool_hit and is_c:
-            try:
+            with contextlib.suppress(Exception):
                 rlr = check_resource_leak(source, vocab)
                 if rlr.leak_found:
                     tool_hit = "smt:check-resource-leak"
                     if rlr.witness:
                         tool_hit += ":witness"
-            except Exception:
-                pass
 
         if not tool_hit and is_c:
-            try:
+            with contextlib.suppress(Exception):
                 npr = check_null_propagation(source, vocab)
                 if npr.null_deref_found:
                     tool_hit = "smt:check-null-propagation"
-            except Exception:
-                pass
 
         if not tool_hit and is_c_or_go:
-            try:
+            with contextlib.suppress(Exception):
                 inr = check_integer_narrowing(source)
                 if inr.narrowing_found:
                     tool_hit = "smt:check-integer-narrowing"
                     if inr.witness:
                         tool_hit += ":witness"
-            except Exception:
-                pass
 
         if not tool_hit and is_c_or_go:
-            try:
+            with contextlib.suppress(Exception):
                 err = check_early_release(source, vocab)
                 if err.early_release_found:
                     tool_hit = "smt:check-early-release"
-            except Exception:
-                pass
 
         if not tool_hit and is_c:
-            try:
+            with contextlib.suppress(Exception):
                 from .callback_lifetime import check_callback_lifetime_local
                 clr = check_callback_lifetime_local(source)
                 if clr.violation_found:
                     tool_hit = "smt:check-callback-lifetime"
-            except Exception:
-                pass
 
         # check-lock-domain: too noisy for hard-classify (FP on
         # aead_check_key).  Runs in inject-mode via _run_mechanical_detectors
         # instead — results go to the LLM as context, not as verdicts.
 
         if not tool_hit and is_c:
-            try:
+            with contextlib.suppress(Exception):
                 ttr = check_toctou(source)
                 if ttr.toctou_found:
                     tool_hit = "smt:check-toctou"
-            except Exception:
-                pass
 
         if tool_hit:
             gap["_smt_pre_evidence"] = tool_hit
@@ -11557,7 +11583,7 @@ def _pre_loop_smt_screen(
             continue
 
         if is_c and _extract_sg is not None and _check_pf is not None:
-            try:
+            with contextlib.suppress(Exception):
                 guards = _extract_sg(source, file_path)
                 if guards:
                     all_infeasible = True
@@ -11592,18 +11618,14 @@ def _pre_loop_smt_screen(
                             file_path, func_name,
                         )
                         continue
-            except Exception:
-                pass
 
         if is_c and not tool_hit:
-            try:
+            with contextlib.suppress(Exception):
                 from .condition_smt import check_race_protection
                 rpr = check_race_protection(source, vocab)
                 if rpr.protected:
                     gap["_race_protected"] = True
                     gap["_race_protection_detail"] = rpr.reasoning
-            except Exception:
-                pass
 
         kept.append(gap)
 
@@ -11619,7 +11641,7 @@ def _pre_loop_smt_screen(
 def _promote_smt_clean(
     result: OrchestratorResult,
     config: OrchestratorConfig,
-    checklist: Optional[Dict[str, Any]] = None,
+    checklist: dict[str, Any] | None = None,
 ) -> None:
     """Consolidated post-loop pass: run SMT checks on clean outcomes.
 
@@ -11631,22 +11653,20 @@ def _promote_smt_clean(
         from .condition_smt import (
             DomainVocabulary,
             check_auth_bypass,
-            check_lock_discipline,
-            check_resource_leak,
-            check_null_propagation,
-            check_integer_narrowing,
             check_early_release,
+            check_integer_narrowing,
+            check_lock_discipline,
             check_lock_domain,
+            check_null_propagation,
+            check_resource_leak,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
 
     dm = None
-    try:
+    with contextlib.suppress(Exception):
         from .journal import load_domain_model
         dm = load_domain_model(config.out_dir)
-    except Exception:
-        pass
     vocab = DomainVocabulary.from_domain_model(dm)
 
     for i, outcome in enumerate(result.outcomes):
@@ -11941,11 +11961,11 @@ _STRUCTURAL_PREFILTER_RULES = frozenset(
 def _resolve_gate_demoted(
     result: OrchestratorResult,
     config: OrchestratorConfig,
-    sarif_cache: Optional[SarifCache] = None,
-    checklist: Optional[Dict[str, Any]] = None,
+    sarif_cache: SarifCache | None = None,
+    checklist: dict[str, Any] | None = None,
     *,
-    domain_model: Optional[Dict[str, Any]] = None,
-    available_tools: Optional[Dict[str, bool]] = None,
+    domain_model: dict[str, Any] | None = None,
+    available_tools: dict[str, bool] | None = None,
     mechanical_findings: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     """Resolve gate-demoted suspicious outcomes.
@@ -12072,11 +12092,11 @@ def _resolve_gate_demoted(
 
 
 def _try_block_level_context(
-    gap: Dict[str, Any],
-    ctx: Dict[str, Any],
-    config: "OrchestratorConfig",
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
-) -> Optional[str]:
+    gap: dict[str, Any],
+    ctx: dict[str, Any],
+    config: OrchestratorConfig,
+    evidence_index: dict[str, EvidenceRecord] | None = None,
+) -> str | None:
     """Build block-level analysis context if the function qualifies.
 
     Returns formatted block context string, or None if the function
@@ -12144,7 +12164,7 @@ def _constraints_for_function(
     constraints: list,
     file_path: str,
     function_name: str,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """Find constraints relevant to a function being reviewed.
 
     Returns constraints where:
@@ -12196,12 +12216,12 @@ def _review_flow_traces(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
-    evidence_index: Optional[Dict[str, EvidenceRecord]] = None,
+    checklist: dict[str, Any],
+    evidence_index: dict[str, EvidenceRecord] | None = None,
     joern_server=None,
-    sarif_cache: Optional[SarifCache] = None,
+    sarif_cache: SarifCache | None = None,
     domain_model=None,
-    audit_log: Optional[list] = None,
+    audit_log: list | None = None,
     start_time: float = 0.0,
 ) -> OrchestratorResult:
     """Post-loop pass: review entire source→sink flow traces as a unit.
@@ -12288,7 +12308,7 @@ def _review_flow_traces(
 
         try:
             outcome = review_fn(flow_ctx, config)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("flow trace review failed: %s", exc)
             continue
 
@@ -12339,7 +12359,7 @@ def _persist_findings(
         (o for o in result.outcomes if o.status == "finding"),
         start=1,
     ):
-        finding: Dict[str, Any] = {
+        finding: dict[str, Any] = {
             "id": f"FIND-{seq:03d}",
             "file": outcome.file,
             "function": outcome.function,
@@ -12365,7 +12385,7 @@ def _persist_findings(
 
 def _persist_project_learnings(
     out_dir: Path,
-    session_observations: List[Dict[str, str]],
+    session_observations: list[dict[str, str]],
     result: OrchestratorResult,
 ) -> None:
     """Save cross-run learnings from this audit to project context.
@@ -12499,10 +12519,10 @@ def _record_uncorrelated_hits(outcome: ReviewOutcome, hits) -> None:
 def _has_mechanical_corroboration(
     outcome: ReviewOutcome,
     config: OrchestratorConfig,
-    sarif_cache: Optional["SarifCache"],
-    checklist: Optional[Dict[str, Any]],
+    sarif_cache: SarifCache | None,
+    checklist: dict[str, Any] | None,
     *,
-    domain_model: Optional[Dict[str, Any]] = None,
+    domain_model: dict[str, Any] | None = None,
     mechanical_findings: dict[str, list[dict[str, Any]]] | None = None,
 ) -> bool:
     """Check if any mechanical tool independently flags this function.
@@ -12578,8 +12598,8 @@ def _has_mechanical_corroboration(
 def _smt_demotion_reason(
     outcome: ReviewOutcome,
     config: OrchestratorConfig,
-    checklist: Dict[str, Any],
-) -> Optional[str]:
+    checklist: dict[str, Any],
+) -> str | None:
     """Return a bracket-prefixed demotion reason if SMT proves overflow infeasible."""
     review = outcome.review_result or {}
     cwe = review.get("cwe_class") or review.get("cwe") or ""
@@ -12648,10 +12668,10 @@ _MAX_PROPAGATION_ROUNDS = 5
 def _extract_and_propagate(
     outcome: ReviewOutcome,
     constraints: list,
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     entry_points: set,
     prop_config: PropagationConfig,
-    tier_counters: Optional[Dict[str, "TierCounters"]] = None,
+    tier_counters: dict[str, TierCounters] | None = None,
 ) -> list:
     """Extract constraints from a review and propagate iteratively.
 
@@ -12714,7 +12734,7 @@ def _extract_and_propagate(
     return constraints
 
 
-def _try_understand_bridge(config: OrchestratorConfig) -> Optional[Dict[str, Any]]:
+def _try_understand_bridge(config: OrchestratorConfig) -> dict[str, Any] | None:
     """Auto-import /understand context-map if one exists for this target."""
     try:
         from core.orchestration.understand_bridge import (
@@ -12748,18 +12768,18 @@ def _re_review_joern_enriched(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    fuzz_coverage: Optional[Dict[str, Any]],
-    evidence_index: Dict[str, EvidenceRecord],
-    sarif_cache: Optional[SarifCache],
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    fuzz_coverage: dict[str, Any] | None,
+    evidence_index: dict[str, EvidenceRecord],
+    sarif_cache: SarifCache | None,
     entry_points: set,
-    gaps_before_joern: List[Dict[str, Any]],
+    gaps_before_joern: list[dict[str, Any]],
     start_time: float,
-    on_progress: Optional[Callable],
-    audit_log: Optional[List[Dict[str, Any]]] = None,
-    session_observations: Optional[List[Dict[str, str]]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
+    on_progress: Callable | None,
+    audit_log: list[dict[str, Any]] | None = None,
+    session_observations: list[dict[str, str]] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
     joern_server=None,
     max_workers: int = 1,
 ) -> OrchestratorResult:
@@ -12840,7 +12860,7 @@ def _re_review_joern_enriched(
         try:
             outcome = review_fn(ctx, config)
             return (idx, outcome, None)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
     if effective_workers <= 1:
@@ -12958,15 +12978,15 @@ def _callee_contract_requeue(
     config: OrchestratorConfig,
     review_fn: Callable,
     *,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    fuzz_coverage: Optional[Dict[str, Any]],
-    evidence_index: Dict[str, Any],
-    discovered_evidence: Optional[Dict[str, Any]] = None,
-    session_observations: Optional[List[Dict[str, str]]] = None,
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    fuzz_coverage: dict[str, Any] | None,
+    evidence_index: dict[str, Any],
+    discovered_evidence: dict[str, Any] | None = None,
+    session_observations: list[dict[str, str]] | None = None,
     joern_server=None,
     start_time: float = 0.0,
-    on_progress: Optional[Callable] = None,
+    on_progress: Callable | None = None,
     max_workers: int = 1,
 ) -> int:
     """Re-review callers whose callee assumptions were contradicted.
@@ -12978,12 +12998,12 @@ def _callee_contract_requeue(
 
     Returns the count of callers re-reviewed.
     """
-    callee_outcomes: Dict[str, ReviewOutcome] = {}
+    callee_outcomes: dict[str, ReviewOutcome] = {}
     for o in result.outcomes:
         callee_outcomes[o.function] = o
         callee_outcomes[f"{o.file}:{o.function}"] = o
 
-    candidates: List[tuple] = []
+    candidates: list[tuple] = []
     for o in result.outcomes:
         if o.status != "clean":
             continue
@@ -13066,7 +13086,7 @@ def _callee_contract_requeue(
         try:
             outcome = review_fn(ctx, config)
             return (idx, outcome, None)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
     if effective_workers <= 1:
@@ -13122,17 +13142,17 @@ def _re_review_study_enriched(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: Dict[str, Any],
-    context_map: Optional[Dict[str, Any]],
-    evidence_index: Dict[str, EvidenceRecord],
-    sarif_cache: Optional[SarifCache],
+    checklist: dict[str, Any],
+    context_map: dict[str, Any] | None,
+    evidence_index: dict[str, EvidenceRecord],
+    sarif_cache: SarifCache | None,
     entry_points: set,
     reading_list_functions: set,
     start_time: float,
-    on_progress: Optional[Callable],
-    audit_log: Optional[List[Dict[str, Any]]] = None,
-    session_observations: Optional[List[Dict[str, str]]] = None,
-    discovered_evidence: Optional[Dict[str, Any]] = None,
+    on_progress: Callable | None,
+    audit_log: list[dict[str, Any]] | None = None,
+    session_observations: list[dict[str, str]] | None = None,
+    discovered_evidence: dict[str, Any] | None = None,
     joern_server=None,
     max_workers: int = 1,
     throttle: Any = None,
@@ -13223,7 +13243,7 @@ def _re_review_study_enriched(
             else:
                 outcome = review_fn(ctx, config)
             return (idx, outcome, None)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return (idx, None, exc)
 
     if effective_workers <= 1:
@@ -13385,19 +13405,19 @@ def _check_layer_disagreement(outcome, ctx, gap):
     )
 
 
-def _fuse_all_evidence(ctx: Dict[str, Any]) -> None:
+def _fuse_all_evidence(ctx: dict[str, Any]) -> None:
     """Fuse mechanical, negative-space, typestate, postcondition, and spec evidence.
 
     Converts per-capability domain objects into GradedEvidence, then runs
     cross-source fusion to corroborate signals before the LLM review.
     Populates ctx["fused_evidence"] with the rendered text.
     """
-    from .evidence_grade import Confidence, EvidenceSource, GradedEvidence
     from .evidence_fusion import format_fused_evidence, fuse_evidence
+    from .evidence_grade import Confidence, EvidenceSource, GradedEvidence
 
     mechanical = ctx.pop("_graded_mechanical", [])
 
-    spec_ev: List[GradedEvidence] = []
+    spec_ev: list[GradedEvidence] = []
     spec = ctx.get("inferred_spec")
     if spec:
         for pc in getattr(spec, "preconditions", []) or []:
@@ -13417,7 +13437,7 @@ def _fuse_all_evidence(ctx: Dict[str, Any]) -> None:
                 )
             )
 
-    ns_ev: List[GradedEvidence] = []
+    ns_ev: list[GradedEvidence] = []
     for finding in ctx.get("negative_space", []):
         desc = getattr(finding, "title", "") or getattr(finding, "expected", "")
         ns_ev.append(
@@ -13429,7 +13449,7 @@ def _fuse_all_evidence(ctx: Dict[str, Any]) -> None:
             )
         )
 
-    contract_ev: List[GradedEvidence] = []
+    contract_ev: list[GradedEvidence] = []
     for viol in ctx.get("postcondition_violations", []):
         desc = getattr(viol, "description", "") or str(viol)
         contract_ev.append(
@@ -13440,7 +13460,7 @@ def _fuse_all_evidence(ctx: Dict[str, Any]) -> None:
             )
         )
 
-    ts_ev: List[GradedEvidence] = []
+    ts_ev: list[GradedEvidence] = []
     for viol in ctx.get("typestate_violations", []):
         desc = getattr(viol, "description", "") or str(viol)
         ts_ev.append(
@@ -13484,7 +13504,7 @@ def _merge_validate_evidence(bridge_result, evidence_index):
 def _run_dark_verification(
     result: OrchestratorResult,
     config: OrchestratorConfig,
-    llm_client: Optional[Callable] = None,
+    llm_client: Callable | None = None,
 ) -> None:
     """Run dark-verification pass on eligible outcomes.
 
@@ -13509,7 +13529,7 @@ def _run_dark_verification(
     try:
         from .cwe_dispatch import dark_verify_applicable
     except ImportError:
-        dark_verify_applicable = lambda _cwe: False  # noqa: E731
+        dark_verify_applicable = lambda _cwe: False
 
     def _eligible(o: ReviewOutcome) -> bool:
         if o.status == "dark":
@@ -13525,7 +13545,7 @@ def _run_dark_verification(
     if not dark_outcomes:
         return
 
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
 
     for outcome in dark_outcomes:
         lang = language_for_file(outcome.file)
@@ -13547,7 +13567,9 @@ def _run_dark_verification(
 
         try:
             llm_response = llm_client(prompt, system)
-        except Exception:
+        # Silent skip is intentional: an LLM failure just drops this
+        # outcome from dark verification.
+        except Exception:  # noqa: BLE001, S112
             continue
 
         spec = parse_witness_response(

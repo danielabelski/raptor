@@ -391,7 +391,10 @@ def validate_structured_response(
             if nullable or field_name not in required:
                 data[field_name] = None
                 fields[field_name] = FieldResult(status="missing")
-                # Optional missing fields don't penalise quality
+                # A missing optional field earns half its weight —
+                # partial credit, not a free pass: a response omitting
+                # every optional field scores 0.5, exactly at
+                # _QUALITY_RETRY_THRESHOLD.
                 weighted_score += weight * 0.5
             else:
                 data[field_name] = None

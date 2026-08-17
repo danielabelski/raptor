@@ -585,7 +585,7 @@ class LLMProvider(ABC):
 
     def _structured_fallback(self, prompt: str, schema: dict[str, Any],
                              pydantic_model, system_prompt: str | None = None
-                             ) -> tuple[dict[str, Any], str]:
+                             ) -> StructuredResponse:
         """
         Universal fallback: ask for JSON in the prompt, validate
         with Pydantic. Works with any LLM that can produce JSON.
@@ -944,7 +944,8 @@ def _normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
         if " or null" in desc_lower:
             prop = {"type": [field_type, "null"]}
         elif desc_lower.startswith("null or "):
-            # "null or string" — extract the actual type from the second word
+            # "null or string" — the type is the token after "null or",
+            # i.e. parts[2] (parts[1] is always the literal "or")
             actual = parts[2].strip() if len(parts) > 2 else "string"
             actual = type_aliases.get(actual, actual)
             prop = {"type": [actual, "null"]}
@@ -1378,7 +1379,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     def generate_structured(self, prompt: str, schema: dict[str, Any],
                            system_prompt: str | None = None,
-                           **kwargs) -> tuple[dict[str, Any], str]:
+                           **kwargs) -> StructuredResponse:
         """Generate structured output using Instructor (or JSON fallback)."""
         pydantic_model = _dict_schema_to_pydantic(schema)
         # Honour caller-supplied temperature so DispatchTask's
@@ -2167,7 +2168,7 @@ class AnthropicProvider(LLMProvider):
 
     def generate_structured(self, prompt: str, schema: dict[str, Any],
                            system_prompt: str | None = None,
-                           **kwargs) -> tuple[dict[str, Any], str]:
+                           **kwargs) -> StructuredResponse:
         """Generate structured output using Instructor (or JSON fallback)."""
         pydantic_model = _dict_schema_to_pydantic(schema)
         # See OpenAI provider — caller-supplied temperature must
@@ -3032,7 +3033,7 @@ class GeminiProvider(LLMProvider):
 
     def generate_structured(self, prompt: str, schema: dict[str, Any],
                            system_prompt: str | None = None,
-                           **kwargs) -> tuple[dict[str, Any], str]:
+                           **kwargs) -> StructuredResponse:
         """Generate structured output using Gemini's native JSON mode."""
         # Normalize simple schema to JSON Schema format so both pydantic and
         # Gemini schema conversion see the same structure
@@ -3459,7 +3460,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         schema: dict[str, Any],
         system_prompt: str | None = None,
         **kwargs,
-    ) -> tuple[dict[str, Any], str]:
+    ) -> StructuredResponse:
         """Dispatch with ``--json-schema`` for structured output via
         stream-json.
 

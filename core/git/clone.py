@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 
 from core.config import RaptorConfig
 from core.git.validate import validate_repo_url
+from core.logging import log_security_event as _log_security_event
 from core.security.redaction import redact_url_secrets_only
 
 # Git allows SHA abbreviations of 4+ chars; full SHA-1 is 40 hex.
@@ -443,6 +444,18 @@ def clone_repository(
         RuntimeError: ``git clone`` exited non-zero.
     """
     if not validate_repo_url(url):
+        # Security-event stream (restored from the pre-restructure
+        # core/git.py emitter, commit c1af3314): record the rejection
+        # in the audit trail. Observability only — the ValueError
+        # below is the behaviour; the emitter never raises. URL is
+        # redacted first: rejected URLs are exactly the ones that may
+        # carry userinfo credentials.
+        _log_security_event(
+            "invalid_repo_url",
+            "Rejected potentially unsafe repository URL: "
+            f"{redact_url_secrets_only(url)}",
+            operation="clone_repository",
+        )
         raise ValueError(f"Invalid or untrusted repository URL: {url}")
     _validate_writable_path(target, role="target")
 
@@ -527,6 +540,14 @@ def fetch_commit(
             ``git fetch`` exited non-zero.
     """
     if not validate_repo_url(url):
+        # Same restored emitter as clone_repository — see the comment
+        # there. Redact before logging; never raises.
+        _log_security_event(
+            "invalid_repo_url",
+            "Rejected potentially unsafe repository URL: "
+            f"{redact_url_secrets_only(url)}",
+            operation="fetch_commit",
+        )
         raise ValueError(f"Invalid or untrusted repository URL: {url}")
     _validate_writable_path(repo_dir, role="repo_dir")
     if not _SHA_RE.fullmatch(sha):

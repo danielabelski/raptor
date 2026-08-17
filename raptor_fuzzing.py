@@ -24,8 +24,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.hash import sha256_file
 from core.json import save_json
-from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
-
 from core.logging import get_logger
 from core.run.safe_io import safe_run_mkdir
 from core.sage.hooks import (
@@ -34,13 +32,19 @@ from core.sage.hooks import (
     recall_context_for_fuzzing_strategy,
     store_fuzzing_strategy_outcome,
 )
-from packages.fuzzing import AFLRunner, CrashCollector
-from packages.binary_analysis import CrashAnalyser
-from packages.llm_analysis.crash_agent import CrashAnalysisAgent
+from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
 from packages.autonomous import (
-    FuzzingPlanner, FuzzingState, FuzzingMemory,
-    MultiTurnAnalyser, ExploitValidator, GoalPlanner, CorpusGenerator
+    CorpusGenerator,
+    ExploitValidator,
+    FuzzingMemory,
+    FuzzingPlanner,
+    FuzzingState,
+    GoalPlanner,
+    MultiTurnAnalyser,
 )
+from packages.binary_analysis import CrashAnalyser
+from packages.fuzzing import AFLRunner, CrashCollector
+from packages.llm_analysis.crash_agent import CrashAnalysisAgent
 
 logger = get_logger()
 
@@ -247,7 +251,7 @@ Examples:
         seed_out = Path(args.export_seed_corpus)
         try:
             manifest = prepare_builtin_seed_corpus(seed_out, profile=args.seed_profile)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             logger.error("Failed to export built-in seed corpus: %s", e)
             sys.exit(1)
 
@@ -276,7 +280,7 @@ Examples:
                     include_lockfiles=args.seed_include_lockfiles,
                 )
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             logger.error("Failed to prepare seed corpus: %s", e)
             sys.exit(1)
 
@@ -342,7 +346,7 @@ Examples:
                     "Auto-selected orchestrator path: AFL++ unavailable, "
                     "libFuzzer/radare2 present."
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — probe is advisory
             logger.debug("Capability probe failed, falling back to legacy: %s", e)
 
     if use_orchestrator:
@@ -352,7 +356,7 @@ Examples:
         llm = None
         try:
             llm = get_client()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — no-LLM mode is supported
             # Fall through to llm=None (orchestrator handles
             # no-LLM mode) but surface why so operators can see
             # whether a config issue is silently downgrading
@@ -388,8 +392,8 @@ Examples:
         except KeyboardInterrupt:
             print("\nCampaign interrupted by user.")
             sys.exit(130)
-        except Exception as e:
-            logger.error("Campaign failed: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Campaign failed")
             sys.exit(1)
 
         print()
@@ -448,7 +452,7 @@ Examples:
             binary_fingerprint=binary_hash,
             strategy_id="default",
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — SAGE recall is best-effort
         logger.debug("SAGE fuzzing strategy recall skipped: %s", e)
 
     sage_afl_flags: list = []
@@ -600,9 +604,8 @@ Examples:
             try:
                 from core.json import save_json as _save_json
                 _save_json(out_dir / "fuzzing_report.json", zero_report)
-            except Exception:
-                # Best effort — don't mask the operator's
-                # already-printed advice with a save error.
+            except Exception:  # noqa: BLE001, S110 — best effort: don't mask the
+                # operator's already-printed advice with a save error.
                 pass
             sys.exit(0)
 
@@ -611,7 +614,7 @@ Examples:
         print(f"\n✗ Sandbox setup failed: {e}", file=sys.stderr)
         print("  Re-run without sandboxing or fix the sandbox configuration.", file=sys.stderr)
         sys.exit(SANDBOX_ENGAGE_EXIT_CODE)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
         logger.error("Fuzzing failed: %s", e)
         print(f"\n✗ Fuzzing failed: {e}", file=sys.stderr)
         sys.exit(1)
@@ -854,7 +857,7 @@ Examples:
         print(f"  - Exploitable: {exploitable}")
         print(f"  - Exploits generated: {exploits_generated}")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
         logger.error("Crash analysis failed: %s", e)
         print(f"\n✗ Analysis failed: {e}", file=sys.stderr)
         import traceback
@@ -889,7 +892,7 @@ Examples:
     fuzz_summary = render_witness_summary(out_dir / "witnesses")
     llm_summary = render_witness_summary(out_dir / "analysis" / "witnesses")
     if fuzz_summary or llm_summary:
-        print("")
+        print()
         if fuzz_summary:
             print(f" Fuzz witnesses ({out_dir / 'witnesses'}):")
             print(fuzz_summary)
@@ -908,7 +911,7 @@ Examples:
     from packages.zkpox import render_run_eligibility
     elig = render_run_eligibility(out_dir)
     if elig:
-        print("")
+        print()
         print(elig)
 
     # Save summary report

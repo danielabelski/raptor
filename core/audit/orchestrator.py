@@ -3182,6 +3182,19 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     from core.analysis.peer_groups import resolve_peer_groups
 
+    # Study domain model, when a prior study loop produced one — the
+    # resolver's L3 (domain-concept) layer previously had no producer
+    # at this call site, so it never ran.
+    prep_domain_model = None
+    try:
+        from .journal import load_domain_model
+
+        prep_domain_model = load_domain_model(config.out_dir)
+    except Exception:
+        logger.debug(
+            "domain model load for peer groups failed", exc_info=True,
+        )
+
     gap_func_dicts = [
         {
             "name": g.get("name", ""),
@@ -3195,6 +3208,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     peer_groups = resolve_peer_groups(
         gap_func_dicts,
         joern_server=joern_server,
+        domain_model=prep_domain_model,
         checklist=checklist,
     )
 

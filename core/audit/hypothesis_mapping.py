@@ -25,6 +25,54 @@ _HYPOTHESIS_SEMGREP_PATTERNS: dict[str, str] = {
 }
 
 
+# Target extension → semgrep language key for the dynamic
+# per-hypothesis rules. Every pattern in
+# ``_HYPOTHESIS_SEMGREP_PATTERNS`` is a ``pattern-regex``, so the
+# language key's only job is FILE SELECTION — a wrong key means the
+# rule never even scans its own target file. Pre-fix everything
+# unmapped defaulted to ``c``: for PHP/Ruby/C#/Kotlin/Swift/Lua/Scala
+# targets the per-hypothesis rule could never match, silently
+# disabling /audit's only dynamic verification channel there.
+# Unknown extensions fall back to ``generic`` (regex over any file)
+# rather than a language guess.
+_SEMGREP_LANG_BY_EXT: dict[str, str] = {
+    ".py": "python",
+    ".pyi": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".php": "php",
+    ".rb": "ruby",
+    ".cs": "csharp",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".swift": "swift",
+    ".scala": "scala",
+    ".lua": "lua",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".hxx": "cpp",
+}
+
+
+def semgrep_language_for(file_path: str) -> str:
+    """Semgrep language key for a dynamic pattern-regex rule targeting
+    ``file_path``. ``generic`` for unmapped extensions."""
+    ext = Path(file_path).suffix.lower()
+    return _SEMGREP_LANG_BY_EXT.get(ext, "generic")
+
+
 def hypothesis_to_semgrep_rule(hypothesis: str, file_path: str) -> str | None:
     """Generate a Semgrep YAML rule from a hypothesis string.
 
@@ -62,17 +110,7 @@ def hypothesis_to_semgrep_rule_keyed(
     if not pattern:
         return None
 
-    lang = "c"
-    if file_path.endswith(".py"):
-        lang = "python"
-    elif file_path.endswith((".js", ".ts")):
-        lang = "javascript"
-    elif file_path.endswith(".java"):
-        lang = "java"
-    elif file_path.endswith(".go"):
-        lang = "go"
-    elif file_path.endswith(".rs"):
-        lang = "rust"
+    lang = semgrep_language_for(file_path)
 
     rule_yaml = (
         f"rules:\n"

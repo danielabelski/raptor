@@ -586,16 +586,33 @@ _negative_control_cache: dict[tuple, bool] = {}
 def negative_control_fixture(keyword: str, file_path: str) -> Path | None:
     """Return the negative-control fixture for a rule keyword, or None.
 
-    The fixture language follows the audited file: .py targets get the
-    .py fixture, everything else the .c one.  Missing fixtures (e.g. a
-    Java target) return None — the control check is then skipped.
+    The fixture language follows the audited file's extension so the
+    dynamic rule (whose ``languages:`` key now matches the target — see
+    ``semgrep_language_for``) actually scans its control fixture.
+    Rules emitted with the ``generic`` language scan any file, so they
+    fall back to whichever fixture exists (.c, then .py). Targets whose
+    language has no fixture return None — the control check is then
+    skipped rather than silently run against a file the rule's language
+    key would never select.
     """
     stem = _KEYWORD_FIXTURE_STEMS.get(keyword)
     if not stem:
         return None
-    suffix = ".py" if file_path.endswith(".py") else ".c"
-    fixture = _NEGATIVE_CONTROLS_DIR / f"{stem}{suffix}"
-    return fixture if fixture.is_file() else None
+    from .hypothesis_mapping import semgrep_language_for
+
+    target_suffix = Path(file_path).suffix.lower()
+    candidates = [target_suffix] if target_suffix else []
+    lang = semgrep_language_for(file_path)
+    if lang == "generic":
+        # generic rules scan any file handed to them
+        candidates += [".c", ".py"]
+    elif lang in ("c", "cpp"):
+        candidates.append(".c")
+    for suffix in candidates:
+        fixture = _NEGATIVE_CONTROLS_DIR / f"{stem}{suffix}"
+        if fixture.is_file():
+            return fixture
+    return None
 
 
 def _rule_matches_negative_control(

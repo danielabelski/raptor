@@ -156,5 +156,19 @@ prompt injection is bounded by sandbox + output-handling per I2.
 
 Tracked separately, not blocking I1/I2/I3:
 - Per-call-site `restrict_reads=True` migration for ad-hoc `sandbox_run` consumers (per-toolchain audits required for build-tool callers).
-- Per-consumer output-handling hardening to satisfy I2-(b).
-- /validate Bash discipline (typed validation-helper enum instead of generic Bash).
+- /validate Bash discipline for the lifecycle/inventory stages (typed
+  validation-helper enum instead of generic Bash); the build/PoC stages
+  inherently need Bash and are bounded by the sandbox.
+- Promotion-alarm blocking mode: `promotion-alarms.jsonl` is currently
+  alarm-only by design; flip to demote-on-alarm only after an
+  observation period of provably-empty legitimate runs.
+
+Closed by the 2026-08 hardening batches (kept here so the list reflects
+reality):
+- Per-consumer output-handling hardening for I2-(b) — superseded by the
+  provenance chokepoint: LLM-derived artifacts carry a
+  `provenance.untrusted` stamp enforced at `raptor-validate-schema`
+  (presence, shape, free-text sanitiser-idempotence), and report
+  writers are lint-enforced sanitised (`report_writer_audit`). The
+  semantic residual (poisoned content in valid structure) remains and
+  is documented in docs/security.md.

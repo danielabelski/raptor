@@ -112,3 +112,20 @@ def _reset_operator_primary_override():
         yield
     finally:
         cfg._operator_primary_override = saved
+
+
+@pytest.fixture(autouse=True)
+def _scrub_dispatcher_route(monkeypatch):
+    """Strip an ambient ``RAPTOR_LLM_SOCKET`` for every test in this
+    directory.
+
+    The credential-isolation dispatcher route wins over direct SDK
+    construction inside ``create_provider`` and the provider
+    constructors, so a socket path leaked into the environment (e.g.
+    pytest run from a shell inside a RAPTOR-launched session) flips
+    every direct-provider assertion (anthropic/openai routes in
+    test_llm_callbacks_providers, test_turn_track_usage_and_factory)
+    to the dispatcher path. Tests that exercise the dispatcher route
+    on purpose set the var with ``monkeypatch.setenv`` inside the test
+    body, which runs after this autouse scrub and wins."""
+    monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)

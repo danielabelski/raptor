@@ -739,6 +739,11 @@ class AutonomousSecurityAgentV2:
         self.execute_exploits = execute_exploits
         self.execute_timeout = execute_timeout
         self.execute_sanitizers = execute_sanitizers
+        # P23 guard-dominance chokepoint: lazy warm-CPG Joern server.
+        # ``_probed`` distinguishes "never tried" from "tried, cold
+        # cache" so a run without a CPG pays the probe exactly once.
+        self._gd_server = None
+        self._gd_server_probed = False
 
         # Detect LLM availability and choose provider
         availability = detect_llm_availability()
@@ -1794,6 +1799,50 @@ class AutonomousSecurityAgentV2:
                 f"(used_llm={verdict.used_llm})"
             )
 
+    def _guard_dominance_refute(self, finding: dict) -> dict | None:
+        """P23 pre-LLM refuter for missing-check-shaped findings.
+
+        Binds (identifier, sink) from the finding's claim text; when a
+        warm CPG exists, asks Joern whether a condition on the
+        identifier dominates every matched sink call site. Returns the
+        dominator receipt when the claim is refuted, else ``None``
+        (no binding / cold CPG / not refuted). The Joern server is
+        started lazily on the FIRST finding that binds and reused for
+        the rest of the run — zero cost when nothing binds or no
+        cached CPG exists.
+        """
+        from core.orchestration.guard_dominance import (
+            missing_check_binding,
+            refute_finding,
+        )
+        if missing_check_binding(finding) is None:
+            return None
+        server = self._acquire_guard_dominance_server()
+        if server is None:
+            return None
+        return refute_finding(finding, Path(self.repo_path), server)
+
+    def _acquire_guard_dominance_server(self):
+        """Lazy warm-CPG Joern server; probed at most once per run."""
+        if self._gd_server_probed:
+            return self._gd_server
+        self._gd_server_probed = True
+        from core.orchestration.guard_dominance import acquire_warm_server
+        out_dir = Path(self.out_dir)
+        # /agentic analysis child writes to <run>/autonomous — the
+        # cached CPG lives under the run dir or the project dir.
+        self._gd_server = acquire_warm_server(
+            Path(self.repo_path), out_dir.parent, out_dir.parent.parent,
+        )
+        return self._gd_server
+
+    def _stop_guard_dominance_server(self) -> None:
+        if getattr(self, "_gd_server", None) is not None:
+            with contextlib.suppress(Exception):
+                self._gd_server.stop()
+        self._gd_server = None
+        self._gd_server_probed = False
+
     _SYNTHESIZED_RULE_PREFIX = "synthesized:"
 
     def _record_graduated_rule_feedback(self, vuln) -> None:
@@ -2454,6 +2503,8 @@ class AutonomousSecurityAgentV2:
         # can see the savings split across the two short-circuit paths.
         reachability_skipped_llm_calls = 0
         sage_fp_skipped_llm_calls = 0
+        # Guard-dominance chokepoint (P23) LLM-call skips.
+        guard_dominance_skipped_llm_calls = 0
         sage_fp_stored = 0
         idx = 0  # prevent UnboundLocalError when empty
 
@@ -2744,6 +2795,60 @@ class AutonomousSecurityAgentV2:
                         journal_entries_emitted += 1
                     continue  # skip LLM analyze + exploit + patch
 
+                # 0d. Guard-dominance chokepoint (P23) — for
+                # missing-check-shaped findings when a warm CPG
+                # exists: a condition on the claimed identifier
+                # dominating every matched sink call site refutes the
+                # claim mechanically. Skips the LLM call with the
+                # dominator receipt in the analysis record (explicit
+                # disqualifier, never a silent drop). Zero cost when
+                # no cached CPG exists — the server is only started
+                # lazily for the first finding that binds.
+                gd_skipped_this = False
+                if not finding.get("manual_override"):
+                    try:
+                        gd_evidence = self._guard_dominance_refute(finding)
+                        if gd_evidence is not None:
+                            vuln.analysis = {
+                                "is_true_positive": False,
+                                "is_exploitable": False,
+                                "reasoning": (
+                                    "Guard-dominance refutation: "
+                                    + gd_evidence.get("reason", "")
+                                    + " (CFG dominance via Joern — see "
+                                    "guard_dominance for the dominator "
+                                    "sites). To override, set "
+                                    "``manual_override: true`` on the "
+                                    "finding and re-run."
+                                ),
+                                "guard_dominance_refutation": True,
+                                "guard_dominance": gd_evidence,
+                            }
+                            gd_skipped_this = True
+                            with contextlib.suppress(Exception):
+                                from core.analysis.reach_chokepoint import (
+                                    record_suppression,
+                                )
+                                record_suppression(
+                                    self.out_dir,
+                                    finding=finding,
+                                    verdict="guard_dominance_refuted",
+                                    reason=gd_evidence.get("reason", ""),
+                                )
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(
+                            "guard-dominance pre-flight failed on %s: %s",
+                            finding.get("finding_id") or finding.get("id"),
+                            e,
+                        )
+
+                if gd_skipped_this:
+                    analyzed += 1
+                    guard_dominance_skipped_llm_calls += 1
+                    if emit_journal and self._emit_journal_entry(vuln, checklist):
+                        journal_entries_emitted += 1
+                    continue  # skip LLM analyze + exploit + patch
+
                 # 1. Autonomous analysis (LLM-powered, or prep-only)
                 if self.analyze_vulnerability(vuln):
                     analyzed += 1
@@ -2868,6 +2973,10 @@ class AutonomousSecurityAgentV2:
                            patches_generated,
                            dataflow_validated)
 
+        # Guard-dominance server (if the chokepoint lazily started one)
+        # is per-process; release it as soon as the loop is done.
+        self._stop_guard_dominance_server()
+
         execution_time = time.time() - start_time
 
         # Get LLM stats from client (aggregates all provider stats)
@@ -2897,6 +3006,9 @@ class AutonomousSecurityAgentV2:
             "sage_fp_suppression": {
                 "skipped_llm_calls": sage_fp_skipped_llm_calls,
                 "verdicts_stored": sage_fp_stored,
+            },
+            "guard_dominance": {
+                "skipped_llm_calls": guard_dominance_skipped_llm_calls,
             },
             "execution_time": execution_time,
             "llm_stats": llm_stats,
@@ -2962,6 +3074,12 @@ class AutonomousSecurityAgentV2:
                     "%d verdict(s) stored",
                     sage_fp_skipped_llm_calls,
                     sage_fp_stored,
+                )
+            if guard_dominance_skipped_llm_calls > 0:
+                logger.info(
+                    "✓ Guard-dominance refutation: "
+                    "%d LLM call(s) skipped (dominating check found)",
+                    guard_dominance_skipped_llm_calls,
                 )
             logger.info("")
             if dataflow_validated > 0:

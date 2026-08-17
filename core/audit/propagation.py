@@ -108,6 +108,10 @@ class PropagationConfig:
     binary_verdicts: dict[str, str] | None = None
     inventory: dict[str, Any] | None = None
     evidence_index: dict[str, Any] | None = None
+    # Live Joern server (warm CPG) for the dominance resolver tier
+    # (P23). None = tier disabled; the orchestrator threads its
+    # already-running server in, this module never starts one.
+    joern_server: Any | None = None
 
 
 def score_caller(
@@ -732,6 +736,96 @@ def _try_joern_resolve(
     return None
 
 
+# Callers probed per dominance check: each is one Joern round-trip.
+_DOMINANCE_MAX_CALLERS = 3
+
+
+def _try_joern_dominance_resolve(
+    constraint: Constraint,
+    config: PropagationConfig,
+    checklist: dict[str, Any],
+) -> PropagationResult | None:
+    """Tier 3b (P23): verify a caller-contract constraint via CFG
+    dominance when the CPG is warm.
+
+    The flow tier (:func:`_try_joern_resolve`) confirms via flow
+    *existence* — a parameter that flows in from a caller. This tier
+    checks the claimed caller-side GUARD instead: in each caller, does
+    a condition on ``constraint.target`` dominate the call to
+    ``constraint.function``?
+
+    * every probed caller guards the call → ``refuted`` (contract
+      satisfied — same resolution the sanitizer branch of the taint
+      tier uses);
+    * any probed caller has an unguarded call site mentioning the
+      identifier → ``confirmed`` (violation);
+    * anything else (cold server, no callers, unbindable identifiers,
+      inconclusive queries) → ``None``, falling through to the next
+      resolver.
+    """
+    server = getattr(config, "joern_server", None)
+    if server is None or config.target_path is None:
+        return None
+    if constraint.kind not in ("parameter", "precondition"):
+        return None
+    if constraint.direction not in ("callers", "both"):
+        return None
+
+    from ._util import is_valid_identifier
+    ident = constraint.target or ""
+    sink = constraint.function or ""
+    if not is_valid_identifier(ident) or not is_valid_identifier(sink):
+        return None
+
+    line = find_function_line(checklist, constraint.file, constraint.function)
+    callers = get_callers(
+        constraint.file, constraint.function, line, config.inventory,
+    ) or []
+    if not callers:
+        return None
+
+    from .joern_verify import run_guard_dominance_check
+
+    outcomes: list[str] = []
+    for caller_file, caller_fn, _ln in callers[:_DOMINANCE_MAX_CALLERS]:
+        try:
+            res = run_guard_dominance_check(
+                target_path=Path(config.target_path),
+                file_path=caller_file,
+                function_name=caller_fn,
+                identifier=ident,
+                sink_call=sink,
+                server=server,
+            )
+        except Exception:
+            logger.debug(
+                "dominance resolve failed for %s in %s:%s",
+                constraint.identity, caller_file, caller_fn,
+                exc_info=True,
+            )
+            return None
+        outcomes.append(res.outcome)
+
+    if "confirmed" in outcomes:
+        return PropagationResult(
+            constraint=constraint,
+            resolved=True,
+            resolution="confirmed",
+            resolver_used="joern_dominance",
+        )
+    if outcomes and all(o == "refuted" for o in outcomes):
+        # A dominating check on the constrained identifier exists in
+        # EVERY probed caller — the caller contract is mechanically
+        # satisfied.
+        return PropagationResult(
+            constraint=constraint,
+            resolved=True,
+            resolution="refuted",
+            resolver_used="joern_dominance",
+        )
+    return None
+
+
 def _tick_tier(
     tier_counters: dict[str, Any] | None,
     tier: str,
@@ -806,6 +900,13 @@ def propagate_one_hop(
     if joern_result:
         _tick_tier(tier_counters, "joern", joern_result)
         return joern_result
+
+    dominance_result = _try_joern_dominance_resolve(
+        constraint, config, checklist,
+    )
+    if dominance_result:
+        _tick_tier(tier_counters, "joern_dominance", dominance_result)
+        return dominance_result
 
     codeql_result = try_codeql_resolve(constraint, config)
     if codeql_result:

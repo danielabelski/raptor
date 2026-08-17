@@ -1045,10 +1045,72 @@ def prepare_D(workdir, target=None):
                 "synthesis": "",
             }
 
+    # --- Guard-dominance refuter (P23, pre-LLM, warm CPG only) ---
+    _run_guard_dominance(workdir, target, data)
+
     _save_findings(workdir, data)
     flagged = sum(1 for f in data["findings"] if f.get("test_code_flag"))
     print(f"Test filter: {flagged} flagged, evidence cards assembled")
     _print_schema_hint("D")
+
+
+def _run_guard_dominance(workdir, target, data):
+    """P23: mechanically test 'missing check' findings before Stage D.
+
+    A condition on the claimed identifier dominating every matched
+    sink call site (CFG dominance via Joern) refutes the claim — the
+    finding gets a guard_dominance receipt and its attack paths are
+    soft-demoted. No dominating guard is corroboration evidence.
+
+    Runs ONLY against a warm CPG (cached joern-cpg/ under the workdir
+    or its project dir) — nothing here builds one. Degrades silently
+    when joern is absent, the cache is cold, or no finding binds.
+    """
+    if not target:
+        return
+    try:
+        from core.orchestration.guard_dominance import (
+            acquire_warm_server,
+            apply_to_findings,
+            missing_check_binding,
+        )
+    except ImportError:
+        return
+
+    findings = data.get("findings", [])
+    # Cheap pre-check: don't pay the JVM start unless something binds.
+    if not any(
+        isinstance(f, dict)
+        and f.get("status") != "disproven"
+        and not f.get("guard_dominance")
+        and missing_check_binding(f)
+        for f in findings
+    ):
+        return
+
+    server = acquire_warm_server(
+        Path(target), Path(workdir), Path(workdir).parent,
+    )
+    if server is None:
+        return
+    try:
+        ap_path = Path(workdir) / "attack-paths.json"
+        attack_paths = load_json(ap_path) or []
+        stats = apply_to_findings(
+            findings, attack_paths, Path(target), server,
+        )
+        if stats["checked"]:
+            if stats["demoted_paths"]:
+                _save_artifact(ap_path, attack_paths)
+            print(
+                f"  Guard-dominance: {stats['checked']} checked — "
+                f"{stats['refuted']} refuted "
+                f"({stats['demoted_paths']} path(s) demoted), "
+                f"{stats['corroborated']} corroborated"
+            )
+    finally:
+        with contextlib.suppress(Exception):
+            server.stop()
 
 
 # ---------------------------------------------------------------------------

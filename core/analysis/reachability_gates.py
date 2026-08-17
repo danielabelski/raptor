@@ -14,30 +14,57 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
-DANGEROUS_LIBC_SINKS: FrozenSet[str] = frozenset({
+# Single authority for the dangerous-sink vocabulary in this module.
+# The conduit-call regex and both Joern query sink lists are DERIVED
+# from these constants — they used to be four hand-copied literals
+# (set, regex, guard-query string, unguarded_sinks.sc) that drifted.
+DANGEROUS_LIBC_SINKS: frozenset[str] = frozenset({
     "memcpy", "memmove", "strcpy", "strncpy", "strcat", "strncat",
     "sprintf", "snprintf", "vsprintf", "vsnprintf",
     "gets", "fgets",
     "system", "popen", "execve", "execvp", "execl", "execlp",
+    # Full exec-family coverage (previously only in the regex copy).
+    "execv", "execle", "execvpe", "execlpe",
     "scanf", "sscanf", "fscanf",
     "sqlite3_exec", "mysql_query",
 })
 
 _CONDUIT_CALL_RE = re.compile(
-    r"\b(?:memcpy|memmove|strcpy|strncpy|strcat|strncat|"
-    r"sprintf|snprintf|vsprintf|vsnprintf|"
-    r"f?gets|system|popen|execle?|execve?|execvpe?|execlpe?|"
-    r"scanf|sscanf|fscanf|"
-    r"sqlite3_exec|mysql_query)\s*\(",
+    r"\b(?:"
+    + "|".join(
+        re.escape(n)
+        for n in sorted(DANGEROUS_LIBC_SINKS, key=len, reverse=True)
+    )
+    + r")\s*\(",
 )
 
-_CONDUIT_PHRASES: Tuple[str, ...] = (
+# Sink names used by the Joern query surfaces. A deliberate subset of
+# DANGEROUS_LIBC_SINKS: whole-CPG name queries drop the noisy scan /
+# vs*printf / rare exec variants and the library-specific SQL names.
+_CORE_QUERY_SINKS: tuple[str, ...] = (
+    "memcpy", "memmove", "strcpy", "strcat", "sprintf", "gets",
+    "strncpy", "strncat", "snprintf", "system", "popen", "execve",
+    "execvp",
+)
+
+# unguarded_sinks.sc additionally reports file-open sinks — useful as
+# per-line LLM context, too noisy for the binary guarded/total verdict.
+_UNGUARDED_QUERY_SINKS: tuple[str, ...] = _CORE_QUERY_SINKS + (
+    "fopen", "open",
+)
+
+
+def _scala_string_list(names: tuple[str, ...]) -> str:
+    """Render a name tuple as the body of a Scala List(...) literal."""
+    return ", ".join(f'"{n}"' for n in names)
+
+_CONDUIT_PHRASES: tuple[str, ...] = (
     r"passes\b.*\bto\b",
     r"forwards\b.*\bto\b",
     r"\bdelegates\s+to\b",
@@ -48,7 +75,7 @@ _CONDUIT_PHRASES: Tuple[str, ...] = (
 _GUARD_QUERY_TEMPLATE = r'''import io.shiftleft.semanticcpg.language._
 
 val fn = cpg.method.name("__FUNCTION__")
-val sinkNames = List("memcpy", "memmove", "strcpy", "strcat", "sprintf", "gets", "strncpy", "strncat", "snprintf", "system", "popen", "execve", "execvp")
+val sinkNames = List(__SINK_NAMES__)
 val sinkCalls = fn.call.name(sinkNames.mkString("|"))
 val total = sinkCalls.size
 val structurallyGuarded = sinkCalls.where(_.dominatedBy.isControlStructure).size
@@ -65,8 +92,8 @@ _QUERIES_DIR = Path(__file__).resolve().parents[2] / "packages" / "joern" / "que
 
 
 def build_sink_reachable_set(
-    context_map: Optional[Dict[str, Any]],
-) -> Optional[Set[str]]:
+    context_map: dict[str, Any] | None,
+) -> set[str] | None:
     """Build the set of functions that transitively reach a known sink.
 
     Seeds from both the context map's catalogued sinks AND well-known
@@ -83,12 +110,12 @@ def build_sink_reachable_set(
     if not edges:
         return None
 
-    sink_fns: Set[str] = set()
+    sink_fns: set[str] = set()
     if sinks_list:
         sink_fns = {s["function"] for s in sinks_list if "function" in s}
 
-    all_callees: Set[str] = set()
-    forward: Dict[str, Set[str]] = {}
+    all_callees: set[str] = set()
+    forward: dict[str, set[str]] = {}
     for edge in edges:
         caller = edge.get("caller") or edge.get("from")
         callee = edge.get("callee") or edge.get("to")
@@ -102,9 +129,9 @@ def build_sink_reachable_set(
     if not sink_fns:
         return None
 
-    reachable: Set[str] = set(sink_fns)
+    reachable: set[str] = set(sink_fns)
     queue = list(sink_fns)
-    reverse: Dict[str, Set[str]] = {}
+    reverse: dict[str, set[str]] = {}
     for caller, callees in forward.items():
         for callee in callees:
             reverse.setdefault(callee, set()).add(caller)
@@ -124,7 +151,7 @@ def build_sink_reachable_set(
 
 def is_entry_unreachable(
     function_name: str,
-    context_map: Optional[Dict[str, Any]],
+    context_map: dict[str, Any] | None,
     *,
     joern_server=None,
 ) -> bool:
@@ -175,7 +202,7 @@ def is_entry_unreachable(
 def _joern_find_callers(
     function_name: str,
     joern_server,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """Query Joern for call sites that invoke function_name."""
     if not joern_server.is_alive():
         return []
@@ -235,7 +262,7 @@ def is_conduit_candidate(body: str) -> bool:
 def check_sink_guarded(
     function_name: str,
     joern_server,
-) -> Optional[str]:
+) -> str | None:
     """Query Joern: are all dangerous sink calls in this function guarded?
 
     Returns "guarded" if all sinks have a dominating conditional,
@@ -247,7 +274,9 @@ def check_sink_guarded(
     if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", function_name):
         return None
 
-    query = _GUARD_QUERY_TEMPLATE.replace("__FUNCTION__", function_name)
+    query = _GUARD_QUERY_TEMPLATE.replace(
+        "__FUNCTION__", function_name,
+    ).replace("__SINK_NAMES__", _scala_string_list(_CORE_QUERY_SINKS))
 
     try:
         result = joern_server.query(query, timeout=30, validate=False)
@@ -271,7 +300,7 @@ def check_sink_guarded(
 def query_unguarded_sinks(
     function_name: str,
     joern_server,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Return details of unguarded sink calls for LLM context enrichment.
 
     Unlike check_sink_guarded (which returns a binary verdict for the
@@ -287,7 +316,9 @@ def query_unguarded_sinks(
     if not query_path.exists():
         return []
 
-    query = query_path.read_text().replace("__FUNCTION__", function_name)
+    query = query_path.read_text().replace(
+        "__FUNCTION__", function_name,
+    ).replace("__SINK_NAMES__", _scala_string_list(_UNGUARDED_QUERY_SINKS))
     try:
         result = joern_server.query(query, timeout=30, validate=False)
         if result.errors:
@@ -309,7 +340,7 @@ def query_sink_arg_index(
     function_name: str,
     sink_name: str,
     joern_server,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Return which argument positions at a sink are tainted by function params.
 
     For memcpy(dst, src, len), knowing arg 2 (src) vs arg 3 (len) is
@@ -357,11 +388,11 @@ def query_sink_arg_index(
 def compute_demotion_verdict(
     function_name: str,
     body: str,
-    context_map: Optional[Dict[str, Any]],
+    context_map: dict[str, Any] | None,
     *,
-    sink_reachable: Optional[Set[str]] = None,
+    sink_reachable: set[str] | None = None,
     joern_server=None,
-) -> Optional[str]:
+) -> str | None:
     """Run all applicable gates and return a demotion reason or None.
 
     This is the single entry point for consumers that want a yes/no
@@ -413,17 +444,17 @@ def compute_demotion_verdict(
 _NEGATION_WINDOW = 4
 
 _SAFETY_ASSERTIONS = [
-    re.compile(r"\bfixed[- ]size\s+(?:static\s+)?(?:string|constant|copy|value)\b", re.I),
-    re.compile(r"\bconstant[- ]size\s+(?:string|copy|value)\b", re.I),
-    re.compile(r"\bstatic string\b", re.I),
-    re.compile(r"\bconstant string\b", re.I),
-    re.compile(r"\bsaturating\s+(?:subtraction|arithmetic|add(?:ition)?)\b", re.I),
-    re.compile(r"\bcorrectly\s+bounded\b", re.I),
-    re.compile(r"\bproperly\s+bounded\b", re.I),
-    re.compile(r"\bsafely\s+bounded\b", re.I),
-    re.compile(r"\bcannot\s+(?:overflow|exceed|underflow)\b", re.I),
-    re.compile(r"\bnever\s+exceeds?\b", re.I),
-    re.compile(r"\bbounds?\s+check\s+(?:prevents?|ensures?)\b", re.I),
+    re.compile(r"\bfixed[- ]size\s+(?:static\s+)?(?:string|constant|copy|value)\b", re.IGNORECASE),
+    re.compile(r"\bconstant[- ]size\s+(?:string|copy|value)\b", re.IGNORECASE),
+    re.compile(r"\bstatic string\b", re.IGNORECASE),
+    re.compile(r"\bconstant string\b", re.IGNORECASE),
+    re.compile(r"\bsaturating\s+(?:subtraction|arithmetic|add(?:ition)?)\b", re.IGNORECASE),
+    re.compile(r"\bcorrectly\s+bounded\b", re.IGNORECASE),
+    re.compile(r"\bproperly\s+bounded\b", re.IGNORECASE),
+    re.compile(r"\bsafely\s+bounded\b", re.IGNORECASE),
+    re.compile(r"\bcannot\s+(?:overflow|exceed|underflow)\b", re.IGNORECASE),
+    re.compile(r"\bnever\s+exceeds?\b", re.IGNORECASE),
+    re.compile(r"\bbounds?\s+check\s+(?:prevents?|ensures?)\b", re.IGNORECASE),
 ]
 
 _NEGATION_WORDS = frozenset({
@@ -434,7 +465,7 @@ _NEGATION_WORDS = frozenset({
 
 _HYPOTHETICAL_CALLER_VIOLATION = re.compile(
     r"\bif\s+a\s+caller\b.*\b(?:violates?|provides?|passes?|supplies?)\b",
-    re.I | re.DOTALL,
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -465,10 +496,7 @@ def has_safety_self_contradiction(body: str) -> bool:
         if not _NEGATION_WORDS & tail_stripped:
             return True
 
-    if _HYPOTHETICAL_CALLER_VIOLATION.search(body_lower):
-        return True
-
-    return False
+    return bool(_HYPOTHETICAL_CALLER_VIOLATION.search(body_lower))
 
 
 __all__ = [

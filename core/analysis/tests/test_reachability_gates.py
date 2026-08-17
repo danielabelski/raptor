@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 # core/inventory/tests/ → repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -15,7 +16,6 @@ from core.analysis.reachability_gates import (
     query_sink_arg_index,
     query_unguarded_sinks,
 )
-
 
 # ─── build_sink_reachable_set ────────────────────────────────────────────────
 
@@ -290,7 +290,7 @@ class _FakeJoernServer:
 class TestEntryUnreachableJoernOverride:
     """Joern caller query prevents false entry-unreachability demotions."""
 
-    _cm = {
+    _cm: ClassVar[dict] = {
         "entry_points": [{"name": "main"}],
         "call_edges": [{"caller": "main", "callee": "parse"}],
     }
@@ -343,3 +343,66 @@ class TestQuerySinkArgIndex:
     def test_invalid_sink_name(self):
         server = _FakeJoernServer()
         assert query_sink_arg_index("fn", "sink; bad", server) == []
+
+
+# ─── Single-sourced sink vocabulary (drift guards) ───────────────────────────
+
+
+class TestSinkVocabularySingleSource:
+    """The regex and both Joern query sink lists derive from one authority."""
+
+    def test_conduit_regex_matches_every_authority_name(self):
+        from core.analysis import reachability_gates as rg
+
+        for name in rg.DANGEROUS_LIBC_SINKS:
+            assert rg._CONDUIT_CALL_RE.search(f"calls {name}(buf, n)"), name
+
+    def test_conduit_regex_preserves_pre_derivation_coverage(self):
+        # The hand-written regex covered exec-family variants the set
+        # lacked; the set was expanded to the union so the derived
+        # regex loses nothing.
+        from core.analysis import reachability_gates as rg
+
+        for name in ("fgets", "gets", "execl", "execle", "execv",
+                     "execve", "execvp", "execvpe", "execlp", "execlpe"):
+            assert rg._CONDUIT_CALL_RE.search(f"{name}(x)"), name
+        assert not rg._CONDUIT_CALL_RE.search("my_memcpy_wrapper(x)")
+        assert not rg._CONDUIT_CALL_RE.search("memcpy_s(x)")
+
+    def test_query_sink_lists_are_authority_subsets(self):
+        from core.analysis import reachability_gates as rg
+
+        assert set(rg._CORE_QUERY_SINKS) <= rg.DANGEROUS_LIBC_SINKS
+        # fopen/open are the documented unguarded-query extras.
+        assert set(rg._UNGUARDED_QUERY_SINKS) - rg.DANGEROUS_LIBC_SINKS == {
+            "fopen", "open",
+        }
+
+    def test_guard_query_renders_pre_split_literal(self):
+        from core.analysis import reachability_gates as rg
+
+        rendered = rg._GUARD_QUERY_TEMPLATE.replace(
+            "__SINK_NAMES__", rg._scala_string_list(rg._CORE_QUERY_SINKS),
+        )
+        assert (
+            'val sinkNames = List("memcpy", "memmove", "strcpy", "strcat", '
+            '"sprintf", "gets", "strncpy", "strncat", "snprintf", "system", '
+            '"popen", "execve", "execvp")'
+        ) in rendered
+
+    def test_unguarded_sc_renders_pre_split_literal(self):
+        from core.analysis import reachability_gates as rg
+
+        sc = (rg._QUERIES_DIR / "unguarded_sinks.sc").read_text()
+        assert "__SINK_NAMES__" in sc
+        # No leftover hardcoded sink names in the template file.
+        assert '"memcpy"' not in sc
+        rendered = sc.replace(
+            "__SINK_NAMES__",
+            rg._scala_string_list(rg._UNGUARDED_QUERY_SINKS),
+        )
+        assert (
+            'val sinkNames = List("memcpy", "memmove", "strcpy", "strcat", '
+            '"sprintf", "gets", "strncpy", "strncat", "snprintf", "system", '
+            '"popen", "execve", "execvp", "fopen", "open")'
+        ) in rendered

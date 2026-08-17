@@ -431,10 +431,12 @@ def _find_unrecorded_reads(
     """Find functions in files the LLM read but didn't record.
 
     Cross-references the coverage plugin's .reads-manifest (files the
-    Read tool touched) against coverage-audit.json (functions explicitly
-    recorded via ``libexec/raptor-audit record``).  Returns a list of
-    {file, functions: [name, ...]} dicts for files with unrecorded
-    functions, sorted by number of unrecorded functions descending.
+    Read tool touched) against journal-derived review state
+    (``audit_data`` from ``_load_review_state`` — coverage-audit.json
+    and the ``raptor-audit record`` CLI were removed by the journal
+    migration).  Returns a list of {file, functions: [name, ...]}
+    dicts for files with unrecorded functions, sorted by number of
+    unrecorded functions descending.
     """
     manifest_path = out_dir / ".reads-manifest"
     checklist_path = out_dir / "checklist.json"

@@ -1,8 +1,10 @@
 """Phase 2b: chaining detection for bug-first mode.
 
 After Phase 2 classifies individual bugs, this module finds pairs of
-quality-only bugs that compose into security issues.  Only considers
-pairs on the same call chain or flow trace — not O(N^2).
+quality-only bugs that compose into security issues.  Enumeration is
+O(N^2) over quality-classified bugs, but only pairs connected by a
+call-graph edge or a shared flow trace become candidates — everything
+else is filtered out before any LLM submission.
 """
 
 from __future__ import annotations

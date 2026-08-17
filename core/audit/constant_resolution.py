@@ -186,9 +186,10 @@ def _scan_definitions(target_path: Path) -> dict[str, list[_RawDefinition]]:
 def _compute_conditional_depths(text: str) -> dict[int, int]:
     """Map line numbers to their #if/#ifdef nesting depth.
 
-    Returns a dict where keys are line numbers (1-based) that contain
-    a #define, and values are the conditional nesting depth at that line.
-    Depth 0 means unconditional.
+    Returns a dict with an entry for EVERY line (1-based): the
+    conditional nesting depth at that line. Depth 0 means
+    unconditional. Callers look up #define lines and enum-block
+    start lines by number.
     """
     depths: dict[int, int] = {}
     depth = 0
@@ -199,10 +200,6 @@ def _compute_conditional_depths(text: str) -> dict[int, int]:
                 depth += 1
             elif _ENDIF_RE.match(raw_line):
                 depth = max(0, depth - 1)
-            if _DEFINE_LINE_RE.match(raw_line):
-                depths[i] = depth
-        # Also record depth for non-#define lines that start enum blocks
-        # (handled by caller using block_line lookup)
         depths[i] = depth
     return depths
 

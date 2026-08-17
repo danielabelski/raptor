@@ -8,7 +8,12 @@ same call site, they fuse into one item with higher confidence.
 Fusion rules:
 - Same call site, same concern: merge descriptions, upgrade confidence
 - Same function, complementary evidence: combine into evidence summary
-- Contradictory evidence: flag disagreement for the reviewer
+
+There is NO contradiction detection: items grouped under the same
+concern key are always merged as corroborating — opposing signals are
+not flagged. If disagreement surfacing is ever needed, FusedEvidence
+would need a polarity/contradiction field rendered by
+to_prompt_section.
 
 This reduces prompt size (fewer items) while increasing signal strength
 (corroborated evidence is more trustworthy).

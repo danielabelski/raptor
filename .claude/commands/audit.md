@@ -37,7 +37,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--review-passes <N>` — independent review passes per function for self-consistency (default: 1)
 - `--subsystem-depth <N>` — directory grouping depth for subsystem-ordered review (default: 0)
 - `--batch-sloc-threshold <N>` — functions at or under N SLOC are batched per file into combined reviews (default: 15; 0 disables). Raise on codebases dense with tiny accessors/wrappers to cut per-call overhead
-- `--include-kinds <list>` — comma-separated extra item kinds to review beyond functions/methods: `top_level`, `macro`, `global` (default: none)
+- `--include-kinds <list>` — comma-separated item kinds beyond functions/methods (default: `top_level`, `macro`, `global`); positive list overrides the defaults, `-kind` opts one out, `none` restricts to functions/methods only
 - `--no-verdict-reuse` — disable cross-run verdict reuse (importing prior-run journal verdicts for functions whose source is unchanged)
 - `--schedule {cost,priority}` — parallel review ordering: `cost` packs predicted-longest reviews first (shortest wall time), `priority` reviews the most promising functions first (fastest first finding)
 - `--dynamic` / `--no-dynamic` — enable/disable dynamic validation (Frida observation / target execution) for confirmed findings; `--no-dynamic` also overrides the project's `dynamic` trust marker

@@ -53,7 +53,7 @@ full flag table.
 | `--model <name>` | Model ID (repeatable for multi-model consensus) |
 | `--adversarial` | Adversarial reviewer that challenges positive verdicts (requires `--model` x2+) |
 | `--no-validate` | Skip the /validate post-pass |
-| `--include-kinds <list>` | Extra item kinds to review beyond functions/methods: `top_level`, `macro`, `global` |
+| `--include-kinds <list>` | Item kinds beyond functions/methods (default: `top_level`, `macro`, `global`). Positive list overrides the defaults; `-kind` opts one out; `none` restricts to functions/methods |
 | `--batch-sloc-threshold <N>` | Batch functions at or under this SLOC per file into combined reviews (default: 15; 0 disables) |
 | `--no-verdict-reuse` | Disable cross-run verdict reuse (importing prior-run journal verdicts for unchanged functions) |
 | `--schedule {cost,priority}` | Parallel review ordering: `cost` packs predicted-longest reviews first, `priority` reviews most promising first |

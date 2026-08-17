@@ -89,9 +89,19 @@ class TestIncludeKinds:
             }],
         }
 
-    def test_default_excludes_top_level(self):
+    def test_default_includes_top_level(self):
+        # Flipped default: module-level code is a reviewable unit
+        # unless the operator opts out.
         from core.audit.gaps import compute_gaps
         gaps = compute_gaps(self._checklist(), [])
+        assert sorted(g["name"] for g in gaps) == [
+            "f", "m.py::top_level",
+        ]
+
+    def test_none_restores_functions_only(self):
+        from core.audit.gaps import compute_gaps
+        gaps = compute_gaps(self._checklist(), [],
+                            include_kinds={"none"})
         assert [g["name"] for g in gaps] == ["f"]
 
     def test_opt_in_includes_top_level(self):

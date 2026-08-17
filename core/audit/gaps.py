@@ -39,6 +39,36 @@ _TRIVIAL_SLOC = 5
 _SMALL_ENTRY_SLOC = 20
 _LARGE_SLOC = 200
 _REVIEWABLE_KINDS = frozenset({"function", "method", ""})
+# Included by DEFAULT: import-time module code (module-level yaml.load,
+# eval on env, subprocess at import), C/C++ macros (an unsafe macro
+# replicates its bug at every expansion site), and globals. The
+# extractor builds these as reviewable units; dropping them silently
+# was a pure recall hole. Opt out via --include-kinds exclusion syntax
+# ("-macro"), or override the extras entirely with a positive list.
+_DEFAULT_EXTRA_KINDS = frozenset({"top_level", "macro", "global"})
+
+
+def _resolve_reviewable_kinds(include_kinds: set | None) -> frozenset:
+    """Resolve the reviewable-kind set from the operator's
+    ``--include-kinds`` value.
+
+    * ``None`` / empty → functions/methods plus the default extras
+      (``top_level``, ``macro``, ``global``).
+    * Positive entries (``{"top_level"}``) OVERRIDE the default
+      extras — only the named kinds are added.
+    * ``-kind`` entries opt out of a default extra
+      (``{"-macro"}`` → defaults minus macros).
+    * ``{"none"}`` → functions/methods only (pre-flip behaviour).
+    """
+    if not include_kinds:
+        return _REVIEWABLE_KINDS | _DEFAULT_EXTRA_KINDS
+    if include_kinds == {"none"}:
+        return _REVIEWABLE_KINDS
+    included = {k for k in include_kinds
+                if k and not k.startswith("-") and k != "none"}
+    excluded = {k.lstrip("-") for k in include_kinds if k.startswith("-")}
+    base = _REVIEWABLE_KINDS | (included or _DEFAULT_EXTRA_KINDS)
+    return frozenset(base - excluded)
 
 # Bounds for detector source hydration. These exist so a large or
 # hostile tree degrades by hydrating fewer functions rather than by
@@ -197,7 +227,7 @@ def compute_gaps(
                 scope_list = None
 
     gaps: list[dict[str, Any]] = []
-    reviewable_kinds = _REVIEWABLE_KINDS | (include_kinds or set())
+    reviewable_kinds = _resolve_reviewable_kinds(include_kinds)
     consumed_covered: dict[str, int] = {}
 
     for file_info in checklist.get("files", []):
@@ -220,10 +250,9 @@ def compute_gaps(
             name = item.get("name", "")
             item_kind = item.get("kind", "")
 
-            # Functions/methods by default; operators opt additional
-            # kinds in (top_level module code, macro bodies, globals)
-            # via --include-kinds — the extractor built those as
-            # reviewable units, but the audit silently dropped them.
+            # Functions/methods plus top_level/macro/global by default
+            # (see _resolve_reviewable_kinds); --include-kinds narrows
+            # or widens the set. Interstitial residue stays out.
             if item_kind not in reviewable_kinds:
                 continue
 

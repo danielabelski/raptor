@@ -508,23 +508,33 @@ def parse_stream_json_lines(lines: list[str]) -> StreamJsonResult:
 
         msg_type = obj.get("type")
         if msg_type == "assistant":
+            # ACCUMULATE across assistant events — one invocation can
+            # emit several ``type: "assistant"`` lines (one per
+            # message). Overwriting silently dropped every message but
+            # the last from ``content`` and under-counted usage. The
+            # final ``result`` event below stays the authoritative
+            # override for token totals where present.
             message = obj.get("message", {})
             content_blocks = message.get("content", [])
             texts = []
             for block in content_blocks:
                 if isinstance(block, dict) and block.get("type") == "text":
                     texts.append(block.get("text", ""))
-            result.content = "\n".join(texts)
+            text = "\n".join(texts)
+            if text:
+                result.content = (
+                    f"{result.content}\n{text}" if result.content else text
+                )
             usage = message.get("usage", {})
-            result.input_tokens = usage.get("input_tokens", 0) or 0
-            result.output_tokens = usage.get("output_tokens", 0) or 0
+            result.input_tokens += usage.get("input_tokens", 0) or 0
+            result.output_tokens += usage.get("output_tokens", 0) or 0
             cache_read = usage.get("cache_read_input_tokens", 0)
             cache_create = usage.get("cache_creation_input_tokens", 0)
             if cache_read:
-                result.cache_read_tokens = cache_read
+                result.cache_read_tokens += cache_read
             if cache_create:
-                result.cache_creation_tokens = cache_create
-            result.model = message.get("model")
+                result.cache_creation_tokens += cache_create
+            result.model = message.get("model") or result.model
 
         elif msg_type == "result":
             result.session_id = obj.get("session_id")

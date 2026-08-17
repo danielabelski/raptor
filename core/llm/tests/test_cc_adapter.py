@@ -295,6 +295,61 @@ class TestParseStreamJsonLines:
         assert r.model == "claude-haiku-4-5-20251001"
         assert r.error is None
 
+    def test_multiple_assistant_messages_accumulate(self):
+        """CC stream-json can emit several ``assistant`` lines per
+        invocation (one per message). Earlier text must not be
+        silently dropped, and usage must be summed — the previous
+        overwrite kept only the last message's text and counters."""
+        from core.llm.cc_adapter import parse_stream_json_lines
+
+        def assistant(text, in_tok, out_tok, cache_read=0):
+            return json.dumps({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": text}],
+                    "model": "claude-haiku-4-5-20251001",
+                    "usage": {
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "cache_read_input_tokens": cache_read,
+                    },
+                },
+            })
+
+        r = parse_stream_json_lines([
+            assistant("first part", 100, 40, cache_read=80),
+            assistant("second part", 5, 60, cache_read=20),
+        ])
+        assert r.content == "first part\nsecond part"
+        assert r.input_tokens == 100 + 5
+        assert r.output_tokens == 40 + 60
+        assert r.cache_read_tokens == 80 + 20
+
+    def test_result_event_overrides_accumulated_usage(self):
+        """The final ``result`` event's usage stays authoritative
+        where present."""
+        from core.llm.cc_adapter import parse_stream_json_lines
+        lines = [
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                },
+            }),
+            json.dumps({
+                "type": "result",
+                "session_id": "sess-1",
+                "usage": {"input_tokens": 111, "output_tokens": 222},
+                "is_error": False,
+            }),
+        ]
+        r = parse_stream_json_lines(lines)
+        assert r.input_tokens == 111
+        assert r.output_tokens == 222
+
     def test_ignores_system_lines(self):
         from core.llm.cc_adapter import parse_stream_json_lines
         lines = [

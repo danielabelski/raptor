@@ -696,6 +696,19 @@ def run(cmd, cwd=None, timeout=RaptorConfig.DEFAULT_TIMEOUT, env=None,
     #     speculative-C retry catches the 126/empty-stderr and
     #     falls back to Landlock-only. Workflow proceeds; debug-
     #     level diagnostic only.
+    # Exec via the binary's REAL path: pip-style installs land a
+    # symlink in a user bin dir while the actual script, interpreter
+    # and native deps live under the venv the tool-path helper binds.
+    # The mount-ns visibility check (correctly) refuses a cmd[0] whose
+    # own path isn't in the bind tree, so invoking via the symlink
+    # dropped every such tool to the Landlock-only fallback — where
+    # netns proxy connectivity is deliberately not re-plumbed, which
+    # is why registry pack fetches (p/...) always failed on pip-
+    # installed semgrep.
+    _resolved0 = shutil.which(cmd[0]) or cmd[0]
+    _real0 = os.path.realpath(_resolved0)
+    if _real0 != cmd[0] and os.path.isfile(_real0):
+        cmd = [_real0, *cmd[1:]]
     tool_paths = _compute_python_tool_paths(cmd)
     from core.sandbox.python_paths import python_runtime_tool_paths
     for p in python_runtime_tool_paths():
@@ -706,6 +719,16 @@ def run(cmd, cwd=None, timeout=RaptorConfig.DEFAULT_TIMEOUT, env=None,
         sandbox_kwargs["fake_home"] = True
     if readable_paths:
         sandbox_kwargs["readable_paths"] = list(readable_paths)
+        # readable_paths only reaches Landlock under restrict_reads;
+        # the channel that makes a path VISIBLE inside the mount-ns
+        # bind tree is tool_paths. The standard tree carries system
+        # dirs + target/output only — no /home — so local rule
+        # configs and --extra-config files were unreadable whenever
+        # mount-ns engaged, and the pack failed. Name them on both
+        # channels: bind now, read-allow if reads ever restrict.
+        for _rp in readable_paths:
+            if _rp not in tool_paths:
+                tool_paths.append(_rp)
     # ``strict_env=True`` acknowledges that this caller deliberately
     # supplies env= (a ``get_safe_env()``-derived dict with HOME / XDG
     # overrides from the semgrep-specific path). Without it, the sandbox
@@ -955,13 +978,24 @@ def run_single_semgrep(
         # but future-proofs against a flip to read-restricted: an operator
         # ``--extra-config /home/me/rules.yml`` would otherwise be denied
         # at sandbox-read time.
+        # Local rule-directory packs reference a filesystem config
+        # (engine/semgrep/rules/<category>). Under mount-ns the child
+        # only sees the standard bind tree plus target/output — an
+        # install root under a masked path (/tmp checkouts, private
+        # prefixes) would leave the config unreadable and fail the
+        # pack. Naming it in readable_paths bind-mounts it explicitly
+        # instead of relying on where the install root happens to live.
+        _pack_readable = list(extra_config_readable_paths or [])
+        if (not is_registry_pack and os.path.exists(config)
+                and str(config) not in _pack_readable):
+            _pack_readable.append(str(config))
         rc, so, se = run(
             cmd, timeout=effective_timeout, env=clean_env,
             target=str(repo_path), output=str(out_dir),
             proxy_hosts=_ph.proxy_hosts_for_semgrep(),
             caller_label="scanner-semgrep",
             fake_home=True,
-            readable_paths=extra_config_readable_paths,
+            readable_paths=_pack_readable or None,
         )
 
         # Validate output

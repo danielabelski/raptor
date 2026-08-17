@@ -35,6 +35,18 @@
     ["local_irq_disable", "local_irq_enable"],
     ["preempt_disable", "preempt_enable"]
   ],
+  "callback_registers": [
+    "timer_setup", "setup_timer", "INIT_WORK", "INIT_DELAYED_WORK",
+    "init_waitqueue_func_entry", "tasklet_init", "hrtimer_init",
+    "mod_timer", "add_timer",
+    "schedule_work", "schedule_delayed_work", "queue_work"
+  ],
+  "callback_cancels": [
+    "del_timer_sync", "del_timer", "timer_delete_sync",
+    "cancel_work_sync", "cancel_delayed_work_sync", "flush_work",
+    "flush_delayed_work", "tasklet_kill", "hrtimer_cancel",
+    "cancel_work", "remove_wait_queue"
+  ],
   "nullable_returns": [
     "kobj_to_dev", "of_find_node_by_name", "of_get_child_by_name",
     "dev_get_drvdata", "platform_get_resource",

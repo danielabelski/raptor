@@ -87,6 +87,8 @@ def _load_pack_uncached(name: str) -> DomainVocabulary | None:
         lock_acquires=frozenset(a for a, _ in lock_pairs),
         lock_releases=frozenset(r for _, r in lock_pairs),
         lock_pairs=lock_pairs,
+        callback_registers=_names("callback_registers"),
+        callback_cancels=_names("callback_cancels"),
         security_fields=_names("security_fields"),
         nullable_returns=_names("nullable_returns"),
         auth_predicates=auth,

@@ -134,3 +134,114 @@ class TestFromDomainModelMerge:
         }
         vocab = DomainVocabulary.from_domain_model(dm)
         assert ("acl_check", "permission") in vocab.auth_predicates
+
+
+class TestCallbackVocabClasses:
+    def test_pack_carries_callback_registers_and_cancels(self):
+        pack = load_pack("linux_kernel")
+        assert pack is not None
+        assert "timer_setup" in pack.callback_registers
+        assert "queue_work" in pack.callback_registers
+        assert "del_timer_sync" in pack.callback_cancels
+        assert "remove_wait_queue" in pack.callback_cancels
+
+    def test_callback_pairs_parse_from_domain_model(self):
+        dm = {
+            "paired_operations": [
+                {
+                    "acquire": "foo_register_handler(dev, cb)",
+                    "release": "foo_cancel_handler(dev)",
+                    "kind": "callback",
+                },
+                {
+                    "acquire": "foo_arm_timer",
+                    "release": "foo_disarm_timer",
+                    "kind": "timer",
+                },
+            ],
+        }
+        vocab = DomainVocabulary.from_domain_model(dm)
+        assert "foo_register_handler" in vocab.callback_registers
+        assert "foo_arm_timer" in vocab.callback_registers
+        assert "foo_cancel_handler" in vocab.callback_cancels
+        assert "foo_disarm_timer" in vocab.callback_cancels
+        # Callback pairs do not leak into the lock vocabulary.
+        assert "foo_register_handler" not in vocab.lock_acquires
+        assert vocab.has_content
+
+    def test_merged_unions_callback_classes(self):
+        a = DomainVocabulary(callback_registers=frozenset({"a_reg"}))
+        b = DomainVocabulary(callback_cancels=frozenset({"b_cancel"}))
+        m = a.merged(b)
+        assert m.callback_registers == {"a_reg"}
+        assert m.callback_cancels == {"b_cancel"}
+
+
+class TestProvenanceTierGate:
+    """Vocabulary entries carrying study provenance tiers.
+
+    ``llm_prior`` (training memory, no on-disk evidence) is never
+    consumed; every other tier — and untiered legacy entries — is.
+    """
+
+    def test_llm_prior_entries_are_dropped(self):
+        dm = {
+            "paired_operations": [
+                {
+                    "acquire": "ghost_lock",
+                    "release": "ghost_unlock",
+                    "kind": "lock",
+                    "provenance": "llm_prior",
+                },
+            ],
+            "nullable_returns": [
+                {"name": "ghost_get", "provenance": "llm_prior"},
+            ],
+            "auth_predicates": [
+                {"name": "ghost_capable", "provenance": "llm_prior"},
+            ],
+            "security_fields": [
+                {"name": "ghost_field", "provenance": "llm_prior"},
+            ],
+        }
+        vocab = DomainVocabulary.from_domain_model(dm)
+        assert not vocab.has_content
+
+    def test_tiered_dict_entries_are_consumed(self):
+        dm = {
+            "paired_operations": [
+                {
+                    "acquire": "proj_lock",
+                    "release": "proj_unlock",
+                    "kind": "mutex",
+                    "provenance": "mechanical",
+                },
+            ],
+            "nullable_returns": [
+                {"name": "proj_get_ctx()", "provenance": "llm_summarized"},
+            ],
+            "auth_predicates": [
+                {
+                    "name": "proj_may_write",
+                    "kind": "permission",
+                    "provenance": "mechanical",
+                },
+            ],
+            "security_fields": [
+                {"name": "acl_mask", "provenance": "llm_summarized"},
+            ],
+        }
+        vocab = DomainVocabulary.from_domain_model(dm)
+        assert ("proj_lock", "proj_unlock") in vocab.lock_pairs
+        assert "proj_get_ctx" in vocab.nullable_returns
+        assert ("proj_may_write", "permission") in vocab.auth_predicates
+        assert "acl_mask" in vocab.security_fields
+
+    def test_plain_string_entries_still_accepted(self):
+        dm = {
+            "security_fields": ["cred_ptr"],
+            "nullable_returns": ["find_ctx()"],
+        }
+        vocab = DomainVocabulary.from_domain_model(dm)
+        assert "cred_ptr" in vocab.security_fields
+        assert "find_ctx" in vocab.nullable_returns

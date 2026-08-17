@@ -47,6 +47,16 @@ class DomainVocabulary:
     are populated from the corresponding domain-model keys when the
     study loop emits them, and by target-kind vocab packs
     (:mod:`core.audit.vocab_packs`).
+    ``callback_registers`` / ``callback_cancels`` carry async-callback
+    registration / cancellation verbs (timer, workqueue, notifier
+    shapes) from ``paired_operations`` entries with a callback-family
+    ``kind`` — consumed by :mod:`core.audit.callback_lifetime`.
+
+    Vocabulary entries may be plain strings or dicts carrying a
+    ``provenance`` tier (study receipts convention: verbatim /
+    mechanical / llm_summarized / llm_prior). Entries whose provenance
+    is ``llm_prior`` (training memory, no on-disk evidence) are not
+    consumed.
     """
 
     allocators: frozenset = field(default_factory=frozenset)
@@ -56,6 +66,8 @@ class DomainVocabulary:
     lock_pairs: frozenset = field(default_factory=frozenset)
     refcount_gets: frozenset = field(default_factory=frozenset)
     refcount_puts: frozenset = field(default_factory=frozenset)
+    callback_registers: frozenset = field(default_factory=frozenset)
+    callback_cancels: frozenset = field(default_factory=frozenset)
     security_fields: frozenset = field(default_factory=frozenset)
     nullable_returns: frozenset = field(default_factory=frozenset)
     auth_predicates: frozenset = field(default_factory=frozenset)
@@ -71,6 +83,10 @@ class DomainVocabulary:
             lock_pairs=self.lock_pairs | other.lock_pairs,
             refcount_gets=self.refcount_gets | other.refcount_gets,
             refcount_puts=self.refcount_puts | other.refcount_puts,
+            callback_registers=(
+                self.callback_registers | other.callback_registers
+            ),
+            callback_cancels=self.callback_cancels | other.callback_cancels,
             security_fields=self.security_fields | other.security_fields,
             nullable_returns=self.nullable_returns | other.nullable_returns,
             auth_predicates=self.auth_predicates | other.auth_predicates,
@@ -119,6 +135,8 @@ class DomainVocabulary:
         lock_pairs: set[tuple[str, str]] = set()
         ref_get: set[str] = set()
         ref_put: set[str] = set()
+        cb_reg: set[str] = set()
+        cb_cancel: set[str] = set()
 
         _KIND_MAP = {
             "alloc": (alloc, dealloc),
@@ -130,9 +148,22 @@ class DomainVocabulary:
             "rcu": (lock_acq, lock_rel),
             "lock": (lock_acq, lock_rel),
             "semaphore": (lock_acq, lock_rel),
+            # Async-callback register/cancel family (study elicits
+            # kind "callback"; the facility aliases cover in-session
+            # written models).
+            "callback": (cb_reg, cb_cancel),
+            "register": (cb_reg, cb_cancel),
+            "timer": (cb_reg, cb_cancel),
+            "work": (cb_reg, cb_cancel),
+            "workqueue": (cb_reg, cb_cancel),
+            "tasklet": (cb_reg, cb_cancel),
+            "hrtimer": (cb_reg, cb_cancel),
+            "notifier": (cb_reg, cb_cancel),
         }
 
         for pair in (pairs or []):
+            if not isinstance(pair, dict) or not _entry_actionable(pair):
+                continue
             acquire = pair.get("acquire", "")
             release = pair.get("release", "")
             kind = pair.get("kind", "").lower()
@@ -151,26 +182,28 @@ class DomainVocabulary:
                     lock_pairs.add((acq_name, rel_name))
 
         sec_fields: set[str] = set()
-        for name in domain_model.get("security_fields", []):
-            if isinstance(name, str):
-                sec_fields.add(name)
-        for attr in domain_model.get("security_attributes", []):
-            if isinstance(attr, str):
-                sec_fields.add(attr)
-        for attr in domain_model.get("sensitive_fields", []):
-            if isinstance(attr, str):
-                sec_fields.add(attr)
+        for key in (
+            "security_fields", "security_attributes", "sensitive_fields",
+        ):
+            for entry in domain_model.get(key, []):
+                name = _entry_name(entry)
+                if name:
+                    sec_fields.add(name)
 
         nullable: set[str] = set()
-        for name in domain_model.get("nullable_returns", []):
-            if isinstance(name, str):
+        for entry in domain_model.get("nullable_returns", []):
+            name = _entry_name(entry)
+            if name:
                 nullable.add(name.split("(")[0].strip())
 
         auth: set[tuple[str, str]] = set()
         for entry in domain_model.get("auth_predicates", []):
             if isinstance(entry, str):
                 auth.add((entry.split("(")[0].strip(), "domain"))
-            elif isinstance(entry, dict) and entry.get("name"):
+            elif (
+                isinstance(entry, dict) and entry.get("name")
+                and _entry_actionable(entry)
+            ):
                 auth.add((
                     str(entry["name"]).split("(")[0].strip(),
                     str(entry.get("kind", "domain")),
@@ -184,6 +217,8 @@ class DomainVocabulary:
             lock_pairs=frozenset(lock_pairs),
             refcount_gets=frozenset(ref_get),
             refcount_puts=frozenset(ref_put),
+            callback_registers=frozenset(cb_reg),
+            callback_cancels=frozenset(cb_cancel),
             security_fields=frozenset(sec_fields),
             nullable_returns=frozenset(nullable),
             auth_predicates=frozenset(auth),
@@ -196,9 +231,33 @@ class DomainVocabulary:
             or self.lock_acquires or self.lock_releases
             or self.lock_pairs
             or self.refcount_gets or self.refcount_puts
+            or self.callback_registers or self.callback_cancels
             or self.nullable_returns or self.auth_predicates
             or self.boundary_transfers
         )
+
+
+def _entry_actionable(entry: dict[str, Any]) -> bool:
+    """Study receipts tier gate for vocabulary dict entries.
+
+    ``llm_prior`` marks a claim backed only by training memory (see
+    ``core.concepts.receipts``) — never consumed as vocabulary. All
+    other tiers (and untiered legacy entries) pass: the mechanical
+    checkers verify the actual code, so vocabulary names only direct
+    attention.
+    """
+    return entry.get("provenance", "") != "llm_prior"
+
+
+def _entry_name(entry: Any) -> str:
+    """Name of a vocabulary entry — plain string or tier-carrying dict."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict) and entry.get("name"):
+        if not _entry_actionable(entry):
+            return ""
+        return str(entry["name"])
+    return ""
 
 
 _EMPTY_VOCAB = DomainVocabulary()

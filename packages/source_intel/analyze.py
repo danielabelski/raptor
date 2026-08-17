@@ -731,15 +731,77 @@ def _shipped_rules_root() -> Path | None:
 _shipped_rules_dir = _shipped_rules_root
 
 
+# =====================================================================
+# API-pack rendering (crypto axis; any axis may opt in via the marker)
+# =====================================================================
+
+
+_API_PACK_MARKER = "// @api-packs:"
+
+
+def _materialize_rules_dir(axis_dir: Path) -> tuple[Path, Any]:
+    """Render ``@api-packs`` slots for an axis, when any rule carries one.
+
+    Returns ``(effective_dir, tempdir_handle)``. When no rule in
+    ``axis_dir`` has a pack slot the axis dir is returned unchanged
+    (``handle`` is None). Otherwise a TemporaryDirectory is populated
+    with every ``.cocci`` (rendered where slotted, verbatim copies
+    elsewhere) so rule names / execution order are preserved; the
+    caller keeps ``handle`` alive for the spatch run. Render failures
+    degrade to the unrendered rule text (still-valid cocci — the marker
+    is a comment) rather than skipping the axis.
+    """
+    rule_paths = sorted(axis_dir.glob("*.cocci"))
+    slotted: dict[Path, str] = {}
+    for rule_path in rule_paths:
+        try:
+            text = rule_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _API_PACK_MARKER not in text:
+            continue
+        try:
+            from engine.coccinelle.api_pack_renderer import render_text
+            rendered = render_text(rule_path)
+        except Exception:  # sidecar renderer must never kill the axis
+            logger.warning(
+                "api-pack render failed for %s; running unrendered",
+                rule_path, exc_info=True,
+            )
+            rendered = None
+        slotted[rule_path] = rendered if rendered is not None else text
+
+    if not slotted:
+        return axis_dir, None
+
+    import shutil
+    import tempfile
+    handle = tempfile.TemporaryDirectory(prefix="source_intel_rules_")
+    tmp_dir = Path(handle.name)
+    for rule_path in rule_paths:
+        if rule_path in slotted:
+            (tmp_dir / rule_path.name).write_text(
+                slotted[rule_path], encoding="utf-8",
+            )
+        else:
+            shutil.copyfile(rule_path, tmp_dir / rule_path.name)
+    return tmp_dir, handle
+
+
 def _axis_dirs(rules_root: Path) -> list[Path]:
     """List of per-axis subdirectories under the rules root.
 
     Phase 2 ships ``attrs/`` only. Axes 2-7 add sibling dirs; this
     function picks all of them up automatically so adding an axis
     means dropping rules into a new subdir without touching analyze.
-    Order is deterministic (sorted by name).
+    Order is deterministic (sorted by name). Subdirs without any
+    ``.cocci`` file are not axes — data directories (e.g. an axis's
+    ``packs/`` API packs) live beside the rules that consume them.
     """
-    return sorted(d for d in rules_root.iterdir() if d.is_dir())
+    return sorted(
+        d for d in rules_root.iterdir()
+        if d.is_dir() and any(d.glob("*.cocci"))
+    )
 
 
 # =====================================================================
@@ -869,15 +931,20 @@ def analyze(
     # existing PR-3 scan + PR-4 prereqs untrusted-target posture;
     # trusted-mode opt-in is a future operator flag.
     for axis_dir in rule_dirs:
-        spatch_results = spatch_run_rules(
-            target=target,
-            rules_dir=axis_dir,
-            timeout_per_rule=timeout_per_rule,
-            no_includes=True,
-            # In-repo shipped source_intel rules (code trust) — their
-            # @script:python reporting blocks are trusted.
-            allow_scripting=True,
-        )
+        effective_dir, _rules_tmp = _materialize_rules_dir(axis_dir)
+        try:
+            spatch_results = spatch_run_rules(
+                target=target,
+                rules_dir=effective_dir,
+                timeout_per_rule=timeout_per_rule,
+                no_includes=True,
+                # In-repo shipped source_intel rules (code trust) — their
+                # @script:python reporting blocks are trusted.
+                allow_scripting=True,
+            )
+        finally:
+            if _rules_tmp is not None:
+                _rules_tmp.cleanup()
         for result in spatch_results:
             rules_executed.append(result.rule)
             if result.errors:
@@ -1532,7 +1599,41 @@ def _parse_match_to_lock_site(match: Any) -> list[LockSiteEvidence]:
 
 
 _CRYPTO_CALL_KINDS = frozenset({"primitive_call", "rng_source"})
-_CRYPTO_CALL_APIS = frozenset({"openssl", "kernel", "libsodium", "libc"})
+# libc RNG is the only api tag hardcoded in crypto_calls.cocci; every
+# other tag comes from the shipped per-library API packs — a new
+# library pack extends the accepted set with no code edit here.
+_CRYPTO_STATIC_APIS = frozenset({"libc"})
+# Pre-pack tag set, used only when the pack dir is unreadable so the
+# parser keeps accepting the historical rules' output.
+_CRYPTO_FALLBACK_APIS = frozenset({"openssl", "kernel", "libsodium"})
+
+_crypto_apis_cache: frozenset[str] | None = None
+_crypto_apis_lock = threading.Lock()
+
+
+def _crypto_call_apis() -> frozenset[str]:
+    """Accepted ``api`` tags: libc + the shipped crypto packs' tags."""
+    global _crypto_apis_cache
+    with _crypto_apis_lock:
+        if _crypto_apis_cache is not None:
+            return _crypto_apis_cache
+        apis = _CRYPTO_STATIC_APIS
+        try:
+            from engine.coccinelle.api_pack_renderer import pack_apis
+            root = _shipped_rules_root()
+            packed = (
+                pack_apis(root / "crypto" / "packs")
+                if root is not None else frozenset()
+            )
+            apis |= packed if packed else _CRYPTO_FALLBACK_APIS
+        except Exception:  # parser must keep working without packs
+            logger.warning(
+                "crypto api packs unavailable; using fallback tag set",
+                exc_info=True,
+            )
+            apis |= _CRYPTO_FALLBACK_APIS
+        _crypto_apis_cache = apis
+        return apis
 
 
 def _parse_match_to_crypto_call(match: Any) -> list[CryptoCallEvidence]:
@@ -1547,7 +1648,7 @@ def _parse_match_to_crypto_call(match: Any) -> list[CryptoCallEvidence]:
     if len(parts) < 4:
         return []
     _prefix, kind, api, fn = parts
-    if kind not in _CRYPTO_CALL_KINDS or api not in _CRYPTO_CALL_APIS:
+    if kind not in _CRYPTO_CALL_KINDS or api not in _crypto_call_apis():
         return []
     fn = fn.strip()
     if not fn:

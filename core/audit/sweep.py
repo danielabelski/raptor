@@ -365,6 +365,27 @@ def run_semgrep_sweep(
             outcome = "error"
         else:
             outcome = "refuted"
+
+        if outcome == "refuted":
+            # Second pass over the fidelity-3 expanded view: pattern
+            # rules can't see through macros (LIST_FOREACH wrappers,
+            # lock macros, allocator wrappers), so a no-match on
+            # macro-bearing C/C++ source is not yet a refutation.
+            # Cheap textual gate + per-run expansion budget inside;
+            # any failure degrades to the plain refuted outcome.
+            expanded = _expanded_second_pass(
+                target_path=target_path,
+                file_path=file_path,
+                full_path=full_path,
+                function_name=function_name,
+                rule_config=rule_config,
+                line_start=line_start,
+                line_end=line_end,
+                hypothesis=hypothesis,
+                rule_keyword=rule_keyword,
+            )
+            if expanded is not None:
+                return expanded
         serialized = []
         for f in in_function:
             if hasattr(f, "to_dict"):
@@ -393,6 +414,139 @@ def run_semgrep_sweep(
             outcome="error",
             errors=[str(exc)],
         )
+
+
+def _expanded_second_pass(
+    *,
+    target_path: Path,
+    file_path: str,
+    full_path: Path,
+    function_name: str,
+    rule_config: str,
+    line_start: int,
+    line_end: int,
+    hypothesis: str,
+    rule_keyword: str,
+) -> SweepResult | None:
+    """Retry a no-match semgrep sweep against the fidelity-3 view.
+
+    Runs only when the function's source shows a function-like
+    ALL_CAPS macro invocation (cheap textual gate) — pattern rules
+    cannot see through macros, so the plain pass's silence proves
+    nothing there.  Matches are line-mapped back to original
+    coordinates by :mod:`core.audit.expanded_semgrep`; only in-file,
+    in-range matches count.  The same identifier-consistency and
+    negative-control caps as the plain pass apply.
+
+    A confirmed match is evidence-stamped distinctly — ``rule_id``
+    gets an ``:expanded`` suffix, so the orchestrator's stamp becomes
+    ``semgrep:<rule>:expanded`` and downstream review can see the
+    match came from the expanded view.
+
+    Returns None whenever the expanded pass cannot improve on the
+    plain outcome (gate not met, budget spent, preprocess/semgrep
+    failure, no in-range match) — the caller's ``refuted`` stands.
+    Never raises.
+    """
+    try:
+        # Function-level import: expanded_semgrep pulls in
+        # preprocessor_view → compiler_sweep, which imports
+        # SweepResult from THIS module — a module-level import here
+        # would be circular.
+        from .expanded_semgrep import (
+            has_macro_invocation,
+            is_c_family,
+            run_expanded_semgrep_rule,
+        )
+
+        if not is_c_family(file_path):
+            return None
+        try:
+            source = full_path.read_text(errors="replace")
+        except OSError:
+            return None
+        if line_start and line_end:
+            lines = source.split("\n")
+            segment = "\n".join(lines[max(0, line_start - 1):line_end])
+        else:
+            segment = source
+        if not has_macro_invocation(segment):
+            return None
+
+        exp = run_expanded_semgrep_rule(
+            target_path=target_path,
+            file_path=file_path,
+            rule_config=rule_config,
+            line_start=line_start,
+            line_end=line_end,
+        )
+        if not exp.ok:
+            logger.debug(
+                "expanded semgrep pass degraded for %s:%s — %s",
+                file_path, function_name, exp.reason,
+            )
+            return None
+        if not exp.matches:
+            return None
+
+        matches = list(exp.matches)
+        capped_reason: str | None = None
+        if hypothesis:
+            named = _hypothesis_identifiers(hypothesis)
+            if named:
+                consistent = _filter_identifier_consistent(
+                    matches, full_path, named,
+                )
+                if consistent:
+                    matches = consistent
+                else:
+                    capped_reason = (
+                        "identifier mismatch: no expanded-view match line "
+                        "(±2) mentions any identifier named by the "
+                        "hypothesis ("
+                        + ", ".join(sorted(named)[:5]) + ")"
+                    )
+
+        if (
+            matches and capped_reason is None and rule_keyword
+            and _rule_matches_negative_control(
+                rule_config, rule_keyword, file_path,
+            )
+        ):
+            capped_reason = (
+                f"presence detector: rule for {rule_keyword!r} also "
+                "matches the guarded negative-control fixture"
+            )
+
+        details: dict[str, Any] = {
+            "expanded_view": True,
+            "dropped_out_of_file": exp.dropped_out_of_file,
+        }
+        if capped_reason:
+            details["reason"] = capped_reason
+            logger.info(
+                "expanded semgrep sweep capped at inconclusive for "
+                "%s:%s — %s",
+                file_path, function_name, capped_reason,
+            )
+            outcome = "inconclusive"
+        else:
+            outcome = "confirmed"
+        return SweepResult(
+            tool="semgrep",
+            file_path=file_path,
+            function_name=function_name,
+            outcome=outcome,
+            matches=matches,
+            rule_id=f"{rule_config}:expanded",
+            details=details,
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade, never kill the sweep
+        logger.debug(
+            "expanded semgrep pass failed for %s:%s: %s",
+            file_path, function_name, exc,
+        )
+        return None
 
 
 # ── Negative controls for dynamic per-hypothesis rules ──────────────

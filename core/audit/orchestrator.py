@@ -8039,6 +8039,18 @@ def _run_tool_chain(
                                     function_name,
                                     len(cached),
                                 )
+                        # Cache hit skips this entry's sweep entirely, so
+                        # the per-hypothesis rule file baked into the
+                        # config would never reach the unlink finally
+                        # below — remove it here or it leaks on every
+                        # sarif_cache hit.
+                        _cached_rule = tool_cfg.get("rule") or ""
+                        if os.path.basename(_cached_rule).startswith(
+                                "audit_sweep_"):
+                            try:
+                                os.unlink(_cached_rule)
+                            except OSError:
+                                pass
                         continue
 
                 rule_path = tool_cfg["rule"]

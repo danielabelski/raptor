@@ -1,12 +1,17 @@
 """Semgrep runner — invoke semgrep, parse results, return structured output.
 
-This module is intentionally minimal: build a command, run it via subprocess,
-parse SARIF and JSON output. Callers add their own concerns on top:
+This module is intentionally minimal: build a command, run it, parse SARIF
+and JSON output. Callers add their own concerns on top:
 
-  - Sandbox engagement (Landlock, mount-ns, network proxy) — see
-    packages/static-analysis/scanner.py:run() which wraps build_cmd() with
-    core.sandbox.run.
-  - HOME redirect into a per-run directory — also scanner concern.
+  - Sandbox POLICY. Execution is sandboxed BY DEFAULT: when no
+    ``subprocess_runner`` is injected, run_rule() wraps the invocation in
+    core.sandbox.run (Landlock scoped to the target, network blocked for
+    local rule paths) and REFUSES to run when the sandbox is unavailable.
+    Semgrep parses attacker-controlled source files, so parser bugs are a
+    code-execution surface. Callers with their own sandbox pass
+    ``subprocess_runner=`` (e.g. packages/static-analysis/scanner.py); the
+    explicit escape hatch for trusted input is ``unsandboxed=True``.
+  - HOME redirect into a per-run directory — scanner concern.
   - Output file layout (semgrep_<name>.sarif, .json, .stderr.log, .exit) —
     scanner persists; we hand back the raw strings.
   - Parallel orchestration across many configs — scanner uses
@@ -95,6 +100,46 @@ def build_cmd(
     return cmd
 
 
+def _default_sandbox_runner(target: Path, config: str):
+    """subprocess.run-shaped wrapper over core.sandbox.run, or None.
+
+    Returns None when core.sandbox is unavailable on this host — the
+    caller REFUSES to run in that case (mirrors patch_gate's
+    no-sandbox-means-no-execution posture) rather than silently falling
+    back to an unsandboxed subprocess.
+
+    Registry configs (p/..., category/...) are fetched from semgrep.dev
+    at run time, so those keep network access (still Landlock-confined);
+    local rule paths run with the network blocked.
+    """
+    try:
+        from core.sandbox.context import run as sandbox_run
+    except ImportError:  # pragma: no cover - platform-dependent import
+        return None
+
+    needs_registry = str(config).startswith(("p/", "category/"))
+
+    def _runner(cmd, **kwargs):
+        return sandbox_run(
+            cmd,
+            block_network=not needs_registry,
+            target=str(target),
+            caller_label="semgrep-runner",
+            env_caller_filtered=True,
+            **{k: v for k, v in kwargs.items() if k != "shell"},
+        )
+
+    return _runner
+
+
+_SANDBOX_REFUSAL = (
+    "core.sandbox unavailable — refusing to run semgrep on the target "
+    "outside a sandbox (semgrep parses untrusted source; parser bugs are "
+    "a code-execution surface). Pass unsandboxed=True for trusted input, "
+    "or inject subprocess_runner= with your own sandbox."
+)
+
+
 def run_rule(
     target: Path,
     config: str,
@@ -107,6 +152,7 @@ def run_rule(
     semgrep_bin: str | None = None,
     extra_args: list[str] | None = None,
     subprocess_runner=None,
+    unsandboxed: bool = False,
 ) -> SemgrepResult:
     """Run semgrep with one config against a target.
 
@@ -122,12 +168,16 @@ def run_rule(
             temporary file is used and removed after parsing.
         semgrep_bin: Override semgrep binary path.
         extra_args: Additional semgrep arguments.
-        subprocess_runner: Optional callable replacing subprocess.run. Must
-            accept the same kwargs (capture_output, text, timeout, env)
-            and return an object with returncode/stdout/stderr. Defaults
-            to subprocess.run. Used by callers that need to engage a
-            sandbox (e.g. core.sandbox.run) without reimplementing the
-            semgrep invocation logic.
+        subprocess_runner: Optional callable replacing the default
+            sandboxed runner. Must accept the same kwargs
+            (capture_output, text, timeout, env) and return an object
+            with returncode/stdout/stderr. Used by callers that engage
+            their own sandbox (e.g. core.sandbox.run) without
+            reimplementing the semgrep invocation logic.
+        unsandboxed: Explicit opt-out from the default sandbox — run via
+            bare subprocess.run. For trusted input only. Ignored when
+            subprocess_runner is given. Without it, run_rule REFUSES to
+            execute when core.sandbox is unavailable.
 
     Returns:
         SemgrepResult with parsed findings, files_examined, files_failed,
@@ -175,7 +225,18 @@ def run_rule(
             _needs_registry = str(config).startswith(("p/", "category/"))
             env = RaptorConfig.get_safe_env(preserve_proxy=_needs_registry)
 
-        runner = subprocess_runner or subprocess.run
+        runner = subprocess_runner
+        if runner is None:
+            if unsandboxed:
+                runner = subprocess.run
+            else:
+                runner = _default_sandbox_runner(target, config)
+                if runner is None:
+                    return SemgrepResult(
+                        name=name, config=config, target=str(target),
+                        errors=[_SANDBOX_REFUSAL],
+                        returncode=-1,
+                    )
 
         start = time.monotonic()
         try:
@@ -243,6 +304,7 @@ def run_rules(
     semgrep_bin: str | None = None,
     extra_args: list[str] | None = None,
     subprocess_runner=None,
+    unsandboxed: bool = False,
 ) -> list[SemgrepResult]:
     """Run multiple semgrep configurations sequentially.
 
@@ -284,6 +346,7 @@ def run_rules(
             semgrep_bin=semgrep_bin,
             extra_args=extra_args,
             subprocess_runner=subprocess_runner,
+            unsandboxed=unsandboxed,
         )
         results.append(result)
     return results

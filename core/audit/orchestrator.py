@@ -6208,10 +6208,11 @@ class _ClientBudgetGate:
     ``budget_ratio() == 0.0`` (gate open) when the client has no
     finite cap.
 
-    NOTE for reservation budgeting: when per-function cost reservation
-    lands, the reservation for a panel review must be
-    ``estimate × len(config.models)`` — this gate is the integration
-    point that already sees the multiplied spend.
+    Reservation note: cost reservations are taken per call inside the
+    LLM client (generate/generate_structured pre-debit an estimate
+    atomically), so a panel's N model calls each hold their own
+    reservation — no panel-level multiplication is needed here. This
+    gate only exposes the live spend ratio.
     """
 
     def __init__(self, client: Any):

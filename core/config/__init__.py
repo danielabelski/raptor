@@ -835,6 +835,22 @@ class RaptorConfig:
             if _userbase is not None:
                 env["PYTHONUSERBASE"] = _userbase
         env["PYTHONUNBUFFERED"] = "1"
+        # Git config isolation for EVERY subprocess (inert for non-git
+        # tools). Without this, any internal or sandboxed git invocation
+        # reads the operator's ~/.gitconfig and /etc/gitconfig: a
+        # commit.gpgsign=true there routes `git commit` through
+        # gpg-agent/keyboxd (unix-socket IPC that network-denied
+        # sandboxes block — observed as non-deterministic "failed to
+        # write commit object"), log.showSignature invokes gpg on
+        # reads, core.fsmonitor spawns watchers, credential.helper
+        # fires on fetches. Applied AFTER the dangerous-var strip so
+        # OUR values win over any operator/caller-supplied override.
+        # Deliberate trade: operator gitconfig http.proxy /
+        # url.insteadOf / credential.helper no longer influence
+        # internal git — proxying flows through the env vars
+        # (preserve_proxy) instead. Sites that predate this chokepoint
+        # via get_git_env() are unaffected (same values).
+        env.update(RaptorConfig.GIT_ENV_VARS)
         return env
 
     # LLM provider API-key env vars.  These are intentionally NOT in

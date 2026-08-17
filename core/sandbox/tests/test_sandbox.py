@@ -300,9 +300,19 @@ class TestSandboxContextManager(unittest.TestCase):
         try:
             with sandbox() as run:
                 result = run(["env"], capture_output=True, text=True)
-            for var in dangerous:
-                self.assertNotIn(f"{var}=", result.stdout,
-                                 f"{var} should be stripped from sandbox env")
+            from core.config import RaptorConfig
+            for var, evil in dangerous.items():
+                if var in RaptorConfig.GIT_ENV_VARS:
+                    # Git config vars are REPLACED with the pinned safe
+                    # value, not stripped — the malicious value must
+                    # not survive either way.
+                    self.assertIn(
+                        f"{var}={RaptorConfig.GIT_ENV_VARS[var]}",
+                        result.stdout)
+                    self.assertNotIn(evil, result.stdout)
+                else:
+                    self.assertNotIn(f"{var}=", result.stdout,
+                                     f"{var} should be stripped from sandbox env")
         finally:
             for k, v in saved.items():
                 if v is None:

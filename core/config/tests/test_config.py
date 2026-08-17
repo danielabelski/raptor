@@ -72,7 +72,13 @@ class TestGetSafeEnv:
         with patch.dict(os.environ, injected):
             env = RaptorConfig.get_safe_env()
             for var in RaptorConfig.DANGEROUS_ENV_VARS:
-                assert var not in env, f"{var} should be stripped from safe env"
+                if var in RaptorConfig.GIT_ENV_VARS:
+                    # Git config vars are REPLACED with our pinned safe
+                    # values rather than merely stripped — the malicious
+                    # operator value must never survive either way.
+                    assert env.get(var) == RaptorConfig.GIT_ENV_VARS[var]
+                else:
+                    assert var not in env, f"{var} should be stripped from safe env"
 
     def test_strips_proxy_env_vars(self):
         """HTTP_PROXY and friends must be removed."""
@@ -316,6 +322,9 @@ class TestGetSafeEnvIncludePythonUserBase:
             for var in RaptorConfig.DANGEROUS_ENV_VARS:
                 if var == "PYTHONUSERBASE":
                     assert env.get(var) == "malicious_PYTHONUSERBASE"
+                elif var in RaptorConfig.GIT_ENV_VARS:
+                    # Replaced with our pinned safe value, not stripped.
+                    assert env.get(var) == RaptorConfig.GIT_ENV_VARS[var]
                 else:
                     assert var not in env, f"{var} should still be stripped"
 
@@ -385,6 +394,9 @@ class TestGetLlmEnvIncludePythonUserBase:
             for var in RaptorConfig.DANGEROUS_ENV_VARS:
                 if var == "PYTHONUSERBASE":
                     assert env.get(var) == "malicious_PYTHONUSERBASE"
+                elif var in RaptorConfig.GIT_ENV_VARS:
+                    # Replaced with our pinned safe value, not stripped.
+                    assert env.get(var) == RaptorConfig.GIT_ENV_VARS[var]
                 else:
                     assert var not in env, f"{var} should still be stripped"
 
@@ -443,3 +455,24 @@ class TestGetLlmEnvPreservesProxy:
         with patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.corp:3128"}):
             env = RaptorConfig.get_safe_env()
             assert "HTTPS_PROXY" not in env
+
+    def test_get_safe_env_isolates_git_config(self):
+        """Every subprocess env must carry the git config isolation —
+        an operator ~/.gitconfig with commit.gpgsign=true otherwise
+        routes sandboxed git commits through gpg-agent's unix-socket
+        IPC (blocked under network-denied sandboxes), and
+        log.showSignature / core.fsmonitor / credential.helper leak
+        operator behaviour into internal git invocations."""
+        env = RaptorConfig.get_safe_env()
+        for key, expected in RaptorConfig.GIT_ENV_VARS.items():
+            assert env.get(key) == expected, (
+                f"{key} missing/mismatched in get_safe_env(): "
+                f"{env.get(key)!r} != {expected!r}")
+
+    def test_get_safe_env_git_isolation_beats_operator_env(self):
+        """Operator-exported GIT_CONFIG_GLOBAL must not survive — the
+        dangerous-var strip removes it and our /dev/null wins."""
+        with patch.dict(os.environ,
+                        {"GIT_CONFIG_GLOBAL": "/home/op/.evil-gitconfig"}):
+            env = RaptorConfig.get_safe_env()
+            assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"

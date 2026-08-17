@@ -640,6 +640,9 @@ def aggregate_provenance(
         seen = {
             (mdl.get("resolved") or mdl.get("alias") or "?")
             for mdl in (m.get("models") or [])
+            # tolerate malformed/imported manifests, like engines above
+            # (run_models() filters non-dicts for the same reason)
+            if isinstance(mdl, dict)
         }
         for key in seen:
             summary["models"][key] = summary["models"].get(key, 0) + 1

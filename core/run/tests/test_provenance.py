@@ -547,6 +547,17 @@ class TestAggregateProvenance(unittest.TestCase):
         self.assertEqual(s["runs"], 1)
         self.assertEqual(s["engines"], {})
 
+    def test_tolerates_non_dict_models_entries(self):
+        # Hand-edited/imported manifest with bare-string model entries
+        # must not crash the rollup (run_models() filters the same way).
+        s = aggregate_provenance([{"manifest": {
+            "models": ["gpt-x", {"resolved": "gemini-2.5-pro"}],
+            "source_control": {"base_sha": "x", "dirty": False},
+            "deterministically_reproducible": False,
+        }}])
+        self.assertEqual(s["runs"], 1)
+        self.assertEqual(s["models"], {"gemini-2.5-pro": 1})
+
 
 class TestFormatProvenanceRollup(unittest.TestCase):
 

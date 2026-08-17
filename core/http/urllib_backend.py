@@ -998,6 +998,25 @@ class UrllibClient:
                         f"reintroduce the bypass urllib3 was chosen to "
                         f"prevent). Underlying: {e}",
                     ) from e
+                # CONNECT-level 5xx from the (upstream) proxy is the
+                # other hard-refusal shape: the proxy itself answered
+                # and said no (host blocked by upstream policy, or the
+                # upstream cannot reach it). Retrying with backoff just
+                # multiplies a policy decision into minutes of wall
+                # clock — observed as registry probes burning the full
+                # total_timeout per blocked host. Same anchored-pattern
+                # discipline as the 403 branch above.
+                _has_tunnel_5xx = bool(
+                    re.search(r'(?:tunnel|status|http|response)'
+                              r'[^\n]{0,40}\b50[234]\b', msg)
+                )
+                if _has_tunnel_5xx:
+                    host = _urlparse.urlsplit(url).hostname or "?"
+                    raise HttpError(
+                        f"Upstream proxy could not tunnel to {host!r} "
+                        f"(CONNECT-level 5xx — upstream policy or "
+                        f"reachability, not transient). Underlying: {e}",
+                    ) from e
                 last_exc = e
                 if is_last_attempt:
                     continue

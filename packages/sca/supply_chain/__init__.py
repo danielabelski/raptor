@@ -507,19 +507,35 @@ def _commit_provenance_to_finding(
 ) -> SupplyChainFinding:
     h = cpf.hit
     short_sha = h.commit_sha[:12]
+    if cpf.claim_shape == "canonical":
+        # Downgraded, never suppressed: label the trusted-email shape
+        # distinctly so a reviewer sees at a glance why the severity
+        # is reduced and what still needs verifying.
+        detail = (
+            f"commit {short_sha} touching dependency manifest(s) is "
+            f"UNSIGNED but carries a trusted-bot author email "
+            f"({h.author_name} <{h.author_email}>), with "
+            f"author/committer date skew of {h.skew_days} days — "
+            f"possible impersonation: the author email is an "
+            f"unauthenticated free-text field, and bots frequently "
+            f"lose their signature on rebase, so verify provenance "
+            f"(reduced severity, not suppressed)"
+        )
+    else:
+        detail = (
+            f"commit {short_sha} touching dependency manifest(s) "
+            f"claims bot/automation identity "
+            f"({h.author_name} <{h.author_email}>), is unsigned, "
+            f"and has author/committer date skew of {h.skew_days} days "
+            f"— forgery-shape conjunction worth review"
+        )
     return SupplyChainFinding(
         finding_id=(
             f"sca:supplychain:commit_provenance_drift:{h.commit_sha}"
         ),
         kind="commit_provenance_drift",
         dependency=cpf.dependency,
-        detail=(
-            f"commit {short_sha} touching dependency manifest(s) "
-            f"claims bot/automation identity "
-            f"({h.author_name} <{h.author_email}>), is unsigned, "
-            f"and has author/committer date skew of {h.skew_days} days "
-            f"— forgery-shape conjunction worth review"
-        ),
+        detail=detail,
         evidence={
             "commit_sha": h.commit_sha,
             "sig_status": h.sig_status,
@@ -528,6 +544,7 @@ def _commit_provenance_to_finding(
             "author_date": h.author_date_iso,
             "committer_date": h.committer_date_iso,
             "skew_days": h.skew_days,
+            "claim_shape": cpf.claim_shape,
             "subject": _truncate(h.subject, limit=200),
             "paths_touched": list(h.paths_touched),
         },

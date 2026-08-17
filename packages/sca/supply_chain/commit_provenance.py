@@ -169,6 +169,12 @@ class CommitProvenanceFinding:
     hit: CommitProvenanceHit
     severity: str
     confidence: Confidence
+    # "impersonation" (bot name claimed, non-canonical email — the
+    # low-effort forgery shape, full severity) or "canonical" (email
+    # matches the canonical bot pattern — downgraded, never
+    # suppressed; the label lets consumers render the two shapes
+    # distinctly).
+    claim_shape: str = "impersonation"
 
 
 def scan_target(
@@ -256,6 +262,7 @@ def _classify(
                     "rebased bot commit, hence reduced confidence"
                 ),
             ),
+            claim_shape="canonical",
         )
     return CommitProvenanceFinding(
         dependency=host,
@@ -268,6 +275,7 @@ def _classify(
                 f"date skew {skew}d (forgery-shape conjunction)"
             ),
         ),
+        claim_shape="impersonation",
     )
 
 

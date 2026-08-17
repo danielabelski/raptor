@@ -518,3 +518,24 @@ class TestTrackReadHook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCleanupManifest:
+    """``cleanup_manifest`` — consume-then-delete for the reads
+    manifest (the validation helper's post-record cleanup)."""
+
+    def test_removes_existing_manifest(self, tmp_path):
+        from core.coverage.record import READS_MANIFEST, cleanup_manifest
+
+        manifest = tmp_path / READS_MANIFEST
+        manifest.write_text("src/a.c\n", encoding="utf-8")
+        assert cleanup_manifest(tmp_path) is True
+        assert not manifest.exists()
+
+    def test_missing_manifest_is_noop(self, tmp_path):
+        from core.coverage.record import cleanup_manifest
+
+        assert cleanup_manifest(tmp_path) is False
+
+    def test_importable_from_package(self):
+        from core.coverage import cleanup_manifest  # noqa: F401

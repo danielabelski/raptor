@@ -9,6 +9,7 @@ execution detail from records).
 from .record import (
     build_from_manifest,
     build_from_semgrep,
+    cleanup_manifest,
     build_from_codeql,
     build_from_findings,
     write_record,
@@ -72,6 +73,7 @@ __all__ = [
     "build_from_semgrep",
     "build_from_codeql",
     "build_from_findings",
+    "cleanup_manifest",
     "write_record",
     "load_record",
     "load_records",

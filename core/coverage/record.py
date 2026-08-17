@@ -72,6 +72,26 @@ def build_from_manifest(run_dir: Path, tool: str,
     return record
 
 
+def cleanup_manifest(run_dir: Path) -> bool:
+    """Remove the consumed ``.reads-manifest`` from *run_dir*.
+
+    Callers that fold the manifest into a coverage record (e.g. the
+    validation helper's ``build_from_findings`` + ``write_record``
+    sequence) delete it afterwards so the run-completion hook's
+    manifest→``coverage-read.json`` conversion doesn't re-count the
+    same reads.  Best-effort: returns True when a manifest was
+    removed, False when none existed or removal failed.
+    """
+    manifest = Path(run_dir) / READS_MANIFEST
+    try:
+        manifest.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+
 def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
                        rules_applied: List[str] = None) -> Optional[Dict[str, Any]]:
     """Build a coverage record from Semgrep JSON output.

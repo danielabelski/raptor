@@ -531,6 +531,58 @@ class LLMProvider(ABC):
             f"or pass cost_per_1k_tokens to the LLMConfig."
         )
 
+    def _init_instructor(self, make_client) -> None:
+        """Shared Instructor wiring for SDK-backed providers.
+
+        ``make_client`` builds the instructor-wrapped client when the
+        library is installed; otherwise structured output uses the
+        JSON-in-prompt fallback (warned once at construction).
+        """
+        self.instructor_client = None
+        self._instructor_consec_failures = 0
+        self._instructor_lock = threading.Lock()
+        if INSTRUCTOR_AVAILABLE:
+            self.instructor_client = make_client()
+        else:
+            logger.warning(
+                "Instructor not installed — structured output will use JSON-in-prompt fallback. "
+                "For more reliable structured output: pip install instructor"
+            )
+
+    def _note_instructor_success(self) -> None:
+        """Reset the consecutive-failure counter after a good call."""
+        with self._instructor_lock:
+            self._instructor_consec_failures = 0
+
+    def _note_instructor_failure(self, exc: Exception) -> None:
+        """Count a consecutive Instructor failure; disable at the cap.
+
+        A single transient error (dispatcher startup race, network
+        hiccup) must not kill Instructor for the session — only
+        ``_INSTRUCTOR_MAX_CONSEC_FAILURES`` in a row do. The disable
+        is permanent for this provider instance: callers fall back to
+        JSON-in-prompt for the rest of the session (there is no
+        re-enable/backoff mechanism).
+        """
+        with self._instructor_lock:
+            self._instructor_consec_failures += 1
+            consec = self._instructor_consec_failures
+        from core.security.log_sanitisation import escape_nonprintable as _esc
+        logger.warning(
+            "Instructor structured generation failed for %s/%s (%d/%d). "
+            "Exception (%s): %s",
+            self.config.provider, self.config.model_name,
+            consec, _INSTRUCTOR_MAX_CONSEC_FAILURES,
+            type(exc).__name__, _esc(str(exc))[:512],
+        )
+        if consec >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
+            logger.warning(
+                "Instructor disabled for %s/%s after %d consecutive failures",
+                self.config.provider, self.config.model_name,
+                consec,
+            )
+            self.instructor_client = None
+
     def _structured_fallback(self, prompt: str, schema: dict[str, Any],
                              pydantic_model, system_prompt: str | None = None
                              ) -> tuple[dict[str, Any], str]:
@@ -1202,17 +1254,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"OpenAICompatibleProvider: direct SDK (no dispatcher) provider={config.provider}"
             )
 
-        self.instructor_client = None
-        self._instructor_consec_failures = 0
-        self._instructor_lock = threading.Lock()
-        self._instructor_backed = None  # stashed client during backoff
-        if INSTRUCTOR_AVAILABLE:
-            self.instructor_client = instructor.from_openai(self.client)
-        else:
-            logger.warning(
-                "Instructor not installed — structured output will use JSON-in-prompt fallback. "
-                "For more reliable structured output: pip install instructor"
-            )
+        self._init_instructor(lambda: instructor.from_openai(self.client))
 
         # Flips on first detection that this provider's bound model
         # rejects function-calling (older Ollama models, smaller
@@ -1391,8 +1433,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     cache_read_tokens=cache_read_tokens,
                 )
 
-                with self._instructor_lock:
-                    self._instructor_consec_failures = 0
+                self._note_instructor_success()
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
@@ -1400,25 +1441,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
 
             except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
-                with self._instructor_lock:
-                    self._instructor_consec_failures += 1
-                    consec = self._instructor_consec_failures
-                from core.security.log_sanitisation import escape_nonprintable as _esc
-                logger.warning(
-                    "Instructor structured generation failed for %s/%s (%d/%d). "
-                    "Exception (%s): %s",
-                    self.config.provider, self.config.model_name,
-                    consec, _INSTRUCTOR_MAX_CONSEC_FAILURES,
-                    type(e).__name__, _esc(str(e))[:512],
-                )
-                if consec >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
-                    logger.warning(
-                        "Instructor disabled for %s/%s after %d consecutive failures",
-                        self.config.provider, self.config.model_name,
-                        consec,
-                    )
-                    self._instructor_backed = self.instructor_client
-                    self.instructor_client = None
+                self._note_instructor_failure(e)
 
         # Fallback: JSON-in-prompt
         return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
@@ -2035,17 +2058,7 @@ class AnthropicProvider(LLMProvider):
             )
             logger.debug("AnthropicProvider: direct SDK (no dispatcher)")
 
-        self.instructor_client = None
-        self._instructor_consec_failures = 0
-        self._instructor_lock = threading.Lock()
-        self._instructor_backed = None  # stashed client during backoff
-        if INSTRUCTOR_AVAILABLE:
-            self.instructor_client = instructor.from_anthropic(self.client)
-        else:
-            logger.warning(
-                "Instructor not installed — structured output will use JSON-in-prompt fallback. "
-                "For more reliable structured output: pip install instructor"
-            )
+        self._init_instructor(lambda: instructor.from_anthropic(self.client))
 
         # Per-instance flag: have we warned about silent cache-failure
         # for this model? Warns once per provider instance to avoid
@@ -2215,8 +2228,7 @@ class AnthropicProvider(LLMProvider):
                     cache_write_tokens=cache_write_tokens,
                 )
 
-                with self._instructor_lock:
-                    self._instructor_consec_failures = 0
+                self._note_instructor_success()
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
@@ -2224,25 +2236,7 @@ class AnthropicProvider(LLMProvider):
                 )
 
             except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
-                with self._instructor_lock:
-                    self._instructor_consec_failures += 1
-                    consec = self._instructor_consec_failures
-                from core.security.log_sanitisation import escape_nonprintable as _esc
-                logger.warning(
-                    "Instructor structured generation failed for %s/%s (%d/%d). "
-                    "Exception (%s): %s",
-                    self.config.provider, self.config.model_name,
-                    consec, _INSTRUCTOR_MAX_CONSEC_FAILURES,
-                    type(e).__name__, _esc(str(e))[:512],
-                )
-                if consec >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
-                    logger.warning(
-                        "Instructor disabled for %s/%s after %d consecutive failures",
-                        self.config.provider, self.config.model_name,
-                        consec,
-                    )
-                    self._instructor_backed = self.instructor_client
-                    self.instructor_client = None
+                self._note_instructor_failure(e)
 
         # Fallback: JSON-in-prompt
         return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)

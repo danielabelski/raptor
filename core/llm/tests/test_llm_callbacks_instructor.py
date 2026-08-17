@@ -561,3 +561,42 @@ class TestGeminiNativeStructuredTruncation:
             "test", {"result": "string"},
         )
         assert result.result["result"] == "ok"
+
+
+class TestInstructorFailureFunnel:
+    """The consecutive-failure funnel shared by the SDK providers:
+    transient errors don't kill Instructor; the cap does, permanently
+    for the provider instance; success resets the count."""
+
+    def _make_provider(self):
+        import threading
+
+        with patch.multiple(LLMProvider, __abstractmethods__=set()):
+            provider = LLMProvider.__new__(LLMProvider)
+        provider.config = ModelConfig(
+            provider="openai",
+            model_name="gpt-5.2",
+            api_key="sk-test",
+            api_base="https://api.openai.com/v1",
+        )
+        provider.instructor_client = object()
+        provider._instructor_consec_failures = 0
+        provider._instructor_lock = threading.Lock()
+        return provider
+
+    def test_disables_after_consecutive_cap(self):
+        provider = self._make_provider()
+        provider._note_instructor_failure(RuntimeError("boom 1"))
+        provider._note_instructor_failure(RuntimeError("boom 2"))
+        assert provider.instructor_client is not None
+        provider._note_instructor_failure(RuntimeError("boom 3"))
+        assert provider.instructor_client is None
+
+    def test_success_resets_counter(self):
+        provider = self._make_provider()
+        provider._note_instructor_failure(RuntimeError("boom 1"))
+        provider._note_instructor_failure(RuntimeError("boom 2"))
+        provider._note_instructor_success()
+        provider._note_instructor_failure(RuntimeError("boom 3"))
+        provider._note_instructor_failure(RuntimeError("boom 4"))
+        assert provider.instructor_client is not None

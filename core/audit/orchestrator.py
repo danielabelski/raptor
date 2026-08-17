@@ -3261,9 +3261,12 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     try:
         from .sibling_analysis import check_semantic_consistency
 
+        # detector_gaps, not gaps: raw checklist gaps carry line spans
+        # but no text, so a source map built from them is always empty
+        # — only the hydrated detector copies have gap["source"].
         source_map = {
             f"{g['file']}:{g['name']}": {"source": g.get("source", "")}
-            for g in gaps
+            for g in detector_gaps
             if g.get("source")
         }
         semantic_findings = check_semantic_consistency(peer_groups, source_map)
@@ -3287,6 +3290,22 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         )
     except Exception:
         logger.debug("mechanical detectors phase failed", exc_info=True)
+
+    # Route semantic-consistency outliers through the mechanical-
+    # findings channel so they reach mechanical-findings.json and the
+    # per-gap review prompt — previously they were computed and dropped
+    # (stored on shared state with no consumer).
+    if semantic_findings:
+        try:
+            from .sibling_analysis import semantic_findings_to_mechanical
+
+            for mf in semantic_findings_to_mechanical(semantic_findings):
+                key = f"{mf['file']}:{mf['function']}"
+                mechanical_findings.setdefault(key, []).append(mf)
+        except Exception:
+            logger.debug(
+                "semantic-consistency routing failed", exc_info=True,
+            )
 
     if mechanical_findings and config.out_dir:
         try:

@@ -894,3 +894,42 @@ def check_semantic_consistency(
         findings.extend(_check_guard_consistency(group, sources))
 
     return findings
+
+
+def semantic_findings_to_mechanical(
+    findings: list[dict],
+) -> list[dict]:
+    """Convert :func:`check_semantic_consistency` outputs into the
+    mechanical-detector finding shape (``file``/``function``/
+    ``detector``/``line``/``description``).
+
+    This is how semantic-consistency outliers reach
+    ``mechanical-findings.json`` and the per-gap review prompt —
+    the same route every other mechanical detector uses.
+    """
+    mechanical: list[dict] = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        file = f.get("file", "")
+        function = f.get("function", "")
+        if not function:
+            continue
+        desc = f.get("inconsistency", "")
+        cwe = f.get("cwe", "")
+        confidence = f.get("confidence")
+        detail = []
+        if cwe:
+            detail.append(cwe)
+        if confidence is not None:
+            detail.append(f"confidence {confidence}")
+        if detail:
+            desc = f"{desc} [{', '.join(detail)}]"
+        mechanical.append({
+            "file": file,
+            "function": function,
+            "detector": "semantic_consistency",
+            "line": 0,
+            "description": desc,
+        })
+    return mechanical

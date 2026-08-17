@@ -33,10 +33,6 @@ def _config(primary: ModelConfig, fallbacks: list) -> LLMConfig:
     )
 
 
-class _FailingResponse:
-    """Stand-in for an LLMResponse the test never reads — provider raises before this matters."""
-
-
 class _FakeProvider:
     """Provider stub.
 

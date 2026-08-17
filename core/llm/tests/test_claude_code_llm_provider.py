@@ -45,15 +45,6 @@ from core.llm.tool_use import (
 # ---------------------------------------------------------------------------
 
 
-class _FakeCompleted:
-    """Stand-in for :class:`subprocess.CompletedProcess`."""
-
-    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0):
-        self.stdout = stdout
-        self.stderr = stderr
-        self.returncode = returncode
-
-
 def _envelope(
     result: str = "ok",
     cost_usd: float = 0.01,
@@ -71,19 +62,6 @@ def _envelope(
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         },
-    })
-
-
-def _structured_envelope(
-    payload: dict[str, Any],
-    cost_usd: float = 0.02,
-) -> str:
-    return json.dumps({
-        "structured_output": payload,
-        "total_cost_usd": cost_usd,
-        "duration_ms": 100,
-        "modelUsage": {"claude-opus-4-6": {}},
-        "usage": {"input_tokens": 3, "output_tokens": 4},
     })
 
 
@@ -859,21 +837,6 @@ _TOOL_DEFS = [
         handler=lambda inp: "ok",
     ),
 ]
-
-
-def _structured_envelope_with_session(
-    payload: dict[str, Any],
-    session_id: str = "sess-001",
-    cost_usd: float = 0.02,
-) -> str:
-    return json.dumps({
-        "structured_output": payload,
-        "session_id": session_id,
-        "total_cost_usd": cost_usd,
-        "duration_ms": 100,
-        "modelUsage": {"claude-haiku-4-5-20251001": {}},
-        "usage": {"input_tokens": 3, "output_tokens": 4},
-    })
 
 
 def test_factory_routes_claudecode_resumable() -> None:

@@ -2852,6 +2852,8 @@ class AutonomousSecurityAgentV2:
                 # 1. Autonomous analysis (LLM-powered, or prep-only)
                 if self.analyze_vulnerability(vuln):
                     analyzed += 1
+                    if emit_journal and self._emit_journal_entry(vuln, checklist):
+                        journal_entries_emitted += 1
                     # P7 precision loop: analysis verdicts on findings
                     # produced by graduated synthesized rules feed
                     # RuleLibrary.record_match so graduation /
@@ -2860,8 +2862,6 @@ class AutonomousSecurityAgentV2:
                     # rule). Best-effort — never blocks analysis.
                     with contextlib.suppress(Exception):
                         self._record_graduated_rule_feedback(vuln)
-                    if emit_journal and self._emit_journal_entry(vuln, checklist):
-                        journal_entries_emitted += 1
 
                     # Track dataflow validation
                     has_dv = (

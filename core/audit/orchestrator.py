@@ -6585,6 +6585,21 @@ def _run_mechanical_detectors(
         logger.debug("mechanical: callsite_consistency failed", exc_info=True)
 
     try:
+        from .block_sibling_analysis import detect_block_sibling_asymmetries
+
+        for bs in detect_block_sibling_asymmetries(source_texts):
+            _add(
+                bs.file,
+                bs.function,
+                "block_sibling",
+                bs.line,
+                f"branch '{bs.branch_label}' deviates from its "
+                f"siblings: {bs.explanation}",
+            )
+    except Exception:
+        logger.debug("mechanical: block_sibling failed", exc_info=True)
+
+    try:
         from .transform_sequence import detect_transform_order_violations
 
         for tv in detect_transform_order_violations(source_texts):

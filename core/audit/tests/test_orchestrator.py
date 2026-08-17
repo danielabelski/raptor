@@ -4413,3 +4413,45 @@ class TestChecklistLineEndCache:
         assert _checklist_line_end(
             self._config(target_b, 99), "src/util.c", "init",
         ) == 99
+
+
+class TestMultiPassConsensusFailureVisibility:
+    """A runtime failure in cross-model consensus must be visible at
+    WARNING (the operator asked for --model A --model B and silently
+    got single-model results), while a missing module stays at DEBUG."""
+
+    def test_consensus_runtime_failure_warns(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        import logging
+
+        import core.audit.multi_review as mr_mod
+
+        def broken_multi_review(*a, **kw):
+            raise RuntimeError("provider exploded")
+
+        monkeypatch.setattr(
+            mr_mod, "run_audit_multi_review", broken_multi_review,
+        )
+
+        config = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path,
+            models=["model-a", "model-b"], multi_model=True,
+        )
+
+        def review_fn(ctx, cfg):
+            return ReviewOutcome(
+                file="a.c", function="f", status="clean", body="ok",
+            )
+
+        ctx = {"file": "a.c", "function": "f", "line_start": 1}
+        with caplog.at_level(logging.DEBUG, logger="core.audit.orchestrator"):
+            outcome = _multi_pass_review(review_fn, ctx, config, passes=2)
+
+        assert outcome.status == "clean"  # inline fallback still ran
+        warning_msgs = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "multi-model consensus failed" in r.message
+        ]
+        assert warning_msgs, "consensus failure must be logged at WARNING"

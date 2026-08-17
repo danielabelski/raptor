@@ -6070,9 +6070,20 @@ def _multi_pass_review(
                 review_result=primary,
             )
 
-        except (ImportError, Exception):
+        except ImportError:
             logger.debug(
                 "multi_review unavailable, falling back to inline loop",
+                exc_info=True,
+            )
+        except Exception:
+            # The operator asked for cross-model consensus (--model A
+            # --model B); a runtime failure here silently downgrades
+            # to single-model self-consistency — say so visibly.
+            logger.warning(
+                "multi-model consensus failed for %s:%s — falling back "
+                "to single-model self-consistency",
+                file_path,
+                function_name,
                 exc_info=True,
             )
 

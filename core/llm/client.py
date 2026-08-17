@@ -1820,6 +1820,17 @@ class LLMClient:
 
                         return response
 
+                    except LLMBudgetExceededError:
+                        # Budget exhaustion is TERMINAL for the run
+                        # (see the class docstring): re-raise so
+                        # callers catching by type actually see it.
+                        # Letting the blanket handler below treat it
+                        # as a per-attempt failure would iterate every
+                        # fallback model (each failing the same budget
+                        # check) and surface a generic "All models
+                        # failed" RuntimeError, losing the typed
+                        # contract.
+                        raise
                     except Exception as e:  # noqa: BLE001
                         last_error = e
 
@@ -2302,6 +2313,11 @@ class LLMClient:
                         self._save_structured_to_cache(cache_key, structured_response)
                         return structured_response
 
+                    except LLMBudgetExceededError:
+                        # Terminal for the run — re-raise past the
+                        # blanket handler so typed callers see it.
+                        # See ``generate`` above for the rationale.
+                        raise
                     except Exception as e:  # noqa: BLE001
                         last_error = e
                         # Schema reliability signal — only record the model as

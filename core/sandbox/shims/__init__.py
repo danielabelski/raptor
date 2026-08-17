@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -48,22 +50,43 @@ def build_setgroups_stub() -> Optional[Path]:
 
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Compile to a temp name and rename — atomic on same filesystem.
-    tmp = out.with_suffix(".tmp.so")
+    # Compile to a PER-PROCESS temp name and os.replace() — atomic on
+    # the same filesystem. A deterministic temp path would let two
+    # concurrent cold builders write the same file and rename a
+    # partially written .so into the cache.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=_CACHE_DIR, prefix=f"libsetgroups_stub-{h}.", suffix=".tmp.so",
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
-        subprocess.run(
+        r = subprocess.run(
             ["gcc", "-shared", "-fPIC", "-O2", "-o", str(tmp), str(src)],
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,  # returncode handled explicitly below
         )
-        if not tmp.is_file():
+        if r.returncode != 0:
+            # A failed compile can still leave partial output at -o;
+            # never promote it into the cache, and keep the stderr so
+            # the failure is diagnosable.
+            log.debug(
+                "gcc failed for setgroups_stub (rc=%s): %s",
+                r.returncode, (r.stderr or "").strip()[:500],
+            )
+            return None
+        if not tmp.is_file() or tmp.stat().st_size == 0:
             log.debug("gcc produced no output for setgroups_stub")
             return None
-        tmp.rename(out)
+        # mkstemp creates 0600; match the default-umask mode gcc used
+        # to produce so sandboxed children can keep dlopen'ing it.
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, out)
         log.debug("Built setgroups stub at %s", out)
         return out
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         log.debug("Failed to build setgroups stub: %s", exc)
-        tmp.unlink(missing_ok=True)
         return None
+    finally:
+        tmp.unlink(missing_ok=True)

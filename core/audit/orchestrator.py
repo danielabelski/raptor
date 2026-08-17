@@ -549,6 +549,10 @@ class OrchestratorResult:
     clean_check_rescues: int = 0
     sarif_clean_resolved: int = 0
     outcomes: list[ReviewOutcome] = field(default_factory=list)
+    # Structured prefilter/triage kill records (see
+    # core.audit.prefilter_ledger) — written to prefilter-kills.jsonl
+    # with sampled compiler-analyzer corroboration at end of run.
+    prefilter_kills: list = field(default_factory=list)
     dormant: int = 0
     error_counts: dict[str, int] = field(default_factory=dict)
     error_retries: int = 0
@@ -934,6 +938,21 @@ def review_one_function(
         outcome.line = gap.get("line_start", 0)
         with result._lock:
             result.prefilter_skipped += 1
+        try:
+            from .prefilter_ledger import GATE_TRIAGE_SKIP, make_kill_record
+
+            with result._lock:
+                result.prefilter_kills.append(make_kill_record(
+                    file=gap["file"],
+                    function=gap["name"],
+                    gate=GATE_TRIAGE_SKIP,
+                    reason=", ".join(triage.reasons),
+                    sloc=gap.get("sloc", 0),
+                    line_start=gap.get("line_start", 0),
+                    line_end=gap.get("line_end", 0),
+                ))
+        except Exception:
+            logger.debug("triage kill record failed", exc_info=True)
         try:
             if collector is not None:
                 collector.submit(outcome, gap)
@@ -1470,6 +1489,25 @@ def review_one_function(
             outcome.line = gap.get("line_start", 0)
             with result._lock:
                 result.prefilter_skipped += 1
+            try:
+                from .prefilter_ledger import (
+                    gate_for_skip_reason,
+                    make_kill_record,
+                )
+
+                with result._lock:
+                    result.prefilter_kills.append(make_kill_record(
+                        file=gap["file"],
+                        function=gap["name"],
+                        gate=gate_for_skip_reason(pf_result.skip_reason),
+                        reason=pf_result.skip_reason,
+                        language=pf_result.language,
+                        sloc=pf_result.sloc,
+                        line_start=gap.get("line_start", 0),
+                        line_end=gap.get("line_end", 0),
+                    ))
+            except Exception:
+                logger.debug("prefilter kill record failed", exc_info=True)
             try:
                 if collector is not None:
                     collector.submit(outcome, gap)
@@ -5480,6 +5518,27 @@ def _run_audit_body(
             logger.info(diag_text)
     except Exception:
         logger.debug("tier diagnostics output failed", exc_info=True)
+
+    # Prefilter-kill ledger: structured record of every prefilter /
+    # triage kill, spot-audited against the compiler analyzer so the
+    # cheapest gates in the funnel carry an error bar.
+    if result.prefilter_kills and config.out_dir:
+        try:
+            from .prefilter_ledger import (
+                corroborate_sample,
+                format_summary,
+                write_ledger,
+            )
+
+            corroborate_sample(
+                result.prefilter_kills,
+                config.target_path,
+                out_dir=config.out_dir,
+            )
+            write_ledger(result.prefilter_kills, config.out_dir)
+            logger.info(format_summary(result.prefilter_kills))
+        except Exception:
+            logger.debug("prefilter kill ledger failed", exc_info=True)
 
     # Pre-export hooks: outcome-level post-processing (e.g. the ensemble
     # pipeline's file-pile-up dampener) runs BEFORE the journal

@@ -156,7 +156,13 @@ SYSPATH_VARIANTS = {
     "raptor-lifecycle-hook": ("sys.path.insert(0, str(REPO_ROOT))",),
     "raptor-migrate-journal": ("sys.path.insert(0, str(REPO))",),
     "raptor-r2-sandboxed": ("sys.path.insert(0, str(_RAPTOR_DIR))",),
-    "raptor-self-test": ("sys.path.insert(0, str(_RAPTOR_DIR))",),
+    "raptor-self-test": (
+        "sys.path.insert(0, str(_RAPTOR_DIR))",
+        # embedded tool-sandbox-matrix harness child snippet — the
+        # child's repo root arrives via the trusted spec argument (the
+        # harness also pins the child's RAPTOR_DIR from the same spec).
+        'sys.path.insert(0, spec["raptor_dir"])',
+    ),
     "raptor-run-sandboxed": ("sys.path.insert(0, raptor_dir)",),
     "raptor-sca-refit-calibration": ("sys.path.insert(0, str(_REPO_ROOT))",),
     "raptor-sca-run": ("sys.path.insert(0, str(_REPO))",),

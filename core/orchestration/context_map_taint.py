@@ -66,8 +66,18 @@ def _sink_call_name(
 def build_taint_pairs(
     context_map: dict[str, Any],
     checklist: dict[str, Any] | None = None,
+    *,
+    iris_sinks: frozenset[str] = frozenset(),
 ) -> list[tuple[dict[str, Any], dict[str, Any], str, str]]:
-    """Enumerate (entry_point, sink_detail, source_method, sink_call)."""
+    """Enumerate (entry_point, sink_detail, source_method, sink_call).
+
+    ``iris_sinks`` holds promoted IRIS taint-spec sink function names:
+    a sink detail whose call site can't be resolved from the call graph
+    (typical for project-wrapper sinks, which carry name but no line)
+    still pairs when its ``name`` is a known IRIS sink — the wrapper
+    function itself is the callee. Such sinks are stamped
+    ``taint_spec_source: "iris"`` for provenance.
+    """
     calls = _call_index(checklist)
     pairs = []
     for ep in context_map.get("entry_points") or []:
@@ -79,7 +89,12 @@ def build_taint_pairs(
                 continue
             sink_call = _sink_call_name(sink, calls)
             if not sink_call:
-                continue
+                name = sink.get("name") or ""
+                if name and name in iris_sinks:
+                    sink_call = name
+                    sink.setdefault("taint_spec_source", "iris")
+                else:
+                    continue
             pairs.append((ep, sink, source_method, sink_call))
     return pairs
 
@@ -125,16 +140,29 @@ def enrich_with_taint_flows(
     checklist: dict[str, Any] | None = None,
     *,
     max_pairs: int = MAX_PAIRS,
+    iris_dir: Any = None,
 ) -> int:
     """Annotate the context map with Joern taint-flow confirmations.
 
     *server* is a started :class:`packages.joern.server.JoernServer`
-    with the target's CPG already imported. Returns the number of
-    entries annotated (entry points + sinks).
+    with the target's CPG already imported. When ``iris_dir`` (a run
+    output dir) is given, promoted IRIS taint-spec sinks widen the
+    pair enumeration so flows through project-specific wrappers are
+    checked too. Returns the number of entries annotated (entry
+    points + sinks).
     """
     _clear_prior_annotations(context_map)
 
-    pairs = build_taint_pairs(context_map, checklist)
+    iris_sinks: frozenset[str] = frozenset()
+    if iris_dir is not None:
+        try:
+            from core.iris.api import get_project_sinks
+
+            iris_sinks = get_project_sinks(out_dir=iris_dir)
+        except Exception:
+            logger.debug("IRIS sink load failed", exc_info=True)
+
+    pairs = build_taint_pairs(context_map, checklist, iris_sinks=iris_sinks)
     dropped = max(0, len(pairs) - max_pairs)
     if dropped:
         logger.warning(
@@ -189,5 +217,6 @@ def enrich_with_taint_flows(
         "flows_confirmed": confirmed,
         "entry_points_confirmed": eps_confirmed,
         "sinks_confirmed": sinks_confirmed,
+        "iris_sinks_loaded": len(iris_sinks),
     }
     return len(eps_confirmed) + len(sinks_confirmed)

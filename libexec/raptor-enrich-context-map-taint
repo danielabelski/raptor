@@ -119,7 +119,9 @@ def main() -> int:
         if not srv.import_cpg(cpg.path):
             print(f"{PROG}: CPG import failed; skipping", file=sys.stderr)
             return 0
-        enriched = enrich_with_taint_flows(context_map, srv, checklist)
+        enriched = enrich_with_taint_flows(
+            context_map, srv, checklist, iris_dir=understand_dir,
+        )
 
     save_json(context_map_path, context_map)
     summary = context_map.get("taint_summary") or {}

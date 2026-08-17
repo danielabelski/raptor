@@ -682,3 +682,40 @@ class TestPopulateSinksArray:
         result = _sample_result()
         _populate_sinks_array(cmap, result)
         assert len(cmap["sinks"]) == 5  # 1 existing + 2 callers + 2 callees
+
+
+class TestMergeIrisSinks:
+    def test_extra_sinks_enter_catalog_with_provenance(self, tmp_path: Path):
+        target = tmp_path / "project"
+        target.mkdir()
+        (target / "noop.py").write_text("def f():\n    pass\n")
+        context_map = {"entry_points": [], "sink_details": [], "meta": {}}
+        modified = enrich_with_sink_discovery(
+            context_map, target,
+            extra_sinks=frozenset({"safe_copy", "run_query"}),
+        )
+        assert modified >= 2
+        iris = [
+            s for s in context_map["sink_details"]
+            if s.get("source") == "iris"
+        ]
+        assert {s["name"] for s in iris} == {"safe_copy", "run_query"}
+        flat = {
+            s["function"] for s in context_map["sinks"]
+            if not s.get("direct", True)
+        }
+        assert {"safe_copy", "run_query"} <= flat
+
+    def test_extra_sinks_idempotent(self, tmp_path: Path):
+        target = tmp_path / "project"
+        target.mkdir()
+        (target / "noop.py").write_text("def f():\n    pass\n")
+        context_map = {"entry_points": [], "sink_details": [], "meta": {}}
+        enrich_with_sink_discovery(
+            context_map, target, extra_sinks=frozenset({"safe_copy"}),
+        )
+        n = len(context_map["sink_details"])
+        enrich_with_sink_discovery(
+            context_map, target, extra_sinks=frozenset({"safe_copy"}),
+        )
+        assert len(context_map["sink_details"]) == n

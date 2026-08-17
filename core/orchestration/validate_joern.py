@@ -174,20 +174,105 @@ def _clear_prior_annotations(attack_surface: dict[str, Any]) -> None:
     attack_surface.pop("taint_summary", None)
 
 
+def _merge_iris_surface_entries(
+    attack_surface: dict[str, Any],
+    iris_dir: Any,
+) -> tuple[int, int]:
+    """Append promoted IRIS spec sources/sinks to the attack surface.
+
+    Entries carry ``source_provenance: "iris"`` (sources) /
+    ``"iris"`` in the sink's ``source`` field so downstream stages can
+    see they came from the promoted spec store, not the LLM map.
+    Idempotent: existing iris entries are reused, not duplicated.
+    Returns (n_sources_added, n_sinks_added).
+    """
+    try:
+        from core.iris.api import get_project_sinks, get_project_sources
+    except ImportError:
+        return (0, 0)
+
+    iris_sources = get_project_sources(out_dir=iris_dir)
+    iris_sinks = get_project_sinks(out_dir=iris_dir)
+    if not iris_sources and not iris_sinks:
+        return (0, 0)
+
+    sources = attack_surface.setdefault("sources", [])
+    sinks = attack_surface.setdefault("sinks", [])
+
+    existing_sources = {
+        s.get("entry", "") for s in sources if isinstance(s, dict)
+    }
+    existing_sinks = {
+        s.get("location", "") for s in sinks if isinstance(s, dict)
+    }
+
+    n_sources = 0
+    for fn in sorted(iris_sources):
+        entry = f"iris:{fn}"
+        if entry in existing_sources:
+            continue
+        sources.append({
+            "type": "project_source",
+            "entry": entry,
+            "function": fn,
+            "source_provenance": "iris",
+            "description": (
+                "Promoted IRIS taint spec: project-specific source"
+            ),
+        })
+        n_sources += 1
+
+    n_sinks = 0
+    for fn in sorted(iris_sinks):
+        location = f"iris:{fn}"
+        if location in existing_sinks:
+            continue
+        sinks.append({
+            "type": "project_sink",
+            "location": location,
+            "operation": f"{fn}(...)",
+            "source": "iris",
+            "description": (
+                "Promoted IRIS taint spec: project-specific sink"
+            ),
+        })
+        n_sinks += 1
+
+    if n_sources or n_sinks:
+        logger.info(
+            "attack-surface: merged %d IRIS source(s), %d IRIS sink(s)",
+            n_sources, n_sinks,
+        )
+    return (n_sources, n_sinks)
+
+
 def enrich_attack_surface_with_taint(
     attack_surface: dict[str, Any],
     server: Any,
     checklist: dict[str, Any] | None = None,
     *,
     max_pairs: int = MAX_PAIRS,
+    iris_dir: Any = None,
 ) -> int:
     """Annotate attack-surface.json with Joern taint confirmations.
 
     *server* is a started :class:`packages.joern.server.JoernServer`
-    with the target's CPG already imported. Returns the number of
+    with the target's CPG already imported. When ``iris_dir`` (a run
+    output dir) is given, promoted IRIS taint-spec sources and sinks
+    join the surface (provenance-marked) so flows through
+    project-specific wrappers are checked too. Returns the number of
     entries annotated (sources + sinks).
     """
     _clear_prior_annotations(attack_surface)
+
+    iris_counts = (0, 0)
+    if iris_dir is not None:
+        try:
+            iris_counts = _merge_iris_surface_entries(
+                attack_surface, iris_dir,
+            )
+        except Exception:
+            logger.debug("IRIS surface merge failed", exc_info=True)
 
     spans = _function_spans(checklist)
     calls = _call_index(checklist)
@@ -195,6 +280,11 @@ def enrich_attack_surface_with_taint(
     pairs: list[tuple[dict[str, Any], dict[str, Any], str, str]] = []
     for source in attack_surface.get("sources") or []:
         source_method = _source_method(source, spans)
+        if not _is_identifier(source_method) and source.get(
+            "source_provenance"
+        ) == "iris":
+            # IRIS source entries name the function directly.
+            source_method = source.get("function", "")
         if not _is_identifier(source_method):
             continue
         for sink in attack_surface.get("sinks") or []:
@@ -259,6 +349,8 @@ def enrich_attack_surface_with_taint(
         "flows_confirmed": confirmed,
         "sources_confirmed": sources_confirmed,
         "sinks_confirmed": sinks_confirmed,
+        "iris_sources_loaded": iris_counts[0],
+        "iris_sinks_loaded": iris_counts[1],
     }
     return len(sources_confirmed) + len(sinks_confirmed)
 

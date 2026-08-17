@@ -170,3 +170,69 @@ class TestEnrichWithTaintFlows:
         assert "taint_reached_from" not in ctx["sink_details"][0]
         assert "has_taint_flow" not in ctx["sources"][0]
         assert ctx["taint_summary"]["flows_confirmed"] == 0
+
+
+class TestIrisSpecs:
+    def _iris_store(self, tmp_path):
+        """Persist promoted specs where a run under tmp_path/project sees them."""
+        from core.iris.specs import TaintSpec
+        from core.iris.store import save_specs
+
+        run_dir = tmp_path / "project" / "understand_1"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            TaintSpec(function="safe_copy", file="entry.c", role="sink"),
+        ])
+        return run_dir
+
+    def test_iris_sink_name_fallback_pairs(self):
+        """A wrapper sink without a resolvable call site still pairs."""
+        ctx = _context_map()
+        ctx["sink_details"].append({
+            "id": "SINK-003",
+            "name": "safe_copy",
+            "file": "",
+            "line": 0,
+            "source": "heuristic",
+        })
+        pairs = build_taint_pairs(
+            ctx, _checklist(), iris_sinks=frozenset({"safe_copy"}),
+        )
+        calls = {(src, call) for _, _, src, call in pairs}
+        assert ("main", "safe_copy") in calls
+        iris_sink = ctx["sink_details"][-1]
+        assert iris_sink["taint_spec_source"] == "iris"
+
+    def test_without_iris_sinks_wrapper_dropped(self):
+        ctx = _context_map()
+        ctx["sink_details"].append({
+            "id": "SINK-003",
+            "name": "safe_copy",
+            "file": "",
+            "line": 0,
+        })
+        pairs = build_taint_pairs(ctx, _checklist())
+        calls = {call for _, _, _, call in pairs}
+        assert "safe_copy" not in calls
+
+    def test_enrich_loads_store_and_queries_wrapper(self, tmp_path):
+        run_dir = self._iris_store(tmp_path)
+        ctx = _context_map()
+        ctx["sink_details"].append({
+            "id": "SINK-003",
+            "name": "safe_copy",
+            "file": "",
+            "line": 0,
+        })
+        srv = FakeServer(verdicts={("main", "safe_copy"): True})
+        enrich_with_taint_flows(ctx, srv, _checklist(), iris_dir=run_dir)
+        assert ("main", "safe_copy") in srv.queries
+        assert ctx["taint_summary"]["iris_sinks_loaded"] == 1
+        assert "SINK-003" in ctx["entry_points"][0]["taint_reaches_sinks"]
+
+    def test_no_store_counts_zero(self, tmp_path):
+        run_dir = tmp_path / "project" / "understand_1"
+        run_dir.mkdir(parents=True)
+        ctx = _context_map()
+        enrich_with_taint_flows(ctx, FakeServer(), _checklist(), iris_dir=run_dir)
+        assert ctx["taint_summary"]["iris_sinks_loaded"] == 0

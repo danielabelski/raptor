@@ -77,8 +77,15 @@ def enrich_with_sink_discovery(
     framework_min_files: int = DEFAULT_FRAMEWORK_MIN_FILES,
     run_dir: Path | None = None,
     expand_macros: bool = True,
+    extra_sinks: Any = None,
 ) -> int:
     """Enrich a context-map dict in place with sink discovery results.
+
+    ``extra_sinks`` is an iterable of project-sink function names from
+    the promoted IRIS taint-spec store (``core.iris.api.
+    get_project_sinks``); they enter the catalog with ``source:
+    "iris"`` provenance so flows through project-specific wrappers are
+    visible to the map.
 
     Returns the number of entries enriched (sinks + entry points).
     """
@@ -126,6 +133,13 @@ def enrich_with_sink_discovery(
             modified += _import_audit_discovered_sinks(context_map, run_dir)
         except Exception:
             logger.debug("audit discovered-sinks import failed", exc_info=True)
+
+    # 7b. Promoted IRIS taint-spec sinks (provenance: iris store)
+    if extra_sinks:
+        try:
+            modified += _merge_iris_sinks(context_map, extra_sinks)
+        except Exception:
+            logger.debug("iris sink merge failed", exc_info=True)
 
     # 8. Add the summary to context_map root (always counts as modified
     # so the caller persists the result even if only framework APIs
@@ -629,6 +643,46 @@ def _import_audit_discovered_sinks(
         logger.info(
             "sink enrichment: imported %d audit-discovered sinks", added,
         )
+    return added
+
+
+def _merge_iris_sinks(
+    context_map: dict[str, Any],
+    sink_names: Any,
+) -> int:
+    """Merge promoted IRIS taint-spec sinks into the catalog.
+
+    Each name is a project-specific sink function from the persistent
+    IRIS store; entries are marked ``source: "iris"``.
+    """
+    sink_details, by_name, _ = _sink_detail_index(context_map)
+    known_names = {name for _file, name in by_name}
+    next_id = _next_sink_id(sink_details)
+    added = 0
+    for fn in sorted(str(n) for n in sink_names if n):
+        if fn in known_names:
+            continue
+        sink_details.append({
+            "id": f"SINK-{next_id:03d}",
+            "file": "",
+            "line": 0,
+            "name": fn,
+            "type": "project_sink",
+            "dangerous_target": fn,
+            "source": "iris",
+            "description": (
+                "Promoted IRIS taint spec: project-specific sink"
+            ),
+        })
+        _append_flat_sink(
+            context_map, file="", function=fn, target=fn, direct=False,
+        )
+        known_names.add(fn)
+        next_id += 1
+        added += 1
+
+    if added:
+        logger.info("sink enrichment: added %d IRIS spec sinks", added)
     return added
 
 

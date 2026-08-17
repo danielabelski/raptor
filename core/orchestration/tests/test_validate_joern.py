@@ -240,3 +240,77 @@ class TestIdentifierFullmatch:
         assert confirmation["confirmed"] is None
         assert "source method" in confirmation["skipped"]
         assert srv.flow_queries == []
+
+
+class TestIrisSurfaceMerge:
+    def _iris_store(self, tmp_path):
+        from core.iris.specs import TaintSpec
+        from core.iris.store import save_specs
+
+        run_dir = tmp_path / "project" / "validate_1"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            TaintSpec(function="read_config", file="cfg.c", role="source"),
+            TaintSpec(function="safe_copy", file="util.c", role="sink"),
+        ])
+        return run_dir
+
+    def test_iris_entries_join_surface_with_provenance(self, tmp_path):
+        run_dir = self._iris_store(tmp_path)
+        surface = _attack_surface()
+        srv = FakeServer()
+        enrich_attack_surface_with_taint(
+            surface, srv, _checklist(), iris_dir=run_dir,
+        )
+        iris_sources = [
+            s for s in surface["sources"]
+            if s.get("source_provenance") == "iris"
+        ]
+        iris_sinks = [
+            s for s in surface["sinks"] if s.get("source") == "iris"
+        ]
+        assert len(iris_sources) == 1
+        assert iris_sources[0]["function"] == "read_config"
+        assert len(iris_sinks) == 1
+        assert iris_sinks[0]["location"] == "iris:safe_copy"
+        summary = surface["taint_summary"]
+        assert summary["iris_sources_loaded"] == 1
+        assert summary["iris_sinks_loaded"] == 1
+        # The IRIS source/sink participate in pair enumeration.
+        assert ("read_config", "safe_copy") in srv.exists_queries
+
+    def test_iris_confirmed_flow_annotates(self, tmp_path):
+        run_dir = self._iris_store(tmp_path)
+        surface = _attack_surface()
+        srv = FakeServer(verdicts={("read_config", "safe_copy"): True})
+        enrich_attack_surface_with_taint(
+            surface, srv, _checklist(), iris_dir=run_dir,
+        )
+        iris_source = next(
+            s for s in surface["sources"]
+            if s.get("source_provenance") == "iris"
+        )
+        assert iris_source["has_taint_flow"] is True
+        assert "iris:safe_copy" in iris_source["taint_reaches_sinks"]
+
+    def test_idempotent_no_duplicate_entries(self, tmp_path):
+        run_dir = self._iris_store(tmp_path)
+        surface = _attack_surface()
+        enrich_attack_surface_with_taint(
+            surface, FakeServer(), _checklist(), iris_dir=run_dir,
+        )
+        n_sources = len(surface["sources"])
+        n_sinks = len(surface["sinks"])
+        enrich_attack_surface_with_taint(
+            surface, FakeServer(), _checklist(), iris_dir=run_dir,
+        )
+        assert len(surface["sources"]) == n_sources
+        assert len(surface["sinks"]) == n_sinks
+
+    def test_without_iris_dir_unchanged(self):
+        surface = _attack_surface()
+        enrich_attack_surface_with_taint(surface, FakeServer(), _checklist())
+        assert surface["taint_summary"]["iris_sources_loaded"] == 0
+        assert all(
+            s.get("source_provenance") != "iris" for s in surface["sources"]
+        )

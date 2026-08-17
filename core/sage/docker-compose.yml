@@ -16,7 +16,9 @@ services:
   ollama:
     image: ollama/ollama:0.32.14
     ports:
-      - "11435:11434"
+      # Loopback-bound: every in-repo consumer targets localhost, and
+      # the sidecars have no peer authentication of their own.
+      - "127.0.0.1:11435:11434"
     volumes:
       - ollama_data:/root/.ollama
     environment:
@@ -63,7 +65,8 @@ services:
   sage:
     image: ghcr.io/l33tdawg/sage:11.18.18
     ports:
-      - "8090:8080"
+      # Loopback-bound: see the ollama mapping above.
+      - "127.0.0.1:8090:8080"
     volumes:
       - sage_data:/root/.sage
     depends_on:

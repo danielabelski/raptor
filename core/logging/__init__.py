@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 RAPTOR Structured Logging System
 
@@ -8,13 +7,13 @@ and machine-parsable JSON audit trails.
 
 import json
 import logging
+import os
 import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional, Self
 
 from core.config import RaptorConfig
-
 
 # Reserved attribute names on `logging.LogRecord`. Any kwarg with a
 # colliding name passed via `extra=` causes
@@ -80,7 +79,7 @@ class JSONFormatter(logging.Formatter):
         # formats in the JSONL audit trail force consumers to
         # parse two date shapes.
         from datetime import datetime, timezone
-        log_obj: Dict[str, Any] = {
+        log_obj: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(
                 record.created, tz=timezone.utc,
             ).isoformat(),
@@ -111,6 +110,34 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_obj, default=str)
 
 
+# Characters that make up decorative separator banners. Several CLIs
+# print `logger.info("=" * 70)` framing for the console; persisted into
+# the JSONL audit trail they are pure noise (hundreds of records per
+# long run whose message is 70 equals-signs).
+_SEPARATOR_CHARS = set("=-─═*# ")
+
+
+def _drop_separator_records(record: logging.LogRecord) -> bool:
+    """Handler filter: False for records that are only a separator."""
+    try:
+        msg = record.getMessage().strip()
+    except Exception:  # noqa: BLE001 — malformed record: let it through
+        return True
+    return not (len(msg) >= 10 and set(msg) <= _SEPARATOR_CHARS)
+
+
+def _file_log_level() -> int:
+    """Audit-trail file level: INFO unless RAPTOR_LOG_FILE_LEVEL says
+    otherwise (unknown names fall back to INFO rather than erroring
+    during logger bootstrap)."""
+    name = os.environ.get("RAPTOR_LOG_FILE_LEVEL", "").strip().upper()
+    if name:
+        level = getattr(logging, name, None)
+        if isinstance(level, int):
+            return level
+    return logging.INFO
+
+
 class RaptorLogger:
     """
     Centralized logger for RAPTOR framework.
@@ -123,7 +150,7 @@ class RaptorLogger:
     _initialized: bool = False
     _lock: threading.Lock = threading.Lock()
 
-    def __new__(cls) -> "RaptorLogger":
+    def __new__(cls) -> Self:
         """Singleton pattern to ensure one logger instance."""
         if cls._instance is None:
             with cls._lock:
@@ -191,7 +218,18 @@ class RaptorLogger:
             # actually a record to write — empty processes leave no
             # trace in `LOG_DIR`.
             file_handler = logging.FileHandler(log_file, delay=True)
-            file_handler.setLevel(logging.DEBUG)
+            # Default INFO, not DEBUG. At DEBUG the audit trail
+            # persisted every per-LLM-call line (usage/cost, "Using
+            # model", "Structured generation successful") and 3-4
+            # provider-init lines per task — roughly half of a typical
+            # file was this repetition. Investigations that need the
+            # full firehose opt back in per run:
+            #   RAPTOR_LOG_FILE_LEVEL=DEBUG
+            file_handler.setLevel(_file_log_level())
+            # Decorative separator banners ("====...====", "----")
+            # belong on the console, not in a JSONL audit trail —
+            # filter them from the file only.
+            file_handler.addFilter(_drop_separator_records)
             json_formatter = JSONFormatter()
             file_handler.setFormatter(json_formatter)
             self.logger.addHandler(file_handler)
@@ -315,7 +353,7 @@ class RaptorLogger:
         exc_info, stack_info, extra = self._split_kwargs(kwargs)
         self.logger.critical(message, *args, extra=extra, exc_info=exc_info, stack_info=stack_info)
 
-    def log_job_start(self, job_id: str, tool: str, arguments: Dict[str, Any]) -> None:
+    def log_job_start(self, job_id: str, tool: str, arguments: dict[str, Any]) -> None:
         """Log job start event."""
         self.info(
             f"Job started: {tool}",
@@ -348,7 +386,7 @@ class RaptorLogger:
 
 
 # Global logger instance
-def get_logger(name: Optional[str] = None) -> "logging.Logger":
+def get_logger(name: str | None = None) -> "logging.Logger":
     """Get a RAPTOR logger.
 
     With no `name` (default): returns the singleton RaptorLogger
@@ -399,7 +437,7 @@ def set_console_log_level(level: int, *, include_root: bool = False) -> None:
     root_logger.setLevel(level)
 
 
-def configure_run_logging(log_level: Optional[str], verbose: bool) -> None:
+def configure_run_logging(log_level: str | None, verbose: bool) -> None:
     """Apply run-level console logging flags."""
     if log_level:
         set_console_log_level(getattr(logging, log_level.upper()), include_root=True)

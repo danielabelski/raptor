@@ -78,7 +78,27 @@ import socket
 import threading
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Optional
+
+
+@dataclass
+class _Lane:
+    """One attributed ingress transport with its own policy bits.
+
+    A lane is how the proxy knows WHICH sandbox a CONNECT came from:
+    netns-tier sandboxes each own a dedicated unix socket; no-netns
+    tiers (Landlock-TCP, seatbelt) each own a dedicated loopback
+    listener. The main TCP listener has no lane — in-process
+    consumers (LLM clients, EgressClient) ride it and are always
+    judged by the legacy global flag, which nothing in production
+    sets any more. Handler closures capture the lane OBJECT at
+    accept time, so a connection racing lane teardown is decided by
+    the lane that accepted it — deterministic, never a lookup miss.
+    """
+
+    label: str
+    audit_log_only: bool = False
 
 # Module-top so the import doesn't run on every CONNECT — the proxy
 # tunnel handler used to do `from core.security.log_sanitisation
@@ -399,13 +419,15 @@ class EgressProxy:
         # loopback IP is purely an attack signal). In audit mode gate 2
         # additionally records the deny into the summary.
         #
-        # Operator-facing wiring: context.py engages this via
-        # acquire_audit_log_only() / release_audit_log_only() when an
-        # audit-mode sandbox enters/exits. The constructor kwarg here
-        # remains for direct test construction. Tests of the toggle
-        # itself MUST use the acquire/release API to exercise the ref-
-        # counting; concurrent mixed-profile sandbox correctness depends
-        # on it.
+        # Scope: this global flag now governs ONLY connections with
+        # no lane — i.e. the shared main TCP listener that in-process
+        # consumers ride. Sandbox contexts get per-lane audit bits
+        # (set_lane_audit on their unix socket / TCP lane), so a
+        # concurrent non-audit sandbox is never downgraded by an
+        # audit sibling. Production code no longer calls
+        # acquire/release_audit_log_only; the API and the constructor
+        # kwarg remain for direct test construction and as the legacy
+        # main-listener toggle.
         self._audit_log_only = audit_log_only
         # When True, gate 1 in audit mode switches from log-and-allow to
         # log-and-deny — the allowlist is enforced even in audit mode.
@@ -430,6 +452,14 @@ class EgressProxy:
         # because a sibling audit sandbox flipped the singleton's flag.
         self._audit_lock = threading.Lock()
         self._audit_count = 1 if audit_log_only else 0
+        # Lane registries: unix lanes keyed by socket path, TCP lanes
+        # by listener port. Guarded by _lanes_lock; handler closures
+        # hold direct lane references so decisions never require the
+        # registry after accept.
+        self._lanes_lock = threading.Lock()
+        self._unix_lanes: dict[str, _Lane] = {}
+        self._tcp_lanes: dict[int, _Lane] = {}
+        self._tcp_lane_servers: dict[int, object] = {}
         self._idle_timeout = idle_timeout
         self._idle_timeout_lock = threading.Lock()
         self._total_timeout = total_timeout
@@ -582,6 +612,11 @@ class EgressProxy:
         """Increment the audit-mode reference count and ensure
         audit-log mode is engaged on the hostname gate.
 
+        LEGACY SCOPE: after lane scoping, this global flag decides
+        only un-laned connections (the shared main listener).
+        Sandbox contexts use set_lane_audit on their own transport
+        instead; production code has no callers of this API.
+
         Ref-counted to prevent concurrent mixed-profile sandboxes
         from racing on the singleton: when an audit-mode sandbox
         enters via use_egress_proxy=True, it acquires; on exit it
@@ -639,7 +674,7 @@ class EgressProxy:
                     "ENFORCING mode (no audit-mode sandbox active)"
                 )
 
-    def bind_unix(self, path: str) -> None:
+    def bind_unix(self, path: str, *, label: str = "sandbox") -> None:
         """Start an additional asyncio Unix socket server at *path*.
 
         Reuses ``_handle_client`` — the CONNECT protocol is transport-
@@ -655,11 +690,16 @@ class EgressProxy:
 
         import os as _os
 
+        lane = _Lane(label=label)
+        with self._lanes_lock:
+            self._unix_lanes[path] = lane
+
         async def _bind():
             old_umask = _os.umask(0o077)
             try:
                 srv = await asyncio.start_unix_server(
-                    self._handle_unix_client, path=path,
+                    lambda r, w: self._handle_unix_client(r, w, lane=lane),
+                    path=path,
                 )
             finally:
                 _os.umask(old_umask)
@@ -671,6 +711,88 @@ class EgressProxy:
         future.result(timeout=_PROXY_CONNECT_TIMEOUT_S)
         logger.info("egress proxy: unix socket bound at %s", path)
 
+    def bind_tcp_lane(self, *, label: str = "sandbox") -> int:
+        """Start a dedicated loopback listener with its own lane.
+
+        For sandbox tiers that cannot use a unix socket (Landlock-TCP
+        children pinned by ``allowed_tcp_ports``, macOS seatbelt
+        children pinned by SBPL): a per-context port gives their
+        connections the same attribution the netns tier gets from its
+        per-context unix socket — and pins the children AWAY from the
+        shared main listener that in-process consumers ride.
+
+        Returns the kernel-assigned port. Raises RuntimeError if the
+        event loop is not running or the bind fails; callers treat
+        that as "no lane" and fail CLOSED (audit leniency unavailable,
+        enforcement intact).
+        """
+        if self._loop is None or not self._loop.is_running():
+            raise RuntimeError("proxy event loop not running")
+
+        lane = _Lane(label=label)
+
+        async def _bind():
+            srv = await asyncio.start_server(
+                lambda r, w: self._handle_unix_client(r, w, lane=lane),
+                host="127.0.0.1", port=0,
+            )
+            port = srv.sockets[0].getsockname()[1]
+            with self._lanes_lock:
+                self._tcp_lanes[port] = lane
+                self._tcp_lane_servers[port] = srv
+            return port
+
+        future = asyncio.run_coroutine_threadsafe(_bind(), self._loop)
+        port = future.result(timeout=_PROXY_CONNECT_TIMEOUT_S)
+        logger.info("egress proxy: tcp lane %r bound at 127.0.0.1:%d",
+                    label, port)
+        return port
+
+    def close_tcp_lane(self, port: int) -> None:
+        """Stop the TCP lane listener at *port*. Idempotent.
+
+        Mirrors unbind_unix: stops accepting, does not cancel tunnels
+        already relaying (their handler holds the lane object).
+        """
+        with self._lanes_lock:
+            srv = self._tcp_lane_servers.pop(port, None)
+            self._tcp_lanes.pop(port, None)
+        if srv is None:
+            return
+        if self._loop is not None and self._loop.is_running():
+            async def _close():
+                srv.close()
+            with contextlib.suppress(Exception):
+                future = asyncio.run_coroutine_threadsafe(
+                    _close(), self._loop,
+                )
+                future.result(timeout=2.0)
+        logger.info("egress proxy: tcp lane at 127.0.0.1:%d closed", port)
+
+    def set_lane_audit(self, key: "str | int", value: bool) -> bool:
+        """Set the audit-log-only bit on one lane.
+
+        *key* is the unix socket path (netns tier) or the TCP lane
+        port. Returns False when no such lane exists — callers MUST
+        treat False as "leniency unavailable" and stay enforcing,
+        never fall back to the global flag.
+        """
+        with self._lanes_lock:
+            lane = (self._unix_lanes.get(key) if isinstance(key, str)
+                    else self._tcp_lanes.get(key))
+        if lane is None:
+            return False
+        with self._audit_lock:
+            lane.audit_log_only = value
+        if value:
+            logger.warning(
+                "egress proxy: lane %r switched to AUDIT-LOG mode "
+                "(this sandbox's CONNECTs to non-allowlisted hosts "
+                "will be ALLOWED and logged; other lanes and the "
+                "main listener stay ENFORCING).", lane.label,
+            )
+        return True
+
     def unbind_unix(self, path: str) -> None:
         """Stop the Unix socket server at *path* and unlink the file.
 
@@ -679,6 +801,8 @@ class EgressProxy:
         """
         with self._unix_lock:
             srv = self._unix_servers.pop(path, None)
+        with self._lanes_lock:
+            self._unix_lanes.pop(path, None)
         if srv is None:
             return
 
@@ -700,6 +824,7 @@ class EgressProxy:
     async def _handle_unix_client(
         self, reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        lane: "_Lane | None" = None,
     ) -> None:
         """Wrapper for Unix socket connections.
 
@@ -713,7 +838,7 @@ class EgressProxy:
         if task is not None:
             self._unix_tasks.add(task)
         try:
-            await self._handle_client(reader, writer)
+            await self._handle_client(reader, writer, lane=lane)
         finally:
             if task is not None:
                 self._unix_tasks.discard(task)
@@ -1164,7 +1289,8 @@ class EgressProxy:
         task.add_done_callback(self._client_tasks.discard)
 
     async def _handle_client(self, reader: asyncio.StreamReader,
-                             writer: asyncio.StreamWriter) -> None:
+                             writer: asyncio.StreamWriter,
+                             lane: "_Lane | None" = None) -> None:
         peer = writer.get_extra_info("peername")
         # Unix socket peers: peername is "" (empty string) or None.
         if peer is None or peer == "" or peer == b"":
@@ -1217,7 +1343,7 @@ class EgressProxy:
             return
 
         try:
-            await self._serve_tunnel(reader, writer)
+            await self._serve_tunnel(reader, writer, lane=lane)
         except asyncio.CancelledError:
             # Event-loop shutdown or tunnel-guard timeout — propagate.
             raise
@@ -1247,11 +1373,13 @@ class EgressProxy:
                 await writer.wait_closed()
 
     async def _serve_tunnel(self, reader: asyncio.StreamReader,
-                            writer: asyncio.StreamWriter) -> None:
+                            writer: asyncio.StreamWriter,
+                            lane: "_Lane | None" = None) -> None:
         t_start = time.monotonic()
         event = {
             "t": t_start, "host": None, "port": None,
             "result": None, "reason": None, "resolved_ip": None,
+            "lane": lane.label if lane is not None else "main",
             "bytes_c2u": 0, "bytes_u2c": 0, "duration": 0.0,
         }
 
@@ -1344,8 +1472,14 @@ class EgressProxy:
             # release dropped the count to zero. The snapshot pattern
             # makes the race window explicit and the outcome
             # consistent with the count value at the snapshot moment.
+            # Lane-scoped decision: an attributed connection is
+            # judged by ITS sandbox's audit bit; only the un-laned
+            # main listener consults the legacy global flag (which
+            # production no longer sets — direct-construction tests
+            # do). Enforce stays a global operator knob.
             with self._audit_lock:
-                _audit_now = self._audit_log_only
+                _audit_now = (lane.audit_log_only if lane is not None
+                              else self._audit_log_only)
                 _enforce_now = self._audit_enforce
             if _audit_now:
                 # Audit mode: record the would-deny event. When
@@ -1525,7 +1659,9 @@ class EgressProxy:
                 # threads need a happens-before edge to make the
                 # snapshot consistent with the count.
                 with self._audit_lock:
-                    _audit_now = self._audit_log_only
+                    _audit_now = (lane.audit_log_only
+                                  if lane is not None
+                                  else self._audit_log_only)
                 if _audit_now:
                     _record_proxy_denial(host, port, resolved_ip,
                                          "resolved_ip_blocked")

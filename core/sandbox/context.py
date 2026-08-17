@@ -712,6 +712,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             except OSError:
                 pass
     _use_proxy_netns = False
+    _proxy_tcp_lane_port = None
     _proxy_unix_path: str | None = None
     _proxy_forwarder_port: int | None = None
     if use_egress_proxy:
@@ -771,7 +772,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     _tmpf.gettempdir(), _sock_name,
                 )
             try:
-                proxy_instance.bind_unix(_proxy_unix_path)
+                proxy_instance.bind_unix(
+                    _proxy_unix_path,
+                    label=caller_label or "sandbox",
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Sandbox: proxy unix socket bind failed (%s); "
@@ -815,7 +819,27 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     "allowed_tcp_ports=%s with proxy port",
                     allowed_tcp_ports,
                 )
-            allowed_tcp_ports = [proxy_instance.port]
+            # Dedicated per-context lane: attribution for the audit
+            # decision, and the Landlock/SBPL pin keeps this context's
+            # children off the shared main listener entirely. On bind
+            # failure fall back to the shared port — connections there
+            # carry no lane, so gate 1 stays ENFORCING for them (audit
+            # leniency degrades, the posture does not).
+            try:
+                _proxy_tcp_lane_port = proxy_instance.bind_tcp_lane(
+                    label=caller_label or "sandbox",
+                )
+            except Exception as _lane_exc:  # noqa: BLE001 — fail closed to enforcing
+                _proxy_tcp_lane_port = None
+                logger.warning(
+                    "Sandbox: proxy tcp lane bind failed (%s); "
+                    "children use the shared listener — audit "
+                    "leniency unavailable for this context.",
+                    _lane_exc,
+                )
+            allowed_tcp_ports = [
+                _proxy_tcp_lane_port or proxy_instance.port
+            ]
 
         _will_engage_audit = bool(audit_mode)
 
@@ -829,7 +853,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         _effective_proxy_port = (
             _proxy_forwarder_port
             if _use_proxy_netns
-            else proxy_instance.port
+            else (_proxy_tcp_lane_port or proxy_instance.port)
         )
         proxy_url = f"http://127.0.0.1:{_effective_proxy_port}"
         proxy_env_overrides = {
@@ -2030,8 +2054,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 logger.warning(
                     "Sandbox: --audit requested but %s; syscall + "
                     "filesystem audit (b2/b3) silently degrade to "
-                    "enforcement. Network audit (b1, if "
-                    "use_egress_proxy=True) is unaffected. Fix: %s",
+                    "enforcement. Network audit (b1): on the netns "
+                    "tier the fallback child has NO network path (its "
+                    "empty netns has no forwarder), so b1 records "
+                    "nothing for it; on the Landlock-TCP tier b1 is "
+                    "unaffected. Fix: %s",
                     degrade_reason, degrade_instr,
                 )
             # Per-call marker so operators inspecting an output dir can
@@ -2123,8 +2150,9 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                    else None),
                     restrict_reads=restrict_reads,
                     use_egress_proxy=use_egress_proxy,
-                    proxy_port=(proxy_instance.port
-                                if proxy_instance is not None else None),
+                    proxy_port=(
+                        (_proxy_tcp_lane_port or proxy_instance.port)
+                        if proxy_instance is not None else None),
                     fake_home=fake_home,
                     map_root=map_root,
                     start_new_session=_start_new_session,
@@ -2824,8 +2852,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             ),
         )
     if use_egress_proxy and _will_engage_audit:
-        proxy_instance.acquire_audit_log_only()
-        _engaging_audit = True
+        # Scope the leniency to THIS context's lane. Concurrent
+        # sandboxes and in-process consumers (main listener) stay
+        # enforcing. set_lane_audit returning False means no lane
+        # exists (tcp lane bind failed) — fail CLOSED: the audit run
+        # proceeds with gate 1 enforcing and the operator is told the
+        # would-deny signal is incomplete.
+        _lane_key = (
+            _proxy_unix_path if _use_proxy_netns
+            else _proxy_tcp_lane_port
+        )
+        if _lane_key is not None and proxy_instance.set_lane_audit(
+                _lane_key, True):
+            _engaging_audit = True
+        else:
+            logger.warning(
+                "Sandbox: audit-log mode unavailable for this "
+                "context (no proxy lane) — egress allowlist stays "
+                "ENFORCING; would-deny events will appear as real "
+                "denials."
+            )
     try:
         yield run
     finally:
@@ -2864,24 +2910,35 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 logger.debug(
                     "proxy unix socket cleanup failed", exc_info=True,
                 )
-        if use_egress_proxy and _engaging_audit:
+        if _proxy_tcp_lane_port is not None and proxy_instance is not None:
             try:
-                proxy_instance.release_audit_log_only()
+                proxy_instance.close_tcp_lane(_proxy_tcp_lane_port)
             except Exception:
-                # WARNING-level (not debug): a failed release leaks
-                # the ref-count, which means every subsequent sandbox
-                # in this process will see inflated _audit_count
-                # and the proxy gate will be stuck in audit-log mode
-                # — non-audit sibling sandboxes get downgraded
-                # silently. Operator needs visibility into this so
-                # they can restart the process if accumulating leaks
-                # affect production. Stack trace via exc_info=True
-                # for diagnosis.
+                logger.debug(
+                    "proxy tcp lane cleanup failed", exc_info=True,
+                )
+        if use_egress_proxy and _engaging_audit:
+            # The lane object died with unbind/close above; clearing
+            # the bit is belt-and-braces for the in-flight-connection
+            # window (handlers hold the lane object).
+            try:
+                _lane_key = (
+                    _proxy_unix_path if _use_proxy_netns
+                    else _proxy_tcp_lane_port
+                )
+                if _lane_key is not None:
+                    proxy_instance.set_lane_audit(_lane_key, False)
+            except Exception:
+                # WARNING-level (not debug): the lane object is gone
+                # with unbind/close above, so a failed clear only
+                # matters for connections already in flight on this
+                # context's lane — but the operator should still see
+                # it, because a recurring failure here means the
+                # teardown path is broken.
                 logger.warning(
-                    "audit ref-count release failed — proxy gate "
-                    "may stay in audit-log mode for remaining "
-                    "sandboxes in this process. Restart RAPTOR if "
-                    "this recurs.",
+                    "audit lane clear failed — in-flight connections "
+                    "on this context's lane may keep audit-log mode "
+                    "until they finish.",
                     exc_info=True,
                 )
         # Persona tmpdir lifecycle: created in build_persona above; the

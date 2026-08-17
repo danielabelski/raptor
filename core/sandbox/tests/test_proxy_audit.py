@@ -606,21 +606,16 @@ class TestProxyAuditRefCount:
             # behaviour ("audit count > 0" → audit mode for ALL
             # concurrent CONNECTs).
             #
-            # The right fix for "non-audit sibling stays enforcing"
-            # is per-CONNECT scoping, NOT aggregate ref-counting.
-            # That requires mapping each CONNECT to its originating
-            # sandbox, which the current proxy doesn't do (singleton
-            # design). For now we assert the documented behaviour and
-            # note as a known limit: when ANY audit sandbox is active,
-            # ALL siblings see audit-log mode on the proxy gate.
-            #
-            # Acceptable because:
-            # 1. RAPTOR rarely runs concurrent mixed-profile sandboxes
-            # 2. The aggregate behaviour is "more permissive on the
-            #    network gate when audit is engaged" — acknowledged
-            #    in the audit profile docstring.
-            # 3. Other layers (Landlock, seccomp, mount-ns) remain
-            #    per-sandbox and unaffected.
+            # Per-CONNECT scoping now exists: lanes (see
+            # test_proxy_lanes.py) give each sandbox context its own
+            # audit bit on its own transport, and production no
+            # longer touches this global flag. What this test pins
+            # today is the LEGACY semantics of the global flag for
+            # un-laned connections (the shared main listener): the
+            # ref-count keeps it consistent for direct-construction
+            # users, and in-process consumers are only ever lenient
+            # if something explicitly sets the global flag — which
+            # nothing in production does.
             assert proxy._audit_log_only is True
 
             # When audit sandbox exits, gate returns to enforcing

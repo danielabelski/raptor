@@ -273,9 +273,14 @@ class TestSandboxAuditKwarg:
                 use_egress_proxy=True,
                 proxy_hosts=["api.example.com"],
             ):
-                # Audit engaged via per-call kwarg → proxy acquired.
-                assert proxy_inst._audit_count == 1
-            assert proxy_inst._audit_count == 0
+                # Audit engaged via per-call kwarg → THIS context's
+                # lane carries the bit; the global count is untouched.
+                lanes = (list(proxy_inst._unix_lanes.values())
+                         + list(proxy_inst._tcp_lanes.values()))
+                assert [ln.audit_log_only for ln in lanes] == [True]
+                assert proxy_inst._audit_count == 0
+            assert not proxy_inst._unix_lanes
+            assert not proxy_inst._tcp_lanes
         finally:
             proxy_mod._reset_for_tests()
 

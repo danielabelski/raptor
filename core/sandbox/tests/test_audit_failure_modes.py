@@ -924,7 +924,7 @@ class TestAuditAcquireOrdering:
         lines = src.splitlines()
         acquire_lines = [
             i for i, line in enumerate(lines)
-            if "acquire_audit_log_only" in line
+            if "set_lane_audit" in line
         ]
         yield_lines = [
             i for i, line in enumerate(lines)
@@ -934,20 +934,24 @@ class TestAuditAcquireOrdering:
             i for i, line in enumerate(lines)
             if line.strip() == "finally:"
         ]
-        assert acquire_lines, "no acquire_audit_log_only call found"
+        assert acquire_lines, "no set_lane_audit engagement found"
         assert yield_lines, "no yield run found"
 
         # Acquire must be BEFORE the yield (obviously), and there
         # must be a finally clause AFTER the yield that handles
         # release. The acquire-yield gap must be small (≤10 lines)
         # to keep the leak window minimal.
-        last_acquire = max(acquire_lines)
+        # The teardown also calls set_lane_audit (clearing the
+        # bit); consider only the engagement sites BEFORE the yield.
         last_yield = max(yield_lines)
-        assert last_acquire < last_yield, (
-            "acquire must precede yield"
-        )
+        pre_yield = [i for i in acquire_lines if i < last_yield]
+        assert pre_yield, "engagement must precede yield"
+        last_acquire = max(pre_yield)
         gap = last_yield - last_acquire
-        assert gap < 10, (
+        # Between engagement and yield sits only the fail-closed
+        # else-branch (a logger.warning) — nothing that can raise
+        # under normal operation. Keep the window bounded regardless.
+        assert gap < 20, (
             f"acquire is {gap} lines before yield — too far. Setup "
             f"code between acquire and yield could raise and leak "
             f"the ref-count. Move acquire closer to yield."
@@ -1146,10 +1150,18 @@ class TestProxyAuditAcquireReleaseIntegration:
                 use_egress_proxy=True,
                 proxy_hosts=["api.example.com"],
             ):
-                assert proxy_inst._audit_count == 1
-                assert proxy_inst._audit_log_only is True
+                # Lane-scoped: exactly this context's lane carries
+                # the audit bit; the GLOBAL flag stays untouched so
+                # concurrent sandboxes / in-process consumers keep
+                # enforcing semantics.
+                lanes = (list(proxy_inst._unix_lanes.values())
+                         + list(proxy_inst._tcp_lanes.values()))
+                assert [ln.audit_log_only for ln in lanes] == [True]
+                assert proxy_inst._audit_count == 0
+                assert proxy_inst._audit_log_only is False
 
-            assert proxy_inst._audit_count == 0
+            assert not proxy_inst._unix_lanes
+            assert not proxy_inst._tcp_lanes
             assert proxy_inst._audit_log_only is False
         finally:
             proxy_mod._reset_for_tests()
@@ -1164,11 +1176,15 @@ class TestProxyAuditAcquireReleaseIntegration:
                 use_egress_proxy=True,
                 proxy_hosts=["api.example.com"],
             ):
-                assert proxy_inst._audit_count == 1
+                lanes = (list(proxy_inst._unix_lanes.values())
+                         + list(proxy_inst._tcp_lanes.values()))
+                assert [ln.audit_log_only for ln in lanes] == [True]
                 raise RuntimeError("simulated workflow failure")
 
-            # Cleanup ran despite the exception
-            assert proxy_inst._audit_count == 0
+            # Cleanup ran despite the exception: lane gone, global
+            # flag never touched.
+            assert not proxy_inst._unix_lanes
+            assert not proxy_inst._tcp_lanes
             assert proxy_inst._audit_log_only is False
         finally:
             proxy_mod._reset_for_tests()

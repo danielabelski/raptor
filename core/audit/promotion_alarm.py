@@ -25,13 +25,13 @@ throughout: alarm failures must never lose a review outcome.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.json import append_jsonl, load_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +97,10 @@ def emit_alarm(out_dir: Path, record: dict[str, Any]) -> None:
     """CRITICAL log + one JSONL line in the run's audit artifacts.
 
     Same single-purpose append pattern as ``suppressions.jsonl`` —
-    O_APPEND keeps concurrent writers line-atomic.  IO errors are
-    logged at debug and swallowed (alarm-only, never load-bearing).
+    ``core.json.append_jsonl``'s O_APPEND keeps concurrent writers
+    line-atomic and its O_NOFOLLOW refuses a symlink planted at the
+    trail path.  IO errors are logged at debug and swallowed
+    (alarm-only, never load-bearing).
     """
     logger.critical(
         "%s: %s:%s reached verdict %r without qualifying tool evidence "
@@ -114,16 +116,7 @@ def emit_alarm(out_dir: Path, record: dict[str, Any]) -> None:
     try:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        line = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
-        fd = os.open(
-            str(out_dir / ALARM_FILENAME),
-            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-            0o644,
-        )
-        try:
-            os.write(fd, line)
-        finally:
-            os.close(fd)
+        append_jsonl(out_dir / ALARM_FILENAME, record, sort_keys=True)
     except OSError:
         logger.debug("promotion alarm write failed", exc_info=True)
 
@@ -162,23 +155,7 @@ def check_and_emit(
 def load_alarms(out_dir: Path) -> list[dict[str, Any]]:
     """Read back the run's alarm records (report / test surface)."""
     path = Path(out_dir) / ALARM_FILENAME
-    if not path.is_file():
-        return []
-    records: list[dict[str, Any]] = []
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(rec, dict):
-                records.append(rec)
-    except OSError:
-        logger.debug("promotion alarm read failed", exc_info=True)
-    return records
+    return [rec for rec in load_jsonl(path) if isinstance(rec, dict)]
 
 
 def check_outcomes(

@@ -6317,3 +6317,142 @@ class _SwiftCallGraph:
             receiver_class=receiver_class,
             argument_identifiers=arg_idents,
         ))
+
+
+# ---------------------------------------------------------------------------
+# Project-level loader
+# ---------------------------------------------------------------------------
+
+#: Extension → (language label, extractor kwargs) for the loader below.
+_EXT_TO_LANGUAGE: Dict[str, Tuple[str, Dict[str, Any]]] = {
+    ".py": ("python", {}),
+    ".js": ("javascript", {}),
+    ".jsx": ("javascript", {}),
+    ".mjs": ("javascript", {}),
+    ".cjs": ("javascript", {}),
+    ".ts": ("javascript", {"language": "typescript"}),
+    ".tsx": ("javascript", {"language": "tsx"}),
+    ".go": ("go", {}),
+    ".java": ("java", {}),
+    ".rs": ("rust", {}),
+    ".rb": ("ruby", {}),
+    ".cs": ("csharp", {}),
+    ".php": ("php", {}),
+    ".c": ("c", {}),
+    ".h": ("c", {}),
+    ".cc": ("cpp", {}),
+    ".cpp": ("cpp", {}),
+    ".cxx": ("cpp", {}),
+    ".hpp": ("cpp", {}),
+    ".hh": ("cpp", {}),
+    ".lua": ("lua", {}),
+    ".scala": ("scala", {}),
+    ".kt": ("kotlin", {}),
+    ".kts": ("kotlin", {}),
+    ".swift": ("swift", {}),
+}
+
+_LOADER_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "__pycache__", ".tox", ".venv", "venv",
+    "vendor", "third_party", "build", "dist", "out", ".out",
+})
+
+
+def _extractor_for(ext: str):
+    """Extractor callable for a file extension, or None."""
+    entry = _EXT_TO_LANGUAGE.get(ext.lower())
+    if entry is None:
+        return None
+    language, kwargs = entry
+    fn = globals().get(f"extract_call_graph_{language}")
+    if fn is None:
+        return None
+    if kwargs:
+        import functools
+
+        return functools.partial(fn, **kwargs)
+    return fn
+
+
+def load_call_graphs(
+    target_path: Any,
+    checklist: Optional[Dict[str, Any]] = None,
+    *,
+    max_files: int = 2000,
+    max_bytes: int = 1_500_000,
+) -> Dict[str, FileCallGraph]:
+    """Extract per-file call graphs for a target tree.
+
+    Consumers (:class:`core.iris.bypass.CompositionalAnalyzer`, the
+    audit orchestrator's structural detectors) want a
+    ``{relative_path: FileCallGraph}`` mapping keyed the same way the
+    checklist / findings key files.
+
+    Args:
+        target_path: Root of the target codebase.
+        checklist: Parsed ``checklist.json`` (``{"files": [{"path":
+            ...}]}``).  When given, only its files are extracted —
+            keys are the checklist paths verbatim.  When None, the
+            tree is walked (common exclusions pruned) and keys are
+            POSIX relative paths.
+        max_files: Cap on extracted files (checklist order / walk
+            order wins; the rest are skipped with a log line).
+        max_bytes: Per-file size cap — larger sources are skipped.
+
+    Returns:
+        Mapping of file path → :class:`FileCallGraph`.  Files that
+        fail to read or parse are skipped (extraction is best-effort
+        by design); an empty dict when nothing was extractable.
+    """
+    from pathlib import Path
+
+    root = Path(target_path)
+    candidates: List[Tuple[str, Any]] = []
+
+    if checklist is not None:
+        for file_info in checklist.get("files", []) or []:
+            rel = file_info.get("path", "")
+            if not rel:
+                continue
+            candidates.append((rel, root / rel))
+    else:
+        import os as _os
+
+        for dirpath, dirnames, filenames in _os.walk(root):
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if d not in _LOADER_SKIP_DIRS
+                and not (Path(dirpath) / d).is_symlink()
+            )
+            for fname in sorted(filenames):
+                p = Path(dirpath) / fname
+                if p.suffix.lower() in _EXT_TO_LANGUAGE:
+                    candidates.append(
+                        (p.relative_to(root).as_posix(), p))
+
+    graphs: Dict[str, FileCallGraph] = {}
+    skipped = 0
+    for rel, path in candidates:
+        if len(graphs) >= max_files:
+            skipped += 1
+            continue
+        extractor = _extractor_for(path.suffix)
+        if extractor is None:
+            continue
+        try:
+            if path.stat().st_size > max_bytes:
+                continue
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        try:
+            graphs[rel] = extractor(content)
+        except Exception:  # noqa: BLE001 — per-file extraction is best-effort
+            logger.debug("call-graph extraction failed for %s", rel,
+                         exc_info=True)
+    if skipped:
+        logger.info(
+            "load_call_graphs: file cap (%d) reached — %d candidates skipped",
+            max_files, skipped,
+        )
+    return graphs

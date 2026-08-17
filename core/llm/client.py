@@ -850,6 +850,12 @@ class LLMClient:
         # line once per doomed call (observed 3x+ per run). Guarded
         # by _stats_lock.
         self._budget_exceeded_logged = False
+        # Held-back slice of max_cost_per_scan that ordinary dispatch
+        # may not spend (see hold_budget_reserve). Lets a late phase
+        # (e.g. the audit deepen pass) guarantee itself headroom that
+        # the discovery loop cannot exhaust first. Guarded by
+        # _stats_lock.
+        self._budget_reserve = 0.0
         self._stats_lock = threading.RLock()
         # Per-cache-key locks. Two threads issuing the same cache key
         # serialise on its lock so only one calls the provider; the
@@ -1638,11 +1644,59 @@ class LLMClient:
             else logger.error
         )
         self._budget_exceeded_logged = True
-        emit(
-            "Budget exceeded: $%.2f + $%.2f > $%.2f",
-            self.total_cost, estimated_cost,
-            self.config.max_cost_per_scan,
+        reserve = getattr(self, "_budget_reserve", 0.0) or 0.0
+        if reserve:
+            emit(
+                "Budget exceeded: $%.2f + $%.2f > $%.2f "
+                "($%.2f cap - $%.2f held in reserve)",
+                self.total_cost, estimated_cost,
+                self._effective_cap_locked(),
+                self.config.max_cost_per_scan, reserve,
+            )
+        else:
+            emit(
+                "Budget exceeded: $%.2f + $%.2f > $%.2f",
+                self.total_cost, estimated_cost,
+                self.config.max_cost_per_scan,
+            )
+
+    def _effective_cap_locked(self) -> float:
+        """The cap ordinary dispatch may spend up to: the configured
+        per-scan cap minus any held reserve. Callers hold _stats_lock.
+        getattr: tests build clients via ``__new__`` without the
+        constructor-initialised reserve."""
+        return (
+            self.config.max_cost_per_scan
+            - (getattr(self, "_budget_reserve", 0.0) or 0.0)
         )
+
+    def hold_budget_reserve(self, amount: float) -> float:
+        """Hold back ``amount`` of the per-scan cap from ordinary
+        dispatch.
+
+        Every budget check then gates against ``cap - reserve``, so a
+        late phase that calls :meth:`release_budget_reserve` first is
+        guaranteed that much headroom regardless of how hungry the
+        earlier phases were. Replaces any previously-held reserve
+        (idempotent under repeat holds). Returns the amount actually
+        held (clamped to [0, cap])."""
+        with self._stats_lock:
+            cap = self.config.max_cost_per_scan
+            held = max(0.0, min(float(amount), cap if cap else 0.0))
+            self._budget_reserve = held
+            return held
+
+    def release_budget_reserve(self) -> float:
+        """Release any held reserve back to ordinary dispatch.
+        Idempotent. Returns the amount released."""
+        with self._stats_lock:
+            held = getattr(self, "_budget_reserve", 0.0) or 0.0
+            self._budget_reserve = 0.0
+            # A released reserve re-opens headroom: allow the next
+            # refusal to log loudly again instead of hiding at DEBUG.
+            if held:
+                self._budget_exceeded_logged = False
+            return held
 
     def _check_budget(self, estimated_cost: float = 0.1) -> bool:
         """Read-only budget check (thread-safe). Returns whether ``estimated_cost``
@@ -1654,7 +1708,7 @@ class LLMClient:
             return True
 
         with self._stats_lock:
-            if self.total_cost + estimated_cost > self.config.max_cost_per_scan:
+            if self.total_cost + estimated_cost > self._effective_cap_locked():
                 self._log_budget_exceeded_locked(estimated_cost)
                 return False
 
@@ -1671,7 +1725,7 @@ class LLMClient:
         with self._stats_lock:
             return (
                 self.total_cost + estimated_cost
-                > self.config.max_cost_per_scan
+                > self._effective_cap_locked()
             )
 
     def _estimate_call_cost(self, call_class: str) -> float:
@@ -1756,7 +1810,7 @@ class LLMClient:
             return True
 
         with self._stats_lock:
-            if self.total_cost + reservation > self.config.max_cost_per_scan:
+            if self.total_cost + reservation > self._effective_cap_locked():
                 self._log_budget_exceeded_locked(reservation)
                 return False
             self.total_cost += reservation

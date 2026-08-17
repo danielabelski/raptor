@@ -264,6 +264,13 @@ class OrchestratorConfig:
     prefilter: bool = True
     sweep_validate_findings: bool = True
     deepen_suspicious: bool = True
+    # Slice of the LLM cost cap held back from the discovery loop so
+    # the deepen phase can actually execute the re-reviews it
+    # announces (a measured run announced 4 re-reviews with $0 left).
+    # Held on the budget client before the main loop, released when
+    # the deepen phase starts (or immediately when deepen has nothing
+    # to do). 0 disables the reserve.
+    deepen_reserve_fraction: float = 0.15
     enable_session_context: bool = True
     review_passes: int = 1
     max_propagation_depth: int | None = None
@@ -4049,6 +4056,13 @@ def _run_audit_body(
         study_consumer_thread.start()
         logger.info("study-consumer: started")
 
+    # --- Deepen budget reserve ---
+    # Hold back a slice of the cost cap so the deepen phase can
+    # execute the re-reviews it announces; the discovery loop (and the
+    # study/synthesis passes that run before deepen) gate against
+    # cap - reserve. Released right before the deepen phase.
+    deepen_reserve_held = _hold_deepen_reserve(config)
+
     executor_stats = run_executor_sync(
         graph,
         review_fn,
@@ -4251,6 +4265,12 @@ def _run_audit_body(
             joern_server=joern_server,
             max_workers=resolved_workers,
         )
+
+    # Release the deepen reserve: from here on the deepen phase itself
+    # is the consumer (or, when deepen is disabled/has nothing to do,
+    # the remaining post-loop phases inherit the headroom).
+    if deepen_reserve_held:
+        _release_deepen_reserve(config)
 
     if config.deepen_suspicious:
         result = _deepen_suspicious(
@@ -7170,6 +7190,55 @@ def _record_executor_stop(result: OrchestratorResult, executor_stats: Any) -> No
     """
     if executor_stats.budget_stopped and result.terminated_by == "complete":
         result.terminated_by = "shutdown"
+
+
+def _hold_deepen_reserve(config: OrchestratorConfig) -> float:
+    """Hold the deepen phase's budget slice on the run's budget client.
+
+    Only when deepen is enabled AND reachable (a budget client with a
+    finite cap exists and the fraction is positive). Returns the amount
+    held (0.0 when no reserve was taken)."""
+    if not config.deepen_suspicious:
+        return 0.0
+    fraction = getattr(config, "deepen_reserve_fraction", 0.0) or 0.0
+    if fraction <= 0:
+        return 0.0
+    client = getattr(config, "llm_budget_client", None)
+    if client is None or not hasattr(client, "hold_budget_reserve"):
+        return 0.0
+    try:
+        cap = getattr(
+            getattr(client, "config", None), "max_cost_per_scan", 0,
+        ) or 0
+        if not cap or cap == float("inf"):
+            return 0.0
+        held = client.hold_budget_reserve(cap * min(fraction, 0.9))
+        if held:
+            logger.info(
+                "deepen: holding $%.2f (%.0f%% of the $%.2f cap) in "
+                "reserve so announced re-reviews can execute",
+                held, 100.0 * min(fraction, 0.9), cap,
+            )
+        return held
+    except Exception:  # reserve is an optimisation, never fatal
+        logger.debug("deepen reserve hold failed", exc_info=True)
+        return 0.0
+
+
+def _release_deepen_reserve(config: OrchestratorConfig) -> None:
+    """Release the deepen reserve back to dispatch (idempotent)."""
+    client = getattr(config, "llm_budget_client", None)
+    if client is None or not hasattr(client, "release_budget_reserve"):
+        return
+    try:
+        released = client.release_budget_reserve()
+        if released:
+            logger.info(
+                "deepen: released the $%.2f reserve to the deepen "
+                "phase", released,
+            )
+    except Exception:
+        logger.debug("deepen reserve release failed", exc_info=True)
 
 
 def _client_class_cost(client: Any, call_class: str) -> float:

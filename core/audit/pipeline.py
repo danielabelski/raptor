@@ -105,6 +105,9 @@ class AuditPipelineOpts:
     # On-demand Mode-2 checker synthesis for chain-less suspicious
     # hypotheses (--no-on-demand-synthesis to disable). Capped per run.
     on_demand_synthesis: bool = True
+    # Slice of --max-cost held back for the deepen phase so announced
+    # re-reviews can execute (None = orchestrator default).
+    deepen_reserve_fraction: float | None = None
 
 
 
@@ -190,6 +193,8 @@ def _build_orchestrator_config(
         pre_scan=opts.pre_scan,
         schedule=opts.schedule,
         on_demand_synthesis=opts.on_demand_synthesis,
+        **({"deepen_reserve_fraction": opts.deepen_reserve_fraction}
+           if opts.deepen_reserve_fraction is not None else {}),
         llm_budget_client=client,
         llm_client=client,
     )

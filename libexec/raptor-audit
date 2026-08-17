@@ -1288,6 +1288,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         pre_scan=args.pre_scan,
         schedule=args.schedule,
         on_demand_synthesis=not args.no_on_demand_synthesis,
+        deepen_reserve_fraction=args.deepen_reserve,
     )
 
     try:
@@ -1634,6 +1635,11 @@ def main() -> int:
                        help="Path to CodeQL database for query dispatch")
     p_run.add_argument("--max-cost", type=float, default=None,
                        help="Maximum cost in USD before stopping")
+    p_run.add_argument("--deepen-reserve", type=float, default=None,
+                       metavar="FRACTION",
+                       help="Slice of --max-cost held back for the deepen "
+                            "phase so announced re-reviews can execute "
+                            "(default 0.15; 0 disables)")
     p_run.add_argument("--max-time", type=float, default=None,
                        help="Maximum wall-clock seconds before stopping")
     p_run.add_argument("--review-passes", type=int, default=1,

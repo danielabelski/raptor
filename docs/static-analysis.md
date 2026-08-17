@@ -51,7 +51,7 @@ expanded-view Semgrep pass (`--expanded-semgrep`).
 | `--exclude-dir <glob>` | none | Drop results from matching paths (repeatable, OR semantics) |
 | `--extra-config <path>` | none | Additional Semgrep rule source path (repeatable) |
 | `--show-suppressed` | off | Include `nosemgrep`-suppressed findings in output summary |
-| `--sandbox <profile>` | full | [Sandbox](sandbox.md) profile (`debug` / `full` / `network-only` / `none`) |
+| `--sandbox <profile>` | full | [Sandbox](sandbox.md) profile (`full` / `strict` / `debug` / `target_run` / `frida` / `network-only` / `none`) |
 | `--no-sandbox` | off | Alias for `--sandbox none` |
 | `--audit` | off | Engage [sandbox](sandbox.md) audit mode |
 | `--audit-verbose` | off | Log every traced syscall (requires `--audit`) |

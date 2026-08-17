@@ -7,12 +7,16 @@ import pytest
 
 from core.concepts.audit_bridge import (
     _extract_cwe_id,
+    _guard_in_scope,
     _find_domain_model,
     _infer_repo_path,
     _match_pass_cwe,
     _relevance_score,
     _sage_recall_for_context,
+    domain_bug_patterns,
+    domain_key_files,
     domain_model_context,
+    domain_security_context,
     invariant_violations_for_hypothesis,
     invariants_contradicting_finding,
     queue_reading_list_item,
@@ -594,3 +598,128 @@ class TestSageRecallForContext:
                 top_k=5,
                 min_confidence=0.5,
             )
+
+
+@pytest.fixture
+def extras_model(domain_model):
+    """Domain model with security_context, bug_patterns, key_files."""
+    domain_model = dict(domain_model)
+    domain_model["security_context"] = {
+        "privilege_level": "kernel",
+        "attack_surface": "AF_ALG socket API reachable from userspace",
+        "isolation": "none",
+        "trust_summary": "unprivileged user -> kernel crypto layer",
+    }
+    domain_model["bug_patterns"] = [
+        {"id": "sg-double-free", "description": "double free of sg pages",
+         "what_to_grep": r"af_alg_free_areq_sgls"},
+        {"id": "unchecked-copy", "description": "copy without bounds check",
+         "what_to_grep": r"copy_from_user"},
+    ]
+    domain_model["key_files"] = [
+        {"path": "crypto/algif_aead.c", "reason": "entry point"},
+        "crypto/af_alg.c",
+    ]
+    return domain_model
+
+
+@pytest.fixture
+def extras_out_dir(extras_model, tmp_path):
+    (tmp_path / "domain-model.json").write_text(
+        json.dumps(extras_model), encoding="utf-8")
+    return tmp_path
+
+
+class TestDomainSecurityContext:
+    def test_returns_block(self, extras_out_dir):
+        block = domain_security_context(extras_out_dir)
+        assert block is not None
+        assert "Target Security Context" in block
+        assert "kernel" in block
+        assert "AF_ALG socket API" in block
+        assert "Trust boundary" in block
+
+    def test_none_without_model(self, tmp_path):
+        assert domain_security_context(tmp_path) is None
+
+    def test_none_without_privilege_level(self, domain_model, tmp_path):
+        (tmp_path / "domain-model.json").write_text(
+            json.dumps(domain_model), encoding="utf-8")
+        assert domain_security_context(tmp_path) is None
+
+
+class TestDomainBugPatterns:
+    def test_grep_hint_match_selects(self, extras_out_dir):
+        src = "err = af_alg_free_areq_sgls(areq);"
+        block = domain_bug_patterns(
+            extras_out_dir, "crypto/algif_aead.c", "aead_release", src)
+        assert block is not None
+        assert "double free of sg pages" in block
+        assert "copy without bounds check" not in block
+
+    def test_no_match_returns_none(self, extras_out_dir):
+        block = domain_bug_patterns(
+            extras_out_dir, "lib/other.c", "unrelated",
+            "int x = 1;\nreturn x;")
+        assert block is None
+
+    def test_empty_source_includes_all(self, extras_out_dir):
+        block = domain_bug_patterns(
+            extras_out_dir, "crypto/algif_aead.c", "aead_release", "")
+        assert block is not None
+        assert "double free of sg pages" in block
+        assert "copy without bounds check" in block
+
+    def test_none_without_model(self, tmp_path):
+        assert domain_bug_patterns(tmp_path, "a.c", "f", "src") is None
+
+    def test_bad_regex_hint_falls_back_to_substring(
+        self, domain_model, tmp_path,
+    ):
+        domain_model = dict(domain_model)
+        domain_model["bug_patterns"] = [
+            {"id": "p", "description": "unbalanced paren hint",
+             "what_to_grep": "kfree("},
+        ]
+        (tmp_path / "domain-model.json").write_text(
+            json.dumps(domain_model), encoding="utf-8")
+        block = domain_bug_patterns(tmp_path, "a.c", "f", "kfree(ptr);")
+        assert block is not None
+        assert "unbalanced paren hint" in block
+
+
+class TestDomainKeyFiles:
+    def test_returns_paths_from_dicts_and_strings(self, extras_out_dir):
+        kf = domain_key_files(extras_out_dir)
+        assert kf == {"crypto/algif_aead.c", "crypto/af_alg.c"}
+
+    def test_empty_without_model(self, tmp_path):
+        assert domain_key_files(tmp_path) == set()
+
+    def test_empty_without_key_files(self, dm_dir):
+        assert domain_key_files(dm_dir) == set()
+
+
+class TestGuardInScope:
+    def test_unscoped_guard_is_global(self):
+        assert _guard_in_scope({"id": "g1", "statement": "s"}, "a/b.c")
+
+    def test_files_list_scopes(self):
+        inv = {"id": "g", "files": ["crypto/algif_aead.c"]}
+        assert _guard_in_scope(inv, "crypto/algif_aead.c")
+        assert _guard_in_scope(inv, "src/crypto/algif_aead.c")
+        assert not _guard_in_scope(inv, "net/socket.c")
+
+    def test_evidence_dict_file_scopes(self):
+        inv = {"id": "g", "evidence": [{"file": "lib/parse.c"}]}
+        assert _guard_in_scope(inv, "lib/parse.c")
+        assert not _guard_in_scope(inv, "lib/other.c")
+
+    def test_evidence_string_path_scopes(self):
+        inv = {"id": "g", "evidence": ["crypto/af_alg.c:120 sg aliasing"]}
+        assert _guard_in_scope(inv, "crypto/af_alg.c")
+        assert not _guard_in_scope(inv, "crypto/algif_hash.c")
+
+    def test_prose_evidence_does_not_scope(self):
+        inv = {"id": "g", "evidence": ["documented in the manpage"]}
+        assert _guard_in_scope(inv, "any/file.c")

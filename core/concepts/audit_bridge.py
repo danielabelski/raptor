@@ -169,6 +169,159 @@ def _relevance_score(
     return score
 
 
+def _security_context_lines(model: dict[str, Any]) -> list[str]:
+    """Prompt lines for the model's ``security_context`` section.
+
+    Returns an empty list when the model carries no usable security
+    context (no privilege level).
+    """
+    sc = model.get("security_context")
+    if not isinstance(sc, dict) or not sc.get("privilege_level"):
+        return []
+    parts = ["### Target Security Context\n"]
+    parts.append(f"- **Privilege level:** {sc['privilege_level']}")
+    if sc.get("attack_surface"):
+        parts.append(f"- **Attack surface:** {sc['attack_surface']}")
+    if sc.get("isolation"):
+        parts.append(f"- **Isolation:** {sc['isolation']}")
+    parts.append(
+        "\nUse this context when assessing severity. "
+        "Memory corruption in kernel code reachable from "
+        "unprivileged userspace is high or critical severity. "
+        "Adjust severity relative to the privilege boundary "
+        "the attacker crosses.\n"
+    )
+    return parts
+
+
+def domain_security_context(out_dir: Path) -> str | None:
+    """Standalone security-context prompt block.
+
+    Consumed by ``core.audit.context`` (always-on prompt section,
+    independent of primer relevance) and by the security classifier.
+    Returns None when no domain model exists or it carries no
+    security context.
+    """
+    model = _find_domain_model(out_dir)
+    if not model:
+        return None
+    lines = _security_context_lines(model)
+    if not lines:
+        return None
+    if isinstance(model.get("security_context"), dict):
+        trust = model["security_context"].get("trust_summary")
+        if trust:
+            # Keep the guidance sentence last.
+            lines.insert(len(lines) - 1, f"- **Trust boundary:** {trust}")
+    return "\n".join(lines)
+
+
+def domain_bug_patterns(
+    out_dir: Path,
+    file_path: str,
+    function_name: str,
+    source: str = "",
+) -> str | None:
+    """Bug-pattern prompt block filtered to the function under review.
+
+    A pattern is included when its ``what_to_grep`` hint matches the
+    function source (strong signal) or its relevance score clears the
+    same >1.0 threshold the other bridge functions use.  With no
+    source text available every pattern is included (nothing to
+    filter on).  Returns None when nothing selects.
+    """
+    model = _find_domain_model(out_dir)
+    if not model:
+        return None
+    bug_patterns = model.get("bug_patterns") or []
+    if not isinstance(bug_patterns, list) or not bug_patterns:
+        return None
+
+    selected: list[dict[str, Any]] = []
+    for bp in bug_patterns:
+        if not isinstance(bp, dict):
+            continue
+        hit = False
+        grep_hint = (bp.get("what_to_grep") or "").strip()
+        if source and grep_hint:
+            try:
+                hit = re.search(grep_hint, source, re.IGNORECASE) is not None
+            except re.error:
+                hit = grep_hint.lower() in source.lower()
+        if not hit and source:
+            hit = _relevance_score(bp, file_path, function_name, source) > 1.0
+        if hit or not source:
+            selected.append(bp)
+    if not selected:
+        return None
+
+    parts = ["### Bug Patterns (from study)\n"]
+    parts.append(
+        "These are common mistake classes for this subsystem. "
+        "Check whether the function under review matches any:\n",
+    )
+    for bp in selected:
+        desc = bp.get("description", bp.get("id", ""))
+        parts.append(f"- {desc}")
+        grep_hint = bp.get("what_to_grep", "")
+        if grep_hint:
+            parts.append(f"  - Grep: `{grep_hint}`")
+    return "\n".join(parts)
+
+
+def domain_key_files(out_dir: Path) -> set[str]:
+    """Paths the domain model marks as key files.
+
+    Consumed by the audit orchestrator's priority boost (a gap whose
+    file is a key file gets ``_KEY_FILE_PRIORITY_BOOST``).  Entries
+    may be dicts (``{"path": ..., "reason": ...}``) or bare strings.
+    Returns an empty set when no model or no key files.
+    """
+    model = _find_domain_model(out_dir)
+    if not model:
+        return set()
+    out: set[str] = set()
+    for kf in model.get("key_files") or []:
+        if isinstance(kf, dict):
+            p = kf.get("path") or kf.get("file") or ""
+        elif isinstance(kf, str):
+            p = kf
+        else:
+            continue
+        if p:
+            out.add(str(p))
+    return out
+
+
+def _guard_in_scope(inv: dict[str, Any], file_path: str) -> bool:
+    """Whether a guard-role invariant applies to *file_path*.
+
+    Scope evidence, in order: explicit ``files``/``scope`` lists, a
+    ``file`` field, and file paths inside ``evidence`` entries.  An
+    invariant with no scope information is treated as global (fail
+    open) — matching the ``role`` default of "boost" in consumers.
+    """
+    scopes: list[str] = []
+    for key in ("files", "scope"):
+        v = inv.get(key)
+        if isinstance(v, (list, tuple)):
+            scopes.extend(str(x) for x in v if x)
+        elif isinstance(v, str) and v:
+            scopes.append(v)
+    if inv.get("file"):
+        scopes.append(str(inv["file"]))
+    for ev in inv.get("evidence") or []:
+        if isinstance(ev, dict) and ev.get("file"):
+            scopes.append(str(ev["file"]))
+        elif isinstance(ev, str) and ev:
+            head = ev.split()[0].split(":")[0]
+            if "/" in head or "." in PurePosixPath(head).name:
+                scopes.append(head)
+    if not scopes:
+        return True
+    return any(_paths_match(file_path, s) for s in scopes)
+
+
 def domain_model_context(
     out_dir: Path,
     file_path: str,
@@ -226,22 +379,7 @@ def domain_model_context(
         return None
 
     parts: list[str] = ["## Domain Knowledge (from /understand --study)\n"]
-
-    sc = model.get("security_context")
-    if sc and sc.get("privilege_level"):
-        parts.append("### Target Security Context\n")
-        parts.append(f"- **Privilege level:** {sc['privilege_level']}")
-        if sc.get("attack_surface"):
-            parts.append(f"- **Attack surface:** {sc['attack_surface']}")
-        if sc.get("isolation"):
-            parts.append(f"- **Isolation:** {sc['isolation']}")
-        parts.append(
-            "\nUse this context when assessing severity. "
-            "Memory corruption in kernel code reachable from "
-            "unprivileged userspace is high or critical severity. "
-            "Adjust severity relative to the privilege boundary "
-            "the attacker crosses.\n"
-        )
+    parts.extend(_security_context_lines(model))
 
     if relevant_concepts:
         parts.append("### Semantic Concepts\n")

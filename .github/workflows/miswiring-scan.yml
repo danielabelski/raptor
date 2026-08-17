@@ -1,0 +1,53 @@
+name: Miswiring scan (daily)
+
+# Daily dead-code / miswiring sweep — the signal for the bug class
+# where a wrong call or import is silently swallowed by a broad
+# exception handler and a feature dies without a test failing.
+#
+# Runs .github/scripts/check_miswiring.py (stdlib-only, no deps)
+# against the checked-in baseline. A NEW finding fails the job: fix
+# the miswiring, or — deliberately, with a note — add its key to
+# .github/scripts/miswiring_baseline.json. Baseline entries that no
+# longer fire are warned as stale in the job log.
+#
+# Deliberately a scheduled job, not a PR gate: the full-repo AST
+# index takes ~a minute and the finding classes need human triage
+# judgment, so the daily cadence keeps the signal without taxing
+# the merge queue.
+
+on:
+  schedule:
+    # 05:30 UTC — clear of tests.yml's full-suite cron (Mon/Thu
+    # 06:00) and nightly.yml (07:00).
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.14'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  miswiring:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run miswiring detector against baseline
+        run: |
+          python3 .github/scripts/check_miswiring.py

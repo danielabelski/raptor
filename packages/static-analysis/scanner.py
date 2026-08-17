@@ -1666,6 +1666,129 @@ def run_compiler_scan_stage(
     return [str(sarif_path)]
 
 
+# ---------------------------------------------------------------------------
+# Expanded-view semgrep (fidelity-3 macro-hidden sink coverage) — opt-in
+# ---------------------------------------------------------------------------
+
+
+def run_expanded_semgrep_stage(
+    repo_path: Path,
+    out_dir: Path,
+    rules_dirs: list[str],
+    baseline_packs: list[tuple[str, str]],
+    extra_configs: list[str] | None = None,
+    max_tus: int | None = None,
+) -> list[str]:
+    """Re-run the loaded semgrep ruleset over fidelity-3 expanded views.
+
+    Pattern rules miss anything hidden behind macros (LIST_FOREACH
+    wrappers, lock macros, allocator wrappers). This stage expands
+    macro-heavy C/C++ TUs through the real preprocessor
+    (core.audit.preprocessor_view — sandboxed, no repo code executes),
+    runs the same rule configs the plain stage ran over the expanded
+    scratch tree, translates match lines back to ORIGINAL coordinates,
+    and emits ``expanded_semgrep.sarif`` under a distinct tool name
+    (``semgrep-expanded``) with an ``expanded_view`` marker on every
+    result. Matches mapping into system headers or other files are
+    dropped (noise by policy).
+
+    Bounded by preprocessor_view's per-run expansion budget; skipped
+    TUs are reported loudly. Best-effort per config — a failing pack
+    never kills the stage.
+
+    Returns the list of SARIF paths emitted (same shape as the other
+    stage runners).
+    """
+    if not _repo_has_c_cpp_source(repo_path):
+        logger.debug("expanded-semgrep: target has no C/C++ source; skipping")
+        return []
+
+    from core.audit import expanded_semgrep as es
+    from packages.semgrep.runner import is_available as semgrep_available
+    from packages.semgrep.runner import run_rule as semgrep_run_rule
+
+    if not semgrep_available():
+        print(
+            "⚠️  expanded-semgrep did not run: semgrep not installed",
+            file=sys.stderr,
+        )
+        return []
+
+    scratch = Path(tempfile.mkdtemp(prefix="expanded_semgrep_", dir=str(out_dir)))
+    try:
+        kwargs = {} if max_tus is None else {"max_tus": max_tus}
+        corpus = es.build_expanded_corpus(
+            repo_path, scratch, out_dir=out_dir, **kwargs,
+        )
+        summary = corpus.summary_line()
+        logger.info(summary)
+        if corpus.skipped_budget:
+            print(f"⚠️  {summary}", file=sys.stderr)
+        if corpus.expanded == 0:
+            return []
+
+        # Same config set the plain stage ran: local rule dirs +
+        # baseline packs + operator --extra-config, minus unreachable
+        # registry packs.
+        configs: list[tuple[str, str]] = []
+        added_packs: set = set()
+        for rd in rules_dirs:
+            rd_path = Path(rd)
+            if rd_path.exists():
+                configs.append((f"category_{rd_path.name}", str(rd_path)))
+        for pack_name, pack_id in baseline_packs:
+            if pack_id not in added_packs:
+                configs.append(
+                    (pack_name, RaptorConfig.get_semgrep_config(pack_id)),
+                )
+                added_packs.add(pack_id)
+        for extra in (extra_configs or []):
+            configs.append(
+                (f"extra_{_sanitize_pack_name(Path(extra).name)}", extra),
+            )
+        configs = _drop_unreachable_registry_packs(configs)
+
+        all_findings: list[dict] = []
+        seen: set = set()
+        total_dropped = 0
+        for name, config in configs:
+            try:
+                res = semgrep_run_rule(
+                    corpus.root, config, name=name,
+                    timeout=RaptorConfig.SEMGREP_PACK_TIMEOUT,
+                    env=RaptorConfig.get_safe_env(preserve_proxy=True),
+                )
+            except Exception as exc:  # noqa: BLE001 — one pack must not kill the stage
+                logger.warning("expanded-semgrep: pack %s failed: %s", name, exc)
+                continue
+            if res.errors and not res.findings:
+                logger.debug(
+                    "expanded-semgrep: pack %s errors: %s", name, res.errors[:3],
+                )
+                continue
+            translated, dropped = es.translate_corpus_findings(
+                corpus, res.findings,
+            )
+            total_dropped += dropped
+            for f in translated:
+                key = (f["rule_id"], f["file"], f["line"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_findings.append(f)
+
+        sarif_path = out_dir / "expanded_semgrep.sarif"
+        save_json(sarif_path, es.findings_to_sarif(all_findings))
+        logger.info(
+            "expanded-semgrep: %d finding(s) at original coordinates "
+            "(%d expanded-region matches dropped as noise); SARIF at %s",
+            len(all_findings), total_dropped, sarif_path,
+        )
+        return [str(sarif_path)]
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def _sarif_has_findings(sarif_path: Path) -> bool:
     """Return True iff the SARIF file contains at least one result.
 
@@ -1966,6 +2089,16 @@ def main():
         help="Cap the number of translation units the compiler-analyzer "
              "scan compiles (default 2000). Skipped TUs are reported "
              "loudly, never silently truncated.",
+    )
+    ap.add_argument(
+        "--expanded-semgrep", action="store_true",
+        dest="expanded_semgrep",
+        help="Re-run the loaded Semgrep ruleset over fidelity-3 "
+             "preprocessor-expanded views of macro-heavy C/C++ TUs, with "
+             "matches line-mapped back to original coordinates — catches "
+             "sinks hidden behind macros (LIST_FOREACH wrappers, allocator "
+             "macros). Budget-bounded; preprocessing is sandboxed and no "
+             "repo code executes. Off by default (operator opt-in).",
     )
     ap.add_argument(
         "--languages",
@@ -2284,9 +2417,21 @@ def main():
                 repo_path, out_dir, max_tus=args.compiler_scan_max_tus,
             )
 
+        # Expanded-view semgrep stage (opt-in). Re-runs the resolved
+        # ruleset over fidelity-3 expanded views of macro-heavy TUs;
+        # findings land at original coordinates with an expanded_view
+        # marker under the distinct semgrep-expanded tool name.
+        expanded_sarifs = []
+        if args.expanded_semgrep:
+            expanded_sarifs = run_expanded_semgrep_stage(
+                repo_path, out_dir, rules_dirs, list(resolved_baseline),
+                extra_configs=args.extra_config,
+            )
+
         # Merge SARIFs if more than one
         sarif_inputs = (
-            semgrep_sarifs + codeql_sarifs + cocci_sarifs + compiler_sarifs
+            semgrep_sarifs + codeql_sarifs + cocci_sarifs
+            + compiler_sarifs + expanded_sarifs
         )
         merged = out_dir / "combined.sarif"
         exclude_globs = args.exclude_dir

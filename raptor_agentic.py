@@ -1213,6 +1213,16 @@ Examples:
              "scan compiles (default 2000). Skipped TUs are reported "
              "loudly, never silently truncated.",
     )
+    parser.add_argument(
+        "--expanded-semgrep", action="store_true",
+        help="Re-run the loaded Semgrep ruleset over fidelity-3 "
+             "preprocessor-expanded views of macro-heavy C/C++ TUs, with "
+             "matches line-mapped back to original coordinates — catches "
+             "sinks hidden behind macros (LIST_FOREACH wrappers, allocator "
+             "macros). Budget-bounded; preprocessing is sandboxed and no "
+             "repo code executes. Off by default; rides the Semgrep scan "
+             "stage, so it is skipped under --codeql-only.",
+    )
     # Reachability gating control
     parser.add_argument(
         "--allow-unreachable",
@@ -2092,10 +2102,10 @@ Examples:
             "--out", str(out_dir / "scan"),
             *sandbox_passthrough,
         ]
-        # Compiler-analyzer channel rides the scanner subprocess —
-        # forwarded verbatim (same pattern as --traced-build on the
-        # codeql agent). --no wins over --on at the scanner too, but
-        # resolve here so the child's argv reflects the decision.
+        # Compiler-analyzer + expanded-semgrep channels ride the scanner
+        # subprocess — forwarded verbatim (same pattern as --traced-build
+        # on the codeql agent). --no wins over --on at the scanner too,
+        # but resolve here so the child's argv reflects the decision.
         if args.compiler_scan and not args.no_compiler_scan:
             semgrep_cmd.append("--compiler-scan")
             if args.compiler_scan_max_tus is not None:
@@ -2103,6 +2113,8 @@ Examples:
                     "--compiler-scan-max-tus",
                     str(args.compiler_scan_max_tus),
                 ])
+        if args.expanded_semgrep:
+            semgrep_cmd.append("--expanded-semgrep")
         logger.debug("Running: Scanning code with Semgrep")
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         # ``semgrep_cmd`` is a list of RAPTOR-constructed argv;

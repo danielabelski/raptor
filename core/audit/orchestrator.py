@@ -396,6 +396,7 @@ class ReviewOutcome:
 
     _CONFIRMED_EVIDENCE = frozenset({
         "dark_verify:confirmed", "dynamic:crash", "frida:runtime",
+        "validate:observed_runtime", "validate:replayed_crash",
     })
 
     def compute_tier(self) -> str:
@@ -413,9 +414,9 @@ class ReviewOutcome:
             return VerificationTier.SPECULATIVE.value
 
         et_lower = self.evidence_tool.strip().lower()
-        if et_lower in self._CONFIRMED_EVIDENCE:
-            return VerificationTier.CONFIRMED.value
         tools = et_lower.split("+")
+        if any(t.strip() in self._CONFIRMED_EVIDENCE for t in tools):
+            return VerificationTier.CONFIRMED.value
         if any(t.strip().endswith(":witness") for t in tools):
             return VerificationTier.CONFIRMED.value
 
@@ -1369,6 +1370,18 @@ def review_one_function(
             fp_warn = format_fp_warnings(fp_patterns, gap["file"])
             if fp_warn:
                 ctx["fp_warnings"] = fp_warn
+    if evidence_index:
+        _vh_rec = evidence_index.get(gap_key)
+        _vh_entry = (
+            getattr(_vh_rec, "validate_history", None) if _vh_rec else None
+        )
+        if _vh_entry:
+            with contextlib.suppress(Exception):
+                from .validate_bridge import format_validate_history
+
+                _vh_text = format_validate_history(_vh_entry)
+                if _vh_text:
+                    ctx["validate_history"] = _vh_text
     if feedback_state and feedback_state.source_precision:
         fb_text = format_feedback_for_context(feedback_state)
         if fb_text:
@@ -1978,6 +1991,25 @@ def review_one_function(
                     exc_info=True,
                 )
 
+    # ── Prior /validate runtime evidence (bridge) ────────────────────
+    # OBSERVED_RUNTIME / REPLAYED_CRASH evidence from a prior /validate
+    # run on unchanged source stamps the re-confirmed finding so
+    # compute_tier() reaches CONFIRMED instead of LLM_ONLY.
+    if outcome.status in ("finding", "suspicious") and evidence_index:
+        with contextlib.suppress(Exception):
+            from .validate_bridge import validate_runtime_stamp
+
+            _vrt_rec = evidence_index.get(gap_key)
+            _vrt_stamp = validate_runtime_stamp(
+                getattr(_vrt_rec, "validate_history", None)
+                if _vrt_rec else None
+            )
+            if _vrt_stamp and _vrt_stamp not in (outcome.evidence_tool or ""):
+                outcome.evidence_tool = (
+                    f"{outcome.evidence_tool}+{_vrt_stamp}"
+                    if outcome.evidence_tool else _vrt_stamp
+                )
+
     # ── Mid-loop synthesis ────────────────────────────────────────────
     if outcome.status == "finding" and _is_tool_confirmed(outcome.evidence_tool or ""):
         try:
@@ -2367,8 +2399,14 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         scope=config.scope,
     )
 
+    validate_confirmed_keys: set[str] | None = None
+    validate_ruled_out_keys: set[str] | None = None
     try:
-        from .validate_bridge import import_validate_evidence
+        from .validate_bridge import (
+            import_validate_evidence,
+            index_verdict_history,
+            validate_history_keys,
+        )
 
         _bridge_project = (
             Path(config.out_dir).parent
@@ -2389,6 +2427,25 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 " %d runtime evidence items",
                 len(bridge_result.feasibility_verdicts),
                 len(bridge_result.runtime_evidence),
+            )
+        if (
+            bridge_result
+            and bridge_result.verdict_history
+            and evidence_index is not None
+        ):
+            _vh_index = index_verdict_history(bridge_result)
+            for _vh_key, _vh_entry in _vh_index.items():
+                _vh_rec = evidence_index.get(_vh_key)
+                if _vh_rec is not None:
+                    _vh_rec.validate_history = _vh_entry
+            validate_confirmed_keys, validate_ruled_out_keys = (
+                validate_history_keys(_vh_index)
+            )
+            logger.info(
+                "validate bridge: verdict history — %d confirmed-function"
+                " boosts, %d ruled-out deprioritisations",
+                len(validate_confirmed_keys),
+                len(validate_ruled_out_keys),
             )
     except Exception:
         logger.debug("validate bridge import failed", exc_info=True)
@@ -2723,6 +2780,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         strategy_weights=strat_weights,
         binary_bridge=binary_bridge_early,
         new_functions=new_fn_keys or None,
+        validate_confirmed_keys=validate_confirmed_keys,
+        validate_ruled_out_keys=validate_ruled_out_keys,
     )
 
     # Fix-history mining: the target's past security fixes become

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 from core.audit.priority import (
+    _COMPLEX_SLOC,
+    _MODERATE_SLOC,
     SCORE_CALLEE_OF_ENTRY,
     SCORE_COMPLEX,
     SCORE_ENTRY_POINT,
@@ -21,8 +23,8 @@ from core.audit.priority import (
     SCORE_THREAT_MODEL_FOCUS,
     SCORE_TRUST_BOUNDARY,
     SCORE_UNCHECKED_FLOW,
-    _COMPLEX_SLOC,
-    _MODERATE_SLOC,
+    SCORE_VALIDATE_CONFIRMED,
+    SCORE_VALIDATE_RULED_OUT,
     detect_widely_used,
     group_by_subsystem,
     load_flow_traces,
@@ -212,6 +214,36 @@ class TestScoreFunctions:
     def test_empty_gaps(self):
         result = score_functions([])
         assert result == []
+
+
+class TestValidateHistoryScoring:
+    def test_confirmed_boost(self):
+        gaps = [_gap("a.c", "f"), _gap("a.c", "g")]
+        result = score_functions(
+            gaps, validate_confirmed_keys={"a.c:f"},
+        )
+        by_name = {g["name"]: g for g in result}
+        assert by_name["f"]["priority_score"] == SCORE_VALIDATE_CONFIRMED
+        assert by_name["g"]["priority_score"] == 0
+
+    def test_ruled_out_mild_demotion(self):
+        gaps = [_gap("a.c", "f"), _gap("a.c", "g")]
+        result = score_functions(
+            gaps, validate_ruled_out_keys={"a.c:f"},
+        )
+        by_name = {g["name"]: g for g in result}
+        assert by_name["f"]["priority_score"] == SCORE_VALIDATE_RULED_OUT
+        assert SCORE_VALIDATE_RULED_OUT < 0
+        assert by_name["g"]["priority_score"] == 0
+
+    def test_confirmed_takes_precedence(self):
+        gaps = [_gap("a.c", "f")]
+        result = score_functions(
+            gaps,
+            validate_confirmed_keys={"a.c:f"},
+            validate_ruled_out_keys={"a.c:f"},
+        )
+        assert result[0]["priority_score"] == SCORE_VALIDATE_CONFIRMED
 
 
 class TestLoadFlowTraces:
@@ -503,10 +535,7 @@ class TestLoadToolCoverage:
                     "codeql": {"files": ["src/a.c"]},
                 },
             }
-            try:
-                result = load_tool_coverage([run_dir])
-            except Exception:
-                result = load_tool_coverage([run_dir])
+            result = load_tool_coverage([run_dir])
 
         if result:
             assert "semgrep" in result.get("src/a.c", set())

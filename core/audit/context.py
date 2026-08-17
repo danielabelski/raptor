@@ -1076,6 +1076,10 @@ def format_context_for_prompt(
         sections.append(PromptSection("fp_warnings",
             f"\n### Previous false positives\n{ctx['fp_warnings']}", 3))
 
+    if ctx.get("validate_history"):
+        sections.append(PromptSection("validate_history",
+            f"\n### Prior /validate verdict history\n{ctx['validate_history']}", 2))
+
     if ctx.get("block_analysis"):
         sections.append(PromptSection(
             "block_analysis", ctx["block_analysis"], 0))

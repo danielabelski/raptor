@@ -60,6 +60,8 @@ SCORE_STRATEGY_MAX_BOOST = 5
 SCORE_BINARY_SINK = 6
 SCORE_BINARY_SURFACE = 4
 SCORE_PARSER_BOUNDARY = 3
+SCORE_VALIDATE_CONFIRMED = 6
+SCORE_VALIDATE_RULED_OUT = -3
 
 _COMPLEX_SLOC = 80
 _MODERATE_SLOC = 30
@@ -88,6 +90,8 @@ def score_functions(
     open_constraint_keys: set[str] | None = None,
     strategy_weights: dict[str, float] | None = None,
     binary_bridge: Any | None = None,
+    validate_confirmed_keys: set[str] | None = None,
+    validate_ruled_out_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Score and re-sort gaps by attack-surface proximity.
 
@@ -123,6 +127,13 @@ def score_functions(
         binary_bridge: BinaryBridgeResult from binary analysis output.
             Binary-confirmed sink callers, ranked surfaces, and parser
             boundaries boost the function's score.
+        validate_confirmed_keys: file:function keys a prior /validate
+            run confirmed as exploitable/confirmed — variant-dense
+            regions, boosted with SCORE_VALIDATE_CONFIRMED.
+        validate_ruled_out_keys: file:function keys a prior /validate
+            run ruled out with strong receipts on unchanged source.
+            Mildly deprioritised (SCORE_VALIDATE_RULED_OUT) — never
+            skipped; a fresh hypothesis may differ in mechanism.
 
     Returns:
         Gaps sorted by (priority ASC, priority_score DESC, sloc DESC).
@@ -225,6 +236,11 @@ def score_functions(
                 )
                 boost = int((max_weight - 1.0) * SCORE_STRATEGY_MAX_BOOST)
                 score += max(-SCORE_STRATEGY_MAX_BOOST, min(SCORE_STRATEGY_MAX_BOOST, boost))
+
+        if validate_confirmed_keys and key in validate_confirmed_keys:
+            score += SCORE_VALIDATE_CONFIRMED
+        elif validate_ruled_out_keys and key in validate_ruled_out_keys:
+            score += SCORE_VALIDATE_RULED_OUT
 
         func_name = gap.get("name", "")
         if key in binary_sink_callers or func_name in binary_sink_callers:

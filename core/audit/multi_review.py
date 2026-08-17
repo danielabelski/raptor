@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from core.llm.multi_model.adapters import BaseVerdictAdapter
 from core.llm.multi_model.dispatch import run_multi_model
 from core.llm.multi_model.types import (
     CostGate,
@@ -52,21 +53,30 @@ class AuditModelHandle:
         return self.real_model or self.model_name
 
 
-class AuditVerdictAdapter:
-    """ItemAdapter + VerdictAdapter for audit review results.
+class AuditVerdictAdapter(BaseVerdictAdapter):
+    """Audit's verdict adapter on the shared BaseVerdictAdapter.
 
     Each model produces a list of single-item results:
         [{file, function, status, hypothesis, evidence, body}]
 
-    Merge groups by file:function and picks a primary. When a
-    scorecard store is supplied, the primary decision is calibrated
-    (per-model per-decision-class reliability weights + /validate
-    priors, ties broken by calibrated confidence — see
-    ``core.audit.calibrated_merge``); cold-start panels and runs
-    without a scorecard use the legacy prefer-positive rule (don't
-    lose findings). Every merged item carries ``merge_decision``
-    telemetry naming which path decided it. All per-model analyses
-    are attached either way.
+    The substrate base provides merge() and correlate() (with the
+    distinct-model gate the hand-rolled copy lacked: one model
+    answering twice no longer masquerades as a multi-model panel).
+    Audit keeps only its POLICY pieces:
+
+    - item_id / normalize_verdict (audit's status vocabulary);
+    - the calibrated select_primary — per-model per-decision-class
+      reliability weights + /validate priors when a scorecard store
+      is supplied (see ``core.audit.calibrated_merge``), the legacy
+      prefer-positive rule otherwise. Every merged item carries
+      ``merge_decision`` telemetry naming which path decided it.
+    - extract_analysis_record: audit consumers (reasoning divergence,
+      the journal) read full per-model records, not the base's
+      truncated summary.
+
+    merge() wraps the base only to (a) skip malformed items instead of
+    sinking the panel and (b) annotate ``_model`` for the calibrated
+    estimator; the fold itself is inherited.
     """
 
     def __init__(
@@ -150,85 +160,48 @@ class AuditVerdictAdapter:
         }
         return best
 
+    def extract_analysis_record(
+        self, result: dict[str, Any], model_name: str,
+    ) -> dict[str, Any]:
+        """Full per-model record (audit consumers read ``body``,
+        ``hypothesis``, ``evidence_tool`` — not just the base's
+        truncated verdict summary)."""
+        record = {
+            "model": model_name,
+            **{k: v for k, v in result.items() if k != "_model"},
+        }
+        # The base correlate reads the normalized ``verdict`` and
+        # surfaces minority reasoning via the ``reasoning`` key; audit
+        # review results carry ``status`` and ``body`` instead — add
+        # both aliases so agreement/insight extraction works.
+        record.setdefault("verdict", self.normalize_verdict(result))
+        record.setdefault("reasoning", result.get("body", ""))
+        return record
+
     def merge(
         self, per_model_results: dict[str, list[dict[str, Any]]],
     ) -> list[dict[str, Any]]:
-        """Merge per-model results into a single list per function."""
-        by_id: dict[str, list[dict[str, Any]]] = {}
+        """Inherited fold with audit pre/post-processing.
+
+        Pre: drop malformed items (missing file/function) instead of
+        crashing the panel, and annotate ``_model`` so the calibrated
+        estimator can look up per-model reliability inside
+        select_primary. Post: strip the annotation from the primary.
+        """
+        cleaned: dict[str, list[dict[str, Any]]] = {}
         for model_name, results in per_model_results.items():
+            keep = []
             for item in results:
                 try:
-                    item_id = self.item_id(item)
+                    self.item_id(item)
                 except (ValueError, KeyError):
                     continue
-                item_with_model = {**item, "_model": model_name}
-                by_id.setdefault(item_id, []).append(item_with_model)
-
-        merged = []
-        for item_id, variants in by_id.items():
-            primary = self.select_primary(variants)
-            merged_item = {**primary}
-            merged_item.pop("_model", None)
-            merged_item["multi_model_analyses"] = [
-                {"model": v.pop("_model", "unknown"), **v}
-                for v in variants
-            ]
-            merged.append(merged_item)
+                keep.append({**item, "_model": model_name})
+            cleaned[model_name] = keep
+        merged = super().merge(cleaned)
+        for item in merged:
+            item.pop("_model", None)
         return merged
-
-    def correlate(
-        self,
-        merged_items: list[dict[str, Any]],
-        per_model_results: dict[str, list[dict[str, Any]]],
-    ) -> dict[str, Any]:
-        """Compute per-function agreement classification."""
-        n_models = len(per_model_results)
-        per_item: dict[str, dict[str, Any]] = {}
-
-        for item in merged_items:
-            item_id = self.item_id(item)
-            analyses = item.get("multi_model_analyses", [])
-            verdicts = [
-                self.normalize_verdict(a) for a in analyses
-                if self.normalize_verdict(a) != "unknown"
-            ]
-
-            if not verdicts:
-                classification = "unknown"
-            elif len(set(verdicts)) == 1:
-                classification = "unanimous"
-            else:
-                from collections import Counter
-                counts = Counter(verdicts)
-                top = counts.most_common(1)[0]
-                if top[1] > len(verdicts) / 2:
-                    classification = "majority"
-                else:
-                    classification = "disputed"
-
-            per_item[item_id] = {
-                "verdicts": verdicts,
-                "classification": classification,
-                "n_models": n_models,
-                "n_responding": len(analyses),
-            }
-
-        n_unanimous = sum(
-            1 for v in per_item.values() if v["classification"] == "unanimous"
-        )
-        n_disputed = sum(
-            1 for v in per_item.values() if v["classification"] == "disputed"
-        )
-
-        return {
-            "per_item": per_item,
-            "summary": {
-                "total": len(per_item),
-                "unanimous": n_unanimous,
-                "majority": len(per_item) - n_unanimous - n_disputed,
-                "disputed": n_disputed,
-            },
-        }
 
 
 class AdversarialReviewer:
@@ -476,10 +449,12 @@ def consensus_status(result: MultiModelResult) -> str | None:
 
 
 def is_disputed(result: MultiModelResult) -> bool:
-    """Check whether any item in the result is disputed."""
+    """Check whether any item in the result is disputed.
+
+    Reads the base adapter's correlation shape
+    (``confidence_signals: {item_id: signal}``).
+    """
     if not result.correlation:
         return False
-    per_item = result.correlation.get("per_item", {})
-    return any(
-        v.get("classification") == "disputed" for v in per_item.values()
-    )
+    signals = result.correlation.get("confidence_signals", {})
+    return any(v == "disputed" for v in signals.values())

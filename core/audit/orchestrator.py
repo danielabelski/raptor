@@ -1171,6 +1171,7 @@ def review_one_function(
 
             tc = extract_type_constraints(
                 ctx["source"],
+                gap.get("file", ""),
                 gap.get("name", ""),
             )
             if tc:

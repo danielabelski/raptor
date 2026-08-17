@@ -22,11 +22,14 @@ into otherwise-generic ``core.http`` / ``core.json.cache`` machinery:
 
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
-from typing import Optional
 
 from core.http import HttpClient
 from core.http.egress_backend import EgressClient
+
+logger = logging.getLogger(__name__)
 
 SCA_USER_AGENT = "raptor-sca/0.1 (+https://github.com/gadievron/raptor)"
 SCA_CACHE_ROOT = Path.home() / ".raptor" / "cache" / "sca"
@@ -80,7 +83,7 @@ SCA_ALLOWED_HOSTS = (
 
 
 def default_client(
-    target: Optional["Path"] = None,
+    target: Path | None = None,
     *,
     offline: bool = False,
 ) -> HttpClient:
@@ -165,7 +168,71 @@ class _NoopHttpClient:
         raise HttpError(f"{self._OFFLINE_MSG}: STREAM {url}")
 
 
-def compose_proxy_hosts(target: "Optional[Path]" = None) -> list:
+# RFC 1123 hostname: dot-separated alphanumeric labels, hyphens
+# allowed inside a label, 253 chars max. IPv4 literals match too
+# (all-digit labels), which is fine for the proxy's hostname-keyed
+# allowlist.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$",
+    re.IGNORECASE,
+)
+
+# Ports tolerated on repo-derived host strings. The egress proxy's
+# allowlist is hostname-keyed, so the port is stripped — but only
+# the standard HTTP(S) ports are accepted at all; anything else is
+# rejected so a manifest can't smuggle odd-port syntax through.
+_ALLOWED_HOST_PORTS = frozenset({"80", "443"})
+
+
+def _normalise_repo_host(raw: object) -> str | None:
+    """Validate one repo-derived allowlist candidate.
+
+    Returns the bare lowercase hostname, or ``None`` when the value
+    is not a plain hostname (whitespace, scheme, path, userinfo,
+    or a non-standard port) — repo manifests are untrusted input,
+    so a malformed value must not reach the proxy allowlist where
+    it could carry proxy-config syntax.
+    """
+    if not isinstance(raw, str):
+        return None
+    if not raw or raw != raw.strip() or any(c.isspace() for c in raw):
+        return None
+    if any(c in raw for c in "/@\\?#,"):
+        return None
+    host, sep, port = raw.partition(":")
+    if sep and port not in _ALLOWED_HOST_PORTS:
+        return None
+    if not _HOSTNAME_RE.match(host):
+        return None
+    return host.lower()
+
+
+def _extend_repo_hosts(
+    hosts: list,
+    seen: set,
+    raw_hosts,
+    *,
+    source: str,
+    added: dict,
+    rejected: dict,
+) -> None:
+    """Append validated repo-derived hosts to ``hosts``/``seen``,
+    recording per-source added / rejected values for the one-line
+    per-run log in :func:`compose_proxy_hosts`."""
+    for raw in raw_hosts:
+        h = _normalise_repo_host(raw)
+        if h is None:
+            rejected.setdefault(source, []).append(repr(raw))
+            continue
+        if h not in seen:
+            hosts.append(h)
+            seen.add(h)
+            added.setdefault(source, []).append(h)
+
+
+def compose_proxy_hosts(target: Path | None = None) -> list:
     """Build the proxy_hosts allowlist for a SCA run.
 
     Always includes :data:`SCA_ALLOWED_HOSTS` (the static set of
@@ -188,15 +255,14 @@ def compose_proxy_hosts(target: "Optional[Path]" = None) -> list:
     # use LLM calls. Include the well-known provider API hosts so
     # the egress proxy permits model-resolution and inference.
     try:
-        from core.llm.egress import derive_allowlist
         from core.llm.config import LLMConfig
+        from core.llm.egress import derive_allowlist
         for h in derive_allowlist(LLMConfig()):
             if h not in seen:
                 hosts.append(h)
                 seen.add(h)
     except Exception as e:                           # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).debug(
+        logger.debug(
             "LLM egress allowlist derivation failed: %s", e,
         )
 
@@ -206,30 +272,38 @@ def compose_proxy_hosts(target: "Optional[Path]" = None) -> list:
     # config, not project-level.
     try:
         from .private_registry import (
-            hosts_for_overrides, load_overrides,
+            hosts_for_overrides,
+            load_overrides,
         )
         for h in hosts_for_overrides(load_overrides()):
             if h not in seen:
                 hosts.append(h)
                 seen.add(h)
-    except Exception:                               # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
+    except Exception:
+        logger.warning(
             "sca: private-registry override discovery failed",
             exc_info=True,
         )
 
     if target is None:
         return hosts
+    # Repo-derived additions below come from the SCANNED TREE
+    # (image refs, chart deps). They are deliberately NOT
+    # trust-gated — the scan legitimately needs to reach them —
+    # but every value is shape-validated (hostname grammar; only
+    # :443/:80 ports tolerated) and the additions are logged once
+    # per run so an operator can see what the target added to the
+    # egress allowlist.
+    added: dict = {}
+    rejected: dict = {}
     try:
         from .dockerfile_from import image_source_registry_hosts
-        for h in image_source_registry_hosts(target):
-            if h not in seen:
-                hosts.append(h)
-                seen.add(h)
-    except Exception:                               # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
+        _extend_repo_hosts(
+            hosts, seen, image_source_registry_hosts(target),
+            source="image refs", added=added, rejected=rejected,
+        )
+    except Exception:
+        logger.warning(
             "sca: failed to derive image-source registry hosts for "
             "proxy allowlist", exc_info=True,
         )
@@ -242,15 +316,27 @@ def compose_proxy_hosts(target: "Optional[Path]" = None) -> list:
     # "host not on the allowlist".
     try:
         from .parsers.helm_chart import chart_repository_hosts
-        for h in chart_repository_hosts(target):
-            if h not in seen:
-                hosts.append(h)
-                seen.add(h)
-    except Exception:                               # noqa: BLE001
-        import logging
-        logging.getLogger(__name__).warning(
+        _extend_repo_hosts(
+            hosts, seen, chart_repository_hosts(target),
+            source="chart deps", added=added, rejected=rejected,
+        )
+    except Exception:
+        logger.warning(
             "sca: failed to derive Helm chart repository hosts "
             "for proxy allowlist", exc_info=True,
+        )
+    if added:
+        logger.warning(
+            "sca: repo-derived hosts added to the egress allowlist — %s",
+            "; ".join(f"{src}: {', '.join(vals)}"
+                      for src, vals in added.items()),
+        )
+    if rejected:
+        logger.warning(
+            "sca: rejected malformed repo-derived egress host value(s) "
+            "— %s",
+            "; ".join(f"{src}: {', '.join(vals)}"
+                      for src, vals in rejected.items()),
         )
     return hosts
 

@@ -192,14 +192,20 @@ def add_scan_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--trust-repo", action="store_true",
-        help="Set the process-wide ``cc_trust`` override. NO behaviour "
-             "change in raptor-sca itself — SCA's defenses (sandbox + "
-             "egress proxy + atomic write + signal-checked bumps) "
-             "are not trust-gated. Provided for cross-subcommand "
-             "consistency so the same flag works on every RAPTOR "
-             "entry point; the override IS consulted by adjacent "
-             "subsystems (``/agentic`` LLM dispatch, CodeQL build "
-             "trust check) when they run in the same process.",
+        help="Treat the scanned repo as operator-trusted: honour its "
+             "suppression overlay (.raptor-sca-suppress.yml) and "
+             "license policy file, which are otherwise reported but "
+             "ignored. Also sets the process-wide ``cc_trust`` "
+             "override consulted by adjacent subsystems (``/agentic`` "
+             "LLM dispatch, CodeQL build trust check) when they run "
+             "in the same process. The active project's ``config`` "
+             "trust marker implies this flag.",
+    )
+    parser.add_argument(
+        "--no-trust-repo", action="store_true",
+        help="Force repo-untrusted for this run, overriding both "
+             "``--trust-repo`` and the active project's ``config`` "
+             "trust marker (explicit negative wins).",
     )
     parser.add_argument(
         "--baseline", metavar="PATH",
@@ -321,7 +327,14 @@ def options_from_args(args: argparse.Namespace) -> RunOptions:
     missing ``emit_spdx_sbom``, ``raptor-sca-run`` was missing
     ``enable_progress``. A new RunOptions field added here lands
     in both surfaces automatically.
+
+    Repo-trust is resolved here against the active project's
+    ``config`` marker (``--no-trust-repo`` > ``--trust-repo`` >
+    marker > off) so both entry points share the precedence and
+    the marker banner.
     """
+    from core.project.trust import apply_project_trust_flags
+    apply_project_trust_flags(args)
     return RunOptions(
         offline=args.offline,
         no_cache=args.no_cache,
@@ -350,4 +363,5 @@ def options_from_args(args: argparse.Namespace) -> RunOptions:
         enable_impact_analysis=args.impact_analysis,
         enable_progress=not args.no_progress,
         sbom_input=Path(args.sbom).resolve() if args.sbom else None,
+        trust_repo=bool(getattr(args, "trust_repo", False)),
     )

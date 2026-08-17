@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from packages.sca.bump.policy import (
-    BumpPolicy, SkipRule, load_policy,
+    BumpPolicy,
+    SkipRule,
+    load_policy,
 )
-
 
 yaml = pytest.importorskip("yaml")
 
@@ -273,10 +274,11 @@ skip:
     reason: pinned for compat with old config
 """)
     # Stub HTTP / pypi for both upstreams.
-    from packages.sca.bump.tests.test_pr_comment import (
-        _StubHttp, _StubPyPI,
-    )
     from packages.sca.bump.orchestrator import run_bump
+    from packages.sca.bump.tests.test_pr_comment import (
+        _StubHttp,
+        _StubPyPI,
+    )
     http = _StubHttp({
         "https://api.github.com/repos/semgrep/semgrep/releases/latest":
             {"tag_name": "v1.119.0"},
@@ -318,10 +320,11 @@ skip:
   - path: "test/data/**"
     reason: fixtures pinned deliberately
 """)
-    from packages.sca.bump.tests.test_pr_comment import (
-        _StubHttp, _StubPyPI,
-    )
     from packages.sca.bump.orchestrator import run_bump
+    from packages.sca.bump.tests.test_pr_comment import (
+        _StubHttp,
+        _StubPyPI,
+    )
     http = _StubHttp({
         "https://api.github.com/repos/semgrep/semgrep/releases/latest":
             {"tag_name": "v1.119.0"},
@@ -359,11 +362,13 @@ def test_orchestrator_block_on_major_forces_review_to_block(
 thresholds:
   block_on_major: true
 """)
-    from packages.sca.bump.tests.test_pr_comment import (
-        _StubHttp, _StubPyPI,
-    )
     from packages.sca.bump.orchestrator import (
-        _VERDICT_BLOCK, run_bump,
+        _VERDICT_BLOCK,
+        run_bump,
+    )
+    from packages.sca.bump.tests.test_pr_comment import (
+        _StubHttp,
+        _StubPyPI,
     )
     http = _StubHttp({
         # Major bump 1.x → 2.x.
@@ -388,26 +393,87 @@ def test_load_binary_capability_delta_default_off(tmp_path: Path) -> None:
 
 
 def test_load_binary_capability_delta_enabled(tmp_path: Path) -> None:
-    """``binary_capability_delta: true`` → flag set to True."""
+    """``binary_capability_delta: true`` → flag set to True on a
+    repo-trusted run (the toggle is operator-only)."""
     from packages.sca.bump.policy import load_policy
     (tmp_path / ".raptor-sca-bump.yml").write_text(
         "binary_capability_delta: true\n",
     )
-    policy = load_policy(tmp_path)
+    policy = load_policy(tmp_path, trust_repo=True)
     assert policy.binary_capability_delta_enabled is True
+
+
+def test_load_binary_capability_delta_untrusted_ignored_and_warned(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A repo file requesting ``binary_capability_delta: true`` on an
+    untrusted run is ignored, with a warning naming the toggle so the
+    operator can opt in deliberately."""
+    from packages.sca.bump.policy import load_policy
+    (tmp_path / ".raptor-sca-bump.yml").write_text(
+        "binary_capability_delta: true\n"
+        "skip: []\n",
+    )
+    with caplog.at_level("WARNING", logger="packages.sca.bump.policy"):
+        policy = load_policy(tmp_path)          # trust_repo defaults off
+    assert policy.binary_capability_delta_enabled is False
+    warned = [r for r in caplog.records
+              if "binary_capability_delta" in r.getMessage()
+              and "not repo-trusted" in r.getMessage()]
+    assert warned, "expected a warning naming the ignored toggle"
+
+
+def test_load_policy_untrusted_keeps_repo_settable_keys(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``skip:`` rules and numeric thresholds still load from the repo
+    file on untrusted runs — only keys outside the allowlist are
+    gated."""
+    from packages.sca.bump.policy import load_policy
+    (tmp_path / ".raptor-sca-bump.yml").write_text(
+        "binary_capability_delta: true\n"
+        "skip:\n"
+        "  - locator: actions/checkout\n"
+        "    reason: vendored\n"
+        "thresholds:\n"
+        "  rapid_release_days: 7\n"
+        "  block_on_major: true\n",
+    )
+    with caplog.at_level("WARNING", logger="packages.sca.bump.policy"):
+        policy = load_policy(tmp_path)
+    assert policy.binary_capability_delta_enabled is False
+    assert len(policy.skip) == 1
+    assert policy.thresholds.rapid_release_days == 7
+    assert policy.thresholds.block_on_major is True
+
+
+def test_load_binary_capability_delta_trusted_no_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Trusted run honours the toggle without the operator-only
+    warning."""
+    from packages.sca.bump.policy import load_policy
+    (tmp_path / ".raptor-sca-bump.yml").write_text(
+        "binary_capability_delta: true\n",
+    )
+    with caplog.at_level("WARNING", logger="packages.sca.bump.policy"):
+        policy = load_policy(tmp_path, trust_repo=True)
+    assert policy.binary_capability_delta_enabled is True
+    assert not [r for r in caplog.records
+                if "not repo-trusted" in r.getMessage()]
 
 
 def test_load_binary_capability_delta_truthy_non_bool_stays_off(
     tmp_path: Path,
 ) -> None:
     """Non-bool truthy values (``"yes"``, ``1``) don't enable the
-    flag — explicit ``true`` required. Defends against accidental
-    enables from sloppy YAML."""
+    flag — explicit ``true`` required even on trusted runs. Defends
+    against accidental enables from sloppy YAML."""
     from packages.sca.bump.policy import load_policy
     (tmp_path / ".raptor-sca-bump.yml").write_text(
         "binary_capability_delta: \"yes\"\n",
     )
-    policy = load_policy(tmp_path)
+    policy = load_policy(tmp_path, trust_repo=True)
     assert policy.binary_capability_delta_enabled is False
 
 

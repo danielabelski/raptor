@@ -23,6 +23,18 @@ from packages.sca._scan_args import (
 from packages.sca.pipeline import RunOptions
 
 
+@pytest.fixture(autouse=True)
+def _no_project_trust_markers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``options_from_args`` resolves the repo-trust umbrella against
+    the active project's markers; pin "no active project" so these
+    tests don't depend on the developer machine's ``~/.raptor``
+    state. Marker-behaviour tests override this with their own
+    patch."""
+    from core.project import trust
+    monkeypatch.setattr(trust, "active_project_trust",
+                        lambda: ({}, None))
+
+
 def _parser_with_scan_args() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="test")
     p.add_argument("target")
@@ -59,6 +71,7 @@ def test_add_scan_args_registers_expected_flags() -> None:
         # Flags that existed only on the libexec side pre-refactor:
         "--spdx", "--no-llm",
         "--html", "--include-commented", "--trust-repo",
+        "--no-trust-repo",
         "--baseline",
         "--no-inline-installs", "--no-dockerfile-from",
         "--skip-review", "--skip-triage",
@@ -198,3 +211,66 @@ def test_each_flag_flips_the_expected_run_option(
     assert getattr(opts, attr) == expected, (
         f"flag {flag} did not propagate to RunOptions.{attr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Repo-trust umbrella resolution
+# ---------------------------------------------------------------------------
+
+def test_trust_repo_flag_reaches_run_options() -> None:
+    p = _parser_with_scan_args()
+    args = p.parse_args(["./target", "--trust-repo"])
+    apply_no_llm_umbrella(args)
+    opts = options_from_args(args)
+    assert opts.trust_repo is True
+
+
+def test_trust_repo_defaults_off() -> None:
+    p = _parser_with_scan_args()
+    args = p.parse_args(["./target"])
+    apply_no_llm_umbrella(args)
+    opts = options_from_args(args)
+    assert opts.trust_repo is False
+
+
+def test_no_trust_repo_wins_over_positive_flag() -> None:
+    """Explicit negative beats explicit positive (precedence pinned
+    by ``core.project.trust.resolve_trust_flag``)."""
+    p = _parser_with_scan_args()
+    args = p.parse_args(["./target", "--trust-repo", "--no-trust-repo"])
+    apply_no_llm_umbrella(args)
+    opts = options_from_args(args)
+    assert opts.trust_repo is False
+
+
+def test_config_marker_implies_trust_repo(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """Active project's ``config`` trust marker turns the umbrella on
+    when neither per-run flag is given, with a banner line."""
+    from core.project import trust
+    monkeypatch.setattr(
+        trust, "active_project_trust",
+        lambda: ({"config": "2026-01-01T00:00:00Z"}, "proj"),
+    )
+    p = _parser_with_scan_args()
+    args = p.parse_args(["./target"])
+    apply_no_llm_umbrella(args)
+    opts = options_from_args(args)
+    assert opts.trust_repo is True
+    assert "project trust: config" in capsys.readouterr().out
+
+
+def test_no_trust_repo_overrides_config_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.project import trust
+    monkeypatch.setattr(
+        trust, "active_project_trust",
+        lambda: ({"config": "2026-01-01T00:00:00Z"}, "proj"),
+    )
+    p = _parser_with_scan_args()
+    args = p.parse_args(["./target", "--no-trust-repo"])
+    apply_no_llm_umbrella(args)
+    opts = options_from_args(args)
+    assert opts.trust_repo is False

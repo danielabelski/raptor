@@ -8,8 +8,7 @@ recursive walk's cycle detection / depth bound / cache behaviour.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
-
+from typing import Any
 
 from core.http import HttpError
 from core.json import JsonCache
@@ -41,9 +40,9 @@ class _StubHttp:
       - A callable taking the URL and returning a dict
     """
 
-    def __init__(self, responses: Dict[str, Any]) -> None:
+    def __init__(self, responses: dict[str, Any]) -> None:
         self._responses = responses
-        self.calls: List[str] = []
+        self.calls: list[str] = []
 
     def get_json(self, url: str, *args, **kwargs) -> Any:
         self.calls.append(url)
@@ -408,3 +407,74 @@ def test_walk_emits_dep_with_breadcrumb_to_host_manifest():
     result = walk_transitive([direct], http=http)
     transitive = next(d for d in result.deps_added if d.name == "b")
     assert transitive.declared_in == Path("/proj/requirements.txt")
+
+
+# ---------------------------------------------------------------------------
+# walk_transitive — total-visit + per-node fan-out caps
+# ---------------------------------------------------------------------------
+
+def test_walk_visit_cap_truncates_and_records():
+    """A deep chain hits ``max_visits``; the result records the drop
+    instead of silently presenting partial coverage as complete."""
+    chain = ["a", "b", "c", "d", "e", "f", "g", "h"]
+    responses = {}
+    for i, n in enumerate(chain):
+        nxt = chain[i + 1] if i + 1 < len(chain) else None
+        responses[f"/pypi/{n}/1.0/json"] = {"info": {
+            "requires_dist": [f"{nxt}>=1.0"] if nxt else [],
+        }}
+    http = _StubHttp(responses)
+    result = walk_transitive(
+        [_direct("PyPI", "a", "1.0")], http=http,
+        max_depth=99, max_visits=3,
+    )
+    assert result.visits == 3
+    assert result.truncated is True
+    assert result.visits_capped >= 1
+    # Only the lookups inside the budget produced deps.
+    assert {d.name for d in result.deps_added} == {"b", "c", "d"}
+
+
+def test_walk_fanout_cap_truncates_and_records():
+    """A node declaring more children than ``max_fanout`` only
+    contributes the first ``max_fanout``; the drop is recorded."""
+    children = [f"c{i}" for i in range(10)]
+    responses = {
+        "/pypi/a/1.0/json": {"info": {
+            "requires_dist": [f"{c}>=1.0" for c in children],
+        }},
+    }
+    for c in children:
+        responses[f"/pypi/{c}/1.0/json"] = {"info": {"requires_dist": []}}
+    http = _StubHttp(responses)
+    result = walk_transitive(
+        [_direct("PyPI", "a", "1.0")], http=http, max_fanout=3,
+    )
+    assert result.truncated is True
+    assert result.fanout_capped == 7
+    assert {d.name for d in result.deps_added} == {"c0", "c1", "c2"}
+
+
+def test_walk_within_caps_reports_complete_coverage():
+    """No cap fired → ``truncated=False`` and zero capped counts, so
+    consumers can distinguish bounded from complete walks."""
+    responses = {
+        "/pypi/a/1.0/json": {"info": {"requires_dist": ["b>=1.0"]}},
+        "/pypi/b/1.0/json": {"info": {"requires_dist": []}},
+    }
+    http = _StubHttp(responses)
+    result = walk_transitive([_direct("PyPI", "a", "1.0")], http=http)
+    assert result.truncated is False
+    assert result.visits_capped == 0
+    assert result.fanout_capped == 0
+
+
+def test_walk_default_caps_are_bounded():
+    """The defaults must stay proportionate to the walk's purpose —
+    an approximation pass, not a full closure."""
+    from packages.sca.registry_metadata_walk import (
+        DEFAULT_MAX_FANOUT,
+        DEFAULT_MAX_VISITS,
+    )
+    assert 0 < DEFAULT_MAX_VISITS <= 500
+    assert 0 < DEFAULT_MAX_FANOUT <= 100

@@ -39,14 +39,12 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import (
-    Callable, Dict, Iterable, List, Optional, Set, Tuple,
-)
 
 from core.http import HttpClient, HttpError
-from core.json import JsonCache, TTL_FOREVER
+from core.json import TTL_FOREVER, JsonCache
 
 from .models import Confidence, Dependency, PinStyle
 
@@ -56,25 +54,43 @@ logger = logging.getLogger(__name__)
 # practice (npm/PyPI; Cargo less). 12 is a safe soft cap.
 DEFAULT_MAX_DEPTH = 12
 
+# Bounded work. The walk is an approximation pass (mode (c)) — its
+# job is a rough transitive set for CVE matching, not a complete
+# closure, so a registry that declares a pathological tree (or an
+# adversarial one built to keep the walker fetching) is cut off
+# rather than followed forever. A few hundred lookups covers real
+# projects' approximate trees comfortably; truncation is recorded in
+# ``WalkResult`` so consumers see the coverage was bounded.
+DEFAULT_MAX_VISITS = 300              # total metadata lookups per walk
+DEFAULT_MAX_FANOUT = 50               # declared children kept per node
+
 
 @dataclass(frozen=True)
 class WalkResult:
     """Summary of a single walk over one or more ecosystems."""
 
-    deps_added: List[Dependency]
+    deps_added: list[Dependency]
     visits: int                       # total (eco, name, version) lookups
     cache_hits: int
     cache_misses: int
     failures: int                     # registry / parse errors
+    truncated: bool = False           # a cap fired — coverage is partial,
+                                      # not complete
+    visits_capped: int = 0            # queued lookups dropped by the
+                                      # total-visit cap
+    fanout_capped: int = 0            # declared children dropped by the
+                                      # per-node fan-out cap
 
 
 def walk_transitive(
     direct_deps: Iterable[Dependency],
     *,
     http: HttpClient,
-    cache: Optional[JsonCache] = None,
+    cache: JsonCache | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
-    ecosystems: Optional[Set[str]] = None,
+    ecosystems: set[str] | None = None,
+    max_visits: int = DEFAULT_MAX_VISITS,
+    max_fanout: int = DEFAULT_MAX_FANOUT,
 ) -> WalkResult:
     """Walk transitives for every dep in ``direct_deps`` whose ecosystem
     has a metadata-walk fetcher today.
@@ -87,8 +103,13 @@ def walk_transitive(
     Direct deps themselves are NOT included in the result — only NEW
     transitives the walk discovered. The caller dedups against existing
     direct deps.
+
+    ``max_visits`` is a shared budget across all ecosystems in the
+    walk; ``max_fanout`` caps the declared children considered per
+    package version. When either cap fires the result carries
+    ``truncated=True`` plus the dropped counts.
     """
-    visited: Set[Tuple[str, str, str]] = set()
+    visited: set[tuple[str, str, str]] = set()
     result = WalkResult(deps_added=[], visits=0, cache_hits=0,
                          cache_misses=0, failures=0)
 
@@ -111,7 +132,7 @@ def walk_transitive(
 
     # Walk ecosystem-by-ecosystem so each fetcher only handles its own
     # version-spec syntax + its own metadata shape.
-    by_eco: Dict[str, List[Dependency]] = {}
+    by_eco: dict[str, list[Dependency]] = {}
     for d in direct_list:
         if ecosystems is not None and d.ecosystem not in ecosystems:
             continue
@@ -128,6 +149,8 @@ def walk_transitive(
         eco_result = _walk_one_ecosystem(
             seeds, fetcher=fetcher, http=http, cache=cache,
             max_depth=max_depth, visited=visited, ecosystem=eco,
+            max_visits=max(0, max_visits - result.visits),
+            max_fanout=max_fanout,
         )
         result = WalkResult(
             deps_added=result.deps_added + eco_result.deps_added,
@@ -135,6 +158,9 @@ def walk_transitive(
             cache_hits=result.cache_hits + eco_result.cache_hits,
             cache_misses=result.cache_misses + eco_result.cache_misses,
             failures=result.failures + eco_result.failures,
+            truncated=result.truncated or eco_result.truncated,
+            visits_capped=result.visits_capped + eco_result.visits_capped,
+            fanout_capped=result.fanout_capped + eco_result.fanout_capped,
         )
     return result
 
@@ -150,15 +176,15 @@ def walk_transitive(
 
 # A fetcher: (http, cache, name, version) -> List[(name, version_spec)] | None
 _Fetcher = Callable[
-    [HttpClient, Optional[JsonCache], str, str],
-    Optional[List[Tuple[str, str]]],
+    [HttpClient, JsonCache | None, str, str],
+    list[tuple[str, str]] | None,
 ]
 
 
 def _safe_fetch(
-    fetcher: "_Fetcher", http: HttpClient, cache: Optional[JsonCache],
+    fetcher: _Fetcher, http: HttpClient, cache: JsonCache | None,
     ecosystem: str, name: str, version: str,
-) -> Tuple[List[Tuple[str, str]], bool]:
+) -> tuple[list[tuple[str, str]], bool]:
     """Run ``fetcher``, return ``(deps, failed)``.
 
     ``failed`` is True when the fetcher couldn't produce data (raised,
@@ -181,30 +207,42 @@ def _safe_fetch(
 
 
 def _walk_one_ecosystem(
-    seeds: List[Dependency],
+    seeds: list[Dependency],
     *,
     fetcher: _Fetcher,
     http: HttpClient,
-    cache: Optional[JsonCache],
+    cache: JsonCache | None,
     max_depth: int,
-    visited: Set[Tuple[str, str, str]],
+    visited: set[tuple[str, str, str]],
     ecosystem: str,
+    max_visits: int = DEFAULT_MAX_VISITS,
+    max_fanout: int = DEFAULT_MAX_FANOUT,
 ) -> WalkResult:
-    deps_added: List[Dependency] = []
+    deps_added: list[Dependency] = []
     visits = 0
     cache_hits = 0
     cache_misses = 0
     failures = 0
+    truncated = False
+    visits_capped = 0
+    fanout_capped = 0
 
     # BFS queue of (name, version, depth) to walk. Items are added when
     # discovered; visited check happens at pop time.
-    queue: deque[Tuple[str, str, int]] = deque()
+    queue: deque[tuple[str, str, int]] = deque()
     for d in seeds:
         if d.version is None:
             continue                  # can't walk metadata without a version
         queue.append((_norm_name(d.name, ecosystem), d.version, 0))
 
     while queue:
+        if visits >= max_visits:
+            # Total-visit budget exhausted — everything still queued
+            # is dropped, and the result records how much.
+            visits_capped += len(queue)
+            truncated = True
+            queue.clear()
+            break
         name, version, depth = queue.popleft()
         if depth >= max_depth:
             continue
@@ -239,6 +277,14 @@ def _walk_one_ecosystem(
                 cache.put(cache_key, child_specs, ttl_seconds=TTL_FOREVER)
         visits += 1
 
+        if len(child_specs) > max_fanout:
+            # Per-node fan-out cap — a node declaring hundreds of
+            # children (pathological or adversarial metadata) only
+            # contributes its first ``max_fanout``.
+            fanout_capped += len(child_specs) - max_fanout
+            truncated = True
+            child_specs = child_specs[:max_fanout]
+
         for child_name, child_spec in child_specs:
             child_norm = _norm_name(child_name, ecosystem)
             child_version = _lower_bound(child_spec)
@@ -265,15 +311,24 @@ def _walk_one_ecosystem(
             ))
             queue.append((child_norm, child_version, depth + 1))
 
+    if truncated:
+        logger.warning(
+            "registry_metadata_walk: %s walk truncated (visit cap %d, "
+            "fan-out cap %d) — %d queued lookup(s) and %d declared "
+            "child(ren) dropped; transitive coverage is partial",
+            ecosystem, max_visits, max_fanout,
+            visits_capped, fanout_capped,
+        )
     return WalkResult(
         deps_added=deps_added, visits=visits,
         cache_hits=cache_hits, cache_misses=cache_misses,
-        failures=failures,
+        failures=failures, truncated=truncated,
+        visits_capped=visits_capped, fanout_capped=fanout_capped,
     )
 
 
 def _make_dep(
-    ecosystem: str, name: str, version: Optional[str], host_path: Path,
+    ecosystem: str, name: str, version: str | None, host_path: Path,
 ) -> Dependency:
     """Construct a transitive dep marked with low confidence + the
     metadata-walk source_kind. ``host_path`` is the manifest of the
@@ -302,7 +357,7 @@ def _make_dep(
     )
 
 
-def _purl(ecosystem: str, name: str, version: Optional[str]) -> str:
+def _purl(ecosystem: str, name: str, version: str | None) -> str:
     eco = {
         "PyPI": "pypi", "npm": "npm", "crates.io": "cargo",
     }.get(ecosystem, ecosystem.lower())
@@ -315,7 +370,7 @@ def _purl(ecosystem: str, name: str, version: Optional[str]) -> str:
 # Version-spec lower-bound extraction
 # ---------------------------------------------------------------------------
 
-def _lower_bound(spec: str) -> Optional[str]:
+def _lower_bound(spec: str) -> str | None:
     """Return the most permissive version that satisfies ``spec``.
 
     Per-ecosystem spec syntaxes converge on similar ideas — pick the
@@ -387,9 +442,9 @@ def _norm_name(name: str, ecosystem: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _fetch_pypi(
-    http: HttpClient, cache: Optional[JsonCache],
+    http: HttpClient, cache: JsonCache | None,
     name: str, version: str,
-) -> Optional[List[Tuple[str, str]]]:
+) -> list[tuple[str, str]] | None:
     """``https://pypi.org/pypi/<name>/<version>/json``.
 
     ``info.requires_dist`` is a list of PEP 508 strings. Filter out
@@ -405,7 +460,7 @@ def _fetch_pypi(
         return None
     info = data.get("info") or {}
     raw = info.get("requires_dist") or []
-    out: List[Tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for entry in raw:
         if not isinstance(entry, str):
             continue
@@ -428,9 +483,9 @@ def _fetch_pypi(
 
 
 def _fetch_npm(
-    http: HttpClient, cache: Optional[JsonCache],
+    http: HttpClient, cache: JsonCache | None,
     name: str, version: str,
-) -> Optional[List[Tuple[str, str]]]:
+) -> list[tuple[str, str]] | None:
     """``https://registry.npmjs.org/<name>/<version>``.
 
     The version-specific endpoint returns the package's own metadata
@@ -446,7 +501,7 @@ def _fetch_npm(
     except HttpError as e:
         logger.debug("npm fetch %s@%s failed: %s", name, version, e)
         return None
-    out: List[Tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for field in ("dependencies", "peerDependencies",
                    "optionalDependencies"):
         block = data.get(field) or {}
@@ -459,9 +514,9 @@ def _fetch_npm(
 
 
 def _fetch_crates(
-    http: HttpClient, cache: Optional[JsonCache],
+    http: HttpClient, cache: JsonCache | None,
     name: str, version: str,
-) -> Optional[List[Tuple[str, str]]]:
+) -> list[tuple[str, str]] | None:
     """``https://crates.io/api/v1/crates/<name>/<version>/dependencies``.
 
     Cargo's registry returns a structured list. ``kind`` distinguishes
@@ -477,7 +532,7 @@ def _fetch_crates(
         logger.debug("crates fetch %s@%s failed: %s", name, version, e)
         return None
     deps = data.get("dependencies") or []
-    out: List[Tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for entry in deps:
         if not isinstance(entry, dict):
             continue  # poisoned/MITM'd cache entry — skip
@@ -492,14 +547,14 @@ def _fetch_crates(
     return out
 
 
-_FETCHERS: Dict[str, _Fetcher] = {
+_FETCHERS: dict[str, _Fetcher] = {
     "PyPI": _fetch_pypi,
     "npm": _fetch_npm,
     "crates.io": _fetch_crates,
 }
 
 
-def supported_ecosystems() -> Set[str]:
+def supported_ecosystems() -> set[str]:
     """Ecosystems where (c) registry-metadata walk has a fetcher today."""
     return set(_FETCHERS)
 
@@ -513,8 +568,8 @@ _EXISTENCE_URLS = {
 
 def package_version_exists(
     ecosystem: str, name: str, version: str,
-    *, http: HttpClient, cache: Optional[JsonCache] = None,
-) -> Optional[bool]:
+    *, http: HttpClient, cache: JsonCache | None = None,
+) -> bool | None:
     """Probe whether ``(ecosystem, name, version)`` exists in its registry.
 
     Returns:
@@ -546,6 +601,8 @@ def package_version_exists(
 
 __all__ = [
     "DEFAULT_MAX_DEPTH",
+    "DEFAULT_MAX_FANOUT",
+    "DEFAULT_MAX_VISITS",
     "WalkResult",
     "package_version_exists",
     "supported_ecosystems",

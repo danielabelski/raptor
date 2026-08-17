@@ -58,6 +58,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Repo-shipped license policy file (see ``packages.sca.license.
+# load_policy``). Named here so the trust gate can detect its
+# presence without loading it.
+_LICENSE_POLICY_FILENAME = ".raptor-sca-license-policy.yml"
+
 
 # ---------------------------------------------------------------------------
 # Options + result
@@ -94,6 +99,17 @@ class RunOptions:
     enable_reachability: bool = True
     enable_supply_chain: bool = True
     enable_suppressions: bool = True
+    trust_repo: bool = False             # honour repo-shipped config
+                                          # (suppression overlay, license
+                                          # policy file). Resolved at the
+                                          # CLI layer: --no-trust-repo >
+                                          # --trust-repo > the project
+                                          # ``config`` trust marker > off.
+                                          # Off means files shipped in the
+                                          # scanned tree are reported but
+                                          # not applied — an untrusted
+                                          # target must not be able to
+                                          # suppress its own findings.
     include_commented: bool = False     # surface commented `# pkg==X`
                                          # lines as info-severity findings
     enable_inline_installs: bool = True  # extract pip/apt/yum/dnf/apk
@@ -232,6 +248,17 @@ class RunResult:
     # mistake an empty result for a clean project. Empty when no
     # parser failed.
     parse_failures: list = field(default_factory=list)
+
+
+def _suppression_entry_label(entry: _suppressions.SuppressionEntry) -> str:
+    """Human-readable identity of a suppression entry for the per-run
+    hit-count log line — the most specific match key the entry set."""
+    if entry.finding_id:
+        return entry.finding_id
+    if entry.advisory_id:
+        return entry.advisory_id
+    return (f"{entry.ecosystem or '*'}:{entry.name or '*'}"
+            f"@{entry.version or '*'}")
 
 
 # ---------------------------------------------------------------------------
@@ -588,14 +615,27 @@ def run_sca(
         from .license import (
             evaluate as evaluate_license,
         )
-        try:
-            policy = load_policy(target)
-        except Exception:
+        # The policy file ships in the scanned tree, so it is only
+        # honoured on repo-trusted runs — otherwise a hostile target
+        # could relax the operator's license gate for itself.
+        license_policy_file = target / _LICENSE_POLICY_FILENAME
+        if license_policy_file.is_file() and not options.trust_repo:
             logger.warning(
-                "sca.pipeline: license policy load failed, using default",
-                exc_info=True,
+                "sca.pipeline: license policy file present but not "
+                "trusted — %s ignored; set the project `config` trust "
+                "marker or pass --trust-repo",
+                _LICENSE_POLICY_FILENAME,
             )
             policy = DEFAULT_POLICY
+        else:
+            try:
+                policy = load_policy(target)
+            except Exception:
+                logger.warning(
+                    "sca.pipeline: license policy load failed, using default",
+                    exc_info=True,
+                )
+                policy = DEFAULT_POLICY
         # Enrichment fetches from PyPI / npm registries. Skipped
         # offline (cache may still populate via prior runs).
         if not options.offline:
@@ -811,16 +851,38 @@ def run_sca(
         )
 
     # 7a. Apply operator suppression overlay (`.raptor-sca-suppress.yml`).
+    #     The overlay ships in the scanned tree, so it is only honoured
+    #     on repo-trusted runs — otherwise a hostile target could ship
+    #     an overlay that suppresses its own findings.
     suppressed_total = 0
     if options.enable_suppressions:
         entries = _suppressions.load(target / _suppressions.SUPPRESS_FILENAME)
-        if entries:
-            suppressed_total = (
-                _suppressions.apply_to_findings(vuln_findings, entries)
-                + _suppressions.apply_to_findings(hygiene_findings, entries)
-                + _suppressions.apply_to_findings(supply_chain_findings, entries)
-                + _suppressions.apply_to_findings(license_findings, entries)
+        if entries and not options.trust_repo:
+            logger.warning(
+                "sca.pipeline: suppression overlay present but not "
+                "trusted — %d entries ignored; set the project `config` "
+                "trust marker or pass --trust-repo", len(entries),
             )
+            progress.flash(
+                "SUPPRESS",
+                f"{len(entries)} untrusted overlay entries ignored",
+            )
+            entries = []
+        if entries:
+            finding_sets = (vuln_findings, hygiene_findings,
+                             supply_chain_findings, license_findings)
+            # Apply entry-by-entry so the per-entry hit count is
+            # loggable. ``apply_to_findings`` skips already-suppressed
+            # findings, so iterating preserves the first-match-wins
+            # semantics of the single batched call.
+            for entry in entries:
+                hit = sum(_suppressions.apply_to_findings(fs, [entry])
+                          for fs in finding_sets)
+                suppressed_total += hit
+                logger.info(
+                    "sca.pipeline: suppression entry %s suppressed "
+                    "%d finding(s)", _suppression_entry_label(entry), hit,
+                )
             logger.info(
                 "sca.pipeline: %d finding(s) suppressed by %s",
                 suppressed_total, _suppressions.SUPPRESS_FILENAME,

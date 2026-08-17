@@ -23,7 +23,9 @@ For LLM-powered analysis of scan results, use `/agentic` or
 
 Dispatches to `python3 raptor.py scan`. Runs Semgrep (always) and
 Coccinelle (default-on for C/C++ targets). CodeQL is opt-in via
-`--codeql`.
+`--codeql`. Two further opt-in channels ride the Semgrep stage on
+C/C++ targets: the compiler analyzers (`--compiler-scan`) and the
+expanded-view Semgrep pass (`--expanded-semgrep`).
 
 ### CLI Flags
 
@@ -38,6 +40,11 @@ Coccinelle (default-on for C/C++ targets). CodeQL is opt-in via
 | `--languages <list>` | auto | CodeQL language list (only relevant with `--codeql`) |
 | `--build-command <cmd>` | auto | CodeQL build command override (only relevant with `--codeql`; implies a traced build) |
 | `--traced-build` | off | Opt into traced-build C/C++ CodeQL extraction — executes the repo's build system (asserts trust). Default is buildless: no repo code runs during database creation |
+| `--no-traced-build` | -- | Force buildless extraction for this run, overriding `--traced-build` and the project's `build` trust marker |
+| `--compiler-scan` | off | Run gcc `-fanalyzer` / clang `--analyze` per C/C++ translation unit as an extra scan channel (sandboxed; no repo code executes) |
+| `--no-compiler-scan` | -- | Explicitly disable the compiler-analyzer channel |
+| `--compiler-scan-max-tus <n>` | 2000 | Cap on translation units analysed by `--compiler-scan` (skipped TUs are reported) |
+| `--expanded-semgrep` | off | Re-run the loaded ruleset over fidelity-3 preprocessor-expanded views of macro-heavy C/C++ TUs, line-mapped back to the originals |
 | `--keep` | off | Keep temporary working directory after completion |
 | `--sequential` | off | Disable parallel scanning; run packs one at a time |
 | `--out <dir>` | auto | Output directory override |

@@ -34,6 +34,7 @@ autonomous analysis pipeline.
 | `--languages <list>` | auto-detect | Comma-separated languages (aliases accepted: `c`, `js`, `ts`, `c#`, `kt`, `py`) |
 | `--build-command <cmd>` | auto-detect | Custom build command (requires exactly one `--languages` entry; implies a traced build for that language) |
 | `--traced-build` | off | Opt into traced-build C/C++ extraction (executes the repo's build system — asserts trust in the repo). Default is buildless |
+| `--no-traced-build` | off | Force buildless extraction for this run, overriding both `--traced-build` and the project's `build` trust marker |
 | `--out <dir>` | auto | Output directory |
 | `--force` | off | Delete and recreate the CodeQL database from scratch |
 | `--extended` | off | Use `security-extended` suites instead of `security-and-quality` |
@@ -46,13 +47,14 @@ autonomous analysis pipeline.
 | `--max-findings <n>` | 20 | Maximum findings to analyse (with `--analyze`) |
 | `--no-visualizations` | off | Disable HTML/Mermaid/ASCII/DOT dataflow visualisations |
 | `--trust-repo` | off | Trust the target repo's config files and skip safety checks |
+| `--no-trust-repo` | off | Keep the strict trust checks for this run, overriding both `--trust-repo` and the project's `config` trust marker |
 | `--phase-timeout <sec>` | config | Wall-clock timeout for the database creation phase (0 = unlimited) |
 | `--binary <path>` | none | Explicit debug binary for reachability oracle (repeatable) |
 | `--binary-auto` | off | Auto-detect locally-built debug binaries |
 | `--binary-edges` | off | Extract direct call edges and vtable resolution via r2 |
 | `--no-binary-oracle` | off | Disable binary-oracle filtering entirely |
 | `--sanitizer-cut <mode>` | off | Sanitiser-cut value-bound suppression mode (`off` / `on` / `strict` / `shadow`) |
-| `--no-iris-tier1` | off | Skip IRIS Tier 1 in-repo LocalFlowSource pack analysis |
+| `--sanitizer-cut-parity-log <path>` | auto | Parity-log path for `--sanitizer-cut shadow` (default: `<run_dir>/sanitizer_cut_parity.jsonl`) |
 | `--sandbox <profile>` | full | [Sandbox](sandbox.md) profile (`debug` / `full` / `network-only` / `none`) |
 | `--no-sandbox` | off | Alias for `--sandbox none` |
 | `--audit` | off | Engage [sandbox](sandbox.md) audit mode |
@@ -206,9 +208,9 @@ three retries and exponential backoff.
 in-repo query packs (`packages/llm_analysis/codeql_packs/`) that
 extend source coverage to CLI arguments, environment variables, stdin,
 file reads, and database inputs. IRIS packs exist for Python, Java,
-JavaScript, and Go (28 queries across 8 CWEs). C++ is excluded because
-the upstream stdlib already covers local flow sources. Disable with
-`--no-iris-tier1`.
+JavaScript, and Go (29 queries across 8 CWEs). C++ is excluded because
+the upstream stdlib already covers local flow sources. The master
+kill-switch is `RaptorConfig.IRIS_TIER1_ENABLED`.
 
 Per-language SARIF files are written to the output directory. IRIS
 findings produce a separate `codeql_<lang>_iris.sarif` file.
@@ -320,7 +322,7 @@ Two-tier architecture:
 2. **Full analysis** -- the finding, source context, dataflow path,
    and any SMT-derived input values are sent to the primary analysis
    model with a Mark Dowd security researcher persona. The prompt
-   requests the 11-field `VULNERABILITY_ANALYSIS_SCHEMA` covering
+   requests the 10-field `VULNERABILITY_ANALYSIS_SCHEMA` covering
    true-positive determination, exploitability score, severity,
    reasoning, attack scenario, prerequisites, impact, CVSS estimate,
    and mitigation.
@@ -400,8 +402,8 @@ CodeQL suite coverage across both suite tiers:
 | C/C++ | yes | yes | |
 | C# | yes | yes | |
 | Ruby | yes | yes | |
-| Swift | yes | -- | Extended suite not defined upstream |
-| Kotlin | yes | -- | Reuses Java suite |
+| Swift | yes | yes | |
+| Kotlin | yes | yes | Reuses Java suite |
 | Rust | yes | yes | |
 
 Language auto-detection covers 10 languages (all except Rust, which

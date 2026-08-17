@@ -11,9 +11,6 @@
   "artifacts:orphan_reader::*.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:orphan_reader::*.sarif": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
   "artifacts:orphan_reader::*.txt": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -45,9 +42,6 @@
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:orphan_reader::codeql-pack.lock.yml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::combined.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:orphan_reader::coverage-*.json": {
@@ -84,9 +78,6 @@
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:orphan_reader::pnpm-workspace.yaml": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:orphan_reader::project.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:orphan_reader::raptor-audit-cfg-*.json": {
@@ -230,12 +221,6 @@
   "artifacts:write_only_artifact::disagreements.json": {
    "note": "operator-facing layer-resolution audit trail (layer_resolution.write_disagreements); surfaced when the atomic-write idiom became visible to the writer classifier"
   },
-  "artifacts:write_only_artifact::discovered-sinks.json": {
-   "note": "written by codeql_backend; reader lands with pending sink-catalog work"
-  },
-  "artifacts:write_only_artifact::epss_signals.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
   "artifacts:write_only_artifact::expanded_semgrep.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -260,9 +245,6 @@
   "artifacts:write_only_artifact::generated-corpus.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::github_poc_signals.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
   "artifacts:write_only_artifact::graduated.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -279,13 +261,7 @@
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:write_only_artifact::iris-taint-specs-refined.json": {
-   "note": "written by orchestrator; readers land with pending IRIS spec work"
-  },
-  "artifacts:write_only_artifact::iris-taint-specs.json": {
-   "note": "written by orchestrator; readers land with pending IRIS spec work"
-  },
-  "artifacts:write_only_artifact::kev_signals.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+   "note": "written by the audit orchestrator after iris_refine_loop; still unread: the promoted-spec readers in /validate//understand//agentic consume the project store (<project>/iris-specs/specs.json via core.iris.api), which only promote_spec_on_annotation writes — the refine loop's caller-persist step (core.iris.store.save_specs merge of refined specs) is unwired, and auto-persisting LLM-refined sanitiser specs into untiered suppression-direction readers (get_project_sanitisers) needs an evidence-tier gate first; artifact doubles as operator-facing run output"
   },
   "artifacts:write_only_artifact::mechanical-findings.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -297,9 +273,6 @@
    "note": "operator-facing layer-resolution audit trail; surfaced when the atomic-write idiom became visible to the writer classifier"
   },
   "artifacts:write_only_artifact::oracle_summary.md": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
-  "artifacts:write_only_artifact::osv_evidence_signals.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:write_only_artifact::phase2-classifications.json": {
@@ -327,7 +300,7 @@
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:write_only_artifact::sage_precall_validation.json": {
-   "note": "write side of an unwired SAGE precall chain (see also orphan reader sage_precall_scan.json and raptor_agentic's --sage-precall forwarding, which no child consumes yet)"
+   "note": "write side of the /validate SAGE precall: raptor-validation-helper stage 0 dumps recall_context_for_validation() output; no reader — the /validate skill instructions never reference it, and the parallel agentic precall chain (sage_precall_scan.json reader + --sage-precall forwarding) was removed (test_agentic_dead_plumbing pins it out); wire a stage reader or drop the dump"
   },
   "artifacts:write_only_artifact::sarif_merge.stderr.log": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -377,9 +350,6 @@
   "artifacts:write_only_artifact::triage.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::unresolved-synthesis-hits.json": {
-   "note": "operator-facing synthesis-signal artifact written for run review; surfaced when the atomic-write idiom became visible to the writer classifier"
-  },
   "artifacts:write_only_artifact::upgrade-impact.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -426,7 +396,7 @@
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
   "dead:dead_function:core/audit/_util.py:extract_sink_sets": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+   "note": "kept: its paired artifact discovered-sinks.json gained a reader (core/orchestration/context_map_sinks imports audit discovered sinks into the /understand map) without consuming this helper; still zero-reference — wire into the sink-catalog flow or drop, owner decision pending"
   },
   "dead:dead_function:core/audit/_util.py:safe_joern_name": {
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
@@ -459,12 +429,6 @@
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
   "dead:dead_function:core/audit/struct_accessor_index.py:build_index_from_joern": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/ts_extract.py:extract_all_dispatch_tables": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/ts_extract.py:extract_all_string_literals": {
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
   "dead:dead_function:core/iris/api.py:load_project_assumptions": {

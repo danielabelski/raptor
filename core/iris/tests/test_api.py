@@ -1,7 +1,6 @@
 """Tests for core.iris.api — consumer-facing spec API."""
 
 from core.evidence import EvidenceTier
-from core.iris.specs import _parse_one_spec, _specs_from_list
 from core.iris.api import (
     _resolve_out_dir,
     get_project_propagators,
@@ -11,7 +10,7 @@ from core.iris.api import (
     load_project_specs,
     promote_spec_on_annotation,
 )
-from core.iris.specs import TaintSpec
+from core.iris.specs import TaintSpec, _parse_one_spec, _specs_from_list
 from core.iris.store import load_specs, save_specs
 
 
@@ -264,6 +263,7 @@ class TestResolveOutDir:
     def test_active_project_child_path(self, monkeypatch):
         """C1 fix: active project dir goes through .parent correctly."""
         from pathlib import Path
+
         from core.iris.store import _project_dir
 
         fake_project_dir = Path("/fake/project/output")

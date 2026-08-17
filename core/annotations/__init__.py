@@ -50,7 +50,6 @@ from .storage import (
     write_annotation,
 )
 
-
 __all__ = [
     "Annotation",
     "annotation_path",

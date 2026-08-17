@@ -355,9 +355,11 @@ def _merge_outcomes(sec_outcomes, bf_outcomes):
             if use_max:
                 winner = copy(bf if br > sr else sec)
             else:
+                # Conservative merge: the lower-ranked outcome wins.
+                # It can never be a finding here — use_max is only
+                # False when exactly one side is >= suspicious, so the
+                # lower side is at most dormant.
                 winner = copy(sec if sr <= br else bf)
-                if winner.status == "finding":
-                    winner.status = "suspicious"
 
             if br > sr and winner.evidence_tool and sec.evidence_tool:
                 winner.evidence_tool = (

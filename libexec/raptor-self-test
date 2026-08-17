@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
 """RAPTOR self-test — non-destructive smoke suite over the command surface.
 
 Exercises as many operator commands as possible against a small generated
@@ -36,16 +38,17 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os
-
+# fmt: off
+import os  # noqa: E402
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
-        "raptor-self-test: internal dispatch script.\n"
+        f"{sys.argv[0]}: internal dispatch script.\n"
         "  Run via 'bin/raptor' instead.\n"
         "  Tests / power users: set _RAPTOR_TRUSTED=1 to bypass.\n"
     )
     sys.exit(2)
+# fmt: on
 # ─── end trust-marker check ─────────────────────────────────
 
 import argparse
@@ -60,7 +63,7 @@ _RAPTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_DIR))
 os.environ.setdefault("RAPTOR_DIR", str(_RAPTOR_DIR))
 
-import core.startup.process_init  # noqa: F401
+import core.startup.process_init  # noqa: E402,F401
 
 # Env vars that make detect_llm_availability() report an LLM. Tier 0
 # children must see none of them so pipelines take their no-LLM paths.

@@ -50,7 +50,8 @@ FLOW_STAMP = "joern:flow"
 # CWE families dispatched to each channel (wired via
 # orchestrator._cwe_fallback_chain).
 GUARD_DOMINANCE_CWES = frozenset({
-    "CWE-120", "CWE-122", "CWE-125", "CWE-787", "CWE-476",
+    # CWE-121: stack variant of the 120/122/787 buffer family.
+    "CWE-120", "CWE-121", "CWE-122", "CWE-125", "CWE-787", "CWE-476",
     # P10 web families: "missing validation before sink" shapes — a
     # dominating check on the hypothesis identifier refutes, an
     # unguarded sink site confirms.
@@ -59,6 +60,9 @@ GUARD_DOMINANCE_CWES = frozenset({
 })
 FLOW_CWES = frozenset({
     "CWE-20", "CWE-74", "CWE-78", "CWE-89", "CWE-79",
+    # CWE-130: length-parameter inconsistency — the recv-length →
+    # parse/copy flow question (sinks come from cwe_dispatch).
+    "CWE-130",
     # P10 web families: source→sink reachability is verification-grade
     # for all of these (sinks come from cwe_dispatch).
     "CWE-22", "CWE-23", "CWE-502", "CWE-918", "CWE-611", "CWE-601",

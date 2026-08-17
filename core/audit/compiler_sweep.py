@@ -151,9 +151,23 @@ COMPILER_CWE_MAP: dict[str, FamilySpec] = {
         reliable=False,
     ),
     "CWE-120": _OOB_SPEC,
+    "CWE-121": _OOB_SPEC,
     "CWE-122": _OOB_SPEC,
     "CWE-125": _OOB_SPEC,
+    "CWE-130": _OOB_SPEC,
     "CWE-787": _OOB_SPEC,
+    # Type confusion via pointer punning: strict-aliasing diagnostics
+    # fire only on TU-visible casts the optimiser may exploit —
+    # confirm-only (silence proves nothing about cross-TU punning).
+    "CWE-843": FamilySpec(
+        gcc_ids=("-Wstrict-aliasing",),
+        gcc_flags=("-fstrict-aliasing", "-Wstrict-aliasing=1"),
+        clang_engine="warning",
+        clang_ids=("-Wstrict-aliasing",),
+        clang_flags=("-fstrict-aliasing", "-Wstrict-aliasing"),
+        clang_message_re="",
+        reliable=False,
+    ),
     "CWE-457": FamilySpec(
         gcc_ids=("-Wanalyzer-use-of-uninitialized-value",),
         gcc_flags=(),

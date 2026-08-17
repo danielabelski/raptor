@@ -44,6 +44,29 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": "cpp/overflow-buffer",
         "sinks": ["memcpy", "strcpy", "strncpy", "sprintf", "gets"],
     },
+    # Stack-based buffer overflow — the 120/122/787 buffer family
+    # (reviews emit it for on-stack destinations; the verifying
+    # channels are identical).
+    "CWE-121": {
+        "smt": "check-oob",
+        "cocci": None,
+        "joern": True,
+        "codeql": "cpp/overflow-buffer",
+        "sinks": ["memcpy", "strcpy", "strncpy", "sprintf", "gets",
+                  "strcat", "vsprintf"],
+    },
+    # Length-parameter inconsistency — a stated length disagrees with
+    # the actual buffer/message size (truncated-header parses, recv
+    # length reuse). Bounds SMT + bounds-check Coccinelle + taint to
+    # the copy/parse sinks.
+    "CWE-130": {
+        "smt": "check-oob",
+        "cocci": "missing_bounds_check.cocci",
+        "joern": True,
+        "codeql": "cpp/overflow-buffer",
+        "sinks": ["memcpy", "memmove", "strncpy", "recv", "recvfrom",
+                  "recvmsg", "read", "fread"],
+    },
     # Integer
     "CWE-190": {
         "smt": "check-overflow",
@@ -310,6 +333,26 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": "cpp/integer-overflow",
         "sinks": [],
     },
+    # Signed/unsigned conversion — the 190/681 signedness family
+    # (narrowing SMT verb + sign-extension Coccinelle rule).
+    "CWE-195": {
+        "smt": "check-integer-narrowing",
+        "cocci": "sign_extension_widen.cocci",
+        "joern": False,
+        "codeql": "cpp/integer-overflow",
+        "sinks": [],
+    },
+    # Type confusion / strict-aliasing punning — no static dataflow
+    # channel can adjudicate; the compiler channel probes with
+    # -fstrict-aliasing -Wstrict-aliasing (confirm-only, see
+    # compiler_sweep.COMPILER_CWE_MAP).
+    "CWE-843": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
     # Uninitialised variable
     "CWE-457": {
         "smt": None,
@@ -365,6 +408,13 @@ _HYPOTHESIS_CWE_MAP = [
       r"redirect.*attacker.(?:controlled|supplied)"), "CWE-601"),
     (r"prototype.pollution|__proto__", "CWE-1321"),
     (r"(?:code|eval).*inject", "CWE-94"),
+    # Appended after all earlier entries (first match wins, so
+    # pre-existing behaviour is unchanged).
+    (r"type.confus|strict.alias|type.punn|punned.*pointer", "CWE-843"),
+    ((r"length.*(?:field|parameter|header|prefix).*"
+      r"(?:inconsisten|mismatch|truncat|exceed|larger|shorter)"),
+     "CWE-130"),
+    (r"sign(?:ed)?.to.unsign|unsigned.conversion|negative.*(?:length|size|count).*(?:unsigned|size_t)", "CWE-195"),
 ]
 
 _HYPOTHESIS_CWE_RE = None

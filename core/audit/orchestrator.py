@@ -9672,7 +9672,9 @@ def _warn_unmapped_cwe(cwe: str) -> None:
     logger.warning(
         "review emitted %s but no tool-chain dispatch entry exists — "
         "CWE-seeded verification will not run for this class "
-        "(hypothesis-keyword channels may still fire)",
+        "(hypothesis-keyword channels may still fire; suspicious "
+        "verdicts in this family become on-demand checker-synthesis "
+        "candidates in the post-loop sweep)",
         norm,
     )
 
@@ -12597,13 +12599,7 @@ def _promote_suspicious(
         if not hypothesis:
             continue
 
-        if _has_refuting_counter(outcome):
-            logger.debug(
-                "sweep skipped %s:%s — LLM counter-hypothesis present",
-                outcome.file,
-                outcome.function,
-            )
-            continue
+        refuting_counter = _has_refuting_counter(outcome)
 
         gap = _find_gap_in_checklist(checklist or {}, outcome.file, outcome.function)
         line_end = gap.get("line_end") if gap else None
@@ -12616,6 +12612,26 @@ def _promote_suspicious(
         )
 
         cwe = _effective_cwe(outcome, result.tier_counters)
+
+        if refuting_counter:
+            if _hypothesis_to_tool_chain(hypothesis, outcome.file, cwe=cwe):
+                logger.debug(
+                    "sweep skipped %s:%s — LLM counter-hypothesis present",
+                    outcome.file,
+                    outcome.function,
+                )
+                continue
+            # Empty-dispatch family: no static channel exists that
+            # could adjudicate this hypothesis OR its counter, so the
+            # only possible mechanical evidence is a synthesized
+            # checker (full dual controls + guarded-sink gate apply
+            # inside). Route the family to on-demand synthesis instead
+            # of letting it die unverified.
+            _synthesize_unmapped_suspicious(
+                result, config, i, outcome, hypothesis, cwe, source,
+                joern_server=joern_server,
+            )
+            continue
 
         mech_tool = _correlated_mech_detector_tool(
             outcome, hypothesis, cwe, mechanical_findings,

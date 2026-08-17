@@ -854,6 +854,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             ),
         }
 
+    # Operator allowlist extensions (--sandbox-readable-path /
+    # --sandbox-tool-path). Merged into the caller's kwargs here — once,
+    # before any consumption — so every backend sees them uniformly:
+    # the Linux Landlock preexec, the mount-ns extra read-only binds,
+    # and the macOS SBPL read rules all read these two variables.
+    # CLI-parsed values only (validated in cli.apply_cli_args); same
+    # prompt-injection contract as the profile override below. Note
+    # readable_paths still has effect only under restrict_reads=True —
+    # the existing warning covers the no-op case.
+    if state._cli_sandbox_readable_paths:
+        readable_paths = list(readable_paths or []) + [
+            p for p in state._cli_sandbox_readable_paths
+            if p not in (readable_paths or [])
+        ]
+    if state._cli_sandbox_tool_paths:
+        tool_paths = list(tool_paths or []) + [
+            p for p in state._cli_sandbox_tool_paths
+            if p not in (tool_paths or [])
+        ]
+
     # Apply profile overrides. CLI flag is authoritative — it wins over
     # caller-supplied `profile=` AND caller-supplied `disabled=True`, so a
     # user's explicit --sandbox full / --sandbox none cannot be silently

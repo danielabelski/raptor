@@ -38,6 +38,7 @@ def _sandbox_state_guard():
         "_cli_sandbox_disabled", "_cli_sandbox_profile",
         "_cli_sandbox_audit", "_cli_sandbox_audit_verbose",
         "_cli_sandbox_audit_budget",
+        "_cli_sandbox_readable_paths", "_cli_sandbox_tool_paths",
         # Once-per-process warnings
         "_landlock_warned_unavailable", "_landlock_warned_abi_v4",
         "_landlock_warned_abi_v3", "_landlock_warned_abi_v2",

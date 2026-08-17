@@ -1165,6 +1165,13 @@ not before; the top-level parser does not declare them directly):
                         (composes with --sandbox profiles other than 'none')
   --audit-verbose       With --audit, log every traced syscall
                         (strace-style diagnostic)
+  --sandbox-readable-path PATH
+                        Extend the read allowlist (repeatable) — the
+                        fix when a read-restricting run denies a path
+                        a tool needs; --audit names the path
+  --sandbox-tool-path DIR
+                        Make an operator-installed tool dir visible
+                        inside the sandbox (repeatable; read-only)
 
   Run ``python3 raptor.py <mode> --help`` to see them in the mode's
   own argparse-generated list (they are added by

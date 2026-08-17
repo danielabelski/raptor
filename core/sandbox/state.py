@@ -99,6 +99,16 @@ _cli_sandbox_audit_verbose = False
 # default; positive integer = override. Per-category and per-PID
 # sub-caps scale proportionally inside AuditBudget.__init__.
 _cli_sandbox_audit_budget = None
+# Operator allowlist extensions — the self-service recovery levers for
+# read denials under read-restricting profiles. `--sandbox-readable-path`
+# extends readable_paths on every sandbox() in the process;
+# `--sandbox-tool-path` does the same for tool_paths (read allowlist +
+# mount-ns bind). These LOOSEN isolation, so the same prompt-injection
+# rule applies with extra force: only entry-point argparse sets them,
+# never env/config/repo content. None = no extension; list[str] of
+# validated absolute paths otherwise.
+_cli_sandbox_readable_paths = None
+_cli_sandbox_tool_paths = None
 
 # Degradation warnings are logged once per process, not once per sandbox()
 # context — kernel capability doesn't change at runtime and scan loops

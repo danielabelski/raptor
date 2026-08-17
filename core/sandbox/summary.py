@@ -279,12 +279,13 @@ def _suggested_fix(denial_type: str, **details: Any) -> str:
 
     Suggestions reference only the actual operator-facing CLI flags
     exposed by ``core/sandbox/cli.py:add_cli_args`` —
-    ``--sandbox {full,debug,network-only,none}`` and ``--no-sandbox``.
-    Per-host / per-path overrides exist in the sandbox API as kwargs
-    (``proxy_hosts``, ``writable_paths``, ``readable_paths``) but are
-    NOT exposed as CLI flags, so suggesting them would mislead the
-    operator into looking for non-existent flags. The detail value
-    (host, path) appears in the message for context only.
+    ``--sandbox {full,debug,network-only,none}``, ``--no-sandbox``,
+    ``--sandbox-readable-path``, and ``--sandbox-tool-path``.
+    Per-host overrides exist in the sandbox API as kwargs
+    (``proxy_hosts``, ``writable_paths``) but are NOT exposed as CLI
+    flags, so suggesting them would mislead the operator into looking
+    for non-existent flags. The detail value (host, path) appears in
+    the message for context only.
     """
     if denial_type == "network":
         host = details.get("host")
@@ -304,9 +305,14 @@ def _suggested_fix(denial_type: str, **details: Any) -> str:
     if denial_type == "write":
         path = details.get("path")
         ctx = f" to `{path}`" if path else ""
-        return (f"write outside allowed paths blocked{ctx}; use "
-                f"`--sandbox network-only` or `--sandbox none` to drop "
-                f"Landlock (or move write into target dir)")
+        return (f"filesystem access outside allowed paths blocked{ctx}; "
+                f"if it was a READ under a read-restricting run, "
+                f"`--sandbox-readable-path <path>` (or "
+                f"`--sandbox-tool-path <dir>` for an operator-installed "
+                f"toolchain) extends the allowlist without dropping "
+                f"Landlock; for writes, move the write into the target "
+                f"dir, or use `--sandbox network-only`/`--sandbox none` "
+                f"to drop Landlock entirely")
     if denial_type == "udp":
         return ("UDP/loopback socket use blocked by the sandbox "
                 "network policy (Linux: proxy fallback tier's seccomp "

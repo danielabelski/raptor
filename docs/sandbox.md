@@ -252,6 +252,19 @@ on with less isolation. On Linux, strict mode also requires mount
 namespaces when target/output isolation is requested. On macOS, the
 Seatbelt backend is the strict isolation layer.
 
+Read-denial recovery: `--sandbox-readable-path PATH` (repeatable;
+file or directory) extends the read allowlist of every read-restricting
+sandbox in the run, and `--sandbox-tool-path DIR` (repeatable) makes an
+operator-installed tool directory visible (read allowlist plus a
+read-only bind in mount-namespace mode — pip `--user`, pyenv,
+`~/.cargo/bin`, `/usr/local` installs). The loop: run with `--audit` to
+see what enforcement would deny, read `suggested_fix` in
+`sandbox-summary.json`, then re-run with the named path. Both flags
+loosen isolation — grant the narrowest path that fixes the denial,
+never `$HOME` itself. Paths are validated at parse time; the flags are
+rejected alongside `--sandbox none`/`--no-sandbox` (no allowlist to
+extend).
+
 ---
 
 ## Configuration

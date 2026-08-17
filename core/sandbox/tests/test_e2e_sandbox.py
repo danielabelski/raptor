@@ -3189,3 +3189,53 @@ class TestE2ENonceNotDiscoverable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCliReadablePathExtension(unittest.TestCase):
+    """--sandbox-readable-path end-to-end: a read that restrict_reads
+    denies (home dir — not on the default allowlist, not bind-mounted
+    in mount-ns mode) succeeds once the operator extends the allowlist
+    through the CLI state. This is the self-service recovery loop:
+    --audit names the denied path, the flag grants exactly that path.
+    """
+
+    def setUp(self):
+        if not check_net_available():
+            self.skipTest("User namespaces not available")
+        if not check_landlock_available():
+            self.skipTest("Landlock not available")
+
+    def test_cli_readable_path_grants_denied_read(self):
+        from core.sandbox import state
+        from core.sandbox.cli import set_cli_readable_paths
+
+        extra_dir = Path.home() / ".raptor_cli_rp_test"
+        extra_dir.mkdir(exist_ok=True)
+        secret = extra_dir / "cfg.txt"
+        secret.write_text("GRANTED\n")
+        try:
+            with TemporaryDirectory() as out:
+                denied = sandbox_run(
+                    ["cat", str(secret)], output=out,
+                    restrict_reads=True,
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertNotEqual(
+                    denied.returncode, 0,
+                    "home read must be denied without the extension",
+                )
+                set_cli_readable_paths([str(extra_dir)])
+                granted = sandbox_run(
+                    ["cat", str(secret)], output=out,
+                    restrict_reads=True,
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(
+                    granted.returncode, 0,
+                    f"extension must grant the read; stderr: {granted.stderr}",
+                )
+                self.assertIn("GRANTED", granted.stdout)
+        finally:
+            state._cli_sandbox_readable_paths = None
+            secret.unlink(missing_ok=True)
+            extra_dir.rmdir()

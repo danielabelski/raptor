@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 MAX_SYNTHESIS_PER_RUN = 5
 MAX_SWEEP_HITS_PER_RULE = 50
 
+# On-demand Mode-2 synthesis: verification channel for chain-less
+# hypotheses — suspicious outcomes whose (possibly inferred) CWE has no
+# dispatch-table entry and whose hypothesis binds no keyword channel.
+# Separate, larger cap from the amplification lane: these are
+# single-function verification attempts, not codebase sweeps seeded
+# from confirmed findings.
+MAX_ONDEMAND_SYNTHESIS_PER_RUN = 10
+
 # Per-call timeout for synthesis LLM calls. Synthesis is the heaviest
 # structured call class in /audit — a grammar-reference system prompt
 # (full SmPL subset) plus --json-schema output — and reliably exceeds
@@ -292,4 +300,170 @@ def synthesize_and_sweep(
         origin_function=function,
         hits=new_hits,
         cost_usd=llm_client.total_cost - cost_before,
+    )
+
+
+@dataclass
+class OnDemandSynthesisResult:
+    """Result of an on-demand verification synthesis attempt.
+
+    ``confirmed`` is True only when the synthesized rule passed BOTH
+    mechanical controls: the positive control (matched the suspect
+    function) and the dual control (matched the positive fixture,
+    stayed silent on the negative fixture). ``stamp`` is empty unless
+    confirmed.
+    """
+
+    stamp: str = ""
+    rule_id: str = ""
+    tool: str = ""
+    content: str = ""
+    cwe: str = ""
+    confirmed: bool = False
+    cost_usd: float = 0.0
+
+
+def synthesize_verification_rule(
+    outcome: Any,
+    config: Any,
+    *,
+    cwe: str = "",
+    source_snippet: str = "",
+    synthesis_count: int = 0,
+    max_per_run: int = MAX_ONDEMAND_SYNTHESIS_PER_RUN,
+) -> OnDemandSynthesisResult | None:
+    """Synthesise a one-off verification rule for a chain-less hypothesis.
+
+    Verification-channel counterpart to :func:`synthesize_and_sweep`:
+    instead of amplifying a confirmed finding across the codebase, it
+    tests an UNCONFIRMED suspicious hypothesis whose CWE has no
+    dispatch-table entry. The rule goes through the standard synthesis
+    controls (positive control against the suspect function, dual
+    control against LLM-emitted positive/negative fixtures); only a
+    rule that passes both earns a ``<engine>:synth-<rule_id>`` receipt.
+    Survivors are persisted to the rule library so the class stays
+    covered on later runs.
+
+    Args:
+        outcome: ReviewOutcome — must be suspicious or finding, never
+            clean (verification money is for candidates only).
+        config: OrchestratorConfig with target_path, out_dir, models.
+        cwe: Effective CWE (review-supplied or inferred); may be empty.
+        source_snippet: The function source, when the caller already
+            read it (falls back to review_result.source_snippet).
+        synthesis_count: On-demand syntheses already attempted this run.
+        max_per_run: Per-run attempt cap.
+
+    Returns:
+        OnDemandSynthesisResult when an LLM synthesis was attempted
+        (confirmed or not — the attempt consumed budget either way),
+        or None when skipped (cap reached, ineligible outcome, no LLM).
+    """
+    if synthesis_count >= max_per_run:
+        logger.debug(
+            "on-demand synthesis cap reached (%d/%d)",
+            synthesis_count, max_per_run,
+        )
+        return None
+
+    status = getattr(outcome, "status", "")
+    if status not in ("suspicious", "finding"):
+        return None
+
+    review = getattr(outcome, "review_result", None) or {}
+    hypothesis = review.get("hypothesis") or getattr(outcome, "hypothesis", "") or ""
+    if not hypothesis:
+        return None
+
+    file_path = getattr(outcome, "file", "")
+    function = getattr(outcome, "function", "")
+    if not file_path or not function:
+        return None
+
+    out_dir = getattr(config, "out_dir", None)
+    target_path = getattr(config, "target_path", None)
+    if not out_dir or not target_path:
+        return None
+
+    llm_pair = _build_llm_callable(config)
+    if llm_pair is None:
+        return None
+    llm_callable, llm_client = llm_pair
+    cost_before = llm_client.total_cost
+
+    try:
+        from packages.checker_synthesis import SeedBug
+        from packages.checker_synthesis.synthesise import synthesise_and_run
+    except ImportError:
+        logger.debug("checker_synthesis packages not available")
+        return None
+
+    line = getattr(outcome, "line", None) or 0
+    seed = SeedBug(
+        file=file_path,
+        function=function,
+        line_start=int(line) if line else 0,
+        line_end=int(line) if line else 0,
+        cwe=cwe or review.get("cwe_class") or review.get("cwe") or "",
+        reasoning=hypothesis,
+        snippet=source_snippet or review.get("source_snippet") or "",
+    )
+
+    try:
+        cs = synthesise_and_run(
+            seed,
+            repo_root=Path(target_path),
+            out_dir=Path(out_dir),
+            llm=llm_callable,
+            max_matches=MAX_SWEEP_HITS_PER_RULE,
+            model_id=getattr(llm_client, "model_name", "") or "",
+        )
+    except Exception:
+        logger.warning(
+            "on-demand synthesis failed for %s:%s",
+            file_path, function, exc_info=True,
+        )
+        return OnDemandSynthesisResult(
+            cwe=seed.cwe,
+            cost_usd=llm_client.total_cost - cost_before,
+        )
+
+    cost = llm_client.total_cost - cost_before
+    if cs.rule is None:
+        logger.debug(
+            "on-demand synthesis: no rule produced for %s:%s (errors: %s)",
+            file_path, function,
+            "; ".join(cs.errors[:3]) if cs.errors else "none",
+        )
+        return OnDemandSynthesisResult(cwe=seed.cwe, cost_usd=cost)
+
+    confirmed = bool(cs.positive_control and cs.dual_control)
+    stamp = f"{cs.rule.engine}:synth-{cs.rule.rule_id}" if confirmed else ""
+
+    if confirmed:
+        try:
+            from packages.checker_synthesis import RuleLibrary
+            RuleLibrary().add_rule(
+                rule_id=cs.rule.rule_id,
+                engine=cs.rule.engine,
+                body=cs.rule.body,
+                cwe=seed.cwe,
+                seed_file=file_path,
+                seed_function=function,
+                source="audit-ondemand",
+            )
+        except Exception:
+            logger.debug(
+                "on-demand synthesis: library persist failed",
+                exc_info=True,
+            )
+
+    return OnDemandSynthesisResult(
+        stamp=stamp,
+        rule_id=cs.rule.rule_id,
+        tool=cs.rule.engine,
+        content=cs.rule.body,
+        cwe=seed.cwe,
+        confirmed=confirmed,
+        cost_usd=cost,
     )

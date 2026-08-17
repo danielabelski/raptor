@@ -99,6 +99,9 @@ class AuditPipelineOpts:
     # Parallel review scheduling: "cost" = most-expensive-first
     # makespan packing (default), "priority" = time-to-first-finding.
     schedule: str = "cost"
+    # On-demand Mode-2 checker synthesis for chain-less suspicious
+    # hypotheses (--no-on-demand-synthesis to disable). Capped per run.
+    on_demand_synthesis: bool = True
 
 
 
@@ -182,6 +185,7 @@ def _build_orchestrator_config(
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
         schedule=opts.schedule,
+        on_demand_synthesis=opts.on_demand_synthesis,
         llm_budget_client=client,
         llm_client=client,
     )

@@ -1286,6 +1286,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                             else (True if args.dynamic else None)),
         verdict_reuse=not args.no_verdict_reuse,
         schedule=args.schedule,
+        on_demand_synthesis=not args.no_on_demand_synthesis,
     )
 
     try:
@@ -1662,6 +1663,11 @@ def main() -> int:
                             "whose source is unchanged); unchanged "
                             "reviewed functions are then silently "
                             "suppressed as before")
+    p_run.add_argument("--no-on-demand-synthesis", action="store_true",
+                       help="Disable on-demand checker synthesis for "
+                            "suspicious hypotheses whose CWE has no "
+                            "tool-chain dispatch entry (synthesis is "
+                            "LLM-cost bearing; capped per run)")
     p_run.add_argument("--schedule", choices=["cost", "priority"],
                        default="cost",
                        help="Parallel review ordering: 'cost' packs "

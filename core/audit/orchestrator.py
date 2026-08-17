@@ -311,6 +311,14 @@ class OrchestratorConfig:
     # timeouts (Joern) clamp to the remaining budget so one stuck
     # query can't hold a worker past the run's end.
     run_deadline_monotonic: float | None = None
+    # On-demand Mode-2 checker synthesis for chain-less hypotheses:
+    # when a suspicious outcome's (possibly inferred) CWE yields no
+    # tool-chain entry and no cheap channel binds the hypothesis, a
+    # one-off negatively-controlled rule is synthesized and run instead
+    # of letting the hypothesis die untested. Opt-out
+    # (--no-on-demand-synthesis); capped per run
+    # (checker_synthesis.MAX_ONDEMAND_SYNTHESIS_PER_RUN).
+    on_demand_synthesis: bool = True
 
 
 @dataclass
@@ -423,6 +431,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "refuted_sweep": TierCounters(),
         "cwe_inference": TierCounters(),
         "precondition_promotion": TierCounters(),
+        "synthesis_on_demand": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
         "joern_guard": TierCounters(),
@@ -477,6 +486,9 @@ class OrchestratorResult:
     # (suspicious → finding promotions with a precondition receipt).
     precondition_promoted: int = 0
     synthesis_amplified: int = 0
+    # On-demand synthesis attempts for chain-less suspicious hypotheses
+    # (each attempt costs an LLM call; capped per run).
+    ondemand_synthesized: int = 0
     refinement_rounds: int = 0
     clean_checks: int = 0
     clean_check_rescues: int = 0
@@ -11542,6 +11554,17 @@ def _promote_suspicious(
                 )
 
         chain = _hypothesis_to_tool_chain(hypothesis, outcome.file, cwe=cwe)
+        if not chain:
+            # No CWE dispatch entry and no cheap channel binds this
+            # hypothesis — the static dispatch table has nothing to
+            # test it with. On-demand Mode-2 synthesis generates a
+            # one-off, negatively-controlled rule instead of letting
+            # the hypothesis die untested.
+            _synthesize_unmapped_suspicious(
+                result, config, i, outcome, hypothesis, cwe, source,
+                joern_server=joern_server,
+            )
+            continue
         confirmed = _run_tool_chain(
             chain,
             config=config,
@@ -11587,6 +11610,95 @@ def _promote_suspicious(
                 outcome.function,
                 tool,
             )
+
+
+def _synthesize_unmapped_suspicious(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+    i: int,
+    outcome: ReviewOutcome,
+    hypothesis: str,
+    cwe: str,
+    source: str,
+    joern_server=None,
+) -> None:
+    """On-demand Mode-2 synthesis for a chain-less suspicious hypothesis.
+
+    Called by ``_promote_suspicious`` when ``_hypothesis_to_tool_chain``
+    came back empty: no CWE dispatch entry exists and no cheap channel
+    binds the hypothesis, so the static tool menu cannot verify it.
+    Synthesizes a one-off rule from the hypothesis + function source
+    (standard synthesis controls apply: positive control against the
+    suspect function, dual control against generated fixtures) and
+    treats a confirmation like any synthesized-checker receipt —
+    promote suspicious → finding with the ``<engine>:synth-<id>`` stamp.
+
+    Bounds: opt-out via ``config.on_demand_synthesis``; per-run attempt
+    cap ``MAX_ONDEMAND_SYNTHESIS_PER_RUN``; suspicious/finding
+    candidates only (enforced again in the helper — never clean).
+    Every attempt is counted in tier telemetry under
+    ``synthesis_on_demand``.
+    """
+    if not getattr(config, "on_demand_synthesis", True):
+        return
+    try:
+        from .checker_synthesis import synthesize_verification_rule
+
+        synth = synthesize_verification_rule(
+            outcome,
+            config,
+            cwe=cwe,
+            source_snippet=source,
+            synthesis_count=result.ondemand_synthesized,
+        )
+    except Exception:
+        logger.debug(
+            "on-demand synthesis failed for %s:%s",
+            outcome.file, outcome.function, exc_info=True,
+        )
+        _increment_tier_dict(
+            result.tier_counters, "synthesis_on_demand", "errors",
+        )
+        return
+    if synth is None:
+        # Cap reached / ineligible / no LLM — nothing was attempted.
+        return
+
+    result.ondemand_synthesized += 1
+    if synth.cost_usd:
+        result.cost_tracker.record_call(
+            "checker_synthesis_ondemand", cost_usd=synth.cost_usd,
+        )
+        result.total_cost_usd += synth.cost_usd
+
+    if not synth.confirmed or not synth.stamp:
+        _increment_tier_dict(
+            result.tier_counters, "synthesis_on_demand", "inconclusive",
+        )
+        return
+    if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
+        _increment_tier_dict(
+            result.tier_counters, "synthesis_on_demand", "inconclusive",
+        )
+        logger.info(
+            "on-demand synthesis promotion blocked %s:%s via %s — "
+            "all sink calls guarded",
+            outcome.file, outcome.function, synth.stamp,
+        )
+        return
+
+    _increment_tier_dict(
+        result.tier_counters, "synthesis_on_demand", "confirmed",
+    )
+    result.outcomes[i] = _promote_outcome(outcome, synth.stamp)
+    result.sweep_promoted += 1
+    result.suspicious -= 1
+    result.findings += 1
+    logger.info(
+        "on-demand synthesized checker confirmed %s:%s via %s — "
+        "promoted suspicious → finding (hypothesis: %s)",
+        outcome.file, outcome.function, synth.stamp, hypothesis[:120],
+    )
 
 
 # Load-bearing precondition check types: promotion requires at least one

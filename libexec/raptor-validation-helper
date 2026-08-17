@@ -756,6 +756,11 @@ def prepare_B(workdir, target=None):
         _save_artifact(wdir / "disproven.json", {"disproven": []})
     _save_findings(workdir, data)
 
+    # SMT feasibility over bridge-imported paths BEFORE Stage B runs,
+    # so the Stage B prompts see concrete model values / infeasibility
+    # receipts on the /understand-imported traces.
+    _run_smt_path_sweep(workdir)
+
     if fast_count:
         print(f"Fast-path: {fast_count} poc_success findings (audit trail created)")
     if full_count:
@@ -775,6 +780,36 @@ def prepare_B(workdir, target=None):
 
     _report_workdir_files(workdir, "existing")
     _print_schema_hint("B")
+
+
+def _run_smt_path_sweep(workdir):
+    """P24: mechanical SMT feasibility over condition-carrying attack paths.
+
+    Guarantees every path that carries ``path_conditions`` gets checked
+    instead of depending on the LLM electing to run
+    ``raptor-smt-validate-path`` per finding. unsat → soft demotion +
+    receipt (never suppression); sat → concrete model values recorded
+    for the Stage B/E prompts. Bounded + hash-cached inside the sweep.
+    """
+    try:
+        from packages.exploitability_validation.smt_paths import (
+            sweep_attack_paths,
+        )
+    except ImportError:
+        return
+    ap_path = Path(workdir) / "attack-paths.json"
+    paths = load_json(ap_path)
+    if not isinstance(paths, list) or not paths:
+        return
+    stats = sweep_attack_paths(paths)
+    if stats["checked"]:
+        _save_artifact(ap_path, paths)
+        print(
+            f"  SMT path sweep: {stats['checked']} checked — "
+            f"{stats['sat']} sat (model recorded), "
+            f"{stats['unsat']} unsat (demoted with receipt), "
+            f"{stats['unknown']} unknown"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -797,6 +832,10 @@ def prepare_C(workdir, target=None):
             _validate_file(workdir, name, validator)
         else:
             print(f"  {name}: not found", file=sys.stderr)
+
+    # SMT feasibility over the Stage B-written paths (bridge-imported
+    # ones checked at prepare_B are hash-cached and skipped).
+    _run_smt_path_sweep(workdir)
 
     # --- Carry-forward check (Stage B) ---
     findings_data = _findings(workdir)

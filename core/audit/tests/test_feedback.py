@@ -797,6 +797,7 @@ class TestConfirmedBeatsDisproven:
             audit_out, "src/a.c", "fn_a") == "clean"
 
 
+
 class TestValidateFeedbackScorecardProducer:
     """The Reflexion importer is the live producer of audit:<CWE>
     reliability cells (2d): each processed finding with a prior model
@@ -916,3 +917,139 @@ class TestValidateFeedbackScorecardProducer:
             audit_out_dir=tmp_path,
         )
         assert captured == []
+
+
+# ---- Provenance-gated human veto ----
+
+def _write_annotation_meta(annotations_dir: Path, file_path: str,
+                           function_name: str, meta: str,
+                           body: str) -> None:
+    """Write an annotation file with a verbatim meta line — lets
+    tests exercise stamped, legacy, and forged provenance shapes."""
+    ann_path = annotations_dir / f"{file_path}.md"
+    ann_path.parent.mkdir(parents=True, exist_ok=True)
+    ann_path.write_text(
+        f"# {file_path}\n\n"
+        f"## {function_name}\n"
+        f"<!-- meta: {meta} -->\n\n"
+        f"{body}\n"
+    )
+
+
+class TestProvenanceGatedVeto:
+    """The Reflexion veto requires human GRADE — source=human plus an
+    interactive-TTY stamp (or a legacy stamp-less note). Everything
+    else demotes to the machine tier: no veto, but the note's status
+    still serves as the prior claim when no journal entry exists."""
+
+    def _report(self, tmp_path: Path) -> Path:
+        report_path = tmp_path / "findings.json"
+        report_path.write_text(json.dumps([{
+            "file": "src/vuln.c",
+            "function": "vuln_fn",
+            "ruling": {"status": "ruled_out", "reason": "dead code"},
+        }]))
+        return report_path
+
+    def test_stamped_interactive_human_vetoes(self, tmp_path: Path):
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        _write_annotation_meta(
+            ann_dir, "src/vuln.c", "vuln_fn",
+            "status=finding source=human "
+            "provenance=interactive-tty tty=stdin",
+            "Manually verified by operator",
+        )
+        result = import_validation_results(
+            validation_report=self._report(tmp_path),
+            annotations_dir=ann_dir,
+        )
+        assert result["skipped"] == 1
+        assert result["updated"] == 0
+
+    def test_legacy_human_without_stamp_vetoes(self, tmp_path: Path):
+        # Pre-stamp corpus keeps benefit-of-doubt: the write-path
+        # audit found zero mechanical writers at HEAD.
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        _write_annotation_meta(
+            ann_dir, "src/vuln.c", "vuln_fn",
+            "status=finding source=human",
+            "Old operator note",
+        )
+        result = import_validation_results(
+            validation_report=self._report(tmp_path),
+            annotations_dir=ann_dir,
+        )
+        assert result["skipped"] == 1
+        assert result["updated"] == 0
+
+    def test_forged_human_non_tty_does_not_veto(self, tmp_path: Path):
+        # source=human with a non-tty stamp is the laundering shape:
+        # no veto; the note is demoted to prior-claim duty and the
+        # /validate correction lands in the journal.
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _write_annotation_meta(
+            ann_dir, "src/vuln.c", "vuln_fn",
+            "status=finding source=human provenance=non-tty tty=none",
+            "Claimed manual, piped context",
+        )
+        result = import_validation_results(
+            validation_report=self._report(tmp_path),
+            annotations_dir=ann_dir,
+            audit_out_dir=audit_out,
+        )
+        assert result["skipped"] == 0
+        assert result["downgraded"] == 1
+        assert _latest_journal_verdict(
+            audit_out, "src/vuln.c", "vuln_fn",
+        ) == "clean"
+
+    def test_agent_annotation_does_not_veto_but_stays_useful(
+        self, tmp_path: Path,
+    ):
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _write_annotation_meta(
+            ann_dir, "src/vuln.c", "vuln_fn",
+            "status=finding source=agent provenance=non-tty tty=none",
+            "Agent-recorded suspicion",
+        )
+        result = import_validation_results(
+            validation_report=self._report(tmp_path),
+            annotations_dir=ann_dir,
+            audit_out_dir=audit_out,
+        )
+        # Machine tier: no veto, but the agent note's status was the
+        # prior claim, so the disproof produces a correction.
+        assert result["skipped"] == 0
+        assert result["downgraded"] == 1
+
+    def test_journal_entry_beats_machine_annotation(self, tmp_path: Path):
+        # When a journal entry exists it stays the prior; the machine
+        # annotation neither vetoes nor overrides it.
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _seed_journal_entry(audit_out, "src/vuln.c", "vuln_fn",
+                            "finding", "journal prior")
+        _write_annotation_meta(
+            ann_dir, "src/vuln.c", "vuln_fn",
+            "status=clean source=agent provenance=non-tty tty=none",
+            "Agent thinks it is fine",
+        )
+        result = import_validation_results(
+            validation_report=self._report(tmp_path),
+            annotations_dir=ann_dir,
+            audit_out_dir=audit_out,
+        )
+        assert result["downgraded"] == 1
+        assert _latest_journal_verdict(
+            audit_out, "src/vuln.c", "vuln_fn",
+        ) == "clean"

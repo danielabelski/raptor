@@ -78,6 +78,7 @@ def import_validation_results(
     # human-authored annotation is still consulted so operator notes
     # with a conclusion status can veto Reflexion — but no annotation
     # is ever written back (see amendment §1 D3 + A5).
+    from core.annotations import is_human_grade
     from core.annotations.storage import read_annotation
 
     from .journal import (
@@ -137,13 +138,18 @@ def import_validation_results(
             continue
 
         # Human notes with a conclusion-status veto Reflexion — the
-        # operator's judgement stands. Amendment A5: only annotations
-        # whose status matches the LLM's verdict vocabulary
-        # (``VALID_VERDICTS``) veto; non-conclusion statuses
-        # (``todo``, ``investigating``, free-form) don't block
-        # Reflexion because the operator hasn't asserted anything.
+        # operator's judgement stands. The veto requires human GRADE
+        # (source=human plus an interactive-TTY provenance stamp, or
+        # a legacy pre-stamp note), not just the caller-asserted
+        # source string — a non-interactive add claiming human is
+        # the laundering shape and gets machine tier below instead.
+        # Amendment A5: only annotations whose status matches the
+        # LLM's verdict vocabulary (``VALID_VERDICTS``) veto;
+        # non-conclusion statuses (``todo``, ``investigating``,
+        # free-form) don't block Reflexion because the operator
+        # hasn't asserted anything.
         human_ann = read_annotation(annotations_dir, file_path, function_name)
-        if human_ann and human_ann.metadata.get("source") == "human":
+        if human_ann and is_human_grade(human_ann.metadata):
             hstatus = (human_ann.metadata.get("status") or "").strip().lower()
             if hstatus in VALID_VERDICTS:
                 logger.info(
@@ -159,15 +165,16 @@ def import_validation_results(
         audit_status = prior_entry.verdict if prior_entry else ""
         prior_body = prior_entry.body if prior_entry else ""
 
-        # Legacy path: run dirs created before the annotation → journal
-        # migration still carry LLM verdicts as annotations. When
-        # there's no journal entry, fall back to the LLM annotation
-        # so the Reflexion loop still fires on pre-migration state.
-        # The corrected verdict is still written to the journal
-        # (never back to the annotation) — annotations remain
-        # human-only for new writes.
-        if not audit_status and human_ann and (
-            human_ann.metadata.get("source") == "llm"
+        # Machine-tier path: annotations without human grade — legacy
+        # pre-migration LLM verdicts, agent-sourced notes, and human
+        # claims stamped non-interactive — don't veto, but they stay
+        # useful: when there's no journal entry, their status serves
+        # as the prior claim so the Reflexion loop still fires. The
+        # corrected verdict is still written to the journal (never
+        # back to the annotation) — annotations remain human-only
+        # for new writes.
+        if not audit_status and human_ann and not is_human_grade(
+            human_ann.metadata,
         ):
             audit_status = human_ann.metadata.get("status", "")
             prior_body = human_ann.body

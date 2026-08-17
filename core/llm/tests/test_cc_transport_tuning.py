@@ -146,6 +146,178 @@ class TestClaudecodeWorkerCap:
         assert derive_max_workers("anthropic.claude-mythos-5") == 12
 
 
+class TestUnknownRpmWorkerFloor:
+    """derive_max_workers when the model's RPM is unknown (rpm=0).
+
+    The claudecode transport's session-default sentinel (and unknown
+    backend ids) resolve to rpm=0 — the worker floor there is the
+    subprocess ceiling, not 1.
+    """
+
+    def _mock_primary(self, monkeypatch, provider, model_name):
+        class _MC:
+            pass
+        mc = _MC()
+        mc.provider = provider
+        mc.model_name = model_name
+        monkeypatch.setattr(
+            "core.llm.config._get_default_primary_model",
+            lambda prefer=None: mc,
+        )
+
+    def _mock_rpm(self, monkeypatch, rpm):
+        monkeypatch.setattr(
+            "core.llm.model_data.rpm_for", lambda model, **kw: rpm,
+        )
+
+    def _no_tuning(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.llm.concurrency.read_tuning_max_llm_workers",
+            lambda: None,
+        )
+
+    def test_claudecode_primary_unknown_rpm_floors_at_cc_cap(
+        self, monkeypatch,
+    ):
+        from core.llm.concurrency import (
+            CC_MAX_WORKERS_DEFAULT,
+            derive_max_workers,
+        )
+
+        self._mock_primary(monkeypatch, "claudecode", "session-default")
+        self._mock_rpm(monkeypatch, 0)
+        self._no_tuning(monkeypatch)
+        assert (
+            derive_max_workers("session-default") == CC_MAX_WORKERS_DEFAULT
+        )
+
+    def test_cc_env_override_applies_to_unknown_rpm_floor(
+        self, monkeypatch,
+    ):
+        from core.llm.concurrency import derive_max_workers
+
+        self._mock_primary(monkeypatch, "claudecode", "session-default")
+        self._mock_rpm(monkeypatch, 0)
+        self._no_tuning(monkeypatch)
+        monkeypatch.setenv("RAPTOR_CC_MAX_WORKERS", "2")
+        assert derive_max_workers("session-default") == 2
+
+    def test_non_claudecode_unknown_rpm_stays_serial(self, monkeypatch):
+        from core.llm.concurrency import derive_max_workers
+
+        self._mock_primary(monkeypatch, "anthropic", "mystery-model")
+        self._mock_rpm(monkeypatch, 0)
+        self._no_tuning(monkeypatch)
+        assert derive_max_workers("mystery-model") == 1
+
+    def test_known_rpm_still_derives_and_clamps(self, monkeypatch):
+        from core.llm.concurrency import (
+            CC_MAX_WORKERS_DEFAULT,
+            derive_max_workers,
+        )
+
+        self._mock_primary(monkeypatch, "claudecode", "session-default")
+        self._mock_rpm(monkeypatch, 60)
+        self._no_tuning(monkeypatch)
+        # 60 rpm → 30 workers, clamped to the claudecode ceiling.
+        assert (
+            derive_max_workers("session-default") == CC_MAX_WORKERS_DEFAULT
+        )
+
+    def test_tuning_override_beats_unknown_rpm_floor(self, monkeypatch):
+        from core.llm.concurrency import derive_max_workers
+
+        self._mock_primary(monkeypatch, "claudecode", "session-default")
+        self._mock_rpm(monkeypatch, 0)
+        monkeypatch.setattr(
+            "core.llm.concurrency.read_tuning_max_llm_workers",
+            lambda: 6,
+        )
+        assert derive_max_workers("session-default") == 6
+
+
+class TestWarmClaudecodeProbe:
+    def _mock_primary(self, monkeypatch, provider):
+        class _MC:
+            pass
+        mc = _MC()
+        mc.provider = provider
+        mc.model_name = "session-default"
+        monkeypatch.setattr(
+            "core.llm.config._get_default_primary_model",
+            lambda prefer=None: mc,
+        )
+
+    def test_warms_once_when_claudecode_primary(self, monkeypatch):
+        from core.llm.concurrency import warm_claudecode_probe
+
+        self._mock_primary(monkeypatch, "claudecode")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        calls = []
+        monkeypatch.setattr(
+            "core.llm.cc_probe.probe_cc_session_model",
+            lambda *a, **kw: calls.append(1) or "backend.resolved-id",
+        )
+        assert warm_claudecode_probe() == "backend.resolved-id"
+        assert len(calls) == 1
+
+    def test_skipped_under_pytest(self, monkeypatch):
+        from core.llm.concurrency import warm_claudecode_probe
+
+        self._mock_primary(monkeypatch, "claudecode")
+        # PYTEST_CURRENT_TEST is naturally present here — the guard
+        # this test exercises is the one protecting every other test
+        # in the suite from a live probe call.
+        called = []
+        monkeypatch.setattr(
+            "core.llm.cc_probe.probe_cc_session_model",
+            lambda *a, **kw: called.append(1),
+        )
+        assert warm_claudecode_probe() is None
+        assert not called
+
+    def test_operator_opt_out(self, monkeypatch):
+        from core.llm.concurrency import warm_claudecode_probe
+
+        self._mock_primary(monkeypatch, "claudecode")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.setenv("RAPTOR_CC_PROBE_WARM", "0")
+        called = []
+        monkeypatch.setattr(
+            "core.llm.cc_probe.probe_cc_session_model",
+            lambda *a, **kw: called.append(1),
+        )
+        assert warm_claudecode_probe() is None
+        assert not called
+
+    def test_skipped_for_non_claudecode_primary(self, monkeypatch):
+        from core.llm.concurrency import warm_claudecode_probe
+
+        self._mock_primary(monkeypatch, "anthropic")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        called = []
+        monkeypatch.setattr(
+            "core.llm.cc_probe.probe_cc_session_model",
+            lambda *a, **kw: called.append(1),
+        )
+        assert warm_claudecode_probe() is None
+        assert not called
+
+    def test_probe_failure_tolerated(self, monkeypatch):
+        from core.llm.concurrency import warm_claudecode_probe
+
+        self._mock_primary(monkeypatch, "claudecode")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+        def _boom(*a, **kw):
+            raise RuntimeError("probe exploded")
+
+        monkeypatch.setattr(
+            "core.llm.cc_probe.probe_cc_session_model", _boom,
+        )
+        assert warm_claudecode_probe() is None  # no raise
+
+
 class TestDispatchKnobs:
     def _cmd(self):
         from core.llm.cc_adapter import CCDispatchConfig, build_cc_command

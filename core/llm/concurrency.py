@@ -91,11 +91,63 @@ def derive_max_workers(model: str) -> int:
 
     rpm = rpm_for(model)
     if rpm <= 0:
+        # RPM unknown. For the claudecode transport this is the COMMON
+        # case, not the exception: the session-default sentinel (and any
+        # backend id the limits table doesn't know) resolves to rpm=0,
+        # and the old blanket "fall back to 1" serialized the entire
+        # review loop even though the transport comfortably sustains
+        # its subprocess ceiling. Use the claudecode worker cap as the
+        # floor there; every other unknown model keeps the conservative
+        # serial fallback.
+        if _is_claudecode_primary(model):
+            return _claudecode_worker_cap()
         return 1
     workers = max(1, min(rpm // 2, MAX_WORKERS_CAP))
     if _is_claudecode_primary(model):
         workers = min(workers, _claudecode_worker_cap())
     return workers
+
+
+def warm_claudecode_probe() -> str | None:
+    """Warm the cc-probe cache at run start (best-effort, non-fatal).
+
+    ``derive_max_workers`` and model pinning both key on the
+    backend-resolved model identity, which is only knowable from a
+    real ``claude -p`` call (``probe_cc_session_model``). When the
+    probe cache is cold, every consumer falls back to the
+    session-default sentinel for the whole run. One tiny probe call
+    here (disk-cached for 24h, so usually a no-op) resolves it
+    before any workers are derived or dispatched.
+
+    Guards:
+
+    * skipped under pytest (``PYTEST_CURRENT_TEST``) — tests must
+      never trigger a live LLM call;
+    * skipped when ``RAPTOR_CC_PROBE_WARM=0`` (operator opt-out);
+    * skipped when the primary model is not served by the claudecode
+      transport (nothing to probe);
+    * any failure is swallowed and logged at DEBUG — a dead probe
+      must not fail the run (the transport's own error paths report
+      real dispatch failures).
+
+    Returns the resolved model id, or ``None`` when skipped/failed.
+    """
+    import os
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return None
+    if os.environ.get("RAPTOR_CC_PROBE_WARM", "") == "0":
+        return None
+    try:
+        if not _is_claudecode_primary("default"):
+            return None
+        from core.llm.cc_probe import probe_cc_session_model
+        model = probe_cc_session_model()
+        if model:
+            logger.debug("cc-probe warm: resolved model %s", model)
+        return model
+    except Exception:  # warm is strictly best-effort
+        logger.debug("cc-probe warm failed", exc_info=True)
+        return None
 
 
 def _tuning_path() -> Path:

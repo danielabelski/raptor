@@ -499,6 +499,14 @@ def run_orchestrator(
         _file_lines_cache.clear()
         if prep_cache is not None:
             prep_cache["_caches_cleared"] = True
+
+    # Warm the claudecode probe cache before any workers are derived
+    # or dispatched — one tiny disk-cached call resolving the
+    # backend's real model identity. Best-effort and non-fatal; the
+    # helper itself guards against pytest and non-claudecode primaries.
+    from core.llm.concurrency import warm_claudecode_probe
+    warm_claudecode_probe()
+
     result = OrchestratorResult()
     _jt = _joern_tunables(overrides=config.joern_overrides)
     if _jt is not None:

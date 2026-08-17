@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.audit.dynamic_sweep import (
     DynamicSweepResult,
@@ -26,7 +26,7 @@ class FakeOutcome:
     status: str = "finding"
     hypothesis: str = "buffer overflow"
     evidence_tool: str = ""
-    review_result: Optional[Dict[str, Any]] = None
+    review_result: dict[str, Any] | None = None
 
 
 @dataclass
@@ -218,3 +218,102 @@ class TestEvidenceStrength:
             exit_code=0, evidence_strength="inconclusive", duration_s=0.1,
         )
         assert r.evidence_strength == "inconclusive"
+
+
+class TestHarnessContainment:
+    """LLM-generated harness code must never execute unsandboxed.
+
+    The runners route compile + execute through run_untrusted() and
+    deliberately have NO bare-subprocess fallback: when isolation
+    cannot engage (SandboxSetupError), the dynamic channel is skipped
+    with an inconclusive result instead.
+    """
+
+    @staticmethod
+    def _ok(returncode: int = 0):
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=returncode, stdout="", stderr="")
+
+    def test_c_harness_skips_on_sandbox_setup_error(self, tmp_path):
+        import time
+        from unittest import mock
+
+        from core.audit.dynamic_sweep import _run_c_harness
+        from core.sandbox import SandboxSetupError
+
+        outcome = FakeOutcome(file="a.c", hypothesis="buffer overflow")
+        config = FakeConfig(target_path=str(tmp_path))
+        with mock.patch("core.sandbox.run_untrusted",
+                        side_effect=SandboxSetupError("no ns")), \
+             mock.patch("subprocess.run") as bare:
+            result = _run_c_harness(outcome, {}, config, time.monotonic())
+        assert result is not None
+        assert result.ran is False
+        assert result.evidence_strength == "inconclusive"
+        assert "sandbox unavailable" in (result.sanitizer_output or "")
+        # The point of the design: no bare-host execution path exists.
+        assert not bare.called
+
+    def test_python_harness_skips_on_sandbox_setup_error(self, tmp_path):
+        import time
+        from unittest import mock
+
+        from core.audit.dynamic_sweep import _run_python_harness
+        from core.sandbox import SandboxSetupError
+
+        outcome = FakeOutcome(file="mod.py", hypothesis="null deref")
+        config = FakeConfig(target_path=str(tmp_path))
+        with mock.patch("core.sandbox.run_untrusted",
+                        side_effect=SandboxSetupError("no ns")), \
+             mock.patch("subprocess.run") as bare:
+            result = _run_python_harness(outcome, {}, config, time.monotonic())
+        assert result is not None
+        assert result.ran is False
+        assert "sandbox unavailable" in (result.sanitizer_output or "")
+        assert not bare.called
+
+    def test_c_harness_confines_compile_and_run(self, tmp_path):
+        """Both steps get target= (read: -I headers) and output= (the
+        scratch dir) so Landlock actually engages — the pre-fix call
+        passed neither, leaving the harness read-everywhere."""
+        import time
+        from unittest import mock
+
+        from core.audit.dynamic_sweep import _run_c_harness
+
+        outcome = FakeOutcome(file="a.c", hypothesis="buffer overflow")
+        config = FakeConfig(target_path=str(tmp_path))
+        with mock.patch("core.sandbox.run_untrusted",
+                        return_value=self._ok()) as m:
+            result = _run_c_harness(outcome, {}, config, time.monotonic())
+        assert result is not None and result.ran is True
+        assert m.call_count == 2  # compile, then execute
+        for call in m.call_args_list:
+            assert call.kwargs["target"] == str(tmp_path)
+            assert call.kwargs["output"]  # the scratch tmpdir
+
+    def test_python_harness_preludes_sys_path_not_pythonpath(self, tmp_path):
+        """strict_env strips PYTHONPATH, so the target path must ride
+        in a sys.path prelude inside the harness script instead."""
+        import time
+        from pathlib import Path
+        from unittest import mock
+
+        from core.audit.dynamic_sweep import _run_python_harness
+
+        outcome = FakeOutcome(file="mod.py", hypothesis="null deref")
+        config = FakeConfig(target_path=str(tmp_path))
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["code"] = Path(cmd[1]).read_text()
+            seen["kwargs"] = kw
+            return self._ok()
+
+        with mock.patch("core.sandbox.run_untrusted", side_effect=fake_run):
+            result = _run_python_harness(outcome, {}, config, time.monotonic())
+        assert result is not None and result.ran is True
+        prelude = f"sys.path.insert(0, {str(tmp_path)!r})"
+        assert prelude in seen["code"].splitlines()[1]
+        assert "PYTHONPATH" not in (seen["kwargs"].get("env") or {})
+        assert seen["kwargs"]["target"] == str(tmp_path)

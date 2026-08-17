@@ -55,6 +55,28 @@ TEXT_EXTS = {".sh", ".md", ".yml", ".yaml", ".toml", ".json", ".cfg", ".ini",
 
 PY_ROOTS = ["core", "packages", "plugins", "libexec", "engine"]
 
+# Reference-text-only roots: files here never join the Python index,
+# but their text joins the reference corpus so symbols invoked from
+# skill instructions, docs, launcher shims or CI scripts are not
+# misclassified as dead (e.g. a method the exploit-dev skill tells
+# the LLM to call, or a function documented in docs/architecture.md).
+TEXT_ROOTS = ["docs", ".claude", "bin", "tiers", ".github"]
+TEXT_ROOT_SKIP = SKIP_DIR_NAMES | {"worktrees"}
+
+
+def iter_text_root_files(root: Path):
+    for sub in TEXT_ROOTS:
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*")):
+            if not p.is_file():
+                continue
+            rel_parts = p.relative_to(root).parts
+            if any(part in TEXT_ROOT_SKIP for part in rel_parts):
+                continue
+            yield p
+
 
 def iter_files(root: Path):
     for sub in PY_ROOTS + ["."]:
@@ -89,10 +111,26 @@ def is_python_file(p: Path) -> bool:
 # ---------------------------------------------------------------- indexing
 
 class FuncDef:
-    __slots__ = ("module", "qualname", "name", "node", "cls", "path",
-                 "lineno", "end_lineno", "decorators", "is_method",
-                 "posonly", "args", "vararg", "kwonly", "kwarg",
-                 "defaults", "kw_defaults", "nested")
+    __slots__ = (
+        "args",
+        "cls",
+        "decorators",
+        "defaults",
+        "end_lineno",
+        "is_method",
+        "kw_defaults",
+        "kwarg",
+        "kwonly",
+        "lineno",
+        "module",
+        "name",
+        "nested",
+        "node",
+        "path",
+        "posonly",
+        "qualname",
+        "vararg",
+    )
 
     def __init__(self, module, qualname, name, node, cls, path, nested):
         self.module = module
@@ -142,8 +180,17 @@ class FuncDef:
 
 
 class ClassInfo:
-    __slots__ = ("module", "name", "qualname", "bases", "methods", "node",
-                 "decorators", "path", "fields")
+    __slots__ = (
+        "bases",
+        "decorators",
+        "fields",
+        "methods",
+        "module",
+        "name",
+        "node",
+        "path",
+        "qualname",
+    )
 
     def __init__(self, module, name, qualname, node, path):
         self.module = module
@@ -172,10 +219,25 @@ def dec_name(node) -> str:
 
 
 class Module:
-    __slots__ = ("path", "modnames", "tree", "src", "lines", "funcs",
-                 "classes", "imports", "import_modules", "top_names",
-                 "star_import", "has_module_getattr", "all_exports",
-                 "name_loads", "attr_loads", "str_words", "import_uses")
+    __slots__ = (
+        "all_exports",
+        "attr_loads",
+        "classes",
+        "funcs",
+        "has_module_getattr",
+        "import_modules",
+        "import_uses",
+        "imports",
+        "lines",
+        "modnames",
+        "name_loads",
+        "path",
+        "src",
+        "star_import",
+        "str_words",
+        "top_names",
+        "tree",
+    )
 
     def __init__(self, path, modnames):
         self.path = path
@@ -358,12 +420,19 @@ class RepoIndex:
                         pkg = name.rsplit(".", 1)[0] if "." in name else name
                         self.modules.setdefault(pkg, mod)
             elif p.suffix in TEXT_EXTS and p.stat().st_size < MAX_TEXT_FILE:
-                try:
-                    text = p.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                self.text_files.append((p, text))
-                self.text_idents.update(IDENT_RE.findall(text))
+                self._add_text_file(p)
+        for p in iter_text_root_files(self.root):
+            if (p.suffix in TEXT_EXTS or p.suffix == ".py") \
+                    and p.stat().st_size < MAX_TEXT_FILE:
+                self._add_text_file(p)
+
+    def _add_text_file(self, p: Path) -> None:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        self.text_files.append((p, text))
+        self.text_idents.update(IDENT_RE.findall(text))
 
     def resolve_module(self, dotted: str):
         if dotted in self.modules:
@@ -492,8 +561,9 @@ def check_calls(idx: RepoIndex):
         encl = {}
 
         class Encl(ast.NodeVisitor):
-            def __init__(self):
+            def __init__(self, out):
                 self.stack = []
+                self.out = out
 
             def visit_ClassDef(self, node):
                 self.stack.append(node.name)
@@ -501,10 +571,12 @@ def check_calls(idx: RepoIndex):
                 self.stack.pop()
 
             def visit_Call(self, node):
-                encl[id(node)] = self.stack[-1] if len(self.stack) == 1 else None
+                self.out[id(node)] = (
+                    self.stack[-1] if len(self.stack) == 1 else None
+                )
                 self.generic_visit(node)
 
-        Encl().visit(mod.tree)
+        Encl(encl).visit(mod.tree)
 
         for node in ast.walk(mod.tree):
             if not isinstance(node, ast.Call):
@@ -545,11 +617,11 @@ def check_calls(idx: RepoIndex):
                             if f"self.{f.attr}" in mod.src or f"cls.{f.attr}" in mod.src.replace(f"cls.{f.attr}(", "", 1):
                                 sup["self_attr_callable"] += 1
                                 continue
-                            findings.append(dict(
-                                kind="missing_method",
-                                file=str(mod.path), line=node.lineno,
-                                sym=f"{cname}.{f.attr}",
-                                detail=f"self.{f.attr}() but no such method on {cname} or resolvable bases"))
+                            findings.append({
+                                "kind": "missing_method",
+                                "file": str(mod.path), "line": node.lineno,
+                                "sym": f"{cname}.{f.attr}",
+                                "detail": f"self.{f.attr}() but no such method on {cname} or resolvable bases"})
                             continue
                         target, bound, label = got, True, f"self.{f.attr}"
                     else:
@@ -574,11 +646,11 @@ def check_calls(idx: RepoIndex):
                             target, bound, label = cands[0], False, f"{base}.{f.attr}"
                         elif f.attr not in tmod.top_names and not tmod.star_import \
                                 and not tmod.has_module_getattr:
-                            findings.append(dict(
-                                kind="missing_module_attr",
-                                file=str(mod.path), line=node.lineno,
-                                sym=f"{tmod.modnames[0]}.{f.attr}",
-                                detail=f"{base}.{f.attr}() but {tmod.modnames[0]} has no top-level '{f.attr}'"))
+                            findings.append({
+                                "kind": "missing_module_attr",
+                                "file": str(mod.path), "line": node.lineno,
+                                "sym": f"{tmod.modnames[0]}.{f.attr}",
+                                "detail": f"{base}.{f.attr}() but {tmod.modnames[0]} has no top-level '{f.attr}'"})
                             continue
                         else:
                             sup["module_attr_not_function"] += 1
@@ -611,13 +683,13 @@ def check_calls(idx: RepoIndex):
                 known = target.all_kw_names(bound)
                 for kw in kw_names:
                     if kw not in known:
-                        findings.append(dict(
-                            kind="unknown_kwarg",
-                            file=str(mod.path), line=node.lineno,
-                            sym=f"{target.module.modnames[0]}:{target.qualname}:{kw}",
-                            detail=f"{label}(... {kw}=...) — callee "
+                        findings.append({
+                            "kind": "unknown_kwarg",
+                            "file": str(mod.path), "line": node.lineno,
+                            "sym": f"{target.module.modnames[0]}:{target.qualname}:{kw}",
+                            "detail": f"{label}(... {kw}=...) — callee "
                                    f"{target.module.modnames[0]}:{target.qualname} "
-                                   f"accepts {sorted(known)}"))
+                                   f"accepts {sorted(known)}"})
             elif has_dstar or target.kwarg is not None:
                 sup["kwargs_open"] += 1
 
@@ -625,13 +697,13 @@ def check_calls(idx: RepoIndex):
             if not has_star:
                 pos_params = target.positional_params(bound)
                 if target.vararg is None and npos > len(pos_params):
-                    findings.append(dict(
-                        kind="too_many_positional",
-                        file=str(mod.path), line=node.lineno,
-                        sym=f"{target.module.modnames[0]}:{target.qualname}",
-                        detail=f"{label}: {npos} positional args, callee "
+                    findings.append({
+                        "kind": "too_many_positional",
+                        "file": str(mod.path), "line": node.lineno,
+                        "sym": f"{target.module.modnames[0]}:{target.qualname}",
+                        "detail": f"{label}: {npos} positional args, callee "
                                f"{target.module.modnames[0]}:{target.qualname} "
-                               f"takes {len(pos_params)}"))
+                               f"takes {len(pos_params)}"})
                 # missing required
                 if not has_dstar:
                     req, req_kw = target.required_params(bound)
@@ -639,13 +711,13 @@ def check_calls(idx: RepoIndex):
                     missing = [p for p in req[npos:] if p not in covered]
                     missing += [p for p in req_kw if p not in kw_names]
                     if missing:
-                        findings.append(dict(
-                            kind="missing_required",
-                            file=str(mod.path), line=node.lineno,
-                            sym=f"{target.module.modnames[0]}:{target.qualname}:"
+                        findings.append({
+                            "kind": "missing_required",
+                            "file": str(mod.path), "line": node.lineno,
+                            "sym": f"{target.module.modnames[0]}:{target.qualname}:"
                                 + ",".join(missing),
-                            detail=f"{label}: missing required {missing} of "
-                                   f"{target.module.modnames[0]}:{target.qualname}"))
+                            "detail": f"{label}: missing required {missing} of "
+                                   f"{target.module.modnames[0]}:{target.qualname}"})
             else:
                 sup["star_args"] += 1
 
@@ -673,12 +745,12 @@ def check_imports(idx: RepoIndex):
                 pkg_dir = tmod.path.parent
                 if (pkg_dir / f"{name}.py").exists() or (pkg_dir / name).is_dir():
                     continue
-            findings.append(dict(
-                kind="import_missing_symbol",
-                file=str(mod.path), line=lineno,
-                sym=f"{from_mod}:{name}",
-                detail=f"from {from_mod} import {name} — not defined in "
-                       f"{tmod.path}"))
+            findings.append({
+                "kind": "import_missing_symbol",
+                "file": str(mod.path), "line": lineno,
+                "sym": f"{from_mod}:{name}",
+                "detail": f"from {from_mod} import {name} — not defined in "
+                       f"{tmod.path}"})
     return findings, sup
 
 
@@ -686,6 +758,13 @@ def check_imports(idx: RepoIndex):
 
 PROTOCOL_NAMES = {
     "main", "setUp", "tearDown", "setUpClass", "tearDownClass",
+    # unittest + pytest xunit lifecycle hooks: resolved by name by the
+    # test runner, never referenced in code.
+    "setUpModule", "tearDownModule",
+    "setup_module", "teardown_module",
+    "setup_function", "teardown_function",
+    "setup_class", "teardown_class",
+    "setup_method", "teardown_method",
     "do_GET", "do_POST", "do_HEAD", "do_PUT", "do_CONNECT",
     "log_message", "log_error", "log_request",
     "default", "emit", "filter", "format", "handle", "handle_error",
@@ -727,7 +806,7 @@ def find_dead(idx: RepoIndex):
                 continue
             if n.startswith("__") and n.endswith("__"):
                 continue
-            if n.startswith("test_") or n in PROTOCOL_NAMES or n.startswith("pytest_"):
+            if n.startswith(("test_", "pytest_")) or n in PROTOCOL_NAMES:
                 continue
             if fd.cls is not None and n.startswith("visit_"):
                 sup["visitor_dispatch_method"] += 1     # NodeVisitor et al.
@@ -754,9 +833,7 @@ def find_dead(idx: RepoIndex):
     def own_body_refs(fd: FuncDef):
         c = 0
         for n in ast.walk(fd.node):
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == fd.name:
-                c += 1
-            elif isinstance(n, ast.Attribute) and n.attr == fd.name:
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == fd.name or isinstance(n, ast.Attribute) and n.attr == fd.name:
                 c += 1
         return c
 
@@ -776,14 +853,14 @@ def find_dead(idx: RepoIndex):
         exported = bool(fd.module.all_exports and n in fd.module.all_exports)
         in_test = ("tests" in fd.path.parts or "test" in fd.path.parts
                    or fd.path.name.startswith(("test_", "conftest")))
-        findings.append(dict(
-            kind="dead_function" if fd.cls is None else "dead_method",
-            file=str(fd.path), line=fd.lineno,
-            name=fd.qualname,
-            in_test=in_test,
-            exported_in_all=exported,
-            detail=f"{fd.module.modnames[0]}:{fd.qualname} — zero references "
-                   f"(AST names/attrs, strings, imports, text corpus)"))
+        findings.append({
+            "kind": "dead_function" if fd.cls is None else "dead_method",
+            "file": str(fd.path), "line": fd.lineno,
+            "name": fd.qualname,
+            "in_test": in_test,
+            "exported_in_all": exported,
+            "detail": f"{fd.module.modnames[0]}:{fd.qualname} — zero references "
+                   f"(AST names/attrs, strings, imports, text corpus)"})
     # dead classes
     for mod in idx.module_list:
         mod_is_test = ("tests" in mod.path.parts or "test" in mod.path.parts
@@ -798,19 +875,17 @@ def find_dead(idx: RepoIndex):
             # subtract own-module self refs inside the class (e.g., factory
             # classmethods returning cls) are attr/name loads of 'cls', fine.
             for n in ast.walk(ci.node):
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == cname:
-                    uses -= 1
-                elif isinstance(n, ast.Attribute) and n.attr == cname:
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == cname or isinstance(n, ast.Attribute) and n.attr == cname:
                     uses -= 1
             if uses > 0:
                 continue
             if cname in idx.text_idents:
                 sup["text_corpus_reference"] += 1
                 continue
-            findings.append(dict(
-                kind="dead_class", file=str(mod.path), line=ci.node.lineno,
-                name=ci.qualname,
-                detail=f"{mod.modnames[0]}:{ci.qualname} — zero references"))
+            findings.append({
+                "kind": "dead_class", "file": str(mod.path), "line": ci.node.lineno,
+                "name": ci.qualname,
+                "detail": f"{mod.modnames[0]}:{ci.qualname} — zero references"})
     return findings, sup
 
 
@@ -828,11 +903,27 @@ COMMON_NONARTIFACTS = {
 WRITE_HINTS = re.compile(
     r"""(open\([^)]*["'](w|a|wb|ab|w\+)["']|write_text|json\.dump\b|\.dump\(|
         atomic_write|_write|write_json|save_|dump_json|writestr|
-        NamedTemporaryFile|to_csv|writelines|\.write\()""", re.X)
+        NamedTemporaryFile|to_csv|writelines|\.write\()""", re.VERBOSE)
 READ_HINTS = re.compile(
     r"""(open\([^)]*["']rb?["']|open\((?![^)]*["'][wa])|read_text|json\.load\b|
         \.load\(|read_json|load_json|loads\(|_read|parse_|exists\(\)|
-        is_file\(\)|glob|iterdir|from_file)""", re.X)
+        is_file\(\)|glob|iterdir|from_file)""", re.VERBOSE)
+# Atomic-write idiom: the artifact literal names the DESTINATION of a
+# tempfile-then-rename write. The dump lands on the temp fd many lines
+# below the literal, so the +/-2-line window sees only the is_file()
+# accumulation guard and misclassifies the writer as a reader.
+ATOMIC_TMP_HINT = re.compile(r"mkstemp|mkdtemp|NamedTemporaryFile")
+ATOMIC_RENAME_HINT = re.compile(r"\.rename\(|os\.replace\(|\.replace\(")
+
+
+def _in_atomic_write_fn(mod: Module, lineno: int) -> bool:
+    """True when *lineno* sits in a function using tempfile+rename."""
+    for fd in mod.funcs:
+        if fd.lineno <= lineno <= (fd.end_lineno or fd.lineno):
+            body = "\n".join(mod.lines[fd.lineno - 1: fd.end_lineno or fd.lineno])
+            if ATOMIC_TMP_HINT.search(body) and ATOMIC_RENAME_HINT.search(body):
+                return True
+    return False
 
 
 def find_artifacts(idx: RepoIndex):
@@ -857,6 +948,13 @@ def find_artifacts(idx: RepoIndex):
                 else:
                     cls = "mention"
                 occ[base].append((str(mod.path), node.lineno, cls, is_test))
+                if cls != "write" and _in_atomic_write_fn(mod, node.lineno):
+                    # The literal names the DESTINATION of a
+                    # tempfile-then-rename write; the accumulate-guard
+                    # window classified it read/mention. Record the
+                    # write as well — the occurrence is both.
+                    occ[base].append(
+                        (str(mod.path), node.lineno, "write", is_test))
     # non-python corpus: shell readers (jq, cat) & docs
     for p, text in idx.text_files:
         for i, line in enumerate(text.splitlines(), 1):
@@ -875,17 +973,17 @@ def find_artifacts(idx: RepoIndex):
         mentions = [e for e in prod if e[2] == "mention"]
         test_reads = [e for e in entries if e[3] and e[2] in ("read", "mention")]
         if writes and not reads:
-            findings.append(dict(
-                kind="write_only_artifact", name=base,
-                writers=[f"{e[0]}:{e[1]}" for e in writes],
-                mentions=[f"{e[0]}:{e[1]}" for e in mentions],
-                test_refs=len(test_reads),
-                detail=f"'{base}' written but never read in production code"))
+            findings.append({
+                "kind": "write_only_artifact", "name": base,
+                "writers": [f"{e[0]}:{e[1]}" for e in writes],
+                "mentions": [f"{e[0]}:{e[1]}" for e in mentions],
+                "test_refs": len(test_reads),
+                "detail": f"'{base}' written but never read in production code"})
         elif reads and not writes and not mentions:
-            findings.append(dict(
-                kind="orphan_reader", name=base,
-                readers=[f"{e[0]}:{e[1]}" for e in reads],
-                detail=f"'{base}' read but never written anywhere in repo"))
+            findings.append({
+                "kind": "orphan_reader", "name": base,
+                "readers": [f"{e[0]}:{e[1]}" for e in reads],
+                "detail": f"'{base}' read but never written anywhere in repo"})
         else:
             sup["artifact_has_both_or_ambiguous"] += 1
     return findings, sup
@@ -976,20 +1074,20 @@ def find_swallowed(idx: RepoIndex, kwarg_findings):
                             for n in ast.walk(b):
                                 if isinstance(n, ast.Call):
                                     calls.append(dec_name(n.func) or "<complex>")
-                        findings.append(dict(
-                            kind="swallowed_exception",
-                            file=str(mod.path), line=node.lineno,
-                            func_span=span,
-                            types=types, broad=broad,
-                            category="contextlib_suppress",
-                            in_test=is_test,
-                            would_eat_miswire=broad or any(
+                        findings.append({
+                            "kind": "swallowed_exception",
+                            "file": str(mod.path), "line": node.lineno,
+                            "func_span": span,
+                            "types": types, "broad": broad,
+                            "category": "contextlib_suppress",
+                            "in_test": is_test,
+                            "would_eat_miswire": broad or any(
                                 t in ("TypeError", "AttributeError", "KeyError",
                                       "ImportError")
                                 for t in types),
-                            miswire_xref_lines=xref,
-                            try_calls=sorted(set(calls))[:12],
-                        ))
+                            "miswire_xref_lines": xref,
+                            "try_calls": sorted(set(calls))[:12],
+                        })
                 continue
             if not isinstance(node, ast.Try):
                 continue
@@ -999,7 +1097,7 @@ def find_swallowed(idx: RepoIndex, kwarg_findings):
                 if res is None:
                     sup["handler_not_silent"] += 1
                     continue
-                cat, stmts = res
+                cat, _stmts = res
                 types, broad = exc_types(h)
                 # cross-ref: does a kwarg/miswire finding sit inside this try?
                 xref = sorted(
@@ -1011,18 +1109,18 @@ def find_swallowed(idx: RepoIndex, kwarg_findings):
                     for n in ast.walk(b):
                         if isinstance(n, ast.Call):
                             calls.append(dec_name(n.func) or "<complex>")
-                findings.append(dict(
-                    kind="swallowed_exception",
-                    file=str(mod.path), line=h.lineno,
-                    func_span=try_span,
-                    types=types, broad=broad, category=cat,
-                    in_test=is_test,
-                    would_eat_miswire=broad or any(
+                findings.append({
+                    "kind": "swallowed_exception",
+                    "file": str(mod.path), "line": h.lineno,
+                    "func_span": try_span,
+                    "types": types, "broad": broad, "category": cat,
+                    "in_test": is_test,
+                    "would_eat_miswire": broad or any(
                         t in ("TypeError", "AttributeError", "KeyError")
                         for t in types),
-                    miswire_xref_lines=xref,
-                    try_calls=sorted(set(calls))[:12],
-                ))
+                    "miswire_xref_lines": xref,
+                    "try_calls": sorted(set(calls))[:12],
+                })
     return findings, sup
 
 
@@ -1061,11 +1159,11 @@ def find_plumbing(idx: RepoIndex):
                 if fname in idx.text_idents:
                     sup["text_corpus_reference"] += 1
                     continue
-                findings.append(dict(
-                    kind="orphan_config_field",
-                    file=str(mod.path), line=lineno,
-                    name=f"{ci.name}.{fname}",
-                    detail=f"field defined but no attribute/string reference anywhere"))
+                findings.append({
+                    "kind": "orphan_config_field",
+                    "file": str(mod.path), "line": lineno,
+                    "name": f"{ci.name}.{fname}",
+                    "detail": "field defined but no attribute/string reference anywhere"})
 
     # argparse flags
     for mod in idx.module_list:
@@ -1095,10 +1193,10 @@ def find_plumbing(idx: RepoIndex):
             if dest in idx.text_idents:
                 sup["text_corpus_reference"] += 1
                 continue
-            findings.append(dict(
-                kind="orphan_cli_flag", file=str(mod.path), line=node.lineno,
-                name=opt or dest,
-                detail=f"parsed into .{dest} but never read"))
+            findings.append({
+                "kind": "orphan_cli_flag", "file": str(mod.path), "line": node.lineno,
+                "name": opt or dest,
+                "detail": f"parsed into .{dest} but never read"})
 
     # env vars set in-repo but never read in-repo
     env_reads = set()
@@ -1137,10 +1235,10 @@ def find_plumbing(idx: RepoIndex):
         if py_hits + txt_hits > len(set(writers)):
             sup["env_referenced_elsewhere"] += 1
             continue
-        findings.append(dict(
-            kind="orphan_env_var", name=name,
-            writers=sorted(set(writers)),
-            detail="set/exported but never read in-repo (external consumers possible)"))
+        findings.append({
+            "kind": "orphan_env_var", "name": name,
+            "writers": sorted(set(writers)),
+            "detail": "set/exported but never read in-repo (external consumers possible)"})
     return findings, sup
 
 

@@ -59,6 +59,14 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
     for bp in new.bug_patterns:
         bp_map[bp.id] = bp
 
+    kf_map: dict[str, dict[str, str]] = {}
+    for kf in prior.key_files:
+        if isinstance(kf, dict) and kf.get("path"):
+            kf_map[kf["path"]] = kf
+    for kf in new.key_files:
+        if isinstance(kf, dict) and kf.get("path"):
+            kf_map[kf["path"]] = kf
+
     return DomainModel(
         version=new.version,
         target=new.target or prior.target,
@@ -68,6 +76,7 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
         contracts=list(ct_map.values()),
         bug_patterns=list(bp_map.values()),
         security_context=new.security_context or prior.security_context,
+        key_files=list(kf_map.values()),
     )
 
 
@@ -2370,6 +2379,49 @@ def infer_security_context(
     )
 
 
+_KEY_FILE_MIN_CITATIONS = 2
+_KEY_FILE_CAP = 12
+
+
+def _derive_key_files(
+    concepts: list[Concept],
+    contracts: list[Contract],
+    *,
+    min_citations: int = _KEY_FILE_MIN_CITATIONS,
+    cap: int = _KEY_FILE_CAP,
+) -> list[dict[str, str]]:
+    """Derive the domain model's key files from study citations.
+
+    A file is "key" when the study kept citing it: every concept
+    evidence entry and every contract contributes one citation to its
+    file. Files with at least *min_citations* make the list (bounded
+    by *cap*, most-cited first) as ``{"path", "reason"}`` entries —
+    the shape ``core.concepts.audit_bridge.domain_key_files`` consumes
+    for the audit priority boost.
+    """
+    counts: dict[str, int] = {}
+    for concept in concepts:
+        seen_in_concept: set[str] = set()
+        for ev in concept.evidence:
+            f = (ev.file or "").strip()
+            if f and f not in seen_in_concept:
+                seen_in_concept.add(f)
+                counts[f] = counts.get(f, 0) + 1
+    for contract in contracts:
+        f = (contract.file or "").strip()
+        if f:
+            counts[f] = counts.get(f, 0) + 1
+
+    ranked = sorted(
+        ((f, n) for f, n in counts.items() if n >= min_citations),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    return [
+        {"path": f, "reason": f"cited by {n} study entries"}
+        for f, n in ranked[:cap]
+    ]
+
+
 def run_phase3(
     concepts: list[Concept],
     invariants: list[Invariant],
@@ -2415,6 +2467,7 @@ def run_phase3(
         contracts=deduped_contracts,
         bug_patterns=bp,
         security_context=security_context,
+        key_files=_derive_key_files(filtered_concepts, deduped_contracts),
     )
 
 

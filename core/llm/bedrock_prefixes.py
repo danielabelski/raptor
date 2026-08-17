@@ -51,9 +51,80 @@ BEDROCK_PROVIDER_SEGMENTS: tuple[str, ...] = (
 )
 
 
+def regional_prefix_of(model_id: str) -> str | None:
+    """The regional inference-profile prefix on ``model_id``, or
+    ``None`` when the id is bare (``anthropic.claude-…``), an ARN, or
+    otherwise unprefixed."""
+    for prefix in BEDROCK_REGIONAL_PREFIXES:
+        if model_id.startswith(prefix):
+            return prefix
+    return None
+
+
+def mantle_model_id(model_id: str) -> str:
+    """Normalize a model id for the Mantle surface, which accepts
+    ONLY bare ``<provider>.<model>`` ids — regional routing happens
+    via the hostname, and a prefixed id is rejected upstream.
+
+    Two lossless fixes: peel a regional prefix, and prepend the
+    provider segment when the id is a bare catalog name whose family
+    implies one (``claude-x`` → ``anthropic.claude-x``).  Ids already
+    in Mantle shape (and anything unrecognisable, e.g. ARNs) pass
+    through verbatim.
+    """
+    prefix = regional_prefix_of(model_id)
+    if prefix:
+        model_id = model_id[len(prefix):]
+    if not model_id.startswith(BEDROCK_PROVIDER_SEGMENTS):
+        # Catalog-bare name: derive the provider segment from the
+        # model family rather than hardcoding a vocabulary here.
+        from core.security.llm_family import provider_of
+        derived = provider_of(model_id)
+        if derived and f"{derived}." in BEDROCK_PROVIDER_SEGMENTS:
+            model_id = f"{derived}.{model_id}"
+    return model_id
+
+
+def prefix_region_mismatch(model_id: str, region: str) -> str | None:
+    """Operator-actionable message when ``model_id``'s geographic
+    inference-profile prefix cannot be served from ``region``, else
+    ``None``.
+
+    Deliberately conservative — only clear contradictions are flagged
+    (a ``us.`` profile invoked from a non-``us-*`` region, and the
+    symmetric cases), because AWS's geography→region mapping grows
+    over time and a stale strict table would false-positive.
+    ``global.`` never mismatches.
+    """
+    prefix = regional_prefix_of(model_id)
+    if not prefix or prefix == BEDROCK_GLOBAL_PREFIX or not region:
+        return None
+    geo_region_starts = {
+        "us.": ("us-",),
+        "eu.": ("eu-",),
+        # apac./au. profiles are served from Asia-Pacific regions;
+        # flag only the unambiguous wrong-continent cases.
+        "apac.": ("ap-",),
+        "au.": ("ap-",),
+    }
+    allowed = geo_region_starts.get(prefix)
+    if allowed and not region.startswith(allowed):
+        return (
+            f"model id {model_id!r} carries the {prefix!r} "
+            f"inference-profile prefix but the configured region is "
+            f"{region!r} — Bedrock will reject the invocation. Use a "
+            f"region matching the profile's geography, the 'global.' "
+            f"profile, or a bare id on the mantle surface."
+        )
+    return None
+
+
 __all__ = [
     "BEDROCK_REGIONAL_PREFIXES",
     "BEDROCK_REGIONAL_SURCHARGE_PREFIXES",
     "BEDROCK_GLOBAL_PREFIX",
     "BEDROCK_PROVIDER_SEGMENTS",
+    "mantle_model_id",
+    "prefix_region_mismatch",
+    "regional_prefix_of",
 ]

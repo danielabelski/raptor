@@ -577,6 +577,22 @@ def _build_bedrock_config() -> Optional['ModelConfig']:
         if not bare_default:
             return None
         model_name = f"anthropic.{bare_default}"
+    # Surface-keyed id normalization, same contract as
+    # ``_model_config_from_entry``: Mantle takes bare ids only;
+    # runtime ids pass verbatim with a region-compatibility warning.
+    from core.llm.bedrock_prefixes import (
+        mantle_model_id,
+        prefix_region_mismatch,
+    )
+    if bedrock_api == "mantle":
+        model_name = mantle_model_id(model_name)
+    else:
+        check_region = (os.getenv("RAPTOR_BEDROCK_REGION")
+                        or os.getenv("AWS_REGION")
+                        or os.getenv("AWS_DEFAULT_REGION") or "")
+        mismatch = prefix_region_mismatch(model_name, check_region)
+        if mismatch:
+            logger.warning("bedrock: %s", mismatch)
     limits = MODEL_LIMITS.get(bare_default, {})
     costs = MODEL_COSTS.get(bare_default, {})
     avg_cost_per_1k = (
@@ -920,6 +936,31 @@ def _model_config_from_entry(entry: dict) -> 'ModelConfig':
             or os.getenv("RAPTOR_BEDROCK_REGION")
             or None
         )
+        # Surface-keyed id normalization: Mantle takes ONLY bare
+        # ``<provider>.<model>`` ids (lossless fixes applied
+        # automatically); runtime ids pass verbatim (prefixed ids,
+        # versioned ids and ARNs are all legal there) with a loud
+        # warning when the geographic prefix contradicts the region.
+        if model_name:
+            from core.llm.bedrock_prefixes import (
+                mantle_model_id,
+                prefix_region_mismatch,
+            )
+            if bedrock_api == "mantle":
+                normalized = mantle_model_id(model_name)
+                if normalized != model_name:
+                    logger.info(
+                        "bedrock: normalized model id %r -> %r for the "
+                        "mantle surface (bare ids only)",
+                        model_name, normalized,
+                    )
+                    model_name = normalized
+            else:
+                check_region = aws_region or os.getenv("AWS_REGION") \
+                    or os.getenv("AWS_DEFAULT_REGION") or ""
+                mismatch = prefix_region_mismatch(model_name, check_region)
+                if mismatch:
+                    logger.warning("bedrock: %s", mismatch)
     else:
         aws_profile = None
         aws_region = None

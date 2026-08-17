@@ -163,7 +163,7 @@ class TestPrepFailureDisablesLoudly:
             calls.append(cmd)
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
 
-        monkeypatch.setattr(_orch.subprocess, "run", fake_run)
+        monkeypatch.setattr(_orch, "_run_study_prep", fake_run)
         warnings = _capture_warnings(monkeypatch)
 
         # 20 items → 2 batches of 15/5: pre-fix the second batch
@@ -190,7 +190,7 @@ class TestPrepFailureDisablesLoudly:
             calls.append(cmd)
             return types.SimpleNamespace(returncode=1, stderr="boom")
 
-        monkeypatch.setattr(_orch.subprocess, "run", fake_run)
+        monkeypatch.setattr(_orch, "_run_study_prep", fake_run)
         warnings = _capture_warnings(monkeypatch)
 
         _run_loop(self._config(tmp_path), _queue_with_batches(20))
@@ -206,7 +206,7 @@ class TestPrepFailureDisablesLoudly:
         def fake_run(cmd, **kwargs):
             return types.SimpleNamespace(returncode=0, stderr="")
 
-        monkeypatch.setattr(_orch.subprocess, "run", fake_run)
+        monkeypatch.setattr(_orch, "_run_study_prep", fake_run)
         warnings = _capture_warnings(monkeypatch)
 
         _run_loop(self._config(tmp_path), _queue_with_batches(20))
@@ -229,7 +229,7 @@ class TestPrepFailureDisablesLoudly:
             seen["timeout"] = kwargs.get("timeout")
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
 
-        monkeypatch.setattr(_orch.subprocess, "run", fake_run)
+        monkeypatch.setattr(_orch, "_run_study_prep", fake_run)
         monkeypatch.setattr(
             "core.llm.config._get_default_primary_model",
             lambda prefer=None: types.SimpleNamespace(timeout=600),
@@ -273,7 +273,7 @@ class TestPrepFailureDisablesLoudly:
             seen["timeout"] = kwargs.get("timeout")
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
 
-        monkeypatch.setattr(_orch.subprocess, "run", fake_run)
+        monkeypatch.setattr(_orch, "_run_study_prep", fake_run)
         monkeypatch.setattr(
             "core.llm.config._get_default_primary_model",
             lambda prefer=None: types.SimpleNamespace(timeout=600),
@@ -306,7 +306,7 @@ class TestStudyRunUsesLowPriorityThrottle:
             (tmp_path / "study-list.json").write_text("[]")
             return types.SimpleNamespace(returncode=0, stderr="")
 
-        monkeypatch.setattr(_orch.subprocess, "run", fake_run)
+        monkeypatch.setattr(_orch, "_run_study_prep", fake_run)
 
         studied = []
         import core.concepts.study as _study_mod

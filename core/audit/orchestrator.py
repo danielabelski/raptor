@@ -4048,9 +4048,14 @@ def _run_audit_body(
     if study_queue is not None:
         study_queue.signal_producer_done()
     if study_consumer_thread is not None:
-        study_consumer_thread.join(timeout=600)
-        if study_consumer_thread.is_alive():
-            logger.warning("study-consumer: did not drain within 600s")
+        _drain_study_consumer(
+            study_consumer_thread,
+            study_queue,
+            budget_exhausted=bool(
+                executor_stats.budget_stopped
+                or _check_budget(config, start_time, result)
+            ),
+        )
 
     # --- Concept discovery: mine outcomes for invariants ---
     try:
@@ -7242,6 +7247,17 @@ class StudyQueue:
         self._consumer_done = False
         self._loop: Any = None
         self._study_event: Any = None
+        # Drain/shutdown seam: the orchestrator's drain path requests a
+        # cooperative stop; the consumer checks it at every lifecycle
+        # checkpoint (loop top, dequeue wait, before each study step)
+        # and the interruptible prep runner kills its subprocess.
+        self._stop_requested = False
+        # Liveness telemetry for the drain path: progress ticks at each
+        # completed consumer step, and a "working" flag distinguishes
+        # "mid-batch (prep/study/re-review)" from "idle on the queue".
+        self._progress = 0
+        self._working = False
+        self._inflight_proc: Any = None
 
     def enqueue(self, item: StudyRequest) -> None:
         concept = _extract_concept_from_question(item.question)
@@ -7255,8 +7271,12 @@ class StudyQueue:
         self, max_items: int = 15, timeout: float = 30.0,
     ) -> list[StudyRequest]:
         with self._not_empty:
+            if self._stop_requested:
+                return []
             if not self._queue and not self._producer_done:
                 self._not_empty.wait(timeout=timeout)
+            if self._stop_requested:
+                return []
             batch = self._queue[:max_items]
             del self._queue[:max_items]
             return batch
@@ -7268,7 +7288,58 @@ class StudyQueue:
 
     def is_done(self) -> bool:
         with self._not_empty:
+            if self._stop_requested:
+                return True
             return self._producer_done and not self._queue
+
+    def request_stop(self) -> None:
+        """Cooperative shutdown: wake the consumer out of its dequeue
+        wait, make every subsequent lifecycle checkpoint observe the
+        stop, and kill the in-flight study-prep subprocess (if any).
+        Idempotent and thread-safe."""
+        with self._not_empty:
+            self._stop_requested = True
+            proc = self._inflight_proc
+            self._not_empty.notify_all()
+        if proc is not None:
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+    @property
+    def stop_requested(self) -> bool:
+        with self._not_empty:
+            return self._stop_requested
+
+    def register_inflight(self, proc: Any) -> None:
+        """Expose a killable subprocess handle to :meth:`request_stop`."""
+        kill_now = False
+        with self._not_empty:
+            self._inflight_proc = proc
+            kill_now = self._stop_requested
+        if kill_now and proc is not None:
+            # A stop raced ahead of registration — honour it.
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+    def clear_inflight(self) -> None:
+        with self._not_empty:
+            self._inflight_proc = None
+
+    def note_progress(self) -> None:
+        """Bump the liveness counter (one completed consumer step)."""
+        with self._not_empty:
+            self._progress += 1
+
+    def set_working(self, working: bool) -> None:
+        """Mark whether the consumer is mid-batch (prep / study /
+        re-review) as opposed to idle on the queue."""
+        with self._not_empty:
+            self._working = working
+
+    def drain_state(self) -> tuple[int, bool, bool]:
+        """Snapshot for the drain loop: (progress, queue_empty, working)."""
+        with self._not_empty:
+            return self._progress, not self._queue, self._working
 
     def pending_concepts(self) -> frozenset:
         with self._not_empty:
@@ -7456,6 +7527,106 @@ def _extract_concept_from_question(question: str) -> str | None:
     return m.group(1) if m else None
 
 
+# Drain policy for the study consumer (all seconds):
+# hard ceiling on the wait — unchanged from the historical join(600);
+_STUDY_DRAIN_TIMEOUT_S = 600.0
+# how often the drain loop re-samples the consumer's state;
+_STUDY_DRAIN_POLL_S = 2.0
+# how long an IDLE consumer (empty queue, not mid-batch, no progress)
+# is tolerated before the drain requests a stop — an idle consumer has
+# nothing left that could ever complete, so waiting longer only burns
+# wall time;
+_STUDY_DRAIN_NO_PROGRESS_S = 60.0
+# grace after a stop request before the thread is abandoned (a stop
+# unwinds in milliseconds unless the consumer is inside a non-
+# interruptible LLM call).
+_STUDY_DRAIN_STOP_GRACE_S = 30.0
+
+
+def _drain_study_consumer(
+    thread: _threading.Thread,
+    study_queue: StudyQueue | None,
+    *,
+    budget_exhausted: bool,
+    timeout_s: float = _STUDY_DRAIN_TIMEOUT_S,
+    no_progress_grace_s: float = _STUDY_DRAIN_NO_PROGRESS_S,
+    stop_grace_s: float = _STUDY_DRAIN_STOP_GRACE_S,
+    poll_s: float = _STUDY_DRAIN_POLL_S,
+) -> None:
+    """Wait for the study consumer to drain — but never wait on nothing.
+
+    The historical drain was a blind ``join(timeout=600)``: when the
+    consumer was stuck inside a doomed step (observed: a study-prep
+    subprocess whose LLM seeding call timed out at 600s and retried),
+    the run idled for the full 10 minutes even though no result could
+    ever arrive. This drain is state-aware:
+
+    * run budget already exhausted → any in-flight study work is
+      unusable (the consumer's own budget gate would discard it), so a
+      cooperative stop is requested immediately and only a short grace
+      is waited;
+    * consumer idle (empty queue, not mid-batch) with no progress for
+      ``no_progress_grace_s`` → nothing can ever complete; request a
+      stop rather than sleeping to the cap;
+    * consumer actively mid-batch with budget remaining → allow it up
+      to the full ``timeout_s`` cap (post-loop study results feed
+      re-reviews, they are worth finishing).
+
+    Loud-degradation semantics are kept: abandoning a still-alive
+    thread emits an operator-visible warning, and a forced stop is
+    announced once.
+    """
+    stop_sent = False
+    drain_start = time.monotonic()
+    deadline = drain_start + timeout_s
+
+    def _request_stop(reason: str) -> float:
+        nonlocal stop_sent
+        stop_sent = True
+        logger.warning(
+            "study-consumer: %s — requesting stop (study results for "
+            "this run may be incomplete)",
+            reason,
+        )
+        if study_queue is not None:
+            study_queue.request_stop()
+        return min(deadline, time.monotonic() + stop_grace_s)
+
+    if budget_exhausted:
+        deadline = _request_stop("run budget exhausted before drain")
+
+    last_progress, _, _ = (
+        study_queue.drain_state() if study_queue is not None
+        else (0, True, False)
+    )
+    last_change = time.monotonic()
+
+    while thread.is_alive():
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        thread.join(timeout=min(poll_s, deadline - now))
+        if not thread.is_alive() or study_queue is None or stop_sent:
+            continue
+        progress, queue_empty, working = study_queue.drain_state()
+        if progress != last_progress or not queue_empty or working:
+            last_progress = progress
+            last_change = time.monotonic()
+            continue
+        if time.monotonic() - last_change >= no_progress_grace_s:
+            deadline = _request_stop(
+                f"no progress for {no_progress_grace_s:.0f}s with an "
+                f"empty queue",
+            )
+
+    if thread.is_alive():
+        logger.warning(
+            "study-consumer: did not drain within %.0fs — abandoning "
+            "(daemon thread; study results for this run are incomplete)",
+            time.monotonic() - drain_start,
+        )
+
+
 def _study_consumer(
     study_queue: StudyQueue,
     config: OrchestratorConfig,
@@ -7514,6 +7685,79 @@ def _study_consumer(
         )
     finally:
         study_queue.signal_consumer_done()
+
+
+class _StudyStopRequested(Exception):
+    """Raised inside the study consumer when the drain path requested a
+    cooperative stop mid-step (e.g. during the prep subprocess)."""
+
+
+# How often the interruptible prep runner re-checks the stop flag while
+# the subprocess runs.
+_STUDY_PREP_POLL_S = 5.0
+
+
+def _run_study_prep(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    timeout: float,
+    study_queue: StudyQueue | None = None,
+) -> subprocess.CompletedProcess:
+    """Run the study-prep subprocess, interruptible by the drain path.
+
+    ``subprocess.run`` held the consumer thread for the full prep
+    timeout (up to ~30 min on a large target) with no way for the
+    orchestrator's drain to unblock it — the observed failure mode was
+    ~10 idle minutes of ``join(600)`` while a doomed prep LLM call
+    retried inside the subprocess. This runner registers the child with
+    the study queue so :meth:`StudyQueue.request_stop` can kill it, and
+    polls the stop flag between short waits.
+
+    Raises :class:`subprocess.TimeoutExpired` on timeout (same contract
+    as ``subprocess.run``) and :class:`_StudyStopRequested` when the
+    drain path asked the consumer to exit.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if study_queue is not None:
+        study_queue.register_inflight(proc)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            if study_queue is not None and study_queue.stop_requested:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                    proc.wait(timeout=10)
+                raise _StudyStopRequested
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                    proc.wait(timeout=10)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            try:
+                stdout, stderr = proc.communicate(
+                    timeout=min(_STUDY_PREP_POLL_S, remaining),
+                )
+            except subprocess.TimeoutExpired:
+                continue
+            if study_queue is not None and study_queue.stop_requested:
+                # request_stop() killed the registered child, so
+                # communicate() returned "normally" — this exit is a
+                # shutdown, not a prep result.
+                raise _StudyStopRequested
+            return subprocess.CompletedProcess(
+                cmd, proc.returncode, stdout=stdout, stderr=stderr,
+            )
+    finally:
+        if study_queue is not None:
+            study_queue.clear_inflight()
 
 
 # Mechanical share of the study-prep budget (struct/pair extraction,
@@ -7623,6 +7867,10 @@ def _study_consumer_loop(
     seen_concepts = st.get("seen_concepts", set())
 
     while not study_queue.is_done():
+        # Idle at the top of every iteration: the drain path uses the
+        # working flag to tell "mid-batch, let it finish" apart from
+        # "idle on the queue, nothing will ever happen".
+        study_queue.set_working(False)
         # The consumer runs its own LLM calls (study-prep, Phase 2/3
         # batches, re-reviews) — without this gate it kept working
         # long past max_seconds/max_cost (observed 27min against a
@@ -7636,6 +7884,7 @@ def _study_consumer_loop(
         batch = study_queue.dequeue_batch(max_items=15, timeout=30.0)
         if not batch:
             continue
+        study_queue.set_working(True)
 
         dm = shared.domain_model
         fresh = _dedup_batch(batch, seen_concepts, dm)
@@ -7696,13 +7945,11 @@ def _study_consumer_loop(
             # time while the domain model stayed silently empty.
             prep_timeout = _study_prep_timeout_s(checklist)
             try:
-                prep_result = subprocess.run(
+                prep_result = _run_study_prep(
                     prep_cmd,
                     env=study_env,
-                    capture_output=True,
-                    text=True,
                     timeout=prep_timeout,
-                    check=False,
+                    study_queue=study_queue,
                 )
                 if prep_result.returncode != 0:
                     _stderr_tail = (prep_result.stderr or "").strip()[:200]
@@ -7734,6 +7981,14 @@ def _study_consumer_loop(
                     f"({_detail})",
                 )
                 break
+            except _StudyStopRequested:
+                # Shutdown, not degradation: the drain path asked the
+                # consumer to exit and killed the prep subprocess.
+                logger.info(
+                    "study-consumer: stop requested during study-prep "
+                    "— exiting",
+                )
+                break
             except Exception:
                 logger.debug(
                     "study-consumer: prep error", exc_info=True,
@@ -7748,6 +8003,7 @@ def _study_consumer_loop(
                 )
                 break
             study_list_built = True
+            study_queue.note_progress()
 
             # Build ConceptIndex from study-prep type data
             if concept_index_ref is not None:
@@ -7756,6 +8012,12 @@ def _study_consumer_loop(
                 )
 
         # Study-run: in-process, scoped to this batch's reading-list.
+        if study_queue.stop_requested:
+            logger.info(
+                "study-consumer: stop requested — exiting before "
+                "study-run",
+            )
+            break
         n_before = len(dm.get("concepts", [])) if dm else 0
         try:
             from core.concepts.study import run_study
@@ -7803,6 +8065,7 @@ def _study_consumer_loop(
                 "study-consumer: study-run failed", exc_info=True,
             )
             continue
+        study_queue.note_progress()
 
         # Reload domain model
         try:
@@ -7891,6 +8154,13 @@ def _study_consumer_loop(
         rest = sorted(already_reviewed - set(suspicious))
         to_review = (suspicious + rest)[:budget]
 
+        if study_queue.stop_requested:
+            logger.info(
+                "study-consumer: stop requested — exiting before "
+                "re-review",
+            )
+            break
+
         reading_list_fns = set(to_review)
         result = _re_review_study_enriched(
             result,
@@ -7912,6 +8182,7 @@ def _study_consumer_loop(
             throttle=throttle,
         )
         re_review_count += len(to_review)
+        study_queue.note_progress()
 
         # Resolve batch items in reading-list
         try:

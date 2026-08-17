@@ -123,7 +123,7 @@ Output: stage-c.json  {"stage":"C", "updates":{"FIND-XXXX": {sanity_check:{...},
 Output: stage-d.json  {"stage":"D", "updates":{"FIND-XXXX": {ruling:{...}, cvss_vector:str, stage_d_summary:{...}}, ...}}
   ruling: {status:"confirmed"|"ruled_out"|"exploitable", disqualifier:str|null, reason:str|null}
   cvss_vector: "CVSS:3.1/AV:.../AC:.../PR:.../UI:.../S:.../C:.../I:.../A:..."
-  stage_d_summary: {status, disqualifiers_checked:[], disqualifiers_failed:[], evidence:str}''',
+  stage_d_summary: {ruling:"confirmed"|"ruled_out"|"exploitable", disqualifiers_checked:[], disqualifiers_failed:[], evidence:str}''',
 
     "F": '''\
 Output: stage-f.json  {"stage":"F", "updates":{"FIND-XXXX": {"stage_f_summary":{...}}, ...}}
@@ -540,22 +540,36 @@ def prepare_A(workdir, target=None):
         executables = _discover_executables(target)
         build_exes = _discover_executables(str(build_dir)) if build_dir.exists() else {}
         if executables or build_exes:
-            print("Source → binary mapping:")
+            # Summarised: on large targets the per-file dump ran to
+            # ~95KB of stdout ("<src>: no binary" x thousands). The
+            # full map goes to source-binary-map.json; stdout carries
+            # the counts, the mapped entries (capped), and the path.
+            mapping = {}
             for f in checklist.get("files", []):
                 src = f["path"]
                 stem = Path(src).stem
                 prefix = stem.split("_")[0] if "_" in stem else ""
                 poc = build_exes.get(stem) or (build_exes.get(prefix) if prefix else "")
                 orig = executables.get(stem) or (executables.get(prefix) if prefix else "")
-                parts = []
+                entry = {}
                 if poc:
-                    parts.append(f"poc={poc}")
+                    entry["poc"] = poc
                 if orig:
-                    parts.append(f"original={orig}")
-                if parts:
-                    print(f"  {src}: {', '.join(parts)}")
-                else:
-                    print(f"  {src}: no binary")
+                    entry["original"] = orig
+                mapping[src] = entry
+            map_path = Path(workdir) / "source-binary-map.json"
+            save_json(map_path, mapping)
+            mapped = {s_: e for s_, e in mapping.items() if e}
+            print(f"Source → binary mapping: {len(mapped)} of "
+                  f"{len(mapping)} source files have a binary "
+                  f"(full map: {map_path})")
+            _MAP_PRINT_CAP = 20
+            for src, entry in list(mapped.items())[:_MAP_PRINT_CAP]:
+                parts = [f"{k}={v}" for k, v in entry.items()]
+                print(f"  {src}: {', '.join(parts)}")
+            if len(mapped) > _MAP_PRINT_CAP:
+                print(f"  ... {len(mapped) - _MAP_PRINT_CAP} more mapped "
+                      f"files in {map_path}")
     _print_schema_hint("A")
 
 

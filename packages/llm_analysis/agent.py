@@ -12,43 +12,45 @@ This agent provides TRUE agentic behaviour with NO templates:
 """
 
 import argparse
+import contextlib
 import json
 import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Also run as standalone subprocess: python3 packages/llm_analysis/agent.py
 sys.path.insert(0, str(Path(__file__).parents[2]))  # repo root
 
-from core.json import load_json, save_json
 from core.config import RaptorConfig
-from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
-from core.llm.task_types import TaskType
-from core.logging import get_logger
-from core.progress import HackerProgress
-from core.run.output import unique_run_suffix
-from core.sarif.parser import parse_sarif_findings, deduplicate_findings
 from core.inventory.lookup import lookup_function as _lookup_function
+from core.json import load_json, save_json
 from core.llm.client import LLMClient, _is_auth_error
 from core.llm.config import LLMConfig
 from core.llm.detection import detect_llm_availability
 from core.llm.providers import ClaudeCodeProvider
+from core.llm.task_types import TaskType
+from core.logging import get_logger
+from core.progress import HackerProgress
+from core.run.output import unique_run_suffix
+from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
+from core.sarif.parser import deduplicate_findings, parse_sarif_findings
+from packages.llm_analysis.cc_dispatch import _safe_id
 
 logger = get_logger()
 
 
-def _file_matches_globs(file_path: str, globs: List[str]) -> bool:
+def _file_matches_globs(file_path: str, globs: list[str]) -> bool:
     """True if ``file_path`` matches any glob in ``globs`` (fnmatch OR)."""
     import fnmatch as _fnmatch
     return any(_fnmatch.fnmatch(file_path or "", g) for g in globs)
 
 
 def apply_prefer_globs(
-    findings: List[Dict[str, Any]],
-    prefer_globs: Optional[List[str]],
-) -> List[Dict[str, Any]]:
+    findings: list[dict[str, Any]],
+    prefer_globs: list[str] | None,
+) -> list[dict[str, Any]]:
     """Re-bucket findings: matches sort to the front, others keep their
     relative order. Stable within each bucket so existing ordering
     (dataflow-prioritised, then SARIF-order) survives — operator can
@@ -61,8 +63,8 @@ def apply_prefer_globs(
     """
     if not prefer_globs:
         return findings
-    preferred: List[Dict[str, Any]] = []
-    others: List[Dict[str, Any]] = []
+    preferred: list[dict[str, Any]] = []
+    others: list[dict[str, Any]] = []
     for f in findings:
         if _file_matches_globs(f.get("file_path", ""), prefer_globs):
             preferred.append(f)
@@ -88,8 +90,8 @@ def _dir_to_glob(d: str) -> str:
 
 
 def resolve_prefer_globs(
-    operator_globs: Optional[List[str]],
-    repo_path: Optional[Path],
+    operator_globs: list[str] | None,
+    repo_path: Path | None,
 ) -> tuple:
     """Resolve the effective attack-surface prefer-globs for an
     /agentic run. Operator-supplied globs win unconditionally;
@@ -126,9 +128,9 @@ def resolve_prefer_globs(
 
 
 def apply_exclude_dir_globs(
-    findings: List[Dict[str, Any]],
-    exclude_globs: Optional[List[str]],
-) -> List[Dict[str, Any]]:
+    findings: list[dict[str, Any]],
+    exclude_globs: list[str] | None,
+) -> list[dict[str, Any]]:
     """Drop findings whose ``file_path`` matches any glob in
     ``exclude_globs``. Order-preserving. Operator escape hatch for
     cases the structural filters (binary-oracle, dataflow priority)
@@ -150,7 +152,7 @@ def apply_exclude_dir_globs(
 
 
 def _enrich_finding_with_ast_view(
-    finding: Dict[str, Any], repo_path: Path,
+    finding: dict[str, Any], repo_path: Path,
 ) -> None:
     """Attach a compact per-function AST view to ``finding["ast_view"]``.
 
@@ -207,7 +209,7 @@ def _enrich_finding_with_ast_view(
         fv = _view(fp, function_name, at_line=fline)
         if fv is not None:
             finding["ast_view"] = fv.to_dict()
-    except Exception:                                       # noqa: BLE001
+    except Exception:
         logger.debug(
             "ast_view enrichment failed for %s:%s %s",
             fpath, fline, function_name,
@@ -215,7 +217,7 @@ def _enrich_finding_with_ast_view(
         )
 
 
-def get_vuln_type(rule_id: str) -> Optional[str]:
+def get_vuln_type(rule_id: str) -> str | None:
     """Map SARIF rule_id to vulnerability type for mitigation checks."""
     try:
         from packages.exploit_feasibility import get_vuln_type_for_rule
@@ -227,7 +229,7 @@ def get_vuln_type(rule_id: str) -> Optional[str]:
 class VulnerabilityContext:
     """Represents a vulnerability with full context for autonomous analysis."""
 
-    def __init__(self, finding: Dict[str, Any], repo_path: Path):
+    def __init__(self, finding: dict[str, Any], repo_path: Path):
         self.finding = finding
         self.repo_path = repo_path
         self.finding_id = finding.get("finding_id")
@@ -243,30 +245,30 @@ class VulnerabilityContext:
 
         # Dataflow analysis fields
         self.has_dataflow: bool = finding.get("has_dataflow", False)
-        self.dataflow_path: Optional[Dict[str, Any]] = finding.get("dataflow_path")
-        self.dataflow_source: Optional[Dict[str, Any]] = None
-        self.dataflow_sink: Optional[Dict[str, Any]] = None
-        self.dataflow_steps: List[Dict[str, Any]] = []
-        self.sanitizers_found: List[str] = []
+        self.dataflow_path: dict[str, Any] | None = finding.get("dataflow_path")
+        self.dataflow_source: dict[str, Any] | None = None
+        self.dataflow_sink: dict[str, Any] | None = None
+        self.dataflow_steps: list[dict[str, Any]] = []
+        self.sanitizers_found: list[str] = []
 
         # Function metadata from inventory (if available)
-        self.metadata: Optional[Dict[str, Any]] = finding.get("metadata")
-        self.function_name: Optional[str] = None
+        self.metadata: dict[str, Any] | None = finding.get("metadata")
+        self.function_name: str | None = None
 
         # Feasibility data from validation pipeline (if available)
         from packages.exploitability_validation.models import Feasibility
-        self.feasibility: Dict[str, Any] = (
+        self.feasibility: dict[str, Any] = (
             Feasibility.from_dict(finding.get("feasibility"))
             .to_dict()
         )
-        self.attack_path_ref: Optional[str] = self.feasibility.get("attack_path_ref")
+        self.attack_path_ref: str | None = self.feasibility.get("attack_path_ref")
 
         # Will be populated by LLM analysis
-        self.full_code: Optional[str] = None
-        self.surrounding_context: Optional[str] = None
+        self.full_code: str | None = None
+        self.surrounding_context: str | None = None
         self.exploitable: bool = False
         self.exploitability_score: float = 0.0
-        self.exploit_code: Optional[str] = None
+        self.exploit_code: str | None = None
         # Compilation-verification result for ``exploit_code``. ``None``
         # means verification was not attempted (no LLM exploit emitted,
         # or compiler unavailable / skipped); ``True`` / ``False``
@@ -277,8 +279,8 @@ class VulnerabilityContext:
         # refinement loop) can see why the LLM's exploit didn't
         # build. Empty list means "no errors observed" or
         # "compilation not attempted".
-        self.exploit_compiled: Optional[bool] = None
-        self.exploit_compile_errors: List[str] = []
+        self.exploit_compiled: bool | None = None
+        self.exploit_compile_errors: list[str] = []
         # Intent-match verdict on ``exploit_code`` — whether the
         # LLM-emitted exploit targets THIS finding or hit a
         # different bug / didn't engage at all. Produced by
@@ -287,11 +289,11 @@ class VulnerabilityContext:
         # ``to_dict()`` can serialise it cleanly. ``None`` means the
         # judge was not invoked (no exploit produced, or
         # ``--no-judge-intent`` opt-out).
-        self.intent_match: Optional[Dict[str, Any]] = None
-        self.patch_code: Optional[str] = None
-        self.analysis: Optional[Dict[str, Any]] = None
+        self.intent_match: dict[str, Any] | None = None
+        self.patch_code: str | None = None
+        self.analysis: dict[str, Any] | None = None
 
-    def get_full_file_path(self) -> Optional[Path]:
+    def get_full_file_path(self) -> Path | None:
         """Get absolute path to vulnerable file."""
         if not self.file_path:
             return None
@@ -350,7 +352,7 @@ class VulnerabilityContext:
                 self.surrounding_context = self.full_code
 
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("Error reading file %s: %s", file_path, e)
             return False
 
@@ -402,7 +404,7 @@ class VulnerabilityContext:
 
             return "\n".join(context)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return f"[Error reading code: {e}]"
 
     def _is_sanitizer(self, label: str) -> bool:
@@ -482,11 +484,11 @@ class VulnerabilityContext:
             )
             return True
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("Failed to extract dataflow: %s", e)
             return False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialisation."""
         result = {
             "finding_id": self.finding_id,
@@ -558,14 +560,15 @@ class VulnerabilityContext:
         return result
 
 
-def convert_validated_to_agent_format(data: dict) -> List[Dict[str, Any]]:
+def convert_validated_to_agent_format(data: dict) -> list[dict[str, Any]]:
     """Convert validation pipeline findings.json to VulnerabilityContext format.
 
     Skips ruled_out, confirmed_blocked, and unlikely-verdict findings.
     Normalizes status fields in-place before filtering (idempotent).
     """
     from packages.exploitability_validation.models import (
-        Finding, EXPLOITABLE_FINAL_STATUSES,
+        EXPLOITABLE_FINAL_STATUSES,
+        Finding,
     )
 
     try:
@@ -635,7 +638,7 @@ def convert_validated_to_agent_format(data: dict) -> List[Dict[str, Any]]:
 class AutonomousSecurityAgentV2:
     def __init__(
         self, repo_path: Path, out_dir: Path,
-        llm_config: Optional[LLMConfig] = None,
+        llm_config: LLMConfig | None = None,
         prep_only: bool = False,
                  synthesise_checkers: bool = True,
                  refine_checkers: bool = True,
@@ -776,10 +779,12 @@ class AutonomousSecurityAgentV2:
     def _prompt_budget(self) -> int:
         try:
             from core.llm.prompt_budget import (
-                context_budget_for_model, estimate_tokens,
+                context_budget_for_model,
+                estimate_tokens,
             )
             from packages.llm_analysis.prompts import (
-                ANALYSIS_SYSTEM_PROMPT, ANALYSIS_TASK_INSTRUCTIONS,
+                ANALYSIS_SYSTEM_PROMPT,
+                ANALYSIS_TASK_INSTRUCTIONS,
             )
             if self.llm_config and self.llm_config.primary_model:
                 model = self.llm_config.primary_model.model_name
@@ -793,10 +798,10 @@ class AutonomousSecurityAgentV2:
             return context_budget_for_model(
                 model, system_prompt_tokens=sys_tokens,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return 0
 
-    def _load_attack_path(self, ref: str) -> Optional[Dict[str, Any]]:
+    def _load_attack_path(self, ref: str) -> dict[str, Any] | None:
         """Load attack path from a ref like 'attack-paths.json#PATH-001'.
 
         `ref` is read from finding JSON which may originate from
@@ -846,7 +851,7 @@ class AutonomousSecurityAgentV2:
             logger.debug("Failed to load attack path from '%s': %s", ref, e)
             return None
 
-    def validate_dataflow(self, vuln: VulnerabilityContext) -> Dict[str, Any]:
+    def validate_dataflow(self, vuln: VulnerabilityContext) -> dict[str, Any]:
         """
         Deep validation of dataflow path using LLM to assess true exploitability.
 
@@ -868,8 +873,8 @@ class AutonomousSecurityAgentV2:
         logger.info("=" * 70)
 
         from packages.llm_analysis.prompts import (
-            build_dataflow_validation_bundle,
             DATAFLOW_VALIDATION_SCHEMA,
+            build_dataflow_validation_bundle,
         )
 
         bundle = build_dataflow_validation_bundle(
@@ -899,7 +904,8 @@ class AutonomousSecurityAgentV2:
                 return {}
 
             from core.llm.response_validation import (
-                attempt_quality_retry, validate_structured_response,
+                attempt_quality_retry,
+                validate_structured_response,
             )
             validated = validate_structured_response(raw_validation, validation_schema)
             # Single-retry uplift: if the LLM's first response is missing
@@ -961,7 +967,7 @@ class AutonomousSecurityAgentV2:
                 logger.info("    %s", validation.get('attack_payload_concept')[:200])
 
             # Save validation details
-            val_name = f"{vuln.finding_id}_validation.json"
+            val_name = f"{_safe_id(vuln.finding_id)}_validation.json"
             validation_file = (
                 self.out_dir / "validation" / val_name
             )
@@ -969,7 +975,7 @@ class AutonomousSecurityAgentV2:
 
             return validation
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("✗ Dataflow validation failed: %s", e)
             return {}
 
@@ -1053,7 +1059,7 @@ class AutonomousSecurityAgentV2:
             tm_block = threat_model_untrusted_block(Path(vuln.repo_path))
             if tm_block:
                 extra_blocks.append(tm_block)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("threat_model_untrusted_block failed: %s", exc)
 
         bundle = build_analysis_prompt_bundle(
@@ -1102,7 +1108,8 @@ class AutonomousSecurityAgentV2:
                 return False
 
             from core.llm.response_validation import (
-                attempt_quality_retry, validate_structured_response,
+                attempt_quality_retry,
+                validate_structured_response,
             )
             validated = validate_structured_response(raw_analysis, analysis_schema)
             # See validate_dataflow above for the retry rationale.
@@ -1277,7 +1284,7 @@ class AutonomousSecurityAgentV2:
                         analysis['dataflow_validation'] = validation
 
             # Save detailed analysis
-            analysis_file = self.out_dir / "analysis" / f"{vuln.finding_id}.json"
+            analysis_file = self.out_dir / "analysis" / f"{_safe_id(vuln.finding_id)}.json"
             save_json(analysis_file, {
                 "finding_id": vuln.finding_id,
                 "rule_id": vuln.rule_id,
@@ -1287,7 +1294,7 @@ class AutonomousSecurityAgentV2:
 
             return True
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("✗ LLM analysis failed: %s", e)
             if _is_auth_error(e):
                 print(
@@ -1342,7 +1349,7 @@ class AutonomousSecurityAgentV2:
                     discover_codeql_databases,
                 )
                 self._codeql_dbs = discover_codeql_databases(self.out_dir) or {}
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("Tier 1 gate: DB discovery failed: %s", e)
                 self._codeql_dbs = {}
         if not self._codeql_dbs:
@@ -1353,7 +1360,7 @@ class AutonomousSecurityAgentV2:
             )
             return tier1_check_finding(vuln.finding, self._codeql_dbs,
                                        target_path=self.repo_path)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # The gate must never break the pipeline. Log and proceed.
             logger.debug("Tier 1 gate: check raised: %s", e)
             return "no_check"
@@ -1408,7 +1415,7 @@ class AutonomousSecurityAgentV2:
 
         try:
             smt = validate_path(conditions, profile=profile)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("SMT pre-flight: check raised: %s", e)
             return "no_check"
 
@@ -1520,7 +1527,7 @@ class AutonomousSecurityAgentV2:
                 vuln.exploit_code = exploit_code
 
                 # Save exploit
-                exploit_name = f"{vuln.finding_id}_exploit.cpp"
+                exploit_name = f"{_safe_id(vuln.finding_id)}_exploit.cpp"
                 exploit_file = (
                     self.out_dir / "exploits" / exploit_name
                 )
@@ -1570,7 +1577,7 @@ class AutonomousSecurityAgentV2:
                 logger.warning("   ✗ LLM response did not contain valid code")
                 return False
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("   ✗ Exploit generation failed: %s", e)
             if _is_auth_error(e):
                 print("⚠️  LLM authentication failed — check your API key.")
@@ -1652,6 +1659,7 @@ class AutonomousSecurityAgentV2:
             function_name = None
 
         from dataclasses import asdict
+
         from packages.llm_analysis.intent_match import intent_match
 
         verdict = intent_match(
@@ -1705,7 +1713,7 @@ class AutonomousSecurityAgentV2:
                 active = _resolve_active_project()
                 if active:
                     project_root = Path(active[0])
-            except Exception:
+            except Exception:  # noqa: BLE001
                 project_root = None
             outcomes = collect_outcomes(self.out_dir, project_root=project_root)
         except Exception as e:
@@ -1846,7 +1854,7 @@ class AutonomousSecurityAgentV2:
             patch_content = response.content
 
             # Save patch
-            patch_file = self.out_dir / "patches" / f"{vuln.finding_id}_patch.md"
+            patch_file = self.out_dir / "patches" / f"{_safe_id(vuln.finding_id)}_patch.md"
             patch_file.parent.mkdir(exist_ok=True, parents=True)
 
             from core.reporting.formatting import display_rule_id
@@ -1876,7 +1884,7 @@ class AutonomousSecurityAgentV2:
             logger.info("   ✓ Saved to: %s", patch_file.name)
             return True
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("   ✗ Patch generation failed: %s", e)
             if _is_auth_error(e):
                 print("⚠️  LLM authentication failed — check your API key.")
@@ -1898,7 +1906,7 @@ class AutonomousSecurityAgentV2:
         re.MULTILINE | re.DOTALL,
     )
 
-    def _extract_code(self, content: str) -> Optional[str]:
+    def _extract_code(self, content: str) -> str | None:
         """Extract code from LLM response (handles markdown code blocks).
 
         Preference order: ```cpp > ```c > ```python > untagged
@@ -1912,7 +1920,7 @@ class AutonomousSecurityAgentV2:
         # Find every fenced block and choose by language tag.
         blocks = list(self._CODE_FENCE_RE.finditer(content))
         if blocks:
-            by_lang: Dict[str, str] = {}
+            by_lang: dict[str, str] = {}
             for m in blocks:
                 lang = (m.group("lang") or "").lower()
                 # First occurrence per language wins (preserve order).
@@ -1927,7 +1935,7 @@ class AutonomousSecurityAgentV2:
         # No code block — return content as-is.
         return content.strip()
 
-    def _load_validated_findings(self, findings_path: str) -> List[Dict[str, Any]]:
+    def _load_validated_findings(self, findings_path: str) -> list[dict[str, Any]]:
         """Load pre-validated findings from the validation pipeline's findings.json.
 
         Skips ruled_out findings and unlikely verdict findings.
@@ -1949,7 +1957,7 @@ class AutonomousSecurityAgentV2:
 
     def _emit_journal_entry(
         self, vuln: "VulnerabilityContext",
-        checklist: Optional[Dict[str, Any]],
+        checklist: dict[str, Any] | None,
     ) -> bool:
         """Emit a ``ReviewJournalEntry`` for ``vuln`` after analysis.
 
@@ -1959,11 +1967,13 @@ class AutonomousSecurityAgentV2:
         Returns True if an entry was written, False otherwise.
         """
         try:
+            from core.annotations import compute_function_hash
             from core.coverage.journal import (
-                ReviewJournalEntry, append_entry, now_iso,
+                ReviewJournalEntry,
+                append_entry,
+                now_iso,
             )
             from core.inventory.lookup import lookup_function
-            from core.annotations import compute_function_hash
 
             file_path = getattr(vuln, "file_path", None)
             start_line = getattr(vuln, "start_line", None)
@@ -2021,7 +2031,7 @@ class AutonomousSecurityAgentV2:
             return False
 
     @staticmethod
-    def _derive_verdict(analysis: Optional[Dict[str, Any]]) -> str:
+    def _derive_verdict(analysis: dict[str, Any] | None) -> str:
         """Map the analysis dict's verdict bools to the journal
         verdict enum."""
         if not analysis:
@@ -2062,7 +2072,7 @@ class AutonomousSecurityAgentV2:
         return "\n\n".join(parts)
 
     def _resolve_prefer_globs(
-        self, operator_globs: Optional[List[str]],
+        self, operator_globs: list[str] | None,
     ) -> tuple:
         """Instance-method wrapper around module-level
         ``resolve_prefer_globs`` — passes the agent's
@@ -2071,14 +2081,14 @@ class AutonomousSecurityAgentV2:
         return resolve_prefer_globs(operator_globs, self.repo_path)
 
     def process_findings(
-        self, sarif_paths: List[str] = None,
-        findings_path: str = None,
+        self, sarif_paths: list[str] | None = None,
+        findings_path: str | None = None,
         max_findings: int = 10,
-        checklist: Dict[str, Any] = None,
+        checklist: dict[str, Any] | None = None,
         emit_journal: bool = True,
-        prefer_globs: Optional[List[str]] = None,
-        exclude_globs: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        prefer_globs: list[str] | None = None,
+        exclude_globs: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Process findings with full LLM-powered autonomous workflow.
 
         ``emit_journal``: when False, skip the per-finding journal
@@ -2415,9 +2425,8 @@ class AutonomousSecurityAgentV2:
                 if fixture_skipped_this:
                     analyzed += 1
                     fixture_skipped_llm_calls += 1
-                    if emit_journal:
-                        if self._emit_journal_entry(vuln, checklist):
-                            journal_entries_emitted += 1
+                    if emit_journal and self._emit_journal_entry(vuln, checklist):
+                        journal_entries_emitted += 1
                     continue  # skip LLM analyze + exploit + patch
 
                 # 0b. Reachability chokepoint — SOUND, corpus-earned
@@ -2469,16 +2478,15 @@ class AutonomousSecurityAgentV2:
                             # operator can ``jq`` / count instead of
                             # walking each per-finding annotation.
                             # Best-effort; never blocks.
-                            try:
-                                from core.analysis.reach_chokepoint \
-                                    import record_suppression
+                            with contextlib.suppress(Exception):
+                                from core.analysis.reach_chokepoint import (
+                                    record_suppression,
+                                )
                                 record_suppression(
                                     self.out_dir,
                                     finding=finding,
                                     verdict=verdict, reason=reason,
                                 )
-                            except Exception:  # noqa: BLE001
-                                pass
                     except Exception as e:  # noqa: BLE001
                         logger.debug(
                             "reachability pre-flight failed on %s: %s",
@@ -2489,9 +2497,8 @@ class AutonomousSecurityAgentV2:
                 if reach_skipped_this:
                     analyzed += 1
                     reachability_skipped_llm_calls += 1
-                    if emit_journal:
-                        if self._emit_journal_entry(vuln, checklist):
-                            journal_entries_emitted += 1
+                    if emit_journal and self._emit_journal_entry(vuln, checklist):
+                        journal_entries_emitted += 1
                     continue  # skip LLM analyze + exploit + patch
 
                 # 0c. SAGE prior-verdict suppression — if a prior run
@@ -2501,8 +2508,8 @@ class AutonomousSecurityAgentV2:
                 sage_fp_skipped_this = False
                 try:
                     from core.sage.hooks import (
-                        recall_prior_finding_verdict,
                         compute_finding_source_hash,
+                        recall_prior_finding_verdict,
                     )
                     _rel = (finding.get("file_path")
                             or finding.get("file") or "")
@@ -2534,9 +2541,10 @@ class AutonomousSecurityAgentV2:
                                     "sage_verdict": prior["verdict"],
                                 }
                                 sage_fp_skipped_this = True
-                                try:
-                                    from core.analysis.reach_chokepoint \
-                                        import record_suppression
+                                with contextlib.suppress(Exception):
+                                    from core.analysis.reach_chokepoint import (
+                                        record_suppression,
+                                    )
                                     record_suppression(
                                         self.out_dir,
                                         finding=finding,
@@ -2547,9 +2555,7 @@ class AutonomousSecurityAgentV2:
                                             "unchanged"
                                         ),
                                     )
-                                except Exception:
-                                    pass
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.debug(
                         "SAGE FP pre-flight failed on %s: %s",
                         finding.get("finding_id") or finding.get("id"),
@@ -2559,17 +2565,15 @@ class AutonomousSecurityAgentV2:
                 if sage_fp_skipped_this:
                     analyzed += 1
                     sage_fp_skipped_llm_calls += 1
-                    if emit_journal:
-                        if self._emit_journal_entry(vuln, checklist):
-                            journal_entries_emitted += 1
+                    if emit_journal and self._emit_journal_entry(vuln, checklist):
+                        journal_entries_emitted += 1
                     continue  # skip LLM analyze + exploit + patch
 
                 # 1. Autonomous analysis (LLM-powered, or prep-only)
                 if self.analyze_vulnerability(vuln):
                     analyzed += 1
-                    if emit_journal:
-                        if self._emit_journal_entry(vuln, checklist):
-                            journal_entries_emitted += 1
+                    if emit_journal and self._emit_journal_entry(vuln, checklist):
+                        journal_entries_emitted += 1
 
                     # Track dataflow validation
                     has_dv = (
@@ -2629,8 +2633,8 @@ class AutonomousSecurityAgentV2:
                 if vuln.analysis and not sage_fp_skipped_this:
                     try:
                         from core.sage.hooks import (
-                            store_finding_verdict,
                             compute_finding_source_hash,
+                            store_finding_verdict,
                         )
                         _rel = (finding.get("file_path")
                                 or finding.get("file") or "")
@@ -2728,7 +2732,8 @@ class AutonomousSecurityAgentV2:
         if emit_journal:
             try:
                 from core.coverage.record import (
-                    build_from_journal, write_record,
+                    build_from_journal,
+                    write_record,
                 )
                 journal_record = build_from_journal(self.out_dir)
                 if journal_record:
@@ -2793,7 +2798,7 @@ class AutonomousSecurityAgentV2:
         return report
 
 
-def find_validation_artifacts(workdir: Path = None) -> Optional[Path]:
+def find_validation_artifacts(workdir: Path | None = None) -> Path | None:
     """Search for validation artifacts from recent pipeline runs.
 
     Checks:
@@ -3075,7 +3080,8 @@ def main() -> None:
         prep_report_path = out_dir / "autonomous_analysis_report.json"
         if prep_report_path.exists():
             from packages.llm_analysis.orchestrator import (
-                build_llm_config_from_flags, orchestrate,
+                build_llm_config_from_flags,
+                orchestrate,
             )
             llm_config = build_llm_config_from_flags(
                 models=args.model or [],

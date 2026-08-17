@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from packages.fuzzing.harness_generator import (
+    GeneratedHarness,
     HarnessGenerator,
     HarnessSpec,
-    GeneratedHarness,
     _extract_target_signature,
 )
 
@@ -153,37 +153,27 @@ class TestCompileCommandShellSafety(unittest.TestCase):
     injection. Per PR #488 review."""
 
     def _make_header(self, body: str = "int foo(void);\n") -> Path:
-        f = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             suffix=".h", delete=False, prefix="r2-cmdq-",
-        )
-        f.write(body.encode())
-        f.close()
+        ) as f:
+            f.write(body.encode())
         self.addCleanup(lambda p=f.name: Path(p).unlink(missing_ok=True))
         return Path(f.name)
 
-    def test_semicolon_in_target_function_quoted(self):
+    def test_semicolon_in_target_function_rejected(self):
         """A target binary that exposes a function literally named
         `foo;rm -rf /tmp/CANARY` (or any shell-meta-containing symbol)
-        must not result in a compile_command shell can split into
-        multiple commands. Re-tokenisation via shlex.split should
-        produce the entire malicious payload as a SINGLE output-name
-        token."""
-        import shlex as _shlex
+        is now rejected at spec construction by the symbol grammar —
+        the compile_command can never be built from it in the first
+        place."""
         header = self._make_header()
-        spec = HarnessSpec(
-            target_function="foo;rm -rf /tmp/CANARY",
-            header_path=header,
-            include_paths=[],
-            library_name=None,
-        )
-        gen = HarnessGenerator(llm=None)
-        harness = gen.generate(spec)
-        cmd = harness.compile_command
-        tokens = _shlex.split(cmd)
-        o_idx = tokens.index("-o")
-        output_name = tokens[o_idx + 1]
-        self.assertIn("rm -rf /tmp/CANARY", output_name,
-                      msg=f"shell could split this: {cmd!r}")
+        with self.assertRaises(ValueError):
+            HarnessSpec(
+                target_function="foo;rm -rf /tmp/CANARY",
+                header_path=header,
+                include_paths=[],
+                library_name=None,
+            )
 
     def test_backtick_in_library_name_quoted(self):
         """Library names parsed from binary metadata could contain
@@ -244,6 +234,129 @@ class TestCompileCommandShellSafety(unittest.TestCase):
         self.assertIn("-I/usr/include/mylib", cmd)
         self.assertIn("-lmylib", cmd)
         self.assertIn("-o fuzz_parse_message", cmd)
+
+
+class TestTargetSymbolGrammar(unittest.TestCase):
+    """target_function is validated against a symbol grammar at spec
+    construction. Unmangled C++ names must keep working; shell/source
+    metacharacters and control characters are hard-rejected."""
+
+    def _make_header(self) -> Path:
+        with tempfile.NamedTemporaryFile(suffix=".h", delete=False) as f:
+            f.write(b"int foo(void);\n")
+        self.addCleanup(lambda p=f.name: Path(p).unlink(missing_ok=True))
+        return Path(f.name)
+
+    def _spec(self, name: str) -> HarnessSpec:
+        return HarnessSpec(target_function=name, header_path=self._make_header())
+
+    def test_cpp_symbols_accepted(self):
+        for name in (
+            "ns::func",
+            "operator+",
+            "operator()",
+            "~Dtor",
+            "foo<int>",
+            "std::vector<std::pair<int, char>>::push_back",
+            "operator[]",
+            "operator!=",
+            "operator new",
+        ):
+            spec = self._spec(name)
+            self.assertEqual(spec.target_function, name)
+
+    def test_dangerous_symbols_rejected(self):
+        for name in (
+            "foo\nbar",
+            "foo\rbar",
+            "foo\tbar",
+            'foo"bar',
+            "foo'bar",
+            "foo`id`",
+            "foo$HOME",
+            "foo;rm",
+            "foo#bar",
+            "foo/bar",
+            "foo\\bar",
+            "-fplugin=evil",
+            "",
+            "   ",
+            "a" * 257,
+        ):
+            with self.assertRaises(ValueError, msg=f"accepted: {name!r}"):
+                self._spec(name)
+
+    def test_cpp_symbol_yields_c_identifier_filenames(self):
+        """The raw symbol never lands in a filename slot — the derived
+        C identifier does."""
+        spec = self._spec("ns::parse<int>")
+        gen = HarnessGenerator(llm=None)
+        harness = gen.generate(spec)
+        self.assertEqual(harness.suggested_filename, "fuzz_ns_parse_int.c")
+        with tempfile.TemporaryDirectory() as tmp:
+            target_path = gen.write(harness, Path(tmp))
+            self.assertEqual(target_path.parent, Path(tmp))
+            self.assertTrue(target_path.exists())
+            build_script = Path(tmp) / "build_ns_parse_int.sh"
+            self.assertTrue(build_script.exists())
+            # Comment slot stays a single printable line.
+            script = build_script.read_text()
+            comment = [
+                line for line in script.splitlines()
+                if line.startswith("# Generated by RAPTOR for")
+            ]
+            self.assertEqual(len(comment), 1)
+            self.assertIn("ns::parse<int>", comment[0])
+
+    def test_write_reduces_suggested_filename_to_bare_component(self):
+        """suggested_filename can never act as a path in write()."""
+        header = self._make_header()
+        spec = HarnessSpec(target_function="foo", header_path=header)
+        gen = HarnessGenerator(llm=None)
+        harness = gen.generate(spec)
+        harness.suggested_filename = "../../escape/fuzz_evil.c"
+        with tempfile.TemporaryDirectory() as tmp:
+            target_path = gen.write(harness, Path(tmp))
+            self.assertEqual(target_path.parent, Path(tmp))
+            self.assertNotIn("/", target_path.name)
+
+    def test_write_sanitises_comment_interpolation(self):
+        """Non-printable characters in the comment slot become `?`
+        (defence in depth — the grammar already rejects them)."""
+        header = self._make_header()
+        spec = HarnessSpec(target_function="foo", header_path=header)
+        gen = HarnessGenerator(llm=None)
+        harness = gen.generate(spec)
+        harness.target_function = "foo\nrm -rf /tmp/CANARY"
+        with tempfile.TemporaryDirectory() as tmp:
+            gen.write(harness, Path(tmp))
+            # The exact script name is an implementation detail of
+            # _c_identifier; locate the single build script instead.
+            scripts = list(Path(tmp).glob("build_*.sh"))
+            self.assertEqual(len(scripts), 1)
+            script = scripts[0].read_text()
+            self.assertNotIn("\nrm -rf", script)
+            self.assertIn("?rm -rf /tmp/CANARY", script)
+
+
+class TestSignatureExtractionBounded(unittest.TestCase):
+    def test_large_semicolon_free_header_returns_quickly(self):
+        """The signature scan must stay linear on pathological headers
+        (no semicolons) — the prefix is line-bounded and the input is
+        truncated before the search."""
+        import time
+        header = ("x" * 200 + "\n") * 20000  # ~4 MB, no semicolons
+        start = time.monotonic()
+        result = _extract_target_signature(header, "parse_buffer")
+        elapsed = time.monotonic() - start
+        self.assertIsNone(result)
+        self.assertLess(elapsed, 5.0)
+
+    def test_normal_extraction_still_works(self):
+        header = "typedef int x_t;\nint parse_buffer(const char *d,\n    size_t n);\n"
+        sig = _extract_target_signature(header, "parse_buffer")
+        self.assertIsNotNone(sig)
+        self.assertIn("parse_buffer", sig)
 
 
 if __name__ == "__main__":

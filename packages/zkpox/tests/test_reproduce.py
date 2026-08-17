@@ -18,20 +18,19 @@ from pathlib import Path
 
 import pytest
 
-
 # packages/zkpox/tests/test_reproduce.py → parents[3] = repo root
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from core.witness.store import WitnessStore  # noqa: E402
-from core.witness.types import (  # noqa: E402
+from core.witness.store import WitnessStore
+from core.witness.types import (
     Witness,
     WitnessOutcome,
     WitnessSource,
     compute_bytes_hash,
 )
-from packages.zkpox.bundle import assemble_bundle  # noqa: E402
-from packages.zkpox.reproduce import (  # noqa: E402
+from packages.zkpox.bundle import assemble_bundle
+from packages.zkpox.reproduce import (
     ReproductionResult,
     attach_reproduction,
     reproduce_witness,
@@ -160,6 +159,37 @@ def test_sanitizer_flag_inferred_from_outcome(tmp_path, monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# Witness-hash verification (both dispatch modes)
+# ----------------------------------------------------------------------
+
+
+def test_witness_hash_mismatch_refused(tmp_path):
+    """Supplied witness bytes don't match the bundle's recorded hash →
+    refuse (we'd be reproducing a different witness). Mirrors the
+    binary-hash check on the replay path."""
+    bundle, _data = _bundle(
+        tmp_path, source=WitnessSource.LLM_EMIT_RUN,
+        outcome=WitnessOutcome.EXIT_SIGNAL, data=b"// poc",
+    )
+    result = reproduce_witness(bundle, b"// tampered", n=3)
+    assert result.attempted is False
+    assert "witness hash mismatch" in result.reason
+
+
+def test_witness_hash_checked_before_dispatch(tmp_path):
+    """The witness-hash check fires before source dispatch — a FUZZ
+    bundle with tampered bytes reports the mismatch, not the missing
+    binary."""
+    bundle, data = _bundle(
+        tmp_path, source=WitnessSource.FUZZ,
+        outcome=WitnessOutcome.EXIT_SIGNAL, data=b"crashbytes",
+    )
+    result = reproduce_witness(bundle, data + b"x", n=3)  # no binary_path
+    assert result.attempted is False
+    assert "witness hash mismatch" in result.reason
+
+
+# ----------------------------------------------------------------------
 # FUZZ / input-replay dispatch
 # ----------------------------------------------------------------------
 
@@ -240,6 +270,7 @@ def _has_libasan() -> bool:
              "-o", "/dev/null"],
             input="int main(){return 0;}",
             text=True, capture_output=True, timeout=10,
+            check=False,
         )
         return r.returncode == 0
     except Exception:  # noqa: BLE001

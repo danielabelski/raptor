@@ -28,7 +28,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
@@ -43,7 +44,7 @@ import argparse
 import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: E402,F401
+import core.startup.process_init  # noqa: F401
 
 
 def _cmd_bundle(args) -> int:
@@ -119,6 +120,29 @@ def _cmd_reproduce(args) -> int:
         )
         return 2
 
+    # Verify witness.bin against the manifest before constructing the
+    # bundle — a swapped/truncated witness must not silently drive an
+    # N-run reproduction of the wrong bytes.
+    witness_bytes = witness_path.read_bytes()
+    from core.hash import sha256_bytes
+    actual_hash = sha256_bytes(witness_bytes)
+    if actual_hash != manifest["witness_hash"]:
+        sys.stderr.write(
+            f"witness.bin hash mismatch: file {actual_hash[:16]}... "
+            f"!= manifest witness_hash "
+            f"{str(manifest['witness_hash'])[:16]}...; "
+            f"refusing to reproduce a tampered/swapped witness\n"
+        )
+        return 2
+    if manifest.get("witness_len") is not None \
+            and len(witness_bytes) != manifest["witness_len"]:
+        sys.stderr.write(
+            f"witness.bin length mismatch: file is "
+            f"{len(witness_bytes)} bytes, manifest witness_len is "
+            f"{manifest['witness_len']}; refusing to reproduce\n"
+        )
+        return 2
+
     # Reconstruct the bundle dataclass from the manifest. The rest
     # round-trip for re-persistence.
     bundle = ZKPoXBundle(
@@ -136,7 +160,6 @@ def _cmd_reproduce(args) -> int:
         reproduction=manifest.get("reproduction"),
     )
 
-    witness_bytes = witness_path.read_bytes()
     binary_path = Path(args.binary) if args.binary else None
 
     result = reproduce_witness(

@@ -222,27 +222,6 @@ def _kill_and_reap(pid: int, timeout_s: float = 2.0) -> None:
         pass
 
 
-def _read_to_eof(fd: int, max_bytes: int = 16 * 1024 * 1024) -> bytes:
-    """Read from `fd` until EOF or `max_bytes`; returns the bytes.
-
-    Bounded so a runaway child can't OOM the parent. Cap is
-    generous (16 MiB) for most workloads; over-cap callers should
-    use stdin/stdout passthrough (capture_output=False).
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while total < max_bytes:
-        try:
-            chunk = os.read(fd, 65536)
-        except OSError:
-            break
-        if not chunk:
-            break
-        chunks.append(chunk)
-        total += len(chunk)
-    return b"".join(chunks)
-
-
 def _drain_pipes_until_eof(
     fds: Iterable[int],
     target_pid: int,

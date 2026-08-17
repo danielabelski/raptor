@@ -36,7 +36,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 from core.config import RaptorConfig
 from packages.codeql.tunables import CodeQLTunables
@@ -44,18 +44,6 @@ from packages.codeql.tunables import CodeQLTunables
 
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_CODEQL_BIN = "codeql"
-
-
-class _SubprocessRunner(Protocol):
-    def __call__(
-        self,
-        args: Sequence[str],
-        *,
-        capture_output: bool = ...,
-        text: bool = ...,
-        timeout: Optional[int] = ...,
-        check: bool = ...,
-    ) -> Any: ...
 
 
 #: Subprocess invocation. Returns the completed process. Injected for

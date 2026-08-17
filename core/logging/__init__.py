@@ -353,27 +353,6 @@ class RaptorLogger:
         exc_info, stack_info, extra = self._split_kwargs(kwargs)
         self.logger.critical(message, *args, extra=extra, exc_info=exc_info, stack_info=stack_info)
 
-    def log_job_start(self, job_id: str, tool: str, arguments: dict[str, Any]) -> None:
-        """Log job start event."""
-        self.info(
-            f"Job started: {tool}",
-            job_id=job_id,
-            tool=tool,
-            arguments=str(arguments),
-        )
-
-    def log_job_complete(
-        self, job_id: str, tool: str, status: str, duration: float
-    ) -> None:
-        """Log job completion event."""
-        self.info(
-            f"Job completed: {tool} ({status})",
-            job_id=job_id,
-            tool=tool,
-            status=status,
-            duration=duration,
-        )
-
     def log_security_event(
         self, event_type: str, message: str, **kwargs: Any
     ) -> None:

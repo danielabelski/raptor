@@ -209,24 +209,6 @@ class RaptorConfig:
         return cls._tuning().max_codeql_workers
 
     @classproperty
-    def CODEQL_RAM_MB(cls):
-        return cls._tuning().codeql_ram_mb
-
-    @classproperty
-    def CODEQL_THREADS(cls):
-        return cls._tuning().codeql_threads
-
-    @classproperty
-    def CODEQL_MAX_DISK_CACHE_MB(cls):
-        """``--max-disk-cache`` MB cap on codeql's DB build cache.
-
-        Sentinel ``0`` means "leave codeql's unbounded default in place"
-        — corresponds to the unset state for callers like
-        :meth:`packages.codeql.CodeQLTunables.from_tuning`.
-        """
-        return cls._tuning().codeql_max_disk_cache_mb
-
-    @classproperty
     def CODEQL_ENABLED(cls):
         """Persistent CodeQL toggle from ``tuning.json``.
 
@@ -757,19 +739,6 @@ class RaptorConfig:
                 f"the parent first or fix the path."
             )
         return resolved
-
-    @staticmethod
-    def get_job_out_dir(job_id: str) -> Path:
-        """
-        Get the output directory for a specific job.
-
-        Args:
-            job_id: Unique job identifier
-
-        Returns:
-            Path: Job-specific output directory
-        """
-        return RaptorConfig.MCP_JOB_DIR / job_id
 
     @staticmethod
     def get_safe_env(

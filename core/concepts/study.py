@@ -2862,14 +2862,6 @@ def _extract_evidence_hashes(content: str) -> set[str]:
     return set(_EVIDENCE_HASH_RE.findall(content))
 
 
-def _extract_source_hash(content: str) -> str:
-    """Extract the composite 'Source hash: ...' line from SAGE content."""
-    for ln in content.split("\n"):
-        if ln.strip().startswith("Source hash:"):
-            return ln.split(":", 1)[1].strip()
-    return ""
-
-
 def _verify_evidence_hashes(
     content: str,
     source_root: Path,

@@ -27,6 +27,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
+from core.paths import path_to_module
+
 logger = logging.getLogger(__name__)
 
 # Verdicts that mean "not reachable in this deployment" (dead).
@@ -317,13 +319,6 @@ class AuditReport:
         return self.caught_dead / dead if dead else 1.0
 
 
-def _path_to_module(rel_path: str) -> Optional[str]:
-    from pathlib import PurePosixPath
-    p = PurePosixPath(rel_path.replace("\\", "/"))
-    if not p.suffix:
-        return None
-    parts = list(p.with_suffix("").parts)
-    return ".".join(parts) if parts else None
 
 
 def audit_corpus(
@@ -356,7 +351,7 @@ def audit_corpus(
 
     report = AuditReport()
     for (rel, name), label in labels.items():
-        module = _path_to_module(rel)
+        module = path_to_module(rel)
         if not module:
             continue
         if (rel, name) not in line_of:

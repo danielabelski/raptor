@@ -23,6 +23,7 @@ from core.llm.methodology import load_methodology
 from core.llm.scorecard import fast_tier_model_name, run_cheap_fp_check
 from core.llm.task_types import TaskType
 from core.logging import get_logger
+from core.paths import path_to_module, to_repo_relative
 from core.security.prompt_defense_profiles import CONSERVATIVE
 from core.security.prompt_envelope import (
     TaintedString,
@@ -347,39 +348,17 @@ class AutonomousCodeQLAnalyzer:
     ) -> str | None:
         """Normalise a finding's file path to a project-relative
         path. SARIF emitters produce a mix of absolute, repo-
-        relative, and ``file://``-URI shapes — handle all three.
+        relative, and ``file://``-URI shapes — all handled by
+        :func:`core.paths.to_repo_relative` (strict mode: out-of-
+        root paths return ``None``).
         """
-        from pathlib import Path as _P
-        file_path = file_path.removeprefix("file://")
-        p = _P(file_path)
-        if p.is_absolute():
-            try:
-                return str(p.relative_to(repo_path.resolve()))
-            except ValueError:
-                return None
-        return file_path
+        return to_repo_relative(file_path, repo_path,
+                                outside_root="none")
 
     def _path_to_module(self, rel_path: str) -> str | None:
-        """``packages/foo/bar.py`` → ``packages.foo.bar``.
-
-        For non-Python files we strip the extension and replace
-        path separators with dots. The resolver's chain matching
-        is dotted-only, so this works for any language whose
-        call_graph data was produced by an extractor on the
-        inventory side."""
-        if not rel_path:
-            return None
-        from pathlib import PurePosixPath
-        p = PurePosixPath(rel_path.replace("\\", "/"))
-        if not p.suffix:
-            return None
-        # Drop the extension. Multiple-extension cases (.tar.gz)
-        # don't apply for source files; ``.py`` / ``.go`` /
-        # ``.js`` / ``.ts`` etc. are all single-suffix.
-        parts = list(p.with_suffix("").parts)
-        if not parts:
-            return None
-        return ".".join(parts)
+        """``packages/foo/bar.py`` → ``packages.foo.bar`` — one
+        implementation in :func:`core.paths.path_to_module`."""
+        return path_to_module(rel_path)
 
     def parse_sarif_finding(self, result: dict, run: dict) -> CodeQLFinding:
         """

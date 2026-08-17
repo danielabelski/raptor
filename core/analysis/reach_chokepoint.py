@@ -31,9 +31,10 @@ Usage::
 from __future__ import annotations
 
 import logging
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
+from core.paths import path_to_module as _path_to_module
 from core.paths import to_repo_relative
 
 logger = logging.getLogger(__name__)
@@ -55,20 +56,11 @@ def normalise_path(file_path: str, repo_root: Path) -> str | None:
 
 
 def path_to_module(rel_path: str) -> str | None:
-    """``packages/foo/bar.py`` → ``packages.foo.bar``. For non-Python
-    languages, strip the extension and replace path separators with
-    dots — the call_graph extractor produces dotted-form keys for
-    every language it covers. Returns ``None`` for paths with no
-    extension (can't derive a module).
+    """``packages/foo/bar.py`` → ``packages.foo.bar``. Delegates to
+    :func:`core.paths.path_to_module` (re-exported here for the
+    chokepoint's existing importers).
     """
-    if not rel_path:
-        return None
-    p = PurePosixPath(rel_path.replace("\\", "/"))
-    if not p.suffix:
-        return None
-    parts = list(p.parts)
-    parts[-1] = p.stem
-    return ".".join(parts)
+    return _path_to_module(rel_path)
 
 
 def check_suppress(

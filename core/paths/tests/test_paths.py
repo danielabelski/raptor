@@ -204,3 +204,44 @@ class TestConsumerParity:
             normalise_path as choke_norm,
         )
         assert choke_norm("../x.c", tmp_path) is None
+
+
+class TestPathToModule:
+    """Shared ``path_to_module`` — one implementation for the five
+    call-graph consumers (chokepoint, reach_audit, enrichment,
+    validate reachability, codeql prefilter)."""
+
+    def test_simple(self):
+        from core.paths import path_to_module
+        assert path_to_module("packages/foo/bar.py") == "packages.foo.bar"
+
+    def test_windows_separators(self):
+        from core.paths import path_to_module
+        assert path_to_module("packages\\foo\\bar.py") == "packages.foo.bar"
+
+    def test_no_extension_returns_none(self):
+        from core.paths import path_to_module
+        assert path_to_module("Makefile") is None
+
+    def test_empty_returns_none(self):
+        from core.paths import path_to_module
+        assert path_to_module("") is None
+
+    def test_non_python_extension_stripped(self):
+        from core.paths import path_to_module
+        assert path_to_module("src/main.go") == "src.main"
+        assert path_to_module("src/main.js") == "src.main"
+
+    def test_dunder_init_not_collapsed(self):
+        # The one divergent copy (core/analysis/reachability.
+        # _file_path_to_module) collapses __init__; the shared helper
+        # deliberately does not — pin that boundary.
+        from core.paths import path_to_module
+        assert path_to_module("foo/__init__.py") == "foo.__init__"
+
+    def test_chokepoint_delegates(self):
+        from core.analysis import reach_chokepoint
+        from core.paths import path_to_module
+        assert reach_chokepoint.path_to_module(
+            "packages/foo/bar.py"
+        ) == path_to_module("packages/foo/bar.py")

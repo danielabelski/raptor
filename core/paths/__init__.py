@@ -34,10 +34,11 @@ containment checks are follow-up work, site by site.
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 __all__ = [
     "confine",
+    "path_to_module",
     "strip_file_uri",
     "to_repo_relative",
 ]
@@ -114,6 +115,31 @@ def to_repo_relative(
     if strict and (norm == ".." or norm.startswith(".." + os.sep)):
         return None
     return norm
+
+
+def path_to_module(rel_path: str) -> str | None:
+    """``packages/foo/bar.py`` → ``packages.foo.bar``.
+
+    For non-Python languages, strip the extension and replace path
+    separators with dots — the call_graph extractor produces
+    dotted-form keys for every language it covers. Returns ``None``
+    for an empty path or one with no extension (can't derive a
+    module). Windows separators are normalised first.
+
+    ``foo/__init__.py`` maps to ``foo.__init__`` — the one divergent
+    copy that collapsed ``__init__`` (core/analysis/reachability.
+    _file_path_to_module) documents its own semantics and stays
+    separate.
+    """
+    if not rel_path:
+        return None
+    p = PurePosixPath(rel_path.replace("\\", "/"))
+    if not p.suffix:
+        return None
+    parts = list(p.with_suffix("").parts)
+    if not parts:
+        return None
+    return ".".join(parts)
 
 
 def confine(

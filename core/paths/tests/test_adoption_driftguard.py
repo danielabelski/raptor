@@ -39,6 +39,16 @@ _STRIP_ADOPTERS = [
     "packages/llm_analysis/patch_gate.py",
 ]
 
+# Modules whose ``_relative_path`` / ``path_to_module`` helpers must
+# delegate to core.paths rather than carry their own bodies.
+_TRIPLET_ADOPTERS = [
+    "core/analysis/reach_chokepoint.py",
+    "core/analysis/reach_audit.py",
+    "core/orchestration/reachability_enrichment.py",
+    "packages/exploitability_validation/reachability.py",
+    "packages/codeql/autonomous_analyzer.py",
+]
+
 # Hand-rolled spellings that must not reappear in adopters. The
 # substring-``replace`` variant is the one that corrupted mid-string
 # ``file://``; the others are the benign-but-drifting leading strips.
@@ -61,7 +71,9 @@ def test_module_imports_substrate(rel_path):
     ), f"{rel_path} must import strip_file_uri from core.paths"
 
 
-@pytest.mark.parametrize("rel_path", _STRIP_ADOPTERS)
+@pytest.mark.parametrize(
+    "rel_path", sorted({*_STRIP_ADOPTERS, *_TRIPLET_ADOPTERS})
+)
 def test_no_hand_rolled_stripper(rel_path):
     src = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
     for pattern in _FORBIDDEN:
@@ -69,3 +81,20 @@ def test_no_hand_rolled_stripper(rel_path):
             f"{rel_path} re-grew a hand-rolled file:// stripper "
             f"({pattern.pattern}); use core.paths.strip_file_uri"
         )
+
+
+@pytest.mark.parametrize("rel_path", _TRIPLET_ADOPTERS)
+def test_triplet_helpers_delegate(rel_path):
+    """The ``_relative_path`` / ``path_to_module`` family must import
+    the core.paths implementations, not re-grow local bodies."""
+    src = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+    assert re.search(
+        r"from core\.paths import .*\b(path_to_module|to_repo_relative)\b",
+        src,
+    ), f"{rel_path} must import its path helpers from core.paths"
+    # The tell-tale of a re-grown local body: the with_suffix/parts
+    # module derivation outside core/paths.
+    assert "with_suffix(\"\").parts" not in src, (
+        f"{rel_path} re-grew a local path_to_module body; delegate to "
+        "core.paths.path_to_module"
+    )

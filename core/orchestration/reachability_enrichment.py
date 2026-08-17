@@ -38,6 +38,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from core.paths import path_to_module
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,19 +182,10 @@ def mark_unreachable_low_priority(
     return marked
 
 
-def _path_to_module(rel_path: str) -> Optional[str]:
-    """``packages/foo/bar.py`` → ``packages.foo.bar``. Same
-    convention used by the codeql / validate consumers."""
-    if not rel_path:
-        return None
-    from pathlib import PurePosixPath
-    p = PurePosixPath(rel_path.replace("\\", "/"))
-    if not p.suffix:
-        return None
-    parts = list(p.with_suffix("").parts)
-    if not parts:
-        return None
-    return ".".join(parts)
+# ``packages/foo/bar.py`` → ``packages.foo.bar`` — the shared
+# convention used by the codeql / validate consumers; one
+# implementation in core.paths.
+_path_to_module = path_to_module
 
 
 # ---------------------------------------------------------------------------

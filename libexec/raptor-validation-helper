@@ -294,19 +294,27 @@ def _apply_stage_file(workdir, stage_letter):
         # final_status is only set for values in the Stage E enum
         # (confirmed / exploitable); ruled_out is NOT a valid
         # final_status value — it flows via ruling.status instead.
-        _RULING_TO_FINAL = {
-            "confirmed": "confirmed",
-            "exploitable": "exploitable",
-        }
+        # ONLY on the Stage D merge: the ruling is Stage D's output,
+        # and this loop walks EVERY finding in the container — running
+        # it on the later merges silently re-clobbered Stage E/F
+        # verdicts (a ruling.status of "confirmed" overwrote Stage E's
+        # final_status of confirmed_unverified on every E/F merge).
+        # Later stages' final_status is authoritative.
+        if stage_letter.upper() == "D":
+            _RULING_TO_FINAL = {
+                "confirmed": "confirmed",
+                "exploitable": "exploitable",
+            }
+            for finding in container.get("findings", []):
+                ruling = finding.get("ruling")
+                if isinstance(ruling, dict):
+                    rs = ruling.get("status", "")
+                    if rs in ("confirmed", "ruled_out", "exploitable"):
+                        finding["status"] = rs
+                    final = _RULING_TO_FINAL.get(rs)
+                    if final:
+                        finding["final_status"] = final
         for finding in container.get("findings", []):
-            ruling = finding.get("ruling")
-            if isinstance(ruling, dict):
-                rs = ruling.get("status", "")
-                if rs in ("confirmed", "ruled_out", "exploitable"):
-                    finding["status"] = rs
-                final = _RULING_TO_FINAL.get(rs)
-                if final:
-                    finding["final_status"] = final
             # Empty cvss_vector fails schema pattern; normalise to None
             if finding.get("cvss_vector") == "":
                 finding["cvss_vector"] = None
@@ -1409,6 +1417,12 @@ VERDICT_MAP = {
     "unlikely": "confirmed_blocked",
     "unknown": "confirmed_unverified",
     "error": "confirmed_unverified",
+    # E-5 table row (stage-e-feasibility.md): no binary to analyse
+    # means the source-confirmed finding stays unverified — without
+    # this row the fallback below stamped final_status "confirmed",
+    # overstating what Stage E proved. (The orchestrator reaches the
+    # same value via its unknown-verdict default.)
+    "binary_not_found": "confirmed_unverified",
 }
 
 

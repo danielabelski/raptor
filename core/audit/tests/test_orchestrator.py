@@ -4159,3 +4159,38 @@ class TestHeuristicBypassFindings:
             raise RuntimeError("analyzer crashed")
 
         assert _heuristic_bypass_findings([], broken_runner) == []
+
+
+class TestDiffNewConcepts:
+    """Study-consumer concept diffing: new concepts must be computed
+    BEFORE the current model's names are folded into seen_concepts
+    (previously the fold ran first, so the diff was always empty and
+    the ConceptIndex-scoped broader re-review never triggered)."""
+
+    @staticmethod
+    def _dm(*names):
+        return {"concepts": [{"name": n} for n in names]}
+
+    def test_study_added_concept_is_new(self):
+        from core.audit.orchestrator import _diff_new_concepts
+
+        seen: set = set()
+        new = _diff_new_concepts(seen, self._dm("Alloc"), self._dm("Alloc", "Free"))
+        assert new == {"free"}
+        assert seen == {"alloc", "free"}
+
+    def test_previously_seen_not_returned_again(self):
+        from core.audit.orchestrator import _diff_new_concepts
+
+        seen: set = set()
+        _diff_new_concepts(seen, self._dm("A"), self._dm("A", "B"))
+        new = _diff_new_concepts(seen, self._dm("A", "B"), self._dm("A", "B", "C"))
+        assert new == {"c"}
+
+    def test_no_growth_still_updates_seen(self):
+        from core.audit.orchestrator import _diff_new_concepts
+
+        seen: set = set()
+        new = _diff_new_concepts(seen, self._dm("A"), None)
+        assert new == set()
+        assert seen == {"a"}

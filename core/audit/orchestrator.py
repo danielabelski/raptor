@@ -6579,6 +6579,31 @@ _STUDY_RE_REVIEW_PER_CYCLE = 10
 _STUDY_MAX_STALE_BATCHES = 3
 
 
+def _diff_new_concepts(
+    seen_concepts: set,
+    pre_dm: dict | None,
+    post_dm: dict | None,
+) -> set:
+    """Return concept names added by this study batch, updating
+    *seen_concepts* in place.
+
+    Pre-study names (*pre_dm*) are folded into *seen_concepts* first so
+    only genuinely new concepts from *post_dm* are returned; the
+    post-study names are then folded in for the next iteration.
+    """
+    seen_concepts.update(
+        c.get("name", "").lower() for c in (pre_dm or {}).get("concepts", [])
+    )
+    new: set = set()
+    if post_dm:
+        all_concepts = {
+            c.get("name", "").lower() for c in post_dm.get("concepts", [])
+        }
+        new = all_concepts - seen_concepts
+        seen_concepts.update(all_concepts)
+    return new
+
+
 def _dedup_batch(
     batch: list[StudyRequest],
     seen_concepts: set,
@@ -6948,20 +6973,17 @@ def _study_consumer_loop(
         else:
             stale_batches = 0
 
-        seen_concepts.update(
-            c.get("name", "").lower()
-            for c in (shared.domain_model or {}).get("concepts", [])
+        # Compute new concepts for broader re-review.  The post-study
+        # model is diffed against seen_concepts + the PRE-study model
+        # (dm); folding the post-study names into seen_concepts before
+        # the diff (as previously done) made the difference
+        # unconditionally empty, so the ConceptIndex-scoped broader
+        # re-review never triggered.
+        new_concept_names = _diff_new_concepts(
+            seen_concepts,
+            dm,
+            shared.domain_model if n_after > n_before else None,
         )
-
-        # Compute new concepts for broader re-review
-        new_concept_names: set[str] = set()
-        if n_after > n_before and shared.domain_model:
-            all_concepts = {
-                c.get("name", "").lower()
-                for c in shared.domain_model.get("concepts", [])
-            }
-            new_concept_names = all_concepts - seen_concepts
-            seen_concepts.update(all_concepts)
 
         if re_review_count >= _STUDY_MAX_RE_REVIEWS:
             logger.info(

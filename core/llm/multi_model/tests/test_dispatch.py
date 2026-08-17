@@ -415,6 +415,30 @@ class TestReviewers:
         assert "high_reviewed" not in by_id["low-1"]
         assert "high_reviewed" not in by_id["low-2"]
 
+    def test_reviewer_item_missing_id_is_dropped_not_fatal(self):
+        """A reviewer item whose id field is missing must be ignored,
+        not crash the run — adapters implement item_id as plain dict
+        access, and the docstring guarantees bad return shapes are
+        caught. The reviewer's valid items still apply."""
+        class MissingIdReviewer:
+            name = "missing_id"
+            cutoff_ratio = 1.0
+
+            def review(self, items):
+                return [
+                    {"severity": "oops-no-id"},          # item_id raises
+                    {"id": "x", "annotated_by": "ok"},   # still applies
+                ]
+
+        result = run_multi_model(
+            task=lambda m: [{"id": "x"}],
+            models=[FakeModel("m")],
+            adapter=IdentityAdapter(),
+            reviewers=[MissingIdReviewer()],
+        )
+        assert len(result.items) == 1
+        assert result.items[0]["annotated_by"] == "ok"
+
     def test_conditional_reviewer_no_applicable_items(self):
         # If no items match should_review, reviewer is a no-op
         def task(m):

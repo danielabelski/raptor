@@ -491,7 +491,19 @@ def _apply_reviewer(
                 f"({type(new_item).__name__}) — ignored"
             )
             continue
-        new_id = adapter.item_id(new_item)
+        try:
+            new_id = adapter.item_id(new_item)
+        except Exception as exc:  # noqa: BLE001 — reviewer output is untrusted
+            # Adapters implement item_id as plain dict-field access, so
+            # a reviewer item missing the id field raises KeyError.
+            # Per the docstring's contract, bad reviewer return shapes
+            # drop that item — they must not crash the run (matches
+            # the non-dict handling above).
+            logger.debug(
+                f"Reviewer {reviewer.name!r} returned item without a "
+                f"usable id ({type(exc).__name__}) — ignored"
+            )
+            continue
         if allowed_ids is not None and new_id not in allowed_ids:
             logger.debug(
                 f"ConditionalReviewer {reviewer.name!r} returned item "

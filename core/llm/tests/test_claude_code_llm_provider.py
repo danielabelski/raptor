@@ -1060,6 +1060,29 @@ def test_resumable_false_uses_stateless_path(monkeypatch) -> None:
     assert "--resume" not in captured["cmd"]
 
 
+def test_stateless_turn_preserves_token_split(monkeypatch) -> None:
+    """The stateless path must report the real input/output token
+    split from the StructuredResponse — it used to collapse the
+    combined total into output_tokens with input_tokens=0, skewing
+    ToolUseLoop's per-turn attribution (the resumable path already
+    did this correctly)."""
+    import core.llm.cc_adapter as _cc_adapter
+
+    def fake_stream(cmd, prompt, *, env, timeout_s):
+        # _stream_result carries input_tokens=3, output_tokens=4
+        return _stream_result({"type": "complete", "final_text": "ok"})
+
+    monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
+    p = ClaudeCodeLLMProvider(_config(), resumable=False)
+
+    msgs = [Message(role="user", content=[TextBlock(text="hi")])]
+    r = p.turn(msgs, _TOOL_DEFS)
+
+    assert r.stop_reason == StopReason.COMPLETE
+    assert r.input_tokens == 3
+    assert r.output_tokens == 4
+
+
 # ---------------------------------------------------------------------------
 # Session-default sentinel (claudecode fallback inherits CLI session model)
 # ---------------------------------------------------------------------------

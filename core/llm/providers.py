@@ -3722,18 +3722,25 @@ class ClaudeCodeLLMProvider(LLMProvider):
         if isinstance(response, StructuredResponse):
             result = response.result
             cost_usd = response.cost
-            tokens = response.tokens_used
+            # Preserve the real input/output split —
+            # generate_structured populates both fields, and
+            # ToolUseLoop records per-turn (input, output) pairs plus
+            # separate totals. Collapsing the sum into output_tokens
+            # (as this path once did) skewed all of them.
+            input_tokens = response.input_tokens
+            output_tokens = response.output_tokens
         else:
             result, _ = response
             cost_usd = 0.0
-            tokens = 0
+            input_tokens = 0
+            output_tokens = 0
 
         return self._parse_turn_structured_result(
             result,
             tools,
             cost_usd=cost_usd,
-            input_tokens=0,
-            output_tokens=tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     def _turn_resumable(

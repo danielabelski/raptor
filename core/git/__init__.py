@@ -39,8 +39,12 @@ contained.
 from __future__ import annotations
 
 from core.git.clone import (
-    clone_repository, fetch_commit, get_safe_git_env, ls_remote,
+    clone_repository,
+    fetch_commit,
+    get_safe_git_env,
+    ls_remote,
     safe_git_command,
+    safe_git_readonly_command,
 )
 from core.git.validate import validate_repo_url
 
@@ -50,5 +54,6 @@ __all__ = [
     "get_safe_git_env",
     "ls_remote",
     "safe_git_command",
+    "safe_git_readonly_command",
     "validate_repo_url",
 ]

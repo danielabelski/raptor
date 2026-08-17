@@ -179,6 +179,54 @@ _SAFE_GIT_OVERRIDES = (
 )
 
 
+# STRICT variant for READ-ONLY operations on target repos (log,
+# rev-parse, rev-list, diff-index, ls-files, ...). Read-only ops never
+# need a remote, so every transport can be refused wholesale:
+#
+#   - protocol.allow=never: one config kills file://, ext::, ssh://,
+#     git://, http(s):// in a single stroke. Stronger than the
+#     per-protocol pair in _SAFE_GIT_OVERRIDES — but note the
+#     precedence trap: git resolves `protocol.<name>.allow` BEFORE the
+#     `protocol.allow` catch-all, so the base tuple's
+#     `protocol.file.allow=user` would still permit the file protocol.
+#     The strict tuple therefore re-pins protocol.file.allow=never
+#     explicitly (protocol.ext.allow is already `never` in the base).
+#   - core.sshCommand=false: belt-and-braces on top of
+#     protocol.allow=never — even if a transport were somehow
+#     engaged, the SSH command is the no-op `false`, never a
+#     repo- or env-chosen binary. (The base tuple pins `ssh` because
+#     clone/fetch legitimately use SSH-capable transports.)
+#
+# These land AFTER _SAFE_GIT_OVERRIDES in the argv; git honours the
+# LAST `-c` occurrence for a key, so the strict pins win.
+#
+# Do NOT use the strict variant for clone_repository / fetch_commit /
+# ls_remote — those are the network entry points and genuinely need
+# the https transport; protocol.allow=never would break every one of
+# them. They keep safe_git_command posture (per-protocol pins) plus
+# the sandbox egress proxy as their network control.
+#
+# The clean/smudge KNOWN LIMIT above applies unchanged to the strict
+# variant: filter drivers have repo-chosen names, so no finite `-c`
+# list neutralises them. protocol.allow=never does NOT protect
+# worktree-rehashing operations — strict callers must still stick to
+# plumbing that never re-hashes worktree files (`rev-parse`,
+# `rev-list`, `log`, `diff-index` without a refresh, `ls-files`).
+_STRICT_READONLY_EXTRA_OVERRIDES = (
+    "-c", "protocol.allow=never",
+    "-c", "protocol.file.allow=never",
+    "-c", "core.sshCommand=false",
+)
+
+# Full strict tuple — single source of truth for consumers that build
+# their own argv (core.audit.git_oracle) and for tests that pin the
+# hardening posture without duplicating literals.
+_SAFE_GIT_READONLY_OVERRIDES = (
+    *_SAFE_GIT_OVERRIDES,
+    *_STRICT_READONLY_EXTRA_OVERRIDES,
+)
+
+
 def safe_git_command(*args: str) -> list:
     """Return a git argv list with per-invocation safety overrides
     layered between ``git`` and the caller's args.
@@ -200,6 +248,42 @@ def safe_git_command(*args: str) -> list:
     in-place if needed.
     """
     return ["git", *_SAFE_GIT_OVERRIDES, *args]
+
+
+def safe_git_readonly_command(*args: str) -> list:
+    """Return a git argv list with the STRICT read-only safety overrides.
+
+    Use for git commands that READ a target repository (cloned from an
+    untrusted source) and never need a remote: ``log``, ``rev-parse``,
+    ``rev-list``, ``diff-index``, ``ls-files``, local ``checkout`` /
+    ``init`` / ``remote add`` steps, etc. On top of the
+    :func:`safe_git_command` posture this refuses every transport
+    (``protocol.allow=never``, with the per-protocol ``file`` pin
+    re-closed — see :data:`_STRICT_READONLY_EXTRA_OVERRIDES`) and pins
+    ``core.sshCommand=false``.
+
+    Do NOT use for :func:`clone_repository` / :func:`fetch_commit` /
+    :func:`ls_remote` or any other network operation — those need the
+    https transport and would fail outright under
+    ``protocol.allow=never``. Their network control is the sandbox
+    egress proxy, not this tuple.
+
+    ``--no-pager`` is included as belt-and-braces with the
+    ``core.pager=cat`` pin (it disables paging even for subcommands
+    that consult a different pager config key).
+
+    KNOWN LIMIT (same as :data:`_SAFE_GIT_OVERRIDES`): clean/smudge
+    filter drivers cannot be blanket-neutralised — stick to plumbing
+    that never re-hashes worktree content.
+
+    Example::
+
+        subprocess.run(
+            safe_git_readonly_command("-C", str(repo), "rev-parse", "HEAD"),
+            env=get_safe_git_env(), ...
+        )
+    """
+    return ["git", "--no-pager", *_SAFE_GIT_READONLY_OVERRIDES, *args]
 
 
 def signature_probe_overrides() -> list:
@@ -717,4 +801,12 @@ def ls_remote(
     return refs
 
 
-__all__ = ["clone_repository", "fetch_commit", "get_safe_git_env", "ls_remote"]
+__all__ = [
+    "clone_repository",
+    "fetch_commit",
+    "get_safe_git_env",
+    "ls_remote",
+    "safe_git_command",
+    "safe_git_readonly_command",
+    "signature_probe_overrides",
+]

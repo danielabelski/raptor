@@ -581,6 +581,110 @@ def test_signature_probe_overrides_resolve_system_binaries() -> None:
         assert "gpg.program" in keys
 
 
+def test_safe_git_readonly_command_layers_strict_pins_last() -> None:
+    """The strict read-only variant is the full safe_git_command posture
+    PLUS transport refusal. git honours the LAST ``-c`` occurrence per
+    key, so every strict pin must land after its base counterpart."""
+    from core.git.clone import (
+        _SAFE_GIT_OVERRIDES,
+        safe_git_command,
+        safe_git_readonly_command,
+    )
+    cmd = safe_git_readonly_command("rev-parse", "HEAD")
+    assert cmd[0] == "git"
+    assert cmd[1] == "--no-pager"
+    assert cmd[-2:] == ["rev-parse", "HEAD"]
+    # Base posture fully present (superset relation with safe_git_command).
+    base = safe_git_command()[1:]
+    assert cmd[2:2 + len(base)] == base
+    for kv in _SAFE_GIT_OVERRIDES[1::2]:
+        assert kv in cmd
+    # Strict pins present and AFTER the base pins they override.
+    assert cmd.index("protocol.allow=never") > cmd.index("protocol.file.allow=user")
+    assert cmd.index("protocol.file.allow=never") > cmd.index("protocol.file.allow=user")
+    assert cmd.index("core.sshCommand=false") > cmd.index("core.sshCommand=ssh")
+    # Well-formed: every override value is preceded by ``-c``.
+    for key in ("protocol.allow=never", "protocol.file.allow=never",
+                "core.sshCommand=false"):
+        assert cmd[cmd.index(key) - 1] == "-c"
+
+
+def test_readonly_overrides_constant_is_single_source_of_truth() -> None:
+    """Consumers (core.audit.git_oracle) and tests assert the strict
+    posture via ``_SAFE_GIT_READONLY_OVERRIDES`` — the helper must emit
+    exactly that tuple, so there is one place to extend it."""
+    from core.git.clone import (
+        _SAFE_GIT_OVERRIDES,
+        _SAFE_GIT_READONLY_OVERRIDES,
+        safe_git_readonly_command,
+    )
+    assert safe_git_readonly_command() == [
+        "git", "--no-pager", *_SAFE_GIT_READONLY_OVERRIDES,
+    ]
+    # Strict tuple embeds the base tuple unchanged (no drift).
+    assert _SAFE_GIT_READONLY_OVERRIDES[:len(_SAFE_GIT_OVERRIDES)] == \
+        _SAFE_GIT_OVERRIDES
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("git") is None, reason="git not installed",
+)
+def test_readonly_command_refuses_local_path_fetch(tmp_path: Path) -> None:
+    """Functional pin of the precedence subtlety: ``protocol.allow=never``
+    alone would NOT refuse the file protocol because the base tuple's
+    per-protocol ``protocol.file.allow=user`` takes precedence over the
+    catch-all. The strict variant re-pins ``protocol.file.allow=never``;
+    a local-path fetch must fail under it while the network-capable
+    ``safe_git_command`` posture permits it."""
+    import os
+    import shutil
+
+    from core.git.clone import safe_git_command, safe_git_readonly_command
+
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+    def run(cmd):
+        return subprocess.run(
+            cmd, capture_output=True, text=True, env=env, check=False,
+        )
+
+    src = tmp_path / "src"
+    src.mkdir()
+    assert run(["git", "init", "-q", str(src)]).returncode == 0
+    (src / "f.txt").write_text("x\n")
+    assert run([
+        "git", "-C", str(src),
+        "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+        "-c", "commit.gpgsign=false",
+        "add", ".",
+    ]).returncode == 0
+    assert run([
+        "git", "-C", str(src),
+        "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+        "-c", "commit.gpgsign=false",
+        "commit", "-q", "-m", "one",
+    ]).returncode == 0
+
+    for dest_name, argv_builder, expect_ok in (
+        ("dest-open", safe_git_command, True),
+        ("dest-strict", safe_git_readonly_command, False),
+    ):
+        dest = tmp_path / dest_name
+        dest.mkdir()
+        assert run(["git", "init", "-q", str(dest)]).returncode == 0
+        proc = run(argv_builder(
+            "-C", str(dest), "fetch", str(src), "HEAD",
+        ))
+        assert (proc.returncode == 0) is expect_ok, proc.stderr
+    shutil.rmtree(tmp_path / "src", ignore_errors=True)
+
+
 def test_signature_probe_overrides_take_precedence() -> None:
     """git honours the LAST ``-c`` occurrence, so the probe pairs must land
     after the neutral pins for re-enablement to take effect."""

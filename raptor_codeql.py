@@ -137,6 +137,18 @@ def run_autonomous_workflow(args):
     if scan_result.total_findings == 0:
         logger.info("No findings - skipping autonomous analysis")
         agent.print_summary(scan_result)
+        # Record the build outcome for cross-run reliability memory —
+        # a build that completed but produced zero findings is a
+        # distinct (and useful) signal from "success with findings".
+        # Pre-fix this early return skipped the store entirely, so
+        # "no_findings" was never recorded.
+        store_codeql_build_reliability(
+            repo_path=args.repo,
+            languages=languages or [],
+            build_command=args.build_command or "auto",
+            auto_detect_outcome="no_findings",
+            analyses_completed=0,
+        )
         return
 
     # PHASE 2: Autonomous Analysis
@@ -249,12 +261,13 @@ def run_autonomous_workflow(args):
     save_json(summary_file, summary)
     # Future-agent note: post-run reliability memory is additive only; failures
     # inside SAGE hooks must not fail the CodeQL workflow.
-    codeql_outcome = "success" if scan_result.total_findings > 0 else "no_findings"
+    # total_findings > 0 is guaranteed here — the zero-findings path
+    # early-returned above (recording "no_findings").
     store_codeql_build_reliability(
         repo_path=args.repo,
         languages=languages or [],
         build_command=args.build_command or "auto",
-        auto_detect_outcome=codeql_outcome,
+        auto_detect_outcome="success",
         analyses_completed=total_analyzed,
     )
 

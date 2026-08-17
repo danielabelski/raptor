@@ -2084,22 +2084,20 @@ def run_codeql_sweep(
                 errors=["no CodeQL database found; build one first"],
             )
 
-        result = analyze(
-            database=db,
-            query=str(qpath),
-            timeout=300,
-        )
+        import tempfile
 
-        if result.get("error"):
-            return SweepResult(
-                tool="codeql",
-                file_path=file_path,
-                function_name=function_name,
-                outcome="error",
-                errors=[result["error"]],
+        with tempfile.TemporaryDirectory(prefix="codeql-sweep-") as tmp:
+            sarif_out = Path(tmp) / "sweep.sarif"
+            result = analyze(
+                Path(db),
+                [str(qpath)],
+                sarif_out,
+                timeout_seconds=300,
             )
+            sarif = _json.loads(result.sarif_path.read_text(encoding="utf-8"))
 
-        sarif_results = result.get("results", [])
+        runs = sarif.get("runs") or [{}]
+        sarif_results = runs[0].get("results") or []
         in_function = []
         for r in sarif_results:
             locs = r.get("locations") or [{}]

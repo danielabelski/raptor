@@ -210,6 +210,101 @@ class TestRunCodeqlSweep:
         assert result.outcome == "error"
         assert result.tool == "codeql"
 
+    @staticmethod
+    def _fake_analyze(results):
+        """Stand-in for codeql_augmented_run.analyze with its real
+        signature: (db_path, queries, output_path, *, ...) -> AnalysisResult.
+        Writes a minimal SARIF file exactly like the real function."""
+        import json
+        from types import SimpleNamespace
+
+        def fake(db_path, queries, output_path, *, extension_pack=None,
+                 codeql_bin="codeql", timeout_seconds=0, runner=None,
+                 extra_args=()):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps({"runs": [{"results": results}]}),
+                encoding="utf-8",
+            )
+            return SimpleNamespace(
+                sarif_path=output_path,
+                queries=tuple(queries),
+                extension_pack=extension_pack,
+                elapsed_seconds=0.0,
+            )
+
+        return fake
+
+    @staticmethod
+    def _sarif_result(uri: str, line: int) -> dict:
+        return {
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": uri},
+                    "region": {"startLine": line},
+                }
+            }]
+        }
+
+    def _setup(self, tmp_path: Path):
+        (tmp_path / "codeql-db").mkdir()
+        query = tmp_path / "test.ql"
+        query.write_text("select 1")
+        return query
+
+    def test_match_in_function_confirmed(self, tmp_path: Path, monkeypatch):
+        query = self._setup(tmp_path)
+        import core.dataflow.codeql_augmented_run as car
+        monkeypatch.setattr(
+            car, "analyze",
+            self._fake_analyze([self._sarif_result("src/a.c", 12)]),
+        )
+        result = run_codeql_sweep(
+            target_path=tmp_path,
+            file_path="a.c",
+            function_name="foo",
+            query_path=str(query),
+            line_start=10,
+            line_end=20,
+        )
+        assert result.outcome == "confirmed"
+        assert len(result.matches) == 1
+
+    def test_match_outside_function_refuted(self, tmp_path: Path, monkeypatch):
+        query = self._setup(tmp_path)
+        import core.dataflow.codeql_augmented_run as car
+        monkeypatch.setattr(
+            car, "analyze",
+            self._fake_analyze([self._sarif_result("src/a.c", 99)]),
+        )
+        result = run_codeql_sweep(
+            target_path=tmp_path,
+            file_path="a.c",
+            function_name="foo",
+            query_path=str(query),
+            line_start=10,
+            line_end=20,
+        )
+        assert result.outcome == "refuted"
+        assert result.matches == []
+
+    def test_analyze_failure_reported(self, tmp_path: Path, monkeypatch):
+        query = self._setup(tmp_path)
+        import core.dataflow.codeql_augmented_run as car
+
+        def boom(db_path, queries, output_path, **kw):
+            raise car.CodeQLRunError("codeql analyze exited 2")
+
+        monkeypatch.setattr(car, "analyze", boom)
+        result = run_codeql_sweep(
+            target_path=tmp_path,
+            file_path="a.c",
+            function_name="foo",
+            query_path=str(query),
+        )
+        assert result.outcome == "error"
+        assert any("exited 2" in e for e in result.errors)
+
 
 class TestConsistencyCheck:
     def test_invalid_function_name_rejected(self, tmp_path: Path):

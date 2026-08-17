@@ -28,10 +28,6 @@ def _addr(v: Any) -> str:
     return str(v)
 
 
-def _node_id(prefix: str, index: int) -> str:
-    return f"{prefix}{index:03d}"
-
-
 def _text(value: Any) -> str:
     if value is None:
         return ""

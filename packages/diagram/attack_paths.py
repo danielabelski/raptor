@@ -31,14 +31,6 @@ def _proximity_desc(score: int) -> str:
     return "Unknown"
 
 
-def _path_status_style(status: str) -> str:
-    if status == "confirmed":
-        return "fill:#dcfce7,stroke:#16a34a"
-    if status == "blocked":
-        return "fill:#fee2e2,stroke:#dc2626"
-    return "fill:#fef9c3,stroke:#ca8a04"
-
-
 def generate_single(path_data: dict[str, Any], path_index: int) -> str:
     """Generate Mermaid for a single attack path."""
     path_id = path_data.get("id", f"PATH-{path_index+1}")

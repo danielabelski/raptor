@@ -42,7 +42,8 @@ def _isolate_scorecard(monkeypatch):
     """
     from core.llm.client import LLMClient
     monkeypatch.setattr(
-        LLMClient, "flush_usage_to_scorecard", lambda self: None,
+        LLMClient, "flush_usage_to_scorecard",
+        lambda self, **kwargs: None,
     )
 
 

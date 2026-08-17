@@ -102,6 +102,123 @@ def is_budget_exceeded_error(exc: BaseException) -> bool:
     )
 
 
+# ── Process-level scorecard flush aggregation ─────────────────────────
+#
+# Each LLMClient used to register its own atexit flush, and each flush
+# printed its own "scorecard: N calls ..." stderr line. Transports that
+# spawn a client per call (claude-CLI) made a single run print 16 such
+# lines at exit. Clients now register here; ONE atexit handler flushes
+# every registered client (each still writes its own window to the
+# scorecard — no data loss) and prints a single summed line.
+
+_SCORECARD_FLUSH_LOCK = threading.Lock()
+_SCORECARD_FLUSH_CLIENTS: list = []
+_SCORECARD_ATEXIT_ARMED = False
+
+
+def _register_scorecard_flush(client: Any) -> None:
+    """Enroll *client* in the process-level run-end scorecard flush."""
+    global _SCORECARD_ATEXIT_ARMED
+    with _SCORECARD_FLUSH_LOCK:
+        _SCORECARD_FLUSH_CLIENTS.append(client)
+        if not _SCORECARD_ATEXIT_ARMED:
+            import atexit
+            atexit.register(_flush_all_scorecards)
+            _SCORECARD_ATEXIT_ARMED = True
+
+
+def _flush_all_scorecards() -> None:
+    """Run-end aggregator: flush every registered client's usage into
+    the scorecard, then print ONE summed summary line. Best-effort;
+    never raises (runs inside atexit)."""
+    with _SCORECARD_FLUSH_LOCK:
+        clients = list(_SCORECARD_FLUSH_CLIENTS)
+        _SCORECARD_FLUSH_CLIENTS.clear()
+    total: dict[str, Any] = {
+        "calls": 0, "cost_usd": 0.0, "latency_ms_sum": 0, "models": {},
+    }
+    flushed_any = False
+    for client in clients:
+        try:
+            stats = client.flush_usage_to_scorecard(emit_summary=False)
+        except TypeError:
+            # Monkeypatched / legacy signature without emit_summary
+            # (some tests stub the method with ``lambda self: None``).
+            try:
+                stats = client.flush_usage_to_scorecard()
+            except Exception:  # noqa: BLE001
+                stats = None
+        except Exception:  # noqa: BLE001
+            stats = None
+        if not stats:
+            continue
+        flushed_any = True
+        total["calls"] += int(stats.get("calls") or 0)
+        total["cost_usd"] += float(stats.get("cost_usd") or 0.0)
+        total["latency_ms_sum"] += int(stats.get("latency_ms_sum") or 0)
+        for alias, calls in (stats.get("models") or {}).items():
+            total["models"][alias] = (
+                total["models"].get(alias, 0) + int(calls or 0)
+            )
+    if flushed_any:
+        _print_scorecard_summary(total)
+
+
+def _print_scorecard_summary(stats: dict[str, Any]) -> None:
+    """Per-run scorecard delta — the discoverability lever. One line at
+    process end so every command's user sees the scorecard active and
+    learns the command exists. Best-effort print to stderr."""
+    try:
+        import os as _os
+        import sys as _sys
+
+        tot_calls = int(stats.get("calls") or 0)
+        tot_cost = float(stats.get("cost_usd") or 0.0)
+        tot_lat_ms = int(stats.get("latency_ms_sum") or 0)
+        models: dict[str, int] = stats.get("models") or {}
+        # Test-run noise suppression: under pytest, a scorecard
+        # line for a zero-cost run (stub providers, cache-only
+        # replay) is pure noise — hundreds of $0.0000 lines
+        # per test session with no actionable signal. Skip
+        # emission in that case. Operator runs (pytest not in
+        # sys.modules) still see zero-cost lines so a cache-
+        # only replay is visibly distinct from a non-firing
+        # command. Paid calls under pytest STILL emit — they
+        # indicate a live-API leak the operator wants to see
+        # (e.g. an unstubbed pipeline test hitting Gemini).
+        #
+        # ``"pytest" in sys.modules`` (not
+        # ``PYTEST_CURRENT_TEST``) because most of these flushes
+        # run in ``atexit`` handlers at interpreter shutdown,
+        # after pytest has already unset the per-test env var.
+        # sys.modules entry persists for the process lifetime.
+        if "pytest" in _sys.modules and tot_cost == 0.0:
+            return
+        if _os.environ.get("RAPTOR_LLM_QUIET"):
+            return
+        avg_ms = (tot_lat_ms // tot_calls) if tot_calls else 0
+        # Four-decimal format always: preserves sub-penny
+        # detail for small runs (cache-heavy / cheap-tier
+        # short-circuit) so a "$0.0042" run is visibly
+        # distinct from a truly-zero "$0.0000" one. Trailing
+        # zeros on larger numbers (``$3.4900``) read as
+        # mild noise but the consistent shape wins for
+        # log-grepping across runs.
+        cost_s = f"${tot_cost:.4f}"
+        models_s = ", ".join(
+            f"{a} {models[a]}c"
+            for a in sorted(models, key=lambda k: -models[k])
+        )
+        print(
+            f"scorecard: {tot_calls} calls across {len(models)} model(s) "
+            f"[{models_s}] · {cost_s} · avg {avg_ms}ms — "
+            f"`raptor-llm-scorecard` for details",
+            file=_sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("scorecard summary print failed: %s", exc)
+
+
 _AUTH_ERROR_INDICATORS = frozenset({
     "401", "403", "authentication", "unauthorized", "invalid api key",
     "invalid x-api-key", "api key not valid", "incorrect api key",
@@ -879,8 +996,13 @@ class LLMClient:
         try:
             if not getattr(self.config, "scorecard_enabled", True):
                 return
-            import atexit
-            atexit.register(self.flush_usage_to_scorecard)
+            # One PROCESS-level atexit aggregator instead of one atexit
+            # per client instance. The claude-CLI transport spawns a
+            # client per call, so a single run used to print 16
+            # separate "scorecard: 1 calls ..." lines at exit; now each
+            # client still writes its own window to the scorecard, but
+            # the operator sees one summed line.
+            _register_scorecard_flush(self)
         except Exception as exc:  # noqa: BLE001
             logger.debug("_arm_usage_flush failed: %s", exc)
 
@@ -907,7 +1029,9 @@ class LLMClient:
             self._fired_schema = {}
         return fm, fu, fs
 
-    def flush_usage_to_scorecard(self) -> None:
+    def flush_usage_to_scorecard(
+        self, *, emit_summary: bool = True,
+    ) -> dict[str, Any] | None:
         """Flush this run's per-model usage into the scorecard — at run end
         (armed lazily on first fire via :meth:`_arm_usage_flush`). Aggregates
         per-alias call counts + cost / tokens / latency + schema validity, and
@@ -917,13 +1041,21 @@ class LLMClient:
 
         Uses :meth:`_snapshot_and_clear_fired` so repeated flushes (atexit +
         any explicit caller) each process a fresh window — no double-count, no
-        lost data after the first flush. Best-effort; never raises."""
+        lost data after the first flush. Best-effort; never raises.
+
+        Returns the flushed window's stats
+        (``{"calls", "cost_usd", "latency_ms_sum", "models": {alias: calls}}``)
+        or None when nothing fired / the scorecard is disabled. With
+        ``emit_summary=False`` the scorecard write still happens but the
+        per-instance stderr line is suppressed — that's the process-level
+        aggregator's mode (:func:`_flush_all_scorecards`), which prints ONE
+        summed line instead of one per client instance."""
         try:
             if not getattr(self.config, "scorecard_enabled", True):
-                return
+                return None
             fired_dict, usage_metrics, schema_dict = self._snapshot_and_clear_fired()
             if not fired_dict:
-                return
+                return None
             # Build the same list shape get_fired_models() returns, from the
             # snapshot. (provider, alias, resolved, role) -> count.
             fired = [
@@ -979,55 +1111,18 @@ class LLMClient:
                     "schema_valid_pass": p, "schema_valid_fail": fail_count,
                 })
             self.scorecard.register_uses(uses)
-            # Per-run scorecard delta — the discoverability lever. One line at
-            # process end so every command's user sees the scorecard active
-            # and learns the command exists. Best-effort print to stderr.
-            try:
-                import os as _os
-                import sys as _sys
-                # Test-run noise suppression: under pytest, a scorecard
-                # line for a zero-cost run (stub providers, cache-only
-                # replay) is pure noise — hundreds of $0.0000 lines
-                # per test session with no actionable signal. Skip
-                # emission in that case. Operator runs (pytest not in
-                # sys.modules) still see zero-cost lines so a cache-
-                # only replay is visibly distinct from a non-firing
-                # command. Paid calls under pytest STILL emit — they
-                # indicate a live-API leak the operator wants to see
-                # (e.g. an unstubbed pipeline test hitting Gemini).
-                #
-                # ``"pytest" in sys.modules`` (not
-                # ``PYTEST_CURRENT_TEST``) because most of these flushes
-                # run in ``atexit`` handlers at interpreter shutdown,
-                # after pytest has already unset the per-test env var.
-                # sys.modules entry persists for the process lifetime.
-                if "pytest" in _sys.modules and tot_cost == 0.0:
-                    return
-                if _os.environ.get("RAPTOR_LLM_QUIET"):
-                    return
-                avg_ms = (tot_lat_ms // tot_calls) if tot_calls else 0
-                # Four-decimal format always: preserves sub-penny
-                # detail for small runs (cache-heavy / cheap-tier
-                # short-circuit) so a "$0.0042" run is visibly
-                # distinct from a truly-zero "$0.0000" one. Trailing
-                # zeros on larger numbers (``$3.4900``) read as
-                # mild noise but the consistent shape wins for
-                # log-grepping across runs.
-                cost_s = f"${tot_cost:.4f}"
-                models_s = ", ".join(
-                    f"{a} {agg[a]['calls']}c"
-                    for a in sorted(agg, key=lambda k: -agg[k]['calls'])
-                )
-                print(
-                    f"scorecard: {tot_calls} calls across {len(agg)} model(s) "
-                    f"[{models_s}] · {cost_s} · avg {avg_ms}ms — "
-                    f"`raptor-llm-scorecard` for details",
-                    file=_sys.stderr,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("scorecard summary print failed: %s", exc)
+            stats: dict[str, Any] = {
+                "calls": tot_calls,
+                "cost_usd": tot_cost,
+                "latency_ms_sum": tot_lat_ms,
+                "models": {a: int(v["calls"]) for a, v in agg.items()},
+            }
+            if emit_summary:
+                _print_scorecard_summary(stats)
+            return stats
         except Exception as e:  # pragma: no cover - shutdown-path best effort  # noqa: BLE001
             logger.debug("scorecard usage flush failed: %s", e)
+            return None
 
     def get_fired_models(self) -> list:
         """Distinct models invoked during this run (cache hits excluded).

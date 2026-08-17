@@ -3790,14 +3790,18 @@ def _run_audit_body(
                 live_classifications,
                 call_edges or [],
             )
+            # One index build instead of two linear outcome scans per
+            # gap (the pass was O(gaps x outcomes) — quadratic on
+            # large audits).  First occurrence wins, matching the old
+            # next() semantics.
+            ls_outcome_by_key: Dict[Tuple[str, str], ReviewOutcome] = {}
+            for o in result.outcomes:
+                ls_outcome_by_key.setdefault((o.file, o.function), o)
             live_sink_targets = []
             for gap in gaps:
                 gap_key = f"{gap['file']}:{gap['name']}"
-                already_reviewed = any(
-                    o.file == gap["file"] and o.function == gap["name"]
-                    for o in result.outcomes
-                )
-                if not already_reviewed:
+                prior = ls_outcome_by_key.get((gap["file"], gap["name"]))
+                if prior is None:
                     continue
                 callees = [
                     e.get("callee", "")
@@ -3805,17 +3809,8 @@ def _run_audit_body(
                     if f"{e.get('caller_file', '')}:{e.get('caller', '')}" == gap_key
                 ]
                 upgrade = live_classifications.should_upgrade_triage(gap_key, callees)
-                if upgrade:
-                    prior = next(
-                        (
-                            o
-                            for o in result.outcomes
-                            if o.file == gap["file"] and o.function == gap["name"]
-                        ),
-                        None,
-                    )
-                    if prior and prior.status == "clean":
-                        live_sink_targets.append(gap)
+                if upgrade and prior.status == "clean":
+                    live_sink_targets.append(gap)
             if live_sink_targets:
                 effective_ls_workers = max(1, resolved_workers)
                 logger.info(
@@ -3836,14 +3831,8 @@ def _run_audit_body(
                     )
                     ctx["live_sinks"] = sorted_sinks
                     ctx["triage_bucket"] = "DEEP_DIVE"
-                    prior = next(
-                        (
-                            o
-                            for o in result.outcomes
-                            if o.file == target_gap["file"]
-                            and o.function == target_gap["name"]
-                        ),
-                        None,
+                    prior = ls_outcome_by_key.get(
+                        (target_gap["file"], target_gap["name"]),
                     )
                     ls_prepared.append((len(ls_prepared), target_gap, prior, ctx))
 

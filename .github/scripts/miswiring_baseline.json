@@ -383,41 +383,20 @@
     "artifacts:write_only_artifact::web_scan_report.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
-    "dead:dead_class:core/audit/build_id_cache.py:CacheEntry": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_class:core/audit/condition_extraction_python.py:_FunctionContext": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_class:core/audit/degradation.py:ToolTier": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_class:core/dataflow/codeql_augmented_run.py:_SubprocessRunner": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_class:core/llm/tests/test_claude_code_llm_provider.py:_FakeCompleted": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_class:core/llm/tests/test_exclude_fallback.py:_FailingResponse": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_class:packages/autonomous/dialogue.py:DialogueContext": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_class:packages/autonomous/dialogue.py:DialogueState": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_class:packages/exploit_feasibility/constants.py:AddressSpace": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_class:packages/exploit_feasibility/constants.py:FormatWriteLimits": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_class:packages/exploit_feasibility/constants.py:GadgetSearch": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_class:packages/exploit_feasibility/constants.py:TargetPriority": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_class:packages/sca/models.py:RiskMetadata": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
@@ -431,25 +410,10 @@
     "dead:dead_function:core/analysis/taint_approx.py:format_transitive_taint": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:core/analysis/taint_summaries.py:_is_return_node": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/analysis/tests/test_cfg_builder.py:_by_label": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/analysis/tests/test_cfg_builder.py:_successors": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/analysis/tests/test_cfg_builder_cpp.py:_predecessors_of": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_function:core/audit/_util.py:extract_sink_sets": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:core/audit/_util.py:safe_joern_name": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/audit/build_id_cache.py:extract_build_id": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:core/audit/checker_library.py:checker_from_synthesis": {
@@ -459,12 +423,6 @@
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:core/audit/checker_library.py:load_library": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/audit/dispatch_completeness.py:_key_looks_related": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/audit/fail_open_detector.py:_line_number_of": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:core/audit/frida_observe.py:collect_observed_functions": {
@@ -485,197 +443,83 @@
     "dead:dead_function:core/audit/sibling_analysis.py:identify_parallel_loops": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:core/audit/spec_inference.py:infer_spec_with_llm": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_function:core/audit/struct_accessor_index.py:build_index_from_joern": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/audit/tests/test_feedback.py:_write_coverage_audit": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/audit/ts_extract.py:extract_all_call_chains": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:core/audit/ts_extract.py:extract_all_dispatch_tables": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:core/audit/ts_extract.py:extract_all_returns": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_function:core/audit/ts_extract.py:extract_all_string_literals": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/audit/validate_bridge.py:_load_json_list": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/concepts/study.py:_extract_source_hash": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:core/iris/api.py:load_project_assumptions": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:core/llm/providers.py:_safe_subprocess_stderr": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/llm/tests/test_claude_code_llm_provider.py:_structured_envelope": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/llm/tests/test_claude_code_llm_provider.py:_structured_envelope_with_session": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/orchestration/understand_bridge.py:enrich_context_map_with_summaries": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:core/sandbox/_landlock_audit.py:_read_to_eof": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_function:core/sandbox/host.py:one_shot_call": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:libexec/raptor-validation-helper:prepare_bridge": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:packages/checker_synthesis/synthesise.py:_validate_cocci_body": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:packages/coccinelle/runner.py:reset_spatch_path_cache": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/cve_diff/cve_diff/infra/github_client.py:get_parent_commit_files": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/cve_diff/tests/unit/infra/test_service_health.py:_error_response": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/diagram/attack_paths.py:_path_status_style": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/diagram/context_map.py:_node_id": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_function:packages/diagram/sanitize.py:detect_id_collisions": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:packages/exploit_feasibility/__init__.py:_get_internal_classes": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_binary_exploitability": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_system_exploitability": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_function:packages/exploit_feasibility/cache.py:clear_caches": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_function:packages/exploit_feasibility/config.py:reset_config": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_function:packages/exploit_feasibility/errors.py:reset_error_collector": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_function:packages/exploit_feasibility/schema.py:validate_context_file": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/llm_analysis/agent.py:get_vuln_type": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/llm_analysis/dataflow_query_builder.py:_query_id": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/sca/bump/tests/test_orchestrator.py:_gitmodules": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/sca/platform_matrix/glibc_db.py:known_distros": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/sca/supply_chain/gha_secret_flow.py:_redirect_target_pattern": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/sca/supply_chain/tests/test_gha_sunset.py:_stub_sunset": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/sca/transitive.py:_try_cascade": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/sca/transitive_drop/detector.py:_requires_dist_for_version": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_function:packages/source_intel/discovery.py:alias_is_curated": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/source_intel/tests/test_priv_back_walk.py:_patch_walk": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/static-analysis/codeql/env.py:detect_codeql": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_function:packages/static-analysis/tests/test_scanner_semgrep_parallel.py:_make_sarif_response": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_method:core/audit/checker_library.py:CheckerLibrary.active_checkers": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_method:core/audit/condition_adequacy.py:AdequacyResult.is_adequate": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/audit/spec_inference.py:PreconditionVerification.verification_rate": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/audit/task_graph.py:TaskGraph.completed_count": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_method:core/concepts/reading_list.py:ReadingList.merge_from": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/config/__init__.py:RaptorConfig.CODEQL_MAX_DISK_CACHE_MB": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/config/__init__.py:RaptorConfig.CODEQL_RAM_MB": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/config/__init__.py:RaptorConfig.CODEQL_THREADS": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/config/__init__.py:RaptorConfig.get_job_out_dir": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/logging/__init__.py:RaptorLogger.log_job_complete": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:core/logging/__init__.py:RaptorLogger.log_job_start": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_method:core/logging/__init__.py:RaptorLogger.log_security_event": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.generate_mutated_seed": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.learn_from_crash": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.optimize_corpus": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/exploit_validator.py:ExploitValidator.quick_syntax_check": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.adapt_fuzzing_strategy": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.should_continue_towards_goal": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.update_goal_progress": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/planner.py:FuzzingPlanner.should_continue_fuzzing": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/autonomous/planner.py:FuzzingState.is_finding_crashes": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
     },
     "dead:dead_method:packages/checker_synthesis/library.py:RuleLibrary.active_entries": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
@@ -683,80 +527,77 @@
     "dead:dead_method:packages/codeql/language_detector.py:LanguageDetector.get_primary_language": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_method:packages/exploit_feasibility/analyzer.py:FeasibilityAnalyzer._check_checksec": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_method:packages/exploit_feasibility/analyzer.py:FeasibilityAnalyzer.quick_check": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/context.py:BinaryContext.rank_write_targets": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_binary_error": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_parse_error": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_permission_error": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_tool_failed": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.add_tool_timeout": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.get_by_category": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.get_by_component": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.has_critical": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/errors.py:AnalysisErrorCollector.has_errors": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/exploit_context.py:ExploitContext.get_with_meta": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/mitigations.py:GlibcMitigations.get_mitigations_for_vuln": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/mitigations.py:KernelMitigations.get_mitigations_for_vuln": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.is_kernel": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.mitigation_analysis_relevant": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/profiles.py:TargetProfile.needs_remote_enumeration": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/targets.py:BinarySpecificAnalysis.get_targets_for_technique": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/vuln_types.py:ExploitabilityVerdict.human_readable": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.is_enabling": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.is_memory_corruption": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_format_string_analysis": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_heap_analysis": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/exploit_feasibility/vuln_types.py:VulnerabilityType.needs_stack_analysis": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+      "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
     },
     "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.add_seeds": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
@@ -768,12 +609,6 @@
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_method:packages/joern/server.py:JoernServer.run_taint_queries_batch": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:packages/joern/tunables.py:JoernTunables.env_overlay": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:packages/sca/resolvers/pip.py:PipResolver._cleanup_venv": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_method:packages/source_intel/analyze.py:SourceIntelResult.function_attrs": {
@@ -1029,9 +864,6 @@
       "note": "triaged at baseline cut: consumed via serialization/external process, or reserved plumbing pending wiring"
     },
     "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.unique_maintainers_in_tree": {
-      "note": "triaged at baseline cut: consumed via serialization/external process, or reserved plumbing pending wiring"
-    },
-    "plumbing:orphan_config_field:packages/static-analysis/codeql/env.py:CodeQLEnv.cli_path": {
       "note": "triaged at baseline cut: consumed via serialization/external process, or reserved plumbing pending wiring"
     },
     "plumbing:orphan_config_field:packages/strategy_eval/models.py:ABResult.sample_id": {

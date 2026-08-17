@@ -57,7 +57,7 @@ _ZERO_PRICE_WARNED: set[str] = set()
 _INSTRUCTOR_MAX_CONSEC_FAILURES = 3
 
 _TEMPERATURE_DEPRECATED_FROM = (4, 7)
-_CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)-(\d+)")
+_CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)(?:-(\d+))?")
 
 
 def supports_temperature(model_name: str) -> bool:
@@ -70,16 +70,21 @@ def supports_temperature(model_name: str) -> bool:
     deprecated opus, and omitting ``temperature`` is harmless (the model falls
     back to its default) whereas sending it to a deprecated model is a hard 400,
     so we err toward omitting for >=4.7 (over-omitting a future tier that still
-    accepts it costs nothing). The regex matches the ``claude-<tier>-<major>-
-    <minor>`` core anywhere in the identifier, so Bedrock region prefixes
-    (``us.anthropic.claude-opus-4-7``) and dated snapshots
+    accepts it costs nothing). The regex matches the ``claude-<tier>-<major>``
+    core (with an optional ``-<minor>``; absent = 0, so the 5-family's
+    single-number versions gate as (5, 0) — verified live: they 400 on
+    ``temperature`` too) anywhere in the identifier, so Bedrock region
+    prefixes (``us.anthropic.claude-opus-4-7``), bare Bedrock ids
+    (``anthropic.claude-sonnet-5``) and dated snapshots
     (``claude-opus-4-7-20260301``) are handled. Non-claude / unparseable names
     keep ``temperature``.
     """
     m = _CLAUDE_VERSION_RE.search(model_name or "")
     if not m:
         return True
-    return (int(m.group(1)), int(m.group(2))) < _TEMPERATURE_DEPRECATED_FROM
+    major = int(m.group(1))
+    minor = int(m.group(2)) if m.group(2) is not None else 0
+    return (major, minor) < _TEMPERATURE_DEPRECATED_FROM
 
 
 def _safe_float(value: Any, *, default: float) -> float:
@@ -120,8 +125,11 @@ def _safe_int(value: Any, *, default: int) -> int:
     return to_int_safe(value, default=default, on_error=_log)
 
 
-# SDK availability flags (canonical source is detection.py)
-from .detection import (
+# SDK availability flags (canonical source is detection.py).  Placed
+# after the helpers above rather than in the top import block; the
+# conditional SDK re-imports below depend on these flags at module
+# scope.
+from .detection import (  # noqa: E402
     ANTHROPIC_SDK_AVAILABLE,
     GENAI_SDK_AVAILABLE,
     OPENAI_SDK_AVAILABLE,

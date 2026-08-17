@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -24,12 +25,20 @@ _resolved_joern_parse: str | None = None
 _joern_parse_resolved: bool = False
 
 
+# Both resolvers cache the REAL path (os.path.realpath of the which()
+# result): joern installs put symlink launchers on PATH while the
+# actual scripts live in the joern-cli install dir next to the jars
+# they need. The sandbox's mount-ns visibility check realpaths cmd[0],
+# so exec'ing the un-realpath'd symlink silently downgrades the run to
+# the Landlock-only fallback tier (selftest-05 scanner precedent:
+# exec tools via their real path).
 def _joern_path() -> str | None:
     global _resolved_joern, _joern_resolved
     if not _joern_resolved:
         for name in _JOERN_NAMES:
-            _resolved_joern = shutil.which(name)
-            if _resolved_joern:
+            found = shutil.which(name)
+            if found:
+                _resolved_joern = os.path.realpath(found)
                 break
         _joern_resolved = True
     return _resolved_joern
@@ -38,7 +47,8 @@ def _joern_path() -> str | None:
 def _joern_parse_path() -> str | None:
     global _resolved_joern_parse, _joern_parse_resolved
     if not _joern_parse_resolved:
-        _resolved_joern_parse = shutil.which(_JOERN_PARSE_BIN)
+        found = shutil.which(_JOERN_PARSE_BIN)
+        _resolved_joern_parse = os.path.realpath(found) if found else None
         _joern_parse_resolved = True
     return _resolved_joern_parse
 

@@ -113,3 +113,45 @@ class TestPathCache:
         prereqs.reset_path_cache()
         assert prereqs._joern_resolved is False
         assert prereqs._joern_parse_resolved is False
+
+
+class TestResolverRealpath:
+    """_joern_path / _joern_parse_path cache the REAL path: symlink
+    launchers on PATH otherwise fail the sandbox's mount-ns visibility
+    check and silently downgrade CPG builds to Landlock-only."""
+
+    def test_joern_path_resolves_symlink(self, tmp_path, monkeypatch):
+        from packages.joern import prereqs
+        real = tmp_path / "joern-cli" / "joern"
+        real.parent.mkdir()
+        real.write_text("#!/bin/sh\n")
+        link = tmp_path / "bin" / "joern"
+        link.parent.mkdir()
+        link.symlink_to(real)
+        monkeypatch.setattr(
+            prereqs.shutil, "which",
+            lambda name: str(link) if name == "joern" else None,
+        )
+        prereqs.reset_path_cache()
+        try:
+            assert prereqs._joern_path() == str(real.resolve())
+        finally:
+            prereqs.reset_path_cache()
+
+    def test_joern_parse_path_resolves_symlink(self, tmp_path, monkeypatch):
+        from packages.joern import prereqs
+        real = tmp_path / "joern-cli" / "joern-parse"
+        real.parent.mkdir()
+        real.write_text("#!/bin/sh\n")
+        link = tmp_path / "bin" / "joern-parse"
+        link.parent.mkdir()
+        link.symlink_to(real)
+        monkeypatch.setattr(
+            prereqs.shutil, "which",
+            lambda name: str(link) if name == "joern-parse" else None,
+        )
+        prereqs.reset_path_cache()
+        try:
+            assert prereqs._joern_parse_path() == str(real.resolve())
+        finally:
+            prereqs.reset_path_cache()

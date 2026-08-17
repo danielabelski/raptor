@@ -1353,3 +1353,25 @@ class TestDefaultRunnerSandboxed:
 
         assert stub.called
         assert result.returncode == 0
+
+class TestSpatchPathRealpath:
+    """_spatch_path caches the REAL path: a symlink shim on PATH
+    otherwise fails the sandbox's mount-ns visibility check and
+    silently downgrades rule runs to Landlock-only."""
+
+    def test_resolves_symlink(self, tmp_path, monkeypatch):
+        from packages.coccinelle import runner as runner_mod
+        real = tmp_path / "coccinelle" / "bin" / "spatch"
+        real.parent.mkdir(parents=True)
+        real.write_text("#!/bin/sh\n")
+        link = tmp_path / "shim" / "spatch"
+        link.parent.mkdir()
+        link.symlink_to(real)
+        monkeypatch.setattr(runner_mod.shutil, "which",
+                            lambda _name: str(link))
+        monkeypatch.setattr(runner_mod, "_spatch_resolved", False)
+        monkeypatch.setattr(runner_mod, "_resolved_spatch", None)
+        assert runner_mod._spatch_path() == str(real.resolve())
+        # Cache invalidation hygiene for later tests.
+        monkeypatch.setattr(runner_mod, "_spatch_resolved", False)
+        monkeypatch.setattr(runner_mod, "_resolved_spatch", None)

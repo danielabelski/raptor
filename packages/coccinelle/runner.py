@@ -138,12 +138,21 @@ def _sandboxed_run(cmd, **kwargs):
 #     mid-run, an upstream tool that mutates os.environ) could
 #     swap out spatch. Cache locks in the resolved path discovered
 #     at first probe.
+# The cached path is the REAL path (os.path.realpath of the which()
+# result): package managers and opam installs commonly place a symlink
+# on PATH while the actual binary (and its sibling data files) live in
+# the install prefix. The mount-ns visibility check realpaths cmd[0]
+# and the bind tree carries the RESOLVED tool dir, so exec'ing the
+# un-realpath'd symlink either fails ENOENT inside the namespace or
+# silently drops the run to the Landlock-only fallback tier
+# (selftest-05 scanner precedent: exec tools via their real path).
 _resolved_spatch: str | None = None
 _spatch_resolved: bool = False  # True once we've cached (None or path).
 def _spatch_path() -> str | None:
     global _resolved_spatch, _spatch_resolved
     if not _spatch_resolved:
-        _resolved_spatch = shutil.which(_SPATCH_BIN)
+        _found = shutil.which(_SPATCH_BIN)
+        _resolved_spatch = os.path.realpath(_found) if _found else None
         _spatch_resolved = True
     return _resolved_spatch
 

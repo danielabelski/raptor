@@ -12173,7 +12173,15 @@ def _run_tool_chain(
 
             elif tool_type == "coccinelle":
                 if tool_cfg.get("cross_file"):
-                    cocci_result = run_consistency_check(
+                    # Cross-file Coccinelle consistency sweep. Import
+                    # under an alias: the consistency-channel branch
+                    # above binds `run_consistency_check` to the
+                    # census adjudicator (.consistency_verify), which
+                    # shadows the sweep helper in this function scope.
+                    from .sweep import (
+                        run_consistency_check as _run_cross_file_cocci,
+                    )
+                    cocci_result = _run_cross_file_cocci(
                         target_path=effective_target,
                         function_name=function_name,
                         cocci_rule=tool_cfg["rule"],

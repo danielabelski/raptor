@@ -303,6 +303,106 @@ def synthesize_and_sweep(
     )
 
 
+def synthesize_from_external_seed(
+    ext_seed: Any,
+    config: Any,
+    *,
+    synthesis_count: int = 0,
+    max_per_run: int = MAX_SYNTHESIS_PER_RUN,
+) -> SynthesisResult | None:
+    """Synthesise a checker from an EXTERNAL ground-truth seed.
+
+    Counterpart to :func:`synthesize_and_sweep` for seeds that did not
+    come from this run's review outcomes: prior-run journal findings,
+    crash RCAs, and cvefix-mined fixture pairs
+    (``core.audit.synthesis_seeds.ExternalSeed``). Seeds with fixture
+    pairs go through the substrate's ground-truth control (positive =
+    known-vulnerable form, negative = fixed form); repo-anchored seeds
+    use the standard positive control. Shares the amplification lane's
+    per-run cap.
+    """
+    if synthesis_count >= max_per_run:
+        logger.debug(
+            "external seed synthesis cap reached (%d/%d)",
+            synthesis_count, max_per_run,
+        )
+        return None
+
+    seed = getattr(ext_seed, "seed", None)
+    if seed is None or not getattr(seed, "file", ""):
+        return None
+
+    out_dir = getattr(config, "out_dir", None)
+    target_path = getattr(config, "target_path", None)
+    if not out_dir or not target_path:
+        return None
+
+    llm_pair = _build_llm_callable(config)
+    if llm_pair is None:
+        return None
+    llm_callable, llm_client = llm_pair
+    cost_before = llm_client.total_cost
+
+    positive = getattr(ext_seed, "positive_fixture", None)
+    negative = getattr(ext_seed, "negative_fixture", None)
+
+    try:
+        from packages.checker_synthesis.synthesise import synthesise_and_run
+        cs_result = synthesise_and_run(
+            seed,
+            repo_root=Path(target_path),
+            out_dir=Path(out_dir),
+            llm=llm_callable,
+            max_matches=MAX_SWEEP_HITS_PER_RULE,
+            model_id=getattr(llm_client, "model_name", "") or "",
+            ground_truth_fixtures=(
+                (positive, negative) if positive else None
+            ),
+        )
+    except Exception:
+        logger.warning(
+            "external seed synthesis failed for %s (%s)",
+            seed.file, getattr(seed, "provenance", ""), exc_info=True,
+        )
+        return None
+
+    if cs_result.rule is None:
+        logger.debug(
+            "external seed synthesis: no rule for %s (%s): %s",
+            seed.file, getattr(seed, "provenance", ""),
+            "; ".join(cs_result.errors[:3]) if cs_result.errors else "none",
+        )
+        return None
+
+    provenance = getattr(seed, "provenance", "") or "external"
+    hits = [
+        {
+            "file": m.file,
+            "line": m.line,
+            "function": "",
+            "snippet": m.snippet or "",
+            "origin_file": seed.file,
+            "origin_function": seed.function,
+            "provenance": provenance,
+        }
+        for m in cs_result.matches
+    ]
+    logger.info(
+        "external seed synthesis %s (%s): %d sweep matches",
+        cs_result.rule.rule_id, provenance, len(hits),
+    )
+    return SynthesisResult(
+        rule_id=cs_result.rule.rule_id,
+        tool=cs_result.rule.engine,
+        content=cs_result.rule.body,
+        cwe=seed.cwe,
+        origin_file=seed.file,
+        origin_function=seed.function,
+        hits=hits,
+        cost_usd=llm_client.total_cost - cost_before,
+    )
+
+
 @dataclass
 class OnDemandSynthesisResult:
     """Result of an on-demand verification synthesis attempt.

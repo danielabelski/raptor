@@ -15,17 +15,15 @@ return ``None`` — caller should skip rather than guess.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Set
-
 
 # C source / header — Coccinelle's home turf.
-_COCCINELLE_EXTS: Set[str] = {".c", ".h"}
+_COCCINELLE_EXTS: set[str] = {".c", ".h"}
 
 # Languages Semgrep handles. Not exhaustive — Semgrep supports more —
 # but covers everything RAPTOR's inventory extractors currently know
 # about. Unknown extensions fall through to None so the caller can
 # skip rather than synthesise a rule that has nowhere to run.
-_SEMGREP_EXTS: Set[str] = {
+_SEMGREP_EXTS: set[str] = {
     ".py", ".pyi",
     ".java",
     ".go",
@@ -46,7 +44,7 @@ _SEMGREP_EXTS: Set[str] = {
 }
 
 
-def detect_engine(file_path: str) -> Optional[str]:
+def detect_engine(file_path: str) -> str | None:
     """Pick the synthesis engine for a source file.
 
     Returns ``"coccinelle"`` for C/C++ headers + sources, ``"semgrep"``
@@ -65,7 +63,7 @@ def detect_engine(file_path: str) -> Optional[str]:
     return None
 
 
-def fallback_engine(primary: str, file_path: str = "") -> Optional[str]:
+def fallback_engine(primary: str, file_path: str = "") -> str | None:
     """Return the alternative engine to try if *primary* fails.
 
     For C sources, both Coccinelle and Semgrep work — they're

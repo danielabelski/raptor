@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 # Synthesis verdict for an individual cross-codebase match. Mirrors
 # the annotation status enum where it makes sense, but adds
@@ -34,6 +33,10 @@ class SeedBug:
     cwe: str
     reasoning: str
     snippet: str = ""  # function source text; populated when available
+    # Where the seed came from: "" (legacy in-run outcome),
+    # "journal:<run>", "crash:<id>", "cvefix:<cve>", ... Rides into
+    # to_dict() so persisted synthesis results are auditable.
+    provenance: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,7 +68,7 @@ class Match:
     file: str  # repo-relative
     line: int
     snippet: str = ""  # the matched code fragment, when the engine provides it
-    metavars: Dict[str, str] = field(default_factory=dict)
+    metavars: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -107,18 +110,18 @@ class CheckerSynthesisResult:
     """
 
     seed: SeedBug
-    rule: Optional[SynthesisedRule] = None
-    rule_path: Optional[Path] = None
+    rule: SynthesisedRule | None = None
+    rule_path: Path | None = None
     positive_control: bool = False
     dual_control: bool = False
     fix_mutant_control: bool | None = None
     rule_tier: str = "sweep_once"
-    matches: List[Match] = field(default_factory=list)
-    triage: List[MatchTriage] = field(default_factory=list)
+    matches: list[Match] = field(default_factory=list)
+    triage: list[MatchTriage] = field(default_factory=list)
     capped: bool = False
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """JSON-serialisable view for persistence next to annotations."""
         return {
             "seed": {
@@ -128,6 +131,7 @@ class CheckerSynthesisResult:
                 "line_end": self.seed.line_end,
                 "cwe": self.seed.cwe,
                 "reasoning": self.seed.reasoning,
+                "provenance": self.seed.provenance,
             },
             "rule": (
                 None if self.rule is None

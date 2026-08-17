@@ -399,6 +399,60 @@ def _dual_control(
     return True, errors
 
 
+def _run_on_fixture_text(
+    rule_path: Path, engine: str, text: str, ext: str,
+) -> tuple[list, list[str]]:
+    """Run the rule against fixture text materialised in a temp file."""
+    dummy = SynthesisedRule(engine=engine, rule_id="probe", body="")
+    with tempfile.TemporaryDirectory(prefix="raptor_gt_") as tmp:
+        fixture = Path(tmp) / f"fixture{ext}"
+        fixture.write_text(text, encoding="utf-8")
+        return _run_engine(dummy, rule_path, fixture)
+
+
+def _ground_truth_control(
+    seed: SeedBug,
+    rule_path: Path,
+    engine: str,
+    positive_text: str,
+    negative_text: str | None,
+) -> tuple[bool, bool | None, list[str]]:
+    """External ground-truth control for seeds not present in the repo.
+
+    ``positive_text`` is known-vulnerable code (e.g. a CVE fix commit's
+    pre-fix hunk); ``negative_text`` is the fixed form. The rule must
+    match the positive; when a negative is supplied it must stay
+    silent on it. Returns ``(positive_ok, negative_ok, errors)`` where
+    ``negative_ok`` is None when no negative fixture was supplied.
+    """
+    ext = _fixture_ext(seed, engine)
+    errors: list[str] = []
+    pos_matches, pos_errors = _run_on_fixture_text(
+        rule_path, engine, positive_text, ext,
+    )
+    errors.extend(pos_errors)
+    if not pos_matches:
+        errors.append(
+            "ground-truth control: rule did not match the known-"
+            "vulnerable fixture"
+        )
+        return False, None, errors
+    if negative_text is None:
+        return True, None, errors
+    neg_matches, neg_errors = _run_on_fixture_text(
+        rule_path, engine, negative_text, ext,
+    )
+    errors.extend(neg_errors)
+    if neg_matches:
+        errors.append(
+            f"ground-truth control: rule matched the FIXED fixture "
+            f"({len(neg_matches)} hit(s) — pattern does not "
+            "distinguish the fix)"
+        )
+        return True, False, errors
+    return True, True, errors
+
+
 def _fix_mutant_control(
     seed: SeedBug,
     rule: SynthesisedRule,
@@ -570,6 +624,7 @@ def synthesise_and_run(
     max_triage_calls: int = 50,
     prior_fps: tuple[Match, ...] = (),
     model_id: str = "",
+    ground_truth_fixtures: tuple[str, str | None] | None = None,
 ) -> CheckerSynthesisResult:
     """End-to-end: propose → validate → run → optionally triage.
 
@@ -592,6 +647,14 @@ def synthesise_and_run(
             synthesis prompt appends them as negative examples. Empty
             for single-shot synthesis; populated by
             ``synthesise_with_refinement``.
+        ground_truth_fixtures: ``(positive_text, negative_text)`` for
+            EXTERNAL seeds whose file is not present in ``repo_root``
+            (e.g. a CVE fix commit's pre-fix hunk / fixed form). The
+            positive control runs against the positive fixture instead
+            of ``repo_root / seed.file``; when the negative fixture is
+            supplied the rule must stay silent on it (ground-truth
+            analogue of the fix-mutant control). The codebase sweep
+            still runs over ``repo_root``.
     """
     repo_root = Path(repo_root).resolve()
     out_dir = Path(out_dir)
@@ -636,9 +699,26 @@ def synthesise_and_run(
                 continue
 
             rule_path = _write_rule(out_dir, rule)
-            ok, run_errors = _positive_control(
-                seed, rule_path, repo_root, engine,
-            )
+            gt_negative_ok: bool | None = None
+            if ground_truth_fixtures is not None:
+                ok, gt_negative_ok, run_errors = _ground_truth_control(
+                    seed, rule_path, engine,
+                    ground_truth_fixtures[0], ground_truth_fixtures[1],
+                )
+                if ok and gt_negative_ok is False:
+                    result.errors.extend(f"{tag}: {e}" for e in run_errors)
+                    feedback = (
+                        "The rule matched the known-vulnerable fixture "
+                        "but ALSO matched the fixed form. Refine the "
+                        "pattern so the patched code does not match."
+                    )
+                    rule = None
+                    rule_path = None
+                    continue
+            else:
+                ok, run_errors = _positive_control(
+                    seed, rule_path, repo_root, engine,
+                )
             result.errors.extend(f"{tag}: {e}" for e in run_errors)
             if ok:
                 ext = _fixture_ext(seed, engine)
@@ -714,7 +794,15 @@ def synthesise_and_run(
     # that passed dual control are candidates for the library, so only
     # those pay for the extra engine run.  Verdict semantics and the
     # fail-closed policy are documented on _fix_mutant_control.
-    if result.dual_control:
+    if ground_truth_fixtures is not None:
+        # External seed: the repo-anchored fix-mutant control cannot
+        # run (seed file absent). The ground-truth negative fixture is
+        # its analogue — the rule already proved silent on the fixed
+        # form when one was supplied.
+        if result.dual_control and ground_truth_fixtures[1] is not None:
+            result.fix_mutant_control = True
+            result.rule_tier = "library"
+    elif result.dual_control:
         fm_ok, fm_errors = _fix_mutant_control(
             seed, rule, rule_path, repo_root, rule.engine,
         )

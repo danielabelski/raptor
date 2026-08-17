@@ -4045,6 +4045,21 @@ def _run_audit_body(
     # or the executor would discard the run's findings and its buffered
     # audit log. Degrade to "second pass skipped" instead: the main pass
     # has already earned its output.
+    # External ground-truth seeds (prior-run journal findings, crash
+    # RCAs, cvefix fixture pairs): synthesize checkers from them now so
+    # the hits ride the SAME second-pass review below. Bounded per
+    # source and by the shared amplification-lane cap; budget-gated.
+    try:
+        if not executor_stats.budget_stopped and not _check_budget(
+            config, start_time, result,
+        ):
+            _synthesize_external_seeds(config, result, shared, checklist)
+    except Exception:
+        logger.warning(
+            "external seed synthesis failed — continuing without it",
+            exc_info=True,
+        )
+
     try:
         if shared.synthesis_queue and not executor_stats.budget_stopped:
             synth_hits = list(shared.synthesis_queue)
@@ -8169,6 +8184,80 @@ def _batch_trivial(
     return batches, remaining
 
 
+def _synthesize_external_seeds(
+    config: OrchestratorConfig,
+    result: Any,
+    shared: Any,
+    checklist: dict[str, Any],
+) -> int:
+    """Synthesize checkers from external ground-truth seeds.
+
+    Seeds come from ``core.audit.synthesis_seeds`` (prior+current-run
+    journal findings, crash RCAs, cvefix fixture pairs), each bounded
+    per source and carrying provenance. Sweep hits join
+    ``shared.synthesis_queue`` so the existing second-pass review
+    analyses them in THIS run. Returns the number of hits queued.
+    """
+    from .checker_synthesis import synthesize_from_external_seed
+    from .synthesis_seeds import collect_external_seeds
+
+    with result._lock:
+        exclude = {
+            (getattr(o, "file", ""), getattr(o, "function", ""))
+            for o in result.outcomes
+            if getattr(o, "status", "") == "finding"
+        }
+    seeds = collect_external_seeds(
+        config, checklist=checklist, exclude_keys=exclude,
+    )
+    if not seeds:
+        return 0
+    logger.info(
+        "external seed synthesis: %d seed(s) — %s",
+        len(seeds),
+        ", ".join(
+            getattr(s.seed, "provenance", "") or "?" for s in seeds
+        ),
+    )
+
+    queued = 0
+    for ext in seeds:
+        synth = synthesize_from_external_seed(
+            ext, config, synthesis_count=result.synthesis_amplified,
+        )
+        if synth is None:
+            continue
+        with result._lock:
+            result.total_cost_usd += synth.cost_usd
+            result.cost_tracker.record_call(
+                "checker_synthesis", cost_usd=synth.cost_usd,
+            )
+        if not synth.hits:
+            continue
+        for hit in synth.hits:
+            hit.setdefault("priority_score", 0.8)
+            shared.synthesis_queue.append(hit)
+            queued += 1
+        result.synthesis_amplified += len(synth.hits)
+        checker_library = getattr(shared, "checker_library", None)
+        if checker_library and synth.rule_id:
+            try:
+                checker_library.add_rule(
+                    rule_id=synth.rule_id,
+                    engine=synth.tool,
+                    body=synth.content,
+                    cwe=synth.cwe or "",
+                    seed_file=synth.origin_file,
+                    seed_function=synth.origin_function,
+                    source="audit-external",
+                )
+            except Exception:
+                logger.debug(
+                    "external seed rule persist failed", exc_info=True,
+                )
+    return queued
+
+
 def _synthesis_hits_to_gaps(
     hits: list[dict[str, Any]],
     checklist: dict[str, Any],
@@ -8223,6 +8312,8 @@ def _synthesis_hits_to_gaps(
         gap["from_synthesis"] = True
         if hit.get("snippet"):
             gap["synthesis_snippet"] = hit["snippet"]
+        if hit.get("provenance"):
+            gap["synthesis_provenance"] = hit["provenance"]
         gaps.append(gap)
 
     if unresolved:

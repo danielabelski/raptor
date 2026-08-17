@@ -12,16 +12,16 @@ os.environ.setdefault("RAPTOR_DIR", str(RAPTOR_DIR))
 if str(RAPTOR_DIR) not in sys.path:
     sys.path.insert(0, str(RAPTOR_DIR))
 
-from packages.checker_synthesis.cwe_families import (  # noqa: E402
+from packages.checker_synthesis.cwe_families import (
     cwe_family,
     cwe_siblings,
 )
-from packages.checker_synthesis.library import (  # noqa: E402
+from packages.checker_synthesis.library import (
     RuleLibrary,
     _body_hash,
     _compute_rates,
 )
-from packages.checker_synthesis.models import (  # noqa: E402
+from packages.checker_synthesis.models import (
     CheckerSynthesisResult,
     Match,
     MatchTriage,
@@ -110,12 +110,12 @@ class TestComputeRates:
             MatchTriage(match=Match(file="a.py", line=1), status="variant", reasoning=""),
             MatchTriage(match=Match(file="b.py", line=2), status="uncertain", reasoning=""),
         ]
-        tp, fp, count = _compute_rates(triage)
+        tp, _fp, count = _compute_rates(triage)
         assert tp == 1.0
         assert count == 1
 
     def test_empty(self):
-        tp, fp, count = _compute_rates([])
+        tp, _fp, count = _compute_rates([])
         assert tp == 0.0
         assert count == 0
 

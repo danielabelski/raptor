@@ -31,7 +31,7 @@ import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from core.atomic_fs import write_text_atomically
 
@@ -61,11 +61,11 @@ class TargetRecord:
     ts: str
     matches: int
     variants: int
-    tp_rate: Optional[float]
+    tp_rate: float | None
     target_profile: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "target_hash": self.target_hash,
             "ts": self.ts,
             "matches": self.matches,
@@ -77,7 +77,7 @@ class TargetRecord:
         return d
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "TargetRecord":
+    def from_dict(cls, d: dict[str, Any]) -> TargetRecord:
         return cls(
             target_hash=d["target_hash"],
             ts=d.get("ts", ""),
@@ -104,12 +104,12 @@ class LibraryEntry:
     fp_rate: float
     total_variants: int
     total_matches: int = 0
-    targets: List[TargetRecord] = field(default_factory=list)
+    targets: list[TargetRecord] = field(default_factory=list)
     archived: bool = False
     source: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "rule_id": self.rule_id,
             "engine": self.engine,
             "cwe": self.cwe,
@@ -132,7 +132,7 @@ class LibraryEntry:
         return d
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "LibraryEntry":
+    def from_dict(cls, d: dict[str, Any]) -> LibraryEntry:
         return cls(
             rule_id=d["rule_id"],
             engine=d["engine"],
@@ -155,8 +155,8 @@ class LibraryEntry:
 
 
 def _compute_rates(
-    triage: List[MatchTriage],
-) -> Tuple[float, float, int]:
+    triage: list[MatchTriage],
+) -> tuple[float, float, int]:
     classified = [t for t in triage if t.status in ("variant", "false_positive")]
     if not classified:
         return 0.0, 0.0, 0
@@ -169,10 +169,10 @@ def _compute_rates(
 class RuleLibrary:
     """Persistent rule library backed by a manifest.json file."""
 
-    def __init__(self, library_dir: Optional[Path] = None) -> None:
+    def __init__(self, library_dir: Path | None = None) -> None:
         self._dir = Path(library_dir) if library_dir else _DEFAULT_LIBRARY_DIR
         self._manifest_path = self._dir / "manifest.json"
-        self._entries: Optional[List[LibraryEntry]] = None
+        self._entries: list[LibraryEntry] | None = None
         self._lock = threading.Lock()
 
     @property
@@ -183,7 +183,7 @@ class RuleLibrary:
         (self._dir / "semgrep").mkdir(parents=True, exist_ok=True)
         (self._dir / "coccinelle").mkdir(parents=True, exist_ok=True)
 
-    def _load(self) -> List[LibraryEntry]:
+    def _load(self) -> list[LibraryEntry]:
         if self._entries is not None:
             return self._entries
         if not self._manifest_path.exists():
@@ -207,7 +207,7 @@ class RuleLibrary:
             tmp_prefix=".manifest-",
         )
 
-    def find(self, cwe: str, engine: str) -> List[LibraryEntry]:
+    def find(self, cwe: str, engine: str) -> list[LibraryEntry]:
         """Find active library rules matching a CWE and engine.
 
         Uses the CWE family mapper so a rule promoted for CWE-564
@@ -219,7 +219,7 @@ class RuleLibrary:
             if e.cwe in family and e.engine == engine and not e.archived
         ]
 
-    def find_replayable(self, cwe: str, engine: str) -> List[LibraryEntry]:
+    def find_replayable(self, cwe: str, engine: str) -> list[LibraryEntry]:
         """Find rules suitable for replay (high TP, enough targets).
 
         Sorted by TP rate descending, then by number of targets tested
@@ -234,7 +234,7 @@ class RuleLibrary:
         candidates.sort(key=lambda e: (e.tp_rate, len(e.targets)), reverse=True)
         return candidates
 
-    def get_by_body_hash(self, body_hash: str) -> Optional[LibraryEntry]:
+    def get_by_body_hash(self, body_hash: str) -> LibraryEntry | None:
         """Look up by rule body hash (dedup key)."""
         for e in self._load():
             if e.body_hash == body_hash:
@@ -248,7 +248,7 @@ class RuleLibrary:
         target_hash: str = "",
         timestamp: str = "",
         source: str = "",
-    ) -> Optional[LibraryEntry]:
+    ) -> LibraryEntry | None:
         """Promote a synthesis result into the library.
 
         Returns the new/updated LibraryEntry, or None if the result
@@ -286,7 +286,7 @@ class RuleLibrary:
         target_hash: str = "",
         timestamp: str = "",
         source: str = "",
-    ) -> Optional[LibraryEntry]:
+    ) -> LibraryEntry | None:
         self._ensure_dirs()
         rule = result.rule
         bh = _body_hash(rule.body)
@@ -308,7 +308,7 @@ class RuleLibrary:
 
         tp_rate, fp_rate, variant_count = _compute_rates(result.triage)
 
-        targets: List[TargetRecord] = []
+        targets: list[TargetRecord] = []
         if target_hash:
             targets.append(TargetRecord(
                 target_hash=target_hash,
@@ -351,7 +351,7 @@ class RuleLibrary:
         target_hash: str,
         timestamp: str,
     ) -> None:
-        tp_rate, fp_rate, variant_count = _compute_rates(result.triage)
+        tp_rate, _fp_rate, variant_count = _compute_rates(result.triage)
         if target_hash:
             already = {t.target_hash for t in entry.targets}
             if target_hash not in already:
@@ -369,17 +369,17 @@ class RuleLibrary:
         self,
         rule_id: str,
         target_hash: str,
-        matches: List[Match],
-        triage: List[MatchTriage],
+        matches: list[Match],
+        triage: list[MatchTriage],
         timestamp: str = "",
-    ) -> Optional[LibraryEntry]:
+    ) -> LibraryEntry | None:
         """Update effectiveness after replaying a library rule."""
         entries = self._load()
         entry = next((e for e in entries if e.rule_id == rule_id), None)
         if entry is None:
             return None
 
-        tp_rate, fp_rate, variant_count = _compute_rates(triage)
+        tp_rate, _fp_rate, variant_count = _compute_rates(triage)
         already = {t.target_hash for t in entry.targets}
         if target_hash and target_hash not in already:
             entry.targets.append(TargetRecord(
@@ -419,11 +419,11 @@ class RuleLibrary:
         """Absolute path to the rule file on disk."""
         return self._dir / entry.rule_path
 
-    def all_entries(self) -> List[LibraryEntry]:
+    def all_entries(self) -> list[LibraryEntry]:
         """All entries including archived."""
         return list(self._load())
 
-    def active_entries(self) -> List[LibraryEntry]:
+    def active_entries(self) -> list[LibraryEntry]:
         """Non-archived entries only."""
         return [e for e in self._load() if not e.archived]
 
@@ -500,13 +500,13 @@ class RuleLibrary:
 
     def retire_low_precision(
         self, *, threshold: float = 0.3, min_evidence: int = 5,
-    ) -> List[str]:
+    ) -> list[str]:
         """Archive rules below the precision threshold.
 
         Only considers rules with enough evidence (total matches across
         targets). Returns list of archived rule_ids.
         """
-        retired: List[str] = []
+        retired: list[str] = []
         for entry in self._load():
             if entry.archived:
                 continue
@@ -524,7 +524,7 @@ class RuleLibrary:
             self._save()
         return retired
 
-    def graduate(self, engine_rules_dir: Path) -> List[str]:
+    def graduate(self, engine_rules_dir: Path) -> list[str]:
         """Promote high-confidence rules to the engine rules directory.
 
         Graduated rules run as first-class scanner rules in /scan and
@@ -533,7 +533,7 @@ class RuleLibrary:
 
         Returns list of graduated rule_ids.
         """
-        graduated: List[str] = []
+        graduated: list[str] = []
         for entry in self._load():
             if entry.archived:
                 continue
@@ -586,7 +586,7 @@ class RuleLibrary:
             f"avg precision {avg:.0%}"
         )
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Summary statistics for /sage status or reports."""
         entries = self._load()
         active = [e for e in entries if not e.archived]

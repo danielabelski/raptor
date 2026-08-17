@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 from packages.checker_synthesis import (
     Match,
     SeedBug,
@@ -50,7 +49,7 @@ def _stub_llm(responses):
         if isinstance(item, BaseException):
             raise item
         return item
-    llm._queue = queue  # noqa: SLF001 — for assertions
+    llm._queue = queue
     return llm
 
 

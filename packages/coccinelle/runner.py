@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from core.config import RaptorConfig
+from core.run.toolprobe import probe
 
 from .models import SpatchMatch, SpatchResult
 
@@ -177,20 +178,20 @@ MIN_SPATCH_VERSION = (1, 3)
 
 
 def version() -> str | None:
-    """Return the spatch version string, or None if unavailable."""
-    if not is_available():
+    """Return the spatch version string, or None if unavailable.
+
+    Probe execution delegates to core.run.toolprobe (safe env,
+    resolved-path exec, uncached so per-test ``subprocess.run``
+    patches stay hermetic); the ``spatch version X`` line parse is
+    spatch-specific and stays here.
+    """
+    info = probe(_SPATCH_BIN)
+    if info is None:
         return None
-    try:
-        proc = subprocess.run(
-            [_spatch_path() or _SPATCH_BIN, "--version"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        for line in proc.stdout.splitlines():
-            if line.startswith("spatch version"):
-                return line.split("spatch version", 1)[1].strip()
-        return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else None
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    for line in info.stdout.splitlines():
+        if line.startswith("spatch version"):
+            return line.split("spatch version", 1)[1].strip()
+    return info.stdout.strip().splitlines()[0] if info.stdout.strip() else None
 
 
 def version_tuple() -> tuple | None:

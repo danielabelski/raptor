@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from core.run.toolprobe import probe
+
 from .models import SemgrepResult, parse_json_output, parse_sarif
 
 _SEMGREP_BIN = "semgrep"
@@ -38,19 +40,15 @@ def is_available() -> bool:
 
 
 def version() -> str | None:
-    """Return the semgrep version string, or None if unavailable."""
-    if not is_available():
-        return None
-    try:
-        proc = subprocess.run(
-            [_SEMGREP_BIN, "--version"],
-            capture_output=True, text=True, timeout=10,
-            check=False,
-        )
-        out = (proc.stdout or proc.stderr or "").strip()
-        return out.splitlines()[0] if out else None
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    """Return the semgrep version string, or None if unavailable.
+
+    Delegates to core.run.toolprobe (safe env, resolved-path exec —
+    the bare-name re-exec this used to do re-resolved PATH at exec
+    time). Uncached: a diagnostic surface, and tests patch
+    ``subprocess.run`` per-test.
+    """
+    info = probe(_SEMGREP_BIN)
+    return info.first_line if info is not None else None
 
 
 def build_cmd(

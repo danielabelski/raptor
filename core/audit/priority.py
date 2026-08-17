@@ -27,9 +27,9 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any
 
 from ._util import extract_context_map_set
 
@@ -66,19 +66,19 @@ _EXPORTED_VISIBILITY = frozenset({"extern", "exported", "public"})
 
 
 def score_functions(
-    gaps: List[Dict[str, Any]],
+    gaps: list[dict[str, Any]],
     *,
-    context_map: Optional[Dict[str, Any]] = None,
-    flow_traces: Optional[List[Dict[str, Any]]] = None,
-    tool_coverage: Optional[Dict[str, Set[str]]] = None,
-    tool_failures: Optional[Set[str]] = None,
-    fuzz_coverage: Optional[Set[str]] = None,
-    new_functions: Optional[Set[str]] = None,
-    threat_model: Optional[Dict[str, Any]] = None,
-    open_constraint_keys: Optional[Set[str]] = None,
-    strategy_weights: Optional[Dict[str, float]] = None,
-    binary_bridge: Optional[Any] = None,
-) -> List[Dict[str, Any]]:
+    context_map: dict[str, Any] | None = None,
+    flow_traces: list[dict[str, Any]] | None = None,
+    tool_coverage: dict[str, set[str]] | None = None,
+    tool_failures: set[str] | None = None,
+    fuzz_coverage: set[str] | None = None,
+    new_functions: set[str] | None = None,
+    threat_model: dict[str, Any] | None = None,
+    open_constraint_keys: set[str] | None = None,
+    strategy_weights: dict[str, float] | None = None,
+    binary_bridge: Any | None = None,
+) -> list[dict[str, Any]]:
     """Score and re-sort gaps by attack-surface proximity.
 
     Each gap gets a numeric 'priority_score' field (higher = more urgent).
@@ -119,9 +119,9 @@ def score_functions(
         ep.rsplit(":", 1)[0] for ep in entry_points if ":" in ep
     }
 
-    binary_sink_callers: Set[str] = set()
-    binary_surface_scores: Dict[str, float] = {}
-    binary_boundary_fns: Set[str] = set()
+    binary_sink_callers: set[str] = set()
+    binary_surface_scores: dict[str, float] = {}
+    binary_boundary_fns: set[str] = set()
     if binary_bridge is not None:
         binary_sink_callers = binary_bridge.sink_callers()
         binary_surface_scores = binary_bridge.surface_functions()
@@ -212,13 +212,13 @@ def score_functions(
     return scored
 
 
-def load_tool_coverage(run_dirs: List[Path]) -> Dict[str, Set[str]]:
+def load_tool_coverage(run_dirs: list[Path]) -> dict[str, set[str]]:
     """Build a file→tools mapping from coverage run directories.
 
     Uses file_level_view() which returns {tool: {files: [...]}} and
     inverts it to {file: {tool1, tool2, ...}}.
     """
-    result: Dict[str, Set[str]] = {}
+    result: dict[str, set[str]] = {}
     try:
         from core.coverage.store_summary import file_level_view
         view = file_level_view(run_dirs)
@@ -230,9 +230,9 @@ def load_tool_coverage(run_dirs: List[Path]) -> Dict[str, Set[str]]:
     return result
 
 
-def load_tool_failures(run_dirs: List[Path]) -> Set[str]:
+def load_tool_failures(run_dirs: list[Path]) -> set[str]:
     """Identify files where a tool attempted to scan but failed."""
-    failures: Set[str] = set()
+    failures: set[str] = set()
     for run_dir in run_dirs:
         for cov_file in run_dir.glob("coverage-*.json"):
             try:
@@ -245,9 +245,9 @@ def load_tool_failures(run_dirs: List[Path]) -> Set[str]:
     return failures
 
 
-def load_fuzz_coverage(run_dirs: List[Path]) -> Optional[Set[str]]:
+def load_fuzz_coverage(run_dirs: list[Path]) -> set[str] | None:
     """Load files examined by fuzzing from coverage-fuzz.json."""
-    fuzzed: Set[str] = set()
+    fuzzed: set[str] = set()
     found = False
     for run_dir in run_dirs:
         fuzz_path = run_dir / "coverage-fuzz.json"
@@ -266,8 +266,8 @@ def load_fuzz_coverage(run_dirs: List[Path]) -> Optional[Set[str]]:
 
 def load_new_functions(
     out_dir: Path,
-    checklist: Dict[str, Any],
-) -> Set[str]:
+    checklist: dict[str, Any],
+) -> set[str]:
     """Identify new/modified functions from inventory diff.
 
     Reads inventory-diff.json (produced by compare_inventories) and
@@ -289,7 +289,7 @@ def load_new_functions(
     if not affected_files:
         return set()
 
-    new_fns: Set[str] = set()
+    new_fns: set[str] = set()
     for file_info in checklist.get("files", []):
         file_path = file_info.get("path", "")
         if file_path in affected_files:
@@ -301,10 +301,10 @@ def load_new_functions(
 
 
 def detect_widely_used(
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     *,
     threshold: int = 20,
-) -> Set[str]:
+) -> set[str]:
     """Identify widely-used functions (many consumers).
 
     Functions with >= threshold callers are likely correct themselves;
@@ -312,11 +312,11 @@ def detect_widely_used(
     Uses the callers_of() API from core.analysis.reachability.
     """
     try:
-        from core.analysis.reachability import callers_of, InternalFunction
+        from core.analysis.reachability import InternalFunction, callers_of
     except ImportError:
         return set()
 
-    widely_used: Set[str] = set()
+    widely_used: set[str] = set()
     files_data = checklist.get("files", {})
     if isinstance(files_data, list):
         file_iter = ((f["path"], f.get("items", [])) for f in files_data if isinstance(f, dict))
@@ -356,10 +356,10 @@ def detect_widely_used(
 
 
 def group_by_subsystem(
-    gaps: List[Dict[str, Any]],
+    gaps: list[dict[str, Any]],
     *,
     depth: int = 1,
-) -> Dict[str, List[Dict[str, Any]]]:
+) -> dict[str, list[dict[str, Any]]]:
     """Group gaps by directory (subsystem).
 
     Groups functions by their file's parent directory at the given depth.
@@ -370,7 +370,7 @@ def group_by_subsystem(
     This enables the orchestrator to build per-subsystem context
     before reviewing individual functions within that subsystem.
     """
-    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for gap in gaps:
         parts = Path(gap["file"]).parts
         if len(parts) > depth:
@@ -383,7 +383,7 @@ def group_by_subsystem(
     return dict(groups)
 
 
-def load_flow_traces(out_dir: Path) -> List[Dict[str, Any]]:
+def load_flow_traces(out_dir: Path) -> list[dict[str, Any]]:
     """Load all flow-trace-*.json files from the output directory."""
     traces = []
     for path in sorted(out_dir.glob("flow-trace-*.json")):
@@ -396,18 +396,18 @@ def load_flow_traces(out_dir: Path) -> List[Dict[str, Any]]:
 
 
 def _extract_unchecked_flows(
-    context_map: Optional[Dict[str, Any]],
-) -> Set[str]:
+    context_map: dict[str, Any] | None,
+) -> set[str]:
     if not context_map:
         return set()
 
-    ep_index: Dict[str, Dict[str, Any]] = {}
+    ep_index: dict[str, dict[str, Any]] = {}
     for ep in context_map.get("entry_points", []):
         ep_id = ep.get("id", "")
         if ep_id:
             ep_index[ep_id] = ep
 
-    sink_index: Dict[str, Dict[str, Any]] = {}
+    sink_index: dict[str, dict[str, Any]] = {}
     for sd in context_map.get("sink_details", []):
         sd_id = sd.get("id", "")
         if sd_id:
@@ -433,10 +433,10 @@ def _extract_unchecked_flows(
 
 
 def _extract_entry_callees(
-    context_map: Optional[Dict[str, Any]],
+    context_map: dict[str, Any] | None,
     *,
     max_depth: int = 2,
-) -> Set[str]:
+) -> set[str]:
     """Functions reachable from entry points within *max_depth* call hops."""
     if not context_map:
         return set()
@@ -446,14 +446,14 @@ def _extract_entry_callees(
         for ep in context_map.get("entry_points", [])
     }
 
-    result: Set[str] = set()
+    result: set[str] = set()
     for ep in context_map.get("entry_points", []):
         for callee in ep.get("callees", []):
             key = f"{callee.get('file', '')}:{callee.get('name', '')}"
             if key != ":":
                 result.add(key)
 
-    caller_to_callees: Dict[str, List[str]] = defaultdict(list)
+    caller_to_callees: dict[str, list[str]] = defaultdict(list)
     for edge in context_map.get("call_edges", []):
         caller_key = f"{edge.get('caller_file', '')}:{edge.get('caller', '')}"
         callee_key = f"{edge.get('callee_file', edge.get('caller_file', ''))}:{edge.get('callee', '')}"
@@ -463,7 +463,7 @@ def _extract_entry_callees(
     if caller_to_callees:
         frontier = set(entry_keys)
         for _ in range(max_depth):
-            next_frontier: Set[str] = set()
+            next_frontier: set[str] = set()
             for node in frontier:
                 for callee_key in caller_to_callees.get(node, ()):
                     if callee_key not in entry_keys and callee_key not in result:
@@ -477,8 +477,8 @@ def _extract_entry_callees(
 
 
 def _extract_flow_path_functions(
-    flow_traces: Optional[List[Dict[str, Any]]],
-) -> Set[str]:
+    flow_traces: list[dict[str, Any]] | None,
+) -> set[str]:
     """Functions that appear on any traced flow path.
 
     Flow trace steps use "definition": "file:line" format. We extract
@@ -504,8 +504,8 @@ def _extract_flow_path_functions(
 
 
 def _threat_model_boost(
-    gap: Dict[str, Any],
-    threat_model: Dict[str, Any],
+    gap: dict[str, Any],
+    threat_model: dict[str, Any],
 ) -> int:
     """Score boost when a gap matches operator-specified threat model focus."""
     focus_cwes = threat_model.get("focus_cwes")

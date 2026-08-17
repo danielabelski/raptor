@@ -1,9 +1,9 @@
 """Inventory comparison by SHA-256 checksums."""
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 
-def compare_inventories(old: Dict[str, Any], new: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def compare_inventories(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any] | None:
     """Compare two inventories by SHA-256 to detect source material changes.
 
     Returns None if nothing changed, otherwise a dict describing the changes.

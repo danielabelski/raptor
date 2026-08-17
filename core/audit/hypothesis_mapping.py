@@ -10,9 +10,8 @@ from __future__ import annotations
 import re
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional
 
-_HYPOTHESIS_SEMGREP_PATTERNS: Dict[str, str] = {
+_HYPOTHESIS_SEMGREP_PATTERNS: dict[str, str] = {
     "buffer overflow": "strcpy|sprintf|gets\\s*\\(|strcat",
     "sql injection": "SELECT.*%|INSERT.*%|UPDATE.*%|DELETE.*%",
     "command injection": "system\\s*\\(|popen\\s*\\(|exec[lv]p?e?\\s*\\(",
@@ -26,7 +25,7 @@ _HYPOTHESIS_SEMGREP_PATTERNS: Dict[str, str] = {
 }
 
 
-def hypothesis_to_semgrep_rule(hypothesis: str, file_path: str) -> Optional[str]:
+def hypothesis_to_semgrep_rule(hypothesis: str, file_path: str) -> str | None:
     """Generate a Semgrep YAML rule from a hypothesis string.
 
     Returns a path to a temp YAML file, or None if no rule can be derived.
@@ -85,12 +84,11 @@ def hypothesis_to_semgrep_rule_keyed(
     )
 
     try:
-        tmp = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             prefix="audit_sweep_", suffix=".yaml",
             mode="w", delete=False,
-        )
-        tmp.write(rule_yaml)
-        tmp.close()
+        ) as tmp:
+            tmp.write(rule_yaml)
         return tmp.name, matched_keyword
     except OSError:
         return None
@@ -158,7 +156,7 @@ _SMT_HYPOTHESIS_VERBS = [
 ]
 
 
-def hypothesis_to_smt_verb(hypothesis: str) -> Optional[str]:
+def hypothesis_to_smt_verb(hypothesis: str) -> str | None:
     """Map a hypothesis to an SMT solver verb."""
     hyp_lower = hypothesis.lower()
     for keyword, verb in _SMT_HYPOTHESIS_VERBS:
@@ -172,7 +170,7 @@ def hypothesis_to_smt_verb(hypothesis: str) -> Optional[str]:
 _COCCI_RULES_DIR = Path(__file__).resolve().parents[2] / "engine" / "coccinelle" / "rules"
 
 
-def hypothesis_to_cocci_check(hypothesis: str) -> Optional[str]:
+def hypothesis_to_cocci_check(hypothesis: str) -> str | None:
     """Map a hypothesis to a Coccinelle consistency-check rule.
 
     Returns the path to a .cocci rule file, or None.

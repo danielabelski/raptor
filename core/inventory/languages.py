@@ -3,7 +3,6 @@
 import functools
 import re
 from pathlib import Path
-from typing import Optional
 
 LANGUAGE_MAP = {
     '.py': 'python',
@@ -57,7 +56,7 @@ RECORD_ONLY_EXTENSIONS = frozenset({'.y', '.l', '.inl', '.sol'})
 
 
 @functools.lru_cache(maxsize=64)
-def detect_language(filepath: str) -> Optional[str]:
+def detect_language(filepath: str) -> str | None:
     """Detect language from file extension."""
     ext = Path(filepath).suffix.lower()
     return LANGUAGE_MAP.get(ext)
@@ -97,8 +96,8 @@ _INC_C_RE = re.compile(
 )
 
 
-def refine_language(language: Optional[str], filepath: str,
-                    content: str) -> Optional[str]:
+def refine_language(language: str | None, filepath: str,
+                    content: str) -> str | None:
     """Refine an extension-detected language using file content.
 
     ``.h`` headers carrying C++ markers route to ``cpp`` so class

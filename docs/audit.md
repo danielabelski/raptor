@@ -128,8 +128,8 @@ alongside the target code.
 Semgrep, Coccinelle, CodeQL, SMT, and compilation invocations run through
 `libexec/raptor-audit sweep` so results are logged to the audit trail
 automatically.  Joern, the compiler analyzers, the expanded-view Semgrep
-pass, the fail-open channel, and the git-history oracle run as
-orchestrator channels.
+pass, the fail-open channel, the consistency channel, and the
+git-history oracle run as orchestrator channels.
 
 | Tool | What it validates | Example use |
 |------|-------------------|-------------|
@@ -142,6 +142,7 @@ orchestrator channels.
 | **Expanded-view Semgrep** | Re-runs rules over fidelity-3 preprocessor-expanded views of macro-heavy C/C++ | "Sink hidden behind a macro expansion" |
 | **Git history** | Corroboration only -- prior security fixes touching the function (never a verdict by itself) | "This function was patched for the same bug class before" |
 | **Fail-open channel** | Swallowed-error hypotheses (CWE-703/636/391/390/252): security role x permissive handler outcome x fallibility, all mechanical with receipts. Phase 1: Python handlers, C ignored-return + tri-state shapes | "The broad `except` around token verification swallows signature errors and the request proceeds" |
+| **Consistency channel** | Peer-majority deviations with PeerEvidence receipts: the return-usage census (six-value enum, `return-census.json`), contract witnesses (warn_unused_result, learned contracts, the shared Tier-A registry), flag/mode and error-path-cleanup comparators. Registry-grade contract witness = promote-capable LLM-free finding; majority-only = detection grade (one shared namespace -- two consistency statistics never self-corroborate to promotion) | "9/10 call sites check `do_auth()`'s return and it is declared `warn_unused_result`; this site discards it" |
 
 ### SMT verbs
 

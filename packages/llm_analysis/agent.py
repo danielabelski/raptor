@@ -32,6 +32,7 @@ from core.llm.detection import detect_llm_availability
 from core.llm.providers import ClaudeCodeProvider
 from core.llm.task_types import TaskType
 from core.logging import get_logger
+from core.paths import strip_file_uri
 from core.progress import HackerProgress
 from core.run.output import unique_run_suffix
 from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
@@ -300,7 +301,9 @@ class VulnerabilityContext:
         """Get absolute path to vulnerable file."""
         if not self.file_path:
             return None
-        clean_path = self.file_path.replace("file://", "")
+        # strip_file_uri drops only a LEADING file:// scheme — the old
+        # substring-replace corrupted paths containing file:// mid-string.
+        clean_path = strip_file_uri(self.file_path)
         resolved = (self.repo_path / clean_path).resolve()
         try:
             resolved.relative_to(self.repo_path.resolve())
@@ -374,8 +377,10 @@ class VulnerabilityContext:
             Code snippet with context
         """
         try:
-            # Clean up the file URI and validate path stays within repo
-            clean_path = file_uri.replace("file://", "")
+            # Clean up the file URI (leading scheme only — substring
+            # replace corrupted mid-string file://) and validate the
+            # path stays within the repo.
+            clean_path = strip_file_uri(file_uri)
             file_path = (self.repo_path / clean_path).resolve()
 
             try:

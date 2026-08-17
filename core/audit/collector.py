@@ -30,7 +30,7 @@ def append_journal_for_outcome(
     run_id: str,
     outcome: Any,
     gap: dict[str, Any],
-    checked_by: list[str],
+    checked_by: list[str] | None = None,
     domain_model_hash: str | None = None,
     producer: str | None = None,
 ) -> None:
@@ -44,11 +44,16 @@ def append_journal_for_outcome(
     review journal, since the design makes the journal the LLM
     review record.
 
+    ``checked_by`` is vestigial: accepted for call-site compatibility
+    (orchestrator still passes it) but NOT persisted — the journal
+    schema has no checked_by column; model attribution lands via
+    ``entry.model``.
+
     ``producer`` distinguishes /audit vs /agentic write sites so
     ``import_journal`` doesn't have to guess from run_id string
     prefixes (amendment §1 A2 / final review Finding #2). Default
-    ``"audit"`` matches the historical convention for `checked_by`
-    labels — /agentic call sites pass ``"agentic"`` explicitly.
+    ``"audit"`` matches the historical convention — /agentic call
+    sites pass ``"agentic"`` explicitly.
 
     Best-effort: any failure logs at DEBUG and swallows so an
     unrelated review can't be lost when a hash / concept lookup
@@ -205,16 +210,14 @@ class Collector:
         *,
         batch: bool = False,
     ) -> None:
-        checked_by = ["audit"]
-        if outcome.model:
-            checked_by.append(outcome.model)
-
         # Journal is the sole LLM review store (see amendment §2).
         # ``record_review``'s coverage-audit.json write and
         # ``mark_checked``'s checklist stamp were removed at Phase-3
         # completion; the journal captures verdict/body/context and
-        # the coverage store imports it at run completion.
-        self._append_journal_entry(outcome, gap, checked_by)
+        # the coverage store imports it at run completion. Model
+        # attribution travels via ``entry.model`` — there is no
+        # separate checked_by record.
+        self._append_journal_entry(outcome, gap)
 
         entry: dict[str, Any] = {
             "action": "orchestrator_review",
@@ -263,16 +266,14 @@ class Collector:
         self,
         outcome: Any,
         gap: dict[str, Any],
-        checked_by: list[str],
     ) -> None:
-        """Dual-write: append a journal entry alongside checked_by."""
+        """Append the review outcome to the journal (batch-cached hash)."""
         append_journal_for_outcome(
             out_dir=self.out_dir,
             target_path=self.target_path,
             run_id=self.run_id,
             outcome=outcome,
             gap=gap,
-            checked_by=checked_by,
             domain_model_hash=self._get_domain_model_hash(),
         )
 

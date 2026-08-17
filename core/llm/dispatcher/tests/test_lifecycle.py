@@ -118,5 +118,11 @@ class TestEnsureInprocessDispatcherEnv:
             token = read_token(fd)
             assert token
         finally:
+            # The helper mutates os.environ by design (its process IS
+            # the worker); scrub the route so later tests don't dial a
+            # dead dispatcher socket.
+            import os
+            os.environ.pop("RAPTOR_LLM_SOCKET", None)
+            os.environ.pop("RAPTOR_LLM_TOKEN_FD", None)
             if d is not None:
                 d.shutdown()

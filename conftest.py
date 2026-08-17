@@ -57,6 +57,22 @@ if _existing and _existing != _conftest_dir:
     )
 os.environ["RAPTOR_DIR"] = _conftest_dir
 
+# The operator's real ``~/.config/raptor/models.json`` must never
+# steer tests: a configured API-served primary (e.g. a Bedrock entry)
+# flips model selection, egress enablement and provider construction
+# for every test that builds a real ``LLMConfig`` — observed as a
+# full-suite hang when the egress proxy dutifully allowed the
+# configured Bedrock host and a test's SDK call attempted a live
+# connection. Pin ``RAPTOR_CONFIG`` at a nonexistent in-tree path;
+# tests that exercise config parsing set ``RAPTOR_CONFIG`` to their
+# own tmp file (monkeypatch wins over this default). ``setdefault``
+# keeps a deliberately exported RAPTOR_CONFIG usable for
+# operator-driven runs against real config.
+os.environ.setdefault(
+    "RAPTOR_CONFIG",
+    str(Path(_conftest_dir) / ".pytest-no-operator-models.json"),
+)
+
 # Put the repo root on sys.path so ``from core.X import Y`` and
 # ``from packages.Y.Z import W`` resolve during pytest collection.
 # pytest.ini's ``pythonpath`` only lists a handful of package-standalone

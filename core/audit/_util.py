@@ -11,7 +11,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _IDENTIFIER_QUALIFIED_RE = re.compile(
@@ -261,3 +260,33 @@ def extract_functions_from_source(source: str) -> list:
         body = "\n".join(lines[body_start_idx:end_idx])
         funcs.append((name, start_line, body))
     return funcs
+
+
+# ── Progress-line rendering (operator-facing) ────────────────────────
+
+# Verdict glyphs for per-function progress lines. OUTPUT STYLE: ✓/✗
+# are fine, no red/green circles. The historical map used a bare "x"
+# for error, which rendered as "→ error x" — the trailing letter read
+# as noise next to the status word rather than as a failure mark.
+STATUS_GLYPHS = {
+    "clean": "✓",
+    "suspicious": "?",
+    "finding": "!",
+    "dormant": "~",
+    "error": "✗",
+}
+
+
+def format_progress_line(idx: int, total: int, outcome: Any) -> str:
+    """Render one review-progress line for the operator stream.
+
+    ``idx < 0`` is the protocol's "print body verbatim" channel used
+    for loop-level announcements (e.g. the budget-exhaustion stop).
+    """
+    if idx < 0:
+        return f"  {outcome.body}"
+    glyph = STATUS_GLYPHS.get(outcome.status, "·")
+    return (
+        f"  [{idx + 1}/{total}] {outcome.file}:{outcome.function} "
+        f"→ {outcome.status} {glyph}"
+    )

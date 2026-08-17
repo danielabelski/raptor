@@ -1218,16 +1218,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
 
     # --- progress callback ---
+    from core.audit._util import format_progress_line
+
     def on_progress(idx: int, total: int, outcome):
-        if idx < 0:
-            print(f"  {outcome.body}", flush=True)
-            return
-        status_char = {
-            "clean": ".", "suspicious": "?", "finding": "!",
-            "dormant": "~", "error": "x",
-        }.get(outcome.status, ".")
-        print(f"  [{idx+1}/{total}] {outcome.file}:{outcome.function} "
-              f"→ {outcome.status} {status_char}", flush=True)
+        print(format_progress_line(idx, total, outcome), flush=True)
 
     # --- run ---
     print(f"\nStarting audit of {target_path}", flush=True)

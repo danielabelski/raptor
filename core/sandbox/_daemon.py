@@ -53,7 +53,7 @@ import struct
 import subprocess
 import sys
 import time
-from typing import Any, Optional
+from typing import Any
 
 
 def _log(msg: str) -> None:
@@ -61,7 +61,7 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
-def _read_frame(fd: int) -> Optional[dict]:
+def _read_frame(fd: int) -> dict | None:
     hdr = b""
     while len(hdr) < 4:
         chunk = os.read(fd, 4 - len(hdr))
@@ -92,11 +92,19 @@ def _write_frame(fd: int, payload: dict) -> None:
 # --------------------------------------------------------------------
 
 
+# Allowlisted AST nodes for compute expressions. The compute language
+# is arithmetic/bit-ops over recv-derived bindings (ints or raw bytes)
+# plus the packing helpers in _SAFE_EVAL_CALLABLES — called by bare
+# name only. Subscript/Slice/Index stay: slicing raw recv bytes (e.g.
+# ``u64(leak[8:16])``) is part of the language. Attribute is
+# deliberately ABSENT: nothing in the language needs dotted access,
+# and admitting it opens ``p64.__globals__['os']``-shaped escape
+# chains through an otherwise allowlisted expression.
 _SAFE_EVAL_NODES = {
     "Expression", "BinOp", "UnaryOp", "Constant", "Name", "Load",
     "Add", "Sub", "Mult", "FloorDiv", "Mod", "BitAnd", "BitOr",
     "BitXor", "LShift", "RShift", "USub", "Invert",
-    "Subscript", "Slice", "Index", "Attribute", "Call",
+    "Subscript", "Slice", "Index", "Call",
 }
 _SAFE_EVAL_CALLABLES = {"p64", "p32", "p16", "u64", "u32", "u16", "int"}
 
@@ -132,7 +140,7 @@ def _safe_eval(expr: str, bindings: dict) -> Any:
                 {"__builtins__": {}}, ns)
 
 
-def _parse_bytes_to_int(raw: bytes) -> Optional[int]:
+def _parse_bytes_to_int(raw: bytes) -> int | None:
     text = raw.decode("utf-8", errors="replace")
     m = re.search(r"0x([0-9a-fA-F]+)", text)
     if m:
@@ -213,8 +221,7 @@ def _render_compose(chunks, recvs):
                 )
             raw = recvs[idx].decode("utf-8", errors="replace").strip()
             tok = raw.split()[0] if raw.split() else ""
-            if tok.startswith("0x"):
-                tok = tok[2:]
+            tok = tok.removeprefix("0x")
             if not tok:
                 raise ValueError(
                     f"recv_le64: recvs[{idx}] is empty after tokenization"
@@ -231,7 +238,7 @@ def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
     buf = b""
     fd = proc.stdout.fileno()
 
-    def _read_bounded(max_bytes: int) -> Optional[bytes]:
+    def _read_bounded(max_bytes: int) -> bytes | None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
@@ -288,6 +295,7 @@ def _handle_spawn(payload: dict) -> dict:
     try:
         result = subprocess.run(
             argv, input=stdin_bytes, capture_output=True, timeout=timeout,
+            check=False,
         )
         return {
             "ok": True,
@@ -356,7 +364,7 @@ def _handle_probe(payload: dict) -> dict:
                 steps_completed += 1
                 continue
 
-            send_bytes: Optional[bytes] = None
+            send_bytes: bytes | None = None
             if "send_hex" in step:
                 send_bytes = bytes.fromhex(step["send_hex"].replace(" ", ""))
                 if len(send_bytes) > _MAX_SEND_BYTES:
@@ -369,7 +377,7 @@ def _handle_probe(payload: dict) -> dict:
                 try:
                     send_bytes = raw.encode("utf-8").decode(
                         "unicode_escape").encode("latin-1")
-                except Exception:
+                except Exception:  # noqa: BLE001
                     send_bytes = raw.encode("utf-8")
             elif "send_p64" in step:
                 try:

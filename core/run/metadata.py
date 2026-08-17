@@ -15,6 +15,12 @@ from typing import Any
 
 from core.json import load_json, save_json
 
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:                                    # pragma: no cover
+    _HAS_FCNTL = False
+
 logger = logging.getLogger(__name__)
 
 RUN_METADATA_FILE = ".raptor-run.json"
@@ -210,6 +216,67 @@ def _pid_alive(pid: int) -> bool:
     return "claude" in comm
 
 
+def _tool_pid_alive(pid: Any) -> bool:
+    """Liveness check for a run's recorded ``tool_pid`` (the worker
+    process that called ``start_run`` — a Bash-tool shell, a Python
+    orchestrator, etc.).
+
+    Unlike :func:`_pid_alive` there is NO ``comm == claude`` cross-check:
+    the tool process is deliberately NOT a claude binary. Plain
+    ``kill(pid, 0)`` accepts a residual PID-reuse risk, but the failure
+    direction is safe — a reused PID keeps a genuinely abandoned run in
+    ``running`` state until its owning session dies (the dead-session
+    branch then sweeps it), whereas a false "dead" would fail a live run.
+
+    Missing / malformed pids return False so legacy metadata (written
+    before ``tool_pid`` was recorded) falls back to the old behaviour.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # alive but owned by another user
+    return True
+
+
+@contextlib.contextmanager
+def _metadata_lock(meta_path: Path):
+    """Cross-process exclusive lock guarding a ``.raptor-run.json``
+    read-modify-write window.
+
+    Same idiom as ``core.coverage.store.coverage_store_lock``: flock a
+    sibling ``.lock`` file (not the JSON itself, which ``save_json``
+    atomically replaces), hold it across the whole load → mutate → save
+    window, degrade to a no-op without fcntl (non-POSIX). Without it,
+    concurrent ``_update_status`` writers (a run's own completion racing
+    a sweep's ``fail_run``, or parallel workers updating ``extra``)
+    last-writer-wins and one update is silently dropped.
+    """
+    if not _HAS_FCNTL:
+        yield
+        return
+    path = Path(meta_path)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        # Lock file uncreatable (read-only dir mid-teardown, ENOSPC) —
+        # proceed unserialised rather than failing the lifecycle.
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def start_run(output_dir: Path, command: str,
               extra: dict[str, Any] | None = None,
               target: str | None = None,
@@ -304,8 +371,11 @@ def _cleanup_abandoned(project_dir: Path, command: str, session_pid: int) -> Non
     Two abandonment shapes, both status=running and past the freshness
     gate:
 
-    - Same session_pid AND same command type — the Esc-then-retry case
-      (user cancelled and reissued the same command in one session).
+    - Same session_pid AND same command type AND the run's recorded
+      worker (``tool_pid``) is dead — the Esc-then-retry case (user
+      cancelled and reissued the same command in one session). The
+      worker-liveness gate keeps long-lived parallel runs of the same
+      command in the same session from being false-failed.
     - Owning session DEAD — the recorded session_pid no longer maps to
       a live claude process (session SIGKILL'd, machine rebooted, or
       PID recycled by something else). No live owner means no lifecycle
@@ -353,8 +423,20 @@ def _cleanup_abandoned(project_dir: Path, command: str, session_pid: int) -> Non
         if meta.get("status") != STATUS_RUNNING:
             continue
         run_session = meta.get("session_pid")
+        # Same-session retry additionally requires the run's own worker
+        # (``tool_pid``, recorded at start_run) to be DEAD. The freshness
+        # gate alone is not enough: a legitimate parallel run of the same
+        # command in the same session that has been going for more than
+        # _ABANDON_FRESHNESS_S seconds would otherwise be failed here,
+        # and the terminal-status guard in _update_status would then
+        # refuse its real completion — misfiling a live run's results.
+        # An Esc-cancelled run's tool process IS dead, so the case this
+        # branch exists for still cleans up. Runs predating tool_pid
+        # recording have no pid and keep the old (freshness-only) gate.
         same_session_retry = (
-            meta.get("command") == command and run_session == session_pid
+            meta.get("command") == command
+            and run_session == session_pid
+            and not _tool_pid_alive(meta.get("tool_pid"))
         )
         session_dead = (
             isinstance(run_session, int)
@@ -788,6 +870,40 @@ def load_run_metadata(run_dir: Path) -> dict[str, Any] | None:
     return load_json(run_dir / RUN_METADATA_FILE)
 
 
+def corroborate_target_path(run_dir: Path, candidate) -> str | None:
+    """Check a recovered target path against the run's sealed metadata.
+
+    Tools that lose the operator-supplied ``--target`` recover it from
+    run artefacts (e.g. checklist.json's ``target_path``) — but those
+    artefacts are written into the run dir by analysis stages and can
+    drift or be tampered with. The ``target_path`` sealed into
+    ``.raptor-run.json`` at :func:`start_run` is the authoritative
+    record of what this run was pointed at.
+
+    Returns ``None`` when the candidate is consistent with the sealed
+    path, or when there is nothing to corroborate against (no metadata
+    file, no ``target_path`` field — older runs). Returns a
+    human-readable mismatch description otherwise; callers should
+    refuse the recovered path and tell the operator to pass the target
+    explicitly.
+    """
+    if not candidate:
+        return None
+    meta = load_run_metadata(Path(run_dir))
+    sealed = (meta or {}).get("target_path")
+    if not sealed or not isinstance(sealed, str):
+        return None
+    try:
+        if Path(sealed).resolve() == Path(candidate).resolve():
+            return None
+    except OSError:
+        return None
+    return (
+        f"recovered target path {candidate!s} does not match the "
+        f"target_path sealed in {RUN_METADATA_FILE} ({sealed})"
+    )
+
+
 def is_run_directory(path: Path, *, strict: bool = True) -> bool:
     """Check if a directory looks like a RAPTOR run output.
 
@@ -911,52 +1027,59 @@ def _update_status(output_dir: Path, status: str,
     rather than hidden.
 
     Raises FileNotFoundError if metadata file doesn't exist (call start_run first).
+
+    The whole read-modify-write runs under :func:`_metadata_lock` so
+    concurrent writers (parallel workers, a sweep racing a completion)
+    serialise instead of last-writer-wins dropping each other's updates.
     """
     path = Path(output_dir) / RUN_METADATA_FILE
-    metadata = load_json(path)
-    if metadata is None:
-        raise FileNotFoundError(f"No {RUN_METADATA_FILE} in {output_dir} — call start_run() first")
-    if not isinstance(metadata, dict):
-        raise ValueError(  # noqa: TRY004 — data validity, not argument type; callers catch ValueError
-            f"Malformed {RUN_METADATA_FILE} in {output_dir} — expected JSON object")
-    current = metadata.get("status")
-    if current in _TERMINAL_STATUSES and current != status:
-        logger.warning(
-            "Refusing to overwrite terminal status %r → %r in %s "
-            "(probable double-finalisation; investigate caller)",
-            current, status, output_dir,
-        )
-        return
-    metadata["status"] = status
+    with _metadata_lock(path):
+        metadata = load_json(path)
+        if metadata is None:
+            raise FileNotFoundError(f"No {RUN_METADATA_FILE} in {output_dir} — call start_run() first")
+        if not isinstance(metadata, dict):
+            # ValueError (not TypeError): malformed on-disk data, and the
+            # exception type callers already handle.
+            raise ValueError(  # noqa: TRY004
+                f"Malformed {RUN_METADATA_FILE} in {output_dir} — expected JSON object")
+        current = metadata.get("status")
+        if current in _TERMINAL_STATUSES and current != status:
+            logger.warning(
+                "Refusing to overwrite terminal status %r → %r in %s "
+                "(probable double-finalisation; investigate caller)",
+                current, status, output_dir,
+            )
+            return
+        metadata["status"] = status
 
-    if record_timing:
-        now = datetime.now(timezone.utc)
-        metadata["end_timestamp"] = now.isoformat()
-        start_ts = metadata.get("timestamp")
-        if start_ts:
-            try:
-                start_dt = datetime.fromisoformat(start_ts)
-                metadata["duration_seconds"] = round((now - start_dt).total_seconds(), 1)
-            except (ValueError, TypeError):
-                pass
+        if record_timing:
+            now = datetime.now(timezone.utc)
+            metadata["end_timestamp"] = now.isoformat()
+            start_ts = metadata.get("timestamp")
+            if start_ts:
+                try:
+                    start_dt = datetime.fromisoformat(start_ts)
+                    metadata["duration_seconds"] = round((now - start_dt).total_seconds(), 1)
+                except (ValueError, TypeError):
+                    pass
 
-    if extra:
-        existing_extra = metadata.get("extra") or {}
-        existing_extra.update(extra)
-        metadata["extra"] = existing_extra
+        if extra:
+            existing_extra = metadata.get("extra") or {}
+            existing_extra.update(extra)
+            metadata["extra"] = existing_extra
 
-    if manifest:
-        # Merge caller-supplied end-of-run provenance into the start-sealed
-        # manifest. Shallow top-level merge: source_control / environment
-        # (sealed at start) stay put; models land here.
-        existing_manifest = metadata.get("manifest") or {}
-        existing_manifest.update(manifest)
-        metadata["manifest"] = existing_manifest
+        if manifest:
+            # Merge caller-supplied end-of-run provenance into the start-sealed
+            # manifest. Shallow top-level merge: source_control / environment
+            # (sealed at start) stay put; models land here.
+            existing_manifest = metadata.get("manifest") or {}
+            existing_manifest.update(manifest)
+            metadata["manifest"] = existing_manifest
 
-    if status == STATUS_COMPLETED:
-        _apply_standard_provenance(metadata, Path(output_dir))
+        if status == STATUS_COMPLETED:
+            _apply_standard_provenance(metadata, Path(output_dir))
 
-    save_json(path, metadata)
+        save_json(path, metadata)
 
 
 def _apply_standard_provenance(metadata: dict[str, Any], output_dir: Path) -> None:

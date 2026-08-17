@@ -45,7 +45,6 @@ import os
 import stat
 import unicodedata
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 
 try:
@@ -369,17 +368,23 @@ def _scan_codeql_config(path: Path) -> FileScan:
 
 
 # ---------------------------------------------------------------------------
-# Top-level scan + cache
+# Top-level scan
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=64)
-def _scan_cached(resolved_path: str) -> tuple[tuple[FileScan, ...], bool]:
-    """Pure scan: returns (scans, any_blocking). Cached because
-    filesystem state for a given resolved path doesn't change within a
-    session. The pack-file-cap warning fires inside this function
-    (once per path, on the uncached call); cache hits suppress it,
-    which is fine — the cap condition is stable for a given path."""
+def _scan_repo(resolved_path: str) -> tuple[tuple[FileScan, ...], bool]:
+    """Pure scan: returns (scans, any_blocking). Deliberately NOT
+    cached. The pack-file set comes from a recursive walk, so no cheap
+    fingerprint can prove freshness (a qlpack.yml written deep in the
+    tree between two checks would not change any fixed-location stat,
+    and a top-level-mtime heuristic misses nested additions entirely) —
+    a per-process cache therefore reintroduces the TOCTOU the trust
+    gate exists to close: the same process runs untrusted target code
+    that can write pack files after the first check. Re-scanning is
+    affordable: the check fires once per ``codeql database create``
+    (packages/codeql/database_manager.py), and two rglob passes are
+    noise next to a DB build measured in minutes. The pack-file-cap
+    warning fires on every call, which is at most once per DB create."""
     target = Path(resolved_path)
     # Skip RAPTOR's own repo — RAPTOR ships codeql packs under
     # packages/llm_analysis/codeql_packs/ that would always flag
@@ -490,7 +495,7 @@ def check_repo_codeql_trust(
         return False
     if trust_override is None:
         trust_override = _trust_override_set
-    scans, any_blocking = _scan_cached(resolved)
+    scans, any_blocking = _scan_repo(resolved)
     if scans:
         target = Path(resolved)
         _render_scan_report(target, scans, any_blocking, trust_override)
@@ -503,8 +508,8 @@ def _render_scan_report(
     any_blocking: bool,
     trust_override: bool,
 ) -> None:
-    """Pure rendering — separated from ``_scan_cached`` so the cache
-    doesn't suppress operator warnings on re-invocation."""
+    """Pure rendering — separated from ``_scan_repo`` so the scan stays
+    side-effect free."""
     safe_target = _safe(str(target))
     if any_blocking:
         if trust_override:

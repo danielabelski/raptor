@@ -1816,7 +1816,13 @@ Examples:
     # ========================================================================
     # PRE-SCAN: Check target repo for malicious Claude Code settings
     # ========================================================================
-    block_cc_dispatch = check_repo_claude_trust(original_repo_path)
+    # Early loud warning only — the verdict is NOT threaded through the
+    # phases. Scanning/analysis runs untrusted target code and LLM-driven
+    # sessions that can write .claude/settings.json / .mcp.json mid-run,
+    # so each CC dispatch site below re-invokes check_repo_claude_trust
+    # immediately before dispatching (the scan cache is keyed on a
+    # config-file fingerprint, so an unchanged repo re-checks for free).
+    check_repo_claude_trust(original_repo_path)
 
     # ========================================================================
     # PHASE 1: CODE SCANNING (Semgrep + CodeQL)
@@ -1851,7 +1857,8 @@ Examples:
         prepass_result = run_understand_prepass(
             target=original_repo_path,
             agentic_out_dir=out_dir,
-            block_cc_dispatch=block_cc_dispatch,
+            # Re-check at dispatch time — the pre-scan verdict may be stale.
+            block_cc_dispatch=check_repo_claude_trust(original_repo_path),
         )
         if prepass_result.ran:
             logger.info(
@@ -2818,7 +2825,9 @@ Examples:
                 no_exploits=args.no_exploits,
                 no_patches=args.no_patches,
                 llm_config=llm_config,
-                block_cc_dispatch=block_cc_dispatch,
+                # Re-check at dispatch time — scanning phases ran untrusted
+                # target code after the pre-scan; the verdict may be stale.
+                block_cc_dispatch=check_repo_claude_trust(original_repo_path),
                 accept_weakened_defenses=args.accept_weakened_defenses,
                 dataflow_validation_enabled=not getattr(args, "no_validate_dataflow", False),
                 deep_validate=getattr(args, "deep_validate", False),
@@ -2853,7 +2862,8 @@ Examples:
             target=original_repo_path,
             agentic_out_dir=out_dir,
             analysis_report=validate_input_report,
-            block_cc_dispatch=block_cc_dispatch,
+            # Re-check at dispatch time — the pre-scan verdict may be stale.
+            block_cc_dispatch=check_repo_claude_trust(original_repo_path),
             allow_unreachable=getattr(args, "allow_unreachable", False),
         )
         if postpass_result.ran:

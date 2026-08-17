@@ -560,8 +560,17 @@ def case_project_lifecycle(ctx: Ctx) -> None:
         ["list"],
         ["coverage"],
         ["findings"],
+        ["notes"],
+        ["report"],
+        ["correlate"],
+        ["provenance"],
+        ["annotations"],
+        ["threat-model"],
+        ["rename", name, "selftest2"],
+        ["use", "selftest2"],
+        ["clean", "--keep", "1"],
         ["none"],
-        ["delete", name, "--force"],
+        ["delete", "selftest2", "--force"],
     ]
     if ctx.fixture_bin is not None:
         steps[9:9] = [
@@ -968,6 +977,208 @@ def _run_afl_matrix(ctx: Ctx, env: dict) -> dict:
                 "stderr_tail": (proc.stderr or "")[-300:]}
 
 
+
+
+# ─── cases: subcommand coverage sweep ───────────────────────────────────
+
+def case_sca_fix_plan(ctx: Ctx) -> None:
+    ctx.run("sca-fix", [
+        sys.executable, "raptor.py", "sca", "fix", str(ctx.fixture_sca),
+    ], env=ctx.env_t0(), timeout=600)
+
+
+def case_sca_purl(ctx: Ctx) -> None:
+    proc = ctx.run("sca-purl", [
+        sys.executable, "raptor.py", "sca", "purl", "PyPI",
+        "django", "4.2.10",
+    ], env=ctx.env_t0(), timeout=60)
+    assert proc.returncode == 0
+
+
+def case_sca_check(ctx: Ctx) -> None:
+    # Pre-install verdict for a known-old release; needs registry
+    # reachability, so tolerate a nonzero verdict/exit but require
+    # the command itself to complete.
+    ctx.run("sca-check", [
+        sys.executable, "raptor.py", "sca", "check", "PyPI",
+        "requests", "2.19.1",
+    ], env=ctx.env_t0(), timeout=300, check=False)
+
+
+def case_sca_upgrade(ctx: Ctx) -> None:
+    ctx.run("sca-upgrade", [
+        sys.executable, "raptor.py", "sca", "upgrade", "PyPI",
+        "requests", "2.19.1", "2.32.3",
+    ], env=ctx.env_t0(), timeout=300, check=False)
+
+
+def case_sca_diff(ctx: Ctx) -> None:
+    src = ctx.artifacts.get("sca_findings")
+    if src is None:
+        raise Skip("sca scan case did not run")
+    ctx.run("sca-diff", [
+        sys.executable, "raptor.py", "sca", "diff", str(src), str(src),
+    ], env=ctx.env_t0(), timeout=120)
+
+
+def case_sca_health(ctx: Ctx) -> None:
+    ctx.run("sca-health", [
+        sys.executable, "raptor.py", "sca", "health",
+    ], env=ctx.env_t0(), timeout=300, check=False)
+
+
+def case_sca_render_gate(ctx: Ctx) -> None:
+    src = ctx.artifacts.get("sca_findings")
+    if src is None:
+        raise Skip("sca scan case did not run")
+    # The fixture produces medium hygiene findings: the CI gate must
+    # pass at a higher threshold and trip at a lower one.
+    hi = ctx.run("sca-render-gate", [
+        sys.executable, "raptor.py", "sca", "render", str(src),
+        "--fail-on-hygiene", "critical",
+    ], env=ctx.env_t0(), timeout=120, check=False)
+    lo = ctx.run("sca-render-gate", [
+        sys.executable, "raptor.py", "sca", "render", str(src),
+        "--fail-on-hygiene", "low",
+    ], env=ctx.env_t0(), timeout=120, check=False)
+    assert hi.returncode == 0, "gate tripped with no critical findings"
+    assert lo.returncode != 0, "gate failed to trip on medium findings"
+
+
+def case_sca_clean_cache(ctx: Ctx) -> None:
+    cache = ctx.out_dir("sca-cache-root")
+    ctx.run("sca-clean-cache", [
+        sys.executable, "raptor.py", "sca", "clean-cache",
+        "--max-age", "30", "--cache-root", str(cache),
+    ], env=ctx.env_t0(), timeout=60, check=False)
+
+
+def case_audit_stale(ctx: Ctx) -> None:
+    base = ctx.out_dir("annotations")
+    ctx.run("audit-stale", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-audit"), "stale",
+        "--annotations-dir", str(base), "--target", str(ctx.fixture),
+    ], env=ctx.env_t0(isolated_home=True), timeout=60, check=False)
+
+
+def case_review_notes(ctx: Ctx) -> None:
+    out = ctx.out_dir("review-notes")
+    rv = str(_RAPTOR_DIR / "libexec" / "raptor-review")
+    env = ctx.env_t0(isolated_home=True)
+    ctx.run("review-notes", [
+        rv, "--out", str(out), "note", "app.py", "ping",
+        "-m", "self-test operator note",
+    ], env=env, timeout=60, check=False)
+    for sub in (["notes"], ["history", "app.py", "ping"],
+                ["coverage"], ["compact"]):
+        ctx.run("review-notes", [rv, "--out", str(out), *sub],
+                env=env, timeout=60, check=False)
+
+
+def case_binary_map(ctx: Ctx) -> None:
+    if ctx.fixture_bin is None:
+        raise Skip("no compiled fixture binary (gcc missing?)")
+    if not (shutil.which("r2") or shutil.which("radare2")):
+        raise Skip("radare2 not on PATH")
+    out = ctx.out_dir("binary-map")
+    ctx.run("binary-map", [
+        sys.executable, "raptor.py", "binary", "map",
+        str(ctx.fixture_bin), "--out", str(out), "--quick",
+    ], env=ctx.env_t0(), timeout=600, check=False)
+    assert any(out.rglob("*.json")), f"binary map produced nothing in {out}"
+
+
+def case_diagram_stdout(ctx: Ctx) -> None:
+    out = ctx.out_dir("diagram-full")
+    cmap = dict(_CONTEXT_MAP)
+    cmap["target"] = str(ctx.fixture)
+    (out / "context-map.json").write_text(json.dumps(cmap))
+    (out / "attack-tree.json").write_text(json.dumps({
+        "target": str(ctx.fixture),
+        "nodes": [
+            {"id": "n1", "label": "entry ping()", "status": "confirmed"},
+            {"id": "n2", "label": "shell exec", "status": "exploring"},
+        ],
+        "edges": [{"from": "n1", "to": "n2"}],
+    }))
+    proc = ctx.run("diagram-stdout", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-render-diagrams"),
+        str(out), "--stdout",
+    ], env=ctx.env_t0(), timeout=120)
+    assert proc.returncode == 0
+    log = (ctx.logs / "diagram-stdout.log").read_text(errors="replace")
+    assert "mermaid" in log or "flowchart" in log, "no diagram emitted"
+
+
+def case_coverage_flags(ctx: Ctx) -> None:
+    cs = str(_RAPTOR_DIR / "libexec" / "raptor-coverage-summary")
+    env = ctx.env_t0(isolated_home=True)
+    for flags in (["--detailed"], ["--gaps"]):
+        ctx.run("coverage-flags", [cs, *flags], env=env, timeout=60,
+                check=False)
+
+
+def case_describe_text(ctx: Ctx) -> None:
+    ctx.run("describe-text", [
+        sys.executable, "raptor.py", "describe",
+        "--target", str(ctx.fixture),
+    ], env=ctx.env_t0(), timeout=180)
+
+
+def case_doctor_strict(ctx: Ctx) -> None:
+    # --strict turns warnings into a nonzero exit; both outcomes are
+    # valid depending on host setup — the case asserts completion.
+    ctx.run("doctor-strict", [
+        sys.executable, "raptor.py", "doctor", "--strict",
+    ], env=ctx.env_t0(), timeout=120, check=False)
+
+
+def case_scorecard_cli(ctx: Ctx) -> None:
+    sc = str(_RAPTOR_DIR / "libexec" / "raptor-llm-scorecard")
+    store = ctx.out_dir("scorecard") / "llm_scorecard.json"
+    for sub in (["summary"], ["list"], ["--json", "summary"]):
+        ctx.run("scorecard-cli", [sc, "--path", str(store), *sub],
+                env=ctx.env_t0(), timeout=60, check=False)
+
+
+def case_scan_extra_config(ctx: Ctx) -> None:
+    _require("semgrep")
+    out = ctx.out_dir("scan-extra")
+    rule = ctx.scratch / "extra-rule.yml"
+    rule.write_text(
+        "rules:\n"
+        "  - id: selftest-extra-system\n    languages: [python]\n"
+        "    severity: ERROR\n    message: extra-config rule fired\n"
+        "    pattern: os.system(...)\n"
+    )
+    ctx.run("scan-extra", [
+        sys.executable, "raptor.py", "scan",
+        "--repo", str(ctx.fixture), "--out", str(out),
+        "--policy-groups", "secrets",
+        "--no-codeql", "--no-cocci",
+        "--extra-config", str(rule),
+    ], env=ctx.env_t0(), timeout=900)
+    combined = out / "combined.sarif"
+    assert combined.is_file()
+    assert "selftest-extra-system" in combined.read_text(), (
+        "operator --extra-config rule did not fire"
+    )
+
+
+def case_analyze_no_llm_degrade(ctx: Ctx) -> None:
+    sarif = ctx.artifacts.get("scan_sarif")
+    if sarif is None:
+        raise Skip("scan case did not run")
+    out = ctx.out_dir("analyze-degrade")
+    # With no LLM reachable, analyze must terminate cleanly (any exit
+    # code) rather than hang or crash uncontrolled.
+    ctx.run("analyze-degrade", [
+        sys.executable, "raptor.py", "analyze",
+        "--repo", str(ctx.fixture), "--sarif", str(sarif),
+        "--out", str(out), "--max-findings", "1",
+    ], env=ctx.env_t0(), timeout=600, check=False)
+
+
 # ─── cases: tier 1 (LLM, budget-capped) ─────────────────────────────────
 
 def _llm_model_args(ctx: Ctx) -> list[str]:
@@ -1060,6 +1271,24 @@ CASES: list[tuple[str, str, object]] = [
     ("resolve-mode", "t0", case_resolve_mode),
     ("audit-mechanical-sweep", "t0", case_audit_mechanical),
     ("tool-sandbox-matrix", "t0", case_tool_sandbox_matrix),
+    ("sca-fix-plan", "t0", case_sca_fix_plan),
+    ("sca-purl", "t0", case_sca_purl),
+    ("sca-check", "t0", case_sca_check),
+    ("sca-upgrade", "t0", case_sca_upgrade),
+    ("sca-diff", "t0", case_sca_diff),
+    ("sca-health", "t0", case_sca_health),
+    ("sca-render-gate", "t0", case_sca_render_gate),
+    ("sca-clean-cache", "t0", case_sca_clean_cache),
+    ("audit-stale", "t0", case_audit_stale),
+    ("review-notes", "t0", case_review_notes),
+    ("binary-map", "t0", case_binary_map),
+    ("diagram-stdout", "t0", case_diagram_stdout),
+    ("coverage-flags", "t0", case_coverage_flags),
+    ("describe-text", "t0", case_describe_text),
+    ("doctor-strict", "t0", case_doctor_strict),
+    ("scorecard-cli", "t0", case_scorecard_cli),
+    ("scan-extra-config", "t0", case_scan_extra_config),
+    ("analyze-no-llm-degrade", "t0", case_analyze_no_llm_degrade),
     ("binary-oracle-e2e", "deep", case_binary_oracle_e2e),
     ("llm-ask", "llm", case_llm_ask),
     ("audit-llm-tiny", "llm", case_audit_llm),

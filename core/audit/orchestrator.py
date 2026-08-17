@@ -5648,7 +5648,9 @@ def _run_audit_body(
         ns_vocab = None
         with contextlib.suppress(Exception):
             from .condition_smt import DomainVocabulary
-            ns_vocab = DomainVocabulary.from_domain_model(domain_model)
+            ns_vocab = DomainVocabulary.from_domain_model(
+                domain_model, target_path=config.target_path,
+            )
         for nf in check_resource_exhaustion(
             gaps, target_path=tp, domain_vocab=ns_vocab,
         ):
@@ -6505,7 +6507,9 @@ class _InjectModeResolver:
             with contextlib.suppress(Exception):
                 from .journal import load_domain_model
                 dm = load_domain_model(config.out_dir)
-            self._vocab = DomainVocabulary.from_domain_model(dm)
+            self._vocab = DomainVocabulary.from_domain_model(
+                dm, target_path=config.target_path,
+            )
         except Exception:
             logger.debug("inject resolver: check_lock_domain unavailable", exc_info=True)
 
@@ -10993,7 +10997,9 @@ def _run_prefilter_for_gap(
         gap.get("line_start", 0),
         gap.get("line_end"),
     )
-    vocab = DomainVocabulary.from_domain_model(domain_model) if domain_model else None
+    vocab = DomainVocabulary.from_domain_model(
+        domain_model, target_path=config.target_path,
+    )
     return run_prefilter(
         target_path=config.target_path,
         file_path=gap["file"],
@@ -11767,8 +11773,11 @@ def _run_tool_chain(
             from .condition_smt import DomainVocabulary
             from .journal import load_domain_model
             dm = load_domain_model(config.out_dir)
-            if dm:
-                domain_vocab = DomainVocabulary.from_domain_model(dm)
+            domain_vocab = DomainVocabulary.from_domain_model(
+                dm, target_path=effective_target,
+            )
+            if not domain_vocab.has_content:
+                domain_vocab = None
 
     for entry in chain:
         tool_type = entry["type"]
@@ -11889,6 +11898,7 @@ def _run_tool_chain(
                     verb=tool_cfg["verb"],
                     source=source or "",
                     hypothesis=hypothesis,
+                    target_path=str(effective_target),
                 )
                 if smt_result.outcome == "confirmed":
                     confirmed.append(f"smt:{tool_cfg['verb']}")
@@ -12967,6 +12977,7 @@ def _proactive_validate(
                 function_name=outcome.function,
                 source=source_text,
                 hypothesis=outcome.hypothesis or "",
+                target_path=str(config.target_path),
             )
             if smt_result.outcome == "confirmed":
                 confirmed_tools.append(f"smt:{smt_verb}")
@@ -16205,7 +16216,9 @@ def _pre_loop_smt_screen(
     with contextlib.suppress(Exception):
         from .journal import load_domain_model
         dm = load_domain_model(config.out_dir)
-    vocab = DomainVocabulary.from_domain_model(dm)
+    vocab = DomainVocabulary.from_domain_model(
+        dm, target_path=config.target_path,
+    )
 
     kept: list = []
     screened = 0
@@ -16229,7 +16242,7 @@ def _pre_loop_smt_screen(
 
         tool_hit = ""
         with contextlib.suppress(Exception):
-            abr = check_auth_bypass(source)
+            abr = check_auth_bypass(source, vocab)
             if abr.bypass_found:
                 tool_hit = "smt:check-auth-bypass"
                 if abr.witness:
@@ -16383,7 +16396,9 @@ def _promote_smt_clean(
     with contextlib.suppress(Exception):
         from .journal import load_domain_model
         dm = load_domain_model(config.out_dir)
-    vocab = DomainVocabulary.from_domain_model(dm)
+    vocab = DomainVocabulary.from_domain_model(
+        dm, target_path=config.target_path,
+    )
 
     for i, outcome in enumerate(result.outcomes):
         if outcome.status != "clean":
@@ -16411,7 +16426,7 @@ def _promote_smt_clean(
         tool_hit = ""
 
         try:
-            abr = check_auth_bypass(source)
+            abr = check_auth_bypass(source, vocab)
             if abr.bypass_found:
                 tool_hit = "smt:check-auth-bypass"
                 if abr.witness:

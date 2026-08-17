@@ -1,7 +1,10 @@
 """Tests for condition_smt — constant-to-SMT bridge for guard sufficiency."""
 
 
+from core.audit.condition_extraction import GuardCondition, SinkGuard
 from core.audit.condition_smt import (
+    _SECURITY_FIELDS,
+    _extract_lock_object,
     check_all_sufficiency,
     check_early_release,
     check_guard_sufficiency,
@@ -12,11 +15,7 @@ from core.audit.condition_smt import (
     check_signed_mismatch,
     constraints_for_guard,
     extract_bounds_constraints,
-    _extract_lock_object,
-    _SECURITY_FIELDS,
 )
-from core.audit.condition_extraction import GuardCondition, SinkGuard
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -239,6 +238,7 @@ class TestContractCompliance:
 
     def test_suppress_evidence_raises(self):
         import pytest
+
         from core.audit.safety_contract import ContractViolation, SuppressEvidence
         with pytest.raises(ContractViolation):
             SuppressEvidence(
@@ -514,7 +514,9 @@ class TestCheckRaceProtection:
             "    return v;\n"
             "}\n"
         )
-        r = check_race_protection(src)
+        # lock_sock/release_sock are pack-tier vocabulary now.
+        from core.audit.vocab_packs import load_pack
+        r = check_race_protection(src, load_pack("linux_kernel"))
         assert r.protected is True
 
     def test_rcu_accessor_in_rcu_scope(self):
@@ -809,7 +811,9 @@ class TestCorrelatedFieldAccess:
             "    task_unlock(task);\n"
             "}\n"
         )
-        r = check_lock_domain(src)
+        # task_lock and the cred/mm/dumpable fields are pack-tier now.
+        from core.audit.vocab_packs import load_pack
+        r = check_lock_domain(src, load_pack("linux_kernel"))
         assert r.mismatch_found
         assert "cred" in r.field or "mm" in r.field or "dumpable" in r.field
 
@@ -842,12 +846,14 @@ class TestCorrelatedFieldAccess:
         assert not r.mismatch_found
 
     def test_security_fields_constant(self):
-        """Ensure _SECURITY_FIELDS has the expected members."""
-        assert "cred" in _SECURITY_FIELDS
-        assert "uid" in _SECURITY_FIELDS
-        assert "mm" in _SECURITY_FIELDS
-        assert "dumpable" in _SECURITY_FIELDS
-        assert "seccomp" in _SECURITY_FIELDS
+        """Seed set stays generic; kernel fields come from the pack."""
+        from core.audit.vocab_packs import load_pack
+
+        assert _SECURITY_FIELDS == frozenset({"uid", "euid", "gid", "egid"})
+        pack = load_pack("linux_kernel")
+        combined = _SECURITY_FIELDS | pack.security_fields
+        for f in ("cred", "uid", "mm", "dumpable", "seccomp"):
+            assert f in combined
 
 
 # ---------------------------------------------------------------------------

@@ -1286,6 +1286,21 @@ def _smt_args_have_guards(smt_args: dict[str, Any]) -> bool:
     return False
 
 
+def _verb_vocab(target_path: str | None):
+    """Vocab for the SMT verb checkers: target-kind pack (learned
+    domain vocabulary is unavailable in the verb child — the pack keeps
+    kernel-name coverage at today's level)."""
+    from core.audit.condition_smt import _EMPTY_VOCAB, DomainVocabulary
+    if not target_path:
+        return _EMPTY_VOCAB
+    try:
+        return DomainVocabulary.from_domain_model(
+            None, target_path=target_path,
+        )
+    except Exception:  # noqa: BLE001 — checker runs on seeds if the pack fails
+        return _EMPTY_VOCAB
+
+
 def run_smt_verb_direct(
     *,
     file_path: str,
@@ -1293,12 +1308,17 @@ def run_smt_verb_direct(
     verb: str,
     source: str,
     hypothesis: str,
+    target_path: str | None = None,
 ) -> SweepResult:
     """Call an SMT verb directly from Python (no shim subprocess).
 
     Extracts operands from the hypothesis text and calls the verb
     function.  Falls back to inconclusive if operands can't be extracted
     or Z3 is unavailable.
+
+    ``target_path`` gates the target-kind vocab packs so the mechanical
+    checkers keep kernel-API coverage on kernel targets (the checkers'
+    hardcoded lists are seed-sized).
 
     Runs in a forked subprocess so Z3 assertion failures (segfaults in
     the C++ core) return inconclusive instead of killing the parent.
@@ -1309,6 +1329,7 @@ def run_smt_verb_direct(
         verb=verb,
         source=source,
         hypothesis=hypothesis,
+        target_path=target_path,
     )
 
 
@@ -1329,6 +1350,7 @@ def _smt_verb_in_subprocess(
     source: str,
     hypothesis: str,
     timeout: int = 10,
+    target_path: str | None = None,
 ) -> SweepResult:
     """Run SMT verb in an isolated subprocess.
 
@@ -1342,6 +1364,7 @@ def _smt_verb_in_subprocess(
         "verb": verb,
         "source": source,
         "hypothesis": hypothesis,
+        "target_path": target_path,
     })
     try:
         proc = subprocess.run(
@@ -1378,8 +1401,10 @@ def _run_smt_verb_inner(
     verb: str,
     source: str,
     hypothesis: str,
+    target_path: str | None = None,
 ) -> SweepResult:
     """Actual SMT verb execution (runs inside forked child)."""
+    vocab = _verb_vocab(target_path)
     try:
         if verb == "check-negative-bypass":
             from packages.exploit_feasibility.smt_verbs import check_negative_bypass
@@ -1492,7 +1517,7 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            auth_result = check_auth_bypass(source)
+            auth_result = check_auth_bypass(source, vocab)
             if auth_result.bypass_found:
                 return SweepResult(
                     tool="smt", file_path=file_path,
@@ -1536,7 +1561,7 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            lock_result = check_lock_discipline(source)
+            lock_result = check_lock_discipline(source, vocab)
             if lock_result.violation_found:
                 return SweepResult(
                     tool="smt", file_path=file_path,
@@ -1558,7 +1583,7 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            null_result = check_null_propagation(source)
+            null_result = check_null_propagation(source, vocab)
             if null_result.null_deref_found:
                 return SweepResult(
                     tool="smt", file_path=file_path,
@@ -1580,7 +1605,7 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            leak_result = check_resource_leak(source)
+            leak_result = check_resource_leak(source, vocab)
             if leak_result.leak_found:
                 return SweepResult(
                     tool="smt", file_path=file_path,
@@ -1602,7 +1627,7 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            er_result = check_early_release(source)
+            er_result = check_early_release(source, vocab)
             if er_result.early_release_found:
                 return SweepResult(
                     tool="smt", file_path=file_path,
@@ -1624,7 +1649,7 @@ def _run_smt_verb_inner(
                     function_name=function_name, outcome="inconclusive",
                     rule_id=f"smt:{verb}",
                 )
-            ld_result = check_lock_domain(source)
+            ld_result = check_lock_domain(source, vocab)
             if ld_result.mismatch_found:
                 return SweepResult(
                     tool="smt", file_path=file_path,

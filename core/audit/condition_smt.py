@@ -1299,15 +1299,36 @@ def check_all_sufficiency(
 # Auth bypass detection
 # ---------------------------------------------------------------------------
 
+# SEED SET — shape patterns (LSM prefix family, cred field access) plus
+# two canonical exemplars. The kernel predicate bulk (ns_capable,
+# inode_permission, ptrace_may_access, ...) lives in the linux_kernel
+# vocab pack; project predicates arrive via
+# DomainVocabulary.auth_predicates. Do not grow this list — teach the
+# study loop / pack instead.
 _AUTH_CHECK_PATTERNS = [
-    (re.compile(r"\b(capable|ns_capable|file_ns_capable|ptrace_has_cap|has_ns_capability)\s*\("), "capability"),
+    (re.compile(r"\b(capable)\s*\("), "capability"),
     (re.compile(r"\b(security_\w+)\s*\("), "lsm"),
-    (re.compile(r"\b(inode_permission|generic_permission|may_open)\s*\("), "permission"),
-    (re.compile(r"\b(uid_eq|gid_eq)\s*\("), "uid"),
+    (re.compile(r"\b(uid_eq)\s*\("), "uid"),
     (re.compile(r"\bcred->(uid|euid|suid|fsuid)\b"), "uid"),
-    (re.compile(r"\b(current_uid|current_euid|from_kuid|from_kgid)\s*\("), "uid"),
-    (re.compile(r"\b(ptrace_may_access|__ptrace_may_access)\s*\("), "ptrace"),
 ]
+
+
+def _auth_patterns(
+    vocab: DomainVocabulary = _EMPTY_VOCAB,
+) -> list[tuple[re.Pattern, str]]:
+    """Seed auth patterns extended with vocab-supplied predicates."""
+    patterns = list(_AUTH_CHECK_PATTERNS)
+    if vocab.auth_predicates:
+        by_kind: dict[str, list[str]] = {}
+        for name, kind in sorted(vocab.auth_predicates):
+            by_kind.setdefault(kind, []).append(name)
+        for kind in sorted(by_kind):
+            alts = "|".join(
+                re.escape(n)
+                for n in sorted(by_kind[kind], key=len, reverse=True)
+            )
+            patterns.append((re.compile(rf"\b({alts})\s*\("), kind))
+    return patterns
 
 _SUCCESS_RETURN_RE = re.compile(
     r"^\s*return\s+(0|nil|None|True|true|EXIT_SUCCESS)\s*;?\s*$",
@@ -1346,7 +1367,10 @@ class AuthBypassResult:
         return d
 
 
-def check_auth_bypass(source: str) -> AuthBypassResult:
+def check_auth_bypass(
+    source: str,
+    vocab: DomainVocabulary = _EMPTY_VOCAB,
+) -> AuthBypassResult:
     """Detect auth check bypass via early success return.
 
     Scans for the pattern: a success return (return 0) guarded by a
@@ -1363,7 +1387,7 @@ def check_auth_bypass(source: str) -> AuthBypassResult:
 
     lines = source.split("\n")
 
-    auth_checks = _extract_auth_checks(lines)
+    auth_checks = _extract_auth_checks(lines, vocab)
     if not auth_checks:
         return AuthBypassResult(reasoning="no auth checks found in source")
 
@@ -1424,18 +1448,20 @@ def check_auth_bypass(source: str) -> AuthBypassResult:
 
 def _extract_auth_checks(
     lines: list[str],
+    vocab: DomainVocabulary = _EMPTY_VOCAB,
 ) -> list[tuple[int, str, str]]:
     """Extract (line_idx, check_type, call_text) for auth checks.
 
     call_text includes function name and arguments so that e.g.
     capable(CAP_SYS_ADMIN) and capable(CAP_NET_ADMIN) are distinct.
     """
+    patterns = _auth_patterns(vocab)
     results: list[tuple[int, str, str]] = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if stripped.startswith(("//", "/*")):
             continue
-        for pattern, check_type in _AUTH_CHECK_PATTERNS:
+        for pattern, check_type in patterns:
             m = pattern.search(line)
             if m:
                 call_text = _extract_call_text(line, m.start())
@@ -1531,20 +1557,19 @@ def _try_z3_auth_bypass(
 # Lock discipline verification
 # ---------------------------------------------------------------------------
 
+# SEED SET — the three canonical kernel exemplars (kept because they
+# double as documentation of the pattern shape). The kernel lock-pair
+# bulk (down_read/up_read, lock_sock/release_sock, local_irq_*,
+# preempt_*, ...) lives in the linux_kernel vocab pack; project pairs
+# arrive via DomainVocabulary.lock_pairs (exact pairing) or the
+# lock_acquires/lock_releases name sets (heuristic pairing). The
+# suffix-based *_lock/*_unlock discovery below covers conventional
+# names mechanically. Do not grow this list — teach the study loop /
+# pack instead.
 _LOCK_PAIRS = [
     (re.compile(r"\b(spin_lock(?:_irq(?:save)?|_bh)?)\s*\("), "spin_unlock"),
     (re.compile(r"\b(mutex_lock(?:_interruptible|_killable)?)\s*\("), "mutex_unlock"),
-    (re.compile(r"\b(down_read)\s*\("), "up_read"),
-    (re.compile(r"\b(down_write)\s*\("), "up_write"),
-    (re.compile(r"\b(read_lock(?:_irq(?:save)?|_bh)?)\s*\("), "read_unlock"),
-    (re.compile(r"\b(write_lock(?:_irq(?:save)?|_bh)?)\s*\("), "write_unlock"),
     (re.compile(r"\b(rcu_read_lock)\s*\("), "rcu_read_unlock"),
-    (re.compile(r"\b(raw_spin_lock(?:_irq(?:save)?)?)\s*\("), "raw_spin_unlock"),
-    (re.compile(r"\b(lock_sock(?:_nested)?)\s*\("), "release_sock"),
-    (re.compile(r"\b(task_lock)\s*\("), "task_unlock"),
-    (re.compile(r"\b(local_irq_save)\s*\("), "local_irq_restore"),
-    (re.compile(r"\b(local_irq_disable)\s*\("), "local_irq_enable"),
-    (re.compile(r"\b(preempt_disable)\s*\("), "preempt_enable"),
 ]
 
 _RETURN_RE = re.compile(r"^\s*return\b", re.MULTILINE)
@@ -1711,15 +1736,25 @@ def _extract_lock_acquires(
     Empty string when the argument cannot be parsed.
     """
     pairs = list(_LOCK_PAIRS)
+    used = {m.pattern for m, _ in _LOCK_PAIRS}
+    # Exact pairs first (vocab packs, study-discovered paired_operations).
+    for acq, rel in sorted(vocab.lock_pairs):
+        pat_str = rf"\b({re.escape(acq)})\s*\("
+        if pat_str in used:
+            continue
+        pairs.append((re.compile(pat_str), rel))
+        used.add(pat_str)
+    # Name-set fallback: heuristically pair acquire/release names when
+    # only the flat sets are available.
     if vocab.lock_acquires and vocab.lock_releases:
-        used = {m.pattern for m, _ in _LOCK_PAIRS}
-        for acq in vocab.lock_acquires:
+        for acq in sorted(vocab.lock_acquires):
             pat_str = rf"\b({re.escape(acq)})\s*\("
             if pat_str in used:
                 continue
-            for rel in vocab.lock_releases:
+            for rel in sorted(vocab.lock_releases):
                 if _paired_name_match(acq, rel):
                     pairs.append((re.compile(pat_str), rel))
+                    used.add(pat_str)
                     break
     # Suffix-based discovery: scan for *_lock() / *_unlock() pairs
     # not already covered by explicit pairs or vocab.
@@ -1959,20 +1994,24 @@ def _z3_lock_discipline_check(
 # Error path resource leak detection
 # ---------------------------------------------------------------------------
 
+# SEED SET — universal libc allocators, the two canonical kernel
+# exemplars, and the subsystem shape regex. The kernel allocator bulk
+# (kvmalloc, devm_kzalloc, alloc_skb, kstrdup, ...) lives in the
+# linux_kernel vocab pack; project allocators arrive via
+# DomainVocabulary.allocators / refcount_gets. Do not grow this list —
+# teach the study loop / pack instead.
 _ALLOC_PATTERNS = [
-    re.compile(r"\b(\w+)\s*=\s*(kmalloc|kzalloc|kcalloc|kvmalloc|kvzalloc|devm_kzalloc|devm_kmalloc)\s*\("),
-    re.compile(r"\b(\w+)\s*=\s*(alloc_skb|alloc_netdev|alloc_etherdev)\s*\("),
-    re.compile(r"\b(\w+)\s*=\s*(kstrdup|kstrndup|kmemdup|kasprintf)\s*\("),
-    re.compile(r"\b(\w+)\s*=\s*(vzalloc|vmalloc)\s*\("),
     re.compile(r"\b(\w+)\s*=\s*(malloc|calloc|realloc)\s*\("),
-    re.compile(r"\b(\w+)\s*=\s*(create_workqueue|alloc_workqueue)\s*\("),
+    re.compile(r"\b(\w+)\s*=\s*(kmalloc|kzalloc)\s*\("),
     re.compile(r"\b(\w+)\s*=\s*(\w+_alloc_\w+)\s*\("),
 ]
 
+# SEED SET — universal free plus the canonical kernel exemplar; the
+# kernel deallocator bulk lives in the linux_kernel vocab pack, and
+# project deallocators arrive via DomainVocabulary.deallocators /
+# refcount_puts (the *_free_* shape regex below stays).
 _FREE_NAMES = frozenset({
-    "kfree", "kvfree", "vfree", "kfree_skb", "free_netdev",
-    "kfree_sensitive", "devm_kfree", "free",
-    "destroy_workqueue",
+    "free", "kfree",
 })
 
 _FREE_RE = re.compile(r"\b(\w+_free_\w+)\s*\(")
@@ -2412,20 +2451,8 @@ def _z3_resource_leak_check(
 # Null propagation detection
 # ---------------------------------------------------------------------------
 
-_NULLABLE_CALLS = re.compile(
-    r"\b(\w+)\s*=\s*("
-    r"kmalloc|kzalloc|kcalloc|kvmalloc|kvzalloc|vzalloc|vmalloc"
-    r"|kstrdup|kstrndup|kmemdup|kasprintf"
-    r"|devm_kzalloc|devm_kmalloc"
-    r"|alloc_skb|alloc_netdev|alloc_etherdev"
-    r"|malloc|calloc|realloc"
-    r"|kobj_to_dev|of_find_node_by_name|of_get_child_by_name"
-    r"|dev_get_drvdata|platform_get_resource"
-    r"|request_firmware|dma_alloc_coherent"
-    r"|get_zeroed_page|__get_free_pages"
-    r"|create_workqueue|alloc_workqueue"
-    r")\s*\("
-)
+# Derived from the _NULLABLE_CALL_NAMES seed set below (kept as a
+# module-level compiled default for the no-vocab fast path).
 
 _NULL_CHECK_RE_TEMPLATE = r"(?:if\s*\(\s*!{var}\s*\)|if\s*\(\s*{var}\s*==\s*NULL\s*\)|if\s*\(\s*IS_ERR(?:_OR_NULL)?\s*\(\s*{var}\s*\)\s*\)|if\s*\(\s*unlikely\s*\(\s*!{var}\s*\)\s*\))"
 
@@ -2502,17 +2529,15 @@ def check_null_propagation(
     )
 
 
+# SEED SET — universal libc allocators plus the two canonical kernel
+# exemplars. The kernel bulk (kv*/devm_* allocators, driver-model
+# getters like dev_get_drvdata / platform_get_resource) lives in the
+# linux_kernel vocab pack; project names arrive via
+# DomainVocabulary.allocators and .nullable_returns. Do not grow this
+# list — teach the study loop / pack instead.
 _NULLABLE_CALL_NAMES = frozenset({
-    "kmalloc", "kzalloc", "kcalloc", "kvmalloc", "kvzalloc", "vzalloc",
-    "vmalloc", "kstrdup", "kstrndup", "kmemdup", "kasprintf",
-    "devm_kzalloc", "devm_kmalloc",
-    "alloc_skb", "alloc_netdev", "alloc_etherdev",
     "malloc", "calloc", "realloc",
-    "kobj_to_dev", "of_find_node_by_name", "of_get_child_by_name",
-    "dev_get_drvdata", "platform_get_resource",
-    "request_firmware", "dma_alloc_coherent",
-    "get_zeroed_page", "__get_free_pages",
-    "create_workqueue", "alloc_workqueue",
+    "kmalloc", "kzalloc",
 })
 
 
@@ -2520,6 +2545,9 @@ def _build_nullable_re(extra: frozenset = frozenset()) -> re.Pattern:
     names = _NULLABLE_CALL_NAMES | extra
     alts = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
     return re.compile(rf"\b(\w+)\s*=\s*({alts})\s*\(")
+
+
+_NULLABLE_CALLS = _build_nullable_re()
 
 
 _EXIT_RE = re.compile(
@@ -2540,7 +2568,10 @@ def _extract_nullable_assigns(
     vocab: DomainVocabulary | None = None,
 ) -> list[tuple[int, str, str]]:
     """Extract (line_idx, var_name, source_function) from nullable calls."""
-    extra = vocab.allocators if vocab is not None else frozenset()
+    extra = (
+        (vocab.allocators | vocab.nullable_returns | vocab.refcount_gets)
+        if vocab is not None else frozenset()
+    )
     nullable_re = _NULLABLE_CALLS if not extra else _build_nullable_re(extra)
     results: list[tuple[int, str, str]] = []
     for i, line in enumerate(lines):
@@ -3215,7 +3246,11 @@ def _check_early_release_c(
             stripped = line.lstrip()
             if stripped.startswith(("//", "/*")):
                 continue
-            for _, unlock_name in _LOCK_PAIRS:
+            seed_unlocks = [u for _, u in _LOCK_PAIRS]
+            vocab_unlocks = sorted(
+                {r for _, r in vocab.lock_pairs} | vocab.lock_releases,
+            )
+            for unlock_name in seed_unlocks + vocab_unlocks:
                 unlock_pat = re.compile(
                     r"\b" + re.escape(unlock_name)
                     + r"(?:_irq(?:restore)?|_bh)?\s*\(",
@@ -3461,14 +3496,14 @@ def _check_lock_domain_go(lines: list[str]) -> LockDomainResult:
     return LockDomainResult(reasoning="no cross-lock-domain accesses found")
 
 
+# SEED SET — generic POSIX credential concepts. The kernel
+# task_struct/cred field bulk (cap_effective, dumpable, seccomp, ...)
+# lives in the linux_kernel vocab pack; project fields arrive via
+# DomainVocabulary.security_fields (domain-model security_fields /
+# security_attributes / sensitive_fields keys). Do not grow this list —
+# teach the study loop / pack instead.
 _SECURITY_FIELDS = frozenset({
-    "cred", "uid", "euid", "suid", "fsuid",
-    "gid", "egid", "sgid", "fsgid",
-    "cap_effective", "cap_permitted", "cap_inheritable",
-    "mm", "dumpable",
-    "security", "seccomp",
-    "flags", "personality",
-    "loginuid", "sessionid",
+    "uid", "euid", "gid", "egid",
 })
 
 

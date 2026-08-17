@@ -375,12 +375,14 @@ def _dispatch_smt(
         hypothesis = getattr(outcome, "hypothesis", "") or suggestion
         file_path = ctx.get("file", "")
 
+        target = getattr(config, "target_path", None)
         result = run_smt_verb_direct(
             verb=smt_verb,
             source=source,
             hypothesis=hypothesis,
             file_path=file_path,
             function_name=ctx.get("function", ""),
+            target_path=str(target) if target else None,
         )
         if result:
             status = "confirmed" if result.outcome == "confirmed" else result.outcome

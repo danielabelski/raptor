@@ -1463,7 +1463,10 @@ class TestFormatStringGoGate:
 class TestAuthBypass:
 
     def test_early_return_before_auth_check(self):
+        # ptrace_has_cap is pack-tier vocabulary (kernel targets get it
+        # via the linux_kernel vocab pack; seeds alone no longer carry it).
         from core.audit.condition_smt import check_auth_bypass
+        from core.audit.vocab_packs import load_pack
         source = (
             "int func(struct task *task) {\n"
             "    if (same_thread_group(task, current))\n"
@@ -1473,7 +1476,7 @@ class TestAuthBypass:
             "    return 0;\n"
             "}\n"
         )
-        result = check_auth_bypass(source)
+        result = check_auth_bypass(source, load_pack("linux_kernel"))
         assert result.bypass_found
         assert "ptrace_has_cap" in str(result.bypassed_checks)
 
@@ -2490,6 +2493,9 @@ int check_access(struct task *t) {
     return 0;
 }
 """)
+        # ptrace_has_cap comes from the linux_kernel vocab pack; mark
+        # the target as a kernel tree so the screen's vocab loads it.
+        (tmp_path / "Kconfig").write_text("config FOO\n")
         workqueue = [
             {"file": "auth.c", "name": "check_access", "line_start": 1, "line_end": 7},
         ]

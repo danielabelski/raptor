@@ -213,28 +213,6 @@ def cmd_record(args: argparse.Namespace) -> int:
     func_key = f"{args.file}:{args.function}"
     related_to = args.related_to
 
-    if args.status == "finding":
-        base_tool = (args.evidence_tool or "").split(":", 1)[0].strip().lower()
-        has_receipt = any(
-            e.get("action") == "sweep"
-            and e.get("key") == func_key
-            and (e.get("tool") or "").split(":", 1)[0].strip().lower()
-                == base_tool
-            and e.get("outcome") == "confirmed"
-            and e.get("rule_source") != "manual-attestation"
-            for e in audit_log
-        )
-        if not has_receipt:
-            print(
-                "error [G2 TOOL-GROUNDED]: no executed confirmed "
-                f"'{base_tool}' sweep receipt found for {func_key}.\n"
-                "  Run the sweep first (raptor-audit sweep --tool "
-                f"{base_tool} ...) — operator-attested outcomes "
-                "(manual --outcome logging) do not satisfy G2.",
-                file=sys.stderr,
-            )
-            return 1
-
     has_own_context = any(
         e.get("action") == "context" and e.get("key") == func_key
         for e in audit_log
@@ -325,6 +303,36 @@ def cmd_record(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # G2 (receipt): the named evidence tool must be backed by an
+    # EXECUTED confirmed sweep for this same function. Checked AFTER
+    # the claim-shape gates (G1 hypothesis, G2 tool/vuln-type args,
+    # G4 body): HYPOTHESIS-FIRST doctrine — a malformed claim is
+    # rejected for what it fails to state, not for a missing receipt
+    # it could never earn. (This block used to sit before G5/G1 and
+    # masked their diagnostics.)
+    if args.status == "finding":
+        base_tool = (args.evidence_tool or "").split(":", 1)[0].strip().lower()
+        has_receipt = any(
+            e.get("action") == "sweep"
+            and e.get("key") == func_key
+            and (e.get("tool") or "").split(":", 1)[0].strip().lower()
+                == base_tool
+            and e.get("outcome") == "confirmed"
+            and e.get("rule_source") != "manual-attestation"
+            for e in audit_log
+        )
+        if not has_receipt:
+            print(
+                "error [G2 TOOL-GROUNDED]: no executed confirmed "
+                f"'{base_tool}' sweep receipt found for {func_key}.\n"
+                "  Run the sweep first (raptor-audit sweep --tool "
+                f"{base_tool} ...) — operator-attested outcomes "
+                "(manual --outcome logging) do not satisfy G2.",
+                file=sys.stderr,
+            )
+            return 1
+
 
     # G3: NO-SELF-CRITIQUE — re-recording same function requires a sweep
     # since the last record. First record is always allowed.

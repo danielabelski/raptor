@@ -9,7 +9,6 @@ for deeper analysis and iterative refinement, rather than single-shot prompts.
 import re
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import List, Optional, Dict, Any
 
 from core.llm.providers import LLMProvider
@@ -34,16 +33,6 @@ def _extract_roles(bundle: PromptBundle) -> tuple:
     return user, system
 
 
-class DialogueState(Enum):
-    """State of the dialogue."""
-    INITIAL = "initial"
-    ANALYZING = "analyzing"
-    REFINING = "refining"
-    VALIDATING = "validating"
-    COMPLETE = "complete"
-    FAILED = "failed"
-
-
 @dataclass
 class Message:
     """A single message in the dialogue."""
@@ -51,16 +40,6 @@ class Message:
     content: str
     timestamp: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class DialogueContext:
-    """Context for the dialogue - what we're trying to accomplish."""
-    goal: str  # What we're trying to achieve (e.g., "analyse crash", "refine exploit")
-    crash_info: Optional[Dict] = None  # Crash details if relevant
-    exploit_code: Optional[str] = None  # Exploit code if refining
-    validation_results: Optional[Dict] = None  # Validation results if iterating
-    max_turns: int = 5  # Maximum dialogue turns
 
 
 class MultiTurnAnalyser:

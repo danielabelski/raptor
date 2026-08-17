@@ -121,10 +121,6 @@ def _ok_response(status=200, body=b"", json_body=None, headers=None):
     return Response(status=status, headers=headers or {}, body=body, url="")
 
 
-def _error_response(status, retry_after=None):
-    raise HttpError(f"http {status}", status=status, retry_after=retry_after)
-
-
 # --- _timed_get ---
 
 def test_timed_get_success_returns_body_and_no_error(monkeypatch) -> None:

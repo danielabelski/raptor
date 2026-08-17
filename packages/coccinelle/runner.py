@@ -147,15 +147,6 @@ def _spatch_path() -> str | None:
     return _resolved_spatch
 
 
-def reset_spatch_path_cache() -> None:
-    """Clear the cached spatch path. Call between tests that patch
-    `shutil.which` so the next probe re-resolves PATH.
-    """
-    global _resolved_spatch, _spatch_resolved
-    _resolved_spatch = None
-    _spatch_resolved = False
-
-
 def is_available() -> bool:
     """Check whether spatch is on PATH."""
     # Always re-probe in is_available so test mocks of shutil.which

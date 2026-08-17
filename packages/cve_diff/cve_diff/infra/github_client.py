@@ -331,30 +331,6 @@ def get_commit_files(slug: str, sha: str) -> Optional[list[str]]:
     return _files_from_commit(get_commit(slug, sha))
 
 
-def get_parent_commit_files(slug: str, sha: str) -> Optional[list[str]]:
-    """Return the changed-files list of ``sha``'s first parent, or None.
-
-    Backs `parent_chain_score`. First fetches the candidate commit (memoized
-    with `get_commit`), extracts ``parents[0].sha``, then fetches the parent
-    commit to pull its files. Returns None on any fetch failure, on a root
-    commit (no parents), or on a merge commit whose mainline parent isn't
-    resolvable — all treated as "can't tell" skips upstream.
-    """
-    commit = get_commit(slug, sha)
-    if commit is None:
-        return None
-    parents = commit.get("parents") or []
-    if not parents or not isinstance(parents, list):
-        return None
-    first = parents[0]
-    if not isinstance(first, dict):
-        return None
-    parent_sha = first.get("sha")
-    if not isinstance(parent_sha, str) or not parent_sha:
-        return None
-    return _files_from_commit(get_commit(slug, parent_sha))
-
-
 def reset_for_tests() -> None:
     """Flush memoization + warning state. Tests only.
 

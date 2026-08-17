@@ -588,7 +588,7 @@
     "kind": "literal"
   },
   "core/audit/strategy.py::_PATH_SIGNALS": {
-    "count": 19,
+    "count": 13,
     "kind": "literal"
   },
   "core/audit/strategy.py::_SOURCE_SIGNALS": {

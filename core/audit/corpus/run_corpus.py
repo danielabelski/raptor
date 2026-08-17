@@ -841,10 +841,12 @@ def _run_probe(
         ctx = _build_probe_context(label, source, domain_model_dir=dm_dir)
         prompt = format_context_for_prompt(ctx)
 
+        from core.audit.strategy import learned_vocab
         strategies = infer_strategies(
             file_path=label.source.file,
             function_name=ctx["function"],
             source=source,
+            domain_vocab=learned_vocab(dm_dir) if dm_dir else None,
         )
         primers = primers_for_strategies(strategies)
 

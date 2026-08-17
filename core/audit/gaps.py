@@ -153,6 +153,10 @@ def compute_gaps(
     # and the target path let the fold re-hash each journaled function
     # and drop prior-run coverage whose source has since changed.
     target_path_str = checklist.get("target_path", "")
+    # Study-learned vocabulary (cached per run) routes functions whose
+    # source calls learned project verbs to the right strategy.
+    from .strategy import learned_vocab
+    gap_vocab = learned_vocab(out_dir, target_path_str or None)
     entry_point_sinks = _build_sink_reachability(context_map)
     current_spans: dict[str, tuple] = {}
     items_by_key: dict[str, tuple] = {}
@@ -192,6 +196,8 @@ def compute_gaps(
             return sorted(strategies_from_item(
                 item, fp,
                 reachable_sinks=entry_point_sinks.get(key),
+                target_path=target_path_str or None,
+                domain_vocab=gap_vocab,
             ))
         except Exception:
             logger.debug("strategy inference failed for %s", key, exc_info=True)
@@ -288,6 +294,8 @@ def compute_gaps(
             strategies = strategies_from_item(
                 item, file_path,
                 reachable_sinks=reachable_sinks,
+                target_path=target_path_str or None,
+                domain_vocab=gap_vocab,
             )
 
             if strategy_filter and strategy_filter not in strategies:
@@ -834,7 +842,10 @@ def gap_for_site(
             "line_start": best["line_start"],
             "line_end": best["line_end"],
             "priority": priority,
-            "strategies": sorted(strategies_from_item(best, file_path)),
+            "strategies": sorted(strategies_from_item(
+                best, file_path,
+                target_path=checklist.get("target_path") or None,
+            )),
             "is_stale": False,
             "sloc": best["line_end"] - best["line_start"] + 1,
         }

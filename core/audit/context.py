@@ -209,6 +209,7 @@ def assemble_context(
         from .strategy import strategies_from_item
         item = _find_checklist_item(checklist, file_path, function_name)
         if item:
+            from .strategy import learned_vocab
             strategies = strategies_from_item(
                 item, file_path,
                 reachable_sinks=ctx.get("sinks"),
@@ -216,6 +217,8 @@ def assemble_context(
                 crypto_inventory=ctx.get("crypto_inventory"),
                 ownership_model=ctx.get("ownership_model"),
                 source=ctx.get("source"),
+                target_path=target_path,
+                domain_vocab=learned_vocab(out_dir, target_path),
             )
     except Exception:
         logger.debug(

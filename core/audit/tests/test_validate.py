@@ -345,6 +345,146 @@ class TestDispatchValidate:
         assert "RuntimeError" in postpass.skipped_reason
 
 
+class TestDispatchGates:
+    """Consolidation fixes: the audit handoff shares /agentic's gate
+    chain and truncation policy via core.orchestration.skill_dispatch."""
+
+    def _open_rule_of_two(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.security.rule_of_two._session_has_human_terminal",
+            lambda: True,
+        )
+
+    def test_cc_trust_blocks_dispatch(self, tmp_path, monkeypatch):
+        # Pre-consolidation the audit handoff had NO cc-trust gate: a
+        # repo the operator hadn't trusted for cc dispatch still got a
+        # Claude Code child. Now the same gate as /agentic applies.
+        self._open_rule_of_two(monkeypatch)
+        monkeypatch.setattr(
+            "core.security.cc_trust.check_repo_claude_trust",
+            lambda repo_path, trust_override=None: True,
+        )
+        postpass = _dispatch_validate(
+            target_path=tmp_path,
+            audit_out_dir=tmp_path,
+            findings_path=tmp_path / "findings.json",
+            findings_count=3,
+        )
+        assert not postpass.ran
+        assert "cc_trust" in postpass.skipped_reason
+
+    def test_trusted_repo_passes_gate(self, tmp_path, monkeypatch):
+        # Positive control: gate open -> falls through to the next
+        # check (claude not on PATH here).
+        self._open_rule_of_two(monkeypatch)
+        monkeypatch.setattr(
+            "core.security.cc_trust.check_repo_claude_trust",
+            lambda repo_path, trust_override=None: False,
+        )
+        monkeypatch.setattr(
+            "core.orchestration.skill_dispatch.shutil.which",
+            lambda _: None,
+        )
+        postpass = _dispatch_validate(
+            target_path=tmp_path,
+            audit_out_dir=tmp_path,
+            findings_path=tmp_path / "findings.json",
+            findings_count=3,
+        )
+        assert not postpass.ran
+        assert "claude not on PATH" in postpass.skipped_reason
+
+    def test_launch_oserror_reported_as_launch_failure(
+            self, tmp_path, monkeypatch):
+        # Pre-consolidation only TimeoutExpired was handled around the
+        # CC dispatch; an OSError (binary vanished, exec format error)
+        # fell through to the generic crash handler. The shared runner
+        # classifies it and fails the lifecycle with the reason.
+        from unittest.mock import MagicMock, patch
+
+        self._open_rule_of_two(monkeypatch)
+        monkeypatch.setattr(
+            "core.security.cc_trust.check_repo_claude_trust",
+            lambda repo_path, trust_override=None: False,
+        )
+        monkeypatch.setattr(
+            "core.orchestration.skill_dispatch.shutil.which",
+            lambda _: "/fake/claude",
+        )
+        run_dir = tmp_path / "validate_run"
+        lifecycle_calls = []
+
+        def _lifecycle(cmd, *args, **kwargs):
+            argv = cmd if isinstance(cmd, list) else [cmd]
+            if Path(argv[0]).name == "raptor-run-lifecycle":
+                lifecycle_calls.append(argv[1])
+                if argv[1] == "start":
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    return MagicMock(returncode=0,
+                                     stdout=f"OUTPUT_DIR={run_dir}\n",
+                                     stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def _sandbox(cmd, *args, **kwargs):
+            raise OSError("exec format error")
+
+        with patch("core.orchestration.skill_dispatch.subprocess.run",
+                   side_effect=_lifecycle), \
+             patch("core.orchestration.skill_dispatch."
+                   "run_untrusted_networked", side_effect=_sandbox):
+            postpass = _dispatch_validate(
+                target_path=tmp_path,
+                audit_out_dir=tmp_path,
+                findings_path=tmp_path / "findings.json",
+                findings_count=1,
+            )
+        assert not postpass.ran
+        assert "launch failed" in postpass.skipped_reason
+        assert "fail" in lifecycle_calls
+
+
+class TestSignalSortedTruncation:
+    def test_truncation_keeps_strongest_not_head(self, tmp_path,
+                                                 monkeypatch):
+        # Pre-consolidation the copy head-truncated: with the cap at 2,
+        # an is_exploitable finding in position 5 was silently dropped
+        # while two weak head entries survived.
+        import core.audit.validate as mod
+        monkeypatch.setattr(mod, "_MAX_VALIDATE_FINDINGS", 2)
+
+        src = tmp_path / "findings.json"
+        findings = [{"id": f"WEAK-{i:03d}"} for i in range(4)]
+        findings.append({"id": "STRONG-001", "is_exploitable": True})
+        src.write_text(json.dumps({
+            "stage": "audit", "target_path": "/t", "source": "audit",
+            "findings": findings,
+        }))
+
+        dest = tmp_path / "selected.json"
+        _copy_findings_for_validate(src, dest)
+
+        kept = [f["id"] for f in json.loads(dest.read_text())["findings"]]
+        assert len(kept) == 2
+        assert "STRONG-001" in kept
+
+    def test_truncation_orders_by_score(self, tmp_path, monkeypatch):
+        import core.audit.validate as mod
+        monkeypatch.setattr(mod, "_MAX_VALIDATE_FINDINGS", 1)
+
+        src = tmp_path / "findings.json"
+        src.write_text(json.dumps({
+            "stage": "audit", "target_path": "/t", "source": "audit",
+            "findings": [
+                {"id": "LOW", "exploitability_score": 0.2},
+                {"id": "HIGH", "exploitability_score": 0.9},
+            ],
+        }))
+        dest = tmp_path / "selected.json"
+        _copy_findings_for_validate(src, dest)
+        kept = [f["id"] for f in json.loads(dest.read_text())["findings"]]
+        assert kept == ["HIGH"]
+
+
 class TestValidateDefault:
     def test_validate_defaults_to_true(self, tmp_path):
         from core.audit.orchestrator import OrchestratorConfig

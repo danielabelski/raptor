@@ -75,6 +75,13 @@ class TestStripJsonFences:
         text = "```\nsome text\n```"
         assert strip_json_fences(text) == text
 
+    def test_single_line_fence_with_language_tag(self):
+        # ``_structured_fallback``/Gemini route through this helper
+        # now — the inline copies they replaced handled a one-line
+        # fenced block with the tag on the same line.
+        text = '```json {"a": 1}```'
+        assert strip_json_fences(text) == '{"a": 1}'
+
 
 class TestParseCCStructured:
     def test_valid_json(self):

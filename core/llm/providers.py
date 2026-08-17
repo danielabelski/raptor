@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from core.logging import get_logger
 
+from .cc_adapter import strip_json_fences
 from .config import ModelConfig
 
 # Wire-shape types for tool-use turn primitive. These live in
@@ -556,23 +557,14 @@ class LLMProvider(ABC):
                 0,
             )
         try:
-            content = response.content.strip()
-            # Strip markdown fences: ```json\n...\n``` or ```\n...\n```
-            if content.startswith("```") and content.endswith("```"):
-                if "\n" in content:
-                    content = content.split("\n", 1)[1]
-                else:
-                    content = content[3:]
-                    # Single-line: strip language tag (e.g. "json", "ql")
-                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
-                content = content.rsplit("```", 1)[0]
-            elif content.startswith("```"):
-                if "\n" in content:
-                    content = content.split("\n", 1)[1]
-                else:
-                    content = content[3:]
-                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
-            content = content.strip()
+            # Strip markdown fences via the shared hardened helper.
+            # It prefers the LAST fenced JSON block, defeating
+            # prepend-prefix injection where attacker-influenced
+            # prompt content coaxes the model into echoing a fake
+            # fenced block before its real answer — the inline copy
+            # this replaces kept the weaker first-block behaviour
+            # (see strip_json_fences' docstring).
+            content = strip_json_fences(response.content.strip()).strip()
             parsed = json.loads(content)
             parsed = _coerce_to_schema(parsed, _normalize_schema(schema))
             validated = pydantic_model.model_validate(parsed)
@@ -3118,21 +3110,9 @@ class GeminiProvider(LLMProvider):
                     f"output_tokens={output_tokens})"
                 )
 
-            content = (response.text or "").strip()
-            if content.startswith("```") and content.endswith("```"):
-                if "\n" in content:
-                    content = content.split("\n", 1)[1]
-                else:
-                    content = content[3:]
-                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
-                content = content.rsplit("```", 1)[0].strip()
-            elif content.startswith("```"):
-                if "\n" in content:
-                    content = content.split("\n", 1)[1]
-                else:
-                    content = content[3:]
-                    content = content.lstrip("abcdefghijklmnopqrstuvwxyz")
-                content = content.strip()
+            # Shared hardened fence-stripping (last-block preference
+            # — see _structured_fallback for the injection rationale).
+            content = strip_json_fences((response.text or "").strip()).strip()
             parsed = json.loads(content)
             if not parsed:
                 raise ValueError("Gemini returned empty object in structured mode")

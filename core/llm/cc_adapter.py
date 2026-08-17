@@ -263,6 +263,12 @@ def strip_json_fences(text: str) -> str:
     for part in parts[1::2]:
         lines = part.strip().split("\n", 1)
         candidate = lines[1].strip() if len(lines) > 1 and not lines[0].startswith("{") else part.strip()
+        if candidate and candidate[0] not in "{[":
+            # Single-line fenced block with the language tag on the
+            # same line ("```json {...}```") — drop the tag.
+            head, _, rest = candidate.partition(" ")
+            if head.isalpha() and rest.lstrip()[:1] in ("{", "["):
+                candidate = rest.lstrip()
         if candidate and candidate[0] in "{[":
             last_candidate = candidate
     return last_candidate if last_candidate is not None else text

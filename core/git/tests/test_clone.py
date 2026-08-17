@@ -13,6 +13,24 @@ from core.git.clone import clone_repository, fetch_commit, ls_remote
 _VALID_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
 
+def _strip_pins(cmd: list) -> list:
+    """Drop the ``-c key=val`` hardening pairs between ``git`` and the
+    subcommand so positional assertions target the semantic argv."""
+    assert cmd[0] == "git"
+    out = ["git"]
+    i = 1
+    while i < len(cmd):
+        if cmd[i] == "-c":
+            i += 2
+            continue
+        if cmd[i] == "--no-pager":
+            i += 1
+            continue
+        out.append(cmd[i])
+        i += 1
+    return out
+
+
 def _completed(rc: int, stderr: str = "",
                stdout: str = "") -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(
@@ -39,7 +57,7 @@ def test_successful_clone_calls_sandbox(tmp_path: Path) -> None:
         )
         assert ok is True
         assert mock_run.called
-        cmd = mock_run.call_args.args[0]
+        cmd = _strip_pins(mock_run.call_args.args[0])
         assert cmd[:4] == ["git", "clone", "--depth", "1"]
         kwargs = mock_run.call_args.kwargs
         proxy_hosts = set(kwargs.get("proxy_hosts", []))
@@ -147,8 +165,8 @@ def test_fetch_into_fresh_dir_runs_init_then_remote_then_fetch(
                            _VALID_SHA, depth=5)
         assert ok is True
 
-    local_cmds = [c.args[0] for c in mock_local.call_args_list]
-    net_cmds = [c.args[0] for c in mock_net.call_args_list]
+    local_cmds = [_strip_pins(c.args[0]) for c in mock_local.call_args_list]
+    net_cmds = [_strip_pins(c.args[0]) for c in mock_net.call_args_list]
     assert local_cmds[0][:4] == ["git", "-C", str(repo), "init"]
     assert local_cmds[1][:4] == ["git", "-C", str(repo), "remote"]
     assert local_cmds[1][4:] == ["add", "origin", "https://github.com/foo/bar"]
@@ -175,7 +193,7 @@ def test_fetch_into_existing_repo_skips_init(tmp_path: Path) -> None:
         mock_net.return_value = _completed(0)
         fetch_commit(repo, "https://github.com/foo/bar", _VALID_SHA)
 
-    cmds = [c.args[0] for c in mock_local.call_args_list]
+    cmds = [_strip_pins(c.args[0]) for c in mock_local.call_args_list]
     # First local call should be ``remote add``, not ``init`` —
     # the ``.git`` dir already exists.
     assert "init" not in cmds[0]
@@ -192,7 +210,7 @@ def test_fetch_existing_origin_remote_falls_back_to_set_url(
     (repo / ".git").mkdir(parents=True)
 
     def _side_effect(cmd, **kwargs):
-        if cmd[3:5] == ["remote", "add"]:
+        if _strip_pins(cmd)[3:5] == ["remote", "add"]:
             return _completed(128, stderr="error: remote origin already exists")
         return _completed(0)
 
@@ -202,7 +220,7 @@ def test_fetch_existing_origin_remote_falls_back_to_set_url(
         ok = fetch_commit(repo, "https://github.com/foo/bar", _VALID_SHA)
         assert ok is True
 
-    cmds = [c.args[0] for c in mock_local.call_args_list]
+    cmds = [_strip_pins(c.args[0]) for c in mock_local.call_args_list]
     add_seen = any(c[3:5] == ["remote", "add"] for c in cmds)
     set_url_seen = any(c[3:5] == ["remote", "set-url"] for c in cmds)
     assert add_seen and set_url_seen
@@ -284,9 +302,9 @@ def test_fetch_remote_add_failure_surfaces_both_errors(
     (repo / ".git").mkdir(parents=True)
 
     def _side_effect(cmd, **kwargs):
-        if cmd[3:5] == ["remote", "add"]:
+        if _strip_pins(cmd)[3:5] == ["remote", "add"]:
             return _completed(128, stderr="error: cannot create file (disk full)")
-        if cmd[3:5] == ["remote", "set-url"]:
+        if _strip_pins(cmd)[3:5] == ["remote", "set-url"]:
             return _completed(128, stderr="error: No such remote 'origin'")
         return _completed(0)
 
@@ -790,3 +808,59 @@ class TestSafeGitCommandExecutes:
                 capture_output=True, text=True, check=False,
             )
             assert proc.returncode == 0, (args, proc.stderr)
+
+# ---------------------------------------------------------------------------
+# Config-pin posture: clone / fetch / ls-remote argv
+# ---------------------------------------------------------------------------
+
+def _pin_pairs(cmd: list) -> set:
+    """Extract the ``-c key=val`` pin values from an argv."""
+    return {cmd[i + 1] for i, tok in enumerate(cmd) if tok == "-c"}
+
+
+def test_clone_argv_carries_safe_git_pins(tmp_path: Path) -> None:
+    """clone must run with the per-invocation neutralisation pins
+    (fsmonitor / hooksPath / credential.helper / ...) but NOT the
+    strict transport refusal, which would break the https clone."""
+    with patch("core.sandbox.run_untrusted_networked") as mock_run:
+        mock_run.return_value = _completed(0)
+        clone_repository("https://github.com/foo/bar", tmp_path / "out")
+    pins = _pin_pairs(mock_run.call_args.args[0])
+    assert "core.fsmonitor=" in pins
+    assert "core.hooksPath=/dev/null" in pins
+    assert "credential.helper=" in pins
+    assert "protocol.allow=never" not in pins
+
+
+def test_fetch_local_steps_carry_strict_pins(tmp_path: Path) -> None:
+    """init / remote add never touch a transport, so they get the
+    strict read-only posture — including protocol.allow=never — to
+    neutralise a pre-existing untrusted .git/config."""
+    repo = tmp_path / "repo"
+    with patch("core.sandbox.run_untrusted") as mock_local, \
+         patch("core.sandbox.run_untrusted_networked") as mock_net:
+        mock_local.return_value = _completed(0)
+        mock_net.return_value = _completed(0)
+        fetch_commit(repo, "https://github.com/foo/bar", _VALID_SHA)
+
+    for call in mock_local.call_args_list:
+        pins = _pin_pairs(call.args[0])
+        assert "core.fsmonitor=" in pins
+        assert "protocol.allow=never" in pins
+
+    # The network fetch keeps the base posture only.
+    net_pins = _pin_pairs(mock_net.call_args.args[0])
+    assert "core.fsmonitor=" in net_pins
+    assert "protocol.allow=never" not in net_pins
+
+
+def test_ls_remote_argv_carries_safe_git_pins() -> None:
+    with patch("core.sandbox.run_untrusted_networked") as mock_run:
+        mock_run.return_value = _completed(
+            0, stdout=f"{_VALID_SHA}\trefs/heads/main\n")
+        ls_remote("https://github.com/foo/bar",
+                  proxy_hosts=["github.com"])
+    pins = _pin_pairs(mock_run.call_args.args[0])
+    assert "core.fsmonitor=" in pins
+    assert "core.hooksPath=/dev/null" in pins
+    assert "protocol.allow=never" not in pins

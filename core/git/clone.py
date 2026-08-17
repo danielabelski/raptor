@@ -216,11 +216,13 @@ _SAFE_GIT_OVERRIDES = (
 # These land AFTER _SAFE_GIT_OVERRIDES in the argv; git honours the
 # LAST `-c` occurrence for a key, so the strict pins win.
 #
-# Do NOT use the strict variant for clone_repository / fetch_commit /
-# ls_remote — those are the network entry points and genuinely need
+# Do NOT use the strict variant for the NETWORK argv in
+# clone_repository / fetch_commit / ls_remote — those genuinely need
 # the https transport; protocol.allow=never would break every one of
-# them. They keep safe_git_command posture (per-protocol pins) plus
-# the sandbox egress proxy as their network control.
+# them. Their network argv use safe_git_command (per-protocol pins)
+# plus the sandbox egress proxy as the network control; fetch_commit's
+# LOCAL steps (init, remote add/set-url) never touch a transport and
+# do use the strict variant.
 #
 # The clean/smudge KNOWN LIMIT above applies unchanged to the strict
 # variant: filter drivers have repo-chosen names, so no finite `-c`
@@ -278,10 +280,11 @@ def safe_git_readonly_command(*args: str) -> list:
     re-closed — see :data:`_STRICT_READONLY_EXTRA_OVERRIDES`) and pins
     ``core.sshCommand=false``.
 
-    Do NOT use for :func:`clone_repository` / :func:`fetch_commit` /
-    :func:`ls_remote` or any other network operation — those need the
-    https transport and would fail outright under
-    ``protocol.allow=never``. Their network control is the sandbox
+    Do NOT use for network operations (the clone / fetch / ls-remote
+    argv inside :func:`clone_repository` / :func:`fetch_commit` /
+    :func:`ls_remote`) — those need the https transport and would fail
+    outright under ``protocol.allow=never``. They use
+    :func:`safe_git_command`; their network control is the sandbox
     egress proxy, not this tuple.
 
     ``--no-pager`` is included as belt-and-braces with the
@@ -443,7 +446,10 @@ def clone_repository(
         raise ValueError(f"Invalid or untrusted repository URL: {url}")
     _validate_writable_path(target, role="target")
 
-    cmd = ["git", "clone"]
+    # Per-invocation config pins (see _SAFE_GIT_OVERRIDES): the clone
+    # transport is https, which every pin is compatible with, and the
+    # pins also govern the post-transfer checkout of the untrusted tree.
+    cmd = safe_git_command("clone")
     if depth is not None:
         cmd.extend(["--depth", str(depth), "--no-tags"])
     cmd.extend([url, str(target)])
@@ -568,7 +574,10 @@ def fetch_commit(
     if not is_repo:
         logger.info("git init: %s", repo_dir)
         proc = _run(
-            ["git", "-C", str(repo_dir), "init", "--quiet"],
+            # Local step, no transport — strict read-only pins apply
+            # (repo_dir may be a pre-existing clone whose .git/config
+            # is untrusted).
+            safe_git_readonly_command("-C", str(repo_dir), "init", "--quiet"),
             network=False,
         )
         if proc.returncode != 0:
@@ -583,12 +592,17 @@ def fetch_commit(
     # we surface BOTH errors so the operator sees the real cause
     # (e.g. disk full) rather than only the set-url echo.
     add_proc = _run(
-        ["git", "-C", str(repo_dir), "remote", "add", "origin", url],
+        # Local step, no transport — strict read-only pins apply.
+        safe_git_readonly_command(
+            "-C", str(repo_dir), "remote", "add", "origin", url,
+        ),
         network=False,
     )
     if add_proc.returncode != 0:
         set_proc = _run(
-            ["git", "-C", str(repo_dir), "remote", "set-url", "origin", url],
+            safe_git_readonly_command(
+                "-C", str(repo_dir), "remote", "set-url", "origin", url,
+            ),
             network=False,
         )
         if set_proc.returncode != 0:
@@ -605,11 +619,13 @@ def fetch_commit(
         depth, redact_url_secrets_only(url), sha,
     )
     proc = _run(
-        [
-            "git", "-C", str(repo_dir), "fetch",
+        # Network step — base pins only (the strict variant's
+        # protocol.allow=never would refuse the https transport).
+        safe_git_command(
+            "-C", str(repo_dir), "fetch",
             "--depth", str(depth), "--no-tags",
             "origin", sha,
-        ],
+        ),
         network=True,
     )
     if proc.returncode != 0:
@@ -772,7 +788,7 @@ def ls_remote(
                      redact_secrets(url),
                      ",".join(sorted(allowed_lower)))
         proc = run_untrusted_networked(
-            ["git", "ls-remote", "--heads", "--tags", url],
+            safe_git_command("ls-remote", "--heads", "--tags", url),
             target=td,
             output=td,
             env=get_safe_git_env(),

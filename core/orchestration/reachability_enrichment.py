@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.paths import path_to_module
 
@@ -44,10 +44,10 @@ logger = logging.getLogger(__name__)
 
 
 def mark_unreachable_low_priority(
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     target_path: Path,
     *,
-    inventory: Optional[Dict[str, Any]] = None,
+    inventory: dict[str, Any] | None = None,
     allow_unreachable: bool = False,
 ) -> int:
     """Walk ``checklist["files"][*]["items"]`` and mark functions
@@ -87,8 +87,9 @@ def mark_unreachable_low_priority(
 
     if inventory is None:
         try:
-            from core.inventory.builder import build_inventory
             import tempfile
+
+            from core.inventory.builder import build_inventory
             with tempfile.TemporaryDirectory() as td:
                 # Union/raw view in isolation mode so the reachability
                 # query graph matches the operator's declared intent
@@ -195,10 +196,10 @@ _path_to_module = path_to_module
 
 
 def enrich_with_caller_context(
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     target_path: Path,
     *,
-    inventory: Optional[Dict[str, Any]] = None,
+    inventory: dict[str, Any] | None = None,
     max_direct_caller_names: int = 5,
     max_depth: int = 20,
 ) -> int:
@@ -235,8 +236,9 @@ def enrich_with_caller_context(
 
     if inventory is None:
         try:
-            from core.inventory.builder import build_inventory
             import tempfile
+
+            from core.inventory.builder import build_inventory
             with tempfile.TemporaryDirectory() as td:
                 inventory = build_inventory(str(target_path), td)
         except Exception as e:                          # noqa: BLE001
@@ -294,7 +296,7 @@ def enrich_with_caller_context(
                 closure = reverse_closure(
                     inventory, target, max_depth=max_depth,
                 )
-            except Exception:                          # noqa: BLE001
+            except Exception:
                 logger.debug("reachability enrichment failed for %s", target, exc_info=True)
                 continue
 
@@ -317,11 +319,11 @@ def enrich_with_caller_context(
 
 
 def enrich_with_frida_traces(
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
     target_path: Path,
     *,
-    search_dirs: Optional[list] = None,
-    inventory: Optional[Dict[str, Any]] = None,
+    search_dirs: list | None = None,
+    inventory: dict[str, Any] | None = None,
 ) -> int:
     """Annotate checklist items with frida runtime-trace evidence.
 

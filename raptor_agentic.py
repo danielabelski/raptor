@@ -1412,8 +1412,6 @@ Examples:
     )
     parser.add_argument("--check-mitigations", action="store_true",
                        help="Run mitigation analysis before scanning (for binary exploit targets)")
-    parser.add_argument("--skip-mitigation-checks", action="store_true",
-                       help="Skip per-vulnerability mitigation checks during exploit generation")
 
     # Exploitability validation options
     parser.add_argument("--skip-dedup", action="store_true",

@@ -37,3 +37,11 @@ class TestDeadPlumbingStaysRemoved:
             "analysis child does not accept it and no producer writes "
             "sage_precall_scan.json — wire both ends or keep it out"
         )
+
+    def test_no_skip_mitigation_checks_flag(self):
+        src = _source()
+        assert "--skip-mitigation-checks" not in src, (
+            "raptor_agentic.py parses --skip-mitigation-checks again; "
+            "nothing consumes it — wire it to a mitigation-check call "
+            "site or keep it out"
+        )

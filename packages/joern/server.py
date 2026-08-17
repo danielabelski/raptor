@@ -13,11 +13,13 @@ Usage::
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -54,6 +56,11 @@ _QUERY_TIMEOUT_S = 300
 _HEALTH_QUERY = "1+1"
 _SHUTDOWN_GRACE_S = 5
 _REPL_BRIDGE_NAME = "repl-bridge"
+_AUTH_USERNAME = "raptor"
+
+# Per-binary cache for the --server-auth-* capability probe: the probe
+# boots a JVM (a few seconds), so pay it once per process per binary.
+_AUTH_SUPPORT_CACHE: dict[str, bool] = {}
 
 # The Joern server only ever listens on 127.0.0.1.  Loopback traffic
 # must never route through an HTTP proxy — hosts with HTTP_PROXY set
@@ -127,6 +134,36 @@ def _repl_bridge_path() -> str | None:
     return shutil.which(_REPL_BRIDGE_NAME)
 
 
+def _server_auth_supported(binary: str) -> bool:
+    """Probe whether the launcher accepts ``--server-auth-*`` flags.
+
+    Checks the ``--help`` output rather than trial-booting a server.
+    Every joern release RAPTOR supports carries the flags, but an
+    unexpected install must fail closed — the caller refuses to start
+    an unauthenticated server when this returns False.
+    """
+    cached = _AUTH_SUPPORT_CACHE.get(binary)
+    if cached is not None:
+        return cached
+    from core.config import RaptorConfig
+    try:
+        proc = subprocess.run(
+            [binary, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=RaptorConfig.get_safe_env(),
+            check=False,
+        )
+        supported = "--server-auth-username" in (
+            (proc.stdout or "") + (proc.stderr or "")
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        supported = False
+    _AUTH_SUPPORT_CACHE[binary] = supported
+    return supported
+
+
 class JoernServer:
     """Manages a persistent ``joern --server`` process.
 
@@ -138,7 +175,15 @@ class JoernServer:
     (``joern-parse``) that processes untrusted target code runs
     sandboxed via ``core.sandbox.run``.  The server only receives
     RAPTOR-authored CPGQL queries validated by ``_validate_query``,
-    not raw target input.
+    not raw target input.  ``POST /query-sync`` executes arbitrary
+    Scala, so listening on loopback alone is not enough: every boot
+    generates a random HTTP Basic credential (passed via
+    ``--server-auth-username`` / ``--server-auth-password``) and every
+    client request carries the matching Authorization header — other
+    local processes cannot drive the server.  If the installed joern
+    does not support the auth flags, ``start()`` raises rather than
+    exposing an unauthenticated server; callers fall back to the
+    subprocess-per-query runner.
     """
 
     def __init__(
@@ -160,6 +205,8 @@ class JoernServer:
         self._last_post_error: str = ""
         self._restart_lock = threading.Lock()
         self._workdir: str | None = None
+        self._auth_user: str | None = None
+        self._auth_password: str | None = None
 
     def start(self) -> None:
         """Boot the Joern server and wait for readiness."""
@@ -167,6 +214,22 @@ class JoernServer:
             return
 
         binary = _repl_bridge_path() or _joern_path() or "joern"
+
+        # Fail closed on launchers without --server-auth-* support:
+        # an unauthenticated /query-sync executes arbitrary Scala for
+        # any local process.  Raising here routes callers onto the
+        # subprocess-per-query fallback instead.
+        if not _server_auth_supported(binary):
+            logger.error(
+                "installed joern (%s) does not support "
+                "--server-auth-username/--server-auth-password; refusing "
+                "to start an unauthenticated server — callers fall back "
+                "to the subprocess-per-query runner", binary,
+            )
+            raise RuntimeError(
+                "joern launcher lacks --server-auth-* support; "
+                "unauthenticated server mode is disabled"
+            )
 
         # Fresh, empty working directory per boot. Joern treats
         # ``$CWD/workspace/`` as its project store and loads EVERY
@@ -196,10 +259,19 @@ class JoernServer:
             self._port = _find_free_port()
             self._base_url = f"http://127.0.0.1:{self._port}"
 
+            # Per-boot-attempt state: stop() after a failed attempt
+            # clears the credential and removes the workdir.
+            self._auth_user = _AUTH_USERNAME
+            self._auth_password = secrets.token_urlsafe(32)
+            if self._workdir is None:
+                self._workdir = tempfile.mkdtemp(prefix="raptor-joern-ws-")
+
             cmd = [binary] + heap_flags + tuning_flags + [
                 "--server",
                 "--server-host", "127.0.0.1",
                 "--server-port", str(self._port),
+                "--server-auth-username", self._auth_user,
+                "--server-auth-password", self._auth_password,
             ]
 
             logger.info("starting Joern server on 127.0.0.1:%d", self._port)
@@ -333,6 +405,9 @@ class JoernServer:
         self._port = None
         self._base_url = None
         self._cpg_loaded = False
+        # Per-boot credential — a fresh one is generated on start().
+        self._auth_user = None
+        self._auth_password = None
 
         if self._workdir is not None:
             shutil.rmtree(self._workdir, ignore_errors=True)
@@ -547,6 +622,20 @@ class JoernServer:
             )
         return self.query(content, timeout=timeout, validate=True, check_length=False)
 
+    def _auth_headers(self) -> dict[str, str]:
+        """HTTP Basic Authorization header for the per-boot credential.
+
+        Empty when no credential is set (e.g. a unit test poking a
+        bare instance) — the server rejects such requests with 401
+        rather than executing them.
+        """
+        if not self._auth_user or not self._auth_password:
+            return {}
+        token = base64.b64encode(
+            f"{self._auth_user}:{self._auth_password}".encode()
+        ).decode("ascii")
+        return {"Authorization": f"Basic {token}"}
+
     def _post_sync(
         self,
         query_str: str,
@@ -584,7 +673,7 @@ class JoernServer:
             trust_env=False,
         )
         try:
-            resp = client.post(url, json=payload)
+            resp = client.post(url, json=payload, headers=self._auth_headers())
             return resp.json()
         except Exception as e:  # noqa: BLE001 — classified below by message
             if "timed out" in str(e).lower() or "timeout" in type(e).__name__.lower():
@@ -608,7 +697,8 @@ class JoernServer:
         req = Request(
             url,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json",
+                     **self._auth_headers()},
             method="POST",
         )
         try:
@@ -634,12 +724,16 @@ class JoernServer:
         payload = {"query": query_str}
         try:
             if _httpx is not None and self._http_client is not None:
-                resp = self._http_client.post(url, json=payload, timeout=10)
+                resp = self._http_client.post(
+                    url, json=payload, timeout=10,
+                    headers=self._auth_headers(),
+                )
                 data = resp.json()
             else:
                 body = json.dumps(payload).encode("utf-8")
                 req = Request(url, data=body,
-                              headers={"Content-Type": "application/json"},
+                              headers={"Content-Type": "application/json",
+                                       **self._auth_headers()},
                               method="POST")
                 with _NO_PROXY_OPENER.open(req, timeout=10) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -655,10 +749,13 @@ class JoernServer:
         url = f"{self._base_url}/result/{uuid}"
         try:
             if _httpx is not None and self._http_client is not None:
-                resp = self._http_client.get(url, timeout=5)
+                resp = self._http_client.get(
+                    url, timeout=5, headers=self._auth_headers(),
+                )
                 data = resp.json()
             else:
-                req = Request(url, method="GET")
+                req = Request(url, method="GET",
+                              headers=self._auth_headers())
                 with _NO_PROXY_OPENER.open(req, timeout=5) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             if data.get("success") is not None:

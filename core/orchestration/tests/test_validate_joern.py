@@ -219,3 +219,24 @@ class TestConfirmFindingFlow:
             _finding(), FakeServer(error=True), _checklist())
         assert result["confirmed"] is None
         assert "skipped" in result
+
+
+class TestIdentifierFullmatch:
+    def test_trailing_newline_rejected(self):
+        # fullmatch: a $-anchored match() admits "main\n".
+        from core.orchestration.validate_joern import _is_identifier
+        assert _is_identifier("parse_alpha") is True
+        assert _is_identifier("parse_alpha\n") is False
+
+    def test_trailing_newline_function_skips_confirmation(self):
+        finding = {
+            "function": "parse_alpha\n",
+            "file": "entry.c",
+            "line": 25,
+            "proof": {"sink": "memcpy(out, buf, n)"},
+        }
+        srv = FakeServer()
+        confirmation = confirm_finding_flow(finding, srv, _checklist())
+        assert confirmation["confirmed"] is None
+        assert "source method" in confirmation["skipped"]
+        assert srv.flow_queries == []

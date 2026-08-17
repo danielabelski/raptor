@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -22,12 +23,11 @@ from packages.joern.runner import (
     _write_cpg_manifest,
     build_cpg,
     build_cpg_cached,
-    load_cached_cpg,
     cleanup_cpg,
+    load_cached_cpg,
     run_query,
     run_taint_query,
 )
-
 
 # ── Query validation ────────────────────────────────────────────────
 
@@ -131,7 +131,7 @@ class TestParseOutput:
             f"JOERN_FLOW:{json.dumps(steps)}\n"
             "JOERN_FLOWS_END\n"
         )
-        flows, errors = _parse_output(output)
+        flows, _errors = _parse_output(output)
         assert len(flows) == 1
         assert len(flows[0].steps) == 2
         assert not flows[0].is_inter_procedural
@@ -389,7 +389,7 @@ class TestTemplateSlotInjection:
     """Verify that attacker-controlled function/param names cannot
     inject code into Joern query templates."""
 
-    INJECTION_PAYLOADS = [
+    INJECTION_PAYLOADS: ClassVar[list[str]] = [
         '"); Runtime.getRuntime().exec("id"); //',
         "foo\nval x = 1",
         'a"b',
@@ -513,3 +513,96 @@ class TestCPGCaching:
         )
         assert result.path == cpg_dir / "cpg.bin"
         assert len(build_called) == 0
+
+
+class TestValidateSubstitutionValueFullmatch:
+    def test_trailing_newline_rejected(self):
+        # A $-anchored match() admits "foo\n"; fullmatch must not.
+        assert not _validate_substitution_value("parse_header\n")
+
+    def test_trailing_newline_qualified_rejected(self):
+        assert not _validate_substitution_value("os.system\n")
+
+
+class TestBuildCpgSandbox:
+    """on_progress must never bypass the sandbox.
+
+    With core.sandbox available, the build routes through the sandbox
+    runner (the raw-Popen stall monitor is dropped); the monitor path
+    only runs when the sandbox is absent.
+    """
+
+    def _spy_runner(self, calls):
+        def runner(cmd, **kwargs):
+            calls.append({"cmd": cmd, "kwargs": kwargs})
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        return runner
+
+    def test_progress_path_routes_through_sandbox(self, tmp_path, monkeypatch):
+        target = tmp_path / "src"
+        target.mkdir()
+        (target / "a.c").write_text("int f() { return 0; }")
+
+        calls: list = []
+        monkeypatch.setattr(
+            "packages.joern.runner._default_sandbox_runner",
+            lambda: self._spy_runner(calls),
+        )
+
+        def no_raw_popen(*a, **kw):
+            raise AssertionError(
+                "stall monitor must not spawn a raw Popen when the "
+                "sandbox is available"
+            )
+
+        monkeypatch.setattr(
+            "packages.joern.runner.subprocess.Popen", no_raw_popen,
+        )
+
+        progress: list = []
+        cpg = build_cpg(
+            target, on_progress=progress.append, output_dir=tmp_path / "out",
+        )
+        assert cpg.target == target.resolve()
+        assert len(calls) == 1
+        assert calls[0]["kwargs"]["block_network"] is True
+        assert calls[0]["kwargs"]["target"] == str(target.resolve())
+        assert progress  # coarse note replaces per-file streaming
+
+    def test_non_monitor_branch_blocks_network(self, tmp_path, monkeypatch):
+        target = tmp_path / "src"
+        target.mkdir()
+
+        calls: list = []
+        monkeypatch.setattr(
+            "packages.joern.runner._default_sandbox_runner",
+            lambda: self._spy_runner(calls),
+        )
+
+        build_cpg(target, output_dir=tmp_path / "out")
+        assert calls[0]["kwargs"]["block_network"] is True
+
+    def test_sandbox_unavailable_keeps_stall_monitor(self, tmp_path, monkeypatch):
+        target = tmp_path / "src"
+        target.mkdir()
+
+        monkeypatch.setattr(
+            "packages.joern.runner._default_sandbox_runner",
+            lambda: subprocess.run,
+        )
+
+        called: dict = {}
+
+        def fake_monitor_build(cmd, cpg_path, target_, languages, timeout,
+                               on_progress):
+            called["cmd"] = cmd
+            return JoernCPG(path=cpg_path, target=target_)
+
+        monkeypatch.setattr(
+            "packages.joern.runner._build_cpg_with_stall_monitor",
+            fake_monitor_build,
+        )
+
+        build_cpg(target, on_progress=lambda m: None,
+                  output_dir=tmp_path / "out")
+        assert "cmd" in called

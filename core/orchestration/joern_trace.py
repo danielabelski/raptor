@@ -33,13 +33,15 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*"
 )
 _CALL_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 def _is_identifier(value: Any) -> bool:
-    return isinstance(value, str) and bool(_IDENTIFIER_RE.match(value))
+    # fullmatch, not match — a $-anchored match() still admits a
+    # trailing newline.
+    return isinstance(value, str) and bool(_IDENTIFIER_RE.fullmatch(value))
 
 
 def _last_call_name(text: Any) -> str | None:

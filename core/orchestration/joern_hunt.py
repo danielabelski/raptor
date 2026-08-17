@@ -29,7 +29,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+try:
+    from packages.joern.runner import _escape_scala_string
+except ImportError:  # pragma: no cover - replicates the runner helper
+    def _escape_scala_string(value: str) -> str:
+        """Escape a value for Scala string literal context."""
+        return (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        )
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _CALL_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -38,14 +50,19 @@ _CALLER_MARKER = "JOERN_CALLER:"
 # Same shape as packages/joern/queries/callers.sc, inlined so the sink
 # name is substituted after identifier validation (no template file
 # round-trip) and the marker parsing stays next to its producer.
+# Every interpolated value (caller, file, code) is backslash+quote
+# escaped and has \r\n flattened on the Scala side, so a filename
+# containing a quote or newline cannot break the JSON line or forge
+# extra records.
 _CALLSITE_QUERY_TEMPLATE = '''import io.shiftleft.semanticcpg.language._
 
+def jsonEsc(v: String): String = v.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"").replace("\\r", "").replace("\\n", " ")
 val callSites = cpg.call.name("__SINK__")
 val callerLines = callSites.map { c =>
-  val callerFn = c.method.name
-  val callerFile = c.method.filename
+  val callerFn = jsonEsc(c.method.name)
+  val callerFile = jsonEsc(c.method.filename)
   val line = c.lineNumber.getOrElse(0)
-  val code = c.code.take(200).replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"")
+  val code = jsonEsc(c.code.take(200))
   s"""JOERN_CALLER:{"caller":"$callerFn","file":"$callerFile","line":$line,"code":"$code"}"""
 }.l
 callerLines.foreach(println)
@@ -54,7 +71,9 @@ callerLines.foreach(println)
 
 
 def _is_identifier(value: Any) -> bool:
-    return isinstance(value, str) and bool(_IDENTIFIER_RE.match(value))
+    # fullmatch, not match — a $-anchored match() still admits a
+    # trailing newline.
+    return isinstance(value, str) and bool(_IDENTIFIER_RE.fullmatch(value))
 
 
 def _first_call_name(text: Any) -> str | None:
@@ -75,7 +94,9 @@ def find_sink_callsites(
     *server* is a started :class:`packages.joern.server.JoernServer`
     with the target's CPG already imported. Returns grep-hit-shaped
     dicts: ``{"file", "line", "code", "caller", "source": "joern"}``,
-    deduplicated by ``(file, line)``.
+    deduplicated by ``(file, line)``. Marker lines that fail to decode
+    (other than REPL value echoes) are logged as warnings — the result
+    shape has no slot for a failure counter, so the log is the record.
     """
     if not _is_identifier(sink_call):
         logger.warning(
@@ -84,7 +105,10 @@ def find_sink_callsites(
         )
         return []
 
-    query = _CALLSITE_QUERY_TEMPLATE.replace("__SINK__", sink_call)
+    # Identifier validation already excludes quotes/backslashes; the
+    # escape is defence in depth for the Scala literal context.
+    query = _CALLSITE_QUERY_TEMPLATE.replace(
+        "__SINK__", _escape_scala_string(sink_call))
     try:
         result = server.query(
             query, timeout=timeout, validate=True, check_length=False,
@@ -103,6 +127,7 @@ def find_sink_callsites(
 
     matches: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
+    decode_failures = 0
     for raw_line in (result.raw_output or "").splitlines():
         line = _ANSI_ESCAPE_RE.sub("", raw_line).strip()
         marker_idx = line.find(_CALLER_MARKER)
@@ -112,7 +137,18 @@ def find_sink_callsites(
         try:
             data = json.loads(payload)
         except (json.JSONDecodeError, ValueError):
-            # REPL value echoes re-print lines with escaped quotes.
+            if '\\"' in payload:
+                # REPL value echoes re-print lines with escaped
+                # quotes — expected noise, not a dropped record.
+                continue
+            # A directly printed record that does not parse means a
+            # call site is being dropped — say so instead of a
+            # silent continue.
+            decode_failures += 1
+            logger.warning(
+                "find_sink_callsites(%s): undecodable JOERN_CALLER "
+                "line (call site dropped): %r", sink_call, payload[:200],
+            )
             continue
         if not isinstance(data, dict):
             continue
@@ -128,6 +164,11 @@ def find_sink_callsites(
             "sink": sink_call,
             "source": "joern",
         })
+    if decode_failures:
+        logger.warning(
+            "find_sink_callsites(%s): %d marker line(s) failed to "
+            "decode — call sites were dropped", sink_call, decode_failures,
+        )
     return matches
 
 

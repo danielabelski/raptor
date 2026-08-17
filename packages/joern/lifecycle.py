@@ -8,7 +8,10 @@ return a client connected to the existing server.  Each
 server is stopped.
 
 State is stored in ``~/.cache/raptor/joern-server.json`` and
-protected by ``fcntl.flock`` for safe concurrent access.
+protected by ``fcntl.flock`` for safe concurrent access.  The file
+carries the server's per-boot HTTP Basic credential so later runs can
+authenticate against the reused server; it is created (and rewritten)
+with mode 0600, and legacy state files are re-chmodded on load.
 
 Usage::
 
@@ -35,9 +38,10 @@ import json
 import logging
 import os
 import signal
+import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from .server import JoernServer
 from .tunables import JoernTunables
@@ -59,7 +63,7 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _read_comm(pid: int) -> Optional[str]:
+def _read_comm(pid: int) -> str | None:
     """Best-effort /proc/<pid>/comm read (None off-Linux or on error)."""
     try:
         return Path(f"/proc/{pid}/comm").read_text(
@@ -93,9 +97,13 @@ def _pid_is_our_server(state: dict[str, Any]) -> bool:
     return "java" in comm.lower() or "joern" in comm.lower()
 
 
-def _read_state(lock_fd: int) -> Optional[dict[str, Any]]:
+def _read_state(lock_fd: int) -> dict[str, Any] | None:
     if not _STATE_FILE.exists():
         return None
+    # The state file carries the server credential; tighten legacy
+    # files that predate the 0600 write path.
+    with contextlib.suppress(OSError):
+        _STATE_FILE.chmod(0o600)
     try:
         return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -105,7 +113,13 @@ def _read_state(lock_fd: int) -> Optional[dict[str, Any]]:
 def _write_state(lock_fd: int, state: dict[str, Any]) -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = _STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    # 0600 from creation — the file carries the server credential.
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(state, indent=2) + "\n")
+    # O_CREAT mode only applies to fresh files; a leftover tmp keeps
+    # its old bits, so re-assert before the rename publishes it.
+    os.chmod(tmp, 0o600)
     tmp.rename(_STATE_FILE)
 
 
@@ -128,7 +142,7 @@ def _locked():
         os.close(fd)
 
 
-def _health_check(port: int) -> bool:
+def _health_check(port: int, auth_headers: dict[str, str] | None = None) -> bool:
     from urllib.error import URLError
     from urllib.request import Request
 
@@ -137,7 +151,8 @@ def _health_check(port: int) -> bool:
     url = f"http://127.0.0.1:{port}/query-sync"
     payload = json.dumps({"query": "1+1"}).encode("utf-8")
     req = Request(url, data=payload,
-                  headers={"Content-Type": "application/json"},
+                  headers={"Content-Type": "application/json",
+                           **(auth_headers or {})},
                   method="POST")
     try:
         with _NO_PROXY_OPENER.open(req, timeout=5) as resp:
@@ -147,18 +162,26 @@ def _health_check(port: int) -> bool:
         return False
 
 
-def _connect_existing(state: dict[str, Any]) -> Optional[JoernServer]:
+def _connect_existing(state: dict[str, Any]) -> JoernServer | None:
     port = state.get("port")
     pid = state.get("pid")
     if not port or not pid:
         return None
 
-    if not _pid_alive(pid):
-        logger.info("joern lifecycle: stale PID %d — server is dead", pid)
+    auth_user = state.get("auth_user")
+    auth_password = state.get("auth_password")
+    if not auth_user or not auth_password:
+        # State written before server auth existed — the running
+        # server is unauthenticated. Refuse to reuse it; the caller
+        # kills it and starts a fresh, authenticated one.
+        logger.info(
+            "joern lifecycle: state has no auth credential — "
+            "recycling pre-auth server (pid %s)", pid,
+        )
         return None
 
-    if not _health_check(port):
-        logger.info("joern lifecycle: PID %d alive but server unhealthy", pid)
+    if not _pid_alive(pid):
+        logger.info("joern lifecycle: stale PID %d — server is dead", pid)
         return None
 
     srv = JoernServer.__new__(JoernServer)
@@ -169,12 +192,22 @@ def _connect_existing(state: dict[str, Any]) -> Optional[JoernServer]:
     srv._proc = None
     srv._base_url = f"http://127.0.0.1:{port}"
     srv._cpg_loaded = False
+    srv._cpg_path = None
     srv._http_client = None
     srv._last_post_error = ""
+    srv._restart_lock = threading.Lock()
+    srv._workdir = None
+    srv._auth_user = auth_user
+    srv._auth_password = auth_password
+
+    if not _health_check(port, srv._auth_headers()):
+        logger.info("joern lifecycle: PID %d alive but server unhealthy", pid)
+        return None
+
     return srv
 
 
-def joern_acquire(tunables: Optional[JoernTunables] = None) -> Optional[JoernServer]:
+def joern_acquire(tunables: JoernTunables | None = None) -> JoernServer | None:
     """Acquire a shared Joern server, starting one if needed.
 
     Returns a connected JoernServer or None if Joern is unavailable.
@@ -231,6 +264,10 @@ def joern_acquire(tunables: Optional[JoernTunables] = None) -> Optional[JoernSer
             "query_timeout_s": tunables.query_timeout_s,
             "refcount": 1,
             "started_at": time.time(),
+            # Per-boot HTTP Basic credential — required to reconnect
+            # to the reused server. The state file is mode 0600.
+            "auth_user": srv._auth_user,
+            "auth_password": srv._auth_password,
         }
         _write_state(fd, new_state)
         logger.info(
@@ -277,7 +314,7 @@ def joern_cleanup() -> None:
 
 
 @contextlib.contextmanager
-def joern_session(tunables: Optional[JoernTunables] = None):
+def joern_session(tunables: JoernTunables | None = None):
     """Context manager wrapping acquire/release."""
     srv = joern_acquire(tunables)
     try:
@@ -287,7 +324,7 @@ def joern_session(tunables: Optional[JoernTunables] = None):
             joern_release()
 
 
-def _start_fresh(tunables: JoernTunables) -> Optional[JoernServer]:
+def _start_fresh(tunables: JoernTunables) -> JoernServer | None:
     try:
         srv = JoernServer.from_tunables(tunables)
         srv.start()

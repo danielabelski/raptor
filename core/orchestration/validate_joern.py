@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PAIRS = 500
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _CALL_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _LOCATION_RE = re.compile(r"^\s*(\S+?):(\d+)")
 _SOURCE_LOC_RE = re.compile(r"@\s*(\S+?):(\d+)\s*$")
@@ -46,7 +46,9 @@ _SINK_KEYS = ("taint_reached_from",)
 
 
 def _is_identifier(value: Any) -> bool:
-    return isinstance(value, str) and bool(_IDENTIFIER_RE.match(value))
+    # fullmatch, not match — a $-anchored match() still admits a
+    # trailing newline.
+    return isinstance(value, str) and bool(_IDENTIFIER_RE.fullmatch(value))
 
 
 def _first_call_name(text: Any) -> str | None:

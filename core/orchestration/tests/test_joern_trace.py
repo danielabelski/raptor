@@ -130,3 +130,20 @@ class TestEnrichTraceWithJoern:
         enrich_trace_with_joern(trace, FakeServer(error=True))
         assert trace["joern_verification"]["verified"] is None
         assert trace["summary"]["confidence"] == "high"
+
+
+class TestIdentifierFullmatch:
+    def test_trailing_newline_rejected(self):
+        # fullmatch: a $-anchored match() admits "main\n".
+        from core.orchestration.joern_trace import _is_identifier
+        assert _is_identifier("main") is True
+        assert _is_identifier("main\n") is False
+        assert _is_identifier("os.system\n") is False
+
+    def test_trailing_newline_entry_point_unresolvable(self):
+        trace = _trace()
+        trace["meta"]["entry_point"] = "main\n"
+        trace["meta"]["target_sink"] = "memcpy"
+        source, sink = extract_source_sink(trace)
+        assert source is None
+        assert sink == "memcpy"

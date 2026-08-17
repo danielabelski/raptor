@@ -151,3 +151,75 @@ class TestClassifyTaintBatch:
         ]
         classify_taint_batch(matches, FakeServer(error=True))
         assert "joern_tainted" not in matches[0]
+
+
+class TestCallsiteProtocolIntegrity:
+    """JOERN_CALLER lines survive hostile caller/file values."""
+
+    def test_template_escapes_all_interpolated_fields(self):
+        from core.orchestration.joern_hunt import _CALLSITE_QUERY_TEMPLATE
+        # caller, file, and code all pass through the same escape
+        # helper — a quote or newline in any of them cannot break the
+        # JSON line or forge extra records.
+        assert "jsonEsc(c.method.name)" in _CALLSITE_QUERY_TEMPLATE
+        assert "jsonEsc(c.method.filename)" in _CALLSITE_QUERY_TEMPLATE
+        assert "jsonEsc(c.code.take(200))" in _CALLSITE_QUERY_TEMPLATE
+
+    def test_quoted_filename_round_trips(self):
+        # What Joern prints after the Scala-side escaping for a file
+        # literally named `weird"name .c` (quote and newline in the
+        # original; the newline is flattened to a space).
+        raw = (
+            'JOERN_CALLER:{"caller":"handler","file":"weird\\"name .c",'
+            '"line":7,"code":"memcpy(dst, src, n)"}\n'
+            "JOERN_CALLERS_DONE"
+        )
+        matches = find_sink_callsites("memcpy", FakeServer(raw_output=raw))
+        assert len(matches) == 1
+        assert matches[0]["file"] == 'weird"name .c'
+        assert matches[0]["caller"] == "handler"
+
+    def test_corrupt_marker_line_warns_instead_of_silent_drop(self, caplog):
+        import logging
+
+        raw = (
+            'JOERN_CALLER:{"caller":"good","file":"a.c","line":1,'
+            '"code":"memcpy(a, b, c)"}\n'
+            'JOERN_CALLER:{"caller":"broken", \n'
+            "JOERN_CALLERS_DONE"
+        )
+        with caplog.at_level(logging.WARNING,
+                             logger="core.orchestration.joern_hunt"):
+            matches = find_sink_callsites(
+                "memcpy", FakeServer(raw_output=raw))
+        assert [m["caller"] for m in matches] == ["good"]
+        assert any("undecodable" in r.message for r in caplog.records)
+        assert any("failed to decode" in r.message for r in caplog.records)
+
+    def test_repl_value_echo_stays_silent(self, caplog):
+        import logging
+
+        raw = (
+            'val res0: String = """JOERN_CALLER:{\\"caller\\":\\"x\\"}"""\n'
+            "JOERN_CALLERS_DONE"
+        )
+        with caplog.at_level(logging.WARNING,
+                             logger="core.orchestration.joern_hunt"):
+            matches = find_sink_callsites(
+                "memcpy", FakeServer(raw_output=raw))
+        assert matches == []
+        assert not caplog.records
+
+    def test_trailing_newline_sink_rejected(self):
+        # fullmatch: a $-anchored match() admits "memcpy\n".
+        srv = FakeServer()
+        assert find_sink_callsites("memcpy\n", srv) == []
+        assert srv.queries == []
+
+    def test_classify_rejects_trailing_newline_names(self):
+        srv = FakeServer(verdicts={("caller", "memcpy"): True})
+        matches = [{"caller": "caller\n", "sink": "memcpy",
+                    "file": "a.c", "line": 1}]
+        classify_taint_batch(matches, srv)
+        assert "joern_tainted" not in matches[0]
+        assert srv.exists_queries == []

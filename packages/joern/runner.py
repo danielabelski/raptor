@@ -54,10 +54,12 @@ def _validate_substitution_value(value: str) -> bool:
 
     Bare identifiers: is_valid_identifier().
     Qualified names (a.b.c): each segment must be a valid identifier.
+    fullmatch, not match — a ``$`` anchor alone admits a trailing
+    newline.
     """
     if not value:
         return False
-    return bool(_IDENTIFIER_QUALIFIED_RE.match(value))
+    return bool(_IDENTIFIER_QUALIFIED_RE.fullmatch(value))
 
 
 def _escape_scala_string(value: str) -> str:
@@ -213,9 +215,19 @@ def build_cpg(
     start = time.monotonic()
 
     if on_progress is not None and subprocess_runner is None:
-        return _build_cpg_with_stall_monitor(
-            cmd, cpg_path, target, languages, timeout, on_progress,
-        )
+        if runner is subprocess.run:
+            # core.sandbox is unavailable — the stall-monitor's raw
+            # Popen is the same trust level as the subprocess.run
+            # fallback the non-monitor branch would use.
+            return _build_cpg_with_stall_monitor(
+                cmd, cpg_path, target, languages, timeout, on_progress,
+            )
+        # The sandbox API is subprocess.run-shaped (blocking, output
+        # captured after exit), so per-file stderr streaming cannot
+        # pass through it. Sandboxing joern-parse on untrusted source
+        # outranks stall detection: drop the monitor and fall through
+        # to the sandboxed build with a coarse progress note.
+        on_progress("Joern CPG build running (sandboxed; per-file progress unavailable)")
 
     try:
         proc = runner(
@@ -225,6 +237,7 @@ def build_cpg(
             timeout=timeout,
             target=str(target),
             output=str(output_dir),
+            block_network=True,
         )
     except TypeError:
         try:
@@ -280,7 +293,13 @@ def _build_cpg_with_stall_monitor(
     timeout: int,
     on_progress: Callable,
 ) -> JoernCPG:
-    """Build CPG with real-time stderr monitoring and adaptive stall detection."""
+    """Build CPG with real-time stderr monitoring and adaptive stall detection.
+
+    Only used when ``core.sandbox`` is unavailable: this path spawns
+    joern-parse with a raw Popen to stream stderr, which cannot be
+    routed through the run()-shaped sandbox API. When the sandbox is
+    present, ``build_cpg`` keeps the sandbox and drops the monitor.
+    """
     try:
         from core.config import RaptorConfig
         safe_env = RaptorConfig.get_safe_env()

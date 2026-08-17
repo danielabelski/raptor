@@ -1190,12 +1190,21 @@ def prepare_E(workdir, target=None):
 # F: Map Stage E verdicts + CVSS scoring + consistency checks
 # ---------------------------------------------------------------------------
 
+# Canonical mapping — kept identical to the Python orchestrator's
+# verdict_to_status (packages/exploitability_validation/orchestrator.py).
+# The two implementations previously diverged here: this map collapsed
+# likely_exploitable into exploitable (overstating what was proven) and
+# had no rows for unknown/error. likely_exploitable stays a distinct
+# final status — operator-facing output preserves the proven-vs-probable
+# distinction; both statuses are valid per the findings schema.
 VERDICT_MAP = {
-    "likely": "exploitable",
-    "likely_exploitable": "exploitable",
+    "likely": "likely_exploitable",
+    "likely_exploitable": "likely_exploitable",
     "exploitable": "exploitable",
     "difficult": "confirmed_constrained",
     "unlikely": "confirmed_blocked",
+    "unknown": "confirmed_unverified",
+    "error": "confirmed_unverified",
 }
 
 
@@ -1233,9 +1242,13 @@ def prepare_F(workdir, target=None):
             finding["final_status"] = status
 
     # --- Derive is_exploitable from final_status ---
+    # likely_exploitable counts as exploitable for downstream
+    # prioritisation (same family grouping as the orchestrator's
+    # confirmed-findings report); the status string itself preserves
+    # the proven-vs-probable distinction for the operator.
     for finding in data.get("findings", []):
         fs = finding.get("final_status", "")
-        if fs in ("exploitable",):
+        if fs in ("exploitable", "likely_exploitable"):
             finding["is_exploitable"] = True
         elif fs in ("confirmed_constrained", "confirmed_blocked", "confirmed",
                     "confirmed_unverified", "ruled_out", "disproven"):

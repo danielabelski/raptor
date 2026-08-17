@@ -286,11 +286,18 @@ each, and attaches an `empirical_mitigation_map` to the finding.
 
 | Source Validation | Feasibility Verdict | Final Status |
 |-------------------|---------------------|--------------|
-| confirmed | likely_exploitable | `exploitable` |
+| confirmed | exploitable | `exploitable` |
+| confirmed | likely_exploitable | `likely_exploitable` |
 | confirmed | difficult | `confirmed_constrained` |
 | confirmed | unlikely | `confirmed_blocked` |
+| confirmed | unknown / error | `confirmed_unverified` |
 | confirmed | not_applicable | `confirmed` |
 | confirmed | binary_not_found | `confirmed_unverified` |
+
+This mapping is identical in both implementations (the skill helper's
+`VERDICT_MAP` and the Python orchestrator's `verdict_to_status`);
+`likely_exploitable` is a distinct final status, never collapsed into
+`exploitable`.
 
 When a binary cannot be located, the finding is marked `confirmed_unverified`
 with guidance on how to provide one (`/validate --binary /path/to/binary`).

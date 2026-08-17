@@ -340,50 +340,59 @@ PROCESS_BOUNDARY_MARKERS: frozenset[str] = frozenset({
 # The biggest single signal source for fuzz prioritisation. A binary
 # that imports any of these is processing structured external input
 # and is worth aggressive coverage.
-PARSER_FUNCS: frozenset[str] = frozenset({
-    # Generic parser-generator output (yacc/bison/flex/lex)
-    "yyparse",
-
-    # XML — expat + libxml2
-    "XML_Parse", "XML_ParseBuffer",
-    "xmlReadMemory", "xmlReadDoc", "xmlReadFile",
-    "xmlSAXUserParseMemory", "xmlParseDoc",
-
-    # JSON — jansson, json-c, cJSON
-    "json_loads", "json_loadb", "json_load_file",
-    "json_object_from_file",
-    "cJSON_Parse",
-
-    # OpenSSL ASN.1 — historically extremely vuln-rich. Limited to the
-    # two most-common entries (X509 + PrivateKey) because the wider
-    # d2i_* family has dozens of variants with vanishingly small
-    # individual CVE history.
-    "d2i_X509", "d2i_X509_bio",
-    "d2i_PrivateKey",
-
-    # OpenSSL PEM — same restriction
-    "PEM_read_X509", "PEM_read_PrivateKey",
-    "PEM_read_bio_X509", "PEM_read_bio_PrivateKey",
-
-    # Embedded scripting — RCE-prone if input is attacker-controlled
-    "lua_load", "lua_loadbuffer",
-    "luaL_loadstring", "luaL_dostring", "luaL_dofile",
-    "Py_CompileString", "PyRun_String", "PyRun_File",
-
-    # Image format parsers — high fuzz yield historically
-    "png_read_info", "png_read_image",
-    "jpeg_read_header", "jpeg_read_scanlines",
-    "TIFFOpen", "TIFFReadDirectory",
-    "WebPDecode", "WebPDecodeRGBA", "WebPDecodeBGRA",
-
-    # Compression library decoders
-    "inflate",                       # zlib
-    "BZ2_bzDecompress",             # bzip2
-    "lzma_code",                     # xz
-    "LZ4_decompress_safe", "LZ4_decompress_fast",
-    "ZSTD_decompress", "ZSTD_decompressStream",
-    "BrotliDecoderDecompress", "BrotliDecoderDecompressStream",
+#
+# SEED SET + DATA PACK. The literal below is a marked seed set (<= 9
+# exemplars, one per format category) documenting the pattern; the
+# library catalog bulk lives in the CVE-corpus-derived data pack
+# ``data/packs/parser_apis.json`` (per-name library + CVE provenance),
+# refreshed by ``libexec/raptor-parser-pack-harvest`` — growing this
+# category means harvesting or editing pack DATA, never this literal.
+# ``PARSER_FUNCS`` is the seeds<pack union, so consumers keep a single
+# name for the whole category.
+PARSER_SEED_FUNCS: frozenset[str] = frozenset({
+    "yyparse",           # parser-generator output (yacc/bison)
+    "XML_Parse",         # XML (expat)
+    "json_loads",        # JSON (jansson)
+    "d2i_X509",          # ASN.1/DER (OpenSSL)
+    "luaL_loadstring",   # embedded scripting (Lua)
+    "png_read_info",     # image (libpng)
+    "jpeg_read_header",  # image (libjpeg)
+    "inflate",           # compression (zlib)
+    "ZSTD_decompress",   # compression (zstd)
 })
+
+
+def _load_parser_pack() -> frozenset[str]:
+    """Names from the parser_apis data pack. Missing/malformed pack →
+    empty set (consumers run on seeds alone); never raises."""
+    import json as _json
+    import logging as _logging
+    from pathlib import Path as _Path
+
+    pack_path = (
+        _Path(__file__).resolve().parent
+        / "data" / "packs" / "parser_apis.json"
+    )
+    try:
+        raw = _json.loads(pack_path.read_text(encoding="utf-8"))
+        names = {
+            e.get("name")
+            for e in raw.get("entries", [])
+            if isinstance(e, dict)
+        }
+        return frozenset(
+            n for n in names
+            if isinstance(n, str) and n.isidentifier()
+        )
+    except (OSError, ValueError, AttributeError):
+        _logging.getLogger(__name__).warning(
+            "parser_apis pack unavailable at %s; PARSER_FUNCS runs on "
+            "seeds only", pack_path,
+        )
+        return frozenset()
+
+
+PARSER_FUNCS: frozenset[str] = PARSER_SEED_FUNCS | _load_parser_pack()
 
 
 # === Integer parsing (CWE-190 / -191 hints) ===
@@ -537,6 +546,7 @@ __all__ = [
     "MEMORY_COPY_FUNCS",
     "NETWORK_INGEST_FUNCS",
     "PARSER_FUNCS",
+    "PARSER_SEED_FUNCS",
     "PROCESS_BOUNDARY_FUNCS",
     "PROCESS_BOUNDARY_MARKERS",
     "RUNTIME_PRIVILEGE_FUNCS",

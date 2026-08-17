@@ -209,6 +209,21 @@ def test_binary_flow_trace_parser_hooks_render_from_taxonomy():
     assert "'ZSTD_decompress': a => ({ size: a[3].toInt32() })" in src
 
 
+def test_binary_flow_trace_hooks_include_pack_derived_names():
+    """The hook list is regenerated from the seeds|pack union (WP6):
+    names that live only in the parser_apis data pack — never in the
+    seed literal — must reach the rendered JS."""
+    from core.function_taxonomy import PARSER_FUNCS, PARSER_SEED_FUNCS
+
+    pack_only = PARSER_FUNCS - PARSER_SEED_FUNCS
+    assert pack_only, "pack contributed nothing to PARSER_FUNCS"
+    src, _ = runner.load_script_source("binary-flow-trace", None)
+    # TIFFOpen is a stable legacy-catalog pack entry; also spot-check
+    # an arbitrary pack-only name so the assertion tracks the pack.
+    assert '"TIFFOpen"' in src
+    assert f'"{min(pack_only)}"' in src
+
+
 def test_non_template_scripts_are_not_rendered(tmp_path: Path):
     js = tmp_path / "h.js"
     js.write_text("const x = /*__PARSER_HOOKS__*/ [];\n")

@@ -249,6 +249,9 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
         # operators reading the summary like seeing what the probe
         # actually produced.
         timed_out = False
+        # Pre-bind: the TimeoutExpired path continues with no completed
+        # process, and the nonce-trust check reads getattr(result, ...).
+        result = None
         return_code: int | None = None
         try:
             result = sandbox_run(

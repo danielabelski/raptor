@@ -290,6 +290,20 @@ class LLMProvider(ABC):
         receive the struct but ignore it."""
         return False
 
+    def prefers_stable_system_prefix(self) -> bool:
+        """``True`` when composing run-stable material into the system
+        prompt pays off on this transport.
+
+        Distinct from :meth:`supports_prompt_caching`, which is about
+        the *request API* (can the caller place cache_control
+        breakpoints). A transport can lack that API yet still benefit
+        from byte-stable system prompts because its backend does
+        server-side prefix caching — the claudecode subprocess is the
+        canonical case. Default: same answer as
+        ``supports_prompt_caching`` (a cache-breakpoint API implies
+        stable prefixes pay off)."""
+        return self.supports_prompt_caching()
+
     def supports_parallel_tools(self) -> bool:
         """``True`` when the provider can return multiple
         :class:`ToolCall` blocks in one assistant turn AND the loop
@@ -3575,7 +3589,26 @@ class ClaudeCodeLLMProvider(LLMProvider):
         )
 
     def supports_tool_use(self) -> bool: return True
-    def supports_prompt_caching(self) -> bool: return False
+
+    def supports_prompt_caching(self) -> bool:
+        """False: ``claude -p`` exposes no cache_control breakpoint
+        API to this process — callers cannot mark cache regions."""
+        return False
+
+    def prefers_stable_system_prefix(self) -> bool:
+        """True: the CLI's backend does server-side prefix caching
+        across separate ``claude -p`` children when the prefix is
+        byte-stable (measured on this transport: 19k cache-read
+        tokens and ~13x input-cost drop on the second
+        identical-prefix call — see cc_adapter.CCDispatchConfig).
+        The system prompt travels via ``--system-prompt`` and the
+        audit composes it once per run, so run-stable material moved
+        into it bills at the cached-input rate from the second call
+        on. Per-call cache-read/-write counters stream back in the
+        usage events and flow through telemetry, so the realised hit
+        rate is measurable on live runs."""
+        return True
+
     def supports_parallel_tools(self) -> bool: return False
 
     # ------------------------------------------------------------------

@@ -90,6 +90,59 @@ def test_kernel_blocks_gated():
         assert "Kernel-internal patterns" not in p_system
 
 
+class TestCacheAlignedReviewComposition:
+    """make_review_fn on a caching-composition transport: the pattern
+    library lands in the system prompt, byte-stable across calls and
+    across factory invocations (the cache prefix must not drift), and
+    leaves the per-function user prompt."""
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def supports_prompt_caching_for(self):
+            return True
+
+        def generate_structured(self, prompt, schema,
+                                system_prompt=None, **kwargs):
+            self.calls.append((prompt, system_prompt))
+
+            class _Resp:
+                result = {"status": "clean", "body": "ok"}  # noqa: RUF012
+                cost = 0.0
+                model = "fake"
+
+            return _Resp()
+
+    def _run(self, client):
+        from core.audit.llm_review import make_review_fn
+        review_fn = make_review_fn(client)
+        review_fn(
+            {"file": "a.c", "function": "f", "source": "int f(){}",
+             "line_start": 1, "line_end": 2},
+            None,
+        )
+
+    def test_pattern_library_moves_to_system_prompt(self):
+        client = self._Client()
+        self._run(client)
+        prompt, system_prompt = client.calls[0]
+        assert "Crypto helper patterns" in system_prompt
+        assert "Crypto helper patterns" not in prompt
+
+    def test_system_prompt_byte_stable_across_calls_and_factories(self):
+        c1 = self._Client()
+        self._run(c1)
+        self._run(c1)
+        c2 = self._Client()
+        self._run(c2)
+        prompts = [sp for _, sp in c1.calls] + [sp for _, sp in c2.calls]
+        assert len(set(prompts)) == 1, (
+            "system prompt must be byte-identical across calls - it is "
+            "the server-side cache prefix on the claudecode transport"
+        )
+
+
 class TestKernelHeuristicCorroboration:
     """Path hints alone must not classify userland trees as kernel C
     (openssl has crypto/ lib/ — the whole codebase got kernel

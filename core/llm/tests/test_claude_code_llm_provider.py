@@ -149,6 +149,42 @@ def test_capabilities() -> None:
     assert p.supports_parallel_tools() is False
 
 
+def test_prefers_stable_system_prefix() -> None:
+    """No cache_control API, but the CLI backend prefix-caches
+    byte-stable system prompts — composition treats CC as caching."""
+    p = ClaudeCodeLLMProvider(_config())
+    assert p.supports_prompt_caching() is False
+    assert p.prefers_stable_system_prefix() is True
+
+
+def test_base_provider_prefix_default_follows_caching() -> None:
+    from core.llm.providers import AnthropicProvider, GeminiProvider
+    # Anthropic: caching API → stable prefix pays off (inherited default)
+    assert (
+        AnthropicProvider.prefers_stable_system_prefix
+        is LLMProvider.prefers_stable_system_prefix
+    )
+    assert (
+        GeminiProvider.prefers_stable_system_prefix
+        is LLMProvider.prefers_stable_system_prefix
+    )
+
+
+def test_client_composition_probe_uses_prefix_capability() -> None:
+    """LLMClient.supports_prompt_caching_for → True on the claudecode
+    transport, so make_review_fn composes the pattern library into
+    the (byte-stable, server-cached) system prompt."""
+    from core.llm.client import LLMClient
+    from core.llm.config import LLMConfig
+
+    cfg = _config()
+    client = LLMClient(LLMConfig(
+        primary_model=cfg, fallback_models=[],
+        enable_caching=False, enable_fallback=False,
+    ))
+    assert client.supports_prompt_caching_for() is True
+
+
 def test_factory_routes_claudecode_provider() -> None:
     for name in ("claudecode", "claude_code", "claude-code"):
         cfg = ModelConfig(

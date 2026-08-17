@@ -1956,16 +1956,27 @@ class LLMClient:
     def supports_prompt_caching_for(
         self, model_config: ModelConfig | None = None,
     ) -> bool:
-        """True when the provider serving ``model_config`` (default:
-        the primary model) supports prompt caching. Callers use this
-        to decide cache-aligned prompt composition — e.g. placing
-        run-stable material in the system prompt where Anthropic-
-        family providers bill it at the cached-input rate."""
+        """True when cache-aligned prompt composition pays off on the
+        provider serving ``model_config`` (default: the primary
+        model) — i.e. placing run-stable material in the system
+        prompt where the backend bills it at the cached-input rate.
+
+        Consults ``prefers_stable_system_prefix()`` rather than the
+        raw ``supports_prompt_caching()`` capability: the claudecode
+        transport has no cache_control API, yet its backend
+        prefix-caches byte-stable system prompts across subprocess
+        calls, so composition-wise it behaves like a caching
+        provider. For providers without the newer capability method,
+        falls back to ``supports_prompt_caching()``."""
         cfg = model_config or self.config.primary_model
         if cfg is None:
             return False
         try:
-            return self._get_provider(cfg).supports_prompt_caching()
+            provider = self._get_provider(cfg)
+            prefers = getattr(provider, "prefers_stable_system_prefix", None)
+            if callable(prefers):
+                return bool(prefers())
+            return provider.supports_prompt_caching()
         except Exception:
             logger.debug(
                 "supports_prompt_caching_for probe failed", exc_info=True,

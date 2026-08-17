@@ -21,6 +21,16 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.security.prompt_defense_profiles import CONSERVATIVE
+from core.security.prompt_envelope import (
+    PromptBundle,
+    TaintedString,
+    UntrustedBlock,
+    build_prompt,
+)
+from core.security.prompt_input_preflight import preflight
+from core.security.prompt_telemetry import defense_telemetry
+
 logger = logging.getLogger(__name__)
 
 # Symbol grammar for target_function. Unmangled C++ names must keep
@@ -220,16 +230,23 @@ class HarnessGenerator:
                 rationale="Fallback harness; LLM unavailable.",
             )
 
-        prompt = self._build_prompt(spec, header_text, signature)
+        bundle = self._build_prompt(spec, header_text, signature)
+        system_prompt = next(
+            (m.content for m in bundle.messages if m.role == "system"),
+            _HARNESS_SYSTEM_PROMPT,
+        )
+        user_prompt = next(
+            (m.content for m in bundle.messages if m.role == "user"), "",
+        )
         try:
             result, _ = self.llm.generate_structured(
-                prompt=prompt,
+                prompt=user_prompt,
                 schema={
                     "source_code": "full harness source as a string",
                     "language": "either 'c' or 'cpp'",
                     "rationale": "one paragraph explanation",
                 },
-                system_prompt=_HARNESS_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
             )
         except Exception as e:  # noqa: BLE001
             logger.error("LLM harness generation failed: %s", e)
@@ -275,23 +292,70 @@ class HarnessGenerator:
         spec: HarnessSpec,
         header_text: str,
         signature: str | None,
-    ) -> str:
-        parts = [
-            f"Target function: {spec.target_function}",
-            f"Header file: {spec.header_path.name}",
+    ) -> PromptBundle:
+        """Build the layered-defence prompt bundle.
+
+        The target header comes from the repo under analysis — untrusted
+        by definition, and the generated harness is subsequently
+        COMPILED AND EXECUTED, so a prompt injection here escalates to
+        code execution on the operator machine. Header text (and the
+        signature extracted from it) therefore rides inside
+        ``UntrustedBlock`` envelopes with nonce + CONSERVATIVE-profile
+        hardening, never as free prose; identifiers travel as untrusted
+        slots. Same pattern as the codeql/sca/web LLM surfaces.
+        """
+        truncated = header_text[:8192]
+        pf = preflight(truncated)
+        defense_telemetry.record_preflight(
+            hit=pf.has_injection_indicators
+        )
+        if pf.has_injection_indicators:
+            logger.warning(
+                "harness_generator: injection indicators in header %s "
+                "(indicators=%s) — proceeding with envelope defences",
+                spec.header_path.name,
+                pf.indicators,
+            )
+
+        blocks = [
+            UntrustedBlock(
+                content=truncated,
+                kind="target-header",
+                origin=str(spec.header_path),
+            ),
         ]
-        if spec.library_name:
-            parts.append(f"Library: {spec.library_name}")
         if signature:
-            parts.append(f"Detected signature: {signature}")
+            blocks.append(UntrustedBlock(
+                content=signature,
+                kind="detected-signature",
+                origin=str(spec.header_path),
+            ))
         if spec.notes:
-            parts.append(f"Notes: {spec.notes}")
-        parts.append("")
-        parts.append("Header contents (truncated to 8 KB if longer):")
-        parts.append("```c")
-        parts.append(header_text[:8192])
-        parts.append("```")
-        return "\n".join(parts)
+            blocks.append(UntrustedBlock(
+                content=spec.notes,
+                kind="caller-notes",
+                origin="harness-spec",
+            ))
+
+        slots = {
+            "target_function": TaintedString(
+                value=spec.target_function, trust="untrusted",
+            ),
+            "header_file": TaintedString(
+                value=spec.header_path.name, trust="untrusted",
+            ),
+        }
+        if spec.library_name:
+            slots["library"] = TaintedString(
+                value=spec.library_name, trust="untrusted",
+            )
+
+        return build_prompt(
+            system=_HARNESS_SYSTEM_PROMPT,
+            profile=CONSERVATIVE,
+            untrusted_blocks=tuple(blocks),
+            slots=slots,
+        )
 
     def _compile_command(
         self,

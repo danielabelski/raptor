@@ -115,6 +115,9 @@ _PROMPT_CONSTRUCTION_FILES = (
     "packages/checker_synthesis/synthesise.py",
     # concept compiler (invariant → rule prompts)
     "core/concepts/compiler.py",
+    # fuzzing harness generator (target headers → compiled+executed
+    # harness source; enveloped via build_prompt + CONSERVATIVE)
+    "packages/fuzzing/harness_generator.py",
 )
 
 

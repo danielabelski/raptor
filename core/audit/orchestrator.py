@@ -8389,6 +8389,7 @@ def _mark_batch_reading_list(
     source_root: Path | None = None,
     study_client: Any = None,
     scorecard_model: str = "",
+    probe_budget: Any = None,
 ) -> set[str]:
     """Post-study reading-list bookkeeping for one batch.
 
@@ -8508,6 +8509,78 @@ def _mark_batch_reading_list(
                 spot = spot_check_question(req.question, study_items)
             except Exception:
                 logger.debug("spot-check failed", exc_info=True)
+
+        # Compiler channel: textually undecidable constant claims on
+        # C/C++ targets (computed #defines, enum auto-values, sizeof/
+        # alignof/offsetof) resolve by sandboxed compile-probe.
+        # Verified/contradicted are mechanical verdicts with a
+        # compiler receipt; unavailable keeps the question's prior
+        # state with an explicit note — never a fabricated verdict.
+        probe_note = ""
+        probe = None
+        if spot is None and study_items and source_root is not None:
+            try:
+                from core.audit.compile_probe import (
+                    compile_probe_question,
+                )
+                probe = compile_probe_question(
+                    req.question, study_items, Path(source_root),
+                    budget=probe_budget,
+                )
+            except Exception:
+                logger.debug("compile probe failed", exc_info=True)
+            if probe is not None and probe.status == "unavailable":
+                probe_note = (
+                    f"compile-probe unavailable/failed: {probe.reason}"
+                )
+                logger.info(
+                    "study-consumer: %s (%s)", probe_note, req.question,
+                )
+                probe = None
+        if probe is not None:
+            from core.audit.compile_probe import probe_receipt
+            probe_l = probe.expression.lower()
+            overrode = _match_domain_entry(
+                domain_model, cl or probe_l, tail or probe_l,
+            ) is not None
+            concept_id = f"compileprobe:{probe.expression}"
+            item.resolve(concept_id)
+            changed = True
+            eligible.add(fn_key)
+            if probe.status == "contradicted":
+                logger.info(
+                    "study-consumer: compile-probe CONTRADICTED the "
+                    "claimed value for %r%s",
+                    probe.expression,
+                    " — overriding LLM summary" if overrode else "",
+                )
+            elif overrode:
+                logger.info(
+                    "study-consumer: compile-probe overrode LLM "
+                    "summary for %r", probe.expression,
+                )
+            _record_study_scorecard(
+                scorecard_model, True, "compile-probe",
+            )
+            ledger.append(StudyAnswer(
+                question=req.question,
+                source_file=req.source_file,
+                source_function=req.source_function,
+                assumption=req.context or "",
+                answer=probe.answer,
+                tier="mechanical",
+                receipt=probe_receipt(probe).to_dict(),
+                status="resolved",
+                resolved_concept_id=concept_id,
+                spot_check_override=overrode,
+                agreement={
+                    "agreed": True,
+                    "reason": "mechanical answer — deterministic, "
+                              "gate skipped",
+                },
+            ))
+            continue
+
         if spot is not None:
             spot_l = spot.identifier.lower()
             overrode = _match_domain_entry(
@@ -8563,6 +8636,7 @@ def _mark_batch_reading_list(
                 status="pending",
                 reason="studied but produced no matching domain-model "
                        "concept",
+                probe_note=probe_note,
             ))
             continue
         matched_id, provenance, receipt, description = entry
@@ -8580,6 +8654,7 @@ def _mark_batch_reading_list(
                 reason="answer lacks a verified receipt — unverified "
                        "hint only",
                 resolved_concept_id="",
+                probe_note=probe_note,
             ))
             continue
 
@@ -8634,6 +8709,7 @@ def _mark_batch_reading_list(
                 status="inconclusive",
                 reason=agreement.get("reason") or "",
                 agreement=agreement,
+                probe_note=probe_note,
             ))
             continue
 
@@ -8651,6 +8727,7 @@ def _mark_batch_reading_list(
             status="resolved",
             resolved_concept_id=matched_id,
             agreement=agreement,
+            probe_note=probe_note,
         ))
 
     if changed:
@@ -9004,6 +9081,14 @@ def _study_consumer_loop(
     re_review_count = st.get("re_review_count", 0)
     stale_batches = st.get("stale_batches", 0)
     seen_concepts = st.get("seen_concepts", set())
+    # Compile-probe cap is per RUN, shared across batches.
+    probe_budget = st.get("probe_budget")
+    if probe_budget is None:
+        try:
+            from core.audit.compile_probe import ProbeBudget
+            probe_budget = ProbeBudget()
+        except Exception:  # noqa: BLE001 - probes degrade to capped-out
+            probe_budget = None
 
     while not study_queue.is_done():
         # Idle at the top of every iteration: the drain path uses the
@@ -9277,6 +9362,7 @@ def _study_consumer_loop(
                     config.models[0]
                     if config.models else "default"
                 ),
+                probe_budget=probe_budget,
             )
         except Exception:
             logger.debug(

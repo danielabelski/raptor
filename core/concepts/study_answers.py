@@ -49,6 +49,10 @@ class StudyAnswer:
     #: {"agreed": bool, "reason": str} — absent when the gate did
     #: not apply (non-flip path or mechanical tier).
     agreement: dict | None = None
+    #: "compile-probe unavailable/failed: <reason>" when the compiler
+    #: channel was attempted but could not produce a verdict — the
+    #: question keeps whatever state the remaining pipeline assigns.
+    probe_note: str = ""
     created_at: float = field(default_factory=time.time)
 
 

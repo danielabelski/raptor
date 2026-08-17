@@ -181,6 +181,18 @@ _HAPPY_EYEBALLS_DELAY = 0.25
 _PROXY_READ_TIMEOUT_S = 10.0
 _PROXY_CONNECT_TIMEOUT_S = 30.0
 
+# TCP keepalive for established tunnel legs. Corporate proxies, NAT
+# gateways, and stateful firewalls drop connection state for tunnels
+# that go quiet — a thinking model can be silent for minutes while
+# its tunnel carries zero bytes, and the response then lands on a
+# dead connection. Keepalive probes refresh that per-TCP-leg state.
+# They are TCP-level, not tunnel payload: an upstream proxy applying
+# an application-level idle timer to RELAYED bytes still fires — the
+# probes only keep the transport under the tunnel alive.
+_TCP_KEEPALIVE_IDLE_S = 30
+_TCP_KEEPALIVE_INTERVAL_S = 10
+_TCP_KEEPALIVE_COUNT = 3
+
 # Canonical filename for the per-run proxy events JSONL. Written by
 # context.py (post-sandbox flush of unregister_sandbox events). Defined
 # here so consumers of the proxy module reference one source-of-truth
@@ -371,6 +383,46 @@ def _host_in_no_proxy(host: str, patterns: list) -> bool:
         if h == p or h.endswith("." + p):
             return True
     return False
+
+
+def _enable_tcp_keepalive(writer: asyncio.StreamWriter) -> None:
+    """Turn on TCP keepalive for one tunnel leg.
+
+    Only meaningful for TCP legs — unix-socket client legs (sandbox
+    lanes) are skipped by the family check. Platform spelling: Linux
+    exposes TCP_KEEPIDLE, macOS calls the same idle knob
+    TCP_KEEPALIVE; interval/count set where the platform has them.
+    Failure is non-fatal — keepalive is a resilience optimisation,
+    never worth killing an established tunnel over.
+    """
+    sock = writer.get_extra_info("socket")
+    if sock is None or sock.family not in (socket.AF_INET, socket.AF_INET6):
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            sock.setsockopt(
+                socket.IPPROTO_TCP, socket.TCP_KEEPIDLE,
+                _TCP_KEEPALIVE_IDLE_S,
+            )
+        elif hasattr(socket, "TCP_KEEPALIVE"):
+            sock.setsockopt(
+                socket.IPPROTO_TCP, socket.TCP_KEEPALIVE,
+                _TCP_KEEPALIVE_IDLE_S,
+            )
+        if hasattr(socket, "TCP_KEEPINTVL"):
+            sock.setsockopt(
+                socket.IPPROTO_TCP, socket.TCP_KEEPINTVL,
+                _TCP_KEEPALIVE_INTERVAL_S,
+            )
+        if hasattr(socket, "TCP_KEEPCNT"):
+            sock.setsockopt(
+                socket.IPPROTO_TCP, socket.TCP_KEEPCNT,
+                _TCP_KEEPALIVE_COUNT,
+            )
+    except OSError:
+        logger.debug("egress proxy: TCP keepalive setup failed",
+                     exc_info=True)
 
 
 def _split_addrinfo_by_family(
@@ -1763,6 +1815,11 @@ class EgressProxy:
         # Acknowledge tunnel established, then relay bytes both ways.
         writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
         await writer.drain()
+        # Both legs get TCP keepalive so middlebox/NAT state survives
+        # long silent stretches (thinking models). The client leg is
+        # a no-op when the child rides a unix-socket lane.
+        _enable_tcp_keepalive(writer)
+        _enable_tcp_keepalive(up_writer)
         # Pull resolved_ip from the event dict — the direct path sets it
         # as a local variable, but the upstream-proxy branch only populates
         # event["resolved_ip"]. Referencing a bare `resolved_ip` here would

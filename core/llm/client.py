@@ -2452,7 +2452,14 @@ class LLMClient:
     def get_stats(self) -> dict[str, Any]:
         """Get usage statistics with per-provider, per-task-type, and token split breakdowns."""
         provider_stats = {}
-        for key, provider in self.providers.items():
+        # Snapshot under the lock: ``_get_provider`` inserts into
+        # ``self.providers`` under ``_stats_lock`` from concurrent
+        # dispatch threads, so iterating the live dict here can raise
+        # RuntimeError("dictionary changed size during iteration")
+        # when progress reporting polls stats mid-run.
+        with self._stats_lock:
+            providers_snapshot = list(self.providers.items())
+        for key, provider in providers_snapshot:
             avg_duration = (provider.total_duration / provider.call_count
                            if provider.call_count > 0 else 0.0)
             pstat: dict[str, Any] = {

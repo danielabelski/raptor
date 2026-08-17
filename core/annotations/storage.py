@@ -38,7 +38,6 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from core.atomic_fs import write_text_atomically
 
@@ -48,9 +47,9 @@ try:
 except ImportError:  # pragma: no cover — only triggers on Windows
     _HAS_FCNTL = False
 
-from .models import Annotation
-
 import logging
+
+from .models import Annotation
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +202,27 @@ def _validate_metadata(metadata) -> None:
 
 def annotation_path(base_dir: Path, source_file: str) -> Path:
     """Resolve the annotation .md path for one source file. Doesn't
-    create the file; callers do."""
+    create the file; callers do.
+
+    Beyond the lexical checks in ``_validate_source_path``, the final
+    parent is resolve()-checked against ``base_dir`` — a symlinked
+    intermediate directory inside the annotation tree could otherwise
+    redirect reads/writes outside it even though every path component
+    passed the lexical validation."""
     _validate_source_path(source_file)
-    return base_dir / (source_file + ".md")
+    path = Path(base_dir) / (source_file + ".md")
+    base_resolved = Path(base_dir).resolve()
+    parent_resolved = path.parent.resolve()
+    if not (
+        parent_resolved == base_resolved
+        or base_resolved in parent_resolved.parents
+    ):
+        raise ValueError(
+            f"annotation path escapes base dir: {source_file!r} "
+            f"(resolved parent {parent_resolved} is not under "
+            f"{base_resolved})"
+        )
+    return path
 
 
 @contextmanager
@@ -233,7 +250,14 @@ def _file_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     # Open with O_CREAT — creates if absent, doesn't truncate.
-    fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
+    # O_NOFOLLOW: the lock file has a predictable sibling name; a
+    # symlink squatted there must fail loudly (ELOOP) rather than be
+    # followed to an attacker-chosen target.
+    fd = os.open(
+        str(lock_path),
+        os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+    )
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
@@ -247,7 +271,7 @@ def _file_lock(path: Path):
 _VALID_ANNOTATION_SOURCES = frozenset({"human", "llm"})
 
 
-def _parse_meta(comment_body: str) -> Dict[str, str]:
+def _parse_meta(comment_body: str) -> dict[str, str]:
     """Parse ``key=value`` pairs from the inside of a meta comment.
     Quoted values keep spaces; bare values are whitespace-delimited.
     Escaped double-quotes (``\\"``) inside quoted values are unescaped.
@@ -258,7 +282,7 @@ def _parse_meta(comment_body: str) -> Dict[str, str]:
     consumers that check ``source == "human"`` — surface those now.
     """
     import logging as _log
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for m in _META_KV_RE.finditer(comment_body):
         key = m.group(1)
         value = m.group(2) if m.group(2) is not None else m.group(3)
@@ -275,11 +299,11 @@ def _parse_meta(comment_body: str) -> Dict[str, str]:
     return out
 
 
-def _format_meta(metadata: Dict[str, str]) -> str:
+def _format_meta(metadata: dict[str, str]) -> str:
     """Render ``metadata`` back to the comment's body string. Keys
     sorted for stable output; values quoted only when they contain
     spaces or quotes."""
-    parts: List[str] = []
+    parts: list[str] = []
     for k in sorted(metadata):
         v = str(metadata[k])
         if (" " in v) or ('"' in v) or v == "":
@@ -290,13 +314,13 @@ def _format_meta(metadata: Dict[str, str]) -> str:
     return " ".join(parts)
 
 
-def _split_sections(text: str) -> List[tuple[str, int, int]]:
+def _split_sections(text: str) -> list[tuple[str, int, int]]:
     """Split a markdown body into ``(name, start_offset, end_offset)``
     triples, one per ``## name`` heading. Offsets are byte positions
     of the heading line (start) and start of next heading or EOF (end).
     """
     headings = list(_SECTION_HEADING_RE.finditer(text))
-    out: List[tuple[str, int, int]] = []
+    out: list[tuple[str, int, int]] = []
     for i, m in enumerate(headings):
         name = m.group(1).strip()
         start = m.start()
@@ -307,7 +331,7 @@ def _split_sections(text: str) -> List[tuple[str, int, int]]:
 
 def _parse_section(
     text: str, name: str, start: int, end: int,
-) -> tuple[Dict[str, str], str]:
+) -> tuple[dict[str, str], str]:
     """Parse one section: returns (metadata, body)."""
     section = text[start:end]
     # Drop the heading line.
@@ -329,7 +353,7 @@ def _parse_section(
 
 def read_file_annotations(
     base_dir: Path, source_file: str,
-) -> List[Annotation]:
+) -> list[Annotation]:
     """Read all annotations for one source file. Returns an empty
     list if no annotation file exists for the source path."""
     path = annotation_path(base_dir, source_file)
@@ -358,7 +382,7 @@ def read_file_annotations(
                 f"(reader supports up to {CURRENT_VERSION}); "
                 f"attempting to parse anyway"
             )
-    out: List[Annotation] = []
+    out: list[Annotation] = []
     for name, start, end in _split_sections(text):
         meta, body = _parse_section(text, name, start, end)
         out.append(Annotation(
@@ -372,7 +396,7 @@ def read_file_annotations(
 
 def read_annotation(
     base_dir: Path, source_file: str, function: str,
-) -> Optional[Annotation]:
+) -> Annotation | None:
     """Read one specific annotation. Returns None if absent."""
     for ann in read_file_annotations(base_dir, source_file):
         if ann.function == function:
@@ -383,7 +407,7 @@ def read_annotation(
 def write_annotation(
     base_dir: Path, ann: Annotation,
     *, overwrite: str = "all",
-) -> Optional[Path]:
+) -> Path | None:
     """Write or replace one function's annotation in its source
     file's annotation .md.
 
@@ -509,7 +533,7 @@ def _render_file(source_file: str, anns) -> str:
     objects. Sections are sorted by function name for stable output
     (diff-friendly under git)."""
     sorted_anns = sorted(anns, key=lambda a: a.function)
-    lines: List[str] = []
+    lines: list[str] = []
     # Format version marker — first line. Reader uses this to detect
     # future format changes and warn rather than silently mis-parse.
     lines.append(f"<!-- annotations-version: {CURRENT_VERSION} -->")

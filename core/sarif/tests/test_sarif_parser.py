@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for SARIF parser reliability fixes."""
 
 import json
@@ -302,6 +301,111 @@ class TestNullPhysicalLocation(unittest.TestCase):
             path = Path(tmpdir) / "null-artifact.sarif"
             path.write_text(json.dumps(sarif))
             findings = parse_sarif_findings(path)
+        self.assertEqual(len(findings), 1)
+        self.assertIsNone(findings[0]["file"])
+
+
+class TestSourceRootContainment(unittest.TestCase):
+    """Opt-in containment check at the parse boundary: with a known
+    source root, artifact URIs resolving outside it are skipped —
+    matching how import_normalizer treats unmappable URIs."""
+
+    @staticmethod
+    def _sarif_with_uris(uris, uri_bases=None):
+        run = {
+            "tool": {"driver": {"name": "test", "rules": []}},
+            "results": [
+                {
+                    "ruleId": f"rule-{i}",
+                    "message": {"text": "finding"},
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": art,
+                            "region": {"startLine": 1},
+                        }
+                    }],
+                }
+                for i, art in enumerate(uris)
+            ],
+        }
+        if uri_bases:
+            run["originalUriBaseIds"] = uri_bases
+        return {"version": "2.1.0", "runs": [run]}
+
+    def _parse(self, sarif, source_root=None):
+        from core.sarif.parser import parse_sarif_findings
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "t.sarif"
+            path.write_text(json.dumps(sarif))
+            return parse_sarif_findings(path, source_root=source_root)
+
+    def test_in_root_relative_uri_kept_identical(self):
+        """With a root, in-root findings come out exactly as without."""
+        sarif = self._sarif_with_uris([{"uri": "src/foo.c"}])
+        with tempfile.TemporaryDirectory() as root:
+            with_root = self._parse(sarif, source_root=Path(root))
+        without_root = self._parse(sarif)
+        self.assertEqual(with_root, without_root)
+        self.assertEqual(with_root[0]["file"], "src/foo.c")
+
+    def test_traversal_uri_skipped_when_root_known(self):
+        sarif = self._sarif_with_uris([
+            {"uri": "../../etc/passwd"},
+            {"uri": "src/ok.c"},
+        ])
+        with tempfile.TemporaryDirectory() as root:
+            findings = self._parse(sarif, source_root=Path(root))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["file"], "src/ok.c")
+
+    def test_percent_encoded_traversal_skipped(self):
+        sarif = self._sarif_with_uris([{"uri": "%2e%2e/%2e%2e/etc/passwd"}])
+        with tempfile.TemporaryDirectory() as root:
+            findings = self._parse(sarif, source_root=Path(root))
+        self.assertEqual(findings, [])
+
+    def test_absolute_uri_outside_root_skipped(self):
+        sarif = self._sarif_with_uris([{"uri": "file:///etc/passwd"}])
+        with tempfile.TemporaryDirectory() as root:
+            findings = self._parse(sarif, source_root=Path(root))
+        self.assertEqual(findings, [])
+
+    def test_absolute_uri_inside_root_kept(self):
+        with tempfile.TemporaryDirectory() as root:
+            resolved_root = Path(root).resolve()
+            sarif = self._sarif_with_uris(
+                [{"uri": f"file://{resolved_root}/src/foo.c"}]
+            )
+            findings = self._parse(sarif, source_root=Path(root))
+        self.assertEqual(len(findings), 1)
+
+    def test_base_joined_uri_escaping_root_skipped(self):
+        """A benign-looking relative URI can still escape via a hostile
+        originalUriBaseIds entry — the check runs AFTER base joining."""
+        sarif = self._sarif_with_uris(
+            [{"uri": "passwd", "uriBaseId": "EVIL"}],
+            uri_bases={"EVIL": {"uri": "../../../etc/"}},
+        )
+        with tempfile.TemporaryDirectory() as root:
+            findings = self._parse(sarif, source_root=Path(root))
+        self.assertEqual(findings, [])
+
+    def test_no_root_keeps_all_findings(self):
+        """Back-compat: without source_root nothing is filtered."""
+        sarif = self._sarif_with_uris([
+            {"uri": "../../etc/passwd"},
+            {"uri": "src/ok.c"},
+        ])
+        findings = self._parse(sarif)
+        self.assertEqual(len(findings), 2)
+
+    def test_missing_uri_not_filtered(self):
+        """A result with no artifact URI is neither in- nor out-of-root;
+        it passes through as before (file=None)."""
+        sarif = self._sarif_with_uris([{}])
+        with tempfile.TemporaryDirectory() as root:
+            findings = self._parse(sarif, source_root=Path(root))
         self.assertEqual(len(findings), 1)
         self.assertIsNone(findings[0]["file"])
 

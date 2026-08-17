@@ -45,15 +45,12 @@ is visible at the use site.
 
 from __future__ import annotations
 
-from typing import FrozenSet
-
-
 # === Bounded-string functions with classic overflow CVE shapes ===
 # Note: snprintf/vsnprintf and their wide-char cousins are NOT here —
 # their dominant CVE shape is format-string (see FORMAT_STRING_FUNCS),
 # not overflow. The bounded-size param actually prevents the classic
 # CWE-120 overflow.
-STRING_OVERFLOW_FUNCS: FrozenSet[str] = frozenset({
+STRING_OVERFLOW_FUNCS: frozenset[str] = frozenset({
     # No bounds checking at all
     "strcpy", "strcat", "sprintf", "vsprintf",
     "gets",  # banned by C11 Annex K, still found in legacy code
@@ -80,7 +77,7 @@ STRING_OVERFLOW_FUNCS: FrozenSet[str] = frozenset({
 # PARSE_FUNCS (when %d / %u is the only parser). Kept as own category
 # because the analysis pattern differs from atoi/strto* (scanf has its
 # own bounded vs unbounded %s rules).
-SCAN_FAMILY_FUNCS: FrozenSet[str] = frozenset({
+SCAN_FAMILY_FUNCS: frozenset[str] = frozenset({
     "scanf", "vscanf", "sscanf", "fscanf", "vsscanf", "vfscanf",
     "wscanf", "swscanf",
 })
@@ -91,7 +88,7 @@ SCAN_FAMILY_FUNCS: FrozenSet[str] = frozenset({
 # `memcpy(buf, attacker_data, attacker_size)` is THE classic CVE so
 # the import IS signal — every binary uses memcpy, but a binary that
 # uses memcpy on caller-supplied size is worth fuzzing more aggressively.
-MEMORY_COPY_FUNCS: FrozenSet[str] = frozenset({
+MEMORY_COPY_FUNCS: frozenset[str] = frozenset({
     "memcpy", "memmove", "bcopy",
     # Wide-char variants
     "wmemcpy", "wmemmove",
@@ -108,7 +105,7 @@ MEMORY_COPY_FUNCS: FrozenSet[str] = frozenset({
 # snprintf / vsnprintf are included here (not in STRING_OVERFLOW)
 # because their dominant CVE shape is format-string-when-tainted,
 # not overflow (the size param prevents the overflow).
-FORMAT_STRING_FUNCS: FrozenSet[str] = frozenset({
+FORMAT_STRING_FUNCS: frozenset[str] = frozenset({
     "vfprintf",
     "syslog",
     "snprintf", "vsnprintf",
@@ -127,7 +124,7 @@ FORMAT_STRING_FUNCS: FrozenSet[str] = frozenset({
 
 
 # === Process execution / command injection sinks ===
-EXEC_FUNCS: FrozenSet[str] = frozenset({
+EXEC_FUNCS: frozenset[str] = frozenset({
     "system", "popen",
     "execl", "execv", "execlp", "execvp", "execle", "execve",
     "posix_spawn", "posix_spawnp",
@@ -149,7 +146,7 @@ EXEC_FUNCS: FrozenSet[str] = frozenset({
 #   alloca:  stack-allocation CWE-770, unbounded if size is tainted
 # The remaining entries are uncommon enough that the import is still
 # signal even though their individual CVE history is thinner.
-ALLOC_FUNCS: FrozenSet[str] = frozenset({
+ALLOC_FUNCS: frozenset[str] = frozenset({
     "calloc",
     "alloca",
     "posix_memalign", "aligned_alloc",
@@ -162,7 +159,7 @@ ALLOC_FUNCS: FrozenSet[str] = frozenset({
 # accept / bind / listen are server-side markers — different semantic
 # from recv* but bundled together because both answer "is this binary
 # doing network I/O" (fuzz-priority interest is similar).
-NETWORK_INGEST_FUNCS: FrozenSet[str] = frozenset({
+NETWORK_INGEST_FUNCS: frozenset[str] = frozenset({
     "recv", "recvfrom", "recvmsg", "recvmmsg",
     "accept", "bind", "listen",
     # OpenSSL
@@ -181,7 +178,7 @@ NETWORK_INGEST_FUNCS: FrozenSet[str] = frozenset({
 # and network protocol handlers). gets() lives in STRING_OVERFLOW_FUNCS
 # (banned API) and is therefore excluded here to keep categories
 # disjoint.
-STREAM_INPUT_FUNCS: FrozenSet[str] = frozenset({
+STREAM_INPUT_FUNCS: frozenset[str] = frozenset({
     "fgets", "fgetws",
     "getline", "getdelim",
     "pread", "preadv", "readv",
@@ -195,7 +192,7 @@ STREAM_INPUT_FUNCS: FrozenSet[str] = frozenset({
 # attacker-controlled equivalent is plain getenv. secure_getenv and
 # getauxval are NOT here — they're context markers, not sources
 # (see PROCESS_BOUNDARY_MARKERS below).
-PROCESS_BOUNDARY_FUNCS: FrozenSet[str] = frozenset({
+PROCESS_BOUNDARY_FUNCS: frozenset[str] = frozenset({
     "getenv",
 })
 
@@ -211,7 +208,7 @@ PROCESS_BOUNDARY_FUNCS: FrozenSet[str] = frozenset({
 #   * pipe / mkfifo — setup primitives, not read primitives. The
 #     actual attacker-data read happens via read() on the resulting
 #     fd (ubiquitous).
-IPC_FUNCS: FrozenSet[str] = frozenset({
+IPC_FUNCS: frozenset[str] = frozenset({
     "shmat", "shmget",
     "mq_receive", "mq_timedreceive",
     "msgrcv",
@@ -238,7 +235,7 @@ IPC_FUNCS: FrozenSet[str] = frozenset({
 #     by many normal programs (rust binaries, go binaries)
 #   * ``fork`` / ``execve`` — already in EXEC_FUNCS; the supply-
 #     chain signal there is the EXEC bucket, not duplicated here
-RUNTIME_PRIVILEGE_FUNCS: FrozenSet[str] = frozenset({
+RUNTIME_PRIVILEGE_FUNCS: frozenset[str] = frozenset({
     # POSIX privilege manipulation — rare in normal package binaries
     "setuid", "setgid", "seteuid", "setegid",
     "setresuid", "setresgid", "setreuid", "setregid",
@@ -271,7 +268,7 @@ RUNTIME_PRIVILEGE_FUNCS: FrozenSet[str] = frozenset({
 # counters, or cross-process memory inspection — the substrate
 # rootkits use to interpose on other processes (read secrets,
 # inject code) without ptrace's user-visible signal.
-KERNEL_TRACE_FUNCS: FrozenSet[str] = frozenset({
+KERNEL_TRACE_FUNCS: frozenset[str] = frozenset({
     # Performance / tracing subsystem
     "perf_event_open",
     # Cross-process memory access
@@ -297,7 +294,7 @@ KERNEL_TRACE_FUNCS: FrozenSet[str] = frozenset({
 #   1. Bare-copy primitives (copy_from_user, get_user, raw / inatomic)
 #   2. Allocator wrappers that copy in one call (memdup_user et al.)
 #   3. iovec / pages interfaces for scatter-gather + DMA paths
-KERNEL_USERSPACE_FUNCS: FrozenSet[str] = frozenset({
+KERNEL_USERSPACE_FUNCS: frozenset[str] = frozenset({
     # Bare copies
     "copy_from_user", "_copy_from_user",
     "raw_copy_from_user", "__copy_from_user_inatomic",
@@ -320,7 +317,7 @@ KERNEL_USERSPACE_FUNCS: FrozenSet[str] = frozenset({
 # so they belong in the shared catalog. Source-side scanners may treat
 # them as L1 context; import/fuzz-priority consumers can opt in only when
 # this signal is meaningful for their target class.
-DEVICE_CONTROL_FUNCS: FrozenSet[str] = frozenset({
+DEVICE_CONTROL_FUNCS: frozenset[str] = frozenset({
     "ioctl", "unlocked_ioctl", "compat_ioctl",
 })
 
@@ -333,7 +330,7 @@ DEVICE_CONTROL_FUNCS: FrozenSet[str] = frozenset({
 # suid) or kernel-supplied (getauxval). A static analyser uses these
 # to weight the suspicion of co-located plain getenv calls, not as
 # direct taint sources.
-PROCESS_BOUNDARY_MARKERS: FrozenSet[str] = frozenset({
+PROCESS_BOUNDARY_MARKERS: frozenset[str] = frozenset({
     "secure_getenv",
     "getauxval",
 })
@@ -343,7 +340,7 @@ PROCESS_BOUNDARY_MARKERS: FrozenSet[str] = frozenset({
 # The biggest single signal source for fuzz prioritisation. A binary
 # that imports any of these is processing structured external input
 # and is worth aggressive coverage.
-PARSER_FUNCS: FrozenSet[str] = frozenset({
+PARSER_FUNCS: frozenset[str] = frozenset({
     # Generic parser-generator output (yacc/bison/flex/lex)
     "yyparse",
 
@@ -396,7 +393,7 @@ PARSER_FUNCS: FrozenSet[str] = frozenset({
 # Float parsing (atof / strto[d,f,ld]) is DELIBERATELY EXCLUDED —
 # float-overflow CVE pattern is fundamentally different from integer
 # overflow and doesn't usually map to memory corruption.
-INTEGER_PARSE_FUNCS: FrozenSet[str] = frozenset({
+INTEGER_PARSE_FUNCS: frozenset[str] = frozenset({
     "atoi", "atol", "atoll",
     "strtoul", "strtol", "strtoull", "strtoll",
 })
@@ -407,7 +404,7 @@ INTEGER_PARSE_FUNCS: FrozenSet[str] = frozenset({
 # CWE-377-guarantee a race condition by construction. tmpfile and
 # mkstemp are NOT here — they're race-free when used correctly.
 # stat / lstat / chdir excluded — too common to signal anything.
-TOCTOU_FUNCS: FrozenSet[str] = frozenset({
+TOCTOU_FUNCS: frozenset[str] = frozenset({
     "access", "faccessat",
     "realpath", "readlink", "readlinkat",
     "chroot",
@@ -420,41 +417,71 @@ TOCTOU_FUNCS: FrozenSet[str] = frozenset({
 # embeds type/parameter info so exact-equality match misses real call
 # sites. Consumers must do `substring in demangled_name` checking,
 # not `name in MACOS_DANGEROUS_SUBSTRINGS`.
-MACOS_DANGEROUS_SUBSTRINGS: FrozenSet[str] = frozenset({
-    # CoreFoundation parsers
-    "CFPropertyListCreateWithData", "CFPropertyListCreateFromXMLData",
-    "CFReadStreamRead", "CFDataGetBytes",
-    "CFStringCreateWithBytes", "CFURLCreateWithBytes",
-    "CFXMLParserCreate", "CFXMLTreeCreateFromData",
+#
+# Grouped by security category so consumers (surface_classification)
+# classify from the taxonomy instead of re-listing names. The flat
+# MACOS_DANGEROUS_SUBSTRINGS set is the DERIVED union — add a new
+# symbol to exactly one group; a drift guard asserts the union stays
+# complete and the groups disjoint.
 
-    # Swift Foundation parsing / IO entry points
-    "Foundation.Data.contentsOf",
-    "Foundation.Data.base64Encoded",
-    "Foundation.Data.write",
-    "Foundation.Data.Iterator",
-    "Foundation.URL.fileURLWithPath",
-    "Foundation.URL.absoluteString",
+# Structured-data parse surfaces (plist / JSON / XML deserialization).
+MACOS_PARSER_SUBSTRINGS: frozenset[str] = frozenset({
+    "CFPropertyListCreateWithData", "CFPropertyListCreateFromXMLData",
+    "CFXMLParserCreate", "CFXMLTreeCreateFromData",
     "Foundation.JSONSerialization",
     "Foundation.PropertyListSerialization",
     "Foundation.PropertyListDecoder",
     "Foundation.JSONDecoder",
+    "Foundation.Data.base64Encoded",
+})
 
-    # Apple security framework / keychain
+# Filesystem / URL handling surfaces.
+MACOS_FILESYSTEM_URL_SUBSTRINGS: frozenset[str] = frozenset({
+    "CFURLCreateWithBytes",
+    "Foundation.Data.contentsOf",
+    "Foundation.URL.fileURLWithPath",
+    "Foundation.URL.absoluteString",
+})
+
+# Apple security framework / keychain boundary APIs. The prefix tuple
+# is what consumers match with (SecTrust* covers the wider family);
+# the named entries are the catalogued exemplars.
+MACOS_SECURITY_BOUNDARY_PREFIXES: tuple = (
+    "SecTrust", "SecPolicy", "SecItem", "SecKeychain",
+)
+MACOS_SECURITY_BOUNDARY_SUBSTRINGS: frozenset[str] = frozenset({
     "SecPolicyCreateSSL",
     "SecTrustEvaluate",
     "SecItemCopyMatching",
     "SecKeychainItem",
+})
 
-    # NSData / NSString interop — option/byte-buffer parameters often
-    # carry tainted input (base64 decode flags, byte ranges).
+# NSData / NSString / CF byte-buffer interop — option/byte-buffer
+# parameters often carry tainted input (base64 decode flags, byte
+# ranges). Catalogued for import-surface weighting; not yet mapped to
+# a classification category by surface_classification.
+MACOS_BYTE_BUFFER_SUBSTRINGS: frozenset[str] = frozenset({
+    "CFReadStreamRead", "CFDataGetBytes", "CFStringCreateWithBytes",
+    "Foundation.Data.write",
+    "Foundation.Data.Iterator",
     "NSDataReadingOptions",
     "NSDataBase64DecodingOptions",
     "NSStringFromBytes",
+})
 
-    # Process execution via Foundation (NSTask / Swift Process)
+# Process execution via Foundation (NSTask / Swift Process).
+MACOS_PROCESS_EXEC_SUBSTRINGS: frozenset[str] = frozenset({
     "NSTask",
     "Foundation.Process",
 })
+
+MACOS_DANGEROUS_SUBSTRINGS: frozenset[str] = (
+    MACOS_PARSER_SUBSTRINGS
+    | MACOS_FILESYSTEM_URL_SUBSTRINGS
+    | MACOS_SECURITY_BOUNDARY_SUBSTRINGS
+    | MACOS_BYTE_BUFFER_SUBSTRINGS
+    | MACOS_PROCESS_EXEC_SUBSTRINGS
+)
 
 
 # === Entry-point name exact matches ===
@@ -463,7 +490,7 @@ MACOS_DANGEROUS_SUBSTRINGS: FrozenSet[str] = frozenset({
 # check; the consumer separately applies a suffix-pattern check for
 # `*main`/`*init`/`*Main`/`*Init`/`*Entry` patterns (those don't
 # belong here — they're patterns, not names).
-ENTRY_POINT_HINTS: FrozenSet[str] = frozenset({
+ENTRY_POINT_HINTS: frozenset[str] = frozenset({
     "main", "_start", "wmain",
     "WinMain", "DllMain", "DriverEntry",
     "LLVMFuzzerTestOneInput",   # libFuzzer harness convention
@@ -473,7 +500,7 @@ ENTRY_POINT_HINTS: FrozenSet[str] = frozenset({
 
 # === Helpers ===
 
-def fortified(base: FrozenSet[str]) -> FrozenSet[str]:
+def fortified(base: frozenset[str]) -> frozenset[str]:
     """Return the FORTIFY_SOURCE __*_chk variants of every function in
     `base`. Exact-match set — useful for consumers that need to
     recognise `__strcpy_chk` as the bounded variant of `strcpy`
@@ -491,25 +518,31 @@ def fortified(base: FrozenSet[str]) -> FrozenSet[str]:
 
 
 __all__ = [
-    "STRING_OVERFLOW_FUNCS",
-    "SCAN_FAMILY_FUNCS",
-    "MEMORY_COPY_FUNCS",
-    "FORMAT_STRING_FUNCS",
-    "EXEC_FUNCS",
     "ALLOC_FUNCS",
-    "NETWORK_INGEST_FUNCS",
-    "STREAM_INPUT_FUNCS",
-    "PROCESS_BOUNDARY_FUNCS",
-    "PROCESS_BOUNDARY_MARKERS",
+    "DEVICE_CONTROL_FUNCS",
+    "ENTRY_POINT_HINTS",
+    "EXEC_FUNCS",
+    "FORMAT_STRING_FUNCS",
+    "INTEGER_PARSE_FUNCS",
     "IPC_FUNCS",
-    "RUNTIME_PRIVILEGE_FUNCS",
     "KERNEL_TRACE_FUNCS",
     "KERNEL_USERSPACE_FUNCS",
-    "DEVICE_CONTROL_FUNCS",
-    "PARSER_FUNCS",
-    "INTEGER_PARSE_FUNCS",
-    "TOCTOU_FUNCS",
+    "MACOS_BYTE_BUFFER_SUBSTRINGS",
     "MACOS_DANGEROUS_SUBSTRINGS",
-    "ENTRY_POINT_HINTS",
+    "MACOS_FILESYSTEM_URL_SUBSTRINGS",
+    "MACOS_PARSER_SUBSTRINGS",
+    "MACOS_PROCESS_EXEC_SUBSTRINGS",
+    "MACOS_SECURITY_BOUNDARY_PREFIXES",
+    "MACOS_SECURITY_BOUNDARY_SUBSTRINGS",
+    "MEMORY_COPY_FUNCS",
+    "NETWORK_INGEST_FUNCS",
+    "PARSER_FUNCS",
+    "PROCESS_BOUNDARY_FUNCS",
+    "PROCESS_BOUNDARY_MARKERS",
+    "RUNTIME_PRIVILEGE_FUNCS",
+    "SCAN_FAMILY_FUNCS",
+    "STREAM_INPUT_FUNCS",
+    "STRING_OVERFLOW_FUNCS",
+    "TOCTOU_FUNCS",
     "fortified",
 ]

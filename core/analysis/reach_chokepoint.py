@@ -34,6 +34,8 @@ import logging
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from core.paths import to_repo_relative
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,21 +45,13 @@ def normalise_path(file_path: str, repo_root: Path) -> str | None:
     Normalise to a repo-relative ``a/b/c.ext`` form so the inventory
     lookup (keyed on repo-relative paths) matches. Returns ``None``
     when the input is absolute but not under ``repo_root`` —
-    something outside the analysed tree, do not suppress.
+    something outside the analysed tree, do not suppress. Delegates to
+    :func:`core.paths.to_repo_relative` (strict mode), which also
+    collapses ``./``/``..`` segments in relative paths and returns
+    ``None`` for a relative path that escapes the root — an escaping
+    path must never license suppression.
     """
-    if not file_path:
-        return None
-    file_path = file_path.removeprefix("file://")
-    p = Path(file_path)
-    if p.is_absolute():
-        try:
-            return str(p.relative_to(repo_root.resolve()))
-        except ValueError:
-            return None
-    # Strip a leading ./ that some tools emit so it matches the
-    # inventory's ``files[].path`` convention (no leading ./).
-    file_path = file_path.removeprefix("./")
-    return file_path
+    return to_repo_relative(file_path, repo_root, outside_root="none")
 
 
 def path_to_module(rel_path: str) -> str | None:

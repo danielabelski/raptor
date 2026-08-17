@@ -31,9 +31,12 @@ parity between the two surfaces."""
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from .pipeline import RunOptions
+
+logger = logging.getLogger(__name__)
 
 _SCAN_HELP_EPILOG = """\
 Common invocations:
@@ -319,6 +322,49 @@ def apply_no_llm_umbrella(args: argparse.Namespace) -> None:
         args.impact_analysis = False
 
 
+def resolve_repo_trust(args: argparse.Namespace) -> bool:
+    """Resolve the repo-trust umbrella ONCE and fan the result out to
+    every consumer.
+
+    Precedence (``core.project.trust.resolve_trust_flag``, shared with
+    /agentic and /codeql): ``--no-trust-repo`` > ``--trust-repo`` >
+    active project's ``config`` marker > off. When the marker decides,
+    the standard project-trust banner prints (via
+    ``apply_project_trust_flags``).
+
+    Mutates ``args.trust_repo`` to the effective value AND sets the
+    process-wide ``cc_trust`` / ``codeql_trust`` overrides to the SAME
+    value, so the pipeline plumbing (``RunOptions.trust_repo``) and the
+    process-wide gates cannot disagree. Entry points must NOT call
+    ``set_trust_override`` from the raw flag themselves — that path
+    missed marker-implied trust (override stayed off on marker-only
+    runs) and, when both flags were passed, left the override trusted
+    while the pipeline correctly resolved untrusted.
+
+    Idempotent: a second call re-resolves from the already-mutated
+    ``args`` to the same value, and the marker banner prints at most
+    once per run.
+    """
+    from core.project.trust import apply_project_trust_flags
+    apply_project_trust_flags(args)
+    resolved = bool(getattr(args, "trust_repo", False))
+    try:
+        from core.security.cc_trust import set_trust_override
+        set_trust_override(resolved)
+    except ImportError:
+        logger.debug("raptor-sca: cc_trust unavailable; repo-trust "
+                     "override not propagated")
+    try:
+        from core.security.codeql_trust import (
+            set_trust_override as _codeql_set_trust_override,
+        )
+        _codeql_set_trust_override(resolved)
+    except ImportError:
+        logger.debug("raptor-sca: codeql_trust unavailable; repo-trust "
+                     "override not propagated")
+    return resolved
+
+
 def options_from_args(args: argparse.Namespace) -> RunOptions:
     """Build :class:`RunOptions` from a parsed Namespace.
 
@@ -328,13 +374,13 @@ def options_from_args(args: argparse.Namespace) -> RunOptions:
     ``enable_progress``. A new RunOptions field added here lands
     in both surfaces automatically.
 
-    Repo-trust is resolved here against the active project's
-    ``config`` marker (``--no-trust-repo`` > ``--trust-repo`` >
-    marker > off) so both entry points share the precedence and
-    the marker banner.
+    Repo-trust is resolved here via :func:`resolve_repo_trust`
+    (``--no-trust-repo`` > ``--trust-repo`` > project ``config``
+    marker > off) so both entry points share the precedence, the
+    marker banner, AND the propagation of the resolved value to
+    the process-wide ``cc_trust`` / ``codeql_trust`` overrides.
     """
-    from core.project.trust import apply_project_trust_flags
-    apply_project_trust_flags(args)
+    resolve_repo_trust(args)
     return RunOptions(
         offline=args.offline,
         no_cache=args.no_cache,

@@ -35,6 +35,20 @@ def _no_project_trust_markers(monkeypatch: pytest.MonkeyPatch) -> None:
                         lambda: ({}, None))
 
 
+@pytest.fixture(autouse=True)
+def _restore_trust_overrides():
+    """``options_from_args`` propagates the resolved repo-trust value
+    to the process-wide ``cc_trust`` / ``codeql_trust`` overrides
+    (via ``resolve_repo_trust``); restore both module globals so
+    trust state never leaks between tests."""
+    from core.security import cc_trust, codeql_trust
+    saved_cc = cc_trust.is_trust_overridden()
+    saved_ql = codeql_trust._trust_override_set
+    yield
+    cc_trust.set_trust_override(saved_cc)
+    codeql_trust.set_trust_override(saved_ql)
+
+
 def _parser_with_scan_args() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="test")
     p.add_argument("target")

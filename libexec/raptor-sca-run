@@ -36,7 +36,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE")
         or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
@@ -51,13 +52,12 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
-import core.startup.process_init  # noqa: E402,F401
-
-from core.run.metadata import complete_run, fail_run, start_run     # noqa: E402
-from core.run.output import get_output_dir                           # noqa: E402
-from packages.sca import cli as sca_cli                              # noqa: E402
-from packages.sca.cli import _configure_logging, _print_summary      # noqa: E402
-from packages.sca.cli import SUBCOMMANDS as _SUBCOMMANDS              # noqa: E402
+import core.startup.process_init  # noqa: F401
+from core.run.metadata import complete_run, fail_run, start_run
+from core.run.output import get_output_dir
+from packages.sca import cli as sca_cli
+from packages.sca.cli import SUBCOMMANDS as _SUBCOMMANDS
+from packages.sca.cli import _configure_logging, _print_summary
 
 _HELP = """\
 raptor-sca — dependency security scanner
@@ -188,13 +188,11 @@ def _run_analyse(argv):
 
     start_run(output_dir, "sca", target=str(target))
 
-    if args.trust_repo:
-        try:
-            from core.security.cc_trust import set_trust_override
-            set_trust_override(True)
-        except ImportError:
-            pass
-
+    # ``options_from_args`` resolves the repo-trust umbrella
+    # (``--no-trust-repo`` > ``--trust-repo`` > project ``config``
+    # marker > off) and propagates the resolved value to the
+    # process-wide ``cc_trust`` / ``codeql_trust`` overrides. Do NOT
+    # set the overrides from the raw flag here.
     from packages.sca._scan_args import options_from_args
     options = options_from_args(args)
 
@@ -223,7 +221,11 @@ def _run_analyse(argv):
 
     # CI-gate threshold evaluation — only fires when --fail-on-* set.
     from packages.sca.thresholds import (
-        cfg_from_args, evaluate as eval_thresholds, print_result,
+        cfg_from_args,
+        print_result,
+    )
+    from packages.sca.thresholds import (
+        evaluate as eval_thresholds,
     )
     cfg = cfg_from_args(args)
     if cfg.is_active:

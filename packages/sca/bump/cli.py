@@ -26,8 +26,8 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +84,21 @@ def main(argv: Sequence[str]) -> int:
     )
     parser.add_argument(
         "--trust-repo", action="store_true",
-        help="Set the process-wide ``cc_trust`` override. NO "
-             "behaviour change in raptor-sca bump itself — bump's "
-             "defenses (sandbox + egress proxy + atomic write + "
-             "verdict-gated apply) are not trust-gated. Provided "
-             "for cross-subcommand consistency; the override IS "
-             "consulted by adjacent subsystems (``/agentic`` LLM "
-             "dispatch, CodeQL build trust) when they run in the "
-             "same process.",
+        help="Set the process-wide ``cc_trust`` / ``codeql_trust`` "
+             "overrides. NO behaviour change in raptor-sca bump "
+             "itself — bump's defenses (sandbox + egress proxy + "
+             "atomic write + verdict-gated apply) are not "
+             "trust-gated. Provided for cross-subcommand "
+             "consistency; the overrides ARE consulted by adjacent "
+             "subsystems (``/agentic`` LLM dispatch, CodeQL build "
+             "trust) when they run in the same process. The active "
+             "project's ``config`` trust marker implies this flag.",
+    )
+    parser.add_argument(
+        "--no-trust-repo", action="store_true",
+        help="Force repo-untrusted for this run, overriding both "
+             "``--trust-repo`` and the active project's ``config`` "
+             "trust marker (explicit negative wins).",
     )
     parser.add_argument(
         "-v", "--verbose", action="count", default=0,
@@ -101,21 +108,18 @@ def main(argv: Sequence[str]) -> int:
     from ..cli import _configure_logging
     _configure_logging(args.verbose)
 
-    if args.trust_repo:
-        # Same wiring shape as ``raptor-sca fix --harden`` and the
-        # scan path. Untrusted-target safety gates downstream of
-        # ``cc_trust.is_trust_overridden()`` (e.g. the ``cc_dispatch``
-        # block in agentic enrichment, target-pollution guards in
-        # parsers) honour this opt-in. ImportError on cc_trust is
-        # an env mismatch, not a fatal error — bump still works
-        # without the override; the operator just gets the default
-        # untrusted treatment.
-        try:
-            from core.security.cc_trust import set_trust_override
-            set_trust_override(True)
-        except ImportError:
-            logger.debug("raptor-sca bump: cc_trust unavailable; "
-                          "--trust-repo had no effect")
+    # Repo-trust umbrella — same resolution as the scan path
+    # (``--no-trust-repo`` > ``--trust-repo`` > project ``config``
+    # marker > off, banner when the marker decides). The resolved
+    # value drives the process-wide ``cc_trust`` / ``codeql_trust``
+    # overrides consulted by untrusted-target safety gates (e.g. the
+    # ``cc_dispatch`` block in agentic enrichment, target-pollution
+    # guards in parsers) when they run in the same process, AND is
+    # passed explicitly to ``run_bump`` below so the policy-file gate
+    # cannot drift from it (the orchestrator's own fallback resolver
+    # has no negative-flag input).
+    from .._scan_args import resolve_repo_trust
+    trust_repo = resolve_repo_trust(args)
 
     target = args.target.resolve()
     if not target.exists():
@@ -128,7 +132,9 @@ def main(argv: Sequence[str]) -> int:
 
     from core.cve import EpssClient, KevClient
     from core.json import JsonCache
-    from .. import SCA_CACHE_ROOT, default_client as _sca_default_http
+
+    from .. import SCA_CACHE_ROOT
+    from .. import default_client as _sca_default_http
     from ..osv import OsvClient
     from ..registries.npm import NpmClient
     from ..registries.pypi import PyPIClient
@@ -161,8 +167,9 @@ def main(argv: Sequence[str]) -> int:
             apply=args.apply,
             cache=cache,
             github_token=github_token,
+            trust_repo=trust_repo,
         )
-    except Exception as e:                # noqa: BLE001
+    except Exception as e:
         logger.exception("raptor-sca bump: unrecoverable error")
         print(f"raptor-sca bump: {e}", file=sys.stderr)
         return 3

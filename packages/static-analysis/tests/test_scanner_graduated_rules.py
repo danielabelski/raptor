@@ -110,6 +110,61 @@ class TestFindEngineRulesDir:
         _mk_rules_dir(repo, "evil-rule")
         assert _scanner.find_engine_rules_dir(run_dir, repo) is None
 
+    def test_refusal_emits_security_event(self, tmp_path, monkeypatch):
+        # The refusal is the scanner's suspicious-input rejection path;
+        # it must land on the security-event stream (observability
+        # only — the refusal itself is asserted above).
+        events = []
+        monkeypatch.setattr(
+            _scanner.logger, "log_security_event",
+            lambda event_type, message, **kw: events.append(
+                (event_type, message, kw),
+            ),
+        )
+        repo = tmp_path / "repo"
+        run_dir = repo / "out"
+        run_dir.mkdir(parents=True)
+        _mk_rules_dir(repo, "evil-rule")
+        assert _scanner.find_engine_rules_dir(run_dir, repo) is None
+        assert len(events) == 1
+        event_type, _message, kw = events[0]
+        assert event_type == "untrusted_rules_dir_rejected"
+        assert kw["repo"] == str(repo.resolve())
+        assert str(repo.resolve()) in kw["rules_dir"]
+
+    def test_legitimate_rules_dir_emits_no_security_event(
+        self, tmp_path, monkeypatch,
+    ):
+        events = []
+        monkeypatch.setattr(
+            _scanner.logger, "log_security_event",
+            lambda event_type, message, **kw: events.append(event_type),
+        )
+        project = tmp_path / "project"
+        run_dir = project / "run_001"
+        run_dir.mkdir(parents=True)
+        rules_dir = _mk_rules_dir(project, "rule-a")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _scanner.find_engine_rules_dir(run_dir, repo) == rules_dir
+        assert events == []
+
+    def test_refusal_survives_broken_logging_sink(self, tmp_path, monkeypatch):
+        # No-raise-on-sink-failure: the guarded emitter must not turn
+        # the refusal into a crash (the security event is a stream,
+        # not a control). Only the security-event write fails so the
+        # pre-existing refusal warning is unaffected.
+        def _flaky_warning(message, *args, **kwargs):
+            if str(message).startswith("SECURITY:"):
+                raise OSError("sink down")
+
+        monkeypatch.setattr(_scanner.logger, "warning", _flaky_warning)
+        repo = tmp_path / "repo"
+        run_dir = repo / "out"
+        run_dir.mkdir(parents=True)
+        _mk_rules_dir(repo, "evil-rule")
+        assert _scanner.find_engine_rules_dir(run_dir, repo) is None
+
 
 class TestRunGraduatedRulesStage:
     def test_emits_sarif_with_provenance(self, tmp_path, monkeypatch):

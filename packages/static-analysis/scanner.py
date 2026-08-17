@@ -1842,6 +1842,19 @@ def find_engine_rules_dir(out_dir: Path, repo_path: Path) -> Path | None:
                 "graduated-rules: refusing rules dir inside the scanned "
                 "repo (%s) — repo-supplied YAML never loads", resolved,
             )
+            # Security-event stream (restored: the scanner emitted
+            # security events on suspicious-input rejection until the
+            # a2f0255b restructure; the clone-URL emitter moved to
+            # core/git, this is the scanner's own rejection path now).
+            # Observability only — the `continue` above/below is the
+            # behaviour; the emitter never raises.
+            logger.log_security_event(
+                "untrusted_rules_dir_rejected",
+                "graduated-rules candidate resolves inside the scanned "
+                "repo; repo-supplied YAML never loads as scanner config",
+                rules_dir=str(resolved),
+                repo=str(repo_resolved),
+            )
             continue
         if rules_dir.is_dir() and any(rules_dir.glob("*.yaml")):
             return rules_dir

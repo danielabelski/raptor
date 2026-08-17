@@ -50,8 +50,9 @@ def main() -> int:
         description="Send a prompt to an LLM and print the response",
     )
     parser.add_argument(
-        "--model", required=True,
-        help="Model to query (e.g. gemini-2.5-pro, claude-opus-4-7)",
+        "--model", default=None,
+        help="Model to query (e.g. gemini-2.5-pro, claude-opus-4-7). "
+             "Omit to use the configured default model.",
     )
     parser.add_argument(
         "--system", default=None,
@@ -139,12 +140,25 @@ def main() -> int:
         print(f"error: could not create LLM client: {exc}", file=sys.stderr)
         return 1
 
-    try:
-        model_config = client.config.config_for_model(args.model)
-    except (ValueError, AttributeError) as exc:
-        print(f"error: could not resolve model {args.model!r}: {exc}",
-              file=sys.stderr)
-        return 1
+    if args.model:
+        try:
+            model_config = client.config.config_for_model(args.model)
+        except (ValueError, AttributeError) as exc:
+            print(f"error: could not resolve model {args.model!r}: {exc}",
+                  file=sys.stderr)
+            return 1
+    else:
+        # No --model: the configured default (models.json primary /
+        # env autodetect / claudecode last resort) — same resolution
+        # every pipeline consumer gets from a bare LLMConfig().
+        model_config = client.config.primary_model
+        if model_config is None:
+            print(
+                "error: no model configured — pass --model <name> or "
+                "configure one in ~/.config/raptor/models.json",
+                file=sys.stderr,
+            )
+            return 1
 
     # Bedrock is dispatcher-only (this process holds the AWS
     # credentials; the SDK client itself never does). Pipeline runs

@@ -257,7 +257,9 @@ contradicts the configured region.
 The Bedrock provider is dispatcher-only. Pipeline runs get the
 dispatcher from the launcher; standalone CLIs whose LLM call happens
 in the invoking process (`raptor-llm-ask`) self-serve an in-process
-dispatcher automatically.
+dispatcher automatically. `raptor-llm-ask` also defaults to the
+configured model when `--model` is omitted — with the minimal entry
+above, `/ask <prompt>` just works.
 
 ### Switching API Surface
 

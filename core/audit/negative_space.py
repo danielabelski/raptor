@@ -268,11 +268,20 @@ def discover_conventions(
     gaps: Sequence[dict[str, Any]],
     *,
     framework: str = "",
+    domain_vocab: Any = None,
 ) -> list[SecurityConvention]:
     """Discover the project's security conventions by scanning source code.
 
     Counts how many functions use each security pattern and emits
     conventions with ≥MIN_CONVENTION_OCCURRENCES occurrences.
+
+    *domain_vocab* is an optional
+    :class:`~core.audit.condition_smt.DomainVocabulary`; its
+    ``auth_predicates`` (study-learned project gates plus any
+    target-kind pack) extend the generic auth patterns additively, so
+    convention discovery recognises project-specific auth gates
+    (``foo_may_access``, ``ns_capable``) the framework/generic seeds
+    never matched.
     """
     gaps = [g for g in gaps if not g.get("dead")]
     if not framework:
@@ -282,10 +291,21 @@ def discover_conventions(
 
     fw_patterns = _FRAMEWORK_PATTERNS.get(framework, {})
 
+    vocab_auth_patterns: list[str] = []
+    if domain_vocab is not None:
+        preds = getattr(domain_vocab, "auth_predicates", frozenset())
+        vocab_auth_patterns = [
+            rf"\b{re.escape(name)}\s*\("
+            for name, _kind in sorted(preds)
+            if name
+        ]
+
     for concern in ALL_CONCERNS:
         patterns_to_check: list[str] = []
         patterns_to_check.extend(fw_patterns.get(concern, []))
         patterns_to_check.extend(_GENERIC_PATTERNS.get(concern, []))
+        if concern == CONCERN_AUTH:
+            patterns_to_check.extend(vocab_auth_patterns)
 
         if not patterns_to_check:
             continue

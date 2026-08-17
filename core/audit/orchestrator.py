@@ -3181,7 +3181,17 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         [g for g in gaps if not g.get("dead")],
         Path(config.target_path),
     )
-    conventions = discover_conventions(detector_gaps)
+    conv_vocab = None
+    with contextlib.suppress(Exception):
+        from .condition_smt import DomainVocabulary
+        from .journal import load_domain_model
+        conv_vocab = DomainVocabulary.from_domain_model(
+            load_domain_model(config.out_dir),
+            target_path=config.target_path,
+        )
+    conventions = discover_conventions(
+        detector_gaps, domain_vocab=conv_vocab,
+    )
     if conventions:
         logger.info(
             "negative-space: discovered %d security conventions",

@@ -918,3 +918,89 @@ class TestPostLoopHydration:
         gap = self._gap("all.py", "f", 1, body.count("\n") + 1)
         findings = check_missing_app_features([gap], target_path=tmp_path)
         assert findings == []
+
+
+class TestVocabAuthConventionDiscovery:
+    """Study-learned auth predicates extend convention discovery.
+
+    Coverage gain: a project whose auth gate is a bespoke predicate
+    (``foo_may_access``) has no convention discoverable from the
+    framework/generic seed patterns; the learned vocabulary makes the
+    convention (and therefore the missing-auth negative-space check)
+    visible. No vocab → behaviour unchanged.
+    """
+
+    def _project_gaps(self):
+        gaps = []
+        for i in range(4):
+            gaps.append({
+                "file": f"srv/handler_{i}.c",
+                "name": f"handle_req_{i}",
+                "source": (
+                    "int handle_req(struct req *r) {\n"
+                    "    if (!foo_may_access(r->ctx))\n"
+                    "        return -EPERM;\n"
+                    "    return do_work(r);\n"
+                    "}\n"
+                ),
+                "strategies": ["auth"],
+            })
+        gaps.append({
+            "file": "srv/handler_missing.c",
+            "name": "handle_req_missing",
+            "source": (
+                "int handle_req_missing(struct req *r) {\n"
+                "    return do_work(r);\n"
+                "}\n"
+            ),
+            "strategies": ["auth"],
+        })
+        return gaps
+
+    def _vocab(self):
+        from core.audit.condition_smt import DomainVocabulary
+
+        return DomainVocabulary.from_domain_model({
+            "auth_predicates": [
+                {"name": "foo_may_access", "kind": "permission"},
+            ],
+        })
+
+    def test_without_vocab_no_auth_convention(self):
+        convs = discover_conventions(self._project_gaps())
+        assert [c for c in convs if c.concern == "auth"] == []
+
+    def test_learned_predicate_discovers_convention(self):
+        convs = discover_conventions(
+            self._project_gaps(), domain_vocab=self._vocab(),
+        )
+        auth_convs = [c for c in convs if c.concern == "auth"]
+        assert len(auth_convs) == 1
+        assert auth_convs[0].occurrences == 4
+        assert "foo_may_access" in auth_convs[0].pattern
+
+    def test_discovered_convention_flags_the_outlier(self):
+        convs = discover_conventions(
+            self._project_gaps(), domain_vocab=self._vocab(),
+        )
+        outlier = {
+            "file": "srv/handler_missing.c",
+            "name": "handle_req_missing",
+            "source": (
+                "int handle_req_missing(struct req *r) {\n"
+                "    return do_work(r);\n"
+                "}\n"
+            ),
+            "sloc": 10,
+            "is_entry_point": True,
+            "callers": [],
+        }
+        findings = check_negative_space(outlier, convs, "auth")
+        assert any(f.check_type == "missing_auth" for f in findings)
+
+    def test_none_vocab_is_equivalent_to_omitting_it(self):
+        gaps = self._project_gaps()
+        assert (
+            discover_conventions(gaps)
+            == discover_conventions(gaps, domain_vocab=None)
+        )

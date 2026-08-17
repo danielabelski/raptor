@@ -125,7 +125,6 @@ patches.
 | `--target-kind {auto,library,hybrid,application}` | Target kind for binary oracle |
 | `--allow-unreachable` | Do not suppress unreachable findings |
 | `--check-mitigations` | Run binary mitigation checks |
-| `--skip-mitigation-checks` | Skip binary mitigation checks |
 
 **Sanitiser cut**
 
@@ -253,7 +252,7 @@ Coverage-guided fuzzing with automatic harness generation.
 | `--seed-out <path>` | Seed output directory |
 | `--seed-max-size <bytes>` | Maximum seed file size |
 | `--seed-include-lockfiles` | Include lockfiles in seed corpus |
-| `--dict <path>` | Fuzzer dictionary file |
+| `--dict <path>` | Fuzzer dictionary file (when omitted, an audit-generated `fuzz.dict` is auto-discovered from the run's own or newest sibling run directory) |
 | `--input-mode {stdin,file}` | How to feed input to the target |
 
 **Execution**
@@ -396,6 +395,7 @@ code as vulnerable -- tool output is the verdict.
 | `--out <dir>` | Output directory |
 | `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep |
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
+| `--deepen-reserve <fraction>` | Slice of `--max-cost` held back for the deepen phase so announced re-reviews can execute (default 0.15; 0 disables) |
 | `--max-time <seconds>` | Wall-clock time limit |
 | `--review-passes <N>` | Independent review passes per function for self-consistency |
 | `--subsystem-depth <N>` | Directory grouping depth for subsystem-ordered review (default: 0) |
@@ -499,7 +499,9 @@ Deep, adversarial code comprehension for security research.  Five modes.
 `--study` runs as its own pipeline and must not be combined with other
 modes; the `libexec/raptor-understand` substrate (binary `--map`,
 multi-model `--hunt`/`--trace`) accepts exactly one of its three
-modes per invocation.
+modes per invocation.  Study is multi-language: C/C++ resolve through
+the study-prep corpus; Python, Go, Java, JavaScript/TypeScript, and
+Rust identifiers resolve in-process.
 
 **Common flags**
 
@@ -919,8 +921,9 @@ Markdown files mirroring the source tree, with `## function_name` sections.
 | `--lines <N-M>` | Source line range |
 | `--target <repo_root>` | Repository root for hash computation |
 | `--meta <KEY=VALUE>` | Metadata key-value pair (repeatable) |
-| `--source <value>` | Attribution source (`human` or `llm`) |
-| `--overwrite {all,respect-manual}` | Overwrite policy |
+| `--checklist <path>` | Inventory `checklist.json` for auto-discovering function bounds when `--lines` is omitted |
+| `--source <value>` | Attribution source (`human`, `llm`, or `agent`; defaults to `human` for interactive invocations — any std fd a TTY — and `agent` otherwise) |
+| `--overwrite {all,respect-manual}` | Overwrite policy (`respect-manual` skips rather than overwrite `source=human` records) |
 
 **Ls flags**
 
@@ -944,8 +947,12 @@ Status values: `clean` (reviewed, no concern), `suspicious` (real bug, not
 exploitable), `finding` (exploitable), `dormant` (unreachable / dead code),
 `error`.
 
-Annotations are human-only: operators write them via `/annotate add`.
-LLM review outcomes are recorded in the review journal instead.
+Annotations are human-only for new writes: no pipeline writes them, and
+operators add them via `/annotate add`.  Every add/edit stamps the
+invocation context (which std fds were TTYs); only `source=human` notes
+with an interactive-TTY stamp (or legacy pre-stamp notes) earn
+human-grade weight in readers.  LLM review outcomes are recorded in the
+review journal instead.
 
 ---
 

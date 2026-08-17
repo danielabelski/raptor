@@ -33,22 +33,28 @@ from core.run.provenance import (
 from .record import load_records
 from .registry import category_of
 from .store import CoverageStore
-from .summary import _match_to_inventory
+from .summary import _inventory_name_index, _match_to_inventory
 
 
 def _inventory_paths(checklist: dict[str, Any]) -> set:
     return {fe.get("path") for fe in checklist.get("files", []) if fe.get("path")}
 
 
-def _to_inventory_path(path: str, inventory_paths: set) -> str:
+def _to_inventory_path(
+    path: str, inventory_paths: set, name_index: dict | None = None,
+) -> str:
     """Normalise a tool-reported path to the inventory's key. Scanners report
     ABSOLUTE paths (semgrep) or paths relative to a different root, while the
     inventory keys on target-relative paths — without this the join silently
     misses every file. Reuses Phase 2's tested matcher (exact / ``./`` strip /
-    basename / component-aware suffix); falls back to the raw path."""
+    basename / component-aware suffix); falls back to the raw path.
+
+    Callers looping many paths over one inventory should precompute
+    ``name_index = _inventory_name_index(inventory_paths)`` and pass it
+    so each lookup is O(candidates) instead of O(inventory)."""
     if not inventory_paths:
         return path
-    return _match_to_inventory(path, inventory_paths) or path
+    return _match_to_inventory(path, inventory_paths, name_index) or path
 
 
 def _field(d: dict[str, Any], *names: str) -> Any | None:
@@ -260,9 +266,10 @@ def import_record(
         tool, provenance, record_version=record.get("version"),
     ) if provenance else None
     inv_paths = set(total_lines)                     # inventory keys (target-relative)
+    inv_index = _inventory_name_index(inv_paths)     # once per record, not per path
     marked = 0
     for path in record.get("files_examined", []) or []:
-        key = _to_inventory_path(path, inv_paths)    # tools may report abs paths
+        key = _to_inventory_path(path, inv_paths, inv_index)  # tools may report abs paths
         tl = total_lines.get(key)
         if not tl:
             continue
@@ -290,6 +297,7 @@ def import_findings(
     Returns the number linked.
     """
     linked = 0
+    inv_index = _inventory_name_index(inventory_paths) if inventory_paths else None
     for f in findings or []:
         if not isinstance(f, dict):
             continue
@@ -297,7 +305,7 @@ def import_findings(
         if not file:
             continue
         if inventory_paths:
-            file = _to_inventory_path(file, inventory_paths)   # match verdict's key
+            file = _to_inventory_path(file, inventory_paths, inv_index)   # match verdict's key
         line = _field(f, "line", "line_start", "start_line")
         # A stable, position-independent id so re-linking the same finding
         # (e.g. backfill then a clean snapshot's retained flip) targets the
@@ -455,9 +463,10 @@ def import_understand(
     on-disk context-map may carry absolute / ``./`` paths). Returns marks made.
     """
     inv = _inventory_paths(checklist)
+    inv_index = _inventory_name_index(inv)
     marks = 0
     for f, ln in _understand_points(run_dir):
-        store.mark(_to_inventory_path(f, inv), ln, ln, tool)
+        store.mark(_to_inventory_path(f, inv, inv_index), ln, ln, tool)
         marks += 1
     return marks
 
@@ -511,10 +520,11 @@ def import_functions_analysed(
         tool, provenance, record_version=record.get("version"),
     ) if provenance else None
     marked = 0
+    inv_index = _inventory_name_index(inventory_paths)
     for fa in fa_list:
         if not isinstance(fa, dict):
             continue
-        f = _to_inventory_path(fa.get("file") or "", inventory_paths)
+        f = _to_inventory_path(fa.get("file") or "", inventory_paths, inv_index)
         rng = ranges.get((f, fa.get("function")))
         if rng is None:
             continue
@@ -620,9 +630,10 @@ def mark_runtime(
     by :func:`import_runtime` (parsed artifacts) and the collectors in
     ``core.coverage.collect`` (tool-run artifacts)."""
     inv = _inventory_paths(checklist)
+    inv_index = _inventory_name_index(inv)
     marked = 0
     for src, lines in data.items():
-        key = _to_inventory_path(src, inv)
+        key = _to_inventory_path(src, inv, inv_index)
         if key not in inv:
             continue          # not an inventory file (system header, non-target)
         for lo, hi in _runs(lines):

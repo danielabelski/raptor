@@ -764,6 +764,12 @@ class LLMClient:
         # actually cost instead of a token $0.10. Guarded by
         # _stats_lock.
         self._call_cost_history: dict[str, tuple[int, float]] = {}
+        # First budget-exceeded refusal logs at ERROR; the rest at
+        # DEBUG. Every post-exhaustion dispatch attempt hits the
+        # budget check, so an unconditional ERROR printed the same
+        # line once per doomed call (observed 3x+ per run). Guarded
+        # by _stats_lock.
+        self._budget_exceeded_logged = False
         self._stats_lock = threading.RLock()
         # Per-cache-key locks. Two threads issuing the same cache key
         # serialise on its lock so only one calls the provider; the
@@ -1537,6 +1543,23 @@ class LLMClient:
             return
         self._maybe_evict_cache()
 
+    def _log_budget_exceeded_locked(self, estimated_cost: float) -> None:
+        """Log a budget refusal — ERROR the first time, DEBUG after.
+
+        Callers hold ``_stats_lock``. Every post-exhaustion dispatch
+        attempt hits the budget check, so an unconditional ERROR
+        printed the identical line once per doomed call.
+        """
+        emit = (
+            logger.debug if self._budget_exceeded_logged else logger.error
+        )
+        self._budget_exceeded_logged = True
+        emit(
+            "Budget exceeded: $%.2f + $%.2f > $%.2f",
+            self.total_cost, estimated_cost,
+            self.config.max_cost_per_scan,
+        )
+
     def _check_budget(self, estimated_cost: float = 0.1) -> bool:
         """Read-only budget check (thread-safe). Returns whether ``estimated_cost``
         would fit under the cap RIGHT NOW. Does not reserve — concurrent callers
@@ -1548,7 +1571,7 @@ class LLMClient:
 
         with self._stats_lock:
             if self.total_cost + estimated_cost > self.config.max_cost_per_scan:
-                logger.error("Budget exceeded: $%.2f + $%.2f > $%.2f", self.total_cost, estimated_cost, self.config.max_cost_per_scan)
+                self._log_budget_exceeded_locked(estimated_cost)
                 return False
 
         return True
@@ -1642,10 +1665,7 @@ class LLMClient:
 
         with self._stats_lock:
             if self.total_cost + reservation > self.config.max_cost_per_scan:
-                logger.error(
-                    f"Budget exceeded: ${self.total_cost:.2f} + "
-                    f"${reservation:.2f} > ${self.config.max_cost_per_scan:.2f}"
-                )
+                self._log_budget_exceeded_locked(reservation)
                 return False
             self.total_cost += reservation
             return True

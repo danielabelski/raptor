@@ -6545,7 +6545,11 @@ def _announce_budget_stop(
         f"{remaining} functions left unreviewed "
         f"(they remain gaps for a future run)"
     )
-    logger.warning(msg)
+    # ONE channel: the progress callback renders on the operator
+    # console (stdout); also warning through the logger printed the
+    # same line twice. The logger is the fallback when no callback
+    # exists (library callers, tests).
+    emitted_via_progress = False
     if on_progress:
         try:
             # idx < 0 is the progress protocol's "print body verbatim"
@@ -6553,8 +6557,11 @@ def _announce_budget_stop(
             on_progress(-1, total, ReviewOutcome(
                 file="", function="", status="error", body=msg,
             ))
+            emitted_via_progress = True
         except Exception:
             logger.debug("budget-stop progress emit failed", exc_info=True)
+    if not emitted_via_progress:
+        logger.warning(msg)
 
 
 @dataclass

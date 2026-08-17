@@ -106,7 +106,38 @@ def compute_gaps(
     # completion, so within a single run compute_gaps has no visibility
     # into either this run's per-turn journal writes OR prior runs'
     # persistent state. Read both sources directly here.
-    _fold_journal_into_covered(covered_functions, out_dir, project_dir)
+    #
+    # Cross-run folding is hash-aware: the checklist's CURRENT spans
+    # and the target path let the fold re-hash each journaled function
+    # and drop prior-run coverage whose source has since changed.
+    target_path_str = checklist.get("target_path", "")
+    current_spans: dict[str, tuple] = {}
+    for file_info in checklist.get("files", []):
+        fp = file_info.get("path", "")
+        if not fp:
+            continue
+        for item in file_info.get("items", file_info.get("functions", [])):
+            name = item.get("name", "")
+            ls = item.get("line_start", 0)
+            if (
+                name
+                and isinstance(ls, int)
+                and not isinstance(ls, bool)
+                and ls > 0
+            ):
+                le = item.get("line_end")
+                if not isinstance(le, int) or isinstance(le, bool):
+                    le = ls
+                # First occurrence wins for same-named items — matches
+                # _consume_covered_key's one-suppression-per-key rule.
+                current_spans.setdefault(f"{fp}:{name}", (ls, le))
+    _fold_journal_into_covered(
+        covered_functions,
+        out_dir,
+        project_dir,
+        target_path=Path(target_path_str) if target_path_str else None,
+        current_spans=current_spans,
+    )
     file_tool_coverage = _build_file_tool_coverage(coverage_records)
     entry_point_sinks = _build_sink_reachability(context_map)
     entry_point_set = extract_context_map_set(context_map, "entry_points")
@@ -734,6 +765,9 @@ def _fold_journal_into_covered(
     covered: set,
     out_dir: Path | None,
     project_dir: Path | None,
+    *,
+    target_path: Path | None = None,
+    current_spans: dict[str, tuple] | None = None,
 ) -> None:
     """Fold review-journal entries into the covered-function set so
     LLM-reviewed functions suppress gaps mid-run.
@@ -742,10 +776,15 @@ def _fold_journal_into_covered(
 
     * Per-run journal (``out_dir/review-journal.jsonl``) — captures
       this run's own reviews, so mid-run resume after crash or
-      context reset skips already-reviewed functions.
+      context reset skips already-reviewed functions. Folded as-is:
+      the source is assumed stable within a single run.
     * Project index (``project_dir/review-journal-index.json``) —
       captures every prior run's most recent review per function,
       so a fresh run doesn't re-review project-durable state.
+      **Hash-aware**: an entry only suppresses the gap when its
+      journaled ``source_hash`` still matches the function's current
+      source (see ``_fold_project_index``). A function that changed
+      since its review must be re-reviewed, not silently skipped.
 
     Deletion note: this replaces the ``checked_by`` read that was
     removed under Phase 3 and the ``recreate_coverage_from_journal``
@@ -766,17 +805,97 @@ def _fold_journal_into_covered(
             )
     if project_dir is not None:
         try:
-            from .journal import load_index
-            for entry in load_index(project_dir).values():
-                if entry.verdict == "error":
-                    continue
-                covered.add(entry.key)
+            _fold_project_index(
+                covered, project_dir,
+                target_path=target_path,
+                current_spans=current_spans or {},
+            )
         except Exception:
             logger.warning(
                 "journal-fold: failed to read project index at %s — "
                 "gap computation will treat all prior LLM reviews as absent",
                 project_dir, exc_info=True,
             )
+
+
+def _fold_project_index(
+    covered: set,
+    project_dir: Path,
+    *,
+    target_path: Path | None,
+    current_spans: dict[str, tuple],
+) -> None:
+    """Fold the project journal index into ``covered``, hash-aware.
+
+    A prior-run review only suppresses the gap when its journaled
+    ``source_hash`` (SHA-256 short prefix, see ``core.staleness``)
+    still matches the hash of the function's CURRENT source at the
+    checklist's current span. A mismatch means the function changed
+    since it was reviewed — it stays uncovered and resurfaces as a
+    gap for re-review.
+
+    Entries that CANNOT be verified keep the pre-hash behaviour
+    (covered / suppressed):
+
+    * ``source_hash`` empty — legacy entries and functions whose hash
+      computation failed at review time never carried drift evidence;
+      treating them as changed would resurface every legacy review at
+      once (a full re-review storm) on upgrade, so absence of
+      evidence keeps the historical suppression.
+    * no ``target_path`` / function absent from the current checklist
+      / file unreadable / current hash uncomputable — no current
+      source to compare against; without evidence of drift the entry
+      stays covered. (A function absent from the checklist produces
+      no gap anyway; a deleted file likewise.)
+
+    Hashes are compared on their common prefix so shorter historical
+    prefixes still match their full-length recomputation. Files are
+    read once each (batched via ``core.staleness.hash_spans``).
+    """
+    from .journal import load_index
+
+    to_verify: dict[str, list] = {}
+    for entry in load_index(project_dir).values():
+        if entry.verdict == "error":
+            continue
+        key = f"{entry.file}:{entry.function}"
+        span = current_spans.get(key)
+        if not entry.source_hash or target_path is None or span is None:
+            covered.add(key)
+            continue
+        to_verify.setdefault(entry.file, []).append((entry, key, span))
+
+    if not to_verify:
+        return
+
+    from core.staleness import hash_spans
+
+    stale = 0
+    for file_path, items in to_verify.items():
+        resolved = safe_join(Path(target_path), file_path)
+        if resolved is None or not resolved.is_file():
+            # No current source to compare — keep covered (see above).
+            covered.update(key for _, key, _ in items)
+            continue
+        hashes = hash_spans(resolved, [span for _, _, span in items])
+        for (entry, key, _span), current in zip(items, hashes):
+            stored = entry.source_hash
+            if current and current[:len(stored)] != stored[:len(current)]:
+                stale += 1
+                logger.debug(
+                    "journal-fold: %s changed since prior review "
+                    "(hash %s → %s) — resurfacing as gap",
+                    key, stored, current,
+                )
+                continue
+            covered.add(key)
+
+    if stale:
+        logger.info(
+            "journal-fold: %d prior-run review(s) stale (source "
+            "changed) — resurfacing as gaps for re-review",
+            stale,
+        )
 
 
 def _build_file_tool_coverage(

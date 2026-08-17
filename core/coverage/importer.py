@@ -203,6 +203,15 @@ def import_journal(
 
     marks = 0
     for entry in entries.values():
+        if entry.verdict == "error":
+            # Error verdicts are transient failures (budget exceeded,
+            # API error, truncation) — the function was never actually
+            # reviewed. Marking it as covered would misrepresent the
+            # coverage view AND suppress it from any consumer that
+            # derives "already reviewed" from the store. Keep it
+            # unreviewed, consistent with journal.reviewed_set() and
+            # the gap computation's index fold.
+            continue
         rng = ranges.get((entry.file, entry.function))
         if rng is None:
             # Try the entry's own line_start/line_end (may be present

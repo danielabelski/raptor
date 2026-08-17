@@ -168,6 +168,7 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
         mode=opts.mode,
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
+        llm_budget_client=client,
     )
 
     return run_orchestrator(
@@ -436,6 +437,7 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
         mode=ReviewMode.SECURITY,
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
+        llm_budget_client=client,
     )
 
     result = run_orchestrator(

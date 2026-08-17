@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from core.llm.client import is_budget_exceeded_error
 from core.llm.concurrency import read_throttle_cooldown_s
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,7 @@ def run_executor_sync(
                 reviewed_outcomes=reviewed_outcomes,
             )
         except RuntimeError as exc:
-            if "budget exceeded" in str(exc).lower():
+            if is_budget_exceeded_error(exc):
                 stats.budget_stopped = True
                 result.terminated_by = "llm_budget_exceeded"
                 break
@@ -262,7 +263,7 @@ def run_executor_sync(
                     reviewed_outcomes=reviewed_outcomes,
                 )
             except RuntimeError as exc:
-                if "budget exceeded" in str(exc).lower():
+                if is_budget_exceeded_error(exc):
                     stats.budget_stopped = True
                     result.terminated_by = "llm_budget_exceeded"
                     break
@@ -523,7 +524,7 @@ async def _run_async_body(
                     ),
                 )
             except RuntimeError as exc:
-                if "budget exceeded" in str(exc).lower():
+                if is_budget_exceeded_error(exc):
                     stats.budget_stopped = True
                     result.terminated_by = "llm_budget_exceeded"
                     return
@@ -569,7 +570,7 @@ async def _run_async_body(
                     ),
                 )
             except RuntimeError as exc:
-                if "budget exceeded" in str(exc).lower():
+                if is_budget_exceeded_error(exc):
                     stats.budget_stopped = True
                     result.terminated_by = "llm_budget_exceeded"
                     return
@@ -659,7 +660,7 @@ async def _run_async_body(
                         ),
                     )
                 except RuntimeError as exc:
-                    if "budget exceeded" in str(exc).lower():
+                    if is_budget_exceeded_error(exc):
                         stats.budget_stopped = True
                         result.terminated_by = "llm_budget_exceeded"
                         return
@@ -837,7 +838,7 @@ def _process_glance_batch(
                     reviewed_outcomes=reviewed_outcomes,
                 )
             except RuntimeError as exc:
-                if "budget exceeded" in str(exc).lower():
+                if is_budget_exceeded_error(exc):
                     raise
             except Exception:
                 logger.warning(

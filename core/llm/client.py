@@ -74,6 +74,34 @@ _CACHE_WRITE_FAILURE_THRESHOLD = 3
 # pre-debit doesn't materially shorten the effective cap.
 _BUDGET_RESERVATION = 0.10
 
+
+class LLMBudgetExceededError(RuntimeError):
+    """Raised when a call would breach the client's cost cap.
+
+    Budget exhaustion is TERMINAL for the run: callers that dispatch
+    LLM calls in a loop must stop dispatching when they see this, not
+    convert it into a per-item error and keep going. Subclasses
+    ``RuntimeError`` and keeps "budget exceeded" in the message so
+    legacy string-match handlers keep working; new code should catch
+    by type (or via :func:`is_budget_exceeded_error`).
+    """
+
+
+def is_budget_exceeded_error(exc: BaseException) -> bool:
+    """True when *exc* signals LLM budget exhaustion.
+
+    Prefers the typed check; falls back to the historical message
+    match for exceptions raised by older code paths or re-wrapped by
+    intermediaries that lose the original type.
+    """
+    if isinstance(exc, LLMBudgetExceededError):
+        return True
+    return (
+        isinstance(exc, RuntimeError)
+        and "budget exceeded" in str(exc).lower()
+    )
+
+
 _AUTH_ERROR_INDICATORS = frozenset({
     "401", "403", "authentication", "unauthorized", "invalid api key",
     "invalid x-api-key", "api key not valid", "incorrect api key",
@@ -1257,6 +1285,20 @@ class LLMClient:
 
         return True
 
+    def is_budget_exhausted(self, estimated_cost: float = 0.1) -> bool:
+        """True when the next call (at ``estimated_cost``) would breach
+        the cost cap. Read-only and quiet — unlike :meth:`_check_budget`
+        it never logs, so loop drivers can poll it cheaply before doing
+        expensive per-item prep work. Always False when cost tracking
+        is disabled."""
+        if not self.config.enable_cost_tracking:
+            return False
+        with self._stats_lock:
+            return (
+                self.total_cost + estimated_cost
+                > self.config.max_cost_per_scan
+            )
+
     def _acquire_budget(self, reservation: float) -> bool:
         """Atomically check + pre-debit ``reservation`` against the budget.
         Returns True if the reservation was held, False if it would breach.
@@ -1318,7 +1360,7 @@ class LLMClient:
         """
         # Check budget
         if not self._check_budget():
-            raise RuntimeError(
+            raise LLMBudgetExceededError(
                 f"LLM budget exceeded: ${self.total_cost:.4f} spent > ${self.config.max_cost_per_scan:.4f} limit. "
                 f"Increase budget with: LLMConfig(max_cost_per_scan={self.config.max_cost_per_scan * 2:.1f})"
             )
@@ -1473,7 +1515,7 @@ class LLMClient:
                         # passing the cap. Reconciled to actual cost
                         # below; released on exception.
                         if not self._acquire_budget(_BUDGET_RESERVATION):
-                            raise RuntimeError(
+                            raise LLMBudgetExceededError(
                                 f"LLM budget exceeded: ${self.total_cost:.4f} spent > "
                                 f"${self.config.max_cost_per_scan:.4f} limit. Increase budget "
                                 f"with: LLMConfig(max_cost_per_scan="
@@ -1681,7 +1723,7 @@ class LLMClient:
         """
         # Check budget
         if not self._check_budget():
-            raise RuntimeError(
+            raise LLMBudgetExceededError(
                 f"LLM budget exceeded: ${self.total_cost:.4f} spent > ${self.config.max_cost_per_scan:.4f} limit. "
                 f"Increase budget with: LLMConfig(max_cost_per_scan={self.config.max_cost_per_scan * 2:.1f})"
             )
@@ -1811,7 +1853,7 @@ class LLMClient:
                         # See `generate` for the acquire/reconcile rationale —
                         # same race shape applies to structured calls.
                         if not self._acquire_budget(_BUDGET_RESERVATION):
-                            raise RuntimeError(
+                            raise LLMBudgetExceededError(
                                 f"LLM budget exceeded: ${self.total_cost:.4f} spent > "
                                 f"${self.config.max_cost_per_scan:.4f} limit. Increase budget "
                                 f"with: LLMConfig(max_cost_per_scan="

@@ -220,6 +220,15 @@ class OrchestratorConfig:
     study_root: Optional[Path] = None  # full source root for study loop (when target_path is an excerpt)
     mode: ReviewMode = ReviewMode.SECURITY
     project_sinks: Optional[frozenset] = None  # IRIS-derived sink names for wrapper pre-filter
+    # The LLM client whose cost cap governs this run (core.llm.client.
+    # LLMClient). Used ONLY for budget introspection: loop drivers poll
+    # ``is_budget_exhausted()`` before expensive per-function prep, and
+    # ``_check_budget`` consults its ledger — which, unlike
+    # ``result.total_cost_usd``, includes spend from failed/timed-out
+    # attempts that never produced an outcome. Deliberately NOT named
+    # ``llm_client``: that attribute would switch on the executor's
+    # batch-glance dispatch (see executor._get_batch_review_fn).
+    llm_budget_client: Optional[Any] = None
 
 
 @dataclass
@@ -557,11 +566,25 @@ def review_one_function(
     can drive the loop (serial or parallel) while the per-function logic
     lives in one place.
 
-    Raises ``RuntimeError`` with "budget exceeded" when the LLM client
-    exhausts its cost cap — the caller is expected to catch this and break
-    the loop.
+    Raises ``LLMBudgetExceededError`` (a ``RuntimeError`` whose message
+    contains "budget exceeded") when the LLM client exhausts its cost
+    cap — the caller is expected to catch this and break the loop.
     """
+    from core.llm.client import LLMBudgetExceededError
+
     from .negative_space import check_negative_space
+
+    # ── Budget gate BEFORE any per-function prep ──────────────────────
+    # Block-level CFG analysis, context assembly, prefilter and sibling
+    # analysis are expensive (observed ~minutes per complex function).
+    # Once the LLM budget is exhausted the review call below can only
+    # fail, so paying that prep cost is pure waste — bail out first.
+    _budget_client = getattr(config, "llm_budget_client", None)
+    if _budget_client is not None and _budget_client.is_budget_exhausted():
+        raise LLMBudgetExceededError(
+            f"LLM budget exceeded before reviewing "
+            f"{gap['file']}:{gap['name']} — skipping prep and stopping"
+        )
 
     # ── Read-only aliases ──────────────────────────────────────────────
     checklist = shared.checklist
@@ -1229,6 +1252,16 @@ def review_one_function(
                 body="blocked by content filter",
             )
         except Exception as exc:
+            from core.llm.client import is_budget_exceeded_error
+
+            if is_budget_exceeded_error(exc):
+                # Budget exhaustion is terminal for the run, not a
+                # per-function error: re-raise so the executor stops
+                # the loop. Crucially, do NOT journal an outcome — the
+                # function stays unreviewed and gap-eligible for a
+                # future run instead of being recorded as an "error"
+                # review that never actually happened.
+                raise
             logger.warning(
                 "review_fn failed for %s:%s: %s",
                 gap["file"],
@@ -3207,6 +3240,10 @@ def _run_audit_body(
     joern_future = joern_state["future"]
     if executor_stats.budget_stopped and not result.terminated_by:
         result.terminated_by = "llm_budget_exceeded"
+    if executor_stats.budget_stopped:
+        _announce_budget_stop(
+            result, executor_stats, graph, on_progress,
+        )
 
     # --- Drain study consumer ---
     if study_queue is not None:
@@ -5922,7 +5959,15 @@ def _retry_error_outcomes(
 
         try:
             new_outcome = review_fn(ctx, config)
-        except Exception:
+        except Exception as exc:
+            from core.llm.client import is_budget_exceeded_error
+
+            if is_budget_exceeded_error(exc):
+                # Terminal: every remaining retry would fail the same
+                # way — stop the retry pass instead of burning prep
+                # time on each leftover error outcome.
+                result.terminated_by = "llm_budget_exceeded"
+                break
             continue
 
         result.error_retries += 1
@@ -5960,7 +6005,56 @@ def _check_budget(
             if result.total_cost_usd >= config.max_cost_usd:
                 result.terminated_by = "max_cost_usd"
                 return True
+    # The LLM client's own ledger includes spend from failed/timed-out
+    # attempts that never produced an outcome, so it can be exhausted
+    # while ``result.total_cost_usd`` (successful outcomes only) is
+    # far below the cap. Without this check every post-exhaustion loop
+    # (deepen, error retry, study) kept dispatching doomed LLM calls.
+    _client = getattr(config, "llm_budget_client", None)
+    if _client is not None and _client.is_budget_exhausted():
+        result.terminated_by = "llm_budget_exceeded"
+        return True
     return False
+
+
+_BUDGET_STOP_REASONS = {
+    "llm_budget_exceeded": "budget exhausted",
+    "max_cost_usd": "budget exhausted",
+    "max_seconds": "time budget exhausted",
+}
+
+
+def _announce_budget_stop(
+    result: OrchestratorResult,
+    executor_stats: Any,
+    graph: Any,
+    on_progress: Optional[Callable],
+) -> None:
+    """Emit ONE clear operator-facing line when the review loop stops
+    on budget exhaustion, instead of a silent break (or, pre-fix, a
+    wall of per-function error lines). Unreviewed functions are not
+    journaled, so they stay gap-eligible for a future run."""
+    reason = _BUDGET_STOP_REASONS.get(result.terminated_by)
+    if reason is None:
+        return  # operator shutdown or other stop — not a budget event
+    completed = executor_stats.completed + executor_stats.repass_completed
+    total = len(graph)
+    remaining = graph.pending
+    msg = (
+        f"{reason} after {completed}/{total} reviews — stopping; "
+        f"{remaining} functions left unreviewed "
+        f"(they remain gaps for a future run)"
+    )
+    logger.warning(msg)
+    if on_progress:
+        try:
+            # idx < 0 is the progress protocol's "print body verbatim"
+            # channel (see libexec/raptor-audit on_progress).
+            on_progress(-1, total, ReviewOutcome(
+                file="", function="", status="error", body=msg,
+            ))
+        except Exception:
+            logger.debug("budget-stop progress emit failed", exc_info=True)
 
 
 @dataclass
@@ -7017,6 +7111,18 @@ def _review_items(
                 body="blocked by content filter",
             )
         except Exception as exc:
+            from core.llm.client import is_budget_exceeded_error
+
+            if is_budget_exceeded_error(exc):
+                # Terminal: stop the batch and return what completed.
+                # The budget-killed function is NOT journaled, so it
+                # stays gap-eligible for a future run.
+                logger.warning(
+                    "batch review stopped at %s:%s — LLM budget exhausted "
+                    "(%d/%d reviewed; rest stay gaps)",
+                    gap["file"], gap["name"], len(outcomes), len(batch),
+                )
+                break
             logger.warning(
                 "review_fn failed for %s:%s: %s",
                 gap["file"],
@@ -9348,6 +9454,17 @@ def _deepen_suspicious(
         _, prior_outcome, gap, ctx = idx_to_prepared[idx]
 
         if exc is not None:
+            from core.llm.client import is_budget_exceeded_error
+
+            if is_budget_exceeded_error(exc):
+                # Terminal — the client-aware _check_budget above stops
+                # further dispatch; keep the prior verdict quietly
+                # instead of one warning per already-dispatched item.
+                logger.debug(
+                    "deepen skipped for %s:%s: LLM budget exhausted",
+                    gap["file"], gap["name"],
+                )
+                continue
             logger.warning(
                 "deepen failed for %s:%s: %s",
                 gap["file"],
@@ -9789,6 +9906,17 @@ def _iterative_re_review(
             _, gap, ctx = idx_to_prepared[idx]
 
             if exc is not None:
+                from core.llm.client import is_budget_exceeded_error
+
+                if is_budget_exceeded_error(exc):
+                    # Terminal — keep the original outcome; do not
+                    # overwrite it with an error verdict the budget
+                    # kill never earned.
+                    logger.debug(
+                        "re-review skipped for %s:%s: LLM budget exhausted",
+                        gap["file"], gap["name"],
+                    )
+                    continue
                 logger.warning(
                     "re-review failed for %s:%s: %s",
                     gap["file"],

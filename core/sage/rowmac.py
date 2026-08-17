@@ -55,11 +55,25 @@ import hmac
 import os
 import re
 import secrets
+import stat
 import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from core.logging import get_logger
+
+logger = get_logger(__name__)
+
 _KEY_LEN = 32
+
+# Sentinel: a key file EXISTS but is unusable (symlink, foreign owner,
+# group/other-readable). Distinct from "absent" — an unusable key must
+# never be silently replaced (re-keying would mask tampering and
+# permanently demote legitimate rows) and must never mint or verify.
+_REFUSED = object()
+
+# One loud warning per suspect path per process; repeats go to debug.
+_warned_paths: set = set()
 
 # Trailing token appended by stamp(); strip() removes it (and any
 # whitespace immediately before it) from the end of the content.
@@ -80,7 +94,77 @@ def _key_path() -> Path:
     return base / "raptor" / "rowmac.key"
 
 
-def _load_or_create_key() -> bytes:
+def _warn_once_suspect_key(path: Path, reason: str, remedy: str) -> None:
+    key = str(path)
+    if key in _warned_paths:
+        logger.debug("rowmac: suspect key %s (%s)", path, reason)
+        return
+    _warned_paths.add(key)
+    logger.warning(
+        "rowmac: refusing key %s — %s. Row MACs will not mint or "
+        "verify (mechanical recall demoted to hint-only) until this "
+        "is fixed: %s",
+        path, reason, remedy,
+    )
+
+
+def _read_existing_key(path: Path):
+    """Read an EXISTING key with the fd-fstat discipline.
+
+    Returns the key bytes, ``None`` when the file is absent, or
+    ``_REFUSED`` when the file exists but is unusable. An exposed or
+    substituted key would let anyone mint valid row MACs — forged
+    "verified" rows would then be mechanically replayed into sweeps —
+    so reads refuse symlinks (``O_NOFOLLOW`` at open, fstat on the
+    actually-opened inode), foreign owners, and any group/other
+    permission bits. Creation (``O_EXCL`` + 0600) needs no such check;
+    this guard covers only the read-existing branch.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        # ELOOP: symlink at the key path. Other OSErrors are equally
+        # unusable — never fall back to a follow-the-link read.
+        _warn_once_suspect_key(
+            path, f"open refused ({exc})",
+            "if the key is a symlink, remove it and investigate how it "
+            "got there; a fresh key is created on the next store",
+        )
+        return _REFUSED
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            _warn_once_suspect_key(
+                path, "not a regular file",
+                "remove the object at that path and investigate",
+            )
+            return _REFUSED
+        if st.st_uid != os.geteuid():
+            _warn_once_suspect_key(
+                path,
+                f"owned by uid={st.st_uid}, expected uid={os.geteuid()}",
+                "investigate the foreign-owned key; restore your own "
+                "0600 key file",
+            )
+            return _REFUSED
+        if st.st_mode & 0o077:
+            _warn_once_suspect_key(
+                path,
+                f"mode {stat.S_IMODE(st.st_mode):04o} grants group/other "
+                "access",
+                f"chmod 600 {path}",
+            )
+            return _REFUSED
+        return os.read(fd, _KEY_LEN * 4)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _load_or_create_key() -> bytes | None:
     """Read the key, lazily creating it (0700 dir, 0600 file) if absent.
 
     Creation uses ``O_EXCL`` so concurrent first-users race safely: the
@@ -90,28 +174,34 @@ def _load_or_create_key() -> bytes:
     key is still used consistently by both mint and verify, so the
     worst case is that tokens minted before repair stop verifying
     (the demote path, never an error).
+
+    Returns ``None`` when a key file exists but is unusable (symlink,
+    foreign owner, permissive mode): the suspect key is never used,
+    never replaced, and the caller refuses to mint/verify.
     """
     path = _key_path()
-    try:
-        data = path.read_bytes()
-    except OSError:
-        data = b""
-    if len(data) == _KEY_LEN:
+    data = _read_existing_key(path)
+    if data is _REFUSED:
+        return None
+    if data is not None and len(data) == _KEY_LEN:
         return data
+    data = data or b""
 
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     key = secrets.token_bytes(_KEY_LEN)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        # Lost the creation race — re-read the winner's key.
+        # Lost the creation race — re-read the winner's key (same
+        # fd-fstat discipline: an attacker pre-placing a symlink also
+        # lands here, because O_EXCL refuses to create through one).
         for _ in range(20):
-            try:
-                data = path.read_bytes()
-            except OSError:
-                data = b""
-            if data:
-                return data
+            raced = _read_existing_key(path)
+            if raced is _REFUSED:
+                return None
+            if raced:
+                return raced
+            data = raced if raced is not None else b""
             time.sleep(0.01)
         return data
     try:
@@ -143,8 +233,16 @@ def mint(fields: Mapping[str, object]) -> str:
 
     Recreates the key lazily if it is missing (so a deleted key means
     old tokens fail verification while new stores keep working).
+    Raises ``RuntimeError`` when the key file exists but is unusable
+    (symlink / foreign owner / permissive mode) — never mints with a
+    suspect key. ``stamp``'s callers already treat a stamp failure as
+    "store unstamped"; ``verify`` treats it as the demote path.
     """
     key = _load_or_create_key()
+    if key is None:
+        raise RuntimeError(
+            "row-MAC key unusable (see rowmac warning) — refusing to mint",
+        )
     return hmac.new(key, _canonical(fields), hashlib.sha256).hexdigest()
 
 

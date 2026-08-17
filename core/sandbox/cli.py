@@ -92,8 +92,13 @@ def add_cli_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--sandbox", choices=sorted(PROFILES.keys()), default=None,
         help="Force sandbox profile "
-             "(debug | full | network-only | none). "
+             "(full | strict | debug | target_run | frida | "
+             "network-only | none). "
              "Overrides any profile chosen in code. "
+             "'strict' = full that FAILS rather than degrades when a "
+             "backend is missing, plus read restriction ($HOME denied) "
+             "by default — use for hostile code when silent downgrade "
+             "is unacceptable. "
              "'debug' for gdb/rr work (allows ptrace). "
              "'network-only' if Landlock or seccomp is breaking your "
              "build, 'none' only as last resort. "

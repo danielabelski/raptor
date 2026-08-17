@@ -1149,8 +1149,10 @@ Examples:
 
 Sandbox isolation (mode-level flags — pass them AFTER the mode name,
 not before; the top-level parser does not declare them directly):
-  --sandbox {full,debug,network-only,none}
-                        Force a sandbox profile (default: full)
+  --sandbox {full,strict,debug,target_run,frida,network-only,none}
+                        Force a sandbox profile (default: full).
+                        'strict' fails closed instead of degrading and
+                        denies $HOME reads by default
   --no-sandbox          Alias for --sandbox none
   --audit               Log what enforcement WOULD have blocked
                         (composes with --sandbox profiles other than 'none')

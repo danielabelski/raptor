@@ -321,6 +321,12 @@ class PatchTask(DispatchTask):
         # Populated by select_items; finalize's patch gate needs the
         # full finding dicts, which its result records don't carry.
         self._findings_by_id: dict[str, Any] = {}
+        # Finding ids whose stored ``patch_gate`` was produced by THIS
+        # task's gate run. The merge step consults this side-channel
+        # (not the result dict, which is LLM-derived and forgeable) to
+        # decide whether a record's gate annotations are trustworthy
+        # or the patch still needs gating (inline CC-schema patches).
+        self.gated_ids: set[str] = set()
 
     def select_items(self, findings, prior_results):
         # Index the full finding dicts for finalize's patch gate —
@@ -393,6 +399,7 @@ class PatchTask(DispatchTask):
                     if gate is not None:
                         prior_results[fid]["patch_gate"] = gate
                         r["patch_gate"] = gate
+                        self.gated_ids.add(fid)
         return results
 
     def _gate_patch(self, fid: str, content: str) -> dict | None:

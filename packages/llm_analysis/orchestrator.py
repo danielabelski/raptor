@@ -1419,16 +1419,23 @@ def orchestrate(
             results_by_id, cost_tracker, max_parallel,
         )
 
+    # checkers_dir lets the patch gate replay synthesized checkers
+    # saved by checker synthesis into the run dir (best-effort —
+    # absent dir just degrades detector resolution). Shared with the
+    # merge step's inline-patch gate below.
+    _checkers_dir = (out_dir / "checkers") if out_dir is not None else None
+    # Finding ids whose patch was gated by PatchTask.finalize — the
+    # merge step trusts those records' stored gate annotations and
+    # gates everything else (inline CC-schema patches).
+    _pre_gated_ids: set[str] = set()
     if not no_patches:
-        # checkers_dir lets the patch gate replay synthesized checkers
-        # saved by checker synthesis into the run dir (best-effort —
-        # absent dir just degrades detector resolution).
-        _checkers_dir = (out_dir / "checkers") if out_dir is not None else None
+        _patch_task = PatchTask(profile=profile, checkers_dir=_checkers_dir)
         dispatch_task(
-            PatchTask(profile=profile, checkers_dir=_checkers_dir),
+            _patch_task,
             findings, dispatch_fn, role_resolution,
             results_by_id, cost_tracker, max_parallel,
         )
+        _pre_gated_ids = _patch_task.gated_ids
 
     elapsed = time.monotonic() - start_time
 
@@ -1483,7 +1490,9 @@ def orchestrate(
     # --- Merge and write ---
     per_finding_results = list(results_by_id.values())
     merged = _merge_results(report, per_finding_results,
-                            no_exploits=no_exploits, no_patches=no_patches)
+                            no_exploits=no_exploits, no_patches=no_patches,
+                            checkers_dir=_checkers_dir,
+                            pre_gated_ids=_pre_gated_ids)
     merged["cross_finding_groups"] = groups
     if dataflow_validation_enabled:
         merged["dataflow_validation"] = {
@@ -1966,16 +1975,92 @@ def _check_self_consistency(results_by_id: dict[str, dict]) -> None:
     check_self_consistency(results_by_id)
 
 
+def _gate_inline_patch(
+    finding: dict[str, Any],
+    checkers_dir: Path | None,
+) -> dict[str, Any] | None:
+    """Gate a ``patch_code`` that arrived inline on an analysis record.
+
+    The claude -p dispatch schema (cc_dispatch.build_schema) lets the
+    analysis response carry ``patch_code`` directly; PatchTask then
+    skips those findings, so without this call the inline patches would
+    reach reports without gate annotations. Mirrors
+    ``PatchTask._gate_patch``: best-effort, annotate-only — a gate
+    crash degrades to a warning and the patch is kept; missing repo /
+    file / span context degrades to the gate's own honest ``skipped``
+    annotations rather than a guessed anchor.
+
+    Returns ``GateResult.to_dict()`` or None when the gate itself
+    failed. Does not mutate ``finding``.
+    """
+    try:
+        from packages.llm_analysis.patch_gate import run_patch_gate
+
+        content = str(finding.get("patch_code") or "")
+        repo_path = finding.get("repo_path") or ""
+        file_path = finding.get("file_path") or ""
+        try:
+            start_line = int(finding.get("start_line") or 0)
+        except (TypeError, ValueError):
+            start_line = 0
+        try:
+            end_line = int(finding.get("end_line") or start_line)
+        except (TypeError, ValueError):
+            end_line = start_line
+        if not repo_path:
+            # No repo anchor at all — only the format check is
+            # meaningful; run_patch_gate handles the empty file_path
+            # case the same way.
+            file_path = ""
+            repo_path = "."
+        gate = run_patch_gate(
+            content,
+            repo_path=Path(repo_path),
+            file_path=file_path,
+            start_line=start_line,
+            end_line=end_line,
+            rule_id=finding.get("rule_id") or "",
+            tool=finding.get("tool") or "",
+            checkers_dir=Path(checkers_dir) if checkers_dir else None,
+        )
+        logger.info(
+            "   · Patch gate (inline, %s): format=%s scope=%s "
+            "detector=%s control=%s",
+            finding.get("finding_id"),
+            gate.format, gate.scope, gate.detector, gate.control,
+        )
+        return gate.to_dict()
+    except Exception as e:  # noqa: BLE001 — gate is annotate-only
+        logger.warning(
+            "   · Patch gate skipped for inline patch %s: %s",
+            finding.get("finding_id"), e,
+        )
+        return None
+
+
 def _merge_results(
     prep_report: dict[str, Any],
     cc_results: list[dict[str, Any]],
     no_exploits: bool = False,
     no_patches: bool = False,
+    *,
+    checkers_dir: Path | None = None,
+    pre_gated_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Merge CC sub-agent results back into the prep report.
 
     Matches by finding_id. CC results update analysis fields while
     preserving all prep data (code, dataflow, feasibility).
+
+    ``patch_code`` / ``patch_gate`` are excluded from the generic key
+    copy and handled explicitly: every patch that survives the merge
+    must carry gate annotations from :func:`run_patch_gate`. Records
+    whose finding_id is in ``pre_gated_ids`` were gated by
+    ``PatchTask.finalize`` (side-channel set from the task instance,
+    never the LLM-derived result dict) and keep their stored gate;
+    anything else — the inline CC-schema ``patch_code`` route — is
+    gated here, and any result-supplied ``patch_gate`` dict is dropped
+    first so a response cannot fabricate its own gate annotations.
     """
     # Deep-copy the entire prep_report. Pre-fix `dict(prep_report)`
     # was a SHALLOW copy, leaving every nested dict (and the
@@ -2028,6 +2113,11 @@ def _merge_results(
         for k, v in cc.items():
             if k.startswith("_") or k == "finding_id":
                 continue
+            if k in ("patch_code", "patch_gate"):
+                # Handled explicitly below so every surviving patch is
+                # gated and a result-supplied gate dict never lands on
+                # the report record unvetted.
+                continue
             if k not in finding:
                 finding[k] = v
 
@@ -2056,8 +2146,25 @@ def _merge_results(
             finding["has_exploit"] = False
 
         if finding["exploitable"] and not no_patches and cc.get("patch_code"):
+            if "patch_code" not in finding:
+                finding["patch_code"] = cc["patch_code"]
             finding["has_patch"] = True
             patches_generated += 1
+            if fid in (pre_gated_ids or ()):
+                # PatchTask.finalize already gated this patch; the
+                # stored annotations are its GateResult.to_dict().
+                gate = cc.get("patch_gate")
+                if isinstance(gate, dict) and "patch_gate" not in finding:
+                    finding["patch_gate"] = gate
+            else:
+                # Inline CC-schema patch (produced mid-analysis) —
+                # PatchTask skipped it, so gate it here. Same
+                # annotate-only posture: a gate crash keeps the patch
+                # and simply leaves it without annotations.
+                finding.pop("patch_gate", None)
+                gate = _gate_inline_patch(finding, checkers_dir)
+                if gate is not None:
+                    finding["patch_gate"] = gate
         else:
             finding.pop("patch_code", None)
             # Gate annotations describe the dropped patch — drop them

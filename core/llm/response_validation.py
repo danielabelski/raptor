@@ -33,6 +33,125 @@ _CVSS_RE = re.compile(
 _CWE_RE = re.compile(r"^CWE-\d+$")
 
 
+class SchemaUnknownFieldError(ValueError):
+    """An LLM structured response carried top-level fields outside the
+    requested schema.
+
+    Raised at the ``generate_structured`` boundary (the mandatory
+    strict floor — the ``extra="forbid"`` equivalent for the dict-based
+    schema format). A schema-invalid response is treated exactly like a
+    malformed response: the client's retry / fallback machinery handles
+    it, and the model's schema-validity scorecard cell records the
+    failure.
+    """
+
+
+# Schemas that legitimately accept open-ended top-level shapes, keyed
+# by their full property-name signature. Registering a signature here
+# is an EXPLICIT, reviewable exemption from the unknown-field floor —
+# never skip silently by weakening the check itself. Each entry must
+# carry a comment explaining why the open shape is legitimate.
+# (Schemas can also opt out in-band by declaring
+# ``"additionalProperties": True`` — that is the JSON-Schema-native
+# way to say "open object" and is honoured below.)
+_OPEN_SCHEMA_SIGNATURES: frozenset = frozenset({
+    # (empty — no consumer currently needs an open top-level shape)
+})
+
+
+# LLM-output parse sites that do NOT flow through generate_structured
+# (they parse free-form ``generate`` text) and are explicitly exempted
+# from conversion to the unknown-field floor, each with a reason. This
+# registry exists so exemptions are documented and greppable rather
+# than silent; a new free-form JSON parse of LLM output should either
+# implement the floor locally (see core/audit/batch_glance.py,
+# core/audit/llm_summaries.py, core/audit/spec_inference.py for the
+# pattern) or be added here with a reason.
+EXEMPT_FREEFORM_PARSE_SITES: tuple = (
+    (
+        "core/audit/dark_verify/_prompts.py",
+        "parse_witness_response",
+        (
+            "prompt-module owned by the prompt-envelope work stream; the "
+            "parse extracts an explicit field set into DarkWitnessSpec "
+            "(unknown fields never propagate) and witness execution runs "
+            "under the fail-closed sandbox"
+        ),
+    ),
+    (
+        "libexec/raptor-study-prep",
+        "_llm_seed_concepts_from_names",
+        (
+            "response is a JSON array of identifier strings intersected "
+            "against a mechanical allowlist (study-list names) — only "
+            "already-known identifiers survive, so unknown values are "
+            "structurally impossible"
+        ),
+    ),
+    (
+        "core/dataflow/barrier_synth.py",
+        "default_completer/_extract_ql",
+        (
+            "output is CodeQL source text (open-ended code by design), not "
+            "structured JSON; the synthesised query is validated by "
+            "compiling and running it against before/after databases"
+        ),
+    ),
+)
+
+
+def _allowed_top_level_keys(schema: dict[str, Any]) -> set[str] | None:
+    """Return the set of permitted top-level keys, or None when the
+    schema does not describe a closed object (strict check skipped).
+
+    Handles both schema formats used in the codebase:
+      - JSON Schema: ``{"properties": {...}}`` — closed unless
+        ``additionalProperties`` is explicitly truthy.
+      - Simple: ``{"field": "type description"}`` (all-str values) —
+        always closed.
+    Unrecognised shapes (top-level arrays, mixed dicts) return None so
+    the floor never rejects a response the schema didn't constrain.
+    """
+    if not isinstance(schema, dict) or not schema:
+        return None
+    if "properties" in schema:
+        props = schema.get("properties")
+        if not isinstance(props, dict) or not props:
+            return None
+        if schema.get("additionalProperties"):
+            return None  # explicitly-open object
+        keys = set(props)
+    elif "type" not in schema and all(isinstance(v, str) for v in schema.values()):
+        # Simple format. A top-level "type" key marks a JSON Schema
+        # fragment (e.g. {"type": "array"}) rather than a field list —
+        # skip those conservatively. (A simple schema with a field
+        # literally named "type" also skips: conservative, never
+        # rejects a response the schema didn't clearly constrain.)
+        keys = set(schema)
+    else:
+        return None
+    if frozenset(keys) in _OPEN_SCHEMA_SIGNATURES:
+        return None
+    return keys
+
+
+def unknown_response_fields(
+    raw: Any,
+    schema: dict[str, Any],
+) -> list[str]:
+    """Return the top-level keys of ``raw`` not permitted by ``schema``.
+
+    Empty list means the response passes the strict floor (or the
+    schema doesn't describe a closed object — see
+    :func:`_allowed_top_level_keys`). Non-dict ``raw`` returns [] here;
+    dict-shape enforcement stays with the caller's existing handling.
+    """
+    allowed = _allowed_top_level_keys(schema)
+    if allowed is None or not isinstance(raw, dict):
+        return []
+    return sorted(k for k in raw if k not in allowed)
+
+
 @dataclass
 class FieldResult:
     """Outcome of validating a single field."""

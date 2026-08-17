@@ -154,7 +154,9 @@ def test_schema_key_order_does_not_affect_cache(tmp_path: Path) -> None:
     to the same key — otherwise consumers that build schemas from
     keyword args would get spurious misses."""
     client = _client(tmp_path)
-    fake = _FakeProvider({"k": "v"})
+    # Result must conform to the schema below — the strict schema floor
+    # rejects responses carrying fields outside the declared properties.
+    fake = _FakeProvider({"a": "v"})
     _install_provider(client, fake)
 
     schema_1 = {"type": "object", "properties": {"a": {"type": "string"},

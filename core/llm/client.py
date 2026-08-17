@@ -28,6 +28,7 @@ from core.logging import get_logger
 
 from .config import LLMConfig, ModelConfig
 from .providers import LLMProvider, LLMResponse, StructuredResponse, create_provider
+from .response_validation import SchemaUnknownFieldError, unknown_response_fields
 
 _client_log = _logging.getLogger(__name__)
 
@@ -525,6 +526,11 @@ def _is_retryable_error(error: Exception) -> bool:
     # JSON parse failures from LLM output are retryable — the model
     # generated malformed JSON but may succeed on a different sample.
     if isinstance(error, json.JSONDecodeError):
+        return True
+
+    # Unknown-field schema violations are the same class of failure as
+    # malformed JSON: a bad sample from the model, worth one more try.
+    if isinstance(error, SchemaUnknownFieldError):
         return True
     json_parse_patterns = ("unterminated string", "expecting value",
                            "expecting property name", "invalid \\escape")
@@ -2089,6 +2095,18 @@ class LLMClient:
             cached = self._get_cached_structured_response(cache_key)
             if cached is not None:
                 cached_result, cached_raw = cached
+                # Strict schema floor applies to cache replays too —
+                # entries written before the floor existed (or by an
+                # older RAPTOR) may carry smuggled fields. Treat a
+                # violating entry as a cache miss and regenerate.
+                stale_unknown = unknown_response_fields(cached_result, schema)
+                if stale_unknown:
+                    logger.debug(
+                        "Cached structured response rejected (unknown "
+                        "fields %s) — regenerating", stale_unknown,
+                    )
+                    cached = None
+            if cached is not None:
                 logger.debug(
                     f"Using cached structured response for "
                     f"{model_config.provider}/{model_config.model_name}"
@@ -2270,6 +2288,27 @@ class LLMClient:
                         logger.debug("Structured generation successful: %s/%s (tokens: %s, cost: $%.4f, duration: %.1fs)", model.provider, model.model_name, tokens_delta, cost_delta, duration)
 
                         result_dict, raw = result_tuple
+                        # Strict schema floor — mandatory last hop for
+                        # every structured response. Provider-side
+                        # constrained decoding guarantees shape but not
+                        # the rejection of smuggled extra fields; a
+                        # hijacked model (or a provider silently
+                        # ignoring the schema) could otherwise pass
+                        # unrequested keys into downstream consumers.
+                        # A violation is treated exactly like a
+                        # malformed response: raised into the retry /
+                        # fallback loop below, recorded against the
+                        # model's schema-validity scorecard cell.
+                        # Open-ended shapes must be exempted explicitly
+                        # (``additionalProperties: true`` or
+                        # ``_OPEN_SCHEMA_SIGNATURES`` in
+                        # core.llm.response_validation).
+                        unknown = unknown_response_fields(result_dict, schema)
+                        if unknown:
+                            raise SchemaUnknownFieldError(
+                                f"structured response carried fields "
+                                f"outside the requested schema: {unknown}"
+                            )
                         # Lift the resolved snapshot the provider attached
                         # (StructuredResponse carries it; a bare-tuple return
                         # yields None — alias-only, never guessed).
@@ -2347,7 +2386,12 @@ class LLMClient:
                         # quota). Otherwise we'd attribute provider flakes as
                         # this model's schema unreliability and the SCHEMA_VALID
                         # cell would drift to nonsense.
-                        if not (_is_quota_error(e) or _is_retryable_error(e)):
+                        # SchemaUnknownFieldError is retryable (a bad
+                        # sample, like malformed JSON) but is still a
+                        # response-shape failure — record it explicitly.
+                        if isinstance(e, SchemaUnknownFieldError) or not (
+                            _is_quota_error(e) or _is_retryable_error(e)
+                        ):
                             self._record_schema_validity(model.model_name, success=False)
 
                         if getattr(e, "status_code", None) == 429:

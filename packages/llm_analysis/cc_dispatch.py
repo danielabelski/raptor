@@ -13,14 +13,14 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from core.llm.cc_adapter import (
     CCDispatchConfig,
     build_cc_command,
     cc_subprocess_env,
-    parse_cc_structured,
     parse_cc_freeform,
+    parse_cc_structured,
 )
 from packages.llm_analysis.dispatch import DispatchResult
 from packages.llm_analysis.prompts.schemas import FINDING_RESULT_SCHEMA
@@ -64,11 +64,11 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
     cmd = build_cc_command(config)
 
     try:
-        from core.sandbox import run_untrusted_networked
         from core.llm.cc_proxy_hosts import (
             proxy_hosts_for_cc_dispatch,
             readable_paths_for_cc_dispatch,
         )
+        from core.sandbox import run_untrusted_networked
         # Sandboxed Claude Code dispatch with restrict_reads=True so the
         # sub-agent can't read host secrets ($HOME, /proc/<host_pid>/) on
         # Landlock-only hosts (Ubuntu 24.04+ default with
@@ -148,7 +148,28 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
 
     quality = 1.0
     if schema and isinstance(parsed, dict) and "error" not in parsed:
-        from core.llm.response_validation import validate_structured_response
+        from core.llm.response_validation import (
+            unknown_response_fields,
+            validate_structured_response,
+        )
+        # Strict schema floor — same mandatory last hop as
+        # LLMClient.generate_structured. The CC subprocess transport
+        # bypasses the client, so the unknown-field rejection must run
+        # here too; a violating response is treated like a parse
+        # failure (existing per-finding error handling).
+        # ``finding_id`` is transport-injected (parse_cc_structured
+        # setdefaults it into every envelope), not model-smuggled —
+        # exempt it for schemas that don't declare it.
+        unknown = [
+            k for k in unknown_response_fields(parsed, effective_schema)
+            if k != "finding_id"
+        ]
+        if unknown:
+            result = {
+                "error": f"schema violation: unknown fields {unknown}",
+            }
+            write_debug(out_dir, "dispatch_schema", proc.stdout, proc.stderr, result)
+            return DispatchResult(result=result)
         validated = validate_structured_response(parsed, effective_schema)
         parsed = validated.data
         quality = validated.quality
@@ -228,7 +249,7 @@ def write_debug(
     finding_id: str,
     stdout: str,
     stderr: str,
-    result: Dict[str, Any],
+    result: dict[str, Any],
 ) -> None:
     """Write raw CC output to a debug file on failure."""
     try:
@@ -242,7 +263,7 @@ def write_debug(
         pass
 
 
-def build_schema(no_exploits: bool = False, no_patches: bool = False) -> Dict[str, Any]:
+def build_schema(no_exploits: bool = False, no_patches: bool = False) -> dict[str, Any]:
     """Build JSON Schema for CC output, excluding fields the user didn't ask for."""
     schema = copy.deepcopy(FINDING_RESULT_SCHEMA)
     if no_exploits:

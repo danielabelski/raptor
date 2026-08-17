@@ -38,7 +38,8 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check ───
-import os  # noqa: E402
+import os
+
 if not (os.environ.get("CLAUDECODE") or os.environ.get("_RAPTOR_TRUSTED")):
     sys.stderr.write(
         f"{sys.argv[0]}: internal dispatch script.\n"
@@ -49,7 +50,26 @@ if not (os.environ.get("CLAUDECODE") or os.environ.get("_RAPTOR_TRUSTED")):
 # ─── end trust-marker check ───
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import core.startup.process_init  # noqa: E402,F401
+import core.startup.process_init  # noqa: F401
+from core.security.prompt_output_sanitise import sanitise_string
+
+
+def _line(value, max_chars: int = 200) -> str:
+    """Collapse an LLM/journal-derived value to one sanitised line.
+
+    Journal entries (verdict, model, strategies, hypothesis claims),
+    annotation bodies, and gap records carry LLM output or scanned-repo
+    identifiers. This CLI prints them straight to the operator's
+    terminal, so ANSI/BIDI/control bytes and autofetch markup must be
+    defanged first — same policy as the markdown report writers.
+    """
+    text = " ".join(str(value if value is not None else "").split()).strip()
+    return sanitise_string(text, max_chars=max_chars)
+
+
+def _prose(value, max_chars: int = 10_000) -> str:
+    """Sanitise a multi-line body (annotation prose) for terminal output."""
+    return sanitise_string(str(value if value is not None else ""), max_chars=max_chars)
 
 
 # ── Layer loaders ────────────────────────────────────────────────────
@@ -107,7 +127,7 @@ def _load_journal_entries(out_dir: Path | None):
     try:
         from core.audit.journal import load_entries
         return load_entries(out_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 — layer loaders degrade gracefully when absent
         return []
 
 
@@ -117,7 +137,7 @@ def _load_journal_index(project_dir: Path | None):
     try:
         from core.audit.journal import load_index
         return load_index(project_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 — layer loaders degrade gracefully when absent
         return {}
 
 
@@ -130,7 +150,7 @@ def _load_coverage_store(project_dir: Path | None):
     try:
         from core.coverage.store import CoverageStore
         return CoverageStore(cov_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 — layer loaders degrade gracefully when absent
         return None
 
 
@@ -140,7 +160,7 @@ def _load_annotation(ann_dir: Path | None, file: str, function: str):
     try:
         from core.annotations.storage import read_annotation
         return read_annotation(ann_dir, file, function)
-    except Exception:
+    except Exception:  # noqa: BLE001 — layer loaders degrade gracefully when absent
         return None
 
 
@@ -159,7 +179,6 @@ def _context_map_role(cm: dict | None, file: str, function: str) -> str | None:
     """Extract the structural role of a function from context-map.json."""
     if not cm:
         return None
-    key = f"{file}:{function}"
     for section, role in [
         ("entry_points", "entry_point"),
         ("sink_details", "sink"),
@@ -172,9 +191,9 @@ def _context_map_role(cm: dict | None, file: str, function: str) -> str | None:
             item_name = item.get("name", item.get("function", ""))
             if item_file == file and item_name == function:
                 return role
-            if item_file.endswith(f"/{file}") or file.endswith(f"/{item_file}"):
-                if item_name == function:
-                    return role
+            if ((item_file.endswith(f"/{file}") or file.endswith(f"/{item_file}"))
+                    and item_name == function):
+                return role
     return None
 
 
@@ -216,21 +235,21 @@ def _show_function(file, function, cm, entries, index, ann_dir, args):
         print(json.dumps(journal_entry.to_dict(), indent=2))
         return
 
-    header = f"─── {file} :: {function} "
+    header = f"─── {_line(file)} :: {_line(function)} "
     print(header + "─" * max(0, 60 - len(header)))
     print()
 
     if role:
-        print(f"  Role:     {role}")
+        print(f"  Role:     {_line(role)}")
 
     if journal_entry:
-        conf = f" ({journal_entry.confidence})" if journal_entry.confidence else ""
-        model = journal_entry.model or "unknown"
-        ts_short = journal_entry.ts[:10] if journal_entry.ts else ""
-        print(f"  Verdict:  {journal_entry.verdict}{conf} — {model}, {ts_short}")
+        conf = f" ({_line(journal_entry.confidence, max_chars=40)})" if journal_entry.confidence else ""
+        model = _line(journal_entry.model or "unknown", max_chars=60)
+        ts_short = _line(journal_entry.ts[:10] if journal_entry.ts else "", max_chars=20)
+        print(f"  Verdict:  {_line(journal_entry.verdict, max_chars=40)}{conf} — {model}, {ts_short}")
         if journal_entry.strategy_id or journal_entry.strategies:
-            strats = ", ".join(journal_entry.strategies) if journal_entry.strategies else ""
-            sid = journal_entry.strategy_id or ""
+            strats = ", ".join(_line(s, max_chars=60) for s in journal_entry.strategies) if journal_entry.strategies else ""
+            sid = _line(journal_entry.strategy_id or "", max_chars=60)
             print(f"  Strategy: {sid} [{strats}]" if sid else f"  Strategy: [{strats}]")
     else:
         print("  Verdict:  (no review recorded)")
@@ -241,20 +260,20 @@ def _show_function(file, function, cm, entries, index, ann_dir, args):
         for h in journal_entry.hypotheses:
             status = h.get("status", "?")
             mark = {"confirmed": "+", "disproven": "x", "exploring": "?"}.get(status, "?")
-            print(f"    {mark} {status:<12} {h.get('claim', '')}")
+            print(f"    {mark} {_line(status, max_chars=40):<12} {_line(h.get('claim', ''))}")
 
     if journal_entry and journal_entry.reading_list_items:
         print()
         print("  Unresolved questions:")
         for q in journal_entry.reading_list_items:
-            print(f"    - {q}")
+            print(f"    - {_line(q)}")
 
     if ann:
         print()
         print("  Operator note:")
         body = getattr(ann, "body", "")
         if body:
-            for line in body.strip().splitlines():
+            for line in _prose(body.strip()).splitlines():
                 print(f"    {line}")
     print()
 
@@ -266,12 +285,12 @@ def _show_file(file, cm, entries, index, ann_dir, args):
             existing = all_entries.get(e.function)
             if not existing or e.ts > existing.ts:
                 all_entries[e.function] = e
-    for key, e in index.items():
+    for e in index.values():
         if e.file == file and e.function not in all_entries:
             all_entries[e.function] = e
 
     count = len(all_entries)
-    header = f"─── {file} ({count} reviewed functions) "
+    header = f"─── {_line(file)} ({count} reviewed functions) "
     print(header + "─" * max(0, 60 - len(header)))
     print()
 
@@ -298,9 +317,9 @@ def _show_file(file, cm, entries, index, ann_dir, args):
         print("  Reviews:")
         for fn in sorted(all_entries):
             e = all_entries[fn]
-            conf = f" ({e.confidence})" if e.confidence else ""
-            model = (e.model or "")[:12]
-            print(f"    {fn:<30} {e.verdict}{conf}  {model}")
+            conf = f" ({_line(e.confidence, max_chars=40)})" if e.confidence else ""
+            model = _line((e.model or "")[:12], max_chars=20)
+            print(f"    {_line(fn, max_chars=80):<30} {_line(e.verdict, max_chars=40)}{conf}  {model}")
     print()
 
 
@@ -334,10 +353,10 @@ def cmd_findings(args):
     print()
     for key in sorted(all_findings):
         e = all_findings[key]
-        cwe = e.cwe or ""
-        model = (e.model or "")[:12]
-        ts_short = e.ts[:10] if e.ts else ""
-        print(f"  {e.file}:{e.function:<20} {cwe:<10} {e.verdict:<10} {model}  {ts_short}")
+        cwe = _line(e.cwe or "", max_chars=20)
+        model = _line((e.model or "")[:12], max_chars=20)
+        ts_short = _line(e.ts[:10] if e.ts else "", max_chars=20)
+        print(f"  {_line(e.file)}:{_line(e.function, max_chars=80):<20} {cwe:<10} {_line(e.verdict, max_chars=40):<10} {model}  {ts_short}")
 
 
 def cmd_gaps(args):
@@ -372,10 +391,10 @@ def cmd_gaps(args):
     print(f"  {'Priority':<10} {'File':<30} {'Function':<25} {'Strategies'}")
     print(f"  {'─' * 9:<10} {'─' * 29:<30} {'─' * 24:<25} {'─' * 20}")
     for g in gaps[:50]:
-        strats = ", ".join(g.get("strategies", [])[:3])
-        pri = g.get('priority', 0)
-        fn = g.get('file', '')
-        nm = g.get('name', '')
+        strats = ", ".join(_line(s, max_chars=40) for s in g.get("strategies", [])[:3])
+        pri = _line(g.get('priority', 0), max_chars=20)
+        fn = _line(g.get('file', ''))
+        nm = _line(g.get('name', ''), max_chars=80)
         print(f"  {pri:<10} {fn:<30} {nm:<25} {strats}")
 
 
@@ -402,11 +421,11 @@ def cmd_history(args):
         return
 
     for e in entries:
-        ts_short = e.ts[:16].replace("T", " ") if e.ts else "?"
-        conf = f" ({e.confidence})" if e.confidence else ""
-        model = (e.model or "?")[:12]
-        strats = ", ".join(e.strategies[:3]) if e.strategies else ""
-        print(f"  {ts_short}  {e.verdict}{conf:<8} {model:<14} {strats}")
+        ts_short = _line(e.ts[:16].replace("T", " ") if e.ts else "?", max_chars=20)
+        conf = f" ({_line(e.confidence, max_chars=40)})" if e.confidence else ""
+        model = _line((e.model or "?")[:12], max_chars=20)
+        strats = ", ".join(_line(s, max_chars=60) for s in e.strategies[:3]) if e.strategies else ""
+        print(f"  {ts_short}  {_line(e.verdict, max_chars=40)}{conf:<8} {model:<14} {strats}")
 
 
 def cmd_stats(args):
@@ -430,13 +449,13 @@ def cmd_stats(args):
             models.add(e.model)
 
     print(f"  Entries:  {len(entries)}")
-    print(f"  Models:   {', '.join(sorted(models)) or '(none)'}")
+    print(f"  Models:   {', '.join(_line(m, max_chars=60) for m in sorted(models)) or '(none)'}")
     print(f"  Cost:     ${total_cost:.2f}")
     print(f"  Duration: {total_duration:.0f}s ({total_duration / 60:.1f}m)")
     print()
     print("  Verdicts:")
     for v in sorted(verdicts):
-        print(f"    {v:<15} {verdicts[v]}")
+        print(f"    {_line(v, max_chars=40):<15} {verdicts[v]}")
 
 
 def cmd_notes(args):
@@ -457,9 +476,9 @@ def cmd_notes(args):
     for ann in iter_all_annotations(ann_dir):
         if ann.metadata.get("source") != "human":
             continue
-        status = ann.metadata.get("status", "")
-        body_preview = (ann.body or "")[:60].replace("\n", " ")
-        print(f"  {ann.file}:{ann.function:<25} {status:<12} {body_preview}")
+        status = _line(ann.metadata.get("status", ""), max_chars=40)
+        body_preview = _line((ann.body or "")[:60], max_chars=80)
+        print(f"  {_line(ann.file)}:{_line(ann.function, max_chars=80):<25} {status:<12} {body_preview}")
         count += 1
 
     if count == 0:
@@ -569,8 +588,8 @@ def _stale_journal(args):
     print(f"  {len(entries)} journal entries, {len(stale)} stale:")
     for entry, current in sorted(stale, key=lambda e: (e[0].file, e[0].function)):
         print(
-            f"    {entry.file}:{entry.function}  "
-            f"verdict={entry.verdict}  "
+            f"    {_line(entry.file)}:{_line(entry.function, max_chars=80)}  "
+            f"verdict={_line(entry.verdict, max_chars=40)}  "
             f"was={entry.source_hash[:12]}...  "
             f"now={current[:12]}..."
         )
@@ -594,7 +613,7 @@ def cmd_coverage(args):
 
     for path in all_files:
         cov = store.file_coverage(path)
-        print(f"  {path}: {cov:.0f}%")
+        print(f"  {_line(path)}: {cov:.0f}%")
 
     print(f"\n  {len(all_files)} file(s) with coverage data.")
 

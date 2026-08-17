@@ -221,7 +221,13 @@ def build_finding_detail(finding: dict[str, Any], index: int) -> ReportSection:
     fline = finding.get("line") if finding.get("line") is not None else finding.get("start_line")
     loc = f"{fpath}:{fline}" if fline is not None else fpath
 
-    title = f"{fid} — {vtype} in `{loc}`"
+    # Section titles render as one heading line — collapse and sanitise
+    # the finding-derived pieces (id, type, file:line) so a crafted value
+    # cannot inject extra heading lines or live markup. Same policy as
+    # core.project.report._md_heading.
+    title = sanitise_string(
+        " ".join(f"{fid} — {vtype} in `{loc}`".split()), max_chars=300,
+    )
 
     lines = []
     lines.append("| Attribute | Value |")

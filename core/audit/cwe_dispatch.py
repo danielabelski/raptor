@@ -437,6 +437,8 @@ _HYPOTHESIS_CWE_MAP = [
     (r"empty.{0,10}catch|except.{0,10}pass", "CWE-703"),
     ((r"(?:ignor|discard|unchecked)\w*.{0,20}"
       r"(?:error|return value|\berr\b)"), "CWE-252"),
+    ((r"(?:return\s+value|result|\berr\b).{0,40}"
+      r"(?:ignor|discard|not\s+checked|unchecked)"), "CWE-252"),
 ]
 
 _HYPOTHESIS_CWE_RE = None

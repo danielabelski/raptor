@@ -1117,6 +1117,13 @@ class TestDispatchWiring:
         assert infer_cwe_from_hypothesis(
             "ignored error from the privilege drop",
         ) == "CWE-252"
+        # Reversed phrasing (object before verb) must route too — the
+        # channel dispatches by keyword either way, but the CWE seeds
+        # the corroborating compiler-family chain step.
+        assert infer_cwe_from_hypothesis(
+            "the return value of setuid is ignored; on failure the "
+            "process keeps root",
+        ) == "CWE-252"
 
     def test_no_duplicate_with_cwe_and_keywords(self):
         from core.audit.orchestrator import _hypothesis_to_tool_chain

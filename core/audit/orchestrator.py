@@ -319,6 +319,14 @@ class OrchestratorConfig:
     # (--no-on-demand-synthesis); capped per run
     # (checker_synthesis.MAX_ONDEMAND_SYNTHESIS_PER_RUN).
     on_demand_synthesis: bool = True
+    # Per-model review functions for cross-model panels. Built by the
+    # pipeline (one make_review_fn per configured model) when
+    # ``len(models) > 1``. The multi-model dispatch in
+    # ``_multi_pass_review`` looks the panel handle's effective model
+    # up here — without this map every "panel member" silently called
+    # the single review_fn pinned to models[0] and model B was never
+    # invoked at all.
+    review_fns_by_model: dict[str, Callable] | None = None
 
 
 @dataclass
@@ -1454,12 +1462,19 @@ def review_one_function(
         spent = getattr(_budget_client, "total_cost", 0.0) or 0.0
         return max(0.0, spent - _spend_before)
 
-    if config.review_passes > 1:
+    # Cross-model panels (--model A --model B) must reach the
+    # multi-model branch regardless of --review-passes: gating the
+    # dispatch on review_passes > 1 alone meant the flagship
+    # multi-model mode never invoked model B with the default single
+    # pass.
+    if config.review_passes > 1 or (
+        config.multi_model and len(config.models) > 1
+    ):
         outcome = _multi_pass_review(
             review_fn,
             ctx,
             config,
-            config.review_passes,
+            max(config.review_passes, 1),
         )
     else:
         try:
@@ -6161,6 +6176,33 @@ _STATUS_SEVERITY = {
 }
 
 
+class _ClientBudgetGate:
+    """CostGate over the run's budget-capped LLM client.
+
+    Panel dispatch multiplies per-function review cost by the panel
+    size; the multi-model substrate's reviewer/aggregator cost gating
+    needs to see the client's live spend against its per-scan cap.
+    ``budget_ratio() == 0.0`` (gate open) when the client has no
+    finite cap.
+
+    NOTE for reservation budgeting: when per-function cost reservation
+    lands, the reservation for a panel review must be
+    ``estimate × len(config.models)`` — this gate is the integration
+    point that already sees the multiplied spend.
+    """
+
+    def __init__(self, client: Any):
+        self._client = client
+
+    def budget_ratio(self) -> float:
+        cfg = getattr(self._client, "config", None)
+        max_cost = getattr(cfg, "max_cost_per_scan", None)
+        if not max_cost or max_cost <= 0 or max_cost == float("inf"):
+            return 0.0
+        spent = getattr(self._client, "total_cost", 0.0) or 0.0
+        return spent / max_cost
+
+
 def _multi_pass_review(
     review_fn: Callable,
     ctx: dict[str, Any],
@@ -6186,11 +6228,19 @@ def _multi_pass_review(
             def context_fn(_file: str, _func: str) -> dict[str, Any]:
                 return ctx
 
+            review_fns = config.review_fns_by_model or {}
+
             def adapted_review_fn(
                 context: dict[str, Any],
                 model_name: str,
             ) -> dict[str, Any]:
-                outcome = review_fn(context, config)
+                # Dispatch by the panel handle's effective model: each
+                # configured model gets ITS review_fn (pinned via
+                # make_review_fn(model_name=...)). Falling back to the
+                # single review_fn keeps consumers that never built the
+                # map (tests, ensemble mode) on the old behaviour.
+                model_review_fn = review_fns.get(model_name, review_fn)
+                outcome = model_review_fn(context, config)
                 result = {
                     "file": outcome.file,
                     "function": outcome.function,
@@ -6227,6 +6277,12 @@ def _multi_pass_review(
                         "hypothesis": outcome.hypothesis,
                     }
 
+            cost_gate = (
+                _ClientBudgetGate(config.llm_budget_client)
+                if config.llm_budget_client is not None
+                else None
+            )
+
             mr_result = run_audit_multi_review(
                 file_path=file_path,
                 function_name=function_name,
@@ -6234,6 +6290,7 @@ def _multi_pass_review(
                 context_fn=context_fn,
                 review_fn=adapted_review_fn,
                 refute_fn=refute_fn,
+                cost_gate=cost_gate,
             )
 
             if not mr_result.items:

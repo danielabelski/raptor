@@ -212,6 +212,20 @@ def run_audit_pipeline(opts: AuditPipelineOpts, *, prep_cache=None):
     )
     config = _build_orchestrator_config(opts, client, models, opts.mode)
 
+    if len(models) > 1:
+        # Cross-model panel: one review_fn per configured model so the
+        # multi-model dispatch actually invokes each model. Without
+        # this map every panel member ran the models[0]-pinned
+        # review_fn — the other configured models were never called.
+        config.review_fns_by_model = {
+            m: make_review_fn(
+                client, task_type="audit",
+                model_name=(m if m != "default" else None),
+                mode=opts.mode, out_dir=opts.out_dir,
+            )
+            for m in models
+        }
+
     return run_orchestrator(
         config, review_fn, on_progress=opts.on_progress, prep_cache=prep_cache,
     )

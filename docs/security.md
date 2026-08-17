@@ -403,3 +403,113 @@ implementation notes, and open work tracking lives at
 - `core/security/prompt_input_preflight.py` -- preflight regex corpus
 - `core/security/rule_of_two.py` -- Rule of Two CI gate
 - `core/security/injection_patterns/` -- injection pattern corpus
+
+---
+
+## Deliberate Posture Decisions
+
+Security choices that look surprising out of context, made consciously
+and worth not re-litigating each time someone reads the code. Each
+entry: the decision, why, and where it is enforced.
+
+### Group-writable files and the privileged launcher
+
+The capability-granted helpers (`core/sandbox/helpers/`) enforce
+trusted-path execution: they only exec files owned by root or by the
+operator who owns the launcher binary, and refuse world-writable
+files. **Group-write is allowed only when the file's group is the
+owner's own primary group.** Debian/Ubuntu use user-private groups
+(each user's primary group has that user as its only member) with
+`umask 002`, so every fresh `git checkout` produces mode-664 files —
+group-writable by a single-member group, which is security-equivalent
+to owner-writable. Refusing it would break the launcher on the default
+configuration of the most common distros and train operators to chmod
+after every clone. Group-write by any *shared* group (the case where
+other humans actually hold write access) is still refused. Accepted
+edge: an operator whose primary group is deliberately shared has made
+that trust choice machine-wide via their umask; the launcher does not
+try to be stricter than the operator's own filesystem posture.
+Enforced in `raptor-coord-launcher.c` / `raptor-gidmap-allow.c`.
+
+### No Landlock BIND_TCP restrictions
+
+Sandboxed tools and targets may legitimately `bind()` — servers under
+test, fuzz harnesses, Frida-instrumented daemons — even when the
+listener is unreachable from outside the sandbox. Restricting bind
+breaks those workloads for no containment gain; egress is what
+matters, and CONNECT_TCP is denied when `block_network` degrades to
+Landlock-only mode. Enforced (by absence) in `core/sandbox/landlock.py`.
+
+### `diff.external=` pinned empty — diff callers fail closed
+
+The safe git overrides pin `diff.external=` (empty). git treats the
+empty value as a command to run, so `git diff` through the overrides
+*fails loudly* unless the caller passes `--no-ext-diff`. Deliberate: a
+future diff call site that forgets to disable external drivers fails
+at development time instead of silently honouring a repo-named
+program. Both in-repo diff consumers pass the flag; an
+execution-level test pins both directions. Enforced in
+`core/git/clone.py`; pinned by `core/git/tests/test_clone.py`.
+
+### `%G?` status B counts toward the signing rate — and gets its own signal
+
+A commit whose signature FAILS verification (`B`) still counts as
+"signed" for the workflow signing-rate regime split (it is visible to
+a reviewer, unlike an unsigned commit), but every `B` commit also
+emits its own per-commit finding in every regime — key present,
+check failed is anomalous regardless of the repo's norm. Enforced in
+`packages/sca/supply_chain/workflow_signing.py`.
+
+### Canonical bot email downgrades, never suppresses
+
+An unsigned commit's author email is free text; matching the canonical
+`<id>+bot@users.noreply.github.com` shape proves nothing. The
+bot+unsigned+date-skew conjunction therefore always surfaces — at
+reduced severity/confidence for the canonical shape (legitimate
+rebased bot commits look identical) instead of being hidden. Enforced
+in `packages/sca/supply_chain/commit_provenance.py`.
+
+### Repo-derived egress hosts are logged, not trust-gated
+
+Image registries and Helm chart hosts declared by the scanned repo are
+added to the egress allowlist without an operator gate: the scan
+legitimately needs them, and blocking them behind trust would break
+SCA on every untrusted target (the common case). Compensations: strict
+hostname-grammar validation, and one WARNING per run listing every
+repo-derived addition by source. Repo-sourced *configuration*
+(suppression overlays, policy toggles) IS trust-gated — data the scan
+needs vs config the operator writes. Enforced in
+`packages/sca/__init__.py` / `pipeline.py` / `bump/policy.py`.
+
+### Incomplete trust scans block; the override persists
+
+A trust verdict computed from a knowably-incomplete enumeration (the
+CodeQL pack-file walk hitting its cap) is treated as blocking, not
+best-effort — operators override deliberately with `--trust-repo` or
+the project `config` marker after seeing the findings. Gate outcomes
+are never persisted to journals or cross-run memory, so a later
+trusted re-run starts clean. Enforced in
+`core/security/codeql_trust.py`.
+
+### Dependency resolution is metadata-only; sdists are a per-run opt-in
+
+`pip-compile` runs with `PIP_ONLY_BINARY=:all:` (and composer with
+`--no-scripts --no-plugins`): resolving versions must never execute a
+package's build backend. Sdist-only manifests fail the dry-run loudly;
+`--allow-sdist-builds` is the explicit per-run risk acceptance.
+Enforced in `packages/sca/resolvers/`.
+
+### SAGE row-authentication key never rotates
+
+Memory rows consumed *mechanically* carry an HMAC minted with a
+per-install key (`$XDG_DATA_HOME/raptor/rowmac.key`, default
+`~/.local/share/raptor/rowmac.key`; created at setup, used forever).
+The key lives outside the repo tree on purpose: several sandbox
+profiles grant children repo-root read, and a sandboxed target that
+could read an in-repo key could mint valid MACs for poisoned rows —
+so the key must sit outside every sandbox-readable tree. There is no
+rotation machinery: deleting the key simply demotes every existing
+row to a human-visible hint, and rows re-earn mechanical status as
+new outcomes are stored — memories decay anyway, so key loss is a
+graceful reset, not an incident. Enforced in `core/sage/rowmac.py` /
+`hooks.py`.

@@ -626,9 +626,15 @@ per-run nonce written into the JSONL records, providing spoof-resistant
 integrity -- a hostile target that manages to append to the JSONL cannot
 produce records with the correct nonce.
 
-Observe JSONL is written to `<run_dir>/.sandbox-observe.jsonl`
-(distinct from the audit JSONL). The resulting records can be parsed
-into an `ObserveProfile` dataclass via `parse_observe_log()`:
+Observe JSONL is written to `<run_dir>/.audit/.sandbox-observe.jsonl`
+(distinct from the audit JSONL). The `.audit/` evidence directory is
+excluded from the sandboxed child's writable view (mount-ns shadows it
+with a read-only tmpfs; the macOS seatbelt profile denies writes
+beneath it), the file is created `O_EXCL` by the parent which holds
+the fd for all appends, and the inode is verified at finalisation.
+`parse_observe_log()` reads the new location and falls back to the
+legacy `<run_dir>/.sandbox-observe.jsonl` spot for old runs. The
+records can be parsed into an `ObserveProfile` dataclass:
 
 ```python
 from core.sandbox import parse_observe_log, ObserveProfile
@@ -823,6 +829,15 @@ execs the coordinator script with `RAPTOR_COORD_FROM_LAUNCHER=1` set.
 The coordinator then proceeds as if it had done the unshare itself.
 AppArmor and SELinux policy files are provided alongside the launcher
 source.
+
+The launcher enforces an argument contract before the unshare: the
+script must resolve to this checkout's `netns_coordinator.py`, and
+both interpreter and script must pass a trusted-path ownership check
+(root- or operator-owned, not writable by others — with a deliberate
+allowance for user-private-group checkouts; see "Deliberate Posture
+Decisions" in [security.md](security.md)). The gid-map helper
+enforces the parallel contract: the target namespace must be owned by
+the invoker and mapped gids confined to the invoker's own groups.
 
 If both paths fail, the coordinator writes a structured error to stdout
 and exits non-zero. The caller surfaces the message to the operator.

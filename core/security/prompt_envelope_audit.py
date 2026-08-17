@@ -99,6 +99,10 @@ _PROMPT_CONSTRUCTION_FILES = (
     # envelope_prompt / build_prompt — locked here so they can't
     # regress to raw interpolation)
     "core/audit/llm_summaries.py",
+    # per-gap review-prompt renderer (mechanical-findings /
+    # mechanical-evidence sections carry target-derived content;
+    # enveloped via neutralize_tag_forgery + <untrusted> blocks)
+    "core/audit/context.py",
     "core/audit/batch_glance.py",
     "core/audit/spec_inference.py",
     "core/audit/security_classifier.py",

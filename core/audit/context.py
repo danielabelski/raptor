@@ -22,6 +22,13 @@ from core.security.prompt_envelope import neutralize_tag_forgery
 
 logger = logging.getLogger(__name__)
 
+# Per-function bound on the pre-loop mechanical-findings prompt
+# section. The full set always lands in mechanical-findings.json;
+# the prompt only carries the first N entries so a detector-noisy
+# function (or a hostile target grinding out matches) cannot flood
+# the review context.
+MECHANICAL_FINDINGS_PROMPT_CAP = 10
+
 
 def _safe_path(target_path: Path, file_path: str) -> Path | None:
     """Join target_path / file_path with traversal guard.
@@ -727,12 +734,28 @@ def format_context_for_prompt(
 
     if ctx.get("mechanical_detector_findings"):
         mdf = ctx["mechanical_detector_findings"]
-        lines_mdf = ["\n### Pre-loop mechanical findings"]
-        for mf in mdf:
-            det = mf.get("detector", "?")
-            desc = mf.get("description", "")
+        shown = mdf[:MECHANICAL_FINDINGS_PROMPT_CAP]
+        # Detector ids and descriptions embed target-derived content
+        # (callee names, branch labels, dispatch keys, snippets) —
+        # defang and envelope them like the mechanical-evidence
+        # section above, and bound the section's volume.
+        lines_mdf = [
+            "\n### Pre-loop mechanical findings",
+            ('<untrusted kind="mechanical-findings"'
+             ' origin="audit-mechanical-detectors">'),
+        ]
+        for mf in shown:
+            det = neutralize_tag_forgery(str(mf.get("detector", "?")))
+            desc = neutralize_tag_forgery(str(mf.get("description", "")))
             mf_line = mf.get("line", 0)
             lines_mdf.append(f"- [{det}] L{mf_line}: {desc}")
+        lines_mdf.append("</untrusted>")
+        if len(mdf) > len(shown):
+            lines_mdf.append(
+                f"({len(mdf) - len(shown)} more findings withheld — "
+                f"cap {MECHANICAL_FINDINGS_PROMPT_CAP} per function; "
+                f"the full set is in mechanical-findings.json)"
+            )
         lines_mdf.append(
             "\nThese mechanical signals were found BEFORE your review. "
             "They are leads, not proof. Consider whether they indicate "

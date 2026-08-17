@@ -9652,6 +9652,28 @@ def _hypothesis_to_tool_chain(
     return chain
 
 
+# Whether the codeql-tier degradation skip was already announced (log
+# once per process, then debug — every CWE-seeded chain would
+# otherwise repeat the same line).
+_CODEQL_DEGRADED_LOGGED: list[bool] = [False]
+
+
+def _note_codeql_degraded_skip(file_path: str, function_name: str) -> None:
+    """One loud line the first time a codeql chain step is skipped
+    because the tier degraded at startup (no database), debug after."""
+    if not _CODEQL_DEGRADED_LOGGED[0]:
+        _CODEQL_DEGRADED_LOGGED[0] = True
+        logger.info(
+            "codeql tier degraded at startup (no CodeQL database) — "
+            "codeql chain steps are skipped for this run; fallback "
+            "channels (semgrep/joern/smt) cover their claims",
+        )
+    logger.debug(
+        "tool_chain codeql skipped %s:%s — tier degraded (no database)",
+        file_path, function_name,
+    )
+
+
 # CWEs already reported as having no dispatch entry (log once per run,
 # not once per finding — a hot class would otherwise spam the log).
 _UNMAPPED_CWES_LOGGED: set[str] = set()
@@ -10096,6 +10118,20 @@ def _run_tool_chain(
                     )
 
             elif tool_type == "codeql":
+                if not config.codeql_db_path:
+                    # Startup already recorded this degradation
+                    # (codeql → semgrep taint mode); honour it at
+                    # dispatch instead of erroring at run time — the
+                    # rest of the chain (semgrep/joern/smt) covers the
+                    # claim. Loud once per run, then debug.
+                    _note_codeql_degraded_skip(
+                        file_path, function_name,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "codeql", "skipped",
+                        )
+                    continue
                 from .sweep import run_codeql_sweep
 
                 codeql_result = run_codeql_sweep(

@@ -931,11 +931,14 @@ def orchestrate(
     # call is skipped; bumps ``client.short_circuits`` so /agentic
     # surfaces the savings count.
     prefilter_fn = None
+    pending_fp_claims: dict[str, dict] = {}
     if dispatch_mode == "external_llm":
         from packages.llm_analysis.prefilter import prefilter_for_finding
 
         def prefilter_fn(item):
-            return prefilter_for_finding(client, item)
+            return prefilter_for_finding(
+                client, item, pending_claims=pending_fp_claims,
+            )
 
     analysis_results = dispatch_task(
         AnalysisTask(profile=profile, allow_unreachable=allow_unreachable),
@@ -943,6 +946,21 @@ def orchestrate(
         results_by_id, cost_tracker, max_parallel,
         prefilter_fn=prefilter_fn,
     )
+
+    # Adjudicate the fall-through cheap "clear_fp" claims against the
+    # full verdicts so agentic:<rule_id> cells accumulate trust and
+    # should_short_circuit can ever leave learning mode.
+    if pending_fp_claims:
+        try:
+            from packages.llm_analysis.prefilter import (
+                record_prefilter_outcomes,
+            )
+            record_prefilter_outcomes(
+                client, pending_fp_claims, analysis_results,
+            )
+        except Exception:
+            logger.debug("prefilter outcome recording failed",
+                         exc_info=True)
 
     # Fallback: if external LLM failed entirely, try CC
     if (dispatch_mode == "external_llm"

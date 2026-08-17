@@ -198,6 +198,7 @@ def agentic_fp_analysis(reasoning: str) -> dict[str, Any]:
 
 def prefilter_for_finding(
     client, item: dict[str, Any],
+    pending_claims: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Return a short-circuit analysis dict if the scorecard trusts a
     cheap-tier ``clear_fp`` verdict for this finding, or ``None`` to
@@ -205,6 +206,15 @@ def prefilter_for_finding(
 
     Bumps ``client.short_circuits`` on the short-circuit path so the
     /agentic summary can surface concrete savings.
+
+    ``pending_claims``: optional dict the caller shares across the
+    dispatch batch. On fall-through with an (untrusted) ``clear_fp``
+    claim, the claim is stashed under the finding id so
+    :func:`record_prefilter_outcomes` can adjudicate it against the
+    full analysis verdict afterwards. Without this recording the
+    ``agentic:<rule_id>`` scorecard cells never accumulate events and
+    ``should_short_circuit`` stays in learning mode forever — the
+    calibration loop is silently open.
     """
     from core.llm.scorecard import prefilter_decision
 
@@ -232,11 +242,68 @@ def prefilter_for_finding(
         if callable(record_short_circuit):
             record_short_circuit()
         return agentic_fp_analysis(cheap_reasoning)
+    if cheap_says_fp and pending_claims is not None:
+        finding_id = str(
+            item.get("finding_id") or item.get("group_id") or "",
+        )
+        if finding_id:
+            pending_claims[finding_id] = {
+                "decision_class": decision_class,
+                "model": fast_model_name,
+                "cheap_reasoning": cheap_reasoning,
+            }
     return None
+
+
+def record_prefilter_outcomes(
+    client,
+    pending_claims: dict[str, dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> int:
+    """Adjudicate stashed cheap ``clear_fp`` claims against the full
+    ANALYSE verdicts and record them to the scorecard.
+
+    Mirrors the recording step the codeql/SCA prefilter twins perform
+    inline after their full analysis; /agentic's split hook/dispatch
+    structure needs it as a post-batch pass. Returns the number of
+    events recorded. Best-effort — never raises.
+    """
+    if not pending_claims:
+        return 0
+    scorecard = getattr(client, "scorecard", None)
+    if scorecard is None:
+        return 0
+    from core.llm.scorecard import record_prefilter_outcome
+
+    n = 0
+    for result in results or []:
+        if not isinstance(result, dict) or "error" in result:
+            continue
+        claim = pending_claims.get(str(result.get("finding_id") or ""))
+        if claim is None:
+            continue
+        try:
+            record_prefilter_outcome(
+                scorecard,
+                decision_class=claim["decision_class"],
+                model=claim["model"],
+                cheap_says_fp=True,
+                full_says_fp=(result.get("is_true_positive") is False),
+                cheap_reasoning=claim.get("cheap_reasoning", ""),
+                full_reasoning=str(result.get("reasoning") or ""),
+            )
+            n += 1
+        except Exception:
+            logger.debug("prefilter outcome recording failed",
+                         exc_info=True)
+    if n:
+        logger.info("fast-tier prefilter scorecard: %d outcomes", n)
+    return n
 
 
 __all__ = [
     "FP_PREFILTER_SCHEMA",
     "agentic_fp_analysis",
     "prefilter_for_finding",
+    "record_prefilter_outcomes",
 ]

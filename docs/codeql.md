@@ -55,6 +55,7 @@ autonomous analysis pipeline.
 | `--no-binary-oracle` | off | Disable binary-oracle filtering entirely |
 | `--sanitizer-cut <mode>` | off | Sanitiser-cut value-bound suppression mode (`off` / `on` / `strict` / `shadow`) |
 | `--sanitizer-cut-parity-log <path>` | auto | Parity-log path for `--sanitizer-cut shadow` (default: `<run_dir>/sanitizer_cut_parity.jsonl`) |
+| `--no-iris-tier1` | off | Skip IRIS Tier 1 in-repo LocalFlowSource pack analysis |
 | `--sandbox <profile>` | full | [Sandbox](sandbox.md) profile (`full` / `strict` / `debug` / `target_run` / `frida` / `network-only` / `none`) |
 | `--no-sandbox` | off | Alias for `--sandbox none` |
 | `--audit` | off | Engage [sandbox](sandbox.md) audit mode |
@@ -209,8 +210,9 @@ in-repo query packs (`packages/llm_analysis/codeql_packs/`) that
 extend source coverage to CLI arguments, environment variables, stdin,
 file reads, and database inputs. IRIS packs exist for Python, Java,
 JavaScript, and Go (29 queries across 8 CWEs). C++ is excluded because
-the upstream stdlib already covers local flow sources. The master
-kill-switch is `RaptorConfig.IRIS_TIER1_ENABLED`.
+the upstream stdlib already covers local flow sources. Disable with
+`--no-iris-tier1` (the master kill-switch is
+`RaptorConfig.IRIS_TIER1_ENABLED`).
 
 Per-language SARIF files are written to the output directory. IRIS
 findings produce a separate `codeql_<lang>_iris.sarif` file.

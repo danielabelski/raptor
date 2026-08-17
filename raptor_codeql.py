@@ -75,6 +75,13 @@ def run_autonomous_workflow(args):
     logger.info("RAPTOR CODEQL - AUTONOMOUS SECURITY ANALYSIS")
     logger.info("%s", "=" * 70)
 
+    # Flip the IRIS Tier 1 master switch for this invocation. The
+    # config is process-scoped, so this run's QueryRunner pack
+    # analysis and any in-process dataflow validation see it without
+    # bleeding into other consumers. Reset is implicit (process exit).
+    if getattr(args, "no_iris_tier1", False):
+        RaptorConfig.IRIS_TIER1_ENABLED = False
+
     # Parse languages — filter out empty entries from leading /
     # trailing / consecutive commas. Pre-fix `--languages
     # ",python,"` produced `["", "python", ""]`; the empty
@@ -343,6 +350,13 @@ Examples:
     parser.add_argument("--extended", action="store_true", help="Use extended security suites")
     parser.add_argument("--min-files", type=int, default=3, help="Min files to detect language")
     parser.add_argument("--codeql-cli", help="Path to CodeQL CLI")
+    parser.add_argument(
+        "--no-iris-tier1", action="store_true",
+        help="Skip the IRIS Tier 1 in-repo LocalFlowSource pack analysis "
+             "for this run (flips RaptorConfig.IRIS_TIER1_ENABLED). Use "
+             "when the in-repo packs produce noise on a specific target "
+             "or when comparing stdlib-only vs LocalFlowSource verdicts.",
+    )
     parser.add_argument("--scan-only", action="store_true", help="Scan only (skip autonomous analysis)")
     parser.add_argument(
         "--allow-unreachable",

@@ -12765,8 +12765,14 @@ def _re_review_joern_enriched(
     ThreadPoolExecutor.  Post-processing runs in the main thread.
     """
     candidates = []
+    seen_candidate_keys: set[str] = set()
     for gap in gaps_before_joern:
         key = f"{gap['file']}:{gap['name']}"
+        # Duplicate gaps (same function under two keys, e.g. same name
+        # at different lines) resolve to the same prior outcome — the
+        # second replace would raise ValueError from outcomes.index().
+        if key in seen_candidate_keys:
+            continue
         rec = evidence_index.get(key)
         if not rec or not rec.all_joern_flows():
             continue
@@ -12781,6 +12787,7 @@ def _re_review_joern_enriched(
             None,
         )
         if prior is not None:
+            seen_candidate_keys.add(key)
             candidates.append((gap, prior))
 
     if not candidates:
@@ -12894,10 +12901,17 @@ def _re_review_joern_enriched(
                         f"[gate violation: {'; '.join(gate_violations)}]",
                     )
 
-            _untally_outcome(result, prior_outcome)
-            oi = result.outcomes.index(prior_outcome)
-            result.outcomes[oi] = outcome
-            _tally_outcome(result, outcome, append=False)
+            # Guarded like the sibling passes (_iterative_re_review,
+            # _callee_contract_requeue): the prior outcome may no
+            # longer be in the list by replace time.
+            if prior_outcome in result.outcomes:
+                _untally_outcome(result, prior_outcome)
+                oi = result.outcomes.index(prior_outcome)
+                result.outcomes[oi] = outcome
+                _tally_outcome(result, outcome, append=False)
+            else:
+                result.outcomes.append(outcome)
+                _tally_outcome(result, outcome, append=False)
 
             try:
                 _commit_outcome(config, outcome, gap)

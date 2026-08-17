@@ -4455,3 +4455,70 @@ class TestMultiPassConsensusFailureVisibility:
             and "multi-model consensus failed" in r.message
         ]
         assert warning_msgs, "consensus failure must be logged at WARNING"
+
+
+class TestJoernReReviewDuplicateGaps:
+    """Two gaps resolving to the same prior clean outcome (duplicate
+    function keys in gaps_before_joern) must not crash the post-loop
+    phase with ValueError on the second replace."""
+
+    def test_duplicate_gaps_processed_once(self, tmp_path, monkeypatch):
+        import time as _time
+        from unittest.mock import MagicMock
+
+        import core.audit.orchestrator as orch_mod
+        from core.audit.orchestrator import _re_review_joern_enriched
+
+        monkeypatch.setattr(
+            orch_mod, "_build_context",
+            lambda config, gap, *a, **kw: {
+                "file": gap["file"], "function": gap["name"],
+                "line_start": gap.get("line_start", 1),
+            },
+        )
+        monkeypatch.setattr(orch_mod, "_commit_outcome", lambda *a, **kw: None)
+
+        prior = ReviewOutcome(
+            file="a.c", function="f", status="clean", body="ok",
+        )
+        result = OrchestratorResult(clean=1)
+        result.outcomes = [prior]
+
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+
+        rec = MagicMock()
+        rec.all_joern_flows.return_value = ["flow"]
+        evidence_index = {"a.c:f": rec}
+
+        review_calls = [0]
+
+        def review_fn(ctx, cfg):
+            review_calls[0] += 1
+            return ReviewOutcome(
+                file="a.c", function="f", status="suspicious",
+                body="joern flow reaches sink", hypothesis="taint",
+            )
+
+        gaps = [
+            {"file": "a.c", "name": "f", "line_start": 1},
+            {"file": "a.c", "name": "f", "line_start": 40},  # duplicate
+        ]
+
+        _re_review_joern_enriched(
+            result, config, review_fn,
+            checklist={"files": []},
+            context_map=None,
+            fuzz_coverage=None,
+            evidence_index=evidence_index,
+            sarif_cache=None,
+            entry_points=set(),
+            gaps_before_joern=gaps,
+            start_time=_time.monotonic(),
+            on_progress=None,
+        )
+
+        assert review_calls[0] == 1  # deduped, one re-review
+        assert len(result.outcomes) == 1
+        assert result.outcomes[0].status == "suspicious"
+        assert result.suspicious == 1
+        assert result.clean == 0

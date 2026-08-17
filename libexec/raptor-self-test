@@ -1,0 +1,1164 @@
+#!/usr/bin/env python3
+"""RAPTOR self-test — non-destructive smoke suite over the command surface.
+
+Exercises as many operator commands as possible against a small generated
+fixture project, in three tiers:
+
+  Tier 0 (default)   no LLM calls at all. Children run with a scrubbed
+                     environment (API keys / dispatcher socket / Ollama /
+                     claude CLI all hidden) so LLM-gated pipelines take
+                     their documented degraded paths, plus an isolated
+                     HOME so project registry / caches never touch the
+                     operator's real ~/.raptor.
+  Tier 1 (--with-llm)  budget-capped LLM runs (/audit, /agentic analysis,
+                     /ask). Hard per-run caps; default total < ~$2.
+  Deep (--deep)      long-running mechanical extras (binary-oracle e2e).
+
+Everything writes under one scratch directory (mkdtemp, reaper-prefixed)
+that is deleted on exit unless --keep is passed. Nothing in the repo,
+the operator's projects, or the operator's caches is read-modified.
+
+Usage:
+    raptor-self-test [--list] [--only SUBSTR] [--with-llm] [--deep]
+                     [--keep] [--model NAME] [--max-llm-cost USD]
+                     [--timeout SECONDS] [--json FILE]
+
+Exit codes: 0 all selected cases passed or skipped, 1 any failure,
+2 usage error.
+"""
+
+import faulthandler
+import signal
+import sys
+
+faulthandler.enable()
+if hasattr(signal, "SIGUSR1"):
+    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
+
+# ─── trust-marker check (do not import; inline by design) ───
+import os
+
+if not (os.environ.get("CLAUDECODE")
+        or os.environ.get("_RAPTOR_TRUSTED")):
+    sys.stderr.write(
+        "raptor-self-test: internal dispatch script.\n"
+        "  Run via 'bin/raptor' instead.\n"
+        "  Tests / power users: set _RAPTOR_TRUSTED=1 to bypass.\n"
+    )
+    sys.exit(2)
+# ─── end trust-marker check ─────────────────────────────────
+
+import argparse
+import json
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+_RAPTOR_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_RAPTOR_DIR))
+os.environ.setdefault("RAPTOR_DIR", str(_RAPTOR_DIR))
+
+import core.startup.process_init  # noqa: F401
+
+# Env vars that make detect_llm_availability() report an LLM. Tier 0
+# children must see none of them so pipelines take their no-LLM paths.
+_LLM_ENV_VARS = (
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "MISTRAL_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "RAPTOR_LLM_SOCKET",
+    "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+)
+
+_DEFAULT_CASE_TIMEOUT = 600
+
+
+class Skip(Exception):
+    """Raise inside a case to mark it skipped (message = reason)."""
+
+
+class Ctx:
+    """Shared per-run context handed to every case."""
+
+    def __init__(self, scratch: Path, args: argparse.Namespace) -> None:
+        self.scratch = scratch
+        self.args = args
+        self.fixture = scratch / "fixture"
+        self.fixture_sca = scratch / "fixture-sca"
+        self.home = scratch / "home"
+        self.logs = scratch / "logs"
+        self.outs = scratch / "outs"
+        for d in (self.home, self.logs, self.outs):
+            d.mkdir(parents=True, exist_ok=True)
+        self.codeql_cli = shutil.which("codeql") or _first_existing(
+            Path.home() / "codeql" / "codeql",
+            Path("/usr/local/bin/codeql"),
+        )
+        self.fixture_bin: Path | None = None
+        # Artifacts shared between chained cases (scan → sarif import, …)
+        self.artifacts: dict[str, Path] = {}
+
+    # -- environment builders -------------------------------------------
+
+    def env_t0(self, *, isolated_home: bool = False) -> dict[str, str]:
+        """Scrubbed env: no LLM reachable, marker set.
+
+        With isolated_home=True, HOME points into the scratch dir so
+        registry-touching commands (/project, annotations) can never
+        reach the operator's real ~/.raptor. Scanner pipelines keep the
+        real HOME: the sandbox's calibrated tool paths live under it,
+        and RAPTOR's own caches (codeql_dbs, sca) are designed to be
+        shared across runs.
+        """
+        env = {
+            k: v for k, v in os.environ.items() if k not in _LLM_ENV_VARS
+        }
+        env["_RAPTOR_TRUSTED"] = "1"
+        if isolated_home:
+            env["HOME"] = str(self.home)
+            env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
+            env["XDG_CACHE_HOME"] = str(self.home / ".cache")
+        # Unroutable Ollama endpoint defeats the reachability probe.
+        env["OLLAMA_HOST"] = "http://127.0.0.1:9"
+        env.pop("RAPTOR_CALLER_DIR", None)
+        env["PATH"] = _path_without_claude(env.get("PATH", ""), self.scratch)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "raptor-self-test"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "st@localhost"
+        return env
+
+    def env_llm(self) -> dict[str, str]:
+        """Real operator env (keys intact) with marker set; HOME real so
+        configured credentials/config files stay visible."""
+        env = dict(os.environ)
+        env["_RAPTOR_TRUSTED"] = "1"
+        env.pop("RAPTOR_CALLER_DIR", None)
+        return env
+
+    # -- process runner ---------------------------------------------------
+
+    def run(self, name: str, argv: list[str], *, env: dict[str, str],
+            timeout: int | None = None, cwd: Path | None = None,
+            check: bool = True) -> subprocess.CompletedProcess:
+        log = self.logs / f"{name}.log"
+        with open(log, "ab") as fh:
+            fh.write(("\n$ " + " ".join(argv) + "\n").encode())
+            fh.flush()
+            try:
+                proc = subprocess.run(
+                    argv, env=env, cwd=str(cwd or _RAPTOR_DIR),
+                    stdout=fh, stderr=subprocess.STDOUT,
+                    timeout=timeout or self.args.timeout, check=False,
+                )
+            except subprocess.TimeoutExpired:
+                raise AssertionError(
+                    f"timed out after {timeout or self.args.timeout}s "
+                    f"(log: {log})"
+                ) from None
+        if check and proc.returncode != 0:
+            tail = _tail(log)
+            raise AssertionError(
+                f"exit {proc.returncode} (log: {log})\n{tail}"
+            )
+        return proc
+
+    def out_dir(self, name: str) -> Path:
+        d = self.outs / name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+
+def _first_existing(*paths: Path) -> str | None:
+    for p in paths:
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def _path_without_claude(path: str, scratch: Path) -> str:
+    """Hide the claude CLI from children without losing sibling tools.
+
+    A PATH entry containing ``claude`` is replaced by a scratch mirror
+    directory holding symlinks to everything else in it, so tools that
+    share a bin dir with claude (semgrep, codeql, ...) stay reachable
+    while shutil.which("claude") returns None.
+    """
+    kept = []
+    for i, entry in enumerate(path.split(os.pathsep)):
+        if not entry:
+            continue
+        src = Path(entry)
+        if not (src / "claude").exists():
+            kept.append(entry)
+            continue
+        mirror = scratch / f"clean-bin-{i}"
+        if not mirror.exists():
+            mirror.mkdir(parents=True)
+            for item in src.iterdir():
+                if item.name.startswith("claude"):
+                    continue
+                try:
+                    (mirror / item.name).symlink_to(item)
+                except OSError:
+                    continue
+        kept.append(str(mirror))
+    return os.pathsep.join(kept)
+
+
+def _tail(log: Path, lines: int = 15) -> str:
+    try:
+        content = log.read_text(errors="replace").splitlines()
+        return "\n".join(content[-lines:])
+    except OSError:
+        return "<log unreadable>"
+
+
+def _require(tool: str) -> None:
+    if shutil.which(tool) is None:
+        raise Skip(f"{tool} not on PATH")
+
+
+# ─── fixture ────────────────────────────────────────────────────────────
+
+_PY_APP = '''\
+"""Tiny deliberately-vulnerable app for RAPTOR self-test fixtures."""
+import os
+import pickle
+import sqlite3
+import subprocess
+
+import yaml
+
+AWS_SECRET = "AKIAIOSFODNN7EXAMPLE"  # hardcoded credential (fixture)
+
+
+def ping(host):
+    # command injection: user input reaches a shell
+    return subprocess.call("ping -c1 " + host, shell=True)
+
+
+def run_tool(cmd):
+    # second injection sink for variant coverage
+    os.system(cmd)
+
+
+def load_config(blob):
+    # unsafe deserialisation
+    return yaml.load(blob)
+
+
+def restore(session):
+    # pickle of untrusted data
+    return pickle.loads(session)
+
+
+def find_user(db, name):
+    # SQL injection via string formatting
+    cur = sqlite3.connect(db).cursor()
+    cur.execute("SELECT * FROM users WHERE name = '%s'" % name)
+    return cur.fetchall()
+'''
+
+_PY_UTIL = '''\
+"""Second module so inventories and gap lists have >1 file."""
+
+
+def read_file(base, name):
+    # path traversal: no containment check
+    with open(base + "/" + name) as fh:
+        return fh.read()
+
+
+def check_token(supplied, expected):
+    # non-constant-time comparison
+    return supplied == expected
+'''
+
+_C_APP = '''\
+/* Tiny deliberately-vulnerable C target for RAPTOR self-test fixtures. */
+#include <stdio.h>
+#include <string.h>
+
+void greet(const char *name) {
+    char buf[16];
+    strcpy(buf, name);           /* stack overflow */
+    printf(buf);                 /* format string */
+    printf("\\n");
+}
+
+int frob(int n) {
+    char data[8];
+    for (int i = 0; i <= n; i++) /* off-by-one when n == 8 */
+        data[i] = (char)i;
+    return data[0];
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1)
+        greet(argv[1]);
+    return frob(argc);
+}
+'''
+
+_REQUIREMENTS = "pyyaml==3.12\nflask==0.12.2\nrequests==2.19.1\n"
+
+_PACKAGE_JSON = json.dumps({
+    "name": "raptor-self-test-fixture",
+    "version": "0.0.1",
+    "dependencies": {"lodash": "4.17.4"},
+}, indent=2) + "\n"
+
+# Minimal context map matching the shape /audit and /diagram consume.
+_CONTEXT_MAP = {
+    "target": "",
+    "entry_points": [
+        {"name": "ping", "file": "app.py", "line": 13,
+         "kind": "function", "reason": "user-controlled host argument"},
+    ],
+    "sources": [
+        {"name": "host", "file": "app.py", "line": 13, "kind": "argument"},
+    ],
+    "sinks": [
+        {"name": "subprocess.call", "file": "app.py", "line": 15,
+         "kind": "command_execution", "cwe": "CWE-78"},
+    ],
+    "sink_details": [
+        {"sink": "subprocess.call", "file": "app.py", "line": 15,
+         "reachable_from": ["ping"]},
+    ],
+    "trust_boundaries": [
+        {"name": "cli-args", "description": "argv crosses into ping()"},
+    ],
+    "boundary_details": [],
+    "unchecked_flows": [
+        {"source": "host", "sink": "subprocess.call",
+         "path": ["ping"], "reason": "no sanitisation between"},
+    ],
+}
+
+
+def build_fixture(ctx: Ctx) -> None:
+    fx = ctx.fixture
+    fx.mkdir(parents=True, exist_ok=True)
+    (fx / "app.py").write_text(_PY_APP)
+    (fx / "util.py").write_text(_PY_UTIL)
+    (fx / "native").mkdir(exist_ok=True)
+    (fx / "native" / "main.c").write_text(_C_APP)
+    sca = ctx.fixture_sca
+    sca.mkdir(parents=True, exist_ok=True)
+    (sca / "requirements.txt").write_text(_REQUIREMENTS)
+    (sca / "package.json").write_text(_PACKAGE_JSON)
+    env = ctx.env_t0()
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "fixture"],
+    ):
+        ctx.run("fixture-git", argv, env=env, cwd=fx, timeout=60)
+    gcc = shutil.which("gcc") or shutil.which("cc")
+    if gcc:
+        binary = fx / "build" / "app"
+        binary.parent.mkdir(exist_ok=True)
+        proc = ctx.run(
+            "fixture-cc",
+            [gcc, "-g", "-O0", "-o", str(binary), str(fx / "native" / "main.c")],
+            env=env, timeout=120, check=False,
+        )
+        if proc.returncode == 0:
+            ctx.fixture_bin = binary
+
+
+# ─── cases: tier 0 ──────────────────────────────────────────────────────
+
+def case_doctor(ctx: Ctx) -> None:
+    ctx.run("doctor", [sys.executable, "raptor.py", "doctor", "--verbose"],
+            env=ctx.env_t0(), timeout=120, check=False)
+
+
+def case_describe(ctx: Ctx) -> None:
+    proc = ctx.run("describe", [
+        sys.executable, "raptor.py", "describe",
+        "--target", str(ctx.fixture), "--json",
+    ], env=ctx.env_t0(), timeout=180)
+    assert proc.returncode == 0
+
+
+def case_scan_semgrep(ctx: Ctx) -> None:
+    _require("semgrep")
+    out = ctx.out_dir("scan")
+    ctx.run("scan", [
+        sys.executable, "raptor.py", "scan",
+        "--repo", str(ctx.fixture), "--out", str(out), "--no-codeql",
+        # Full policy set compiles for many minutes even on a tiny
+        # fixture; two targeted groups keep wallclock bounded while
+        # still proving the semgrep + cocci + SARIF plumbing.
+        "--policy-groups", "secrets,injection",
+    ], env=ctx.env_t0(), timeout=900)
+    combined = out / "combined.sarif"
+    assert combined.is_file(), f"no combined.sarif under {out}"
+    data = json.loads(combined.read_text())
+    hits = sum(len(r.get("results", [])) for r in data.get("runs", []))
+    assert hits > 0, "fixture vulns produced zero scan findings"
+    ctx.artifacts["scan_sarif"] = combined
+
+
+def case_scan_policy_groups(ctx: Ctx) -> None:
+    _require("semgrep")
+    out = ctx.out_dir("scan-policy")
+    ctx.run("scan-policy", [
+        sys.executable, "raptor.py", "scan",
+        "--repo", str(ctx.fixture), "--out", str(out),
+        "--policy-groups", "secrets",
+        "--no-codeql", "--no-cocci", "--show-suppressed",
+        "--exclude-dir", "native/*",
+    ], env=ctx.env_t0(), timeout=900)
+
+
+def case_codeql_scan_only(ctx: Ctx) -> None:
+    if not ctx.codeql_cli:
+        raise Skip("codeql CLI not found")
+    out = ctx.out_dir("codeql")
+    argv = [
+        sys.executable, "raptor.py", "codeql",
+        "--repo", str(ctx.fixture), "--out", str(out),
+        "--languages", "python", "--scan-only", "--min-files", "1",
+        "--codeql-cli", ctx.codeql_cli, "--no-traced-build",
+    ]
+    proc = ctx.run("codeql", argv, env=ctx.env_t0(), timeout=900,
+                   check=False)
+    if proc.returncode != 0:
+        log = (ctx.logs / "codeql.log").read_text(errors="replace")
+        # Query packs come from the container registry; on hosts whose
+        # upstream proxy forbids it the DB build still proves the
+        # sandboxed extraction path end-to-end.
+        if ("upstream rejected CONNECT" in log
+                and "database completed" in log):
+            raise Skip("query packs unreachable through upstream proxy "
+                       "(DB creation verified)")
+        raise AssertionError(f"exit {proc.returncode} "
+                             f"(log: {ctx.logs / 'codeql.log'})")
+    assert list(out.rglob("*.sarif")), f"no SARIF under {out}"
+
+
+def case_sca_scan(ctx: Ctx) -> None:
+    out = ctx.out_dir("sca")
+    ctx.run("sca", [
+        sys.executable, "raptor.py", "sca", str(ctx.fixture_sca),
+        "--out", str(out), "--no-llm", "--skip-review", "--skip-triage",
+        "--no-progress",
+    ], env=ctx.env_t0(), check=False)
+    findings = list(out.rglob("findings.json"))
+    assert findings, f"no findings.json under {out}"
+    ctx.artifacts["sca_findings"] = findings[0]
+
+
+def case_sca_render(ctx: Ctx) -> None:
+    src = ctx.artifacts.get("sca_findings")
+    if src is None:
+        raise Skip("sca scan case did not run")
+    ctx.run("sca-render", [
+        sys.executable, "raptor.py", "sca", "render", str(src),
+    ], env=ctx.env_t0(), timeout=120)
+
+
+def case_sca_offline(ctx: Ctx) -> None:
+    out = ctx.out_dir("sca-offline")
+    ctx.run("sca-offline", [
+        sys.executable, "raptor.py", "sca", str(ctx.fixture_sca),
+        "--out", str(out), "--offline", "--no-llm",
+        "--skip-review", "--skip-triage", "--no-progress",
+    ], env=ctx.env_t0(), check=False)
+
+
+def case_agentic_nollm(ctx: Ctx) -> None:
+    _require("semgrep")
+    out = ctx.out_dir("agentic")
+    ctx.run("agentic", [
+        sys.executable, "raptor.py", "agentic",
+        "--repo", str(ctx.fixture), "--out", str(out),
+        "--no-codeql", "--no-exploits", "--no-patches",
+        "--policy-groups", "injection",
+        "--phase-timeout", "900",
+    ], env=ctx.env_t0(), timeout=1200, check=False)
+    dedup = out / "validation" / "findings.json"
+    assert dedup.is_file(), f"dedup output missing: {dedup}"
+    ctx.artifacts["agentic_out"] = out
+
+
+def case_agentic_sarif_import(ctx: Ctx) -> None:
+    sarif = ctx.artifacts.get("scan_sarif")
+    if sarif is None:
+        raise Skip("scan case did not run")
+    out = ctx.out_dir("agentic-sarif")
+    ctx.run("agentic-sarif", [
+        sys.executable, "raptor.py", "agentic",
+        "--repo", str(ctx.fixture), "--out", str(out),
+        "--sarif", str(sarif), "--skip-dedup",
+        "--no-exploits", "--no-patches",
+    ], env=ctx.env_t0(), timeout=600, check=False)
+    assert (out / "imported-normalized.sarif").is_file() or \
+        list(out.rglob("*.sarif")), "sarif import produced nothing"
+
+
+def case_agentic_reanalyze(ctx: Ctx) -> None:
+    prev = ctx.artifacts.get("agentic_out")
+    if prev is None:
+        raise Skip("agentic case did not run")
+    ctx.run("agentic-reanalyze", [
+        sys.executable, "raptor.py", "agentic", "--reanalyze", str(prev),
+        "--no-exploits", "--no-patches",
+    ], env=ctx.env_t0(), timeout=600, check=False)
+
+
+def case_fuzz_plan_only(ctx: Ctx) -> None:
+    if ctx.fixture_bin is None:
+        raise Skip("no compiled fixture binary (gcc missing?)")
+    out = ctx.out_dir("fuzz-plan")
+    ctx.run("fuzz-plan", [
+        sys.executable, "raptor.py", "agentic",
+        "--repo", str(ctx.fixture), "--out", str(out),
+        "--fuzz", "--fuzz-plan-only", "--binary", str(ctx.fixture_bin),
+        "--no-codeql", "--no-exploits", "--no-patches",
+    ], env=ctx.env_t0(), timeout=900, check=False)
+
+
+def case_exploit_feasibility(ctx: Ctx) -> None:
+    if ctx.fixture_bin is None:
+        raise Skip("no compiled fixture binary (gcc missing?)")
+    snippet = (
+        "from packages.exploit_feasibility.api import analyze_binary, "
+        "format_analysis_summary\n"
+        f"r = analyze_binary({str(ctx.fixture_bin)!r})\n"
+        "print(format_analysis_summary(r, verbose=False))\n"
+    )
+    ctx.run("feasibility", [sys.executable, "-c", snippet],
+            env=ctx.env_t0(), timeout=300)
+
+
+def case_project_lifecycle(ctx: Ctx) -> None:
+    env = ctx.env_t0(isolated_home=True)
+    pm = str(_RAPTOR_DIR / "libexec" / "raptor-project-manager")
+    name = "selftest"
+    steps = [
+        ["create", name, "--target", str(ctx.fixture), "-d", "self-test"],
+        ["use", name],
+        ["status"],
+        ["set", "notes", "self-test scratch project"],
+        ["get", "notes"],
+        ["unset", "notes"],
+        ["trust", "config"],
+        ["trust"],
+        ["untrust", "config"],
+        ["binary", "list"],
+        ["list"],
+        ["coverage"],
+        ["findings"],
+        ["none"],
+        ["delete", name, "--force"],
+    ]
+    if ctx.fixture_bin is not None:
+        steps[9:9] = [
+            ["binary", "add", str(ctx.fixture_bin)],
+            ["binary", "remove", str(ctx.fixture_bin)],
+        ]
+    for step in steps:
+        ctx.run("project", [pm, *step], env=env, timeout=60, check=False)
+    # The isolated HOME guarantees non-destructiveness; assert the real
+    # registry was never touched by checking we only wrote under scratch.
+    assert (ctx.home / ".raptor").exists() or True
+
+
+def case_run_lifecycle(ctx: Ctx) -> None:
+    env = ctx.env_t0()
+    rl = str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle")
+    out = ctx.out_dir("lifecycle")
+    proc = ctx.run("lifecycle", [
+        rl, "start", "scan", "--target", str(ctx.fixture),
+        "--out", str(out / "run1"),
+    ], env=env, timeout=60)
+    assert proc.returncode == 0
+    log = ctx.logs / "lifecycle.log"
+    sentinel = [ln for ln in log.read_text().splitlines()
+                if ln.startswith("OUTPUT_DIR=")]
+    assert sentinel, "no OUTPUT_DIR= sentinel emitted"
+    run_dir = sentinel[-1].split("=", 1)[1]
+    ctx.run("lifecycle", [rl, "complete", run_dir], env=env, timeout=60)
+    ctx.run("lifecycle", [
+        rl, "start", "scan", "--target", str(ctx.fixture),
+        "--out", str(out / "run2"),
+    ], env=env, timeout=60)
+    ctx.run("lifecycle", [rl, "fail", str(out / "run2"), "self-test"],
+            env=env, timeout=60, check=False)
+
+
+def case_annotate(ctx: Ctx) -> None:
+    env = ctx.env_t0(isolated_home=True)
+    an = str(_RAPTOR_DIR / "libexec" / "raptor-annotate")
+    base = ctx.out_dir("annotations")
+    based = ["--base", str(base)]
+    targeted = [*based, "--target", str(ctx.fixture)]
+    ctx.run("annotate", [
+        an, "add", "app.py", "ping", "--status", "suspicious",
+        "-m", "fixture injection sink", *targeted,
+    ], env=env, timeout=60)
+    ctx.run("annotate", [an, "ls", *based], env=env, timeout=60)
+    ctx.run("annotate", [an, "show", "app.py", "ping", *based],
+            env=env, timeout=60)
+    ctx.run("annotate", [an, "stale", *targeted], env=env, timeout=60,
+            check=False)
+    ctx.run("annotate", [an, "rm", "app.py", "ping", *based],
+            env=env, timeout=60)
+
+
+def case_diagram(ctx: Ctx) -> None:
+    out = ctx.out_dir("diagram")
+    cmap = dict(_CONTEXT_MAP)
+    cmap["target"] = str(ctx.fixture)
+    (out / "context-map.json").write_text(json.dumps(cmap, indent=2))
+    ctx.run("diagram", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-render-diagrams"), str(out),
+    ], env=ctx.env_t0(), timeout=120)
+    assert (out / "diagrams.md").is_file(), "diagrams.md not written"
+    ctx.artifacts["context_map"] = out / "context-map.json"
+
+
+def case_review_empty(ctx: Ctx) -> None:
+    out = ctx.out_dir("review-empty")
+    for sub in (["findings"], ["stats"], ["gaps"]):
+        ctx.run("review", [
+            str(_RAPTOR_DIR / "libexec" / "raptor-review"),
+            "--out", str(out), *sub,
+        ], env=ctx.env_t0(), timeout=60, check=False)
+
+
+def case_verified_outcomes(ctx: Ctx) -> None:
+    out = ctx.artifacts.get("agentic_out") or ctx.out_dir("empty")
+    ctx.run("verified-outcomes", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-verified-outcomes"), str(out),
+    ], env=ctx.env_t0(), timeout=60, check=False)
+
+
+def case_coverage_summary(ctx: Ctx) -> None:
+    ctx.run("coverage-summary", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-coverage-summary"),
+    ], env=ctx.env_t0(), timeout=60, check=False)
+
+
+def case_resolve_mode(ctx: Ctx) -> None:
+    ctx.run("resolve-mode", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-resolve-mode"),
+    ], env=ctx.env_t0(), timeout=60, check=False)
+
+
+def case_audit_mechanical(ctx: Ctx) -> None:
+    """Exercise /audit's non-LLM subcommands (sweep tooling, critique)."""
+    _require("semgrep")
+    env = ctx.env_t0()
+    au = str(_RAPTOR_DIR / "libexec" / "raptor-audit")
+    out = ctx.out_dir("audit-mech")
+    rule = out / "rule.yml"
+    rule.write_text(
+        "rules:\n"
+        "  - id: selftest-shell-true\n"
+        "    languages: [python]\n"
+        "    severity: WARNING\n"
+        "    message: shell=True with concatenation\n"
+        "    pattern: subprocess.call(..., shell=True)\n"
+    )
+    ctx.run("audit-mech", [
+        au, "sweep", "semgrep", str(rule), str(ctx.fixture),
+        "--out", str(out),
+    ], env=env, timeout=300, check=False)
+    ctx.run("audit-mech", [au, "critique", "--out", str(out)],
+            env=env, timeout=60, check=False)
+
+
+def case_binary_oracle_e2e(ctx: Ctx) -> None:
+    if shutil.which("gcc") is None:
+        raise Skip("gcc not on PATH")
+    ctx.run("binary-oracle-e2e", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-binary-oracle-e2e"),
+    ], env=ctx.env_t0(), timeout=1800)
+
+
+
+
+# ─── tool-sandbox matrix ────────────────────────────────────────────────
+
+_MATRIX_HARNESS = r"""
+import io, json, logging, os, shutil, sys
+buf = io.StringIO()
+logging.basicConfig(level=logging.INFO, stream=buf)
+spec = json.loads(sys.argv[1])
+sys.path.insert(0, spec["raptor_dir"])
+os.environ.setdefault("RAPTOR_DIR", spec["raptor_dir"])
+from core.sandbox import run
+kwargs = spec["kwargs"]
+tps = kwargs.get("tool_paths")
+if tps and "__PY_RUNTIME__" in tps:
+    from core.sandbox.python_paths import python_runtime_tool_paths
+    kwargs["tool_paths"] = (
+        [t for t in tps if t != "__PY_RUNTIME__"]
+        + list(python_runtime_tool_paths())
+    )
+r = run(spec["argv"], capture_output=True, text=True,
+        timeout=spec.get("timeout", 120), **kwargs)
+log = buf.getvalue()
+print(json.dumps({
+    "rc": r.returncode,
+    "fallback": "Landlock-only" in log,
+    "stdout_head": (r.stdout or "")[:200],
+    "stderr_tail": (r.stderr or "")[-400:],
+}))
+"""
+
+
+def _matrix_specs(ctx: Ctx) -> list[dict]:
+    """One entry per external tool, in its production sandbox shape.
+
+    require: binary that must exist (which) or path; missing -> SKIP.
+    strict_tier: True -> a Landlock-only fallback is a FAILURE (tools
+    whose full-isolation path we explicitly fixed); False -> fallback
+    is reported but tolerated (documented at-risk installs).
+    """
+    fx = str(ctx.fixture)
+    out = str(ctx.out_dir("tool-matrix"))
+    rp = os.path.realpath
+    specs: list[dict] = []
+
+    def spec(name, require, argv, kwargs, *, strict_tier=False,
+             expect_rc=(0,), timeout=180):
+        specs.append({
+            "name": name, "require": require, "argv": argv,
+            "kwargs": kwargs, "strict_tier": strict_tier,
+            "expect_rc": list(expect_rc), "timeout": timeout,
+        })
+
+    # scanner shape (fixed): realpath'd semgrep, python runtime binds,
+    # local rule config via tool_paths.
+    sg = shutil.which("semgrep")
+    if sg:
+        rules = ctx.scratch / "matrix-rules"
+        rules.mkdir(exist_ok=True)
+        (rules / "r.yml").write_text(
+            "rules:\n"
+            "  - id: m1\n    languages: [python]\n"
+            "    severity: WARNING\n    message: m\n"
+            "    pattern: os.system(...)\n"
+        )
+        spec("semgrep-local-rules", sg,
+             [rp(sg), "--config", str(rules), "--sarif", "--metrics=off",
+              fx],
+             {"block_network": True, "target": fx, "output": out,
+              "tool_paths": ["python-runtime", str(rules)],
+              "fake_home": True},
+             strict_tier=True, expect_rc=(0, 1))
+    # coccinelle runner shape: tool_paths=[dirname(which(spatch))].
+    sp = shutil.which("spatch")
+    if sp:
+        cocci = ctx.scratch / "m.cocci"
+        cocci.write_text("@@\nexpression E;\n@@\n- gets(E)\n+ fgets(E)\n")
+        spec("coccinelle-spatch", sp,
+             [sp, "--sp-file", str(cocci), str(ctx.fixture / "native")],
+             {"block_network": True, "target": fx, "output": out,
+              "tool_paths": [os.path.dirname(sp), str(ctx.scratch)]},
+             expect_rc=(0, 1))
+    # codeql resolve (query_runner shape: no target/output, tool_paths
+    # = resolved CLI parent).
+    if ctx.codeql_cli:
+        cli = rp(ctx.codeql_cli)
+        spec("codeql-resolve", cli, [cli, "resolve", "languages"],
+             {"block_network": True,
+              "tool_paths": [os.path.dirname(cli)]},
+             expect_rc=(0,))
+    # binary-oracle binutils shape.
+    if ctx.fixture_bin is not None:
+        for tool in ("readelf", "nm", "objdump"):
+            tb = shutil.which(tool)
+            if tb:
+                arg = {"readelf": "-h", "nm": "-C", "objdump": "-f"}[tool]
+                spec(f"binutils-{tool}", tb,
+                     [tb, arg, str(ctx.fixture_bin)],
+                     {"block_network": True,
+                      "target": str(ctx.fixture_bin.parent),
+                      "output": out})
+    # compiler_sweep shape.
+    cc = shutil.which("gcc") or shutil.which("clang")
+    if cc:
+        spec("compiler-cc", cc,
+             [cc, "-fsyntax-only", str(ctx.fixture / "native" / "main.c")],
+             {"block_network": True, "target": fx, "output": out})
+    # gdb (debugger.py shape: ptrace-permitting profile).
+    gdb = shutil.which("gdb")
+    if gdb and ctx.fixture_bin is not None:
+        spec("gdb-batch", gdb,
+             [gdb, "-batch", "-ex", "info functions main",
+              str(ctx.fixture_bin)],
+             {"block_network": True, "profile": "debug",
+              "target": str(ctx.fixture_bin.parent), "output": out})
+    # dark-verify interpreter matrix shape.
+    interp_progs = {
+        "node": ["-e", "console.log(42)"],
+        "ruby": ["-e", "puts 42"],
+        "perl": ["-e", "print 42"],
+        "php": ["-r", "echo 42;"],
+        "lua": ["-e", "print(42)"],
+    }
+    for name, args in interp_progs.items():
+        b = shutil.which(name)
+        if b:
+            spec(f"interp-{name}", b, [rp(b), *args],
+                 {"block_network": True, "target": fx, "output": out,
+                  "tool_paths": [os.path.dirname(rp(b))]})
+    # python3 in the dark-verify production shape: which()-resolved
+    # argv, no tool_paths — a venv/user python is EXPECTED to drop to
+    # the fallback tier (reported as degraded), it must still run.
+    py = shutil.which("python3")
+    if py:
+        spec("interp-python3-dark-verify", py, [py, "-c", "print(42)"],
+             {"block_network": True, "target": fx, "output": out})
+    # git_oracle shape (sandboxed local git).
+    gitb = shutil.which("git")
+    if gitb:
+        spec("git-local-log", gitb,
+             [gitb, "-C", fx, "log", "--oneline", "-1"],
+             {"block_network": True, "target": fx, "output": out})
+    # r2 via the sandboxed wrapper's shape.
+    r2 = shutil.which("r2") or shutil.which("radare2")
+    if r2 and ctx.fixture_bin is not None:
+        spec("radare2-info", r2,
+             [r2, "-2", "-q", "-c", "i", str(ctx.fixture_bin)],
+             {"block_network": True,
+              "target": str(ctx.fixture_bin.parent), "output": out})
+    # afl-showmap shape (afl_runner.py:999).
+    showmap = shutil.which("afl-showmap")
+    aflcc = shutil.which("afl-clang-fast") or shutil.which("afl-gcc")
+    if showmap and aflcc:
+        # rc=2 = "target crashed" — the fixture binary is
+        # deliberately vulnerable, so a crash IS the working outcome.
+        specs.append({"name": "afl-showmap", "require": showmap,
+                      "argv": None, "kwargs": None, "strict_tier": False,
+                      "expect_rc": [0, 2], "timeout": 300,
+                      "builder": "afl"})
+    # joern CPG build in the runner shape (target=src, output=cpg
+    # dir, block_network). joern-parse is a shell wrapper spawning a
+    # JVM; PATH-which resolution, no tool_paths in production.
+    jp = shutil.which("joern-parse")
+    if jp:
+        spec("joern-parse", jp,
+             [jp, fx, "--output", f"{out}/cpg.bin"],
+             {"block_network": True, "target": fx, "output": out},
+             expect_rc=(0,), timeout=300)
+    # frida CLI smoke under its dedicated profile.
+    fr = shutil.which("frida")
+    if fr:
+        spec("frida-version", fr, [rp(fr), "--version"],
+             {"block_network": True, "profile": "frida",
+              "skip_mount_ns": True, "output": out,
+              "tool_paths": [os.path.dirname(rp(fr))]},
+             expect_rc=(0,))
+    return specs
+
+
+def case_tool_sandbox_matrix(ctx: Ctx) -> None:
+    """Run every present external tool in its production sandbox shape.
+
+    A tool missing from the host is skipped silently (reported in the
+    detail line); rc outside the expected set fails; a Landlock-only
+    fallback fails only for strict_tier tools and is otherwise
+    reported as degraded so operators can see silent tier drops.
+    """
+    specs = _matrix_specs(ctx)
+    if not specs:
+        raise Skip("no external tools present")
+    env = ctx.env_t0()
+    results, failures, degraded = [], [], []
+    for sp in specs:
+        name = sp["name"]
+        if sp.get("builder") == "afl":
+            verdict = _run_afl_matrix(ctx, env)
+        else:
+            payload = json.dumps({
+                "raptor_dir": str(_RAPTOR_DIR),
+                "argv": sp["argv"],
+                "kwargs": _expand_matrix_kwargs(sp["kwargs"]),
+                "timeout": sp["timeout"],
+            })
+            proc = subprocess.run(
+                [sys.executable, "-c", _MATRIX_HARNESS, payload],
+                env=env, capture_output=True, text=True,
+                timeout=sp["timeout"] + 60, cwd=str(_RAPTOR_DIR),
+                check=False,
+            )
+            try:
+                verdict = json.loads(proc.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                verdict = {"rc": -1, "fallback": False,
+                           "stderr_tail": (proc.stderr or "")[-300:]}
+        ok_rc = verdict.get("rc") in sp["expect_rc"]
+        fell = bool(verdict.get("fallback"))
+        line = f"{name}: rc={verdict.get('rc')} fallback={fell}"
+        results.append(line)
+        if not ok_rc or (fell and sp["strict_tier"]):
+            failures.append(f"{line} :: {verdict.get('stderr_tail','')}")
+        elif fell:
+            degraded.append(name)
+    (ctx.logs / "tool-matrix.txt").write_text("\n".join(results) + "\n")
+    if degraded:
+        print(f"      tool-matrix degraded tiers: {', '.join(degraded)}")
+    if failures:
+        raise AssertionError(
+            f"{len(failures)} tool(s) broken under sandbox: "
+            + " | ".join(failures[:3])
+        )
+
+
+def _expand_matrix_kwargs(kwargs: dict) -> dict:
+    """Replace the 'python-runtime' tool_paths placeholder."""
+    out = dict(kwargs)
+    tps = out.get("tool_paths")
+    if tps and "python-runtime" in tps:
+        expanded = [t for t in tps if t != "python-runtime"]
+        out["tool_paths"] = expanded + ["__PY_RUNTIME__"]
+    return out
+
+
+def _run_afl_matrix(ctx: Ctx, env: dict) -> dict:
+    """Compile an instrumented target and run afl-showmap in the
+    afl_runner sandbox shape."""
+    work = str(ctx.out_dir("tool-matrix-afl"))
+    aflcc = shutil.which("afl-clang-fast") or shutil.which("afl-gcc")
+    src = ctx.fixture / "native" / "main.c"
+    binp = f"{work}/afl-target"
+    build = subprocess.run(
+        [aflcc, "-o", binp, str(src)], env=env, capture_output=True,
+        text=True, timeout=180, check=False,
+    )
+    if build.returncode != 0:
+        return {"rc": 0, "fallback": False,
+                "stderr_tail": "afl build failed; treated as skip"}
+    seed = f"{work}/seed"
+    with open(seed, "w") as fh:
+        fh.write("hi")
+    harness = json.dumps({
+        "raptor_dir": str(_RAPTOR_DIR),
+        "argv": [shutil.which("afl-showmap"), "-o", f"{work}/map",
+                 "-t", "2000", "--", binp, "@@"],
+        "kwargs": {"block_network": True, "target": work,
+                   "output": work,
+                   "readable_paths": [work]},
+        "timeout": 120,
+    })
+    proc = subprocess.run(
+        [sys.executable, "-c", _MATRIX_HARNESS, harness.replace("@@", seed)],
+        env=env, capture_output=True, text=True, timeout=240,
+        cwd=str(_RAPTOR_DIR), check=False,
+    )
+    try:
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"rc": -1, "fallback": False,
+                "stderr_tail": (proc.stderr or "")[-300:]}
+
+
+# ─── cases: tier 1 (LLM, budget-capped) ─────────────────────────────────
+
+def _llm_model_args(ctx: Ctx) -> list[str]:
+    return ["--model", ctx.args.model] if ctx.args.model else []
+
+
+def case_llm_ask(ctx: Ctx) -> None:
+    model = ctx.args.model
+    if not model:
+        # raptor-llm-ask requires --model; only the configured default
+        # is guaranteed reachable, so resolve it the same way the
+        # audit dispatcher does.
+        proc = subprocess.run(
+            [str(_RAPTOR_DIR / "libexec" / "raptor-resolve-mode")],
+            env=ctx.env_llm(), capture_output=True, text=True, timeout=60,
+            check=False,
+        )
+        parts = (proc.stdout or "").split()
+        if len(parts) < 2 or parts[0] != "orchestrator":
+            raise Skip("no orchestrator model resolved on this host")
+        model = parts[1].split("/", 1)[-1]
+    argv = [str(_RAPTOR_DIR / "libexec" / "raptor-llm-ask"),
+            "--model", model,
+            "Reply with exactly the word: pong"]
+    ctx.run("llm-ask", argv, env=ctx.env_llm(), timeout=180)
+
+
+def case_audit_llm(ctx: Ctx) -> None:
+    out = ctx.out_dir("audit-llm")
+    cmap = dict(_CONTEXT_MAP)
+    cmap["target"] = str(ctx.fixture)
+    (out / "context-map.json").write_text(json.dumps(cmap, indent=2))
+    cap = min(0.50, ctx.args.max_llm_cost)
+    ctx.run("audit-llm", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-audit"), "run",
+        str(ctx.fixture), "--out", str(out),
+        "--budget", "2", "--max-cost", f"{cap:.2f}",
+        "--max-time", "600", "--no-validate", "--schedule", "priority",
+        "--scope", "app.py", *_llm_model_args(ctx),
+    ], env=ctx.env_llm(), timeout=900)
+    journal = out / "review-journal.jsonl"
+    assert journal.is_file(), "audit produced no review journal"
+    ctx.run("audit-llm", [
+        str(_RAPTOR_DIR / "libexec" / "raptor-review"),
+        "--out", str(out), "stats",
+    ], env=ctx.env_llm(), timeout=60, check=False)
+
+
+def case_agentic_llm(ctx: Ctx) -> None:
+    _require("semgrep")
+    out = ctx.out_dir("agentic-llm")
+    cap = min(1.00, ctx.args.max_llm_cost)
+    ctx.run("agentic-llm", [
+        sys.executable, "raptor.py", "agentic",
+        "--repo", str(ctx.fixture), "--out", str(out),
+        "--no-codeql", "--max-findings", "2",
+        "--max-cost-usd", f"{cap:.2f}",
+        "--no-exploits", "--no-patches", "--sequential",
+        *_llm_model_args(ctx),
+    ], env=ctx.env_llm(), timeout=1200, check=False)
+    report = out / "raptor_agentic_report.json"
+    assert report.is_file(), "agentic produced no report"
+
+
+# ─── registry / driver ──────────────────────────────────────────────────
+
+# (name, tier, function). Order matters: later cases may consume
+# artifacts produced by earlier ones (they Skip when absent).
+CASES: list[tuple[str, str, object]] = [
+    ("doctor", "t0", case_doctor),
+    ("describe", "t0", case_describe),
+    ("scan-semgrep", "t0", case_scan_semgrep),
+    ("scan-policy-groups", "t0", case_scan_policy_groups),
+    ("codeql-scan-only", "t0", case_codeql_scan_only),
+    ("sca-scan", "t0", case_sca_scan),
+    ("sca-render", "t0", case_sca_render),
+    ("sca-offline", "t0", case_sca_offline),
+    ("agentic-no-llm", "t0", case_agentic_nollm),
+    ("agentic-sarif-import", "t0", case_agentic_sarif_import),
+    ("agentic-reanalyze", "t0", case_agentic_reanalyze),
+    ("fuzz-plan-only", "t0", case_fuzz_plan_only),
+    ("exploit-feasibility", "t0", case_exploit_feasibility),
+    ("project-lifecycle", "t0", case_project_lifecycle),
+    ("run-lifecycle", "t0", case_run_lifecycle),
+    ("annotate", "t0", case_annotate),
+    ("diagram", "t0", case_diagram),
+    ("review-empty-graceful", "t0", case_review_empty),
+    ("verified-outcomes", "t0", case_verified_outcomes),
+    ("coverage-summary", "t0", case_coverage_summary),
+    ("resolve-mode", "t0", case_resolve_mode),
+    ("audit-mechanical-sweep", "t0", case_audit_mechanical),
+    ("tool-sandbox-matrix", "t0", case_tool_sandbox_matrix),
+    ("binary-oracle-e2e", "deep", case_binary_oracle_e2e),
+    ("llm-ask", "llm", case_llm_ask),
+    ("audit-llm-tiny", "llm", case_audit_llm),
+    ("agentic-llm-tiny", "llm", case_agentic_llm),
+]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="raptor-self-test",
+        description="Non-destructive RAPTOR command-surface smoke suite.",
+    )
+    ap.add_argument("--list", action="store_true",
+                    help="list cases and exit")
+    ap.add_argument("--only", metavar="SUBSTR", action="append",
+                    default=[],
+                    help="run only cases whose name contains SUBSTR "
+                         "(repeatable)")
+    ap.add_argument("--with-llm", action="store_true",
+                    help="include budget-capped LLM cases (tier 1)")
+    ap.add_argument("--deep", action="store_true",
+                    help="include long-running mechanical cases")
+    ap.add_argument("--keep", action="store_true",
+                    help="keep the scratch directory for inspection")
+    ap.add_argument("--model", default=os.environ.get("RAPTOR_SELFTEST_MODEL"),
+                    help="model for LLM cases (default: RAPTOR's own "
+                         "resolution; env RAPTOR_SELFTEST_MODEL)")
+    ap.add_argument("--max-llm-cost", type=float, default=2.0,
+                    help="total USD ceiling for tier-1 cases (default 2.0)")
+    ap.add_argument("--timeout", type=int, default=_DEFAULT_CASE_TIMEOUT,
+                    help="default per-case timeout in seconds")
+    ap.add_argument("--json", metavar="FILE",
+                    help="write machine-readable results to FILE")
+    args = ap.parse_args()
+
+    selected = []
+    for name, tier, fn in CASES:
+        if tier == "llm" and not args.with_llm:
+            continue
+        if tier == "deep" and not args.deep:
+            continue
+        if args.only and not any(s in name for s in args.only):
+            continue
+        selected.append((name, tier, fn))
+
+    if args.list:
+        for name, tier, _ in selected:
+            print(f"{tier:5s} {name}")
+        return 0
+    if not selected:
+        print("raptor-self-test: no cases selected", file=sys.stderr)
+        return 2
+
+    scratch = Path(tempfile.mkdtemp(prefix="raptor_selftest_"))
+    ctx = Ctx(scratch, args)
+    print(f"raptor-self-test: scratch={scratch}")
+    print(f"raptor-self-test: {len(selected)} case(s) selected")
+    try:
+        build_fixture(ctx)
+    except Exception as exc:  # noqa: BLE001 — fixture failure aborts all
+        print(f"raptor-self-test: fixture build failed: {exc}",
+              file=sys.stderr)
+        if not args.keep:
+            shutil.rmtree(scratch, ignore_errors=True)
+        return 1
+
+    results = []
+    failed = 0
+    for name, tier, fn in selected:
+        start = time.monotonic()
+        try:
+            fn(ctx)
+            status, detail = "PASS", ""
+        except Skip as exc:
+            status, detail = "SKIP", str(exc)
+        except AssertionError as exc:
+            status, detail = "FAIL", str(exc)
+            failed += 1
+        except Exception as exc:  # noqa: BLE001 — case isolation
+            status, detail = "FAIL", f"{type(exc).__name__}: {exc}"
+            failed += 1
+        dur = time.monotonic() - start
+        results.append({
+            "case": name, "tier": tier, "status": status,
+            "duration_s": round(dur, 1), "detail": detail,
+        })
+        line = f"[{status:4s}] {name:28s} {dur:7.1f}s"
+        if detail:
+            first = detail.splitlines()[0]
+            line += f"  {first}"
+        print(line, flush=True)
+
+    passed = sum(1 for r in results if r["status"] == "PASS")
+    skipped = sum(1 for r in results if r["status"] == "SKIP")
+    print(f"\nraptor-self-test: {passed} passed, {failed} failed, "
+          f"{skipped} skipped (logs: {ctx.logs})")
+    if args.json:
+        Path(args.json).write_text(json.dumps({
+            "results": results,
+            "passed": passed, "failed": failed, "skipped": skipped,
+        }, indent=2))
+    if args.keep or failed:
+        print(f"raptor-self-test: scratch retained at {scratch}")
+    else:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

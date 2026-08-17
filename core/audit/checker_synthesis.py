@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class SynthesisResult:
     cwe: str
     origin_file: str
     origin_function: str
-    hits: List[Dict[str, Any]] = field(default_factory=list)
+    hits: list[dict[str, Any]] = field(default_factory=list)
     cost_usd: float = 0.0
 
 
@@ -65,7 +65,7 @@ def _build_llm_callable(config: Any):
     if not hasattr(client, "generate_structured"):
         return None
 
-    def _call(prompt: str, schema: Dict[str, Any], system_prompt: str):
+    def _call(prompt: str, schema: dict[str, Any], system_prompt: str):
         try:
             data, _full = client.generate_structured(
                 prompt=prompt,
@@ -77,14 +77,14 @@ def _build_llm_callable(config: Any):
                 timeout_s=SYNTHESIS_TIMEOUT_S,
             )
             return data
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — any transport failure degrades to no-synthesis
             logger.debug("checker_synthesis LLM call failed: %s", exc)
             return None
 
     return _call, client
 
 
-def _seed_from_outcome(outcome: Any) -> Optional[Any]:
+def _seed_from_outcome(outcome: Any) -> Any | None:
     """Build a ``SeedBug`` from a /audit ``ReviewOutcome``.
     Returns None when the outcome lacks the fields needed for synthesis."""
     from packages.checker_synthesis import SeedBug
@@ -120,11 +120,11 @@ def _seed_from_outcome(outcome: Any) -> Optional[Any]:
 def synthesize_and_sweep(
     outcome: Any,
     config: Any,
-    seen_keys: Set[str],
+    seen_keys: set[str],
     *,
     synthesis_count: int = 0,
     max_per_run: int = MAX_SYNTHESIS_PER_RUN,
-) -> Optional[SynthesisResult]:
+) -> SynthesisResult | None:
     """Synthesise a checker from a confirmed finding and sweep the codebase.
 
     Delegates to ``packages.checker_synthesis.synthesise_with_refinement``
@@ -227,6 +227,7 @@ def synthesize_and_sweep(
                 out_dir=Path(out_dir),
                 llm=llm_callable,
                 max_matches=MAX_SWEEP_HITS_PER_RULE,
+                model_id=getattr(llm_client, "model_name", "") or "",
             )
         except Exception:
             logger.warning(

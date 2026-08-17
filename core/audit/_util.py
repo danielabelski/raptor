@@ -290,3 +290,46 @@ def format_progress_line(idx: int, total: int, outcome: Any) -> str:
         f"  [{idx + 1}/{total}] {outcome.file}:{outcome.function} "
         f"→ {outcome.status} {glyph}"
     )
+
+
+def envelope_prompt(
+    system: str,
+    blocks: Any,
+    slots: dict[str, Any] | None = None,
+    *,
+    model_id: str = "",
+) -> tuple[str, str]:
+    """Build a ``(user, system)`` message pair via the prompt envelope.
+
+    Canonical construction for the auxiliary /audit LLM calls
+    (summaries, glance batches, classification, chain evaluation,
+    dark-verify witness generation): trusted instructions in the
+    system message, target-/LLM-derived content in ``UntrustedBlock``
+    envelopes, identifiers in slots.  The per-model defence profile is
+    resolved the same way sibling callsites do — ``get_profile_for``
+    when the model is known, CONSERVATIVE otherwise.
+
+    ``blocks`` is an iterable of ``UntrustedBlock``; ``slots`` maps
+    slot names to ``TaintedString`` values.  The returned pair plugs
+    straight into ``LLMClient.generate(user, system_prompt=system)``.
+    """
+    from core.security.prompt_defense_profiles import (
+        CONSERVATIVE,
+        get_profile_for,
+    )
+    from core.security.prompt_envelope import build_prompt
+
+    profile = get_profile_for(model_id) if model_id else CONSERVATIVE
+    bundle = build_prompt(
+        system=system,
+        profile=profile,
+        untrusted_blocks=tuple(blocks),
+        slots=slots or None,
+    )
+    user = "\n\n".join(
+        m.content for m in bundle.messages if m.role == "user"
+    )
+    system_text = next(
+        (m.content for m in bundle.messages if m.role == "system"), "",
+    )
+    return user, system_text

@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +36,14 @@ class InferredSpec:
     function: str
     file: str
     intent: str = ""
-    preconditions: List[str] = field(default_factory=list)
-    postconditions: List[str] = field(default_factory=list)
-    invariants: List[str] = field(default_factory=list)
-    negative_specs: List[str] = field(default_factory=list)
-    sources: List[SpecSource] = field(default_factory=list)
+    preconditions: list[str] = field(default_factory=list)
+    postconditions: list[str] = field(default_factory=list)
+    invariants: list[str] = field(default_factory=list)
+    negative_specs: list[str] = field(default_factory=list)
+    sources: list[SpecSource] = field(default_factory=list)
 
 
-_NAME_INTENT: List[tuple] = [
+_NAME_INTENT: list[tuple] = [
     (re.compile(r"^(?:validate|verify|check)_"), "validates", "high"),
     (re.compile(r"^sanitize_|^clean_|^escape_"), "sanitizes input for", "high"),
     (re.compile(r"^parse_|^decode_|^deserialize_"), "parses/decodes", "high"),
@@ -64,7 +64,7 @@ _NAME_INTENT: List[tuple] = [
     (re.compile(r"^recv_|^receive_|^consume_|^subscribe_"), "receives", "medium"),
 ]
 
-_PARAM_PRECONDITIONS: List[tuple] = [
+_PARAM_PRECONDITIONS: list[tuple] = [
     (re.compile(r"__user\b"), "pointer is user-space (must copy_from_user)"),
     (re.compile(r"\bsize_t\b.*\blen\b|\bsize_t\b.*\bsize\b|\bsize_t\b.*\bcount\b"),
      "length parameter must be bounds-checked"),
@@ -75,7 +75,7 @@ _PARAM_PRECONDITIONS: List[tuple] = [
      "buffer/length pair — length must not exceed buffer size"),
 ]
 
-_ATTR_INVARIANTS: Dict[str, str] = {
+_ATTR_INVARIANTS: dict[str, str] = {
     "__must_check": "return value must be checked by caller",
     "warn_unused_result": "return value must be checked by caller",
     "nodiscard": "return value must be checked by caller",
@@ -95,7 +95,7 @@ _ATTR_INVARIANTS: Dict[str, str] = {
     "malloc": "returned pointer must be freed by caller",
 }
 
-_NEGATIVE_KEYWORDS: Dict[str, str] = {
+_NEGATIVE_KEYWORDS: dict[str, str] = {
     "password": "must NOT log or store in plaintext",
     "secret": "must NOT log or store in plaintext",
     "token": "must NOT log or expose in error messages",
@@ -110,10 +110,10 @@ _NEGATIVE_KEYWORDS: Dict[str, str] = {
 
 
 def infer_spec_mechanical(
-    gap: Dict[str, Any],
-    checklist: Optional[Dict[str, Any]] = None,
-    tests: Optional[Dict[str, Any]] = None,
-    summaries: Optional[Dict[str, Any]] = None,
+    gap: dict[str, Any],
+    checklist: dict[str, Any] | None = None,
+    tests: dict[str, Any] | None = None,
+    summaries: dict[str, Any] | None = None,
 ) -> InferredSpec:
     """Infer a function's specification from mechanical signals only."""
     file_path = gap.get("file", "")
@@ -134,7 +134,7 @@ def infer_spec_mechanical(
 
 
 def should_infer_with_llm(
-    gap: Dict[str, Any],
+    gap: dict[str, Any],
     triage_bucket: str,
     is_entry_point: bool = False,
     is_sink: bool = False,
@@ -151,10 +151,7 @@ def should_infer_with_llm(
         return True
 
     strategy = gap.get("strategy", "")
-    if strategy in ("auth", "crypto", "privilege", "injection"):
-        return True
-
-    return False
+    return strategy in ("auth", "crypto", "privilege", "injection")
 
 
 def format_spec_for_context(spec: InferredSpec) -> str:
@@ -221,7 +218,7 @@ def _infer_from_name(spec: InferredSpec, name: str) -> None:
             return
 
 
-def _infer_from_params(spec: InferredSpec, gap: Dict[str, Any]) -> None:
+def _infer_from_params(spec: InferredSpec, gap: dict[str, Any]) -> None:
     """Infer preconditions from parameter types and names."""
     params = gap.get("params", [])
     signature = gap.get("signature", "")
@@ -240,7 +237,7 @@ def _infer_from_params(spec: InferredSpec, gap: Dict[str, Any]) -> None:
             ))
 
 
-def _infer_from_attributes(spec: InferredSpec, gap: Dict[str, Any]) -> None:
+def _infer_from_attributes(spec: InferredSpec, gap: dict[str, Any]) -> None:
     """Infer invariants from function attributes and annotations."""
     attrs = gap.get("attributes", [])
     if isinstance(attrs, str):
@@ -259,7 +256,7 @@ def _infer_from_attributes(spec: InferredSpec, gap: Dict[str, Any]) -> None:
                 break
 
 
-def _infer_from_docstring(spec: InferredSpec, gap: Dict[str, Any]) -> None:
+def _infer_from_docstring(spec: InferredSpec, gap: dict[str, Any]) -> None:
     """Extract preconditions and postconditions from docstrings."""
     docstring = gap.get("docstring", "") or ""
     if not docstring:
@@ -303,7 +300,7 @@ def _infer_from_docstring(spec: InferredSpec, gap: Dict[str, Any]) -> None:
 def _infer_from_tests(
     spec: InferredSpec,
     function_name: str,
-    tests: Optional[Dict[str, Any]],
+    tests: dict[str, Any] | None,
 ) -> None:
     """Extract postconditions from test assertions."""
     if not tests:
@@ -333,8 +330,8 @@ def _infer_from_tests(
 def _infer_from_caller_usage(
     spec: InferredSpec,
     function_name: str,
-    checklist: Optional[Dict[str, Any]],
-    summaries: Optional[Dict[str, Any]],
+    checklist: dict[str, Any] | None,
+    summaries: dict[str, Any] | None,
 ) -> None:
     """Infer spec from how callers use the return value."""
     if not checklist:
@@ -382,7 +379,7 @@ def _infer_from_caller_usage(
 def _infer_negative_specs(
     spec: InferredSpec,
     function_name: str,
-    gap: Dict[str, Any],
+    gap: dict[str, Any],
 ) -> None:
     """Infer what the function must NOT do based on its domain."""
     combined = f"{function_name} {gap.get('params', '')} {gap.get('source', '')}"
@@ -399,7 +396,7 @@ def _infer_negative_specs(
                 ))
 
 
-_ASSERTION_PATTERNS: List[tuple] = [
+_ASSERTION_PATTERNS: list[tuple] = [
     (re.compile(r"\bBUG_ON\s*\((.+?)\)"), "invariant"),
     (re.compile(r"\bWARN_ON\s*\((.+?)\)"), "postcondition"),
     (re.compile(r"\bBUILD_BUG_ON\s*\((.+?)\)"), "compile_time_invariant"),
@@ -419,7 +416,7 @@ _ASSERTION_PATTERNS: List[tuple] = [
 
 def _infer_from_assertions(
     spec: InferredSpec,
-    gap: Dict[str, Any],
+    gap: dict[str, Any],
 ) -> None:
     """Extract preconditions/invariants from assertion macros."""
     source = gap.get("source", "")
@@ -429,7 +426,7 @@ def _infer_from_assertions(
     line_start = gap.get("line_start", 0)
     for i, line in enumerate(source.splitlines()):
         stripped = line.strip()
-        if stripped.startswith("//") or stripped.startswith("/*"):
+        if stripped.startswith(("//", "/*")):
             continue
         for pattern, kind in _ASSERTION_PATTERNS:
             m = pattern.search(stripped)
@@ -464,7 +461,7 @@ class PreconditionVerification:
     violated_sites: int
     unknown_sites: int
     is_universally_satisfied: bool = False
-    evidence: List[Dict[str, str]] = field(default_factory=list)
+    evidence: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def verification_rate(self) -> float:
@@ -475,9 +472,9 @@ class PreconditionVerification:
 
 def verify_preconditions_at_call_sites(
     spec: InferredSpec,
-    callers: List[Dict[str, Any]],
-    checklist: Optional[Dict[str, Any]] = None,
-) -> List[PreconditionVerification]:
+    callers: list[dict[str, Any]],
+    checklist: dict[str, Any] | None = None,
+) -> list[PreconditionVerification]:
     """Cross-reference preconditions against call sites.
 
     For each precondition, checks whether all callers satisfy it.
@@ -486,7 +483,7 @@ def verify_preconditions_at_call_sites(
     if not spec.preconditions or not callers:
         return []
 
-    results: List[PreconditionVerification] = []
+    results: list[PreconditionVerification] = []
     for precond in spec.preconditions:
         v = _verify_one_precondition(precond, callers, checklist)
         results.append(v)
@@ -495,14 +492,14 @@ def verify_preconditions_at_call_sites(
 
 def _verify_one_precondition(
     precondition: str,
-    callers: List[Dict[str, Any]],
-    checklist: Optional[Dict[str, Any]],
+    callers: list[dict[str, Any]],
+    checklist: dict[str, Any] | None,
 ) -> PreconditionVerification:
     """Check one precondition against all known callers."""
     verified = 0
     violated = 0
     unknown = 0
-    evidence: List[Dict[str, str]] = []
+    evidence: list[dict[str, str]] = []
 
     check_type = _classify_precondition(precondition)
 
@@ -564,7 +561,7 @@ def _check_precondition_in_source(
     check_type: str,
     precondition: str,
     caller_source: str,
-) -> Optional[bool]:
+) -> bool | None:
     """Check if the caller source satisfies the precondition."""
     if check_type == "null_check":
         var_match = re.search(r"(\w+)\s*(?:!=\s*(?:NULL|0)|!= null)", precondition)
@@ -599,7 +596,7 @@ def _check_precondition_in_source(
 def _get_source_from_checklist(
     file_path: str,
     function_name: str,
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
 ) -> str:
     """Get function source from checklist data."""
     for f in checklist.get("files", []):
@@ -612,7 +609,7 @@ def _get_source_from_checklist(
 
 
 def format_precondition_verification(
-    verifications: List[PreconditionVerification],
+    verifications: list[PreconditionVerification],
 ) -> str:
     """Render precondition verification as a context section for the LLM."""
     if not verifications:
@@ -651,34 +648,59 @@ def _checks_return_value(source: str, function_name: str) -> bool:
     return False
 
 
-_LLM_SPEC_PROMPT = """\
+_LLM_SPEC_SYSTEM = """\
 You are inferring a security specification for a function. Given the source \
-code, determine what this function SHOULD do — its contract with callers.
-
-Function: {function} in {file}
-```
-{source}
-```
+code in the untrusted block (its file and function name are in the slots), \
+determine what this function SHOULD do — its contract with callers.
 
 Respond with JSON only:
-{{
+{
   "intent": "one sentence describing what this function should do",
   "preconditions": ["condition that must hold on entry"],
   "postconditions": ["condition that must hold on exit"],
   "invariants": ["property that must hold throughout"],
   "negative_specs": ["what this function must NOT do"]
-}}
+}
 
 Focus on security-relevant specifications: bounds on sizes, null-safety, \
 authentication requirements, sanitization guarantees, resource lifecycle, \
 crypto properties. Omit trivial specs (e.g. "returns a value").
 """
 
+# Cap on source going into the spec prompt.
+_SPEC_SOURCE_MAX_CHARS = 4000
+
+
+def build_spec_prompt(
+    function_name: str,
+    file_path: str,
+    source: str,
+    *,
+    model_id: str = "",
+) -> tuple[str, str]:
+    """Envelope the spec-inference prompt: source in an
+    ``UntrustedBlock``, identifiers in slots, instructions in system.
+    Returns ``(user, system)``."""
+    from core.security.prompt_envelope import TaintedString, UntrustedBlock
+
+    from ._util import envelope_prompt
+
+    block = UntrustedBlock(
+        content=source[:_SPEC_SOURCE_MAX_CHARS],
+        kind="source-code",
+        origin=f"{file_path}:{function_name}",
+    )
+    slots = {
+        "file": TaintedString(value=file_path, trust="untrusted"),
+        "function": TaintedString(value=function_name, trust="untrusted"),
+    }
+    return envelope_prompt(_LLM_SPEC_SYSTEM, (block,), slots, model_id=model_id)
+
 
 async def infer_spec_with_llm(
-    gap: Dict[str, Any],
+    gap: dict[str, Any],
     llm_call,
-    mechanical_spec: Optional[InferredSpec] = None,
+    mechanical_spec: InferredSpec | None = None,
 ) -> InferredSpec:
     """Infer a function's specification using an LLM for semantic understanding.
 
@@ -695,18 +717,18 @@ async def infer_spec_with_llm(
     if not source:
         return mechanical_spec or InferredSpec(function=function_name, file=file_path)
 
-    prompt = _LLM_SPEC_PROMPT.format(
-        function=function_name,
-        file=file_path,
-        source=source[:4000],
-    )
+    # ``llm_call`` exposes a single prompt channel — join the enveloped
+    # system and user parts; the block/nonce/slot defences all live in
+    # the message text itself.
+    user, system = build_spec_prompt(function_name, file_path, source)
+    prompt = f"{system}\n\n{user}"
 
     spec = mechanical_spec or InferredSpec(function=function_name, file=file_path)
 
     try:
         response = await llm_call(prompt)
         data = _parse_llm_spec_response(response)
-    except Exception:
+    except Exception:  # noqa: BLE001 — inference is best-effort; fall back to mechanical spec
         logger.debug("LLM spec inference failed for %s:%s", file_path, function_name)
         return spec
 
@@ -740,8 +762,27 @@ async def infer_spec_with_llm(
     return spec
 
 
-def _parse_llm_spec_response(response: str) -> Dict[str, Any]:
-    """Parse LLM JSON response, handling markdown fences."""
+# Strict top-level schema for the spec response — the keys the prompt
+# declares, and nothing else. Unknown fields REJECT the whole response
+# (schema-invalid == malformed; callers already treat an empty dict as
+# "no LLM data"). Same floor policy as
+# core.llm.response_validation.unknown_response_fields.
+_SPEC_RESPONSE_KEYS = frozenset({
+    "intent",
+    "preconditions",
+    "postconditions",
+    "invariants",
+    "negative_specs",
+})
+
+
+def _parse_llm_spec_response(response: str) -> dict[str, Any]:
+    """Parse LLM JSON response, handling markdown fences.
+
+    Returns {} for malformed responses — including non-object JSON and
+    responses carrying top-level fields outside
+    :data:`_SPEC_RESPONSE_KEYS` (strict unknown-field floor).
+    """
     import json as _json
 
     text = response.strip()
@@ -755,23 +796,32 @@ def _parse_llm_spec_response(response: str) -> Dict[str, Any]:
                 break
         text = "\n".join(lines[start:end])
 
+    data: Any = None
     try:
-        return _json.loads(text)
+        data = _json.loads(text)
     except _json.JSONDecodeError:
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
             try:
-                return _json.loads(text[start:end + 1])
+                data = _json.loads(text[start:end + 1])
             except _json.JSONDecodeError:
                 pass
-    return {}
+    if not isinstance(data, dict):
+        return {}
+    unknown = sorted(k for k in data if k not in _SPEC_RESPONSE_KEYS)
+    if unknown:
+        logger.debug(
+            "spec response rejected — unknown fields %s", unknown,
+        )
+        return {}
+    return data
 
 
 def infer_spec_with_llm_sync(
-    gap: Dict[str, Any],
-    mechanical_spec: Optional[InferredSpec] = None,
-) -> Optional[InferredSpec]:
+    gap: dict[str, Any],
+    mechanical_spec: InferredSpec | None = None,
+) -> InferredSpec | None:
     """Synchronous LLM spec inference for use in the review loop.
 
     Fires only for high-value targets (entry points, sinks, auth/crypto)
@@ -784,18 +834,18 @@ def infer_spec_with_llm_sync(
     if not source:
         return mechanical_spec
 
-    prompt = _LLM_SPEC_PROMPT.format(
-        function=function_name,
-        file=file_path,
-        source=source[:4000],
-    )
-
     try:
         from core.llm.client import LLMClient
         client = LLMClient()
-        response = client.generate(prompt, task_type="audit")
+        prompt, system_prompt = build_spec_prompt(
+            function_name, file_path, source,
+            model_id=getattr(client, "model_name", "") or "",
+        )
+        response = client.generate(
+            prompt, system_prompt=system_prompt, task_type="audit",
+        )
         text = response.text if hasattr(response, "text") else str(response)
-    except Exception:
+    except Exception:  # noqa: BLE001 — inference is best-effort; fall back to mechanical spec
         logger.debug("LLM spec inference unavailable for %s:%s", file_path, function_name)
         return mechanical_spec
 
@@ -837,8 +887,8 @@ def infer_spec_with_llm_sync(
 
 def find_peer_functions(
     function_name: str,
-    checklist: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+    checklist: dict[str, Any],
+) -> list[dict[str, Any]]:
     """Find peer functions with similar names for comparison.
 
     Detects versioned functions (parse_v1/parse_v2), copy-paste variants
@@ -881,6 +931,4 @@ def _is_peer(base: str, original: str, candidate: str) -> bool:
     if cand_base == base and cand_base != candidate:
         return True
     prefix_len = len(os.path.commonprefix([original, candidate]))
-    if prefix_len >= len(original) * 0.6 and prefix_len >= 4:
-        return True
-    return False
+    return prefix_len >= len(original) * 0.6 and prefix_len >= 4

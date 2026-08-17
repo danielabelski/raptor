@@ -4545,6 +4545,7 @@ def _run_audit_body(
             result.outcomes,
             evidence_index=evidence_index,
             attack_chains=chains,
+            out_dir=config.out_dir,
         )
         if feedback_state and feedback_state.confirmed_finding_ids:
             for finding in graded.get("findings", []):
@@ -5900,6 +5901,13 @@ def _check_finding_gates(
         )
         if matched_invariants:
             inv_ids = ", ".join(matched_invariants)
+            # Machine-readable marker for the designed exception so the
+            # promotion-without-tool-evidence alarm can distinguish it
+            # from a genuine gate bypass.
+            if outcome.review_result is not None:
+                outcome.review_result["g2_invariant_bypass"] = (
+                    list(matched_invariants)
+                )
             logger.info(
                 "G2 bypassed for %s:%s — hypothesis matches "
                 "domain-model invariant(s): %s",
@@ -13524,16 +13532,21 @@ def _run_dark_verification(
         if lang is None:
             continue
 
-        prompt = build_witness_prompt(
+        prompt, system = build_witness_prompt(
             file=outcome.file,
             function=outcome.function,
             hypothesis=outcome.hypothesis,
             body=outcome.body,
             language=lang,
+            model_id=(
+                config.models[0]
+                if config.models and config.models[0] != "default"
+                else ""
+            ),
         )
 
         try:
-            llm_response = llm_client(prompt, "")
+            llm_response = llm_client(prompt, system)
         except Exception:
             continue
 

@@ -9,6 +9,7 @@ per-call — batching it adds complexity for no gain.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -16,8 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from .journal import (
-    ReviewJournalEntry, append_entry, compute_domain_model_hash,
-    flush_journal, now_iso,
+    ReviewJournalEntry,
+    append_entry,
+    compute_domain_model_hash,
+    flush_journal,
+    now_iso,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,7 +109,9 @@ def append_journal_for_outcome(
     invariants_available: list[str] = []
     try:
         from core.concepts.audit_bridge import (
-            _find_domain_model, _guard_in_scope, _relevance_score,
+            _find_domain_model,
+            _guard_in_scope,
+            _relevance_score,
         )
         dm = _find_domain_model(out_dir)
         if dm:
@@ -120,9 +126,10 @@ def append_journal_for_outcome(
                         )
             for inv in dm.get("invariants", []):
                 inv_role = inv.get("role", "boost")
-                if inv_role == "guard":
-                    if not _guard_in_scope(inv, outcome.file or ""):
-                        continue
+                if inv_role == "guard" and not _guard_in_scope(
+                    inv, outcome.file or "",
+                ):
+                    continue
                 inv_id = inv.get("id", "")
                 if inv_id:
                     invariants_available.append(inv_id)
@@ -153,6 +160,18 @@ def append_journal_for_outcome(
     context_reduced = bool(getattr(outcome, "context_reduced", False)) or None
     reused = bool(getattr(outcome, "reused", False)) or None
     reused_from_run = (getattr(outcome, "reused_from_run", "") or None) if reused else None
+
+    # Promotion-without-tool-evidence alarm: the journal write is the
+    # chokepoint every review outcome flows through, so an evidence-less
+    # ``finding`` here means the tool-gated promotion invariant was
+    # bypassed upstream.  Alarm-only — the entry is still written.
+    try:
+        from .promotion_alarm import check_and_emit
+        check_and_emit(
+            out_dir, outcome, stage="journal-write", run_id=run_id,
+        )
+    except Exception:
+        logger.debug("promotion alarm hook failed", exc_info=True)
 
     entry = ReviewJournalEntry(
         ts=now_iso(),
@@ -289,11 +308,9 @@ class Collector:
     def invalidate_domain_model_cache(self) -> None:
         """Call after the domain model changes (e.g. JIT study loop)."""
         self._domain_model_hash = None
-        try:
+        with contextlib.suppress(Exception):
             from core.concepts.audit_bridge import _load_cached
             _load_cached.cache_clear()
-        except Exception:
-            pass
 
     def flush(self) -> None:
         """Write all buffered state to disk in bulk."""

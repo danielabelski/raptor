@@ -12,42 +12,60 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
-
-from core.evidence import EvidenceTier
+from typing import Any
 
 from core.analysis.summaries import FunctionSummary, Precondition, TaintRule
+from core.evidence import EvidenceTier
 
 logger = logging.getLogger(__name__)
 
 _SUMMARY_SYSTEM_PROMPT = (
     "You are a security-focused code analyst.  Given a function's source, "
-    "extract its security-relevant summary as JSON.  Be precise and terse."
+    "extract its security-relevant summary as JSON.  Be precise and terse.\n\n"
+    "Analyse the function provided in the untrusted source-code block "
+    "(its file and function name are given in the slots) and return a "
+    "JSON object with these fields:\n\n"
+    '- "preconditions": list of {"parameter": str, "assumption": str} — '
+    "what each parameter must satisfy for safe execution (null checks, bounds, "
+    "valid state).\n"
+    '- "taint_flows": list of {"source_param": str, "source_index": int, '
+    '"sink_call": str, "sink_arg_index": int} — parameters that flow to '
+    "security-sensitive callees (memcpy, strcpy, system, exec, SQL, etc.).\n"
+    '- "callees": list of "file:function" strings for functions this function calls.\n'
+    '- "callers": list of "file:function" strings if visible from the source.\n'
+    '- "error_paths": list of return-statement strings for error/failure returns.\n'
+    '- "state_transitions": list of strings describing resource state changes '
+    "(lock acquire/release, file open/close, allocation/free).\n\n"
+    "Return ONLY the JSON object.  No explanation, no markdown fencing."
 )
 
-_SUMMARY_USER_TEMPLATE = """\
-Analyse the following function and return a JSON object with these fields:
 
-- "preconditions": list of {{"parameter": str, "assumption": str}} — \
-what each parameter must satisfy for safe execution (null checks, bounds, \
-valid state).
-- "taint_flows": list of {{"source_param": str, "source_index": int, \
-"sink_call": str, "sink_arg_index": int}} — parameters that flow to \
-security-sensitive callees (memcpy, strcpy, system, exec, SQL, etc.).
-- "callees": list of "file:function" strings for functions this function calls.
-- "callers": list of "file:function" strings if visible from the source.
-- "error_paths": list of return-statement strings for error/failure returns.
-- "state_transitions": list of strings describing resource state changes \
-(lock acquire/release, file open/close, allocation/free).
+def build_summary_prompt(
+    file_path: str,
+    function_name: str,
+    source: str,
+    *,
+    model_id: str = "",
+) -> tuple[str, str]:
+    """Envelope the summary-extraction prompt: source code in an
+    ``UntrustedBlock``, identifiers in slots, instructions in system.
+    Returns ``(user, system)``."""
+    from core.security.prompt_envelope import TaintedString, UntrustedBlock
 
-Return ONLY the JSON object.  No explanation, no markdown fencing.
+    from ._util import envelope_prompt
 
-File: {file}
-Function: {function}
-
-```
-{source}
-```"""
+    block = UntrustedBlock(
+        content=source[:_MAX_SOURCE_CHARS],
+        kind="source-code",
+        origin=f"{file_path}:{function_name}",
+    )
+    slots = {
+        "file": TaintedString(value=file_path, trust="untrusted"),
+        "function": TaintedString(value=function_name, trust="untrusted"),
+    }
+    return envelope_prompt(
+        _SUMMARY_SYSTEM_PROMPT, (block,), slots, model_id=model_id,
+    )
 
 # Cap source length to keep LLM cost reasonable per function.
 _MAX_SOURCE_CHARS = 8000
@@ -57,10 +75,10 @@ _MAX_FUNCTIONS = 80
 
 
 def identify_summary_candidates(
-    workqueue: List[Dict[str, Any]],
-    taint_summary_results: Optional[Dict[str, Any]],
-    checklist: Optional[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    workqueue: list[dict[str, Any]],
+    taint_summary_results: dict[str, Any] | None,
+    checklist: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     """Find functions that need LLM summaries.
 
     A function is a candidate when:
@@ -71,15 +89,15 @@ def identify_summary_candidates(
         return []
 
     existing = set(taint_summary_results or {})
-    queue_keys: Set[str] = set()
-    queue_by_key: Dict[str, Dict[str, Any]] = {}
+    queue_keys: set[str] = set()
+    queue_by_key: dict[str, dict[str, Any]] = {}
 
     for gap in workqueue:
         key = f"{gap['file']}:{gap['name']}"
         queue_keys.add(key)
         queue_by_key[key] = gap
 
-    connected: Set[str] = set()
+    connected: set[str] = set()
     for gap in workqueue:
         for ce in gap.get("callees", []):
             ce_name = ce if isinstance(ce, str) else ce.get("name", "")
@@ -106,10 +124,10 @@ def identify_summary_candidates(
 
 
 def run_llm_summary_pass(
-    candidates: List[Dict[str, Any]],
+    candidates: list[dict[str, Any]],
     target_path: Path,
     config: Any,
-) -> Dict[str, FunctionSummary]:
+) -> dict[str, FunctionSummary]:
     """Run focused LLM calls to extract summaries for candidates.
 
     Returns a dict of "file:function" → FunctionSummary.
@@ -136,12 +154,11 @@ def run_llm_summary_pass(
     if not items_with_source:
         return {}
 
-    def _do_one(item: tuple) -> Optional[tuple]:
+    def _do_one(item: tuple) -> tuple | None:
         file_path, function_name, source = item
-        prompt = _SUMMARY_USER_TEMPLATE.format(
-            file=file_path,
-            function=function_name,
-            source=source[:_MAX_SOURCE_CHARS],
+        prompt, system_prompt = build_summary_prompt(
+            file_path, function_name, source,
+            model_id=getattr(client, "model_name", "") or "",
         )
         # Short call class: minimal prompt, small response. The
         # per-call ceiling (honoured by the claudecode transport;
@@ -153,7 +170,7 @@ def run_llm_summary_pass(
         from core.audit.llm_review import SHORT_CALL_TIMEOUT_S
         response = client.generate(
             prompt,
-            system_prompt=_SUMMARY_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             task_type="audit",
             timeout_s=SHORT_CALL_TIMEOUT_S,
             call_class="summary",
@@ -175,7 +192,7 @@ def run_llm_summary_pass(
         label="llm-summaries",
     )
 
-    results: Dict[str, FunctionSummary] = {}
+    results: dict[str, FunctionSummary] = {}
     for r in raw:
         if r is not None:
             results[r[0]] = r[1]
@@ -194,9 +211,9 @@ def _read_source(
     target_path: Path,
     file_path: str,
     function_name: str,
-    line_start: Optional[int] = None,
-    line_end: Optional[int] = None,
-) -> Optional[str]:
+    line_start: int | None = None,
+    line_end: int | None = None,
+) -> str | None:
     """Read function source from the target directory."""
     full_path = target_path / file_path
     if not full_path.is_file():
@@ -219,12 +236,32 @@ def _read_source(
     return text
 
 
+# Strict top-level schema for the summary response — the keys the
+# prompt declares, and nothing else. Unknown fields REJECT the whole
+# response (schema-invalid == malformed; caller already handles the
+# None return by skipping the summary). Same floor policy as
+# core.llm.response_validation.unknown_response_fields.
+_SUMMARY_RESPONSE_KEYS = frozenset({
+    "preconditions",
+    "taint_flows",
+    "callees",
+    "callers",
+    "error_paths",
+    "state_transitions",
+})
+
+
 def _parse_summary_response(
     text: str,
     function: str,
     file: str,
-) -> Optional[FunctionSummary]:
-    """Parse a JSON summary response into a FunctionSummary."""
+) -> FunctionSummary | None:
+    """Parse a JSON summary response into a FunctionSummary.
+
+    Returns None for malformed responses — including responses that
+    carry top-level fields outside :data:`_SUMMARY_RESPONSE_KEYS`
+    (strict unknown-field floor).
+    """
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -245,6 +282,14 @@ def _parse_summary_response(
             return None
 
     if not isinstance(data, dict):
+        return None
+
+    unknown = sorted(k for k in data if k not in _SUMMARY_RESPONSE_KEYS)
+    if unknown:
+        logger.debug(
+            "summary response for %s:%s rejected — unknown fields %s",
+            file, function, unknown,
+        )
         return None
 
     preconditions = []

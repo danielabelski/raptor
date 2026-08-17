@@ -13,10 +13,48 @@ documentation — the LLM sees them, so the output shape is explicit.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable
+from collections.abc import Iterable
+from typing import Any
+
+from core.security.prompt_defense_profiles import CONSERVATIVE, get_profile_for
+from core.security.prompt_envelope import (
+    TaintedString,
+    UntrustedBlock,
+    build_prompt,
+)
 
 from .grammars import COCCINELLE_GRAMMAR, SEMGREP_GRAMMAR
-from .models import SeedBug, SynthesisedRule, Match
+from .models import Match, SeedBug, SynthesisedRule
+
+
+def _envelope(
+    system: str,
+    blocks: Iterable[UntrustedBlock],
+    slots: dict[str, TaintedString],
+    model_id: str,
+) -> tuple[str, str]:
+    """Render ``(user, system)`` through the prompt envelope.
+
+    Seed reasoning, snippets, and candidate matches are target- or
+    prior-LLM-derived — they travel in untrusted blocks; identifiers
+    ride in slots.  Profile resolution mirrors sibling callsites:
+    ``get_profile_for`` when the model is known, CONSERVATIVE
+    otherwise.
+    """
+    profile = get_profile_for(model_id) if model_id else CONSERVATIVE
+    bundle = build_prompt(
+        system=system,
+        profile=profile,
+        untrusted_blocks=tuple(blocks),
+        slots=slots,
+    )
+    user = "\n\n".join(
+        m.content for m in bundle.messages if m.role == "user"
+    )
+    system_text = next(
+        (m.content for m in bundle.messages if m.role == "system"), "",
+    )
+    return user, system_text
 
 
 # Cap on ``seed.snippet`` going into the synthesis prompt. A huge
@@ -81,7 +119,7 @@ def synthesis_system_for_engine(engine: str) -> str:
     return _SYNTHESIS_SYSTEM_BASE
 
 
-SYNTHESIS_SCHEMA: Dict[str, Any] = {
+SYNTHESIS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
         "rule_body", "rationale", "test_positive", "test_negative",
@@ -149,9 +187,15 @@ SYNTHESIS_SCHEMA: Dict[str, Any] = {
 def build_synthesis_prompt(
     seed: SeedBug, engine: str,
     retry_feedback: str = "",
-    prior_fps: "Iterable[Match]" = (),
-) -> str:
-    """Compose the synthesis prompt body.
+    prior_fps: Iterable[Match] = (),
+    *,
+    model_id: str = "",
+) -> tuple[str, str]:
+    """Compose the enveloped synthesis prompt. Returns ``(user, system)``.
+
+    The seed's reasoning and snippet (target-/prior-LLM-derived) travel
+    in untrusted blocks; file / function / lines / CWE ride in slots;
+    the task instructions live in the system text.
 
     ``retry_feedback`` is non-empty on a retry — it carries the
     failure mode of the previous attempt (e.g. "rule did not match
@@ -164,87 +208,113 @@ def build_synthesis_prompt(
     appends them as negative examples so the next rule tightens
     away from those locations while still hitting the seed bug.
     """
-    parts = [
+    system_parts = [
+        synthesis_system_for_engine(engine),
+        "",
         f"BUG TO REPLICATE AS A CHECKER ({engine})",
         "",
-        f"File:     {seed.file}",
-        f"Function: {seed.function}",
-        f"Lines:    {seed.line_start}–{seed.line_end}",
-        f"CWE:      {seed.cwe}",
-        "",
-        "Reasoning from the original analysis:",
-        seed.reasoning.strip() or "(no reasoning provided)",
-    ]
-    if seed.snippet:
-        parts += [
-            "",
-            "Source of the buggy function:",
-            "```",
-            _truncate_snippet(seed.snippet).rstrip(),
-            "```",
-        ]
-    parts += [
+        ("The seed bug's file, function, line range, and CWE are in the "
+         "slots (seed_file, seed_function, seed_lines, seed_cwe). The "
+         "reasoning from the original analysis and the source of the "
+         "buggy function arrive as untrusted blocks."),
         "",
         "TASK:",
         f"Output a {engine} rule that:",
-        "  1. Matches the original bug at the lines above.",
-        "  2. Captures the structural shape, not the exact text — so "
-        "running it across the codebase finds variants that share the "
-        "same flaw.",
-        "  3. Is tight enough to avoid mass false positives. If your "
-        "first instinct is a single ``pattern: foo(...)`` that would "
-        "match every call to ``foo``, refine it.",
+        "  1. Matches the original bug at the seed lines (seed_lines slot).",
+        ("  2. Captures the structural shape, not the exact text — so "
+         "running it across the codebase finds variants that share the "
+         "same flaw."),
+        ("  3. Is tight enough to avoid mass false positives. If your "
+         "first instinct is a single ``pattern: foo(...)`` that would "
+         "match every call to ``foo``, refine it."),
         "",
-        "Additionally, provide two test fixtures (each 5-20 lines of "
-        "complete, parseable code):",
-        "  4. test_positive: a minimal standalone snippet containing the "
-        "vulnerable pattern — the rule MUST match this.",
-        "  5. test_negative: a minimal standalone snippet that is "
-        "structurally similar but SAFE (the fix applied) — the rule "
-        "must NOT match this.",
+        ("Additionally, provide two test fixtures (each 5-20 lines of "
+         "complete, parseable code):"),
+        ("  4. test_positive: a minimal standalone snippet containing the "
+         "vulnerable pattern — the rule MUST match this."),
+        ("  5. test_negative: a minimal standalone snippet that is "
+         "structurally similar but SAFE (the fix applied) — the rule "
+         "must NOT match this."),
         "",
-        (f"Also provide fix_patch: the FIXED replacement for lines "
-         f"{seed.line_start}–{seed.line_end} of {seed.file} — the same "
-         "code with the minimal missing guard/check inserted, drop-in "
-         "compatible with the surrounding file (same indentation, "
-         "complete statements). The rule must NOT match the file once "
-         "this patch is applied."),
+        ("Also provide fix_patch: the FIXED replacement for the seed's "
+         "line range (seed_lines slot) in the seed file (seed_file "
+         "slot) — the same code with the minimal missing guard/check "
+         "inserted, drop-in compatible with the surrounding file (same "
+         "indentation, complete statements). The rule must NOT match "
+         "the file once this patch is applied."),
         "",
-        "Respond with JSON: {\"rule_body\": \"...\", \"rationale\": \"...\", "
-        "\"test_positive\": \"...\", \"test_negative\": \"...\", "
-        "\"fix_patch\": \"...\"}.",
+        ("Respond with JSON: {\"rule_body\": \"...\", \"rationale\": \"...\", "
+         "\"test_positive\": \"...\", \"test_negative\": \"...\", "
+         "\"fix_patch\": \"...\"}."),
     ]
     if retry_feedback:
-        parts += [
+        system_parts += [
             "",
-            "RETRY — the previous attempt failed:",
-            retry_feedback,
-            "Refine the rule, don't regenerate from scratch.",
+            ("RETRY — the previous attempt failed; the failure detail "
+             "arrives as an untrusted retry-feedback block. Refine the "
+             "rule, don't regenerate from scratch."),
         ]
+
+    seed_origin = f"{seed.file}:{seed.function}"
+    blocks = [
+        UntrustedBlock(
+            content=seed.reasoning.strip() or "(no reasoning provided)",
+            kind="prior-analysis",
+            origin=seed_origin,
+        ),
+    ]
+    if seed.snippet:
+        blocks.append(UntrustedBlock(
+            content=_truncate_snippet(seed.snippet).rstrip(),
+            kind="source-code",
+            origin=seed_origin,
+        ))
+    if retry_feedback:
+        blocks.append(UntrustedBlock(
+            content=retry_feedback,
+            kind="retry-feedback",
+            origin="synthesis-harness",
+        ))
     fps = list(prior_fps) if prior_fps else []
     if fps:
-        parts += [
+        system_parts += [
             "",
-            "PRIOR FALSE POSITIVES — earlier rules matched the "
-            "following locations that triage classified as NOT the "
-            "same bug. Refine your rule to AVOID matching these "
-            "while still hitting the seed at the lines above:",
+            ("PRIOR FALSE POSITIVES — earlier rules matched the "
+             "locations listed in the prior-false-positives block, and "
+             "triage classified them as NOT the same bug. Refine your "
+             "rule to AVOID matching these while still hitting the seed "
+             "at the seed lines."),
         ]
         # Cap the per-prompt FP context to avoid context blow-up.
         # 8 examples × ~200 chars each ≈ 1.6KB — enough signal,
         # bounded cost.
+        fp_lines = []
         for fp in fps[:8]:
             line = f"  - {fp.file}:{fp.line}"
             if fp.snippet:
                 # Trim the snippet so context stays bounded.
                 snip = " ".join(fp.snippet.split())[:160]
                 line += f"\n      {snip}"
-            parts.append(line)
+            fp_lines.append(line)
         if len(fps) > 8:
-            parts.append(
+            fp_lines.append(
                 f"  ... ({len(fps) - 8} more false positives elided)"
             )
-    return "\n".join(parts)
+        blocks.append(UntrustedBlock(
+            content="\n".join(fp_lines),
+            kind="prior-false-positives",
+            origin="triage",
+        ))
+
+    slots = {
+        "seed_file": TaintedString(value=seed.file, trust="untrusted"),
+        "seed_function": TaintedString(value=seed.function, trust="untrusted"),
+        "seed_lines": TaintedString(
+            value=f"{seed.line_start}–{seed.line_end}", trust="untrusted",
+        ),
+        "seed_cwe": TaintedString(value=seed.cwe, trust="untrusted"),
+    }
+    return _envelope("\n".join(system_parts), blocks, slots, model_id)
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +332,7 @@ TRIAGE_SYSTEM = (
 )
 
 
-TRIAGE_SCHEMA: Dict[str, Any] = {
+TRIAGE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["status", "reasoning"],
     "properties": {
@@ -280,39 +350,67 @@ TRIAGE_SCHEMA: Dict[str, Any] = {
 
 def build_triage_prompt(
     seed: SeedBug, rule: SynthesisedRule, match: Match,
-) -> str:
-    """Compose the triage prompt for one candidate match."""
-    parts = [
-        "SEED BUG (the confirmed instance, used as ground truth):",
-        f"  File:     {seed.file}",
-        f"  Function: {seed.function}",
-        f"  Lines:    {seed.line_start}–{seed.line_end}",
-        f"  CWE:      {seed.cwe}",
-        f"  Reasoning: {seed.reasoning.strip() or '(none)'}",
-        "",
-        f"SYNTHESISED RULE ({rule.engine}, id={rule.rule_id}):",
-        f"  Rationale: {rule.rationale or '(none)'}",
-        "",
-        "CANDIDATE MATCH (rule fired here, same bug or false positive?):",
-        f"  File: {match.file}",
-        f"  Line: {match.line}",
-    ]
-    if match.snippet:
-        parts += [
-            "  Snippet:",
-            "  ```",
-            "  " + match.snippet.rstrip().replace("\n", "\n  "),
-            "  ```",
-        ]
-    parts += [
-        "",
-        "TASK: classify this match.",
-        "  * variant         — same underlying flaw as the seed bug.",
-        "  * false_positive  — the rule matched but the code is safe.",
-        "  * uncertain       — not enough context to decide.",
-        "",
+    *,
+    model_id: str = "",
+) -> tuple[str, str]:
+    """Compose the enveloped triage prompt for one candidate match.
+    Returns ``(user, system)``.
+
+    Seed reasoning, rule rationale, and the candidate snippet are
+    prior-LLM-/target-derived — they travel in untrusted blocks; the
+    seed / rule / match identifiers ride in slots.
+    """
+    system = (
+        TRIAGE_SYSTEM
+        + "\n\n"
+        "SEED BUG (the confirmed instance, used as ground truth): its "
+        "file, function, line range, and CWE are in the slots "
+        "(seed_file, seed_function, seed_lines, seed_cwe); its "
+        "reasoning arrives as the seed-reasoning block.\n\n"
+        "SYNTHESISED RULE: engine and id are in the slots (rule_engine, "
+        "rule_id); its rationale arrives as the rule-rationale block.\n\n"
+        "CANDIDATE MATCH (rule fired here, same bug or false "
+        "positive?): location is in the slots (match_file, match_line); "
+        "its snippet, when available, arrives as the candidate-snippet "
+        "block.\n\n"
+        "TASK: classify this match.\n"
+        "  * variant         — same underlying flaw as the seed bug.\n"
+        "  * false_positive  — the rule matched but the code is safe.\n"
+        "  * uncertain       — not enough context to decide.\n\n"
         "Respond with JSON: "
         "{\"status\": \"variant|false_positive|uncertain\", "
-        "\"reasoning\": \"...\"}.",
+        "\"reasoning\": \"...\"}."
+    )
+
+    blocks = [
+        UntrustedBlock(
+            content=seed.reasoning.strip() or "(none)",
+            kind="seed-reasoning",
+            origin=f"{seed.file}:{seed.function}",
+        ),
+        UntrustedBlock(
+            content=rule.rationale or "(none)",
+            kind="rule-rationale",
+            origin=rule.rule_id,
+        ),
     ]
-    return "\n".join(parts)
+    if match.snippet:
+        blocks.append(UntrustedBlock(
+            content=match.snippet.rstrip(),
+            kind="candidate-snippet",
+            origin=f"{match.file}:{match.line}",
+        ))
+
+    slots = {
+        "seed_file": TaintedString(value=seed.file, trust="untrusted"),
+        "seed_function": TaintedString(value=seed.function, trust="untrusted"),
+        "seed_lines": TaintedString(
+            value=f"{seed.line_start}–{seed.line_end}", trust="untrusted",
+        ),
+        "seed_cwe": TaintedString(value=seed.cwe, trust="untrusted"),
+        "rule_engine": TaintedString(value=rule.engine, trust="trusted"),
+        "rule_id": TaintedString(value=rule.rule_id, trust="trusted"),
+        "match_file": TaintedString(value=match.file, trust="untrusted"),
+        "match_line": TaintedString(value=str(match.line), trust="untrusted"),
+    }
+    return _envelope(system, blocks, slots, model_id)

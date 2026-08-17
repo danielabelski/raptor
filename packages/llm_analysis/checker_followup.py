@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ CHECKER_MATCHES_FILE = "checker-matches.jsonl"
 
 def _llm_callable_from_client(
     llm_client, cost_tracker=None,
-) -> Optional[Any]:
+) -> Any | None:
     """Adapt RAPTOR's ``LLMClient`` to checker_synthesis's
     ``LLMCallable`` Protocol. Returns None when the client doesn't
     expose ``generate_structured`` (e.g. ClaudeCodeProvider in
@@ -55,7 +55,7 @@ def _llm_callable_from_client(
                     )
                     return None
             except Exception:
-                pass
+                logger.debug("cost tracker probe failed", exc_info=True)
         try:
             data, _full = llm_client.generate_structured(
                 prompt=prompt,
@@ -64,7 +64,7 @@ def _llm_callable_from_client(
                 task_type=TaskType.ANALYSE,
             )
             return data
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — any transport failure degrades to no-synthesis
             logger.warning(
                 "checker_synthesis LLM call failed: %s", e,
             )
@@ -72,7 +72,7 @@ def _llm_callable_from_client(
     return _call
 
 
-def _seed_from_vuln(vuln, repo_root: Optional[Path] = None) -> Optional[Any]:
+def _seed_from_vuln(vuln, repo_root: Path | None = None) -> Any | None:
     """Build a ``SeedBug`` from a confirmed-exploitable
     ``VulnerabilityContext``. Returns None if the vuln lacks the
     fields needed to seed synthesis (no file_path, no line range,
@@ -127,8 +127,8 @@ def _seed_from_vuln(vuln, repo_root: Optional[Path] = None) -> Optional[Any]:
 
 
 def _resolve_match_function(
-    match, checklist: Optional[Dict[str, Any]], repo_root: Path,
-) -> Optional[str]:
+    match, checklist: dict[str, Any] | None, repo_root: Path,
+) -> str | None:
     """Look up the function name covering ``match.file:match.line``.
     Returns None when not resolvable."""
     if not checklist:
@@ -162,8 +162,8 @@ def _try_replay_from_library(
     None if no library rule qualifies."""
     try:
         from packages.checker_synthesis import RuleLibrary
-        from packages.checker_synthesis.library import _DEFAULT_LIBRARY_DIR
         from packages.checker_synthesis.languages import detect_engine
+        from packages.checker_synthesis.library import _DEFAULT_LIBRARY_DIR
         from packages.checker_synthesis.synthesise import _run_engine, _triage
 
         engine = detect_engine(seed.file)
@@ -246,9 +246,10 @@ def _try_replay_from_library(
 def _try_promote_to_library(result, repo_root: Path):
     """Promote a synthesis result to the rule library if eligible."""
     try:
+        import hashlib
+
         from packages.checker_synthesis import RuleLibrary
         from packages.checker_synthesis.library import _DEFAULT_LIBRARY_DIR
-        import hashlib
 
         lib = RuleLibrary(_DEFAULT_LIBRARY_DIR)
         target_hash = hashlib.sha256(
@@ -282,7 +283,7 @@ def emit_variant_matches_for_finding(
     vuln,
     *,
     out_dir: Path,
-    checklist: Optional[Dict[str, Any]],
+    checklist: dict[str, Any] | None,
     repo_root: Path,
     llm_client,
     cost_tracker=None,
@@ -358,6 +359,7 @@ def emit_variant_matches_for_finding(
                     max_acceptable_fp_rate=max_acceptable_fp_rate,
                     max_matches=max_matches,
                     max_triage_calls=max_triage_calls,
+                    model_id=getattr(llm_client, "model_name", "") or "",
                 )
             else:
                 from packages.checker_synthesis import synthesise_and_run
@@ -369,6 +371,7 @@ def emit_variant_matches_for_finding(
                     max_matches=max_matches,
                     triage_each=triage_each,
                     max_triage_calls=max_triage_calls,
+                    model_id=getattr(llm_client, "model_name", "") or "",
                 )
 
             _try_promote_to_library(result, repo_root)
@@ -409,7 +412,7 @@ def _record_matches(
     seed,
     result,
     out_dir: Path,
-    checklist: Optional[Dict[str, Any]],
+    checklist: dict[str, Any] | None,
     repo_root: Path,
 ) -> int:
     """Walk synthesis matches -> write to checker-matches.jsonl.

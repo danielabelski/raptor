@@ -16,7 +16,6 @@ from core.concepts.compiler import (
 )
 from core.concepts.model import DomainModel, Invariant
 
-
 # ------------------------------------------------------------------
 # Fixtures
 # ------------------------------------------------------------------
@@ -57,53 +56,59 @@ def _stub_llm(response: dict | None = None):
 # ------------------------------------------------------------------
 
 class TestBuildInvariantPrompt:
+    # build_invariant_prompt returns the enveloped (user, system)
+    # pair: invariant text / evidence / snippets in untrusted blocks
+    # (user), CWEs and id in slots (user), task instructions in the
+    # system text.
     def test_includes_statement_and_negation(self):
         inv = _make_invariant()
-        prompt = build_invariant_prompt(inv, "semgrep")
-        assert "All callers of copy_page must hold page_lock" in prompt
-        assert "does not hold page_lock" in prompt
+        user, _system = build_invariant_prompt(inv, "semgrep")
+        assert "All callers of copy_page must hold page_lock" in user
+        assert "does not hold page_lock" in user
 
     def test_includes_engine(self):
         inv = _make_invariant()
-        prompt = build_invariant_prompt(inv, "coccinelle")
-        assert "coccinelle" in prompt
+        _user, system = build_invariant_prompt(inv, "coccinelle")
+        assert "coccinelle" in system
 
     def test_includes_cwes(self):
         inv = _make_invariant(relevant_cwes=["CWE-362", "CWE-416"])
-        prompt = build_invariant_prompt(inv, "semgrep")
-        assert "CWE-362" in prompt
-        assert "CWE-416" in prompt
+        user, _system = build_invariant_prompt(inv, "semgrep")
+        assert "CWE-362" in user
+        assert "CWE-416" in user
 
     def test_includes_evidence(self):
         inv = _make_invariant(
             evidence=["mm/filemap.c:1234 - with lock", "mm/swap.c:56 - also locked"],
         )
-        prompt = build_invariant_prompt(inv, "semgrep")
-        assert "mm/filemap.c:1234" in prompt
-        assert "mm/swap.c:56" in prompt
+        user, _system = build_invariant_prompt(inv, "semgrep")
+        assert "mm/filemap.c:1234" in user
+        assert "mm/swap.c:56" in user
 
     def test_caps_evidence_at_5(self):
         inv = _make_invariant(evidence=[f"file{i}.c:1 - ev" for i in range(10)])
-        prompt = build_invariant_prompt(inv, "semgrep")
-        assert "file4.c" in prompt
-        assert "file5.c" not in prompt
-        assert "5 more" in prompt
+        user, _system = build_invariant_prompt(inv, "semgrep")
+        assert "file4.c" in user
+        assert "file5.c" not in user
+        assert "5 more" in user
 
     def test_retry_feedback(self):
         inv = _make_invariant()
-        prompt = build_invariant_prompt(inv, "semgrep", retry_feedback="rule too broad")
-        assert "RETRY" in prompt
-        assert "rule too broad" in prompt
+        user, system = build_invariant_prompt(
+            inv, "semgrep", retry_feedback="rule too broad",
+        )
+        assert "RETRY" in system
+        assert "rule too broad" in user
 
     def test_no_description(self):
         inv = _make_invariant(description="")
-        prompt = build_invariant_prompt(inv, "semgrep")
-        assert "Context:" not in prompt
+        user, _system = build_invariant_prompt(inv, "semgrep")
+        assert "invariant-context" not in user
 
     def test_no_cwes(self):
         inv = _make_invariant(relevant_cwes=[])
-        prompt = build_invariant_prompt(inv, "semgrep")
-        assert "CWEs:" not in prompt
+        user, _system = build_invariant_prompt(inv, "semgrep")
+        assert "relevant_cwes" not in user
 
 
 # ------------------------------------------------------------------
@@ -509,12 +514,12 @@ class TestCopyFail:
 
     def test_prompt_captures_ownership_semantics(self):
         inv = _copyfail_invariant()
-        prompt = build_invariant_prompt(inv, "coccinelle")
-        assert "Page-cache pages must not be written to" in prompt
-        assert "Writing through a shared page" in prompt
-        assert "CWE-416" in prompt
-        assert "crypto/af_alg.c" in prompt
-        assert "coccinelle" in prompt
+        user, system = build_invariant_prompt(inv, "coccinelle")
+        assert "Page-cache pages must not be written to" in user
+        assert "Writing through a shared page" in user
+        assert "CWE-416" in user
+        assert "crypto/af_alg.c" in user
+        assert "coccinelle" in system
 
     def test_infers_coccinelle_from_evidence(self):
         inv = _copyfail_invariant()

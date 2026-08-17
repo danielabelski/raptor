@@ -251,7 +251,7 @@ class TestSnippetTruncation:
             cwe="CWE-?", reasoning="r",
             snippet="x " * 100_000,  # ~200KB
         )
-        prompt = build_synthesis_prompt(seed, "semgrep")
+        prompt, _system = build_synthesis_prompt(seed, "semgrep")
         # Prompt body should be much smaller than the raw snippet.
         assert len(prompt.encode("utf-8")) < 50_000
         assert "(snippet truncated)" in prompt
@@ -264,7 +264,7 @@ class TestSnippetTruncation:
             cwe="CWE-?", reasoning="r",
             snippet="def f():\n    pass\n",
         )
-        prompt = build_synthesis_prompt(seed, "semgrep")
+        prompt, _system = build_synthesis_prompt(seed, "semgrep")
         assert "def f():" in prompt
         assert "(snippet truncated)" not in prompt
 

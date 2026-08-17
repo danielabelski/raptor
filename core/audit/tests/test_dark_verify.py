@@ -1125,116 +1125,121 @@ class TestExecuteWitnessPerl:
 
 
 class TestBuildWitnessPrompt:
+    # build_witness_prompt returns the enveloped (user, system) pair:
+    # finding identifiers land in the user message as slots, the
+    # hypothesis/detail in untrusted blocks, and the per-language task
+    # text in the system prompt.
     def test_includes_finding_details(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="core/audit/gate.py",
             function="check_bounds",
             hypothesis="off-by-one",
             body="The function does not check upper bound",
         )
-        assert "core/audit/gate.py" in prompt
-        assert "check_bounds" in prompt
-        assert "off-by-one" in prompt
+        assert "core/audit/gate.py" in user
+        assert "check_bounds" in user
+        assert "off-by-one" in user
+        assert "## Task" in system
 
     def test_missing_hypothesis(self):
-        prompt = build_witness_prompt("a.py", "f", "", "detail")
-        assert "(no hypothesis)" in prompt
+        user, _system = build_witness_prompt("a.py", "f", "", "detail")
+        assert "(no hypothesis)" in user
 
     def test_c_prompt_has_sanitizer(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="src/buf.c",
             function="copy_buf",
             hypothesis="heap overflow",
             body="No bounds check",
             language="c",
         )
-        assert "sanitize" in prompt.lower() or "ASan" in prompt
-        assert "copy_buf" in prompt
+        assert "sanitize" in system.lower() or "ASan" in system
+        assert "copy_buf" in user
 
     def test_go_prompt_has_panic(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="pkg/auth.go",
             function="Check",
             hypothesis="nil deref",
             body="No nil check",
             language="go",
         )
-        assert "panic" in prompt.lower()
-        assert "Check" in prompt
+        assert "panic" in system.lower()
+        assert "Check" in user
 
     def test_js_prompt_has_require(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="src/auth.js",
             function="validate",
             hypothesis="prototype pollution",
             body="Object.assign without filter",
             language="javascript",
         )
-        assert "require" in prompt.lower()
-        assert "validate" in prompt
+        assert "require" in system.lower()
+        assert "validate" in user
 
     def test_ts_prompt(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="src/auth.ts", function="validate",
             hypothesis="type confusion", body="Any cast",
             language="typescript",
         )
-        assert "TypeScript" in prompt
-        assert "validate" in prompt
+        assert "TypeScript" in system
+        assert "validate" in user
 
     def test_ruby_prompt(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="lib/auth.rb", function="check",
             hypothesis="injection", body="No sanitization",
             language="ruby",
         )
-        assert "Ruby" in prompt
-        assert "check" in prompt
+        assert "Ruby" in system
+        assert "check" in user
 
     def test_php_prompt(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="src/auth.php", function="validate",
             hypothesis="sqli", body="No prepared statement",
             language="php",
         )
-        assert "PHP" in prompt
-        assert "validate" in prompt
+        assert "PHP" in system
+        assert "validate" in user
 
     def test_rust_prompt(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="src/lib.rs", function="process",
             hypothesis="buffer overflow", body="Unsafe block",
             language="rust",
         )
-        assert "Rust" in prompt
-        assert "process" in prompt
+        assert "Rust" in system
+        assert "process" in user
 
     def test_java_prompt(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="src/Auth.java", function="validate",
             hypothesis="null deref", body="No null check",
             language="java",
         )
-        assert "Java" in prompt
-        assert "validate" in prompt
+        assert "Java" in system
+        assert "validate" in user
 
     def test_lua_prompt(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="lib/auth.lua", function="validate",
             hypothesis="injection", body="No sanitization",
             language="lua",
         )
-        assert "Lua" in prompt
-        assert "validate" in prompt
+        assert "Lua" in system
+        assert "validate" in user
 
     def test_perl_prompt(self):
-        prompt = build_witness_prompt(
+        user, system = build_witness_prompt(
             file="lib/Auth.pm", function="check",
             hypothesis="injection", body="No taint check",
             language="perl",
         )
-        assert "Perl" in prompt
-        assert "check" in prompt
+        assert "Perl" in system
+        assert "check" in user
 
 
 # -- parse_witness_response ---------------------------------------------------

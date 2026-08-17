@@ -263,6 +263,7 @@ Query audit state across all four layers:
 | `review-journal.jsonl` | Per-function review decisions (strategies, hypotheses, tools, cost) |
 | `cost-breakdown.json` | Per-consumer cost ledger reconciliation |
 | `llm-telemetry.jsonl` | Per-call LLM telemetry |
+| `promotion-alarms.jsonl` | Promotion-without-tool-evidence alarms — a `finding` that reached the journal or export without qualifying tool evidence. Empty on every legitimate run; any record means the mechanical-verdict gate was bypassed (possible injection or policy bug). Alarm-only, never blocks |
 | `audit-report.json` | Summary report |
 
 

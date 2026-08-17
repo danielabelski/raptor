@@ -13,7 +13,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .evidence_grade import (
     GradedEvidence,
@@ -27,15 +27,15 @@ logger = logging.getLogger(__name__)
 
 def build_graded_finding(
     outcome: Any,
-    evidence_record: Optional[Any] = None,
-) -> Dict[str, Any]:
+    evidence_record: Any | None = None,
+) -> dict[str, Any]:
     """Build a finding dict with graded evidence chain.
 
     Combines mechanical evidence (from EvidenceRecord) with LLM review
     evidence (from ReviewOutcome.review_result) into a single ordered
     chain with source tags and confidence levels.
     """
-    chain: List[GradedEvidence] = []
+    chain: list[GradedEvidence] = []
 
     if evidence_record is not None:
         chain.extend(grade_evidence_record(evidence_record))
@@ -56,7 +56,7 @@ def build_graded_finding(
     if not finding_id:
         finding_id = f"{file_val}:{func_val}:{line_val}"
 
-    finding: Dict[str, Any] = {
+    finding: dict[str, Any] = {
         "id": finding_id,
         "file": file_val,
         "function": func_val,
@@ -143,15 +143,34 @@ def build_graded_finding(
 
 
 def export_findings(
-    outcomes: List[Any],
-    evidence_index: Optional[Dict[str, Any]] = None,
-    attack_chains: Optional[List[Any]] = None,
-) -> Dict[str, Any]:
+    outcomes: list[Any],
+    evidence_index: dict[str, Any] | None = None,
+    attack_chains: list[Any] | None = None,
+    *,
+    out_dir: Path | None = None,
+    run_id: str = "",
+) -> dict[str, Any]:
     """Export all findings with evidence chains and attack chains.
 
     Returns a structured dict suitable for writing to findings-graded.json.
+
+    When ``out_dir`` is given, the promotion-without-tool-evidence
+    alarm sweeps the FINAL outcome statuses here (post-loop promotions
+    run after the per-review journal writes, so the export is the
+    second chokepoint that sees them).  Alarm-only; the export output
+    is unchanged.
     """
-    findings: List[Dict[str, Any]] = []
+    if out_dir is not None:
+        try:
+            from .promotion_alarm import check_outcomes
+            check_outcomes(
+                Path(out_dir), outcomes, stage="findings-export",
+                run_id=run_id,
+            )
+        except Exception:
+            logger.debug("promotion alarm export sweep failed", exc_info=True)
+
+    findings: list[dict[str, Any]] = []
     for outcome in outcomes:
         status = getattr(outcome, "status", "clean")
         if status not in ("finding", "suspicious"):
@@ -162,7 +181,7 @@ def export_findings(
         finding = build_graded_finding(outcome, ev_record)
         findings.append(finding)
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "findings": findings,
         "stats": {
             "total": len(findings),
@@ -188,7 +207,7 @@ def export_findings(
 
 
 def write_graded_findings(
-    export: Dict[str, Any],
+    export: dict[str, Any],
     out_dir: Path,
 ) -> Path:
     """Write findings-graded.json to the run directory."""
@@ -208,7 +227,7 @@ def write_graded_findings(
     return path
 
 
-def format_findings_summary(export: Dict[str, Any]) -> str:
+def format_findings_summary(export: dict[str, Any]) -> str:
     """Render a human-readable summary of graded findings."""
     stats = export.get("stats", {})
     total = stats.get("total", 0)

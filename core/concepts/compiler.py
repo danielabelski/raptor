@@ -107,40 +107,53 @@ def build_invariant_prompt(
     engine: str,
     retry_feedback: str = "",
     source_snippets: list[str] | None = None,
-) -> str:
-    """Build the synthesis prompt for an invariant violation rule.
+    *,
+    model_id: str = "",
+) -> tuple[str, str]:
+    """Build the enveloped synthesis prompt for an invariant violation
+    rule.  Returns ``(user, system)``.
+
+    The invariant's statement / negation / description / evidence are
+    LLM-derived from target code and the source snippets are target
+    code — all travel in untrusted envelope blocks; the invariant id
+    and CWE list ride in slots; task instructions stay in the system
+    text.
 
     *source_snippets*: optional list of code excerpts showing known
     violation sites.  Giving the LLM real code dramatically improves
     the structural accuracy of the generated rule.
     """
+    from core.security.prompt_defense_profiles import (
+        CONSERVATIVE,
+        get_profile_for,
+    )
+    from core.security.prompt_envelope import (
+        TaintedString,
+        UntrustedBlock,
+        build_prompt,
+    )
+
     parts = [
+        _invariant_system_for_engine(engine),
+        "",
         f"INVARIANT TO COMPILE ({engine})",
         "",
-        f"Statement:  {inv.statement}",
-        f"Violation:  {inv.negation}",
+        ("The invariant's statement, violation (negation), context, and "
+         "evidence arrive as untrusted blocks; its id and relevant CWEs "
+         "are in the slots."),
     ]
-    if inv.description:
-        parts.append(f"Context:    {inv.description}")
-    if inv.relevant_cwes:
-        parts.append(f"CWEs:       {', '.join(inv.relevant_cwes)}")
-    if inv.evidence:
-        parts += ["", "Evidence (sites where the invariant holds):"]
-        for e in inv.evidence[:5]:
-            parts.append(f"  - {e}")
-        if len(inv.evidence) > 5:
-            parts.append(f"  ... ({len(inv.evidence) - 5} more)")
     if source_snippets:
-        parts += ["", "Source code showing known violation(s):"]
-        for i, snip in enumerate(source_snippets[:3]):
-            trimmed = snip[:4096].rstrip()
-            parts += ["```", trimmed, "```"]
+        parts += [
+            "",
+            ("Source code showing known violation(s) arrives in the "
+             "untrusted violation-source blocks."),
+        ]
     parts += [
         "",
         "TASK:",
         f"Output a {engine} rule that detects VIOLATIONS of this invariant.",
-        "The rule should match code where the invariant is broken — the "
-        "negation pattern described above.",
+        ("The rule should match code where the invariant is broken — the "
+         "negation pattern described in the invariant-negation block."),
         "",
         "Focus on the structural shape of the violation.",
         "",
@@ -172,27 +185,90 @@ def build_invariant_prompt(
         ]
     parts += [
         "",
-        "Provide two test fixtures (each 5-20 lines of complete, "
-        "parseable C code — no #include headers):",
-        "  - test_positive: minimal snippet VIOLATING the invariant "
-        "(rule MUST match).  Must contain exactly the structural shape "
-        "the rule detects.",
-        "  - test_negative: minimal snippet CONFORMING to the invariant "
-        "(rule must NOT match).  Must differ from test_positive in "
-        "exactly the way the rule checks — e.g. adds the missing guard, "
-        "removes the duplicate call, uses a literal instead of a variable.",
+        ("Provide two test fixtures (each 5-20 lines of complete, "
+         "parseable C code — no #include headers):"),
+        ("  - test_positive: minimal snippet VIOLATING the invariant "
+         "(rule MUST match).  Must contain exactly the structural shape "
+         "the rule detects."),
+        ("  - test_negative: minimal snippet CONFORMING to the invariant "
+         "(rule must NOT match).  Must differ from test_positive in "
+         "exactly the way the rule checks — e.g. adds the missing guard, "
+         "removes the duplicate call, uses a literal instead of a variable."),
         "",
-        'Respond with JSON: {"rule_body": "...", "rationale": "...", '
-        '"test_positive": "...", "test_negative": "..."}.',
+        ('Respond with JSON: {"rule_body": "...", "rationale": "...", '
+         '"test_positive": "...", "test_negative": "..."}.'),
     ]
     if retry_feedback:
         parts += [
             "",
-            "RETRY — the previous attempt failed:",
-            retry_feedback,
-            "Refine the rule, don't regenerate from scratch.",
+            ("RETRY — the previous attempt failed; the failure detail "
+             "arrives as an untrusted retry-feedback block. Refine the "
+             "rule, don't regenerate from scratch."),
         ]
-    return "\n".join(parts)
+
+    blocks = [
+        UntrustedBlock(
+            content=inv.statement or "",
+            kind="invariant-statement",
+            origin=inv.id,
+        ),
+        UntrustedBlock(
+            content=inv.negation or "",
+            kind="invariant-negation",
+            origin=inv.id,
+        ),
+    ]
+    if inv.description:
+        blocks.append(UntrustedBlock(
+            content=inv.description,
+            kind="invariant-context",
+            origin=inv.id,
+        ))
+    if inv.evidence:
+        ev_lines = [f"  - {e}" for e in inv.evidence[:5]]
+        if len(inv.evidence) > 5:
+            ev_lines.append(f"  ... ({len(inv.evidence) - 5} more)")
+        blocks.append(UntrustedBlock(
+            content="Evidence (sites where the invariant holds):\n"
+                    + "\n".join(ev_lines),
+            kind="invariant-evidence",
+            origin=inv.id,
+        ))
+    for snip in (source_snippets or [])[:3]:
+        blocks.append(UntrustedBlock(
+            content=snip[:4096].rstrip(),
+            kind="violation-source",
+            origin=inv.id,
+        ))
+    if retry_feedback:
+        blocks.append(UntrustedBlock(
+            content=retry_feedback,
+            kind="retry-feedback",
+            origin="synthesis-harness",
+        ))
+
+    slots = {
+        "invariant_id": TaintedString(value=inv.id or "", trust="untrusted"),
+    }
+    if inv.relevant_cwes:
+        slots["relevant_cwes"] = TaintedString(
+            value=", ".join(inv.relevant_cwes), trust="untrusted",
+        )
+
+    profile = get_profile_for(model_id) if model_id else CONSERVATIVE
+    bundle = build_prompt(
+        system="\n".join(parts),
+        profile=profile,
+        untrusted_blocks=tuple(blocks),
+        slots=slots,
+    )
+    user = "\n\n".join(
+        m.content for m in bundle.messages if m.role == "user"
+    )
+    system_text = next(
+        (m.content for m in bundle.messages if m.role == "system"), "",
+    )
+    return user, system_text
 
 
 # ------------------------------------------------------------------
@@ -244,17 +320,18 @@ class _InvariantProposer:
         self._inv = inv
         self._engine = engine
         self._source_snippets = source_snippets
-        self._system = _invariant_system_for_engine(engine)
 
     def propose(self, context, feedback, *, prior_verdict=None):
         from packages.checker_synthesis.prompts import SYNTHESIS_SCHEMA
 
-        prompt = build_invariant_prompt(
+        # The builder folds the engine-specific system base into the
+        # returned system text (with envelope priming).
+        prompt, system = build_invariant_prompt(
             self._inv, self._engine, retry_feedback=feedback,
             source_snippets=self._source_snippets,
         )
         try:
-            return self._llm(prompt, SYNTHESIS_SCHEMA, self._system)
+            return self._llm(prompt, SYNTHESIS_SCHEMA, system)
         except Exception as exc:
             raise ValueError(f"LLM error: {exc}") from exc
 

@@ -31,10 +31,8 @@ from .models import (
 from .prompts import (
     SYNTHESIS_SCHEMA,
     TRIAGE_SCHEMA,
-    TRIAGE_SYSTEM,
     build_synthesis_prompt,
     build_triage_prompt,
-    synthesis_system_for_engine,
 )
 
 logger = logging.getLogger(__name__)
@@ -290,17 +288,18 @@ def _propose_rule(
     seed: SeedBug, engine: str, attempt: int, llm: LLMCallable,
     retry_feedback: str = "",
     prior_fps: tuple[Match, ...] = (),
+    model_id: str = "",
 ) -> tuple[SynthesisedRule | None, str | None]:
     """Single LLM round-trip producing one candidate rule.
     Returns ``(rule, error)``; exactly one is set."""
-    prompt = build_synthesis_prompt(
+    prompt, system = build_synthesis_prompt(
         seed, engine,
         retry_feedback=retry_feedback,
         prior_fps=prior_fps,
+        model_id=model_id,
     )
     try:
-        data = llm(prompt, SYNTHESIS_SCHEMA,
-                   synthesis_system_for_engine(engine))
+        data = llm(prompt, SYNTHESIS_SCHEMA, system)
     except Exception as e:  # noqa: BLE001
         return None, f"llm error: {e}"
     if not isinstance(data, dict):
@@ -516,6 +515,7 @@ def _is_seed_match(seed: SeedBug, m: Match) -> bool:
 def _triage(
     seed: SeedBug, rule: SynthesisedRule, matches: list[Match],
     llm: LLMCallable, max_calls: int,
+    model_id: str = "",
 ) -> tuple[list[MatchTriage], list[str]]:
     """LLM-classify each match. Bounded by ``max_calls`` to cap cost.
     Matches beyond the budget are recorded with ``status='skipped'``.
@@ -529,9 +529,9 @@ def _triage(
                 reasoning=f"triage budget exhausted after {max_calls} calls",
             ))
             continue
-        prompt = build_triage_prompt(seed, rule, m)
+        prompt, system = build_triage_prompt(seed, rule, m, model_id=model_id)
         try:
-            data = llm(prompt, TRIAGE_SCHEMA, TRIAGE_SYSTEM)
+            data = llm(prompt, TRIAGE_SCHEMA, system)
         except Exception as e:  # noqa: BLE001
             errors.append(f"triage llm error for {m.file}:{m.line}: {e}")
             out.append(MatchTriage(
@@ -569,6 +569,7 @@ def synthesise_and_run(
     triage_each: bool = False,
     max_triage_calls: int = 50,
     prior_fps: tuple[Match, ...] = (),
+    model_id: str = "",
 ) -> CheckerSynthesisResult:
     """End-to-end: propose → validate → run → optionally triage.
 
@@ -626,6 +627,7 @@ def synthesise_and_run(
             rule, err = _propose_rule(
                 seed, engine, attempt, llm, feedback,
                 prior_fps=tuple(prior_fps),
+                model_id=model_id,
             )
             if err:
                 result.errors.append(f"{tag}: {err}")
@@ -757,7 +759,8 @@ def synthesise_and_run(
     result.matches = variants
 
     if triage_each and variants:
-        triage, t_errors = _triage(seed, rule, variants, llm, max_triage_calls)
+        triage, t_errors = _triage(seed, rule, variants, llm,
+                                   max_triage_calls, model_id=model_id)
         result.triage = triage
         result.errors.extend(t_errors)
 
@@ -793,6 +796,7 @@ def synthesise_with_refinement(
     max_acceptable_fp_rate: float = 0.2,
     max_matches: int = 50,
     max_triage_calls: int = 50,
+    model_id: str = "",
 ) -> CheckerSynthesisResult:
     """Iterative checker synthesis with FP-elimination.
 
@@ -847,6 +851,7 @@ def synthesise_with_refinement(
             triage_each=True,
             max_triage_calls=max_triage_calls,
             prior_fps=tuple(prior_fps),
+            model_id=model_id,
         )
 
         # If synthesis failed entirely, bump to next iteration.

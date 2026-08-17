@@ -16,16 +16,43 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from core.security.prompt_output_sanitise import sanitise_string
 
 logger = logging.getLogger(__name__)
+
+
+def _line(value: Any, *, max_chars: int = 300) -> str:
+    """Collapse a finding/journal-derived value to one sanitised line.
+
+    Finding titles, severities, file paths, and function names originate
+    from LLM review output (or from the scanned repo itself) and land in
+    markdown headings / list lines of the audit report. Newlines are
+    collapsed so a multi-line value cannot inject extra heading or list
+    lines; ``sanitise_string`` strips autofetch markup, defangs
+    line-leading markdown, and escapes ANSI/BIDI/control bytes. Same
+    policy as ``core.project.report._md_heading``.
+    """
+    text = " ".join(str(value if value is not None else "").split()).strip()
+    return sanitise_string(text, max_chars=max_chars)
+
+
+def _cell(value: Any, *, max_chars: int = 300) -> str:
+    """Sanitise a value for a one-line markdown table cell.
+
+    Adds pipe-escaping on top of :func:`_line` so a cell can neither
+    split table columns nor render as live markup — mirrors
+    ``core.project.report._md_escape_inline``.
+    """
+    return _line(value, max_chars=max_chars).replace("|", "\\|")
 
 
 def generate_report(
     out_dir: Path,
     *,
-    target_path: Optional[Path] = None,
-) -> Dict[str, Any]:
+    target_path: Path | None = None,
+) -> dict[str, Any]:
     """Generate the final audit report.
 
     Returns a dict with:
@@ -75,24 +102,36 @@ def generate_report(
     if survival:
         report["survival"] = survival
 
+    # Promotion-without-tool-evidence alarms: empty on every
+    # legitimate run — any record is a mechanical-verdict invariant
+    # violation and must be surfaced loudly.
+    try:
+        from .promotion_alarm import load_alarms
+        promotion_alarms = load_alarms(out_dir)
+    except Exception:  # reporting must not fail the run
+        logger.debug("promotion alarm load failed", exc_info=True)
+        promotion_alarms = []
+    if promotion_alarms:
+        report["promotion_alarms"] = promotion_alarms
+
     eval_path = out_dir / "evaluation.json"
     if eval_path.is_file():
         try:
             eval_data = json.loads(eval_path.read_text())
             report["evaluation"] = eval_data
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — reporting must not fail the run
             logger.warning("failed to load evaluation results from %s: %s", eval_path, e)
 
     report["summary"] = _format_summary(report)
     return report
 
 
-def format_summary(report: Dict[str, Any]) -> str:
+def format_summary(report: dict[str, Any]) -> str:
     """Format a report dict as a human-readable summary."""
     return report.get("summary", _format_summary(report))
 
 
-def write_report(report: Dict[str, Any], out_dir: Path) -> Path:
+def write_report(report: dict[str, Any], out_dir: Path) -> Path:
     """Write the report to audit-report.json."""
     path = out_dir / "audit-report.json"
     serializable = {k: v for k, v in report.items() if k != "summary"}
@@ -111,14 +150,14 @@ def write_report(report: Dict[str, Any], out_dir: Path) -> Path:
 
 
 def write_markdown_report(
-    report: Dict[str, Any],
+    report: dict[str, Any],
     out_dir: Path,
     *,
-    target_path: Optional[Path] = None,
+    target_path: Path | None = None,
     model: str = "",
     duration_minutes: float = 0.0,
     cost_usd: float = 0.0,
-    capabilities: Optional[Dict[str, bool]] = None,
+    capabilities: dict[str, bool] | None = None,
     suppressions_count: int = 0,
 ) -> Path:
     """Write the full audit-report.md per the /audit output contract."""
@@ -150,9 +189,9 @@ def write_markdown_report(
     lines.append("## Summary")
     lines.append("")
     if findings:
-        severity_counts: Dict[str, int] = {}
+        severity_counts: dict[str, int] = {}
         for f in findings:
-            sev = f.get("severity", "medium").lower()
+            sev = _line(str(f.get("severity", "medium")).lower(), max_chars=40)
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
         sev_parts = [f"{count} {sev}" for sev, count in sorted(severity_counts.items())]
         lines.append(f"{len(findings)} findings: {', '.join(sev_parts)}.")
@@ -176,13 +215,16 @@ def write_markdown_report(
         lines.append("## Findings")
         lines.append("")
         for f in findings:
-            fid = f.get("id", "FIND-???")
-            title = f.get("title", "Untitled")
-            tier = f.get("evidence_tier", "HEURISTIC")
+            # LLM-derived free text (title) and labels (id, tier, file,
+            # line, depth) — single-line sanitised so a crafted value
+            # cannot break out of the heading or inject markup.
+            fid = _line(f.get("id", "FIND-???"), max_chars=80)
+            title = _line(f.get("title", "Untitled"))
+            tier = _line(f.get("evidence_tier", "HEURISTIC"), max_chars=40)
             lines.append(f"### {fid}: {title} ({tier})")
-            file_loc = f.get("file", "?")
-            line_no = f.get("line", "?")
-            depth = f.get("depth", "?")
+            file_loc = _line(f.get("file", "?"))
+            line_no = _line(f.get("line", "?"), max_chars=20)
+            depth = _line(f.get("depth", "?"), max_chars=40)
             lines.append(
                 f"**File:** {file_loc}:{line_no}  "
                 f"**Depth:** {depth}  "
@@ -198,7 +240,7 @@ def write_markdown_report(
         lines.append("| Tier | Count |")
         lines.append("|---|---|")
         for tier, count in sorted(evidence_dist.items()):
-            lines.append(f"| {tier} | {count} |")
+            lines.append(f"| {_cell(tier, max_chars=40)} | {count} |")
     else:
         lines.append("No evidence recorded.")
     lines.append("")
@@ -230,14 +272,14 @@ def write_markdown_report(
             lines.append("| Evidence source | TP | FP |")
             lines.append("|---|---|---|")
             for src, counts in sorted(per_cap.items()):
-                lines.append(f"| {src} | {counts.get('tp', 0)} | {counts.get('fp', 0)} |")
+                lines.append(f"| {_cell(src, max_chars=60)} | {counts.get('tp', 0)} | {counts.get('fp', 0)} |")
         per_cell = evaluation.get("per_cell", {})
         if per_cell:
             lines.append("")
             lines.append("| Depth x Failure mode | TP | FN |")
             lines.append("|---|---|---|")
             for cell_key, counts in sorted(per_cell.items()):
-                lines.append(f"| {cell_key} | {counts.get('tp', 0)} | {counts.get('fn', 0)} |")
+                lines.append(f"| {_cell(cell_key, max_chars=60)} | {counts.get('tp', 0)} | {counts.get('fn', 0)} |")
         lines.append("")
 
     # Unrecorded reads
@@ -250,10 +292,13 @@ def write_markdown_report(
         )
         lines.append("")
         for u in unrecorded[:10]:
-            fn_list = ", ".join(u["functions"][:5])
+            # File / function names come from the scanned repo's
+            # checklist — untrusted-source-derived; keep them to one
+            # sanitised line each.
+            fn_list = ", ".join(_line(fn, max_chars=80) for fn in u["functions"][:5])
             extra = len(u["functions"]) - 5
             suffix = f" (+{extra} more)" if extra > 0 else ""
-            lines.append(f"- {u['file']}: {fn_list}{suffix}")
+            lines.append(f"- {_line(u['file'])}: {fn_list}{suffix}")
         lines.append("")
 
     content = "\n".join(lines)
@@ -263,17 +308,17 @@ def write_markdown_report(
 
 
 def _evidence_distribution(
-    findings: List[Dict[str, Any]],
-) -> Dict[str, int]:
+    findings: list[dict[str, Any]],
+) -> dict[str, int]:
     """Count findings per evidence tier."""
-    dist: Dict[str, int] = {}
+    dist: dict[str, int] = {}
     for f in findings:
         tier = f.get("evidence_tier", "HEURISTIC")
         dist[tier] = dist.get(tier, 0) + 1
     return dist
 
 
-def _load_review_state(out_dir: Path) -> Dict[str, Any]:
+def _load_review_state(out_dir: Path) -> dict[str, Any]:
     """Load LLM review state from the review journal.
 
     Returns a ``coverage-audit.json``-shaped dict
@@ -293,7 +338,7 @@ def _load_review_state(out_dir: Path) -> Dict[str, Any]:
     if not entries:
         return {"functions_analysed": []}
 
-    functions: List[Dict[str, Any]] = []
+    functions: list[dict[str, Any]] = []
     files_examined: set = set()
     for entry in entries.values():
         functions.append({
@@ -315,9 +360,9 @@ _BENIGN_VERDICTS = frozenset({"clean", "dormant"})
 
 
 def _apply_journal_verdict_overrides(
-    findings: List[Dict[str, Any]],
-    audit_data: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+    findings: list[dict[str, Any]],
+    audit_data: dict[str, Any],
+) -> list[dict[str, Any]]:
     """JOIN semantics: findings.json is emit-only at /audit run end;
     the journal is authoritative for current verdict.
 
@@ -338,7 +383,7 @@ def _apply_journal_verdict_overrides(
     Returns the filtered list (never mutates the input list's
     length in place).
     """
-    by_key: Dict[str, str] = {}
+    by_key: dict[str, str] = {}
     for func in audit_data.get("functions_analysed", []):
         f = func.get("file", "")
         fn = func.get("function", "")
@@ -346,7 +391,7 @@ def _apply_journal_verdict_overrides(
         if f and fn and status:
             by_key[f"{f}:{fn}"] = status
 
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for finding in findings:
         key = f"{finding.get('file', '')}:{finding.get('function', '')}"
         journal_verdict = by_key.get(key)
@@ -361,7 +406,7 @@ def _apply_journal_verdict_overrides(
     return out
 
 
-def _load_findings(out_dir: Path) -> List[Dict[str, Any]]:
+def _load_findings(out_dir: Path) -> list[dict[str, Any]]:
     path = out_dir / "findings.json"
     if not path.exists():
         return []
@@ -373,7 +418,7 @@ def _load_findings(out_dir: Path) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else data.get("findings", [])
 
 
-def _load_gaps(out_dir: Path) -> Dict[str, Any]:
+def _load_gaps(out_dir: Path) -> dict[str, Any]:
     path = out_dir / "gaps.json"
     if not path.exists():
         return {}
@@ -384,7 +429,7 @@ def _load_gaps(out_dir: Path) -> Dict[str, Any]:
         return {}
 
 
-def _compute_stats(audit_data: Dict[str, Any]) -> Dict[str, int]:
+def _compute_stats(audit_data: dict[str, Any]) -> dict[str, int]:
     """Count statuses across all reviewed functions."""
     counts = {"reviewed": 0, "clean": 0, "suspicious": 0, "finding": 0, "dormant": 0, "error": 0}
 
@@ -406,8 +451,8 @@ def _compute_stats(audit_data: Dict[str, Any]) -> Dict[str, int]:
 
 
 def _count_remaining_gaps(
-    gaps_data: Dict[str, Any],
-    audit_data: Dict[str, Any],
+    gaps_data: dict[str, Any],
+    audit_data: dict[str, Any],
 ) -> int:
     """Count gaps not covered by this audit run."""
     total_gaps = gaps_data.get("count", 0)
@@ -425,9 +470,9 @@ def _count_remaining_gaps(
 
 def _find_unrecorded_reads(
     out_dir: Path,
-    audit_data: Dict[str, Any],
-    target_path: Optional[Path],
-) -> List[Dict[str, Any]]:
+    audit_data: dict[str, Any],
+    target_path: Path | None,
+) -> list[dict[str, Any]]:
     """Find functions in files the LLM read but didn't record.
 
     Cross-references the coverage plugin's .reads-manifest (files the
@@ -467,7 +512,7 @@ def _find_unrecorded_reads(
             if f and fn:
                 recorded_funcs.add(f"{f}:{fn}")
 
-    file_functions: Dict[str, List[str]] = {}
+    file_functions: dict[str, list[str]] = {}
     for file_entry in checklist.get("files", []):
         rel_path = file_entry.get("path", "")
         if not rel_path:
@@ -509,7 +554,7 @@ def _find_unrecorded_reads(
     return result
 
 
-def _format_summary(report: Dict[str, Any]) -> str:
+def _format_summary(report: dict[str, Any]) -> str:
     """Format a human-readable summary."""
     stats = report.get("stats", {})
     lines = [
@@ -531,10 +576,12 @@ def _format_summary(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("### Findings")
         for f in findings:
-            severity = f.get("severity", "medium").title()
+            # LLM-derived values — sanitise so a crafted title / path
+            # cannot inject extra lines or live markup into the summary.
+            severity = _line(str(f.get("severity", "medium")).title(), max_chars=40)
             lines.append(
-                f"- [{severity}] {f.get('title', 'Untitled')} "
-                f"({f.get('file', '?')}:{f.get('line', '?')})"
+                f"- [{severity}] {_line(f.get('title', 'Untitled'))} "
+                f"({_line(f.get('file', '?'))}:{_line(f.get('line', '?'), max_chars=20)})"
             )
 
     survival = report.get("survival")
@@ -543,6 +590,27 @@ def _format_summary(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("### Finding survival (/validate feedback)")
         lines.extend(format_survival(survival)[1:])
+
+    promotion_alarms = report.get("promotion_alarms")
+    if promotion_alarms:
+        lines.append("")
+        lines.append(
+            f"### ⚠️ Promotion alarms ({len(promotion_alarms)})"
+        )
+        lines.append(
+            "Findings reached the journal/export without qualifying "
+            "tool evidence — this class is empty on legitimate runs. "
+            "Treat as possible prompt injection or a verdict-gate bug. "
+            "See promotion-alarms.jsonl."
+        )
+        for rec in promotion_alarms[:10]:
+            lines.append(
+                f"  - {_line(rec.get('file', '?'))}:"
+                f"{_line(rec.get('function', '?'), max_chars=60)} "
+                f"[{_line(rec.get('stage', '?'), max_chars=20)}]"
+            )
+        if len(promotion_alarms) > 10:
+            lines.append(f"  ... and {len(promotion_alarms) - 10} more")
 
     unrecorded = report.get("unrecorded_reads", [])
     if unrecorded:
@@ -554,10 +622,10 @@ def _format_summary(report: Dict[str, Any]) -> str:
         lines.append("Use `--related-to <primary_file>:<primary_function>` "
                      "to record ancillary reviews.")
         for u in unrecorded[:10]:
-            fn_list = ", ".join(u["functions"][:5])
+            fn_list = ", ".join(_line(fn, max_chars=80) for fn in u["functions"][:5])
             extra = len(u["functions"]) - 5
             suffix = f" (+{extra} more)" if extra > 0 else ""
-            lines.append(f"  {u['file']}: {fn_list}{suffix}")
+            lines.append(f"  {_line(u['file'])}: {fn_list}{suffix}")
         if len(unrecorded) > 10:
             lines.append(f"  ... and {len(unrecorded) - 10} more files")
 

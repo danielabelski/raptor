@@ -643,7 +643,7 @@ class TestIrisPromotionOnAdd:
         specs = load_specs(base)
         assert specs[0].evidence_tier == EvidenceTier.HEURISTIC
 
-    def test_llm_source_does_not_promote(self, tmp_path):
+    def test_llm_source_promotes_to_hint_tier_only(self, tmp_path):
         from core.evidence import EvidenceTier
         from core.iris.store import load_specs
 
@@ -655,10 +655,51 @@ class TestIrisPromotionOnAdd:
                  "--base", str(base), "--status", "sink",
                  "--source", "llm", "-m", "scripted add")
         assert r.returncode == 0, r.stderr
-        assert "promoted" not in r.stdout
+        assert "header_backed" in r.stdout
 
         specs = load_specs(base)
-        assert specs[0].evidence_tier == EvidenceTier.HEURISTIC
+        assert specs[0].evidence_tier == EvidenceTier.HEADER_BACKED
+        assert specs[0].source == "annotation_asserted"
+
+    def test_agent_default_promotes_to_hint_tier_only(self, tmp_path):
+        from core.evidence import EvidenceTier
+        from core.iris.store import load_specs
+
+        base = tmp_path / "annotations"
+        base.mkdir()
+        self._write_store(tmp_path)
+
+        # All fds piped → source defaults to agent.
+        r = _run("add", "src/io.c", "write_out",
+                 "--base", str(base), "--status", "sink",
+                 "-m", "agent-driven add")
+        assert r.returncode == 0, r.stderr
+        assert "header_backed" in r.stdout
+
+        specs = load_specs(base)
+        assert specs[0].evidence_tier == EvidenceTier.HEADER_BACKED
+
+    def test_forged_human_non_tty_promotes_to_hint_tier_only(
+        self, tmp_path,
+    ):
+        from core.evidence import EvidenceTier
+        from core.iris.store import load_specs
+
+        base = tmp_path / "annotations"
+        base.mkdir()
+        self._write_store(tmp_path)
+
+        # Explicit --source human with zero TTYs: the laundering
+        # shape. Never reaches xref_backed.
+        r = _run("add", "src/io.c", "write_out",
+                 "--base", str(base), "--status", "sink",
+                 "--source", "human", "-m", "claimed manual")
+        assert r.returncode == 0, r.stderr
+        assert "header_backed" in r.stdout
+
+        specs = load_specs(base)
+        assert specs[0].evidence_tier == EvidenceTier.HEADER_BACKED
+        assert specs[0].source == "annotation_asserted"
 
     def test_missing_store_never_fails_add(self, tmp_path):
         base = tmp_path / "annotations"

@@ -146,7 +146,7 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "src/cmd.py", "exec_cmd", "sink", out_dir=run_dir,
         )
-        assert result is True
+        assert result == EvidenceTier.XREF_BACKED
         reloaded = load_specs(run_dir)
         assert reloaded[0].evidence_tier == EvidenceTier.XREF_BACKED
         assert reloaded[0].source == "operator_confirmed"
@@ -161,11 +161,11 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "src/io.py", "read_input", "entry_point", out_dir=run_dir,
         )
-        assert result is True
+        assert result == EvidenceTier.XREF_BACKED
         reloaded = load_specs(run_dir)
         assert reloaded[0].evidence_tier == EvidenceTier.XREF_BACKED
 
-    def test_no_match_returns_false(self, tmp_path):
+    def test_no_match_returns_none(self, tmp_path):
         run_dir = tmp_path / "project" / "run_001"
         run_dir.mkdir(parents=True)
         save_specs(run_dir, [
@@ -174,9 +174,9 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "src/cmd.py", "unrelated_fn", "sink", out_dir=run_dir,
         )
-        assert result is False
+        assert result is None
 
-    def test_irrelevant_status_returns_false(self, tmp_path):
+    def test_irrelevant_status_returns_none(self, tmp_path):
         run_dir = tmp_path / "project" / "run_001"
         run_dir.mkdir(parents=True)
         save_specs(run_dir, [
@@ -185,7 +185,7 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "src/cmd.py", "exec_cmd", "clean", out_dir=run_dir,
         )
-        assert result is False
+        assert result is None
 
     def test_already_high_tier_not_re_promoted(self, tmp_path):
         run_dir = tmp_path / "project" / "run_001"
@@ -197,15 +197,15 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "src/cmd.py", "exec_cmd", "sink", out_dir=run_dir,
         )
-        assert result is False
+        assert result is None
 
-    def test_no_store_returns_false(self, tmp_path):
+    def test_no_store_returns_none(self, tmp_path):
         run_dir = tmp_path / "project" / "run_001"
         run_dir.mkdir(parents=True)
         result = promote_spec_on_annotation(
             "src/cmd.py", "exec_cmd", "sink", out_dir=run_dir,
         )
-        assert result is False
+        assert result is None
 
     def test_finding_status_maps_to_sink(self, tmp_path):
         run_dir = tmp_path / "project" / "run_001"
@@ -217,7 +217,7 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "src/cmd.py", "exec_cmd", "finding", out_dir=run_dir,
         )
-        assert result is True
+        assert result == EvidenceTier.XREF_BACKED
         reloaded = load_specs(run_dir)
         assert reloaded[0].evidence_tier == EvidenceTier.XREF_BACKED
 
@@ -232,7 +232,7 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "test_auth.py", "check_pw", "sink", out_dir=run_dir,
         )
-        assert result is False
+        assert result is None
 
     def test_path_prefix_matches(self, tmp_path):
         """src/auth.py should match spec with file=auth.py."""
@@ -245,7 +245,7 @@ class TestPromoteSpecOnAnnotation:
         result = promote_spec_on_annotation(
             "src/auth.py", "check_pw", "sink", out_dir=run_dir,
         )
-        assert result is True
+        assert result == EvidenceTier.XREF_BACKED
 
 
 class TestResolveOutDir:
@@ -306,3 +306,56 @@ class TestTaintSpecParamsCoercion:
              "taint_classes": ["cmdi"], "role": "sink"},
         ])
         assert specs[0].params_affected == [0, 1]
+
+
+class TestPromoteSpecTierByGrade:
+    """Non-human-grade annotations promote to the hint tier only."""
+
+    def _store(self, tmp_path, tier=EvidenceTier.HEURISTIC):
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            _make_spec(fn="exec_cmd", file="src/cmd.py", role="sink",
+                       evidence_tier=tier),
+        ])
+        return run_dir
+
+    def test_machine_grade_promotes_to_header_backed(self, tmp_path):
+        run_dir = self._store(tmp_path)
+        result = promote_spec_on_annotation(
+            "src/cmd.py", "exec_cmd", "sink", out_dir=run_dir,
+            human_grade=False,
+        )
+        assert result == EvidenceTier.HEADER_BACKED
+        reloaded = load_specs(run_dir)
+        assert reloaded[0].evidence_tier == EvidenceTier.HEADER_BACKED
+        assert reloaded[0].source == "annotation_asserted"
+
+    def test_machine_grade_never_touches_xref_backed(self, tmp_path):
+        run_dir = self._store(tmp_path, tier=EvidenceTier.XREF_BACKED)
+        result = promote_spec_on_annotation(
+            "src/cmd.py", "exec_cmd", "sink", out_dir=run_dir,
+            human_grade=False,
+        )
+        assert result is None
+        reloaded = load_specs(run_dir)
+        assert reloaded[0].evidence_tier == EvidenceTier.XREF_BACKED
+
+    def test_machine_grade_never_touches_header_backed(self, tmp_path):
+        run_dir = self._store(tmp_path, tier=EvidenceTier.HEADER_BACKED)
+        result = promote_spec_on_annotation(
+            "src/cmd.py", "exec_cmd", "sink", out_dir=run_dir,
+            human_grade=False,
+        )
+        assert result is None
+
+    def test_human_grade_promotes_over_header_backed(self, tmp_path):
+        # A prior hint-tier promotion doesn't block the operator's.
+        run_dir = self._store(tmp_path, tier=EvidenceTier.HEADER_BACKED)
+        result = promote_spec_on_annotation(
+            "src/cmd.py", "exec_cmd", "sink", out_dir=run_dir,
+            human_grade=True,
+        )
+        assert result == EvidenceTier.XREF_BACKED
+        reloaded = load_specs(run_dir)
+        assert reloaded[0].source == "operator_confirmed"

@@ -187,30 +187,49 @@ def promote_spec_on_annotation(
     status: str,
     *,
     out_dir: Path | None = None,
-) -> bool:
-    """Promote an IRIS spec when an operator confirms via /annotate.
+    human_grade: bool = True,
+) -> EvidenceTier | None:
+    """Promote an IRIS spec when an annotation confirms it.
 
-    When an operator marks a function with status ``sink``,
-    ``entry_point``, or ``finding`` (and ``source=human``), any
-    matching IRIS spec is promoted to XREF_BACKED — the highest
-    automatically assignable tier.
+    When a function is annotated with status ``sink``,
+    ``entry_point``, or ``finding``, any matching IRIS spec is
+    promoted:
 
-    Returns True if a spec was promoted and the store was updated.
+      * ``human_grade=True`` (operator note: ``source=human`` with an
+        interactive-TTY provenance stamp, or a legacy pre-stamp note)
+        → XREF_BACKED, the highest automatically assignable tier,
+        with ``source="operator_confirmed"``.
+      * ``human_grade=False`` (agent/llm-sourced, or a human claim
+        stamped non-interactive) → HEADER_BACKED, the hint tier,
+        with ``source="annotation_asserted"``. Useful signal, but
+        never operator authority.
+
+    Promotion only raises a spec's tier; a spec already at or above
+    the target keeps its tier (so a non-human-grade note can never
+    touch an XREF_BACKED spec).
+
+    Returns the tier applied when at least one spec was promoted and
+    the store updated, else ``None``.
     """
     role = _ANNOTATION_STATUS_TO_ROLE.get(status)
     if role is None:
-        return False
+        return None
 
     resolved = _resolve_out_dir(out_dir)
     if resolved is None:
-        return False
+        return None
 
     specs = load_specs(resolved)
     if not specs:
-        return False
+        return None
 
     promoted = False
-    target_tier = EvidenceTier.XREF_BACKED
+    if human_grade:
+        target_tier = EvidenceTier.XREF_BACKED
+        spec_source = "operator_confirmed"
+    else:
+        target_tier = EvidenceTier.HEADER_BACKED
+        spec_source = "annotation_asserted"
     target_rank = TIER_RANK.get(target_tier, 0)
 
     for spec in specs:
@@ -226,7 +245,7 @@ def promote_spec_on_annotation(
         if TIER_RANK.get(spec.evidence_tier, 0) >= target_rank:
             continue
         spec.evidence_tier = target_tier
-        spec.source = "operator_confirmed"
+        spec.source = spec_source
         promoted = True
 
     if promoted:
@@ -245,10 +264,12 @@ def promote_spec_on_annotation(
             target_path=Path(stored_target) if stored_target else None,
         )
         logger.info(
-            "IRIS: promoted %s:%s to %s via operator annotation",
+            "IRIS: promoted %s:%s to %s via %s annotation",
             source_file, function, target_tier.value,
+            "operator" if human_grade else "machine-attributed",
         )
-    return promoted
+        return target_tier
+    return None
 
 
 def _resolve_out_dir(out_dir: Path | None) -> Path | None:

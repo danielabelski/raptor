@@ -94,6 +94,7 @@ from core.annotations import (
     annotation_path,
     compute_function_hash,
     detect_invocation_context,
+    is_human_grade,
     iter_all_annotations,
     read_annotation,
     read_file_annotations,
@@ -342,9 +343,12 @@ def cmd_add(opts: argparse.Namespace) -> int:
 
 def _promote_iris_spec(base: Path, opts: argparse.Namespace,
                        metadata: dict) -> None:
-    """Close the annotation→IRIS loop: an operator-confirmed
-    ``sink`` / ``entry_point`` / ``finding`` annotation promotes any
-    matching IRIS taint spec so next-run taint coverage widens.
+    """Close the annotation→IRIS loop: a ``sink`` / ``entry_point`` /
+    ``finding`` annotation promotes any matching IRIS taint spec so
+    next-run taint coverage widens. Human-grade notes (operator at an
+    interactive TTY) promote to xref_backed; everything else — agent /
+    llm sourced, or a human claim stamped non-interactive — promotes
+    to the header_backed hint tier only.
 
     Best-effort — a missing IRIS store or promotion failure never
     fails the add. The annotations base lives directly under the
@@ -352,15 +356,19 @@ def _promote_iris_spec(base: Path, opts: argparse.Namespace,
     resolving the project dir from a run-level child, so ``base``
     doubles as the store lookup hint.
     """
-    if metadata.get("source") != "human" or not opts.status:
+    if not opts.status:
         return
     try:
         from core.iris import promote_spec_on_annotation
 
-        if promote_spec_on_annotation(
+        tier = promote_spec_on_annotation(
             opts.file, opts.function, opts.status, out_dir=base,
-        ):
-            print("promoted matching IRIS taint spec(s) to xref_backed")
+            human_grade=is_human_grade(metadata),
+        )
+        if tier is not None:
+            print(
+                f"promoted matching IRIS taint spec(s) to {tier.value}"
+            )
     except Exception:
         logger.debug("IRIS spec promotion failed", exc_info=True)
 

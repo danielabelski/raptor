@@ -614,6 +614,11 @@ class AFLRunner:
         # Count final crashes across all instances
         crash_files = self._collect_all_crash_files()
         total_crashes = len(crash_files)
+        # Single directory containing every collected crash — with parallel
+        # secondaries, returning only main/crashes would count secondary
+        # crashes in the total above but silently exclude them from the
+        # downstream CrashCollector analysis phase.
+        crashes_dir = self._merge_crash_files(crash_files)
 
         elapsed = time.time() - start_time
         
@@ -657,7 +662,7 @@ class AFLRunner:
         logger.info("=" * 70)
         logger.info("Duration: %.1fs", elapsed)
         logger.info("Unique crashes: %s", total_crashes)
-        logger.info("Crashes dir: %s", self.output_dir)
+        logger.info("Crashes dir: %s", crashes_dir)
         logger.info("=" * 70)
 
         # Run coverage analysis if requested
@@ -670,7 +675,7 @@ class AFLRunner:
                 for key, value in coverage_stats.items():
                     logger.info("  %s: %s", key, value)
 
-        return total_crashes, self.output_dir / "main" / "crashes"
+        return total_crashes, crashes_dir
 
     @staticmethod
     def _close_process_logs(entry: dict) -> None:
@@ -705,6 +710,34 @@ class AFLRunner:
                     f for f in crashes_dir.iterdir() if f.name.startswith("id:")
                 )
         return sorted(crash_files)
+
+    def _merge_crash_files(self, crash_files: list[Path]) -> Path:
+        """Return one directory containing every collected crash file.
+
+        Single-instance campaigns (or ones where only the main instance
+        crashed) keep the historical ``main/crashes`` directory. When a
+        secondary instance found crashes, hardlink (or copy) every crash
+        into ``<output_dir>/merged_crashes`` so the downstream
+        CrashCollector sees them all. Names keep their ``id:`` prefix
+        (the collector filters on it) and gain an ``,instance:<name>``
+        suffix to disambiguate identical AFL ids across instances.
+        """
+        main_crashes = self.output_dir / "main" / "crashes"
+        if all(f.parent.parent.name == "main" for f in crash_files):
+            return main_crashes
+
+        merged = self.output_dir / "merged_crashes"
+        merged.mkdir(parents=True, exist_ok=True)
+        for f in crash_files:
+            instance = f.parent.parent.name
+            dest = merged / f"{f.name},instance:{instance}"
+            if dest.exists():
+                continue
+            try:
+                dest.hardlink_to(f)
+            except OSError:
+                shutil.copy2(f, dest)
+        return merged
 
     @staticmethod
     def _tail_file(path: Path, max_bytes: int = 4096) -> str:

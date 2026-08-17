@@ -524,6 +524,40 @@ implementation notes, and open work tracking lives at
 
 ---
 
+## Security-Event Stream
+
+Security-relevant rejections and denials are recorded on a dedicated
+observability stream: `log_security_event()` in `core/logging/`.  It is
+observability, not a control -- emitters call it on rejection, denial,
+and fail-closed paths whose behaviour is already decided, and the call
+never raises.
+
+**What emits today:**
+
+- Rejected git clone/fetch URLs (`invalid_repo_url`) -- URL allowlist
+  violations, with secrets redacted from the logged URL
+- Sandbox denials (`sandbox_denial`) -- denial type and return code from
+  sandboxed subprocesses
+- Repo-supplied scanner config rejection (`untrusted_rules_dir_rejected`)
+  -- repo YAML never loads as Semgrep configuration
+- Environment sanitisation failure (`env_sanitisation_failed`) during
+  validation-stage binary discovery
+
+**Where it lands:** the framework-level JSONL audit trail under
+`out/logs/raptor_<timestamp>_pid<pid>_<nnnn>.jsonl` (not the per-run
+output directory).  Each event is a WARNING record whose message is
+`SECURITY: <event_type> - <message>`, with `event_type` and the
+emitter's structured fields as JSON keys.  Payloads carry identifiers
+only -- never environment values or key material.
+
+There is no dedicated viewer; inspect with standard JSONL tooling:
+
+```bash
+jq -c 'select(.message | startswith("SECURITY:"))' out/logs/raptor_*.jsonl
+```
+
+---
+
 ## Deliberate Posture Decisions
 
 Security choices that look surprising out of context, made consciously

@@ -2471,6 +2471,31 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         )
         if edge_count:
             logger.debug("bootstrapped %d call edges from checklist", edge_count)
+    if not context_map.get("crypto_inventory"):
+        # Bare-audit fallback (A9): without a prior /understand map the
+        # crypto API packs never fed the audit — per-function contexts
+        # and strategy routing saw zero crypto_inventory refs even on
+        # an openssl-shaped target. Pack-driven mechanical scan; a
+        # cocci-derived inventory from a real map always wins.
+        try:
+            from core.orchestration.context_map_crypto import (
+                enrich_with_crypto_inventory,
+            )
+            n_crypto = enrich_with_crypto_inventory(
+                context_map,
+                checklist=checklist,
+                target_path=config.target_path,
+            )
+            if n_crypto:
+                logger.info(
+                    "crypto inventory: %d call sites from the crypto API "
+                    "packs (mechanical bootstrap — no /understand map)",
+                    n_crypto,
+                )
+        except Exception:
+            logger.debug(
+                "crypto inventory bootstrap failed", exc_info=True,
+            )
     flow_traces = load_flow_traces(config.out_dir)
 
     variant_targets = _load_variants(config.out_dir)

@@ -158,6 +158,16 @@ def compute_gaps(
     from .strategy import learned_vocab
     gap_vocab = learned_vocab(out_dir, target_path_str or None)
     entry_point_sinks = _build_sink_reachability(context_map)
+    # Per-function crypto_inventory index (map-enriched or audit-prep
+    # pack bootstrap) so strategy routing sees crypto call sites — the
+    # path-derived "crypto" keyword tag alone missed files whose names
+    # carry no crypto vocabulary.
+    crypto_by_key: dict[str, list] = {}
+    for _site in (context_map or {}).get("crypto_inventory", []) or []:
+        _sf = _site.get("file")
+        _sfn = _site.get("function")
+        if _sf and _sfn:
+            crypto_by_key.setdefault(f"{_sf}:{_sfn}", []).append(_site)
     current_spans: dict[str, tuple] = {}
     items_by_key: dict[str, tuple] = {}
     for file_info in checklist.get("files", []):
@@ -196,6 +206,7 @@ def compute_gaps(
             return sorted(strategies_from_item(
                 item, fp,
                 reachable_sinks=entry_point_sinks.get(key),
+                crypto_inventory=crypto_by_key.get(key),
                 target_path=target_path_str or None,
                 domain_vocab=gap_vocab,
             ))
@@ -294,6 +305,9 @@ def compute_gaps(
             strategies = strategies_from_item(
                 item, file_path,
                 reachable_sinks=reachable_sinks,
+                crypto_inventory=crypto_by_key.get(
+                    f"{file_path}:{name}",
+                ),
                 target_path=target_path_str or None,
                 domain_vocab=gap_vocab,
             )

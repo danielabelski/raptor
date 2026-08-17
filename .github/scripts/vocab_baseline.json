@@ -773,8 +773,14 @@
   "kind": "literal"
  },
  "core/config/__init__.py::LLM_API_KEY_VARS": {
-  "count": 20,
-  "kind": "literal"
+  "count": 21,
+  "kind": "literal",
+  "note": "LLM credential env vars layered by get_llm_env (provider API keys - infrastructure constants, not a learnable name vocabulary); grew to 21 when AWS_BEARER_TOKEN_BEDROCK joined as a Bedrock selection signal + credential"
+ },
+ "core/config/__init__.py::LLM_ROUTING_ENV_VARS": {
+  "count": 12,
+  "kind": "literal",
+  "note": "LLM transport-routing env vars carried into LLM child envs (backend-selection flags and AWS profile/region names - infrastructure constants, not a learnable name vocabulary); same class as cc_proxy_hosts._PROVIDER_ENV_KEYS"
  },
  "core/config/__init__.py::SAFE_ENV_ALLOWLIST": {
   "count": 28,

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class Fallback:
     impact: str
     fallback_description: str
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "tool": self.tool,
             "fallback_tool": self.fallback_tool,
@@ -47,7 +47,7 @@ class Fallback:
         }
 
 
-_DEGRADATION_MATRIX: List[Fallback] = [
+_DEGRADATION_MATRIX: list[Fallback] = [
     Fallback(
         tool="joern",
         fallback_tool="tree-sitter + LLM",
@@ -72,9 +72,11 @@ _DEGRADATION_MATRIX: List[Fallback] = [
     Fallback(
         tool="binary",
         fallback_tool="source-only",
-        impact="Lose all binary mechanical intelligence. Source-only audit, "
-               "no Layer 0, no binary oracle.",
-        fallback_description="Layers 1-2-3 only (Joern + LLM, no Layer 0)",
+        impact="Lose binary-derived mechanical intelligence and the "
+               "binary oracle. The Layer 0 source-pattern pre-sweep "
+               "still runs (it reads source, not binaries).",
+        fallback_description="Layers 1-2-3 plus source-pattern Layer 0 "
+                             "(no binary-backed evidence)",
     ),
     Fallback(
         tool="semgrep",
@@ -130,7 +132,7 @@ _DEGRADATION_MATRIX: List[Fallback] = [
 _FALLBACK_BY_TOOL = {f.tool: f for f in _DEGRADATION_MATRIX}
 
 
-def get_fallback(tool: str) -> Optional[Fallback]:
+def get_fallback(tool: str) -> Fallback | None:
     return _FALLBACK_BY_TOOL.get(tool.lower())
 
 
@@ -138,11 +140,11 @@ def get_fallback(tool: str) -> Optional[Fallback]:
 class DegradationReport:
     """Tracks which tools are available and which degraded."""
 
-    available: List[str] = field(default_factory=list)
-    degraded: List[Fallback] = field(default_factory=list)
-    unavailable_no_fallback: List[str] = field(default_factory=list)
+    available: list[str] = field(default_factory=list)
+    degraded: list[Fallback] = field(default_factory=list)
+    unavailable_no_fallback: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "available": self.available,
             "degraded": [f.to_dict() for f in self.degraded],
@@ -151,7 +153,7 @@ class DegradationReport:
 
 
 def assess_degradation(
-    capabilities: Dict[str, bool],
+    capabilities: dict[str, bool],
 ) -> DegradationReport:
     """Assess which tools are available and which need fallbacks.
 
@@ -199,7 +201,7 @@ def format_degradation_report(report: DegradationReport) -> str:
 
 
 def format_capabilities_table(
-    capabilities: Dict[str, bool],
+    capabilities: dict[str, bool],
 ) -> str:
     """Format capabilities as a markdown table for the audit report."""
     lines = [
@@ -230,7 +232,7 @@ class TriageSignalAvailability:
     layer0_findings: bool = False
     complexity_metrics: bool = True
 
-    def conservative_defaults(self) -> Dict[str, bool]:
+    def conservative_defaults(self) -> dict[str, bool]:
         """When a signal is unavailable, return the conservative default.
 
         Conservative = assume reachable/present (review more, not less).

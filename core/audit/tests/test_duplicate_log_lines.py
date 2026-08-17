@@ -3,7 +3,7 @@
 Observed on a real instrumented run: the Joern pre-sweep announcement
 printed twice (logger + progress callback), and the budget-exhausted
 stop line printed multiple times (logger + progress callback, plus
-one client-side "Budget exceeded" ERROR per post-exhaustion dispatch
+one client-side "Budget exceeded" line per post-exhaustion dispatch
 attempt).
 """
 
@@ -147,8 +147,8 @@ class TestClientBudgetLogOnce:
             return _sink
 
         monkeypatch.setattr(
-            client_mod.logger, "error",
-            _make_sink(logging.ERROR, client_mod.logger.error),
+            client_mod.logger, "info",
+            _make_sink(logging.INFO, client_mod.logger.info),
         )
         monkeypatch.setattr(
             client_mod.logger, "debug",
@@ -163,7 +163,8 @@ class TestClientBudgetLogOnce:
             assert client._acquire_budget(0.5) is False
 
         budget_lines = [r for r in records if "Budget exceeded" in r[1]]
-        errors = [r for r in budget_lines if r[0] == logging.ERROR]
+        # INFO, not ERROR: a designed budget stop is not a failure.
+        infos = [r for r in budget_lines if r[0] == logging.INFO]
         debugs = [r for r in budget_lines if r[0] == logging.DEBUG]
-        assert len(errors) == 1, budget_lines
+        assert len(infos) == 1, budget_lines
         assert len(debugs) == 9

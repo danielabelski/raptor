@@ -136,6 +136,14 @@ def mine_security_fixes(
 
     target_path = Path(target_path)
     if not _is_git_repo(target_path):
+        # Loud once: on an extracted tarball this feature has nothing
+        # to mine, and a silent skip is indistinguishable from a
+        # broken oracle.
+        logger.info(
+            "fix-history: target is not a git repository — "
+            "security-fix mining skipped (run against a git checkout "
+            "to enable variant hunts and regression hypotheses)",
+        )
         return []
 
     proc = _run_git(

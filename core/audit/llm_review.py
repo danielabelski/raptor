@@ -1189,6 +1189,17 @@ def make_review_fn(
                 snippet = counter[:120]
                 if len(counter) > 120:
                     snippet += "…"
+                # Annotate the body: the prose below argues clean, but
+                # the stored verdict is suspicious — without this
+                # marker an operator reading the journal sees
+                # "Verdict: clean" text under a suspicious record and
+                # cannot tell which one to trust.
+                result["body"] = (
+                    "[counter-hypothesis escalation: the review "
+                    "rationale below concludes clean, but a compelling "
+                    "counter-hypothesis kept this verdict suspicious "
+                    f"— {snippet}]\n\n" + (result.get("body") or "")
+                )
                 logger.debug(
                     "counter-hypothesis escalation %s:%s: %s",
                     ctx["file"], ctx["function"], snippet,
@@ -1209,6 +1220,13 @@ def make_review_fn(
                 status = "clean"
                 result["status"] = status
                 result["all_refuted_demotion"] = True
+                # Keep the journal body consistent with the stored
+                # verdict (the prose may still argue suspicion).
+                result["body"] = (
+                    "[all-refuted demotion: every hypothesis below was "
+                    "refuted by the review itself — verdict recorded "
+                    "as clean]\n\n" + (result.get("body") or "")
+                )
                 logger.info(
                     "all-refuted demotion %s:%s: %d hypotheses refuted%s",
                     ctx["file"], ctx["function"], len(hypotheses),
@@ -1225,6 +1243,12 @@ def make_review_fn(
             status = "clean"
             result["status"] = status
             result["rationale_consistency_demotion"] = True
+            result["body"] = (
+                f"[rationale-consistency demotion: the rationale below "
+                f"concludes clean while the emitted status was {prior} "
+                f"— verdict recorded as clean]\n\n"
+                + (result.get("body") or "")
+            )
             logger.info(
                 "rationale-consistency demotion %s:%s: "
                 "rationale says clean but status was %s",

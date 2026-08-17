@@ -720,14 +720,19 @@ def load_cached_cpg(
 
     current_hash = _target_content_hash(target)
     if manifest.get("content_hash") != current_hash:
+        # Name the cache path: several consumers keep separate CPG
+        # caches, and a bare "will rebuild" printed next to another
+        # consumer's fast cache load reads as a contradiction.
         logger.info(
-            "CPG cache stale (hash %s → %s), will rebuild",
+            "CPG cache at %s stale (hash %s → %s) — this cache will "
+            "be rebuilt",
+            cpg_dir,
             manifest.get("content_hash", "?")[:8], current_hash[:8],
         )
         return None
 
     langs = set(manifest.get("languages", []))
-    logger.info("CPG cache hit for %s", target)
+    logger.info("CPG cache hit for %s (cache: %s)", target, cpg_dir)
     return JoernCPG(
         path=cpg_path,
         target=target,

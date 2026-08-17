@@ -503,7 +503,11 @@ class JoernServer:
                          resp.get("stderr", "")[:500])
             return False
 
-        logger.info("CPG loaded in %.1fs", elapsed)
+        # "imported into the server", not "loaded": this is the REPL
+        # importCpg round-trip for an already-built CPG file — a fast
+        # line here does NOT contradict an earlier cache-stale/rebuild
+        # message from a CPG *build* cache.
+        logger.info("CPG imported into Joern server in %.1fs", elapsed)
         self._cpg_loaded = True
         self._cpg_path = cpg_path
 

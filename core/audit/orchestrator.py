@@ -2251,6 +2251,13 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 "sarif_cache: imported %d results from prior scan runs",
                 _sibling_results,
             )
+        else:
+            # Loud-once no-op: a silent zero is indistinguishable
+            # from the import never running.
+            logger.info(
+                "sarif_cache: no fresh sibling-run SARIF found for "
+                "this target — nothing imported",
+            )
     except Exception:
         logger.debug("sibling SARIF import failed", exc_info=True)
 
@@ -2404,7 +2411,17 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 l0_result.findings.extend(l0_findings)
             l0_result.functions_scanned += 1
         if l0_result.findings:
-            logger.info(format_layer0_summary(l0_result))
+            # Name the producer and the destination: this counter is
+            # the source-pattern pre-sweep attached to the evidence
+            # index — NOT the mechanical-detector findings written to
+            # mechanical-findings.json later, whose different count
+            # read as a silent dedup next to this line.
+            logger.info(
+                "%s (source-pattern pre-sweep; attached to the "
+                "evidence index, separate from mechanical-findings"
+                ".json)",
+                format_layer0_summary(l0_result),
+            )
     except Exception:
         logger.debug("binary layer0 pre-sweep failed", exc_info=True)
 
@@ -2969,7 +2986,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             mech_path = config.out_dir / "mechanical-findings.json"
             mech_path.write_text(json.dumps(mechanical_findings, indent=2))
             logger.info(
-                "wrote %d mechanical findings to %s",
+                "wrote %d mechanical-detector findings to %s "
+                "(separate from the Layer 0 source-pattern pre-sweep)",
                 sum(len(v) for v in mechanical_findings.values()),
                 mech_path,
             )

@@ -844,11 +844,11 @@ class LLMClient:
         # actually cost instead of a token $0.10. Guarded by
         # _stats_lock.
         self._call_cost_history: dict[str, tuple[int, float]] = {}
-        # First budget-exceeded refusal logs at ERROR; the rest at
-        # DEBUG. Every post-exhaustion dispatch attempt hits the
-        # budget check, so an unconditional ERROR printed the same
-        # line once per doomed call (observed 3x+ per run). Guarded
-        # by _stats_lock.
+        # First budget-exceeded refusal logs at INFO (a designed
+        # stop, not a failure); the rest at DEBUG. Every post-
+        # exhaustion dispatch attempt hits the budget check, so an
+        # unconditional log printed the same line once per doomed
+        # call (observed 3x+ per run). Guarded by _stats_lock.
         self._budget_exceeded_logged = False
         # Held-back slice of max_cost_per_scan that ordinary dispatch
         # may not spend (see hold_budget_reserve). Lets a late phase
@@ -1630,18 +1630,22 @@ class LLMClient:
         self._maybe_evict_cache()
 
     def _log_budget_exceeded_locked(self, estimated_cost: float) -> None:
-        """Log a budget refusal — ERROR the first time, DEBUG after.
+        """Log a budget refusal — INFO the first time, DEBUG after.
 
         Callers hold ``_stats_lock``. Every post-exhaustion dispatch
-        attempt hits the budget check, so an unconditional ERROR
-        printed the identical line once per doomed call.
+        attempt hits the budget check, so an unconditional log printed
+        the identical line once per doomed call. INFO, not ERROR: the
+        refusal is the cost cap working as designed (the run continues
+        to a successful exit and the loop driver prints the operator-
+        facing stop summary) — an ERROR here made every clean budget
+        stop read like a failure.
         """
         # getattr: tests build clients via ``__new__`` without the
         # constructor-initialised flag.
         emit = (
             logger.debug
             if getattr(self, "_budget_exceeded_logged", False)
-            else logger.error
+            else logger.info
         )
         self._budget_exceeded_logged = True
         reserve = getattr(self, "_budget_reserve", 0.0) or 0.0

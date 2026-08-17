@@ -7,6 +7,40 @@
 [Static Analysis](static-analysis.md)
 
 
+## Self-test
+
+After an install, upgrade, or environment change, run the smoke suite
+before debugging individual commands:
+
+```bash
+libexec/raptor-self-test
+```
+
+The default tier makes **no LLM calls**: children run with a scrubbed
+environment (API keys, dispatcher socket, Ollama, and the `claude` CLI
+all hidden) plus an isolated `HOME`, so it never touches your real
+`~/.raptor`, project registry, or caches.  Everything runs in a
+temporary scratch directory that is deleted on success (kept on failure,
+or with `--keep`).  It exercises the command surface end to end:
+doctor, describe, scan, CodeQL scan-only, SCA, agentic (no-LLM paths),
+fuzz plan-only, exploit feasibility, project and run lifecycle,
+annotate, diagram, review, coverage, and the audit mechanical sweep.
+
+Two opt-in tiers extend it:
+
+| Flag | Adds |
+|------|------|
+| `--with-llm` | Budget-capped LLM runs (`/audit`, `/agentic` analysis, `/ask`); default total under ~$2, tunable with `--max-llm-cost` and `--model` |
+| `--deep` | Long-running mechanical extras (binary-oracle end-to-end) |
+
+Other useful flags: `--list` (show cases), `--only <substr>` (filter,
+repeatable), `--json <file>` (machine-readable results),
+`--timeout <seconds>` (per-case cap).  Exit codes: 0 all selected cases
+passed or were skipped, 1 any failure, 2 usage error.  Run it from a
+RAPTOR session (or with the libexec trust marker set, as for any
+libexec script).
+
+
 ## Sandbox
 
 ### Exit code 3: sandbox cannot engage

@@ -60,6 +60,21 @@ def _model_banner_shown() -> bool:
     return False
 
 
+_TRANSPORT_BANNER_SHOWN = False
+
+
+def _transport_banner_shown() -> bool:
+    """Return True (and set flag) if the no-external-LLM transport
+    banner was already logged. The claude-CLI transport constructs a
+    client per call, so an unguarded banner printed once per worker
+    call — 12 copies on one observed run."""
+    global _TRANSPORT_BANNER_SHOWN
+    if _TRANSPORT_BANNER_SHOWN:
+        return True
+    _TRANSPORT_BANNER_SHOWN = True
+    return False
+
+
 # After this many consecutive cache write failures, auto-disable
 # caching for the rest of the run. Tuned for "transient blip vs
 # durable problem" — three retries lets a momentary EBUSY recover,
@@ -799,7 +814,10 @@ class LLMClient:
         # were succeeding through the CLI. Say what is actually true.
         from .detection import detect_llm_availability
         availability = detect_llm_availability()
-        if not availability.external_llm:
+        # Once per PROCESS, not per client: transports that spawn a
+        # client per call (claude CLI) otherwise print this banner on
+        # every worker call.
+        if not availability.external_llm and not _transport_banner_shown():
             primary = self.config.primary_model
             if primary is not None and primary.provider.startswith("claudecode"):
                 logger.info(

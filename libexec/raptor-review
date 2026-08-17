@@ -497,8 +497,13 @@ def cmd_note(args):
         cmd.extend(["-m", args.body])
     if getattr(args, "status", None):
         cmd.extend(["--status", args.status])
+    if getattr(args, "base", None):
+        cmd.extend(["--base", args.base])
     env = os.environ.copy()
     env["_RAPTOR_TRUSTED"] = "1"
+    # No --source: the delegate stamps the inherited fds' TTY context
+    # and derives the default from it, so an interactive /review note
+    # lands as human and an agent-driven one as agent.
     sys.exit(subprocess.call(cmd, env=env))
 
 
@@ -510,6 +515,8 @@ def cmd_edit(args):
         sys.executable, str(libexec / "raptor-annotate"),
         "edit", args.file, args.function,
     ]
+    if getattr(args, "base", None):
+        cmd.extend(["--base", args.base])
     env = os.environ.copy()
     env["_RAPTOR_TRUSTED"] = "1"
     sys.exit(subprocess.call(cmd, env=env))
@@ -676,10 +683,18 @@ def main():
     p_note.add_argument("function")
     p_note.add_argument("-m", "--body", default=None)
     p_note.add_argument("--status", default=None)
+    p_note.add_argument(
+        "--base", default=None,
+        help="annotation base dir (default: active project)",
+    )
 
     p_edit = sub.add_parser("edit", parents=[common], help="Edit operator note")
     p_edit.add_argument("file")
     p_edit.add_argument("function")
+    p_edit.add_argument(
+        "--base", default=None,
+        help="annotation base dir (default: active project)",
+    )
 
     p_stale = sub.add_parser(
         "stale", parents=[common],

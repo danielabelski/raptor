@@ -24,9 +24,15 @@ Add options:
                         staleness detection.
   --target REPO_ROOT    Where to find the source file for hash
                         computation. Defaults to current directory.
-  --meta KEY=VALUE      Extra metadata (repeatable)
-  --source VALUE        Defaults to ``human``. Set ``llm`` only for
-                        scripted, non-operator-driven adds.
+  --meta KEY=VALUE      Extra metadata (repeatable). ``tty`` and
+                        ``provenance`` are reserved (recorded
+                        automatically); ``source`` here may not
+                        conflict with an explicit ``--source``.
+  --source VALUE        ``human`` / ``llm`` / ``agent``. Default is
+                        context-sensitive: ``human`` when the
+                        invocation is interactive (any of stdin /
+                        stdout / stderr is a TTY), ``agent`` when
+                        none is.
   --overwrite MODE      ``all`` (default) or ``respect-manual``.
 
 ls options:
@@ -38,9 +44,16 @@ stale options:
   --target REPO_ROOT    Where to resolve source files for hash
                         recomputation. Defaults to current directory.
 
-All ``add`` calls default to ``metadata.source=human``, so subsequent
-LLM passes that pass ``overwrite=respect-manual`` will not clobber
-operator notes.
+Provenance: every ``add`` / ``edit`` stamps the invocation context
+into the metadata (``tty=<which fds were TTYs>``,
+``provenance=interactive-tty|non-tty``). ``source`` remains
+caller-asserted, but the stamp records the context that can
+contradict it — readers grant human-grade weight only to
+``source=human`` notes with an interactive stamp (or legacy
+pre-stamp notes). A human running fully detached (cron, all fds
+redirected) is stamped ``non-tty`` even with ``--source human``;
+remedy: re-run the add interactively, or accept hint-tier weight.
+See ``core.annotations.provenance`` for the model.
 """
 from __future__ import annotations
 
@@ -75,9 +88,12 @@ if not (os.environ.get("CLAUDECODE")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: F401
 from core.annotations import (
+    NON_TTY,
+    PROVENANCE_KEYS,
     Annotation,
     annotation_path,
     compute_function_hash,
+    detect_invocation_context,
     iter_all_annotations,
     read_annotation,
     read_file_annotations,
@@ -233,11 +249,42 @@ def _parse_lines(spec: str) -> tuple[int, int]:
 def cmd_add(opts: argparse.Namespace) -> int:
     base = _resolve_base(opts.base)
     metadata = _parse_meta(opts.meta or [])
+    for reserved in PROVENANCE_KEYS:
+        if reserved in metadata:
+            sys.stderr.write(
+                f"raptor-annotate: --meta {reserved}=... is reserved — "
+                f"the invocation-context stamp is recorded "
+                f"automatically and cannot be asserted by the caller\n"
+            )
+            return 2
+    meta_source = metadata.pop("source", None)
+    if (
+        meta_source is not None
+        and opts.source is not None
+        and meta_source != opts.source
+    ):
+        sys.stderr.write(
+            f"raptor-annotate: conflicting source values — "
+            f"--source {opts.source!r} vs --meta source={meta_source!r}\n"
+        )
+        return 2
     if opts.status:
         metadata["status"] = opts.status
     if opts.cwe:
         metadata["cwe"] = opts.cwe
-    metadata.setdefault("source", opts.source or "human")
+    # Invocation-context stamp. Recorded unconditionally; ``source``
+    # defaults from it (interactive terminal → human, agent-spawned /
+    # fully-redirected → agent). An explicit --source is preserved
+    # verbatim — it's caller-asserted — but the stamp records the
+    # context that can contradict it.
+    context = detect_invocation_context()
+    interactive = context["provenance"] != NON_TTY
+    metadata["source"] = (
+        opts.source
+        or meta_source
+        or ("human" if interactive else "agent")
+    )
+    metadata.update(context)
     # Resolve line bounds: explicit --lines wins; otherwise try to
     # discover via inventory checklist when one is available.
     line_bounds: tuple[int, int] | None = None
@@ -464,6 +511,29 @@ def cmd_edit(opts: argparse.Namespace) -> int:
         return rc
     # Re-parse to verify the user didn't break the format.
     anns = read_file_annotations(base, opts.file)
+    # An edit is a write: re-stamp the addressed function's section
+    # with THIS invocation's context. A non-interactive edit of a
+    # human note (the laundering shape) thereby demotes its own
+    # provenance; ``source`` is left untouched (editing doesn't
+    # re-assert authorship).
+    target = next((a for a in anns if a.function == opts.function), None)
+    if target is not None:
+        meta = dict(target.metadata)
+        meta.update(detect_invocation_context())
+        try:
+            write_annotation(base, Annotation(
+                file=opts.file, function=target.function,
+                body=target.body, metadata=meta,
+            ))
+        except ValueError as e:
+            # Editor-introduced metadata failed write validation
+            # (e.g. a typoed source enum). Surface it — the edited
+            # text is still on disk, only the re-stamp was refused.
+            sys.stderr.write(
+                f"raptor-annotate: warning — could not re-stamp "
+                f"provenance after edit: {e}\n"
+            )
+        anns = read_file_annotations(base, opts.file)
     print(f"saved {path} ({len(anns)} annotation(s))")
     return 0
 
@@ -546,7 +616,12 @@ def _build_parser() -> argparse.ArgumentParser:
              "dir's ancestors)",
     )
     pa.add_argument("--meta", action="append")
-    pa.add_argument("--source", default="human")
+    pa.add_argument(
+        "--source", default=None, choices=("human", "llm", "agent"),
+        help="who authored the note (default: human when the "
+             "invocation is interactive — any std fd a TTY — else "
+             "agent)",
+    )
     pa.add_argument("--overwrite", default="all",
                     choices=("all", "respect-manual"))
 

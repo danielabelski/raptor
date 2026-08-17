@@ -3,34 +3,86 @@
 Drives the CLI as a subprocess. Each test sets ``_RAPTOR_TRUSTED=1``
 to bypass the trust-marker guard and passes ``--base`` so no project
 state is required.
+
+Provenance note: a plain subprocess run has every std fd piped, so
+the CLI stamps ``provenance=non-tty`` and defaults ``source=agent``.
+Tests that need an interactive invocation pass ``tty=(...)`` to
+:func:`_run`, which attaches a pty to the named fds.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
+import pty
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CLI = REPO_ROOT / "libexec" / "raptor-annotate"
 
 
-def _run(*args, env=None, input_text=None):
-    """Run the CLI with --base resolved by caller in args."""
+@dataclass
+class _Result:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _run(*args, env=None, input_text=None, tty=(), stdin_path=None):
+    """Run the CLI with --base resolved by caller in args.
+
+    ``tty``: names among ``stdin``/``stdout``/``stderr`` to attach to
+    a pty slave, making them real TTYs in the child (streams so
+    attached are not captured). ``stdin_path``: redirect stdin from a
+    file (the ``add ... < notes.txt`` shape); mutually exclusive with
+    ``input_text`` and ``"stdin" in tty``.
+    """
     real_env = dict(os.environ)
     real_env["_RAPTOR_TRUSTED"] = "1"
     if env:
         real_env.update(env)
-    result = subprocess.run(
-        [sys.executable, str(CLI), *args],
-        env=real_env,
-        capture_output=True,
-        text=True,
-        input=input_text,
-        check=False,
-    )
-    return result
+    if not tty and stdin_path is None:
+        result = subprocess.run(
+            [sys.executable, str(CLI), *args],
+            env=real_env,
+            capture_output=True,
+            text=True,
+            input=input_text,
+            check=False,
+        )
+        return _Result(result.returncode, result.stdout, result.stderr)
+
+    master, slave = pty.openpty()
+    stdin_file = None
+    try:
+        kwargs = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        for name in tty:
+            assert name in ("stdin", "stdout", "stderr")
+            kwargs[name] = slave
+        if stdin_path is not None:
+            assert "stdin" not in tty and input_text is None
+            stdin_file = open(stdin_path, "rb")  # noqa: SIM115 — closed in finally
+            kwargs["stdin"] = stdin_file
+        proc = subprocess.Popen(
+            [sys.executable, str(CLI), *args],
+            env=real_env, text=True, **kwargs,
+        )
+        send = input_text if kwargs["stdin"] == subprocess.PIPE else None
+        out, err = proc.communicate(input=send, timeout=60)
+        return _Result(proc.returncode, out or "", err or "")
+    finally:
+        if stdin_file is not None:
+            stdin_file.close()
+        for fd in (master, slave):
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +124,10 @@ class TestAdd:
         text = ann_file.read_text()
         assert "## process" in text
         assert "status=clean" in text
-        assert "source=human" in text  # default
+        # All fds piped → non-interactive default + stamp.
+        assert "source=agent" in text
+        assert "provenance=non-tty" in text
+        assert "tty=none" in text
         assert "Reviewed, no taint" in text
 
     def test_add_with_cwe_and_meta(self, tmp_path):
@@ -248,9 +303,11 @@ class TestAdd:
         assert r.returncode == 2
 
     def test_add_respect_manual_skips_human(self, tmp_path):
-        # First write as human (default).
+        # First write as human (explicit — a piped run defaults to
+        # agent, which respect-manual deliberately does not protect).
         _run("add", "src/foo.py", "f",
              "--base", str(tmp_path),
+             "--source", "human",
              "-m", "manual note")
         # Now LLM tries respect-manual — should skip.
         r = _run("add", "src/foo.py", "f",
@@ -557,9 +614,11 @@ class TestIrisPromotionOnAdd:
         base.mkdir()
         self._write_store(tmp_path)
 
+        # Interactive stdin → source defaults to human, human-grade.
         r = _run("add", "src/io.c", "write_out",
                  "--base", str(base), "--status", "sink",
-                 "-m", "confirmed sink wrapper")
+                 "-m", "confirmed sink wrapper",
+                 tty=("stdin",))
         assert r.returncode == 0, r.stderr
         assert "promoted matching IRIS taint spec" in r.stdout
 
@@ -609,3 +668,190 @@ class TestIrisPromotionOnAdd:
                  "-m", "no IRIS store present")
         assert r.returncode == 0, r.stderr
         assert "wrote " in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# Invocation-context provenance (stamp + context-sensitive defaults)
+# ---------------------------------------------------------------------------
+
+
+def _meta_of(base: Path, source_file: str, function: str) -> dict:
+    from core.annotations import read_annotation
+    ann = read_annotation(base, source_file, function)
+    assert ann is not None
+    return dict(ann.metadata)
+
+
+class TestProvenanceDefaults:
+    def test_all_piped_defaults_to_agent(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path), "-m", "x")
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "agent"
+        assert meta["provenance"] == "non-tty"
+        assert meta["tty"] == "none"
+
+    def test_tty_stdin_defaults_to_human(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path), "-m", "x",
+                 tty=("stdin",))
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "human"
+        assert meta["provenance"] == "interactive-tty"
+        assert meta["tty"] == "stdin"
+
+    def test_stdin_from_file_with_tty_stdout_defaults_to_human(
+        self, tmp_path,
+    ):
+        # ``raptor-annotate add ... --body-file - < notes.txt`` in a
+        # terminal: stdin is a file, stdout is still a TTY — a
+        # legitimate human workflow, must stay interactive.
+        notes = tmp_path / "notes.txt"
+        notes.write_text("prose from a file\n")
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--body-file", "-",
+                 stdin_path=notes, tty=("stdout",))
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "human"
+        assert meta["provenance"] == "interactive-tty"
+        assert meta["tty"] == "stdout"
+        text = (tmp_path / "src" / "a.py.md").read_text()
+        assert "prose from a file" in text
+
+    def test_forged_human_all_piped_keeps_contradicting_stamp(
+        self, tmp_path,
+    ):
+        # Explicit --source human is caller-asserted and preserved,
+        # but the stamp records the non-interactive context.
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--source", "human", "-m", "x")
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "human"
+        assert meta["provenance"] == "non-tty"
+        assert meta["tty"] == "none"
+        from core.annotations import is_human_grade
+        assert not is_human_grade(meta)
+
+    def test_explicit_source_wins_over_context(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--source", "llm", "-m", "x", tty=("stdin",))
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "llm"
+        assert meta["provenance"] == "interactive-tty"
+
+
+class TestProvenanceQuirks:
+    def test_meta_source_conflicting_with_flag_is_hard_error(
+        self, tmp_path,
+    ):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--source", "human", "--meta", "source=llm", "-m", "x")
+        assert r.returncode == 2
+        assert "conflicting source" in r.stderr
+        assert not (tmp_path / "src" / "a.py.md").exists()
+
+    def test_meta_source_agreeing_with_flag_is_fine(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--source", "llm", "--meta", "source=llm", "-m", "x")
+        assert r.returncode == 0, r.stderr
+        assert _meta_of(tmp_path, "src/a.py", "f")["source"] == "llm"
+
+    def test_meta_source_without_flag_is_used(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--meta", "source=llm", "-m", "x")
+        assert r.returncode == 0, r.stderr
+        assert _meta_of(tmp_path, "src/a.py", "f")["source"] == "llm"
+
+    def test_invalid_meta_source_rejected(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--meta", "source=humman", "-m", "x")
+        assert r.returncode == 2
+        assert "invalid annotation source" in r.stderr
+        assert not (tmp_path / "src" / "a.py.md").exists()
+
+    def test_invalid_source_flag_rejected_by_argparse(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--source", "humman", "-m", "x")
+        assert r.returncode == 2
+        assert not (tmp_path / "src" / "a.py.md").exists()
+
+    def test_meta_tty_and_provenance_are_reserved(self, tmp_path):
+        for pair in ("tty=stdin", "provenance=interactive-tty"):
+            r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                     "--meta", pair, "-m", "x")
+            assert r.returncode == 2, pair
+            assert "reserved" in r.stderr
+        assert not (tmp_path / "src" / "a.py.md").exists()
+
+
+class TestEditRestamp:
+    def test_non_interactive_edit_demotes_provenance(self, tmp_path):
+        # Interactive add: human + interactive stamp.
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "-m", "human note", tty=("stdin",))
+        assert r.returncode == 0, r.stderr
+        assert _meta_of(tmp_path, "src/a.py", "f")["provenance"] == \
+            "interactive-tty"
+        # Fully-piped edit (the laundering shape): the edit itself
+        # re-stamps the section non-tty; source stays human but the
+        # note is no longer human-grade.
+        r = _run("edit", "src/a.py", "f", "--base", str(tmp_path),
+                 env={"EDITOR": "true"})
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "human"
+        assert meta["provenance"] == "non-tty"
+        assert meta["tty"] == "none"
+        from core.annotations import is_human_grade
+        assert not is_human_grade(meta)
+
+    def test_interactive_edit_keeps_interactive_stamp(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "-m", "human note", tty=("stdin",))
+        assert r.returncode == 0, r.stderr
+        r = _run("edit", "src/a.py", "f", "--base", str(tmp_path),
+                 env={"EDITOR": "true"}, tty=("stdin",))
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "human"
+        assert meta["provenance"] == "interactive-tty"
+
+    def test_edit_preserves_body_and_other_metadata(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "--base", str(tmp_path),
+                 "--status", "clean", "--cwe", "CWE-78",
+                 "-m", "the prose body", tty=("stdin",))
+        assert r.returncode == 0, r.stderr
+        r = _run("edit", "src/a.py", "f", "--base", str(tmp_path),
+                 env={"EDITOR": "true"})
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["status"] == "clean"
+        assert meta["cwe"] == "CWE-78"
+        assert "the prose body" in \
+            (tmp_path / "src" / "a.py.md").read_text()
+
+
+class TestReviewNoteDelegationInheritsContext:
+    """/review note delegates to raptor-annotate via subprocess with
+    inherited fds — a piped /review note must land as agent."""
+
+    def test_piped_review_note_defaults_to_agent(self, tmp_path):
+        review = REPO_ROOT / "libexec" / "raptor-review"
+        env = dict(os.environ)
+        env["_RAPTOR_TRUSTED"] = "1"
+        r = subprocess.run(
+            [sys.executable, str(review), "note",
+             "src/a.py", "f", "-m", "note body",
+             "--base", str(tmp_path)],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        if r.returncode != 0 and "--base" in r.stderr:
+            import pytest
+            pytest.skip("raptor-review note does not forward --base")
+        assert r.returncode == 0, r.stderr
+        meta = _meta_of(tmp_path, "src/a.py", "f")
+        assert meta["source"] == "agent"
+        assert meta["provenance"] == "non-tty"

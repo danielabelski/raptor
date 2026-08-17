@@ -312,3 +312,114 @@ class TestPersistence:
     def test_load_malformed_returns_empty(self, tmp_path: Path):
         (tmp_path / "fp-patterns.json").write_text("not json")
         assert load_fp_patterns(tmp_path) == []
+
+
+class TestProvenanceTiering:
+    """Human-grade clean notes mine as operator patterns; agent notes
+    and human claims stamped non-interactive mine as machine patterns
+    (hint tier); legacy source=llm annotations are not mined."""
+
+    def _write(self, ann_dir: Path, meta: str) -> None:
+        md = ann_dir / "src" / "auth.py.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text(
+            "## check_pw\n"
+            f"<!-- meta: {meta} -->\n"
+            "Not exploitable: input is allowlisted upstream.\n",
+        )
+
+    def test_stamped_interactive_human_is_operator(self, tmp_path: Path):
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        self._write(
+            ann_dir,
+            "source=human status=clean cwe=CWE-89 "
+            "provenance=interactive-tty tty=stdin",
+        )
+        patterns = scan_fp_patterns(ann_dir)
+        assert len(patterns) == 1
+        assert patterns[0].origin == "operator"
+
+    def test_legacy_human_without_stamp_is_operator(self, tmp_path: Path):
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        self._write(ann_dir, "source=human status=clean cwe=CWE-89")
+        patterns = scan_fp_patterns(ann_dir)
+        assert len(patterns) == 1
+        assert patterns[0].origin == "operator"
+
+    def test_agent_note_is_machine_tier_not_dropped(self, tmp_path: Path):
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        self._write(
+            ann_dir,
+            "source=agent status=clean cwe=CWE-89 "
+            "provenance=non-tty tty=none",
+        )
+        patterns = scan_fp_patterns(ann_dir)
+        assert len(patterns) == 1
+        assert patterns[0].origin == "machine"
+
+    def test_forged_human_non_tty_is_machine_tier(self, tmp_path: Path):
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        self._write(
+            ann_dir,
+            "source=human status=clean cwe=CWE-89 "
+            "provenance=non-tty tty=none",
+        )
+        patterns = scan_fp_patterns(ann_dir)
+        assert len(patterns) == 1
+        assert patterns[0].origin == "machine"
+
+    def test_legacy_llm_annotation_still_not_mined(self, tmp_path: Path):
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        self._write(ann_dir, "source=llm status=clean cwe=CWE-89")
+        assert scan_fp_patterns(ann_dir) == []
+
+    def test_operator_patterns_render_before_machine(self):
+        machine = FPPattern(
+            file_pattern="*.py", function="m_fn", cwe="CWE-89",
+            hypothesis_snippet="sql", human_note="agent view",
+            origin="machine",
+        )
+        operator = FPPattern(
+            file_pattern="*.py", function="op_fn", cwe="CWE-89",
+            hypothesis_snippet="sql", human_note="operator view",
+            origin="operator",
+        )
+        text = format_fp_warnings([machine, operator], "src/x.py")
+        assert text is not None
+        op_idx = text.index("op_fn")
+        m_idx = text.index("m_fn")
+        assert op_idx < m_idx
+        assert "machine-attributed" in text
+        # Operator entries keep the plain override phrasing.
+        assert 'was overridden: "operator view"' in text
+
+    def test_origin_roundtrips_through_persistence(self, tmp_path: Path):
+        pats = [
+            FPPattern(
+                file_pattern="*.c", function="f", cwe="CWE-120",
+                hypothesis_snippet="overflow", human_note="bounds ok",
+                origin="machine",
+            ),
+        ]
+        save_fp_patterns(pats, tmp_path)
+        loaded = load_fp_patterns(tmp_path)
+        assert loaded[0].origin == "machine"
+
+    def test_legacy_persisted_patterns_default_to_operator(
+        self, tmp_path: Path,
+    ):
+        # fp-patterns.json written before origin existed.
+        (tmp_path / "fp-patterns.json").write_text(json.dumps([{
+            "file_pattern": "*.py",
+            "function": "f",
+            "cwe": "CWE-89",
+            "hypothesis_snippet": "sql",
+            "human_note": "parameterised",
+        }]))
+        loaded = load_fp_patterns(tmp_path)
+        assert loaded[0].origin == "operator"

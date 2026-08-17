@@ -36,7 +36,13 @@ class FPPattern:
             if not specified).
         hypothesis_snippet: key phrase from the LLM's hypothesis
             (extracted from metadata or body).
-        human_note: the human operator's rationale (the override body).
+        human_note: the note's rationale (the override body).
+        origin: ``"operator"`` when the override is human-grade
+            (source=human with an interactive-TTY provenance stamp,
+            or a legacy pre-stamp note); ``"machine"`` for agent
+            notes and human claims stamped non-interactive. Machine
+            patterns render at the hint tier: after operator ones,
+            with machine-attributed phrasing.
     """
 
     file_pattern: str
@@ -44,6 +50,7 @@ class FPPattern:
     cwe: str
     hypothesis_snippet: str
     human_note: str
+    origin: str = "operator"
 
 
 def _file_extension_glob(source_file: str) -> str:
@@ -106,10 +113,17 @@ def scan_fp_patterns(
     against LLM review journal entries.
 
     A false positive is detected when:
-    1. A human annotation marks a function ``clean`` (Layer 3), AND
+    1. An annotation marks a function ``clean`` (Layer 3), AND
     2. A journal entry for the same function has verdict ``finding`` or
-       ``suspicious`` (Layer 2), or the human annotation itself carries
+       ``suspicious`` (Layer 2), or the annotation itself carries
        CWE/hypothesis metadata or a ``lesson`` exists in the journal.
+
+    Human-grade clean notes (source=human with an interactive-TTY
+    provenance stamp, or legacy pre-stamp notes) yield ``operator``
+    patterns. Agent notes and human claims stamped non-interactive
+    yield ``machine`` patterns — still mined, rendered at the hint
+    tier. Legacy ``source=llm`` annotations are not mined at all:
+    they are pre-migration LLM verdicts (priors), not overrides.
 
     Args:
         annotations_dir: path to the human annotations directory.
@@ -133,18 +147,23 @@ def scan_fp_patterns(
     if journal_dir:
         journal_index = _load_journal_index(journal_dir)
 
-    human_overrides: dict[str, list] = defaultdict(list)
+    from core.annotations import is_human_grade
+
+    clean_overrides: dict[str, list] = defaultdict(list)
     for ann in iter_all_annotations(annotations_dir):
         src = ann.metadata.get("source", "")
         status = ann.metadata.get("status", "")
-        if src == "human" and status == "clean":
+        if src in ("human", "agent") and status == "clean":
             key = f"{ann.file}:{ann.function}"
-            human_overrides[key].append(ann)
+            clean_overrides[key].append(ann)
 
     raw_patterns: list[FPPattern] = []
-    for key, anns in human_overrides.items():
+    for key, anns in clean_overrides.items():
         for ann in anns:
-            pattern = _detect_fp(ann, journal_index.get(key))
+            origin = (
+                "operator" if is_human_grade(ann.metadata) else "machine"
+            )
+            pattern = _detect_fp(ann, journal_index.get(key), origin=origin)
             if pattern is not None:
                 raw_patterns.append(pattern)
 
@@ -184,24 +203,27 @@ def _load_journal_index(journal_dir: Path) -> dict[str, _JournalSummary]:
 
 
 def _detect_fp(
-    human_ann,
+    ann,
     journal: _JournalSummary | None,
+    *,
+    origin: str = "operator",
 ) -> FPPattern | None:
-    """Check whether a human-clean annotation contradicts a journal
+    """Check whether a clean annotation contradicts a journal
     finding/suspicious verdict, signalling a false-positive pattern."""
-    source_file = human_ann.file
+    source_file = ann.file
 
     if journal is not None and journal.verdict in ("finding", "suspicious"):
         return FPPattern(
             file_pattern=_file_extension_glob(source_file),
-            function=human_ann.function,
+            function=ann.function,
             cwe=journal.cwe,
             hypothesis_snippet=_first_line(journal.body),
-            human_note=human_ann.body,
+            human_note=ann.body,
+            origin=origin,
         )
 
-    cwe = human_ann.metadata.get("cwe", "")
-    hypothesis = human_ann.metadata.get("hypothesis", "")
+    cwe = ann.metadata.get("cwe", "")
+    hypothesis = ann.metadata.get("hypothesis", "")
     has_lesson = journal is not None and bool(journal.lesson)
 
     if cwe or hypothesis or has_lesson:
@@ -209,26 +231,29 @@ def _detect_fp(
         if not snippet and has_lesson:
             snippet = _first_line(journal.lesson)  # type: ignore[union-attr]
         if not snippet:
-            snippet = _first_line(human_ann.body)
+            snippet = _first_line(ann.body)
         return FPPattern(
             file_pattern=_file_extension_glob(source_file),
-            function=human_ann.function,
+            function=ann.function,
             cwe=cwe or (journal.cwe if journal else ""),
             hypothesis_snippet=snippet,
-            human_note=human_ann.body,
+            human_note=ann.body,
+            origin=origin,
         )
 
-    # Human anchor: an operator clean-note whose prose is FP-shaped
-    # (explains why a hypothesised vulnerability is not real) is a
-    # warning primer even without CWE/hypothesis metadata or a journal
-    # contradiction. The operator typed a rationale — reuse it.
-    if _is_fp_shaped_note(human_ann.body):
+    # Prose anchor: a clean-note whose prose is FP-shaped (explains
+    # why a hypothesised vulnerability is not real) is a warning
+    # primer even without CWE/hypothesis metadata or a journal
+    # contradiction. The author typed a rationale — reuse it (at the
+    # note's origin tier).
+    if _is_fp_shaped_note(ann.body):
         return FPPattern(
             file_pattern=_file_extension_glob(source_file),
-            function=human_ann.function,
+            function=ann.function,
             cwe=journal.cwe if journal else "",
-            hypothesis_snippet=_first_line(human_ann.body),
-            human_note=human_ann.body,
+            hypothesis_snippet=_first_line(ann.body),
+            human_note=ann.body,
+            origin=origin,
         )
 
     return None
@@ -292,6 +317,11 @@ def format_fp_warnings(
     if not relevant:
         return None
 
+    # Operator-grade patterns render first; machine-attributed ones
+    # (agent notes, demoted human claims) fill the remaining slots at
+    # the hint tier. Stable within each group.
+    relevant.sort(key=lambda p: p.origin != "operator")
+
     lines = ["Previous false positives in this codebase:"]
     for p in relevant[:_MAX_WARNINGS_RENDERED]:
         parts: list[str] = []
@@ -304,10 +334,22 @@ def format_fp_warnings(
 
         note = _envelope_text(_first_line(p.human_note, max_len=100))
         entry = " ".join(part for part in parts if part).strip()
-        if note:
-            entry = f'{entry} was overridden: "{note}"'
+        if p.origin == "operator":
+            if note:
+                entry = f'{entry} was overridden: "{note}"'
+            else:
+                entry = f"{entry} was overridden to clean"
         else:
-            entry = f"{entry} was overridden to clean"
+            if note:
+                entry = (
+                    f"{entry} was marked clean by a machine-attributed "
+                    f'note (hint tier): "{note}"'
+                )
+            else:
+                entry = (
+                    f"{entry} was marked clean by a machine-attributed "
+                    f"note (hint tier)"
+                )
 
         lines.append(f"- {entry}")
 
@@ -387,6 +429,9 @@ def load_fp_patterns(out_dir: Path) -> list[FPPattern]:
                 cwe=str(item.get("cwe", "")),
                 hypothesis_snippet=str(item.get("hypothesis_snippet", "")),
                 human_note=str(item.get("human_note", "")),
+                # Files saved before origin existed were mined under
+                # the human-only rule — default to operator.
+                origin=str(item.get("origin", "operator")),
             ))
         except (TypeError, ValueError):
             continue

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ class ToolPolicy:
     network_deny: bool = True
     fs_read_only: bool = True
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "tool": self.tool,
             "profile": self.profile,
             "reason": self.reason,
@@ -58,7 +58,7 @@ class ToolPolicy:
         return d
 
 
-_TOOL_POLICIES: Dict[str, ToolPolicy] = {
+_TOOL_POLICIES: dict[str, ToolPolicy] = {
     "readelf": ToolPolicy(
         tool="readelf", profile=SandboxProfile.TRUSTED,
         reason="binutils parsing attacker-controlled ELF headers",
@@ -139,7 +139,7 @@ _TOOL_POLICIES: Dict[str, ToolPolicy] = {
 }
 
 
-def get_sandbox_profile(tool: str) -> Optional[ToolPolicy]:
+def get_sandbox_profile(tool: str) -> ToolPolicy | None:
     """Look up the sandbox policy for a tool.
 
     Returns None for unknown tools — callers should refuse to run
@@ -159,7 +159,7 @@ def require_sandbox_profile(tool: str) -> ToolPolicy:
     return policy
 
 
-def all_policies() -> List[ToolPolicy]:
+def all_policies() -> list[ToolPolicy]:
     """Return all registered tool policies."""
     return list(_TOOL_POLICIES.values())
 
@@ -170,8 +170,8 @@ _LLM_PHASES = frozenset({
 
 
 def validate_all_tools_sandboxed(
-    invoked_tools: List[str],
-) -> List[str]:
+    invoked_tools: list[str],
+) -> list[str]:
     """Check that every invoked tool has a sandbox policy.
 
     Returns a list of tools WITHOUT a policy (should be empty).
@@ -188,7 +188,7 @@ def validate_all_tools_sandboxed(
 
 
 def format_sandbox_summary(
-    invoked_tools: Optional[List[str]] = None,
+    invoked_tools: list[str] | None = None,
 ) -> str:
     """Render a summary of sandbox coverage."""
     if invoked_tools is None:

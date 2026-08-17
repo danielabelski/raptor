@@ -39,9 +39,9 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import core.startup.process_init  # noqa: E402,F401
 import hashlib  # noqa: E402
 
-import core.startup.process_init  # noqa: E402,F401
 from core.artifacts.provenance import sanitise_free_text, stamp_provenance  # noqa: E402
 from core.inventory.lookup import normalise_path  # noqa: E402
 from core.json import load_json, save_json  # noqa: E402

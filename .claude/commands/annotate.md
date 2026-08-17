@@ -47,6 +47,7 @@ LLM passes (`/agentic`, `/understand` post-processor) that pass
 | `--lines N-M` | Source line range; computes `metadata.hash` for staleness |
 | `--target REPO_ROOT` | Where to find source for hash (default: cwd) |
 | `--meta KEY=VALUE` | Extra metadata (repeatable) |
+| `--checklist PATH` | Inventory `checklist.json` for auto-discovering function bounds when `--lines` is omitted |
 | `--source VALUE` | Defaults to `human`; set `llm` only for scripted adds |
 | `--overwrite MODE` | `all` (default) or `respect-manual` |
 

@@ -32,6 +32,10 @@ Static analysis scan using Semgrep (and optionally CodeQL and Coccinelle).
 | `--no-cocci` | Disable Coccinelle (spatch) analysis |
 | `--languages <langs>` | Restrict to specific languages |
 | `--build-command <cmd>` | Build command for compiled languages (CodeQL) |
+| `--traced-build` / `--no-traced-build` | Opt into (or force off) traced-build C/C++ CodeQL extraction |
+| `--compiler-scan` / `--no-compiler-scan` | Enable/disable the compiler-analyzer channel (gcc `-fanalyzer` / clang `--analyze`) |
+| `--compiler-scan-max-tus <n>` | Cap on translation units for `--compiler-scan` (default 2000) |
+| `--expanded-semgrep` | Re-run rules over preprocessor-expanded views of macro-heavy C/C++ TUs |
 | `--keep` | Keep intermediate scan artefacts |
 | `--sequential` | Run scanners sequentially instead of in parallel |
 | `--out <dir>` | Output directory override |
@@ -96,6 +100,10 @@ patches.
 | `--build-command <cmd>` | Build command for compiled languages |
 | `--extended` | Enable extended CodeQL query suites |
 | `--codeql-cli <path>` | Path to CodeQL CLI binary |
+| `--traced-build` / `--no-traced-build` | Opt into (or force off) traced-build C/C++ CodeQL extraction |
+| `--compiler-scan` / `--no-compiler-scan` | Enable/disable the compiler-analyzer scan channel (gcc `-fanalyzer` / clang `--analyze`) |
+| `--compiler-scan-max-tus <n>` | Cap on translation units for `--compiler-scan` (default 2000) |
+| `--expanded-semgrep` | Re-run rules over preprocessor-expanded views of macro-heavy C/C++ TUs |
 
 **Output control**
 
@@ -113,7 +121,6 @@ patches.
 | `--binary <path>` | Explicit debug binary for reachability filtering (repeatable) |
 | `--binary-auto` | Auto-detect locally-built binaries |
 | `--binary-edges` | Extract call edges and vtable resolution via r2 |
-| `--no-binary-oracle` | Disable binary-oracle filtering entirely |
 | `--target-kind {auto,library,hybrid,application}` | Target kind for binary oracle |
 | `--allow-unreachable` | Do not suppress unreachable findings |
 | `--check-mitigations` | Run binary mitigation checks |
@@ -163,6 +170,8 @@ patches.
 | `--skip-sca-triage` | Skip SCA triage |
 | `--accept-weakened-defenses` | Accept findings in weakened-defence categories |
 | `--trust-repo` | Trust the repository (skip untrusted-repo sanitisation) |
+| `--no-trust-repo` | Keep strict trust checks, overriding `--trust-repo` and the project's `config` trust marker |
+| `--max-cost-usd <usd>` | LLM budget cap for the run (default $10) |
 
 **Sandbox** (see [sandbox](sandbox.md))
 
@@ -253,7 +262,7 @@ Coverage-guided fuzzing with automatic harness generation.
 | `--duration <secs>` | Fuzz duration in seconds (default 3600) |
 | `--parallel <n>` | Number of parallel fuzzing jobs |
 | `--max-crashes <n>` | Stop after N unique crashes (default 10) |
-| `--timeout <secs>` | Per-execution timeout |
+| `--timeout <ms>` | Per-execution timeout in milliseconds (default 1000) |
 | `--out <dir>` | Output directory override |
 | `--check-sanitizers` | Verify sanitiser availability |
 | `--recompile-guide` | Emit recompilation guidance for instrumentation |
@@ -348,14 +357,13 @@ Analyse existing SARIF findings with LLM without re-scanning.
 | `--max-findings <n>` | Maximum findings to analyse |
 | `--prefer <glob>` | Prioritise findings matching glob (repeatable) |
 | `--exclude-dir <glob>` | Exclude directories matching glob (repeatable) |
-| `--checklist` | Generate a review checklist |
+| `--checklist <file>` | Inventory `checklist.json` for function metadata lookup |
 | `--no-journal` | Skip journal updates |
 | `--no-checker-synthesis` | Skip checker synthesis |
 | `--no-verify-exploits` | Skip exploit verification |
 | `--no-judge-intent` | Skip intent judgement |
 | `--no-record-witnesses` | Skip witness recording |
 | `--no-verified-exemplars` | Skip verified exemplar generation |
-| `--sage-precall <path>` | SAGE pre-call context file |
 | `--prep-only` | Prepare context only, do not analyse |
 | `--max-parallel <n>` | Maximum parallel analysis workers |
 | `--model <model>` | LLM model (repeatable) |
@@ -383,7 +391,7 @@ code as vulnerable -- tool output is the verdict.
 |------|-------------|
 | `--strategy <name>` | Filter to one strategy: general, input_handling, concurrency, memory, auth, crypto, aliasing |
 | `--budget <N>` | Maximum functions to review (default: all gaps) |
-| `--scope <dir>` | Restrict to a subdirectory (successive scoped runs accumulate) |
+| `--scope <dir>` | Restrict to a subdirectory (repeatable; successive scoped runs accumulate) |
 | `--out <dir>` | Output directory |
 | `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep |
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
@@ -391,6 +399,12 @@ code as vulnerable -- tool output is the verdict.
 | `--review-passes <N>` | Independent review passes per function for self-consistency |
 | `--subsystem-depth <N>` | Directory grouping depth for subsystem-ordered review (default: 0) |
 | `--max-propagation-depth <N>` | Override adaptive constraint propagation depth (default: auto-calibrated) |
+| `--include-kinds <list>` | Extra item kinds beyond functions/methods: `top_level`, `macro`, `global` |
+| `--batch-sloc-threshold <N>` | Batch small functions per file into combined reviews (default 15; 0 disables) |
+| `--no-verdict-reuse` | Disable cross-run verdict reuse for unchanged functions |
+| `--schedule {cost,priority}` | Parallel review ordering |
+| `--dynamic` / `--no-dynamic` | Enable/disable dynamic validation for confirmed findings |
+| `--binary <path>` / `--binary-auto` / `--no-binary-oracle` | Binary-oracle reachability enrichment |
 | `--model <name>` | Model ID (repeatable for multi-model consensus) |
 | `--adversarial` | Adversarial reviewer that challenges positive verdicts |
 | `--no-validate` | Skip the /validate post-pass |
@@ -461,17 +475,17 @@ Accepts the same flags as [/agentic](#agentic) minus `--no-patches`.
 
 ### /understand
 
-Deep, adversarial code comprehension for security research.  Four mutually
-exclusive modes.
+Deep, adversarial code comprehension for security research.  Five modes.
 
 ```
 /understand <target> --map
 /understand <target> --trace <entry>
 /understand <target> --hunt <pattern>
 /understand <target> --teach <subject>
+/understand <target> --study <scope>
 ```
 
-**Mode flags** (exactly one required)
+**Mode flags**
 
 | Flag | Description |
 |------|-------------|
@@ -479,6 +493,12 @@ exclusive modes.
 | `--trace <entry>` | Follow one data-flow path source to sink |
 | `--hunt <pattern>` | Find all variants of a vulnerability pattern |
 | `--teach <subject>` | Explain a framework, library, or pattern |
+| `--study <scope>` | Extract semantic concepts (ownership, lifetime, contracts) |
+
+`--study` runs as its own pipeline and must not be combined with other
+modes; the `libexec/raptor-understand` substrate (binary `--map`,
+multi-model `--hunt`/`--trace`) accepts exactly one of its three
+modes per invocation.
 
 **Common flags**
 
@@ -499,6 +519,7 @@ exclusive modes.
 - `--trace` produces `flow-trace-<id>.json`
 - `--hunt` produces `variants.json`
 - `--teach` is inline (no file output)
+- `--study` produces `domain-model.json`
 
 Pipeline integration: [/validate](#validate) Stage 0 automatically imports
 `/understand` output via the bridge.  See [architecture](architecture.md) for
@@ -538,7 +559,7 @@ Skill-dispatched multi-agent orchestration.
 | Flag | Description |
 |------|-------------|
 | `--max-followups <n>` | Maximum follow-up investigation rounds (default 3) |
-| `--max-retries <n>` | Maximum retries on transient failures (default 3) |
+| `--max-retries <n>` | Maximum hypothesis revision rounds (default 3) |
 
 Agents query GH Archive (BigQuery), live GitHub API, Wayback Machine, and
 local git history.  Requires `GOOGLE_APPLICATION_CREDENTIALS` for BigQuery.
@@ -564,6 +585,11 @@ Find vulnerable dependencies, gate CI, fix and pin.  Alias: `/raptor-sca`.
 /sca purl <ecosystem> <name> <version>
 /sca render <findings.json>
 /sca clean-cache --max-age <days>
+/sca dt-push <sbom> --url <url> --api-key <key>
+/sca suppress <list|check> <path>
+/sca bump <path> ...
+/sca fingerprint <path-or-image-ref> [--save|--check]
+/sca triage <path>
 ```
 
 **Scan flags** (default subcommand)
@@ -686,9 +712,8 @@ Dynamic instrumentation via Frida.  Skill-dispatched.
 **Bundled templates:** `api-trace`, `ssl-unpin`, `binary-flow-trace`,
 `bb-coverage`.
 
-See [Frida quickstart](frida/QUICKSTART.md) for installation and
-platform-specific setup ([Linux](frida/SETUP_LINUX.md),
-[macOS](frida/SETUP_MACOS.md)).
+See the [Frida guide](frida.md) for installation and platform-specific
+setup.
 
 ---
 
@@ -699,7 +724,7 @@ platform-specific setup ([Linux](frida/SETUP_LINUX.md),
 Named workspaces that corral analysis runs into a shared directory.
 
 ```
-/project create <name> --target <path> [-d <description>]
+/project create <name> --target <path> [-d <description>] [--output-dir <dir>] [--binary <path> ...] [--require-target-type <kind>]
 /project list
 /project status [<name>]
 /project use [<name>]
@@ -713,10 +738,14 @@ Named workspaces that corral analysis runs into a shared directory.
 /project diff <name> <run1> <run2>
 /project merge [<name>] [--type <type>] [--yes]
 /project findings [<name>] [--detailed]
-/project coverage [<name>] [--detailed]
+/project coverage [<name>] [--detailed] [--fail-under <pct>]
+/project correlate [<name>]
+/project provenance [<name>]
+/project show <run>
+/project threat-model <action> [args]
 /project annotations [<name>]
 /project annotations-diff <run-a> <run-b>
-/project clean [<name>] [--keep <n>] [--dry-run] [--yes]
+/project clean [<name>] [--keep <n>] [--dedup] [--dry-run] [--yes]
 /project export <name> <path> [--force]
 /project import <path> [--force] [--sha256 <hash>]
 /project binary add <path>
@@ -749,7 +778,11 @@ Named workspaces that corral analysis runs into a shared directory.
 | `diff` | Diff two runs within a project |
 | `merge` | Merge findings across runs (`--type` selects merge strategy) |
 | `findings` | Show merged findings (`--detailed` for per-finding breakdown) |
-| `coverage` | Show tool coverage summary (`--detailed` for per-file table) |
+| `coverage` | Show tool coverage summary (`--detailed` for per-file table, `--fail-under <pct>` for CI gating) |
+| `correlate` | Cross-run finding correlation |
+| `provenance` | Provenance rollup across all runs (SHAs, engines, models, reproducibility) |
+| `show` | Show one run's provenance detail |
+| `threat-model` | Manage the project threat-model artefact (init/show/export/sync/lint/diff/report/add/remove) |
 | `annotations` | Show annotations across runs |
 | `annotations-diff` | Diff annotations between two runs |
 | `clean` | Delete old runs (`--keep <n>` retains the N most recent, `--dry-run` previews) |
@@ -905,10 +938,10 @@ Markdown files mirroring the source tree, with `## function_name` sections.
 
 Status values: `clean` (reviewed, no concern), `suspicious` (real bug, not
 exploitable), `finding` (exploitable), `dormant` (unreachable / dead code),
-`entry_point`, `sink`, `trust_boundary`, `flow_step`, `unchecked_flow`,
 `error`.
 
-Annotations are emitted automatically by `/agentic` and `/understand`.
+Annotations are human-only: operators write them via `/annotate add`.
+LLM review outcomes are recorded in the review journal instead.
 
 ---
 
@@ -919,8 +952,13 @@ natural-language questions about model competence.
 
 ```
 /scorecard [list]
+/scorecard summary
+/scorecard recommend <decision_class>
+/scorecard chain-closure [--cwe <CWE-XX>]
 /scorecard compare <model-a> <model-b>
 /scorecard samples <decision_class>
+/scorecard mark <decision_class> --model <model> ...
+/scorecard tool-evidence <decision_class> --model <model> ...
 /scorecard pin <decision_class> --model <model> --as <mode>
 /scorecard unpin <decision_class> --model <model>
 /scorecard reset [<decision_class>] [--model <model>]
@@ -932,11 +970,13 @@ natural-language questions about model competence.
 |------|-------------|
 | `--by-savings` | Sort by cost savings |
 | `--by-miss-rate` | Sort by miss rate |
+| `--by-cost` | Sort by cost |
 | `--untrusted` | Show untrusted-only decisions |
 | `--learning` | Show learning-phase decisions |
 | `--prefix <prefix>` | Filter decision classes by prefix |
+| `--event-type <type>` | Filter by event type |
 | `--since <interval>` | Filter by recency (`Nd`, `Nh`) |
-| `--recency <days>` | Recency window in days |
+| `--freshness <days>` | Weight recent behaviour more heavily (half-life in days) |
 
 **Pin flags**
 
@@ -1091,7 +1131,9 @@ operator annotations.
 | `stats` | Entry counts, costs, coverage % |
 | `compact` | Compact project journal index |
 
-Options: `--out DIR` (explicit output directory), `--raw` (JSON output).
+Options: `--out DIR` (explicit output directory), `--project DIR`
+(explicit project directory), `--raw` (JSON output). `stale` also
+accepts `--source annotation|journal|both` and `--target <repo>`.
 
 ---
 

@@ -30,6 +30,13 @@ from packages.fuzzing.seed_corpus import prepare_builtin_seed_corpus
 logger = get_logger()
 
 _AFL_INT_RE = re.compile(r"^-?\d+")
+
+# Stats keys that can carry the path/corpus discovery count across AFL++
+# versions. Single source of truth — raptor_agentic's fuzz phase summary
+# consumes the same tuple so the two lists cannot drift.
+AFL_PATHS_FOUND_KEYS = (
+    "paths_found", "corpus_found", "queued_paths", "cur_path", "corpus_count",
+)
 _AFL_CRASH_EXECS_RE = re.compile(r"(?:^|,)execs:(\d+)(?:,|$)")
 
 
@@ -799,10 +806,10 @@ class AFLRunner:
     @classmethod
     def _afl_paths_found(cls, stats: dict) -> int:
         """Map current AFL++ stats to a useful path/corpus discovery count."""
-        for key in ("paths_found", "corpus_found", "queued_paths", "cur_path"):
+        for key in AFL_PATHS_FOUND_KEYS:
             if key in stats:
                 return cls._parse_afl_int(stats[key])
-        return cls._parse_afl_int(stats.get("corpus_count"))
+        return 0
 
     @staticmethod
     def _max_crash_execs(crashes_dir: Path) -> int:

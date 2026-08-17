@@ -1003,12 +1003,9 @@ def _build_fuzz_phase_summary(fuzzing_result: dict | None, fuzz_out: Path | None
         _safe_int(stats.get("total_executions")),
         _safe_int(telemetry.get("total_executions")),
     )
+    from packages.fuzzing.afl_runner import AFL_PATHS_FOUND_KEYS
     paths_found = max(
-        _safe_int(stats.get("paths_found")),
-        _safe_int(stats.get("corpus_found")),
-        _safe_int(stats.get("queued_paths")),
-        _safe_int(stats.get("cur_path")),
-        _safe_int(stats.get("corpus_count")),
+        *(_safe_int(stats.get(key)) for key in AFL_PATHS_FOUND_KEYS),
         _safe_int(telemetry.get("paths_found")),
     )
     coverage_percent = next(

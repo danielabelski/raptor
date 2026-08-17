@@ -112,3 +112,24 @@ class TestCrashHandoffErrorVisibility(unittest.TestCase):
             '"Crash → validate handoff failed: %s", e', src,
         )
         self.assertIn("Crash triage / validation handoff", src)
+
+
+class TestPathsFoundKeysShared(unittest.TestCase):
+    """The AFL stats key-priority list lives in one place.
+
+    Regression: _build_fuzz_phase_summary and AFLRunner._afl_paths_found
+    each carried their own copy of the key list with slightly different
+    entries; a key added to one was silently missing from the other.
+    """
+
+    def test_both_consumers_honour_every_shared_key(self):
+        from packages.fuzzing.afl_runner import AFL_PATHS_FOUND_KEYS, AFLRunner
+
+        for key in AFL_PATHS_FOUND_KEYS:
+            stats = {key: "7"}
+            self.assertEqual(AFLRunner._afl_paths_found(stats), 7, key)
+
+            summary = _build_fuzz_phase_summary(
+                {"fuzzer": "afl", "stats": stats}, None,
+            )
+            self.assertEqual(summary["paths_found"], 7, key)

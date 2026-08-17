@@ -112,6 +112,7 @@ def main() -> int:
 
     enriched = enrich_with_sink_discovery(
         context_map, Path(target_path), max_depth=args.max_depth,
+        run_dir=understand_dir,
     )
     if enriched:
         save_json(context_map_path, context_map)

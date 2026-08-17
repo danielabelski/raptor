@@ -16,10 +16,15 @@ from typing import Any
 
 from core.analysis.summaries import FunctionSummary, Precondition, TaintRule
 from core.evidence import EvidenceTier
+from core.security.prompt_framing import with_audit_framing
 
 logger = logging.getLogger(__name__)
 
-_SUMMARY_SYSTEM_PROMPT = (
+# Audit-purpose framing: this class was AUP-refused 18/18 in the final
+# comparison audit (bare code + security-extraction ask with no stated
+# purpose); the review class, which frames the audit context, went
+# 36/36. See core.security.prompt_framing.
+_SUMMARY_SYSTEM_PROMPT = with_audit_framing(
     "You are a security-focused code analyst.  Given a function's source, "
     "extract its security-relevant summary as JSON.  Be precise and terse.\n\n"
     "Analyse the function provided in the untrusted source-code block "
@@ -36,7 +41,7 @@ _SUMMARY_SYSTEM_PROMPT = (
     '- "error_paths": list of return-statement strings for error/failure returns.\n'
     '- "state_transitions": list of strings describing resource state changes '
     "(lock acquire/release, file open/close, allocation/free).\n\n"
-    "Return ONLY the JSON object.  No explanation, no markdown fencing."
+    "Return ONLY the JSON object.  No explanation, no markdown fencing.",
 )
 
 

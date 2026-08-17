@@ -14,13 +14,19 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from core.security.prompt_framing import with_audit_framing
+
 from .orchestrator import OrchestratorConfig, ReviewOutcome
 
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 10
 
-_BATCH_SYSTEM_PROMPT = (
+# Audit-purpose framing: same gap class as the refused summary /
+# spec_inference prompts (bare code + one-line security question);
+# unexercised in the final audit run (0 glances) but the shape is
+# identical. See core.security.prompt_framing.
+_BATCH_SYSTEM_PROMPT = with_audit_framing(
     "You are a security auditor doing a quick triage pass over multiple "
     "functions. For each function, determine whether it is security-relevant "
     "and could contain a vulnerability.\n\n"
@@ -29,7 +35,7 @@ _BATCH_SYSTEM_PROMPT = (
     '  {"file": "<file>", "function": "<name>", "status": "clean"|"suspicious", '
     '"body": "<one sentence>"}\n\n'
     'Use "suspicious" only when there is a concrete reason (e.g. unchecked '
-    "input, missing bounds check, unsafe pattern). Default to \"clean\"."
+    "input, missing bounds check, unsafe pattern). Default to \"clean\".",
 )
 
 # Per-function triage question, keyed by review mode. Lives in the

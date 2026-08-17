@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 from core.llm.coerce import structured_result
+from core.security.prompt_framing import with_audit_framing
 
 from .receipts import TIER_MECHANICAL, verify_receipt
 
@@ -50,12 +51,12 @@ _GATE_SCHEMA: dict = {
     "required": ["answerable", "answer", "quote"],
 }
 
-_GATE_SYSTEM_PROMPT = (
+_GATE_SYSTEM_PROMPT = with_audit_framing(
     "You are independently verifying a code-comprehension claim. "
     "Answer STRICTLY from the source snippets provided — never from "
     "prior knowledge. Copy a verbatim supporting quote (it is "
     "mechanically checked). If the snippets do not answer the "
-    "question, set answerable=false."
+    "question, set answerable=false.",
 )
 
 #: Overlap chunk length for quote agreement.

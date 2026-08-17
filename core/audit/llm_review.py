@@ -1302,9 +1302,16 @@ def call_llm_for_rule_refinement(
         if client is None:
             from core.llm.client import LLMClient
             client = LLMClient()
+        from core.security.prompt_framing import with_audit_framing
         response = client.generate(
             prompt,
-            system_prompt="You are a Semgrep rule author. Return only YAML.",
+            # Framed like every auxiliary audit class — the bare
+            # rule-author ask ships hypothesis + target code with no
+            # stated purpose (the refused-class shape, see
+            # core.security.prompt_framing).
+            system_prompt=with_audit_framing(
+                "You are a Semgrep rule author. Return only YAML.",
+            ),
             task_type="audit",
             call_class="rule_refinement",
         )

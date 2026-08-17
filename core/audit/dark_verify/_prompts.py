@@ -272,11 +272,17 @@ def build_witness_prompt(
     Returns ``(user, system)``.
     """
     from core.security.prompt_envelope import TaintedString, UntrustedBlock
+    from core.security.prompt_framing import with_audit_framing
 
     from .._util import envelope_prompt
 
     lang = language or language_for_file(file) or "python"
-    template = _TEMPLATES.get(lang, _TEMPLATES["python"])
+    # Audit-purpose framing: witness generation is the most
+    # exploit-shaped auxiliary ask — carry the same defensive-audit
+    # context the review class carries (see core.security.
+    # prompt_framing; the witness is executed in the run's sandbox to
+    # confirm or refute the finding, never against a live system).
+    template = with_audit_framing(_TEMPLATES.get(lang, _TEMPLATES["python"]))
     key = f"{file}:{function}"
     blocks = (
         UntrustedBlock(

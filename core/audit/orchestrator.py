@@ -6420,11 +6420,15 @@ def _run_concept_discovery(
     client = _run_llm_client(config)
 
     def _llm(prompt, schema, system_prompt):
+        from core.security.prompt_framing import with_audit_framing
         try:
             data, _ = client.generate_structured(
                 prompt=prompt,
                 schema=schema,
-                system_prompt=system_prompt,
+                # Audit-purpose framing — same auxiliary-class gap as
+                # the refused summary/spec prompts (see
+                # core.security.prompt_framing).
+                system_prompt=with_audit_framing(system_prompt),
                 task_type=TaskType.AUDIT,
                 call_class="concept_discovery",
             )

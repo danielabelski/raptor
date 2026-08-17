@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from core.llm.coerce import structured_result
+from core.security.prompt_framing import with_audit_framing
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ def find_chain_candidates(
     return candidates
 
 
-_CHAIN_SYSTEM = (
+_CHAIN_SYSTEM = with_audit_framing(
     "You are a security analyst.  Given two verified "
     "code defects on the same call path, decide whether "
     "they compose into a security vulnerability that "
@@ -159,7 +160,7 @@ _CHAIN_SYSTEM = (
     "- Bug A weakens a bounds check + Bug B uses the unchecked value\n"
     "- Bug A leaks a pointer + Bug B uses the leaked address\n"
     "- Bug A skips authentication under error + Bug B triggers the error\n\n"
-    "If they do NOT compose, set is_chain to false."
+    "If they do NOT compose, set is_chain to false.",
 )
 
 

@@ -93,11 +93,16 @@ def _build_llm_callable(config: Any):
         return None
 
     def _call(prompt: str, schema: dict[str, Any], system_prompt: str):
+        from core.security.prompt_framing import with_audit_framing
         try:
             data, _full = client.generate_structured(
                 prompt=prompt,
                 schema=schema,
-                system_prompt=system_prompt,
+                # Audit-purpose framing at the audit boundary — the
+                # packages-side grammar prompt states the rule-author
+                # role but not the audit context (see
+                # core.security.prompt_framing).
+                system_prompt=with_audit_framing(system_prompt),
                 task_type=TaskType.AUDIT,
                 # Telemetry class matches the "checker_synthesis"
                 # phase the orchestrator books this spend into, so

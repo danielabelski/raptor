@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.security.prompt_framing import with_audit_framing
+
 logger = logging.getLogger(__name__)
 
 
@@ -661,7 +663,10 @@ def _checks_return_value(source: str, function_name: str) -> bool:
     return False
 
 
-_LLM_SPEC_SYSTEM = """\
+# Audit-purpose framing: this class (the IRIS spec/refine leg) was
+# AUP-refused 19/19 in the final comparison audit — same gap as the
+# summary class. See core.security.prompt_framing.
+_LLM_SPEC_SYSTEM = with_audit_framing("""\
 You are inferring a security specification for a function. Given the source \
 code in the untrusted block (its file and function name are in the slots), \
 determine what this function SHOULD do — its contract with callers.
@@ -678,7 +683,7 @@ Respond with JSON only:
 Focus on security-relevant specifications: bounds on sizes, null-safety, \
 authentication requirements, sanitization guarantees, resource lifecycle, \
 crypto properties. Omit trivial specs (e.g. "returns a value").
-"""
+""")
 
 # Cap on source going into the spec prompt.
 _SPEC_SOURCE_MAX_CHARS = 4000

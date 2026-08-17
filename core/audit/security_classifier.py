@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from core.llm.coerce import structured_result
+from core.security.prompt_framing import with_audit_framing
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def _load_security_context(out_dir: Path) -> str:
         return ""
 
 
-_CLASSIFICATION_SYSTEM = (
+_CLASSIFICATION_SYSTEM = with_audit_framing(
     "You are a security impact classifier.  Given a "
     "verified code defect, decide whether it has security "
     "implications or is purely a quality issue.\n\n"
@@ -88,7 +89,7 @@ _CLASSIFICATION_SYSTEM = (
     "A defect that only affects correctness (wrong output, "
     "resource leak with no security consequence, cosmetic error) "
     "is a quality_finding.  A defect that an attacker can use "
-    "to violate a security property is a security_finding."
+    "to violate a security property is a security_finding.",
 )
 
 

@@ -143,10 +143,19 @@ def run_llm_summary_pass(
             function=function_name,
             source=source[:_MAX_SOURCE_CHARS],
         )
+        # Short call class: minimal prompt, small response. The
+        # per-call ceiling (honoured by the claudecode transport;
+        # SDK providers ignore it) stops one wedged summary call
+        # from holding a worker for the transport's full 600s
+        # default. Timeout retries keep the client default cap of
+        # one — a short call's timeout is usually transient, and an
+        # identical retry is cheap.
+        from core.audit.llm_review import SHORT_CALL_TIMEOUT_S
         response = client.generate(
             prompt,
             system_prompt=_SUMMARY_SYSTEM_PROMPT,
             task_type="audit",
+            timeout_s=SHORT_CALL_TIMEOUT_S,
         )
         text = response.text if hasattr(response, "text") else str(response)
         summary = _parse_summary_response(text, function_name, file_path)

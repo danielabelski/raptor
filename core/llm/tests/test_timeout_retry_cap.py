@@ -124,6 +124,95 @@ class TestGenerateTimeoutRetryCap:
         assert prov.generate.call_count == 2
 
 
+class TestPerCallTimeoutRetryCap:
+    """``timeout_retry_cap`` kwarg tightens the timeout retry budget
+    per call — the review path passes 0 so a timed-out review fails
+    straight through to the orchestrator's reduced-context retry."""
+
+    def test_cap_zero_means_no_identical_retry(self, monkeypatch):
+        import core.llm.client as client_mod
+        monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+
+        client = _client(max_retries=3)
+        with patch.object(client, "_get_provider") as mock_get:
+            prov = MagicMock()
+            prov.generate.side_effect = RuntimeError(
+                "claude -p timed out after 480s",
+            )
+            mock_get.return_value = prov
+            with pytest.raises(RuntimeError):
+                client.generate("test prompt", timeout_retry_cap=0)
+
+        assert prov.generate.call_count == 1
+
+    def test_cap_zero_structured(self, monkeypatch):
+        import core.llm.client as client_mod
+        monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+
+        client = _client(max_retries=3)
+        with patch.object(client, "_get_provider") as mock_get:
+            prov = MagicMock()
+            prov.total_cost = 0.0
+            prov.total_tokens = 0
+            prov.generate_structured.side_effect = RuntimeError(
+                "claude -p timed out after 480s",
+            )
+            mock_get.return_value = prov
+            with pytest.raises(RuntimeError):
+                client.generate_structured(
+                    "test prompt", {"type": "object"},
+                    timeout_retry_cap=0,
+                )
+
+        assert prov.generate_structured.call_count == 1
+
+    def test_cap_zero_leaves_non_timeout_budget_alone(self, monkeypatch):
+        # timeout_retry_cap only constrains timeout-class failures;
+        # 5xx-style retryables keep the full max_retries budget.
+        import core.llm.client as client_mod
+        monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+
+        client = _client(max_retries=3)
+        with patch.object(client, "_get_provider") as mock_get:
+            prov = MagicMock()
+            prov.generate.side_effect = RuntimeError(
+                "simulated 503 from upstream",
+            )
+            mock_get.return_value = prov
+            with pytest.raises(RuntimeError):
+                client.generate("test prompt", timeout_retry_cap=0)
+
+        assert prov.generate.call_count == 3
+
+    def test_invalid_cap_falls_back_to_default(self, monkeypatch):
+        import core.llm.client as client_mod
+        monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+
+        client = _client(max_retries=3)
+        with patch.object(client, "_get_provider") as mock_get:
+            prov = MagicMock()
+            prov.generate.side_effect = RuntimeError(
+                "claude -p timed out after 480s",
+            )
+            mock_get.return_value = prov
+            with pytest.raises(RuntimeError):
+                client.generate("test prompt", timeout_retry_cap="bogus")
+
+        # Default policy: initial attempt + one retry.
+        assert prov.generate.call_count == 2
+
+    def test_resolver_values(self):
+        from core.llm.client import (
+            _TIMEOUT_RETRY_CAP,
+            _resolve_timeout_retry_cap,
+        )
+        assert _resolve_timeout_retry_cap(None) == _TIMEOUT_RETRY_CAP
+        assert _resolve_timeout_retry_cap(0) == 0
+        assert _resolve_timeout_retry_cap(2) == 2
+        assert _resolve_timeout_retry_cap(-1) == _TIMEOUT_RETRY_CAP
+        assert _resolve_timeout_retry_cap("1") == 1
+
+
 class TestGenerateStructuredTimeoutRetryCap:
     def test_timeout_capped_at_one_retry(self, monkeypatch):
         import core.llm.client as client_mod

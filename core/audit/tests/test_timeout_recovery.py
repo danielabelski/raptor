@@ -149,8 +149,11 @@ class TestTimeoutReducedRetry:
 
 
 class TestReviewFnTimeoutCapPlumbing:
-    """review_fn forwards ctx['timeout_s'] to the client as the
-    per-call ``timeout_s`` kwarg."""
+    """review_fn forwards a per-call ``timeout_s`` to the client:
+    ctx['timeout_s'] when the recovery path set one, else the
+    review-class default. Review calls also opt out of the client's
+    identical timeout retry (``timeout_retry_cap=0``) — their
+    recovery is the orchestrator's reduced-context retry."""
 
     class _FakeClient:
         def __init__(self):
@@ -187,9 +190,19 @@ class TestReviewFnTimeoutCapPlumbing:
         client = self._review({"timeout_s": 300})
         assert client.captured_kwargs.get("timeout_s") == 300
 
-    def test_no_cap_by_default(self):
+    def test_review_class_default_timeout(self):
+        from core.audit.llm_review import REVIEW_TIMEOUT_S
         client = self._review({})
-        assert "timeout_s" not in client.captured_kwargs
+        assert client.captured_kwargs.get("timeout_s") == REVIEW_TIMEOUT_S
+
+    def test_review_path_disables_identical_timeout_retry(self):
+        client = self._review({})
+        assert client.captured_kwargs.get("timeout_retry_cap") == 0
+
+    def test_ctx_cap_beats_class_default(self):
+        from core.audit.llm_review import REVIEW_TIMEOUT_S
+        client = self._review({"timeout_s": 300})
+        assert client.captured_kwargs.get("timeout_s") != REVIEW_TIMEOUT_S
 
 
 class TestDeepenPicksUpReducedOutcomes:

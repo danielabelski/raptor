@@ -25,6 +25,24 @@ from .pipeline import ReviewMode
 logger = logging.getLogger(__name__)
 
 
+# Per-call-class timeout ceilings (seconds), plumbed to providers that
+# honour a per-call ``timeout_s`` (the claudecode transport; SDK
+# providers build their request kwargs explicitly and ignore it).
+#
+# Derivation: pooled successful review calls on the claudecode
+# transport measure min 62s / median 96s / p95 234s / max 317s. The
+# transport's own default is 600s — nearly 2x the observed maximum —
+# so a review still running at that point has effectively already
+# failed. REVIEW_TIMEOUT_S ≈ 2x p95 keeps genuine heavy calls alive
+# while cutting the doomed-call wait by 2 minutes; the reduced-context
+# retry (300s cap) is the designed recovery beyond it. Glance batches
+# and taint-summary calls are short, minimal-prompt classes (simple
+# turns measure 5-15s): 120s is generous for a healthy call and stops
+# a wedged one from holding a worker slot for 10 minutes.
+REVIEW_TIMEOUT_S = 480
+SHORT_CALL_TIMEOUT_S = 120
+
+
 _CLEAN_PHRASES = (
     "no vulnerability", "no security issue", "correctly bounded",
     "properly validated", "safely handled", "no exploitable",
@@ -1098,16 +1116,30 @@ def make_review_fn(
         else:
             kwargs["task_type"] = task_type
 
+        # Review calls are the long-tail call class: a review that hits
+        # the transport timeout almost always has an oversized prompt,
+        # and its designed recovery is the orchestrator's reduced-
+        # context retry. An identical client-level retry in between
+        # would re-buy the same timeout at full wall-clock and token
+        # cost first — so the review path opts out of it entirely
+        # (timeout_retry_cap=0) and fails straight through to the
+        # orchestrator's recovery.
+        kwargs["timeout_retry_cap"] = 0
+
         # Per-call timeout cap (timeout-recovery retries set this on
         # the context). Providers that support per-call timeouts (the
         # claudecode transport) honour ``timeout_s``; others build
-        # their request kwargs explicitly and ignore it.
-        _timeout_cap = ctx.get("timeout_s")
-        if _timeout_cap:
-            try:
-                kwargs["timeout_s"] = int(_timeout_cap)
-            except (TypeError, ValueError):
-                pass
+        # their request kwargs explicitly and ignore it. When the
+        # context carries no explicit cap, apply the review-class
+        # default: ~2x the p95 of successful review calls observed on
+        # the claudecode transport — a call still streaming past that
+        # is far more likely doomed than about to finish, and the
+        # reduced-context retry is the cheaper way to find out.
+        _timeout_cap = ctx.get("timeout_s") or REVIEW_TIMEOUT_S
+        try:
+            kwargs["timeout_s"] = int(_timeout_cap)
+        except (TypeError, ValueError):
+            pass
 
         active_schema = deepen_schema if ctx.get("deepen") else first_pass_schema
 

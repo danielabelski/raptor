@@ -128,6 +128,15 @@ def make_batch_review_fn(
         else:
             kwargs["task_type"] = task_type
 
+        # Short call class: N minimal glance prompts in one call.
+        # Per-call ceiling honoured by the claudecode transport (SDK
+        # providers ignore it); timeout retries keep the client
+        # default of one identical retry — cheap for this class, and
+        # the per-item fallback to individual review covers repeated
+        # failure.
+        from .llm_review import SHORT_CALL_TIMEOUT_S
+        kwargs["timeout_s"] = SHORT_CALL_TIMEOUT_S
+
         try:
             response = llm_client.generate(
                 prompt,

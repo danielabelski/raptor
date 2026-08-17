@@ -413,7 +413,32 @@ def _is_daily_quota_error(error: Exception) -> bool:
 # keep the standard max_retries budget — they are cheap and genuinely
 # transient. The orchestrator layers ONE further reduced-context
 # retry on top (see core.audit.orchestrator timeout recovery).
+#
+# Callers can tighten this per call via the ``timeout_retry_cap``
+# kwarg on ``generate`` / ``generate_structured``. The audit review
+# path passes 0: a review call that ran to the transport timeout has
+# an oversized prompt, and its recovery path is the orchestrator's
+# reduced-context retry — an identical client-level retry in between
+# just re-buys the same timeout first. Short call classes (glance
+# batches, taint summaries) keep the default single identical retry:
+# their timeouts are far more likely transient than prompt-sized.
 _TIMEOUT_RETRY_CAP = 1
+
+
+def _resolve_timeout_retry_cap(raw: Any) -> int:
+    """Sanitise a per-call ``timeout_retry_cap`` kwarg.
+
+    ``None`` (kwarg absent) and anything non-coercible or negative
+    fall back to the module default. ``0`` is a valid value: fail
+    straight through to the caller's own recovery on first timeout.
+    """
+    if raw is None:
+        return _TIMEOUT_RETRY_CAP
+    try:
+        cap = int(raw)
+    except (TypeError, ValueError):
+        return _TIMEOUT_RETRY_CAP
+    return cap if cap >= 0 else _TIMEOUT_RETRY_CAP
 
 
 def is_timeout_error(error: Exception) -> bool:
@@ -1535,6 +1560,12 @@ class LLMClient:
         # showing up under two slots in the model panel). Pop here so the
         # value doesn't propagate to providers via **kwargs.
         exclude_fallback_to: set | None = kwargs.pop('exclude_fallback_to', None)
+        # Per-call timeout retry budget — see _TIMEOUT_RETRY_CAP. Popped
+        # before the cache key is computed so retry policy never splits
+        # otherwise-identical prompts into separate cache entries.
+        timeout_retry_cap = _resolve_timeout_retry_cap(
+            kwargs.pop('timeout_retry_cap', None),
+        )
         if not model_config:
             if task_type:
                 model_config = self.config.get_model_for_task(task_type)
@@ -1793,11 +1824,11 @@ class LLMClient:
 
                         if is_timeout_error(e):
                             timeout_failures += 1
-                            if timeout_failures > _TIMEOUT_RETRY_CAP:
+                            if timeout_failures > timeout_retry_cap:
                                 logger.info(
                                     "Timeout retry cap (%d) reached for "
                                     "%s/%s — skipping remaining retries",
-                                    _TIMEOUT_RETRY_CAP,
+                                    timeout_retry_cap,
                                     model.provider, model.model_name,
                                 )
                                 break
@@ -1904,6 +1935,10 @@ class LLMClient:
         model_config = kwargs.pop('model_config', None)
         # See ``generate`` for the rationale on exclude_fallback_to.
         exclude_fallback_to: set | None = kwargs.pop('exclude_fallback_to', None)
+        # Per-call timeout retry budget — see ``generate``.
+        timeout_retry_cap = _resolve_timeout_retry_cap(
+            kwargs.pop('timeout_retry_cap', None),
+        )
         if not model_config:
             if task_type:
                 model_config = self.config.get_model_for_task(task_type)
@@ -2179,11 +2214,11 @@ class LLMClient:
 
                         if is_timeout_error(e):
                             timeout_failures += 1
-                            if timeout_failures > _TIMEOUT_RETRY_CAP:
+                            if timeout_failures > timeout_retry_cap:
                                 logger.info(
                                     "Timeout retry cap (%d) reached for "
                                     "%s/%s — skipping remaining retries",
-                                    _TIMEOUT_RETRY_CAP,
+                                    timeout_retry_cap,
                                     model.provider, model.model_name,
                                 )
                                 break

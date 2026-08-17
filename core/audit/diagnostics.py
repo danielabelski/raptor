@@ -136,6 +136,16 @@ def write_tier_diagnostics(
         }
         if tc.cpg_build_s > 0:
             data[name]["cpg_build_s"] = round(tc.cpg_build_s, 2)
+    # Scoped-run slot-allocation report (see gaps.truncate_gaps_to_
+    # budget): surfaced here so an operator reading tier diagnostics
+    # sees which in-scope files got zero review slots.
+    sc_path = out_dir / "scope-coverage.json"
+    if sc_path.is_file():
+        try:
+            with open(sc_path, encoding="utf-8") as f:
+                data["scope_coverage"] = json.load(f)
+        except (OSError, ValueError):
+            logger.debug("scope-coverage.json unreadable", exc_info=True)
     path = out_dir / "tier-diagnostics.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)

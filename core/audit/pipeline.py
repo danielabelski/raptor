@@ -62,6 +62,7 @@ class AuditPipelineOpts:
     target_path: Path = field(default_factory=lambda: Path("."))
     out_dir: Path = field(default_factory=lambda: Path("out"))
     scope: list[str] | None = None
+    scope_floor: bool = True
     functions: list[str] | None = None
     models: list[str] | None = None
     max_cost_usd: float | None = None
@@ -163,6 +164,7 @@ def _build_orchestrator_config(
         out_dir=opts.out_dir,
         budget=opts.budget,
         scope=opts.scope,
+        scope_floor=opts.scope_floor,
         strategy_filter=opts.strategy_filter,
         models=models,
         multi_model=len(models) > 1,

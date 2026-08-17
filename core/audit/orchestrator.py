@@ -241,6 +241,11 @@ class OrchestratorConfig:
     out_dir: Path
     budget: int | None = None
     scope: str | list[str] | None = None
+    # Coverage floor for scoped runs: under --budget, every in-scope
+    # file keeps its best-scored gap before score order fills the
+    # rest (see gaps.truncate_gaps_to_budget). Only consulted when
+    # scope is set.
+    scope_floor: bool = True
     strategy_filter: str | None = None
     models: list[str] = field(default_factory=lambda: ["default"])
     multi_model: bool = False
@@ -3079,8 +3084,13 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     if config.budget and config.budget > 0:
         # Records the dropped tail in not-attempted.json so the run
         # summary reports it as "not attempted (budget)" instead of
-        # silently conflating it with reviewed code.
-        gaps = truncate_gaps_to_budget(gaps, config.budget, config.out_dir)
+        # silently conflating it with reviewed code. Scoped runs get
+        # the per-file coverage floor + loud zero-slot report.
+        gaps = truncate_gaps_to_budget(
+            gaps, config.budget, config.out_dir,
+            scope=config.scope,
+            scope_floor=getattr(config, "scope_floor", True),
+        )
 
     entry_points = extract_context_map_set(context_map, "entry_points")
 

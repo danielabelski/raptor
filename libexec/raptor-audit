@@ -110,6 +110,7 @@ def cmd_gaps(args: argparse.Namespace) -> int:
         strategy_filter=args.strategy,
         budget=args.budget if not args.prioritize else None,
         scope=args.scope,
+        scope_floor=args.scope_floor,
         annotations_dir=annotations_dir,
         out_dir=out_dir,
     )
@@ -121,8 +122,12 @@ def cmd_gaps(args: argparse.Namespace) -> int:
             gaps, context_map=context_map, flow_traces=flow_traces,
         )
         if args.budget and args.budget > 0:
-            # Records the dropped tail as not attempted (budget).
-            gaps = truncate_gaps_to_budget(gaps, args.budget, out_dir)
+            # Records the dropped tail as not attempted (budget);
+            # scoped runs get the per-file floor + zero-slot report.
+            gaps = truncate_gaps_to_budget(
+                gaps, args.budget, out_dir,
+                scope=args.scope, scope_floor=args.scope_floor,
+            )
 
     path = write_gaps(gaps, out_dir)
     print(f"gaps: {len(gaps)} unreviewed functions → {path}")
@@ -1266,6 +1271,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         target_path=target_path,
         out_dir=out_dir,
         scope=args.scope,
+        scope_floor=args.scope_floor,
         models=models if models else None,
         max_cost_usd=args.max_cost,
         max_seconds=args.max_time,
@@ -1338,6 +1344,32 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(cost_line, flush=True)
     print(f"Report: {report_path}", flush=True)
     print(f"Terminated: {result.terminated_by}", flush=True)
+    # Scoped-run slot allocation (see gaps.truncate_gaps_to_budget):
+    # zero-slot in-scope files are the silent-failure mode — always
+    # state the allocation when a scope was set.
+    scope_cov_path = out_dir / "scope-coverage.json"
+    if args.scope and scope_cov_path.is_file():
+        try:
+            with open(scope_cov_path, encoding="utf-8") as f:
+                _sc = json.load(f)
+            _zero = _sc.get("zero_slot_files") or []
+            if _zero:
+                print(
+                    f"Scope coverage: {len(_zero)} of "
+                    f"{_sc.get('in_scope_files', '?')} in-scope files "
+                    f"received ZERO review slots: {', '.join(_zero)} "
+                    f"(see scope-coverage.json)",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Scope coverage: all "
+                    f"{_sc.get('in_scope_files', '?')} in-scope files "
+                    f"received at least one review slot",
+                    flush=True,
+                )
+        except (OSError, ValueError):
+            pass
 
     # --- lifecycle complete ---
     model_id = args.model[0] if args.model else ""
@@ -1504,6 +1536,13 @@ def main() -> int:
     p_gaps.add_argument("--out", required=True)
     p_gaps.add_argument("--target", default=None,
                         help="Target path — used to auto-build checklist if missing")
+    p_gaps.add_argument("--scope-floor", dest="scope_floor",
+                        action="store_true", default=True,
+                        help="Guarantee every in-scope file at least one "
+                             "review slot under --budget (default ON)")
+    p_gaps.add_argument("--no-scope-floor", dest="scope_floor",
+                        action="store_false",
+                        help="Disable the scoped-run coverage floor")
     p_gaps.add_argument("--scope", action="append", default=None,
                         help="Restrict to files under this path prefix (repeatable)")
     p_gaps.add_argument("--strategy", default=None)
@@ -1631,6 +1670,15 @@ def main() -> int:
                        help="Max functions to review")
     p_run.add_argument("--scope", action="append", default=None,
                        help="Restrict to a subdirectory (repeatable)")
+    p_run.add_argument("--scope-floor", dest="scope_floor",
+                       action="store_true", default=True,
+                       help="Guarantee every in-scope file at least one "
+                            "review slot under --budget (default ON for "
+                            "scoped runs)")
+    p_run.add_argument("--no-scope-floor", dest="scope_floor",
+                       action="store_false",
+                       help="Disable the scoped-run coverage floor "
+                            "(zero-slot files are still reported loudly)")
     p_run.add_argument("--annotations-dir", default=None)
     p_run.add_argument("--no-validate", action="store_true",
                        help="Skip automatic /validate post-pass")

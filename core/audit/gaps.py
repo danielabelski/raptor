@@ -94,6 +94,7 @@ def compute_gaps(
     include_kinds: set | None = None,
     reuse_sink: dict | None = None,
     current_model: str | None = None,
+    scope_floor: bool = True,
 ) -> list[dict[str, Any]]:
     """Compute the list of unreviewed functions.
 
@@ -394,7 +395,10 @@ def compute_gaps(
     gaps.sort(key=lambda g: (g["priority"], -g.get("sloc", 0)))
 
     if budget is not None and budget > 0:
-        gaps = truncate_gaps_to_budget(gaps, budget, out_dir)
+        gaps = truncate_gaps_to_budget(
+            gaps, budget, out_dir,
+            scope=scope, scope_floor=scope_floor,
+        )
 
     return gaps
 
@@ -403,6 +407,9 @@ def truncate_gaps_to_budget(
     gaps: list[dict[str, Any]],
     budget: int | None,
     out_dir: Path | None = None,
+    *,
+    scope: str | list[str] | None = None,
+    scope_floor: bool = True,
 ) -> list[dict[str, Any]]:
     """Apply ``--budget`` to an ordered gap list, RECORDING the dropped
     tail instead of silently discarding it.
@@ -412,13 +419,98 @@ def truncate_gaps_to_budget(
     them as "not attempted (budget)" — they were never reviewed, and
     without a record they were indistinguishable from reviewed-clean.
     They stay gap-eligible: nothing here marks them covered.
+
+    Scoped runs (an explicit ``--scope``) additionally get:
+
+    * a coverage floor (``scope_floor``, default ON): every in-scope
+      file keeps its best-scored gap before the remaining budget fills
+      in score order — a pure score cut once starved whole in-scope
+      files (a real finding lived in a file the scorer gave ZERO
+      slots). Skipped only when in-scope files outnumber the budget.
+    * a LOUD zero-slot report — which in-scope files received no
+      review slot (count + names), logged here, persisted to
+      ``scope-coverage.json`` (merged into tier-diagnostics and the
+      run summary). Silence is the failure mode.
     """
     if not budget or budget <= 0 or len(gaps) <= budget:
+        if scope and out_dir is not None and gaps:
+            # Everything scheduled — record the all-covered report so
+            # the summary can state it positively.
+            _write_scope_coverage(
+                gaps, gaps, budget, Path(out_dir),
+                floor_applied=False, overflow=False,
+            )
         return gaps
-    dropped = gaps[budget:]
+
+    if scope:
+        files_in_order: list[str] = []
+        seen: set[str] = set()
+        for g in gaps:
+            f = g.get("file", "")
+            if f and f not in seen:
+                seen.add(f)
+                files_in_order.append(f)
+        overflow = len(files_in_order) > budget
+        if scope_floor and not overflow:
+            # Floor pass: one slot per in-scope file (the file's
+            # best-scored gap — the list is already in score order),
+            # then the remaining budget fills in score order.
+            selected_idx: set[int] = set()
+            floored: set[str] = set()
+            for i, g in enumerate(gaps):
+                if g.get("file", "") not in floored:
+                    floored.add(g.get("file", ""))
+                    selected_idx.add(i)
+            remaining = budget - len(selected_idx)
+            for i in range(len(gaps)):
+                if remaining <= 0:
+                    break
+                if i not in selected_idx:
+                    selected_idx.add(i)
+                    remaining -= 1
+            selected = [g for i, g in enumerate(gaps) if i in selected_idx]
+            dropped = [g for i, g in enumerate(gaps) if i not in selected_idx]
+            floor_applied = True
+        else:
+            selected = gaps[:budget]
+            dropped = gaps[budget:]
+            floor_applied = False
+            if overflow and scope_floor:
+                logger.warning(
+                    "scope floor: %d in-scope files outnumber the "
+                    "budget of %d — floor skipped; the zero-slot "
+                    "report below carries the overflow",
+                    len(files_in_order), budget,
+                )
+        selected_files = {g.get("file", "") for g in selected}
+        zero_slot = [f for f in files_in_order if f not in selected_files]
+        if zero_slot:
+            logger.warning(
+                "scope coverage: %d of %d in-scope files received ZERO "
+                "review slots under --budget %d%s: %s",
+                len(zero_slot), len(files_in_order), budget,
+                ("" if floor_applied
+                 else (" (files outnumber budget)" if overflow
+                       else " (scope floor disabled)")),
+                ", ".join(zero_slot),
+            )
+        else:
+            logger.info(
+                "scope coverage: all %d in-scope files received at "
+                "least one review slot", len(files_in_order),
+            )
+        if out_dir is not None:
+            _write_scope_coverage(
+                gaps, selected, budget, Path(out_dir),
+                floor_applied=floor_applied, overflow=overflow,
+            )
+    else:
+        selected = gaps[:budget]
+        dropped = gaps[budget:]
+
     logger.info(
         "budget: %d of %d gaps scheduled — %d not attempted (budget)",
-        budget, len(gaps), len(dropped),
+        len(selected), len(gaps), len(dropped),
     )
     if out_dir is not None:
         try:
@@ -429,7 +521,46 @@ def truncate_gaps_to_budget(
                 "will be missing from the run summary", len(dropped),
                 exc_info=True,
             )
-    return gaps[:budget]
+    return selected
+
+
+def _write_scope_coverage(
+    all_gaps: list[dict[str, Any]],
+    selected: list[dict[str, Any]],
+    budget: int | None,
+    out_dir: Path,
+    *,
+    floor_applied: bool,
+    overflow: bool,
+) -> None:
+    """Persist the scoped-run slot-allocation report (best-effort)."""
+    files_in_order: list[str] = []
+    seen: set[str] = set()
+    for g in all_gaps:
+        f = g.get("file", "")
+        if f and f not in seen:
+            seen.add(f)
+            files_in_order.append(f)
+    selected_files = {g.get("file", "") for g in selected}
+    payload = {
+        "budget": budget,
+        "in_scope_files": len(files_in_order),
+        "files_with_slots": len(
+            [f for f in files_in_order if f in selected_files],
+        ),
+        "zero_slot_files": [
+            f for f in files_in_order if f not in selected_files
+        ],
+        "floor_applied": floor_applied,
+        "overflow": overflow,
+    }
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, str(out_dir / "scope-coverage.json"))
+    except Exception:
+        logger.warning("could not write scope-coverage.json", exc_info=True)
 
 
 def write_not_attempted(

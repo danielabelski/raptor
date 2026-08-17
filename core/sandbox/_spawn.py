@@ -967,15 +967,41 @@ def run_sandboxed(
         landlock_fn = None
         if writable_paths or allowed_tcp_ports:
             effective_paths = list(writable_paths) if writable_paths else []
+            # readable_paths serves two consumers with different
+            # semantics: the mount-ns bind list (always) and Landlock's
+            # read allowlist (ONLY under restrict_reads — Landlock
+            # treats a non-None readable_paths as "deny reads
+            # everywhere else", docstring in landlock.py). Passing it
+            # unconditionally turned every tool_paths caller into an
+            # accidental floor-less read restriction: the child could
+            # not even read /bin/sh to exec it, failed with EACCES,
+            # and the speculative-failure cache silently degraded the
+            # binary to Landlock-only for the rest of the process.
+            # The setup-report at the bottom of this function already
+            # reported read_allowlist only when restrict_reads — the
+            # enforcement now matches it.
             landlock_fn = _make_landlock_preexec(
                 effective_paths,
                 list(allowed_tcp_ports) if allowed_tcp_ports else None,
-                readable_paths=list(readable_paths) if readable_paths else None,
+                readable_paths=(list(readable_paths)
+                                if (readable_paths and restrict_reads)
+                                else None),
             )
+        # AF_UNIX is safe to allow exactly when this child gets the
+        # mount-ns (fresh tmpfs masks /run's pathname sockets; the rest
+        # of the host is read-only under pivot_root) on top of its
+        # netns (abstract sockets are namespace-scoped). Mirrors the
+        # child-side engagement condition at step 9; a mount failure
+        # aborts the child before the payload runs, and the caller's
+        # fallback re-runs through the preexec path where AF_UNIX
+        # stays blocked. Needed for Python >= 3.14 multiprocessing
+        # (forkserver listener) inside sandboxed tools.
+        _allow_unix = bool((target or output) and not skip_mount_ns)
         seccomp_fn = _make_seccomp_preexec(
             seccomp_profile, block_udp=seccomp_block_udp,
             audit_mode=_audit_engaged,
             observe_mode=bool(observe_mode) and _audit_engaged,
+            allow_unix_sockets=_allow_unix,
         ) if seccomp_profile else None
 
         # Tracer-ready pipe: the tracer subprocess writes a byte once

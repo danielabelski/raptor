@@ -276,7 +276,7 @@ def _seccomp_functional_selftest(lib) -> bool:
             rc = lib.seccomp_load(ctx)
             lib.seccomp_release(ctx)
             os._exit(0 if rc == 0 else 1)
-        except BaseException:
+        except BaseException:  # noqa: BLE001 — post-fork: must never unwind into parent state
             os._exit(1)
     # ===== PARENT =====
     try:
@@ -325,7 +325,8 @@ def check_seccomp_available() -> bool:
 
 def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                           audit_mode: bool = False,
-                          observe_mode: bool = False):
+                          observe_mode: bool = False,
+                          allow_unix_sockets: bool = False):
     """Create a preexec_fn that installs the seccomp filter for `profile`.
 
     Runs POST-fork in the child. Same fork-safety rules as Landlock: capture
@@ -349,6 +350,20 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     kernel default action for unhandled TRACE is SIGSYS-kill the
     process. The caller (_spawn.py) is responsible for ensuring tracer
     is attached before any traced syscall fires.
+
+    `allow_unix_sockets=True` drops AF_UNIX from the socket-family
+    blocklist. Only pass this when BOTH isolation layers that make
+    AF_UNIX harmless are engaged for this child: the mount namespace
+    (fresh tmpfs over /run masks pathname sockets like docker.sock;
+    pivot_root leaves the rest of the host read-only, and connect(2)
+    to a pathname socket on a read-only mount fails the MAY_WRITE
+    inode check) and a fresh/coordinator network namespace (abstract-
+    namespace AF_UNIX sockets are netns-scoped, so the host's are
+    unreachable). Blanket-blocking socket(AF_UNIX) breaks Python >=
+    3.14 inside the sandbox: multiprocessing's default start method
+    changed to forkserver, whose listener needs socket(AF_UNIX) —
+    observed as the CodeQL python extractor dying with EPERM. The
+    preexec-only path (no mount-ns) must keep the block.
 
     `observe_mode=True` extends the trace set with stat-family syscalls
     (stat/lstat/newfstatat/access/faccessat/faccessat2) on top of the
@@ -443,7 +458,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     # "frida" profile: allow AF_UNIX (frida-helper uses Unix sockets for
     # its internal IPC with the target process) but keep NETLINK/PACKET
     # and SOCK_RAW blocked.
-    if profile == "frida":
+    if profile == "frida" or allow_unix_sockets:
         socket_family_blocks = [_AF_NETLINK, _AF_PACKET]
     else:
         socket_family_blocks = [_AF_UNIX, _AF_NETLINK, _AF_PACKET]
@@ -670,7 +685,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     os._exit(126)
             finally:
                 lib.seccomp_release(ctx)
-        except BaseException:
+        except BaseException:  # noqa: BLE001 — fail-closed: abort child on ANY install error
             # Fail-closed on any unexpected exception -- same reason.
             # BaseException so SystemExit / KeyboardInterrupt also
             # route through the safe-exit path rather than letting

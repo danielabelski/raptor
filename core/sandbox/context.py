@@ -1099,6 +1099,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             writable_paths = []
         else:
             writable_paths = [_tempfile.gettempdir()]
+            # /dev/shm rides the scratch baseline for the same reason
+            # as /tmp: POSIX shared memory and named semaphores
+            # (sem_open/shm_open) are created there, and Python's
+            # multiprocessing primitives (SemLock behind Queue/Lock)
+            # fail with EPERM without it. In mount-ns mode this is the
+            # per-sandbox private tmpfs, not the host's shm.
+            if os.path.isdir("/dev/shm"):
+                writable_paths.append("/dev/shm")
             # When TMPDIR points somewhere custom, ALSO keep /tmp in
             # the baseline: tools fall back to it (gcc's "Cannot
             # create temporary file in /tmp/" path), and in mount-ns

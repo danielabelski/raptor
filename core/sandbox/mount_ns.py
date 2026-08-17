@@ -372,6 +372,14 @@ def setup_mount_ns(target: str | None, output: str | None,
     # in subtle ways. rbind + Landlock narrowing is the practical
     # compromise.
     _mount("/dev", f"{root}/dev", None, MS_BIND | MS_REC)
+    # /dev/shm: fresh tmpfs stacked over the rbind so POSIX shared
+    # memory / named semaphores (shm_open, sem_open — Python
+    # multiprocessing's SemLock lives here) work inside the sandbox
+    # WITHOUT exposing the host's shm segments. Same per-sandbox
+    # isolation rationale as /tmp below; mode 1777 matches the
+    # host convention (sticky world-writable scratch).
+    if os.path.isdir("/dev/shm"):
+        _mount("tmpfs", f"{root}/dev/shm", "tmpfs", 0, "mode=1777")
     _mount("/sys", f"{root}/sys", None, MS_BIND | MS_REC)
 
     # 6. /proc: bind host /proc. Fresh procfs would require a pid-ns

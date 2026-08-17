@@ -126,11 +126,12 @@ class TestAuditPreflightDecision:
         original = seccomp._make_seccomp_preexec
 
         def spy(profile, block_udp=False, audit_mode=False,
-                observe_mode=False):
+                observe_mode=False, allow_unix_sockets=False):
             captured_audit_mode.append(audit_mode)
             return original(profile, block_udp=block_udp,
                             audit_mode=audit_mode,
-                            observe_mode=observe_mode)
+                            observe_mode=observe_mode,
+                            allow_unix_sockets=allow_unix_sockets)
         monkeypatch.setattr("core.sandbox._spawn._make_seccomp_preexec", spy)
 
         run_dir = tmp_path / "run"
@@ -167,11 +168,12 @@ class TestAuditPreflightDecision:
         original = seccomp._make_seccomp_preexec
 
         def spy(profile, block_udp=False, audit_mode=False,
-                observe_mode=False):
+                observe_mode=False, allow_unix_sockets=False):
             captured_audit_mode.append(audit_mode)
             return original(profile, block_udp=block_udp,
                             audit_mode=audit_mode,
-                            observe_mode=observe_mode)
+                            observe_mode=observe_mode,
+                            allow_unix_sockets=allow_unix_sockets)
         monkeypatch.setattr("core.sandbox._spawn._make_seccomp_preexec", spy)
 
         run_dir = tmp_path / "run"

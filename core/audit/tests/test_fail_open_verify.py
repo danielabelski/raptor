@@ -2049,7 +2049,13 @@ class TestDispatchWiring:
         assert is_tool_evidence(RULE_HANDLER_OUTCOME)
         assert is_tool_evidence(RULE_IGNORED_RETURN)
         assert is_tool_evidence(RULE_TRISTATE)
-        assert is_tool_evidence(RULE_HANDLER_OUTCOME + "-naming")
+        # The -naming variant is detection-grade by this channel's own
+        # is_detection_rule_id contract: it may ride in a composite but
+        # is NOT full tool evidence alone.
+        assert not is_tool_evidence(RULE_HANDLER_OUTCOME + "-naming")
+        assert is_tool_evidence(
+            RULE_HANDLER_OUTCOME + "-naming+coccinelle"
+        )
 
     def test_detection_variant_is_detection_only(self):
         from core.audit.orchestrator import _is_detection_only
@@ -2063,7 +2069,9 @@ class TestDispatchWiring:
             (RULE_HANDLER_OUTCOME, "permissive error handler"),
             (RULE_IGNORED_RETURN, "neither assigned nor compared"),
             (RULE_TRISTATE, "tri-state"),
-            (RULE_HANDLER_OUTCOME + "-naming", "fail-open"),
+            # Detection-grade -naming variants render only inside a
+            # composite that carries a qualifying receipt.
+            (RULE_HANDLER_OUTCOME + "-naming+coccinelle", "fail-open"),
         ):
             items = grade_review_result(
                 {"hypothesis": "h"}, evidence_tool=rule_id,

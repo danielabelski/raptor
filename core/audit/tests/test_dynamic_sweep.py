@@ -123,6 +123,52 @@ class TestGenerateCHarness:
         assert "main" in code
 
 
+class TestGenerateCHarnessCweDispatch:
+    """CWE lookup order in harness dispatch: review_result beats hypothesis."""
+
+    @staticmethod
+    def _outcome(function="target_fn", hypothesis="", review_result=None):
+        return FakeOutcome(
+            function=function,
+            hypothesis=hypothesis,
+            file="src/a.c",
+            review_result=review_result,
+        )
+
+    def test_cwe_from_review_result_selects_harness(self):
+        harness = generate_c_harness(
+            self._outcome(review_result={"cwe_class": "CWE-134"}),
+            {"source": "int f;"},
+        )
+        assert "%s%s" in harness  # format-string harness
+
+    def test_cwe_fallback_key_selects_harness(self):
+        harness = generate_c_harness(
+            self._outcome(review_result={"cwe": "CWE-476"}),
+            {"source": "int f;"},
+        )
+        assert "NULL" in harness  # null-deref harness
+
+    def test_missing_review_result_falls_back_to_hypothesis(self):
+        harness = generate_c_harness(
+            self._outcome(hypothesis="buffer overflow in copy"),
+            {"source": "int f;"},
+        )
+        assert "small_buf" in harness  # buffer-overflow harness
+
+    def test_no_cwe_no_hypothesis_gives_generic_harness(self):
+        harness = generate_c_harness(self._outcome(), {"source": "int f;"})
+        assert "HARNESS_COMPLETE" in harness
+        assert "target_fn" not in harness  # generic harness ignores func
+
+    def test_invalid_identifier_rejected(self):
+        harness = generate_c_harness(
+            self._outcome(function="bad; rm -rf /"),
+            {"source": "int f;"},
+        )
+        assert harness == ""
+
+
 class TestGeneratePythonHarness:
     def test_generates_test_script(self):
         o = FakeOutcome(

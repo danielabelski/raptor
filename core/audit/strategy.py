@@ -473,6 +473,7 @@ def strategies_from_item(
     item: dict[str, Any],
     file_path: str,
     *,
+    includes: list[str] | None = None,
     reachable_sinks: list[str] | None = None,
     shared_state: list[Any] | None = None,
     crypto_inventory: list[Any] | None = None,
@@ -484,7 +485,9 @@ def strategies_from_item(
     """Select strategies from a checklist item dict.
 
     Convenience wrapper that extracts metadata fields from the
-    serialized checklist item format.
+    serialized checklist item format. Checklist metadata carries no
+    include/import data, so ``includes`` must be supplied by the
+    caller (e.g. from the source file's import lines).
     """
     metadata = item.get("metadata", {}) or {}
     parameters = None
@@ -507,6 +510,7 @@ def strategies_from_item(
         parameters=parameters,
         return_type=metadata.get("return_type"),
         attributes=metadata.get("attributes"),
+        includes=includes,
         reachable_sinks=reachable_sinks,
         shared_state=shared_state,
         crypto_inventory=crypto_inventory,
@@ -556,6 +560,52 @@ STRATEGY_PRIMERS: dict[str, str] = {
         "4. Identify what writes through the aliased pointer: "
         "crypto_aead_encrypt/decrypt, memcpy into SGL, skb_cow_data "
         "that doesn't actually copy."
+    ),
+    "auth": (
+        "AUTHENTICATION / AUTHORIZATION VULNERABILITY PRIMER\n"
+        "\n"
+        "The pattern: the check and the action live in different "
+        "places, and a path exists from request to action that skips "
+        "or weakens the check. Authn/authz bugs are rarely broken "
+        "algorithms — they are broken PLUMBING between the credential "
+        "and the privileged operation.\n"
+        "\n"
+        "What to look for:\n"
+        "- Check/act separation: a handler that performs the "
+        "privileged operation, and a decorator/middleware/filter "
+        "expected to have run first. Find registrations that bypass "
+        "the middleware chain (alternate routers, internal endpoints, "
+        "debug handlers, websocket/upgrade paths).\n"
+        "- Verification results that are computed but not enforced: "
+        "jwt.verify/signature-check calls whose return value or "
+        "exception is swallowed; verify=False / algorithms=['none'] "
+        "reachable via config.\n"
+        "- Identity from mutable sources: trusting Host/X-Forwarded-* "
+        "headers, client-supplied user ids or role fields, session "
+        "values written before authentication completed.\n"
+        "- Comparison defects: token/secret equality via early-exit "
+        "string compare on a network-observable path; case/Unicode "
+        "normalisation differences between the check and the lookup.\n"
+        "- State-machine gaps: password-reset, MFA, and OAuth flows "
+        "where a later step does not re-verify what an earlier step "
+        "established (or a step can be replayed/skipped).\n"
+        "\n"
+        "The assumption that fails: 'every path to this operation went "
+        "through the auth layer' or 'this value was set by us'. "
+        "Alternate entry points, background jobs replaying user input, "
+        "and deserialised session state violate both.\n"
+        "\n"
+        "Verification steps:\n"
+        "1. Enumerate every route/registration that reaches the "
+        "privileged function; diff against the set covered by the "
+        "auth middleware/decorator.\n"
+        "2. For each verify/authenticate call, confirm the result is "
+        "consumed on every branch (including exception paths).\n"
+        "3. Trace the identity value from its origin — reject any "
+        "origin the client controls.\n"
+        "4. For multi-step flows, write down the state each step "
+        "assumes and check the server enforces the ordering rather "
+        "than trusting the client to follow it."
     ),
     "crypto": (
         "CRYPTO SUBSYSTEM VULNERABILITY PRIMER\n"

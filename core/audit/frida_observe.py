@@ -396,7 +396,7 @@ def _run_frida_session(
         return result.returncode == 0 or log_file.stat().st_size > 0
 
     except subprocess.TimeoutExpired:
-        logger.debug("Frida session timed out after %ds", _OBSERVE_TIMEOUT_S)
+        logger.debug("Frida session timed out after %ds", timeout)
         return log_file.exists() and log_file.stat().st_size > 0
     except FileNotFoundError:
         logger.debug("frida CLI not found")

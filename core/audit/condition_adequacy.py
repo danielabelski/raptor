@@ -158,13 +158,9 @@ _ALLOC_SPEC = SinkSpec(
     note="integer overflow check on size argument required before allocation",
 )
 
-# --- Null dereference sinks ---
-_DEREF_SPEC = SinkSpec(
-    required=frozenset({"null"}),
-    helpful=frozenset(),
-    irrelevant=frozenset({"auth", "bounds", "config", "type", "resource"}),
-    note="null/nil check on the pointer is the only relevant guard",
-)
+# Null dereference has no sink-API name to key on (dereference is an
+# operator, not a call), so no deref spec can be registered in the
+# name-keyed table below — that bug class is not assessable here.
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +258,11 @@ def assess_guard_adequacy(
     """
     spec = _lookup_spec(sink_api)
     if spec is None:
-        present = frozenset(g.category for g in guards)
+        # Same semantics as the spec-found path: "unknown" carries no
+        # category signal, so it is excluded from reporting here too.
+        present = frozenset(
+            g.category for g in guards if g.category != "unknown"
+        )
         return AdequacyResult(
             sink_api=sink_api,
             verdict=Adequacy.UNKNOWN,

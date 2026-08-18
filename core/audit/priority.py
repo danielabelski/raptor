@@ -655,7 +655,10 @@ def _extract_entry_callees(
     for ep in context_map.get("entry_points", []):
         for callee in ep.get("callees", []):
             key = f"{callee.get('file', '')}:{callee.get('name', '')}"
-            if key != ":":
+            # Same exclusion as the BFS below: an entry point listed
+            # among another entry's callees already scores
+            # SCORE_ENTRY_POINT and must not double-count.
+            if key != ":" and key not in entry_keys:
                 result.add(key)
 
     caller_to_callees: dict[str, list[str]] = defaultdict(list)

@@ -107,7 +107,6 @@ def generate_c_harness(
     if not _is_valid_identifier(function_name):
         return ""
 
-    cwe = ""
     review = getattr(outcome, "review_result", None) or {}
     cwe = review.get("cwe_class", "") or review.get("cwe", "")
 

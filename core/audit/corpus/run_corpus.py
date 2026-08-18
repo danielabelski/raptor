@@ -632,6 +632,12 @@ def _run_audit_on_target(
 
     outcomes_by_id: dict[str, dict[str, Any]] = {}
     bare_key_entries: dict[str, dict[str, Any]] = {}
+    # Bare forms derived from line-suffixed log keys.  Kept separate so an
+    # exact bare log key always wins the bare_key_entries slot; when several
+    # line-suffixed entries share a bare form, the highest-ranked status is
+    # kept (log order breaks ties) so a real finding is never shadowed by a
+    # clean sibling.
+    derived_bare_entries: dict[str, dict[str, Any]] = {}
     log_path = out_dir / ".audit-log.jsonl"
     if log_path.exists():
         with open(log_path) as f:
@@ -652,8 +658,17 @@ def _run_audit_on_target(
                 head, _, tail = key.rpartition(":")
                 if head and tail.isdigit():
                     outcomes_by_id[head] = entry
+                    best = derived_bare_entries.get(head)
+                    if best is None or (
+                        _STATUS_RANK.get(entry.get("status", ""), 0)
+                        > _STATUS_RANK.get(best.get("status", ""), 0)
+                    ):
+                        derived_bare_entries[head] = entry
                 else:
                     bare_key_entries[key] = entry
+
+    for bare, entry in derived_bare_entries.items():
+        bare_key_entries.setdefault(bare, entry)
 
     return outcomes_by_id, bare_key_entries, out_dir
 

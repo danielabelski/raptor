@@ -235,11 +235,15 @@ def _extract_python_function(source: str, name: str) -> str | None:
 
 # ── Check implementations ──────────────────────────────────────────
 
-_NULL_TERM_PATTERNS = [
-    # Direct null-termination: buf[len] = '\0'; buf[n] = 0;
+# Explicit terminator stores: buf[len] = '\0'; buf[n] = 0;
+_NULL_TERM_STORE_PATTERNS = [
     re.compile(r"\[\s*\w+\s*\]\s*=\s*['\"]?\\0['\"]?\s*;"),
     re.compile(r"\[\s*\w+\s*\]\s*=\s*0\s*;"),
-    # strncpy + explicit null term
+]
+
+# Bare call tokens: too weak to bind to a specific buffer (and
+# strncpy does not even guarantee termination).
+_NULL_TERM_TOKEN_PATTERNS = [
     re.compile(r"\bstrncpy\b"),
     re.compile(r"\bstrlcpy\b"),
     re.compile(r"\bsnprintf\b"),
@@ -247,6 +251,8 @@ _NULL_TERM_PATTERNS = [
     re.compile(r"\bstrdup\b"),
     re.compile(r"\bstrndup\b"),
 ]
+
+_NULL_TERM_PATTERNS = _NULL_TERM_STORE_PATTERNS + _NULL_TERM_TOKEN_PATTERNS
 
 
 def _check_null_termination(
@@ -256,14 +262,25 @@ def _check_null_termination(
     """Check if a function null-terminates a buffer.
 
     For caller_null_terminates, expect_absent=True means the LLM claims
-    the caller does NOT null-terminate. If we find null-termination,
-    the claim is contradicted.
+    the caller does NOT null-terminate. Bare call tokens (a strncpy or
+    strdup anywhere in the function) are weak evidence — they don't
+    prove the specific buffer is terminated — so they cap at
+    'inconclusive', matching _check_bounds/_check_sanitization. Only
+    an explicit terminator store contradicts: bound to the named
+    parameter when one is given, or any store when the claim names no
+    buffer to bind.
     """
     found_patterns = []
+    strong_patterns = []
 
-    for pat in _NULL_TERM_PATTERNS:
-        matches = pat.findall(source)
-        if matches:
+    for pat in _NULL_TERM_STORE_PATTERNS:
+        if pat.search(source):
+            found_patterns.append(pat.pattern[:40])
+            if not parameter:
+                strong_patterns.append(pat.pattern[:40])
+
+    for pat in _NULL_TERM_TOKEN_PATTERNS:
+        if pat.search(source):
             found_patterns.append(pat.pattern[:40])
 
     # Also look for the specific parameter if given
@@ -277,19 +294,31 @@ def _check_null_termination(
         )
         if param_null.search(source):
             found_patterns.append(f"explicit \\0 on '{parameter}'")
+            strong_patterns.append(f"explicit \\0 on '{parameter}'")
 
     has_null_term = bool(found_patterns)
 
     if expect_absent:
         # LLM claims null-termination is ABSENT
-        if has_null_term:
+        if strong_patterns:
             return CheckResult(
                 check_type="caller_null_terminates",
                 assumption="",
                 verdict="contradicted",
                 evidence=(
                     f"{file}:{func} DOES null-terminate: "
-                    f"{', '.join(found_patterns[:3])}"
+                    f"{', '.join(strong_patterns[:3])}"
+                ),
+            )
+        if has_null_term:
+            return CheckResult(
+                check_type="caller_null_terminates",
+                assumption="",
+                verdict="inconclusive",
+                evidence=(
+                    f"{file}:{func} has null-termination-related patterns "
+                    f"({', '.join(found_patterns[:3])}) but cannot confirm "
+                    "they terminate this specific buffer"
                 ),
             )
         return CheckResult(
@@ -338,9 +367,12 @@ def _check_bounds(
     """Check if a function performs bounds checking.
 
     Regex matching is weak evidence — a sizeof or MAX_ in a function
-    doesn't prove it protects the specific argument.  So we only
-    return 'supported' (not 'contradicted') when patterns are found
-    and expect_absent is True.
+    doesn't prove it protects the specific argument.  So this never
+    returns 'contradicted': under expect_absent, found patterns yield
+    'inconclusive' (we decline to affirm on weak evidence) and
+    'supported' is returned only when no patterns are found; without
+    expect_absent, found patterns yield 'supported' and their absence
+    'inconclusive'.
     """
     found = []
     for pat in _BOUNDS_PATTERNS:

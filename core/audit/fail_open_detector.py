@@ -1,6 +1,6 @@
 """Detect fail-open-on-unknown bugs via mechanical pattern matching.
 
-Three sub-patterns where ambiguous/unknown/error results silently
+Four sub-patterns where ambiguous/unknown/error results silently
 become "safe":
 
 1. **optional_not_checked** — function returns ``Optional[T]`` but the
@@ -17,6 +17,12 @@ become "safe":
    same literal as a legitimate "no results" return in the same
    function (e.g. ``except Exception: return {}`` alongside a normal
    ``return {}``).
+
+4. **truncation_consumed_unchecked** — consumer-side companion to
+   pattern 2: a caller of a truncation-silent function treats the
+   possibly-truncated result as authoritative (e.g. branches to a
+   "safe"/"clean" outcome on an empty result) with no
+   truncation-awareness check anywhere in the caller.
 
 All detection is mechanical: regex/AST-free pattern matching on source
 text, optionally enhanced by caller-side call-graph data.
@@ -89,9 +95,8 @@ class FailOpenPattern:
 # Helpers
 # ---------------------------------------------------------------------------
 
-# ``if X is False:`` / ``if X is True:``  (identity checks on bool)
+# ``if X is False:``  (identity check on bool)
 _IS_FALSE_RE = re.compile(r"\bif\s+(\w+)\s+is\s+False\b")
-_IS_TRUE_RE = re.compile(r"\bif\s+(\w+)\s+is\s+True\b")
 
 # Companion None checks
 _IS_NONE_RE = re.compile(r"\bif\s+(\w+)\s+is\s+None\b")
@@ -113,11 +118,6 @@ _CAP_BREAK_RE = re.compile(
     # Go: if LHS >= RHS { break/return
     rf"|\bif\s+{_LHS}\s*(?:>=|>|==)\s*{_RHS}\s*\{{\s*\n?\s*(?:break|return)\b",
     re.MULTILINE,
-)
-
-# Collection returns
-_RETURN_COLLECTION_RE = re.compile(
-    r"^\s*return\s+\w+\s*$", re.MULTILINE
 )
 
 # Truncation signaling: returning a tuple, a dict with "truncated", or

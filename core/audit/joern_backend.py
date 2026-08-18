@@ -483,6 +483,32 @@ def resolve_cpg_cache_dir(out_dir) -> Path | None:
     return None
 
 
+def _current_content_hash(out_dir, target_path) -> str | None:
+    """The current run's target content hash, or None when unavailable.
+
+    Prefers the current run's own .raptor-run.json manifest; falls back
+    to deriving it from the target tree the same way the CPG cache does.
+    """
+    manifest_path = Path(out_dir) / ".raptor-run.json"
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                own = json.load(f)
+            own_hash = own.get("content_hash", "")
+            if own_hash:
+                return own_hash
+        except (json.JSONDecodeError, OSError):
+            pass
+    if target_path is None or not Path(target_path).is_dir():
+        return None
+    try:
+        from packages.joern.runner import _target_content_hash
+        return _target_content_hash(Path(target_path))
+    except Exception:
+        logger.debug("content hash derivation failed", exc_info=True)
+        return None
+
+
 def import_sibling_joern_flows(
     out_dir,
     target_path=None,
@@ -492,6 +518,8 @@ def import_sibling_joern_flows(
     if not siblings:
         return None
     imported: dict[str, list] = {}
+    current_hash: str | None = None
+    current_hash_resolved = False
     for sibling_dir in siblings:
         flows_path = sibling_dir / "joern-flows.json"
         if not flows_path.exists():
@@ -503,7 +531,24 @@ def import_sibling_joern_flows(
                     manifest = json.load(f)
                 sibling_hash = manifest.get("content_hash", "")
                 if sibling_hash:
-                    pass
+                    # Staleness gate: a sibling run at a different
+                    # commit carries taint flows for code that no
+                    # longer exists. Only enforced when both hashes
+                    # are known — legacy siblings without hashes
+                    # import as before.
+                    if not current_hash_resolved:
+                        current_hash = _current_content_hash(
+                            out_dir, target_path,
+                        )
+                        current_hash_resolved = True
+                    if current_hash and sibling_hash != current_hash:
+                        logger.info(
+                            "sibling %s joern-flows stale "
+                            "(hash %s → %s) — skipped",
+                            sibling_dir.name,
+                            sibling_hash[:8], current_hash[:8],
+                        )
+                        continue
             except (json.JSONDecodeError, OSError):
                 pass
         try:

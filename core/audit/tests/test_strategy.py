@@ -213,6 +213,45 @@ class TestStrategiesFromItem:
         assert STRATEGY_MEMORY in result
 
 
+class TestIncludesSignalThroughWrapper:
+    """The ``includes`` signal reaches infer_strategies through the
+    strategies_from_item wrapper (additive keyword; checklist metadata
+    carries no include data, so callers supply it)."""
+
+    # Path and name chosen to match no path-signal tokens, so any extra
+    # strategy must come from the includes signal alone.
+    _ITEM = {"name": "compute_sum", "kind": "function", "metadata": {}}
+    _FILE = "src/mathops.c"
+
+    def test_baseline_without_includes(self):
+        strategies = strategies_from_item(self._ITEM, self._FILE)
+        assert STRATEGY_GENERAL in strategies
+        assert STRATEGY_CONCURRENCY not in strategies
+        assert STRATEGY_CRYPTO not in strategies
+
+    def test_concurrency_include_forwarded(self):
+        strategies = strategies_from_item(
+            self._ITEM, self._FILE, includes=["#include <pthread.h>"],
+        )
+        assert STRATEGY_CONCURRENCY in strategies
+
+    def test_crypto_include_forwarded(self):
+        strategies = strategies_from_item(
+            self._ITEM, self._FILE, includes=["#include <openssl/evp.h>"],
+        )
+        assert STRATEGY_CRYPTO in strategies
+
+    def test_include_matching_is_case_insensitive(self):
+        strategies = strategies_from_item(
+            self._ITEM, self._FILE, includes=["import Threading"],
+        )
+        assert STRATEGY_CONCURRENCY in strategies
+
+    def test_none_includes_is_default_compatible(self):
+        assert strategies_from_item(self._ITEM, self._FILE, includes=None) == \
+            strategies_from_item(self._ITEM, self._FILE)
+
+
 class TestInferStrategiesMapEnrichments:
     def test_shared_state_adds_concurrency(self):
         result = infer_strategies(

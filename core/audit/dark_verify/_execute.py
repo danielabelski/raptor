@@ -313,11 +313,18 @@ def _classify_json_output(
                 actual_exception=f"{exc_type}: {exc_msg}",
                 match_detail=f"expected {expected_exc}, got {exc_type}",
             )
+        # No exception was predicted: an unexpected exception proves
+        # the witness (arguments, import path, harness) is wrong about
+        # the mechanism, not that the hypothesis is right — a TypeError
+        # from a mis-guessed signature must never read as a bug.
         return DarkVerifyResult(
-            finding_key=spec.finding_key, verdict="confirmed",
+            finding_key=spec.finding_key, verdict="error",
             language=language,
             actual_exception=f"{exc_type}: {exc_msg}",
-            match_detail="unexpected exception confirms bug",
+            match_detail=(
+                "unexpected exception — witness stated no exception "
+                "expectation; not accepted as confirmation"
+            ),
         )
 
     if status == "returned":
@@ -329,6 +336,19 @@ def _classify_json_output(
                 match_detail=(
                     f"expected {expected_exc} exception, "
                     f"but function returned normally"
+                ),
+            )
+        # A return-value match may only confirm when the witness's
+        # stated expectation IS a return-value check. A spec that
+        # predicted a crash/sanitizer signal and returned normally is
+        # refuted regardless of what the value happens to be.
+        if spec.expected_crash or spec.expected_sanitizer:
+            return DarkVerifyResult(
+                finding_key=spec.finding_key, verdict="refuted",
+                language=language, actual_return=actual_repr,
+                match_detail=(
+                    "expected crash/sanitizer signal, but function "
+                    "returned normally"
                 ),
             )
         if spec.expected_return is not None:

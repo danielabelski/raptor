@@ -333,7 +333,10 @@ class TestClassifyOutput:
         r = _classify_output(spec, stdout, "python")
         assert r.verdict == "refuted"
 
-    def test_unexpected_exception_confirms(self):
+    def test_unexpected_exception_is_error_not_confirmed(self):
+        """No stated exception expectation: an exception means the
+        witness itself failed (bad args, wrong signature), never that
+        the hypothesis is confirmed."""
         spec = DarkWitnessSpec(
             finding_key="f1", file="a.py", function="f",
             module_path="a",
@@ -343,7 +346,28 @@ class TestClassifyOutput:
             "message": "division by zero",
         })
         r = _classify_output(spec, stdout, "python")
-        assert r.verdict == "confirmed"
+        assert r.verdict == "error"
+        assert "not accepted as confirmation" in r.match_detail
+
+    def test_returned_match_with_crash_expectation_refutes(self):
+        """A benign return match cannot confirm a spec whose stated
+        expectation was a crash/sanitizer signal."""
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.c", function="f", language="c",
+            expected_return="42", expected_crash=True,
+        )
+        stdout = json.dumps({"status": "returned", "value": "42"})
+        r = _classify_output(spec, stdout, "c")
+        assert r.verdict == "refuted"
+
+    def test_returned_match_with_sanitizer_expectation_refutes(self):
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.c", function="f", language="c",
+            expected_return="42", expected_sanitizer="heap-buffer-overflow",
+        )
+        stdout = json.dumps({"status": "returned", "value": "42"})
+        r = _classify_output(spec, stdout, "c")
+        assert r.verdict == "refuted"
 
     def test_expected_exception_but_returned(self):
         spec = DarkWitnessSpec(

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from core.concepts.compiler import (
     CompilationResult,
     _fixture_ext,
+    _fixture_language,
     _infer_engine,
     _make_rule_id,
     build_invariant_prompt,
@@ -111,6 +112,79 @@ class TestBuildInvariantPrompt:
         assert "relevant_cwes" not in user
 
 
+class TestFixtureLanguageInPrompt:
+    """The fixture-language instruction tracks _fixture_ext.
+
+    The synthesis prompt must ask for test fixtures in the SAME
+    language the dual-control oracle will execute them as
+    (_fixture_ext resolves the extension from the invariant's
+    evidence); a prompt that unconditionally demands "parseable C
+    code" gets non-C targets C fixtures executed under the wrong
+    extension, and valid rules are rejected."""
+
+    def test_python_evidence_asks_for_python_fixtures(self):
+        inv = _make_invariant(evidence=["src/auth.py:42 - check"])
+        _user, system = build_invariant_prompt(inv, "semgrep")
+        assert "parseable Python code" in system
+        assert "parseable C code" not in system
+        assert "#include" not in system
+
+    def test_coccinelle_asks_for_c_fixtures(self):
+        inv = _make_invariant(evidence=["src/auth.py:42 - check"])
+        _user, system = build_invariant_prompt(inv, "coccinelle")
+        # Coccinelle always executes fixtures as .c regardless of
+        # evidence extension.
+        assert "parseable C code" in system
+        assert "no #include headers" in system
+
+    def test_c_evidence_with_semgrep_asks_for_c(self):
+        inv = _make_invariant(evidence=["mm/filemap.c:1234 - lock held"])
+        _user, system = build_invariant_prompt(inv, "semgrep")
+        assert "parseable C code" in system
+        assert "no #include headers" in system
+
+    def test_cpp_evidence_asks_for_cpp(self):
+        inv = _make_invariant(evidence=["src/engine.cpp:7 - guarded"])
+        _user, system = build_invariant_prompt(inv, "semgrep")
+        assert "parseable C++ code" in system
+        assert "no #include headers" in system
+
+    def test_go_evidence_asks_for_go(self):
+        inv = _make_invariant(evidence=["pkg/server.go:88 - checked"])
+        _user, system = build_invariant_prompt(inv, "semgrep")
+        assert "parseable Go code" in system
+        assert "#include" not in system
+
+    def test_no_evidence_defaults_to_python(self):
+        # _fixture_ext falls back to .py, so the prompt must too.
+        inv = _make_invariant(evidence=[])
+        _user, system = build_invariant_prompt(inv, "semgrep")
+        assert "parseable Python code" in system
+        assert "parseable C code" not in system
+
+    def test_unknown_extension_names_the_extension(self):
+        inv = _make_invariant(evidence=["src/thing.weird:3 - site"])
+        _user, system = build_invariant_prompt(inv, "semgrep")
+        assert ".weird source file" in system
+        assert "parseable C code" not in system
+
+    def test_prompt_language_matches_oracle_extension(self):
+        # The instruction and the executed extension must agree for
+        # every evidence shape the compiler encounters.
+        cases = [
+            (["a.py:1 - x"], "semgrep", "Python"),
+            (["a.rs:1 - x"], "semgrep", "Rust"),
+            (["a.java:1 - x"], "semgrep", "Java"),
+            (["a.c:1 - x"], "coccinelle", "C"),
+        ]
+        for evidence, engine, lang in cases:
+            inv = _make_invariant(evidence=evidence)
+            ext = _fixture_ext(inv, engine)
+            assert _fixture_language(ext) == lang
+            _user, system = build_invariant_prompt(inv, engine)
+            assert f"parseable {lang} code" in system
+
+
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
@@ -140,6 +214,20 @@ class TestHelpers:
     def test_fixture_ext_default(self):
         inv = _make_invariant(evidence=[])
         assert _fixture_ext(inv, "semgrep") == ".py"
+
+    def test_fixture_language_known_extensions(self):
+        assert _fixture_language(".c") == "C"
+        assert _fixture_language(".hpp") == "C++"
+        assert _fixture_language(".py") == "Python"
+        assert _fixture_language(".ts") == "TypeScript"
+        assert _fixture_language(".rb") == "Ruby"
+
+    def test_fixture_language_case_insensitive(self):
+        assert _fixture_language(".PY") == "Python"
+
+    def test_fixture_language_unknown_extension_returns_none(self):
+        assert _fixture_language(".weird") is None
+        assert _fixture_language("") is None
 
     def test_infer_engine_c(self):
         inv = _make_invariant(evidence=["mm/filemap.c:1234 - with lock"])
@@ -293,6 +381,34 @@ class TestCompileInvariant:
         assert r.success
         assert len(r.matches) == 2
         assert r.matches[0]["file"] == "src/bad.c"
+
+    @patch("packages.checker_synthesis.synthesise._run_engine")
+    @patch("packages.checker_synthesis.synthesise._dual_control")
+    @patch("packages.checker_synthesis.synthesise._write_rule")
+    def test_no_sweep_on_dual_control_failure(
+        self, mock_write, mock_dc, mock_run, tmp_path,
+    ):
+        # rule_body is populated even when dual control fails (the
+        # last attempt's evidence) — the codebase sweep must still be
+        # gated on dual control passing, so an unvalidated rule never
+        # produces matches.
+        mock_write.return_value = tmp_path / "checkers" / "test.yml"
+        mock_dc.return_value = (
+            False, ["dual control: positive fixture not matched"],
+        )
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        inv = _make_invariant()
+        r = compile_invariant(
+            inv, "semgrep", _stub_llm(), tmp_path,
+            repo_root=repo, max_retries=0,
+        )
+        assert r.rule_body  # evidence carried the body
+        assert not r.dual_control
+        mock_run.assert_not_called()
+        assert r.matches == []
 
     @patch("packages.checker_synthesis.synthesise._run_engine")
     @patch("packages.checker_synthesis.synthesise._dual_control")

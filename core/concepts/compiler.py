@@ -183,10 +183,22 @@ def build_invariant_prompt(
             "patterns.  `$PTR = malloc(...)` without a semicolon in",
             "pattern-not-inside causes mis-parsing and false suppression.",
         ]
+    # The fixture language must match the extension the dual-control
+    # oracle executes the fixtures under (_fixture_ext) — a C fixture
+    # run as .py parses as the wrong language and rejects valid rules.
+    fixture_ext = _fixture_ext(inv, engine)
+    fixture_lang = _fixture_language(fixture_ext)
+    if fixture_lang:
+        fixture_desc = f"parseable {fixture_lang} code"
+    else:
+        fixture_desc = f"parseable code for a {fixture_ext} source file"
+    header_note = (
+        " — no #include headers" if fixture_lang in ("C", "C++") else ""
+    )
     parts += [
         "",
-        ("Provide two test fixtures (each 5-20 lines of complete, "
-         "parseable C code — no #include headers):"),
+        (f"Provide two test fixtures (each 5-20 lines of complete, "
+         f"{fixture_desc}{header_note}):"),
         ("  - test_positive: minimal snippet VIOLATING the invariant "
          "(rule MUST match).  Must contain exactly the structural shape "
          "the rule detects."),
@@ -295,6 +307,36 @@ def _fixture_ext(inv: Invariant, engine: str) -> str:
             if suffix:
                 return suffix
     return ".py"
+
+
+# Prompt-facing language name per fixture extension.  Keyed to what
+# _fixture_ext can return; kept aligned with the engine extension sets
+# in packages.checker_synthesis.languages.
+_EXT_LANGUAGE: dict[str, str] = {
+    ".c": "C", ".h": "C",
+    ".cpp": "C++", ".cc": "C++", ".cxx": "C++", ".c++": "C++",
+    ".hpp": "C++", ".hh": "C++", ".hxx": "C++",
+    ".py": "Python", ".pyi": "Python",
+    ".java": "Java",
+    ".go": "Go",
+    ".js": "JavaScript", ".jsx": "JavaScript",
+    ".mjs": "JavaScript", ".cjs": "JavaScript",
+    ".ts": "TypeScript", ".tsx": "TypeScript",
+    ".rb": "Ruby",
+    ".rs": "Rust",
+    ".php": "PHP",
+    ".cs": "C#",
+    ".kt": "Kotlin", ".kts": "Kotlin",
+    ".scala": "Scala",
+    ".swift": "Swift",
+    ".lua": "Lua",
+    ".ex": "Elixir", ".exs": "Elixir",
+}
+
+
+def _fixture_language(ext: str) -> str | None:
+    """Language name for a fixture extension, or None if unknown."""
+    return _EXT_LANGUAGE.get(ext.lower())
 
 
 def _infer_engine(inv: Invariant) -> str:
@@ -459,7 +501,10 @@ def compile_invariant(
         if "dc_errors" in ev:
             result.errors.extend(ev["dc_errors"])
 
-    if result.rule_body and repo_root and repo_root.is_dir():
+    # Sweep only after dual control passes — rule_body is also
+    # populated on dual-control failure (the last attempt's evidence),
+    # and an unvalidated rule must not produce codebase matches.
+    if result.dual_control and result.rule_body and repo_root and repo_root.is_dir():
         from packages.checker_synthesis.models import SynthesisedRule
         from packages.checker_synthesis.synthesise import _run_engine
 

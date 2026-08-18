@@ -358,3 +358,49 @@ class TestGidmapAllowContract:
                 os.waitpid(child, 0)
             except ChildProcessError:
                 pass
+
+
+class TestApparmorProfileTemplate:
+    """The AppArmor profile ships as a template whose attachment is
+    the unparseable @@RAPTOR_DIR@@ placeholder. AppArmor attaches by
+    exact path match — a suffix-wildcard attachment would hand the
+    profile's userns + capability grants to any local user who stages
+    a binary under a matching path, defeating the system-wide
+    apparmor_restrict_unprivileged_userns hardening."""
+
+    HELPERS = Path(__file__).resolve().parents[1] / "helpers"
+
+    def test_template_has_placeholder_attachment(self):
+        text = (self.HELPERS / "raptor-coord-launcher.apparmor.template").read_text()
+        assert "@@RAPTOR_DIR@@/core/sandbox/helpers/raptor-coord-launcher" in text
+
+    def test_no_wildcard_attachment_anywhere(self):
+        """No shipped profile source may attach by path glob."""
+        for prof in self.HELPERS.glob("*.apparmor*"):
+            text = prof.read_text()
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                assert "/**/core/sandbox" not in stripped, (
+                    f"{prof.name}: wildcard attachment path — any local "
+                    f"user could stage a matching path and inherit the "
+                    f"userns grant"
+                )
+
+    def test_render_substitutes_absolute_checkout_path(self, tmp_path):
+        """`make apparmor-profile` in a copied helpers dir renders the
+        attachment to that tree's absolute path and leaves no
+        placeholder behind."""
+        import shutil as _shutil
+        work = tmp_path / "core" / "sandbox" / "helpers"
+        work.mkdir(parents=True)
+        for name in ("Makefile", "raptor-coord-launcher.apparmor.template"):
+            _shutil.copy(self.HELPERS / name, work / name)
+        r = subprocess.run(["make", "-C", str(work), "apparmor-profile"],
+                           capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, r.stderr
+        rendered = (work / "raptor-coord-launcher.apparmor").read_text()
+        assert "@@RAPTOR_DIR@@" not in rendered
+        assert (f"{tmp_path}/core/sandbox/helpers/raptor-coord-launcher"
+                in rendered)

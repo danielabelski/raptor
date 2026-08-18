@@ -18,6 +18,8 @@
 #   themselves — they can't abuse the userns to escape.
 #
 # Install (one-time, operator-explicit):
+#   make apparmor-profile        # renders raptor-coord-launcher.apparmor
+#                                # with THIS checkout's absolute path
 #   sudo cp raptor-coord-launcher.apparmor \
 #       /etc/apparmor.d/raptor-coord-launcher
 #   sudo apparmor_parser -r /etc/apparmor.d/raptor-coord-launcher
@@ -27,16 +29,25 @@
 #   /path/to/raptor/core/sandbox/helpers/raptor-coord-launcher /usr/bin/true
 #   (no error == profile attaches correctly)
 #
-# IMPORTANT: the path below must match the absolute path of your RAPTOR
-# checkout's raptor-coord-launcher binary. Edit this line if your checkout
-# is somewhere other than /home/raptor/raptor — apparmor profiles match by
-# absolute binary path, not by content hash.
+# WHY A TEMPLATE: AppArmor attaches a profile by matching the
+# executable's PATH — never its contents, owner, or a hash. An earlier
+# revision shipped a ready-to-install profile whose attachment was the
+# suffix wildcard /**/core/sandbox/helpers/raptor-coord-launcher; any
+# local user could stage their own binary under a matching path and
+# inherit this profile's userns + capability grants, defeating the
+# system-wide apparmor_restrict_unprivileged_userns hardening. The
+# @@RAPTOR_DIR@@ placeholder below is deliberately UNPARSEABLE so an
+# un-rendered template fails apparmor_parser loudly instead of ever
+# granting broadly; `make apparmor-profile` substitutes the exact
+# absolute checkout path. If you relocate the checkout, re-render and
+# re-install — the stale profile stops matching and the launcher fails
+# LOUD (grant missing), never open.
 
 abi <abi/5.0>,
 include <tunables/global>
 
 profile raptor-coord-launcher
-    /**/core/sandbox/helpers/raptor-coord-launcher
+    @@RAPTOR_DIR@@/core/sandbox/helpers/raptor-coord-launcher
     flags=(attach_disconnected,mediate_deleted) {
   allow capability,
   allow file rwlkm /{**,},

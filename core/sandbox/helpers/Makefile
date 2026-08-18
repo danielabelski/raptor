@@ -24,7 +24,7 @@
 # exercised against temp files and a self-created user namespace. No
 # capability grant is needed to run it.
 
-.PHONY: all help clean check test
+.PHONY: all help clean check test apparmor-profile
 
 CC ?= cc
 
@@ -101,11 +101,12 @@ help:
 	@echo "          | sudo tee /etc/sysctl.d/99-raptor.conf"
 	@echo
 	@echo "  (2) Install the AppArmor profile (Ubuntu hardened):"
+	@echo "      make apparmor-profile   # renders for THIS checkout"
 	@echo "      sudo cp raptor-coord-launcher.apparmor \\"
 	@echo "             /etc/apparmor.d/raptor-coord-launcher"
 	@echo "      sudo apparmor_parser -r /etc/apparmor.d/raptor-coord-launcher"
-	@echo "      (Edit the .apparmor file's path glob if your checkout"
-	@echo "       is somewhere other than /home/<user>/raptor/.)"
+	@echo "      (Attachment is this checkout's ABSOLUTE path — re-run"
+	@echo "       both steps if you relocate the checkout.)"
 	@echo
 	@echo "  (3) Apply file capabilities (Debian / older Ubuntu / etc.):"
 	@echo "      sudo setcap cap_net_admin,cap_sys_admin+ep \\"
@@ -138,5 +139,32 @@ check:
 	    echo "  $(COORD_BIN): not built. Run 'make' first."; \
 	fi
 
+# Render the AppArmor profile for THIS checkout. The shipped file is
+# a template whose attachment path is the unparseable @@RAPTOR_DIR@@
+# placeholder — AppArmor attaches by exact path match and a suffix
+# wildcard would hand this profile's userns grant to any local user
+# who stages a matching path (see the template's WHY A TEMPLATE
+# block). Rendering stays sudo-free; installing the result is the
+# operator's explicit consent step, as ever.
+APPARMOR_TEMPLATE = raptor-coord-launcher.apparmor.template
+APPARMOR_RENDERED = raptor-coord-launcher.apparmor
+RAPTOR_ROOT = $(abspath $(CURDIR)/../../..)
+
+apparmor-profile: $(APPARMOR_TEMPLATE)
+	@case '$(RAPTOR_ROOT)' in \
+	    *'|'* | *' '* | *'	'*) \
+	        echo "ERROR: checkout path '$(RAPTOR_ROOT)' contains" \
+	             "whitespace or '|' — render manually."; exit 1;; \
+	esac
+	sed 's|@@RAPTOR_DIR@@|$(RAPTOR_ROOT)|g' $(APPARMOR_TEMPLATE) \
+	    > $(APPARMOR_RENDERED)
+	@grep -q '@@RAPTOR_DIR@@' $(APPARMOR_RENDERED) && \
+	    { echo "ERROR: placeholder survived rendering"; \
+	      rm -f $(APPARMOR_RENDERED); exit 1; } || true
+	@echo "Rendered $(APPARMOR_RENDERED) for $(RAPTOR_ROOT)."
+	@echo "Install (operator-explicit):"
+	@echo "  sudo cp $(APPARMOR_RENDERED) /etc/apparmor.d/raptor-coord-launcher"
+	@echo "  sudo apparmor_parser -r /etc/apparmor.d/raptor-coord-launcher"
+
 clean:
-	rm -f $(COORD_BIN) $(GIDMAP_BIN) $(TEST_BIN)
+	rm -f $(COORD_BIN) $(GIDMAP_BIN) $(TEST_BIN) $(APPARMOR_RENDERED)

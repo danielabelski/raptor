@@ -580,3 +580,101 @@ class TestLifecycleChannelDispatch:
             lifecycle_counters,
         )
         assert confirmed == ["lock_region:callback-under-lock"]
+
+
+class TestResourceBoundsWiring:
+    """Five-channel programme: resource_bounds chain wiring (§9)."""
+
+    HYP = "the session list grows without limit — memory exhaustion"
+
+    def test_cwe_fallback_emits_channel(self):
+        for cwe in ("CWE-770", "CWE-400", "CWE-772"):
+            assert "resource_bounds" in _types(_cwe_fallback_chain(cwe)), cwe
+
+    def test_hypothesis_chain_emits_channel(self):
+        chain = _hypothesis_to_tool_chain(self.HYP, "src/a.c")
+        assert "resource_bounds" in _types(chain)
+
+    def test_cross_channel_negatives(self):
+        # A fail-open / consistency / memcpy hypothesis must not
+        # dispatch resource_bounds.
+        for hyp in (
+            "the broad except swallows verification errors",
+            "9/10 callers check do_auth()'s return; this one discards it",
+            "unchecked memcpy overflow of `dst`",
+        ):
+            chain = _hypothesis_to_tool_chain(hyp, "src/a.c")
+            assert "resource_bounds" not in _types(chain), hyp
+
+    def test_tier_counter_exists(self):
+        assert "resource_bounds" in orch._make_tier_counters()
+
+    def test_cheap_lane_membership(self):
+        assert "resource_bounds" in orch._REFUTED_CHEAP_CHANNELS
+
+    def test_namespace_and_receipts(self):
+        from core.audit.evidence_grade import (
+            _RECEIPT_MAP,
+            is_tool_evidence,
+        )
+        assert is_tool_evidence("resource_bounds:unbounded-accumulation")
+        assert "resource_bounds:unbounded-accumulation" in _RECEIPT_MAP
+        assert "resource_bounds" in _RECEIPT_MAP
+
+    def test_detection_variant_never_tool_evidence_alone(self):
+        from core.audit.evidence_grade import is_tool_evidence
+        from core.audit.orchestrator import _is_detection_only
+        naming = "resource_bounds:unbounded-accumulation-naming"
+        assert not is_tool_evidence(naming)
+        assert _is_detection_only(naming)
+        assert not _is_detection_only(
+            "resource_bounds:unbounded-accumulation",
+        )
+        # In an aggregation composite the variant may ride along.
+        assert is_tool_evidence("joern+" + naming)
+
+    def test_detection_variant_solo_promotion_trips_alarm(self, tmp_path):
+        from types import SimpleNamespace
+
+        from core.audit.promotion_alarm import check_and_emit
+        record = check_and_emit(
+            tmp_path,
+            SimpleNamespace(
+                file="src/a.c", function="f", status="finding",
+                evidence_tool=(
+                    "resource_bounds:unbounded-accumulation-naming"
+                ),
+                review_result=None, hypothesis=self.HYP,
+            ),
+            stage="test",
+        )
+        assert record is not None
+        assert record["event"] == "promotion_without_tool_evidence"
+
+    def test_run_tool_chain_dispatch(self, tmp_path, monkeypatch):
+        import core.audit.resource_bounds as rb
+
+        class _Res:
+            outcome = "confirmed"
+            reason = "r"
+            rule_id = "resource_bounds:unbounded-accumulation"
+            corroboration = []
+
+            def to_dict(self):
+                return {"outcome": self.outcome}
+
+        monkeypatch.setattr(
+            rb, "run_resource_bounds_check", lambda *a, **kw: _Res(),
+        )
+        counters = {"resource_bounds": TierCounters()}
+        confirmed = _run_tool_chain(
+            [{"type": "resource_bounds", "config": {}}],
+            config=_Cfg(tmp_path),
+            file_path="src/a.c",
+            function_name="f",
+            source="",
+            hypothesis=self.HYP,
+            tier_counters=counters,
+        )
+        assert confirmed == ["resource_bounds:unbounded-accumulation"]
+        assert counters["resource_bounds"].confirmed == 1

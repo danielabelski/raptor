@@ -498,6 +498,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "api_boundary": TierCounters(),
         "fail_open": TierCounters(),
         "consistency": TierCounters(),
+        "resource_bounds": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "adversarial_refute": TierCounters(),
@@ -3685,6 +3686,87 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 )
     except Exception:
         logger.debug("lifecycle channel prepass failed", exc_info=True)
+
+    # Five-channel standing prepasses (adjacent to — and independent
+    # of — the consistency prepass block above): each channel sweeps
+    # the same source set, emits mechanical-findings entries plus
+    # injected hypotheses on the matching gaps (the fix_history
+    # mechanically-injected-hypothesis precedent), and appends its
+    # telemetry to the audit log. Channel list grows per landed
+    # channel; every entry degrades independently.
+    _channel_prepasses: list[tuple[str, str]] = [
+        ("resource_bounds", "run_resource_bounds_prepass"),
+    ]
+    for _ch_name, _ch_fn in _channel_prepasses:
+        try:
+            import importlib
+            _ch_mod = importlib.import_module(
+                f"core.audit.{_ch_name}",
+            )
+            _ch_run = getattr(_ch_mod, _ch_fn)
+
+            _ch_texts: dict[str, str] = {}
+            for gap in gaps:
+                fp = gap.get("file", "")
+                if fp and fp not in _ch_texts:
+                    with contextlib.suppress(Exception):
+                        src_path = config.target_path / fp
+                        if src_path.is_file():
+                            _ch_texts[fp] = src_path.read_text(
+                                errors="replace",
+                            )
+            if not _ch_texts:
+                continue
+            from .fail_open_roles import RoleContext as _ChRoleCtx
+            _ch_out = _ch_run(
+                _ch_texts,
+                target_path=config.target_path,
+                out_dir=config.out_dir,
+                inventory=getattr(config, "inventory", None),
+                context=_ChRoleCtx(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                    context_map=context_map,
+                ),
+                domain_model=prep_domain_model,
+            )
+            for mf in _ch_out.get("mechanical", []):
+                key = f"{mf['file']}:{mf['function']}"
+                mechanical_findings.setdefault(key, []).append(mf)
+            _ch_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for lead in _ch_out.get("leads", []):
+                _ch_by_key.setdefault(
+                    (lead.get("file", ""), lead.get("function", "")),
+                    [],
+                ).append(lead)
+            _ch_seeded = 0
+            for gap in gaps:
+                key = (gap.get("file", ""), gap.get("name", ""))
+                for lead in _ch_by_key.get(key, []):
+                    if not lead.get("mechanism"):
+                        continue
+                    gap.setdefault("injected_hypotheses", []).append({
+                        "mechanism": lead["mechanism"],
+                        "confidence": "medium",
+                        "source": f"{_ch_name}_prepass",
+                    })
+                    _ch_seeded += 1
+            if _ch_seeded:
+                logger.info(
+                    "%s prepass: %d hypothesis lead(s) injected",
+                    _ch_name, _ch_seeded,
+                )
+            if config.out_dir:
+                with contextlib.suppress(Exception):
+                    append_audit_log(config.out_dir, {
+                        "action": f"{_ch_name}_prepass",
+                        **(_ch_out.get("telemetry") or {}),
+                    })
+        except Exception:
+            logger.debug("%s prepass failed", _ch_name, exc_info=True)
 
     if mechanical_findings and config.out_dir:
         try:
@@ -11902,6 +11984,20 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "lock_region", "config": {}})
                 seen_types.add("lock_region")
 
+    # Unbounded-accumulation hypotheses ("the incoming list grows
+    # without limit — memory exhaustion"): the resource_bounds channel
+    # runs the bound-witness comparator (local dominating guard,
+    # depth-3 caller walk, removal-pair parity) mechanically.
+    if "resource_bounds" not in seen_types:
+        try:
+            from .resource_bounds import is_resource_bounds_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_resource_bounds_hypothesis(hypothesis):
+                chain.append({"type": "resource_bounds", "config": {}})
+                seen_types.add("resource_bounds")
+
     # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
     # the preservation harness checks the stated invariant against the
     # function's mutation sites — the channel gap that left every
@@ -12039,10 +12135,11 @@ def _record_channel_receipt(
     function_name: str,
     res: Any,
 ) -> None:
-    """Persist a lifecycle-channel receipt (ptr_lifecycle four-receipt
-    conjunction / lock_region region+invocation+setter evidence) to
-    the audit log — the shared shape of the per-channel recorders
-    above."""
+    """Persist a channel receipt (ptr_lifecycle four-receipt
+    conjunction / lock_region region+invocation+setter evidence /
+    resource_bounds / release_order / protocol_state — the
+    fail_open receipt pattern) to the audit log — the shared
+    shape of the per-channel recorders above."""
     try:
         if not config.out_dir:
             return
@@ -12187,6 +12284,17 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         # pure static analysis, cheap, before the heavier engines.
         if consistency_applicable(cwe):
             chain.append({"type": "consistency", "config": {}})
+
+    try:
+        from .resource_bounds import resource_bounds_applicable
+    except ImportError:
+        pass
+    else:
+        # Unbounded allocation / accumulation family
+        # (RESOURCE_BOUNDS_CWES — CWE-770/400/772): the bound-witness
+        # comparator is the verifier. Pure static analysis, cheap.
+        if resource_bounds_applicable(cwe):
+            chain.append({"type": "resource_bounds", "config": {}})
 
     smt_verb = smt_verb_for_cwe(cwe)
     if smt_verb:
@@ -12840,6 +12948,74 @@ def _run_tool_chain(
                     if tier_counters:
                         _increment_tier_dict(
                             tier_counters, "lock_region",
+                            "inconclusive",
+                        )
+
+            elif tool_type == "resource_bounds":
+                from .fail_open_roles import RoleContext as _RbRoleCtx
+                from .resource_bounds import run_resource_bounds_check
+
+                rb_dm = None
+                with contextlib.suppress(Exception):
+                    from .journal import load_domain_model as _rb_ldm
+                    rb_dm = _rb_ldm(config.out_dir) \
+                        if config.out_dir else None
+                rb_ctx = _RbRoleCtx(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                    context_map=getattr(config, "context_map", None),
+                )
+                rb_res = run_resource_bounds_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    context=rb_ctx,
+                    domain_model=rb_dm,
+                )
+                # Receipts already earned by earlier chain steps
+                # corroborate (the fail_open convention).
+                rb_res.corroboration.extend(
+                    c for c in confirmed
+                    if not c.startswith("resource_bounds")
+                )
+                _record_channel_receipt(
+                    config, "resource_bounds_check", file_path,
+                    function_name, rb_res,
+                )
+                if rb_res.outcome == "confirmed":
+                    confirmed.append(rb_res.rule_id)
+                    logger.info(
+                        "resource-bounds confirmed %s:%s — %s",
+                        file_path, function_name, rb_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "resource_bounds",
+                            "confirmed",
+                        )
+                elif rb_res.outcome == "refuted":
+                    logger.info(
+                        "resource-bounds refuted %s:%s — %s",
+                        file_path, function_name, rb_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "resource_bounds",
+                            "refuted",
+                        )
+                else:
+                    logger.info(
+                        "resource-bounds inconclusive %s:%s — %s",
+                        file_path, function_name, rb_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "resource_bounds",
                             "inconclusive",
                         )
 
@@ -16144,6 +16320,13 @@ def _is_detection_only(tool_id: str) -> bool:
         from core.audit.lock_region import is_detection_rule_id
         return is_detection_rule_id(tool_id)
 
+    if tool_id.startswith("resource_bounds:"):
+        # -naming variants (seed-only vocabulary or unknown
+        # reachability) may not promote alone; registry-grade
+        # confirmations promote directly.
+        from core.audit.resource_bounds import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
+
     return False
 
 
@@ -16175,6 +16358,7 @@ def _source_has_arithmetic(source: str) -> bool:
 _REFUTED_CHEAP_CHANNELS = frozenset({
     "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
     "fail_open", "consistency", "ptr_lifecycle", "lock_region",
+    "resource_bounds",
 })
 
 # Bound the extra tool work per function: at most this many hypotheses

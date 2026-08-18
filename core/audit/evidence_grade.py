@@ -101,19 +101,25 @@ _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "prefilter", "critique", "sweep", "sarif_cache",
     "dynamic", "frida", "dark_verify", "precondition",
     "fail_open", "consistency", "ptr_lifecycle", "lock_region",
+    "resource_bounds",
 })
 
 
 def _is_detection_variant(part: str) -> bool:
-    """Detection-role consistency stamps (``consistency:*-majority``).
+    """Detection-role channel stamps (``consistency:*-majority``,
+    ``resource_bounds:*-naming``).
 
-    A majority statistic corroborates; it does not convict (the
-    ``git_history`` epistemology applied to statistics). Such a stamp
-    may ride along in a ``+``-joined aggregation receipt, but alone it
-    is NOT tool evidence — a ``finding`` carrying only a ``-majority``
-    stamp trips the promotion alarm.
+    A majority statistic / uncorroborated-vocabulary premise
+    corroborates; it does not convict (the ``git_history``
+    epistemology). Such a stamp may ride along in a ``+``-joined
+    aggregation receipt, but alone it is NOT tool evidence — a
+    ``finding`` carrying only a detection variant trips the promotion
+    alarm.
     """
-    return part.startswith("consistency:") and part.endswith("-majority")
+    if part.startswith("consistency:") and part.endswith("-majority"):
+        return True
+    return part.startswith("resource_bounds:") and \
+        part.endswith("-naming")
 
 
 def _is_single_tool_evidence(part: str) -> bool:
@@ -240,6 +246,24 @@ _RECEIPT_MAP: dict[str, tuple] = {
     "fail_open": (
         EvidenceSource.TREE_SITTER,
         "fail-open shape confirmed by the handler-outcome channel",
+    ),
+    # Resource-bounds channel receipts (the bare namespace covers the
+    # -naming detection variants riding in aggregation composites).
+    "resource_bounds:unbounded-accumulation": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "an accumulation site has no dominating bound witness in "
+            "the function or its searched callers (guard walk + "
+            "constant-resolution receipts; the searched scope is "
+            "named in the receipt)"
+        ),
+    ),
+    "resource_bounds": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "unbounded-accumulation shape confirmed by the "
+            "bound-witness comparator"
+        ),
     ),
     # Consistency channel receipts (per dimension; the bare namespace
     # covers the -majority detection variants riding in aggregation

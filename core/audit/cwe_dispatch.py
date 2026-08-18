@@ -480,6 +480,31 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "sinks": [],
         "dark_verify": True,
     },
+    # Unbounded allocation / accumulation family — no static dataflow
+    # channel adjudicates; the resource_bounds channel (bound-witness
+    # comparator, resource_bounds.RESOURCE_BOUNDS_CWES) is the
+    # verifier via the fallback chain.
+    "CWE-770": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
+    "CWE-400": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
+    "CWE-772": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
 }
 
 
@@ -564,6 +589,12 @@ _HYPOTHESIS_CWE_MAP = [
       r".{0,25}(?:data|origin|source|message|payload|signature)|"
       r"signature.{0,25}(?:not|never|un)\w*.{0,10}(?:verif|check)"),
      "CWE-345"),
+    # Five-channel programme families (appended: first-match-wins, so
+    # pre-existing behaviour is unchanged).
+    ((r"unbounded.{0,30}(?:alloc|growth|accumulat|list|queue)|"
+      r"memory\s+exhaustion|resource\s+exhaustion|"
+      r"grows?\s+without\s+(?:bound|limit|cap)|no\s+backpressure"),
+     "CWE-770"),
 ]
 
 _HYPOTHESIS_CWE_RE = None

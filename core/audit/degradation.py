@@ -141,7 +141,11 @@ _DEGRADATION_MATRIX: list[Fallback] = [
                "need rhs provenance gate to "
                "inconclusive('census-incomplete') (ptr_lifecycle "
                "refuses to guess alias edges; the field-parity leg "
-               "detects nothing).",
+               "detects nothing). "
+               "resource_bounds channel: the bound-witness comparator "
+               "needs the CFG/dominator walk and reports "
+               "inconclusive('census-degraded') rather than confirming "
+               "a no-bound claim without the guard walk.",
         fallback_description="ast for Python handlers, line-regex for "
                              "C call-site shapes and the coarse census",
     ),

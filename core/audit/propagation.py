@@ -79,7 +79,6 @@ class PropagationResult:
     resolution: str = ""          # "confirmed" | "refuted" | "depth_limited"
     resolver_used: str = ""       # "codeql" | "coccinelle" | "semgrep" | "heuristic" | "llm"
     callers_scheduled: list[CallerCandidate] = field(default_factory=list)
-    callers_filtered: int = 0
     finding: dict[str, Any] | None = None
     depth_probe: DepthProbe | None = None
 
@@ -964,7 +963,6 @@ def propagate_one_hop(
         resolved=False,
         resolver_used="heuristic",
         callers_scheduled=ranked,
-        callers_filtered=len(candidates) - len(ranked),
     )
 
 

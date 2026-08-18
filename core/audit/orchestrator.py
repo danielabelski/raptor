@@ -3281,12 +3281,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         if g.get("name")
     ]
     # Dispatch tables extracted from the hydrated gaps — the L2
-    # (dispatch-site) layer's first producer at this call site. The
-    # remaining optional resolver inputs (binary_edge_index,
-    # type_ref_index) still lack producers: L1 needs the r2
-    # --binary-edges cache wired through prep and L4 needs a type
-    # cohort index from the inventory extractors — both stay
-    # unproduced in phase 1, documented, not silently wired.
+    # (dispatch-site) layer's first producer at this call site.
     prep_dispatch_tables = None
     try:
         from .dispatch_table import build_dispatch_tables
@@ -3300,9 +3295,40 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     except Exception:
         logger.debug("dispatch-table extraction failed", exc_info=True)
 
+    # L1: cached r2 binary call edges for the declared binaries.
+    # Cache-only (populated by /agentic / /codeql --binary-edges or a
+    # binary graph store); binaries come from the enriched inventory's
+    # binary_oracle block, which already passed the provenance filter
+    # + source-coverage floor. Tier gating and the --no-binary-oracle
+    # opt-out are enforced inside the producer. Cold cache / no
+    # binaries → None → the layer stays empty (equivalence pin).
+    prep_binary_edge_index = None
+    try:
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        _pg_inventory = next(
+            (
+                c for c in (config.inventory, checklist)
+                if isinstance(c, dict) and c.get("binary_oracle")
+            ),
+            None,
+        )
+        prep_binary_edge_index = binary_edge_index_from_inventory(
+            _pg_inventory,
+            no_binary_oracle=config.no_binary_oracle,
+        )
+    except Exception:
+        logger.debug(
+            "binary edge index load for peer groups failed",
+            exc_info=True,
+        )
+
     peer_groups = resolve_peer_groups(
         gap_func_dicts,
         joern_server=joern_server,
+        binary_edge_index=prep_binary_edge_index,
         dispatch_tables=prep_dispatch_tables or None,
         domain_model=prep_domain_model,
         checklist=checklist,
@@ -5639,7 +5665,6 @@ def _run_audit_body(
                 if config.out_dir:
                     spec_path = config.out_dir / "iris-taint-specs-refined.json"
                     spec_path.write_text(specs_to_json(refined_specs))
-
             if assumptions:
                 logger.info(
                     "iris.synthesise: %d assumptions from %d sink/sanitiser specs",

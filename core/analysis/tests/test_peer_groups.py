@@ -644,3 +644,163 @@ class TestLargestCompatibleSubset:
 
     def test_empty(self):
         assert _largest_compatible_subset([]) == []
+
+
+# ── Producers: binary_edge_index_from_inventory (L1) ─────────────────
+
+
+def _bo_inventory(binaries):
+    return {"binary_oracle": {"binaries": binaries}}
+
+
+class TestBinaryEdgeIndexFromInventory:
+    def _patch_cache(self, monkeypatch, mapping):
+        """Route load_cached_edge_index through an in-memory cache."""
+        import core.analysis.binary_oracle_edges as edges_mod
+
+        def _fake_load(path):
+            return mapping.get(str(path))
+
+        monkeypatch.setattr(
+            edges_mod, "load_cached_edge_index", _fake_load,
+        )
+
+    def test_none_inventory(self):
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        assert binary_edge_index_from_inventory(None) is None
+        assert binary_edge_index_from_inventory({}) is None
+        assert binary_edge_index_from_inventory(
+            {"binary_oracle": {}}) is None
+
+    def test_operator_opt_out(self, monkeypatch):
+        """--no-binary-oracle wins even with eligible cached binaries."""
+        from core.analysis.binary_oracle_edges import BinaryEdgeIndex
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        idx = BinaryEdgeIndex(binary_path="/b/app")
+        idx.edges.append(FakeBinaryCallEdge("main", "h_get"))
+        self._patch_cache(monkeypatch, {"/b/app": idx})
+        inv = _bo_inventory(
+            [{"path": "/b/app", "build_id": "aa", "tier": "full"}])
+        assert binary_edge_index_from_inventory(
+            inv, no_binary_oracle=True) is None
+
+    def test_tier_gate_skips_symbol_only_and_unknown(self, monkeypatch):
+        """Chokepoint tier gating: stripped / unknown-tier binaries
+        never feed L1 — name-keyed joins from a stripped binary can't
+        earn an exclusive-claim layer."""
+        from core.analysis.binary_oracle_edges import BinaryEdgeIndex
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        idx = BinaryEdgeIndex(binary_path="/b/stripped")
+        idx.edges.append(FakeBinaryCallEdge("main", "h_get"))
+        self._patch_cache(
+            monkeypatch, {"/b/stripped": idx, "/b/unknown": idx})
+        inv = _bo_inventory([
+            {"path": "/b/stripped", "build_id": "aa",
+             "tier": "symbol_only"},
+            {"path": "/b/unknown", "build_id": "bb", "tier": "unknown"},
+        ])
+        assert binary_edge_index_from_inventory(inv) is None
+
+    def test_cache_miss_stays_empty(self, monkeypatch):
+        """Cold cache -> None -> layer stays empty (equivalence pin).
+        The producer never runs r2."""
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        self._patch_cache(monkeypatch, {})
+        inv = _bo_inventory(
+            [{"path": "/b/app", "build_id": "aa", "tier": "full"}])
+        assert binary_edge_index_from_inventory(inv) is None
+
+    def test_full_tier_cache_hit_merges_binaries(self, monkeypatch):
+        from core.analysis.binary_oracle_edges import BinaryEdgeIndex
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        idx_a = BinaryEdgeIndex(binary_path="/b/app")
+        idx_a.edges.append(FakeBinaryCallEdge("main", "h_get", "/b/app"))
+        idx_a.callees.add("h_get")
+        idx_b = BinaryEdgeIndex(binary_path="/b/lib")
+        idx_b.edges.append(FakeBinaryCallEdge("main", "h_put", "/b/lib"))
+        idx_b.callees.add("h_put")
+        self._patch_cache(monkeypatch, {"/b/app": idx_a, "/b/lib": idx_b})
+        inv = _bo_inventory([
+            {"path": "/b/app", "build_id": "aa", "tier": "full"},
+            {"path": "/b/lib", "build_id": "bb", "tier": "full"},
+        ])
+        merged = binary_edge_index_from_inventory(inv)
+        assert merged is not None
+        assert len(merged.edges) == 2
+        assert merged.callees == {"h_get", "h_put"}
+
+    def test_coverage_gain_l1_groups_where_l2_l6_cannot(self, monkeypatch):
+        """Functions no other layer can group (no dispatch table, no
+        verb prefix, no pair pattern) get grouped once the L1 producer
+        supplies cached binary edges."""
+        from core.analysis.binary_oracle_edges import BinaryEdgeIndex
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        funcs = [
+            _func("frobnicate", file="src/a.c"),
+            _func("quuxify", file="src/b.c"),
+        ]
+        # Without the L1 input: no groups at all.
+        assert resolve_peer_groups(funcs) == []
+
+        idx = BinaryEdgeIndex(binary_path="/b/app")
+        idx.edges.append(
+            FakeBinaryCallEdge("dispatch_all", "frobnicate", "/b/app"))
+        idx.edges.append(
+            FakeBinaryCallEdge("dispatch_all", "quuxify", "/b/app"))
+        idx.callees.update({"frobnicate", "quuxify"})
+        self._patch_cache(monkeypatch, {"/b/app": idx})
+        inv = _bo_inventory(
+            [{"path": "/b/app", "build_id": "aa", "tier": "full"}])
+
+        edge_index = binary_edge_index_from_inventory(inv)
+        groups = resolve_peer_groups(funcs, binary_edge_index=edge_index)
+        assert len(groups) == 1
+        assert groups[0].sibling_type == "co_callee"
+        assert {s.function for s in groups[0].siblings} == {
+            "frobnicate", "quuxify",
+        }
+
+    def test_equivalence_absent_input_byte_identical(self):
+        """No binaries declared -> resolver output identical to a call
+        that never mentions the layer."""
+        funcs = [
+            _func("handle_get", file="src/h.c"),
+            _func("handle_put", file="src/h.c"),
+            _func("encode_frame", file="src/codec.c"),
+            _func("decode_frame", file="src/codec.c"),
+        ]
+        from core.analysis.peer_groups import (
+            binary_edge_index_from_inventory,
+        )
+
+        produced = binary_edge_index_from_inventory({"files": []})
+        assert produced is None
+        baseline = resolve_peer_groups(funcs)
+        wired = resolve_peer_groups(funcs, binary_edge_index=produced)
+        assert [
+            (g.group_id, g.sibling_type,
+             [(s.file, s.function) for s in g.siblings])
+            for g in baseline
+        ] == [
+            (g.group_id, g.sibling_type,
+             [(s.file, s.function) for s in g.siblings])
+            for g in wired
+        ]

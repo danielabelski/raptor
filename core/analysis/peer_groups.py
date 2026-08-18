@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from core.audit.sibling_analysis import (
@@ -111,6 +111,96 @@ def resolve_peer_groups(
         len(groups), len(claimed), len(functions),
     )
     return groups
+
+
+# ── Input producers (orchestrator prep phase) ────────────────────────
+#
+# The resolver takes its optional layer inputs pre-built.  The
+# producers below build them from the data the audit prep phase
+# already has — the enriched inventory.  Each returns ``None`` when
+# its input is absent, and the resolver then behaves exactly as if
+# the layer did not exist (equivalence pin).
+
+
+def binary_edge_index_from_inventory(
+    inventory: dict[str, Any] | None,
+    *,
+    no_binary_oracle: bool = False,
+) -> Any | None:
+    """L1 producer: cached r2 call edges for the run's declared binaries.
+
+    Cache-only — never invokes r2 (audit prep must stay fast).  Consumes
+    the per-build-id edge cache persisted by ``/agentic`` / ``/codeql``
+    ``--binary-edges`` runs (Inc 2b) or a binary graph store left by
+    ``/understand --map``.
+
+    Chokepoint safeguards (all inherited or enforced here):
+
+    * **Provenance** — only binaries recorded in
+      ``inventory['binary_oracle']['binaries']`` are considered.  That
+      list is produced upstream by ``resolve_binary_paths`` (git-
+      untracked filter, operator-explicit ``--binary`` bypass) plus the
+      source-coverage floor, so a planted or repo-committed binary
+      never reaches this producer.
+    * **Tier gating** — binaries that fell back to symbol-only or
+      unknown tier are skipped: name-keyed joins from a stripped
+      binary are not trustworthy enough for a layer that claims
+      functions exclusively.
+    * **Operator opt-out** — ``no_binary_oracle=True`` returns ``None``
+      (mirrors ``--no-binary-oracle``).
+
+    Returns a merged ``BinaryEdgeIndex`` across all eligible binaries,
+    or ``None`` when nothing is available — the L1 layer then stays
+    empty and resolver behaviour is unchanged.
+    """
+    if no_binary_oracle or not isinstance(inventory, dict):
+        return None
+    bo = inventory.get("binary_oracle")
+    if not isinstance(bo, dict):
+        return None
+    binaries = bo.get("binaries")
+    if not isinstance(binaries, list) or not binaries:
+        return None
+
+    try:
+        from core.analysis.binary_oracle_edges import (
+            BinaryEdgeIndex,
+            load_cached_edge_index,
+        )
+    except ImportError:
+        return None
+
+    merged: Any = None
+    n_loaded = 0
+    for entry in binaries:
+        if not isinstance(entry, dict):
+            continue
+        tier = entry.get("tier")
+        path = entry.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        if tier != "full":
+            logger.debug(
+                "peer groups L1: skipping %s (tier=%s, need full-DWARF)",
+                path, tier,
+            )
+            continue
+        idx = load_cached_edge_index(Path(path))
+        if idx is None or not idx.edges:
+            continue
+        if merged is None:
+            merged = BinaryEdgeIndex(binary_path=path)
+        merged.edges.extend(idx.edges)
+        merged.callees.update(idx.callees)
+        n_loaded += 1
+
+    if merged is None:
+        return None
+    logger.info(
+        "peer groups L1: %d cached binary edges from %d binar%s",
+        len(merged.edges), n_loaded, "y" if n_loaded == 1 else "ies",
+    )
+    return merged
 
 
 # ── L0: Joern co-callee groups ────────────────────────────────────────

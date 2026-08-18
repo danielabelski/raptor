@@ -795,11 +795,11 @@ _CALL_IN_LINE_RE = re.compile(
 # `return f();` on the call-site path.
 _C_FUNC_HEADER_RE = re.compile(
     r"^\s*"
-    r"(?:__attribute__\s*\(\(.*?\)\)\s*)*"
+    r"(?:__attribute__\s*\(\([^()]*(?:\([^()]*\)[^()]*)*\)\)\s*)*"
     r"(?!(?:if|else|while|for|switch|do|case|goto|return|yield|"
     r"sizeof|new|delete|throw|await)\b)"
     r"(?:[A-Za-z_]\w*[ \t*&]+)+"
-    r"(?:__attribute__\s*\(\(.*?\)\)\s*)*"
+    r"(?:__attribute__\s*\(\([^()]*(?:\([^()]*\)[^()]*)*\)\)\s*)*"
     r"(?P<name>[A-Za-z_]\w*)\s*"
     r"\([^;{}()]*\)\s*"
     r"(?P<tail>[{;])?\s*$",

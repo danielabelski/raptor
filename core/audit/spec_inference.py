@@ -43,6 +43,12 @@ class InferredSpec:
     invariants: list[str] = field(default_factory=list)
     negative_specs: list[str] = field(default_factory=list)
     sources: list[SpecSource] = field(default_factory=list)
+    #: LLM claims whose source anchor did NOT verify against the
+    #: function source (hint tier — the receipts.py precedent:
+    #: unverified answers surface only as explicitly-marked hints).
+    #: Never merged into the spec lists above, so precondition
+    #: verification and evidence fusion never consume them.
+    llm_hints: list[str] = field(default_factory=list)
 
 
 _NAME_INTENT: list[tuple] = [
@@ -194,6 +200,14 @@ def format_spec_for_context(spec: InferredSpec) -> str:
         lines.append("**Must NOT:**")
         for ns in spec.negative_specs[:4]:
             lines.append(f"- {ns}")
+
+    if spec.llm_hints:
+        lines.append(
+            "**Unverified LLM hints** (no source anchor — NOT part of "
+            "the spec; treat as leads only):"
+        )
+        for hint in spec.llm_hints[:4]:
+            lines.append(f"- {hint}")
 
     source_strs = []
     for s in spec.sources[:5]:
@@ -684,11 +698,18 @@ contract with callers.
 Respond with JSON only:
 {
   "intent": "one sentence describing what this function should do",
-  "preconditions": ["condition that must hold on entry"],
-  "postconditions": ["condition that must hold on exit"],
-  "invariants": ["property that must hold throughout"],
-  "negative_specs": ["what this function must NOT do"]
+  "preconditions": [{"claim": "condition that must hold on entry",
+                     "anchor": "verbatim code from the source that grounds the claim"}],
+  "postconditions": [{"claim": "condition that must hold on exit", "anchor": "..."}],
+  "invariants": [{"claim": "property that must hold throughout", "anchor": "..."}],
+  "negative_specs": [{"claim": "what this function must NOT do", "anchor": "..."}]
 }
+
+Every claim MUST carry an "anchor": a short snippet copied VERBATIM \
+from the provided source (a parameter declaration, a check, a call — \
+whatever the claim is grounded in). Anchors are verified mechanically \
+against the source; a claim whose anchor does not appear in the source \
+is demoted to an unverified hint. Do not paraphrase anchors.
 
 Focus on the safety-relevant parts of the contract: bounds on sizes, \
 null-safety, authentication requirements, sanitization guarantees, \
@@ -793,6 +814,55 @@ def _parse_llm_spec_response(response: str) -> dict[str, Any]:
     return data
 
 
+# Source-grounding for LLM spec claims (the receipts.py verify
+# precedent, applied at this seam): every claim must carry an anchor —
+# a verbatim source snippet — that verifies mechanically against the
+# exact source slice the model was shown. Anchors below the floor
+# ("}", "return;") verify trivially and carry no evidential weight;
+# the floor is lower than receipts.MIN_QUOTE_CHARS because code
+# anchors ("if (!p)") are denser than prose quotes.
+_ANCHOR_MIN_CHARS = 8
+
+
+def _normalise_anchor(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text)).strip()
+
+
+def _anchor_verifies(anchor: str, norm_source: str) -> bool:
+    """True when *anchor* is a verbatim (whitespace-normalised)
+    substring of the source the model was shown."""
+    norm = _normalise_anchor(anchor)
+    return len(norm) >= _ANCHOR_MIN_CHARS and norm in norm_source
+
+
+def _ground_spec_claims(
+    items: Any, norm_source: str,
+) -> tuple[list[str], list[str]]:
+    """Split raw claim items into (anchored, unanchored) claim texts.
+
+    Accepts the prompt's ``{"claim", "anchor"}`` objects; a bare
+    string (schema drift) has no anchor and lands in the unanchored
+    bucket. Items without usable claim text are dropped.
+    """
+    anchored: list[str] = []
+    unanchored: list[str] = []
+    if not isinstance(items, list):
+        return anchored, unanchored
+    for item in items:
+        if isinstance(item, dict):
+            claim = str(item.get("claim", "") or "").strip()
+            if not claim:
+                continue
+            if _anchor_verifies(str(item.get("anchor", "") or ""),
+                                norm_source):
+                anchored.append(claim)
+            else:
+                unanchored.append(claim)
+        elif isinstance(item, str) and item.strip():
+            unanchored.append(item.strip())
+    return anchored, unanchored
+
+
 def infer_spec_with_llm_sync(
     gap: dict[str, Any],
     mechanical_spec: InferredSpec | None = None,
@@ -867,26 +937,41 @@ def infer_spec_with_llm_sync(
         return spec
 
     if data.get("intent") and not spec.intent:
-        spec.intent = data["intent"]
+        # Intent is one sentence of descriptive prose consumed as
+        # context only (same pass-through as _ground_summary's state
+        # transitions) — it grounds no verification decision.
+        spec.intent = str(data["intent"])
         spec.sources.append(SpecSource(
             signal="llm_inference", confidence="medium", evidence="LLM-inferred intent",
         ))
 
-    for pc in data.get("preconditions", []):
-        if pc and pc not in spec.preconditions:
-            spec.preconditions.append(pc)
-
-    for pc in data.get("postconditions", []):
-        if pc and pc not in spec.postconditions:
-            spec.postconditions.append(pc)
-
-    for inv in data.get("invariants", []):
-        if inv and inv not in spec.invariants:
-            spec.invariants.append(inv)
-
-    for ns in data.get("negative_specs", []):
-        if ns and ns not in spec.negative_specs:
-            spec.negative_specs.append(ns)
+    # Source-grounding: only claims whose verbatim anchor verifies
+    # against the exact source slice the model was shown enter the
+    # spec lists; the rest are demoted to the hint tier (llm_hints).
+    norm_source = _normalise_anchor(source[:_SPEC_SOURCE_MAX_CHARS])
+    hint_count = 0
+    for field_name, target in (
+        ("preconditions", spec.preconditions),
+        ("postconditions", spec.postconditions),
+        ("invariants", spec.invariants),
+        ("negative_specs", spec.negative_specs),
+    ):
+        anchored, unanchored = _ground_spec_claims(
+            data.get(field_name, []), norm_source,
+        )
+        for claim in anchored:
+            if claim not in target:
+                target.append(claim)
+        for claim in unanchored:
+            hint = f"{field_name}: {claim}"
+            if hint not in spec.llm_hints:
+                spec.llm_hints.append(hint)
+                hint_count += 1
+    if hint_count:
+        logger.debug(
+            "spec_inference: %d unanchored claim(s) for %s:%s demoted "
+            "to hint tier", hint_count, file_path, function_name,
+        )
 
     if not any(s.signal == "llm_inference" for s in spec.sources):
         spec.sources.append(SpecSource(

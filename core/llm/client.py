@@ -573,6 +573,20 @@ def _resolve_timeout_retry_cap(raw: Any) -> int:
     return cap if cap >= 0 else _TIMEOUT_RETRY_CAP
 
 
+def _transport_http_version() -> str | None:
+    """Most recent negotiated HTTP protocol (``h1``/``h2``) seen by
+    this process's pooled LLM transports — attached to telemetry
+    records so HTTP/2 service is provable from run artifacts. None
+    when the transport lives in another process (remote dispatcher)
+    or no response has been seen yet."""
+    try:
+        from core.llm.http_pool import last_http_version
+
+        return last_http_version()
+    except Exception:  # noqa: BLE001 — telemetry must never break a call
+        return None
+
+
 def _failure_disposition(error: Exception) -> str:
     """Telemetry label for a failed attempt: how the retry policy saw
     it. Ordering matters — quota beats the message-based timeout
@@ -2172,6 +2186,7 @@ class LLMClient:
                             timeout_retries=timeout_failures,
                             duration_s=round(duration, 3),
                             cost_usd=response.cost,
+                            http_version=_transport_http_version(),
                             tokens_in=getattr(response, "input_tokens", 0),
                             tokens_out=getattr(response, "output_tokens", 0),
                             cache_read_tokens=getattr(
@@ -2261,6 +2276,7 @@ class LLMClient:
                             attempt=attempt + 1,
                             duration_s=round(
                                 time.monotonic() - attempt_start, 3),
+                            http_version=_transport_http_version(),
                             error=_safe_e[:200],
                         )
 
@@ -2739,6 +2755,7 @@ class LLMClient:
                             timeout_retries=timeout_failures,
                             duration_s=round(duration, 3),
                             cost_usd=cost_delta,
+                            http_version=_transport_http_version(),
                             tokens_in=in_delta,
                             tokens_out=out_delta,
                             cache_read_tokens=cread_delta,
@@ -2833,6 +2850,7 @@ class LLMClient:
                             attempt=attempt + 1,
                             duration_s=round(
                                 time.monotonic() - attempt_start, 3),
+                            http_version=_transport_http_version(),
                             error=_safe_e[:200],
                         )
 

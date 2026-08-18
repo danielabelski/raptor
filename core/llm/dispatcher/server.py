@@ -486,11 +486,16 @@ class LLMDispatcher:
         env = tuple(os.environ.get(v) for v in _PROXY_ENV_VARS)
         with self._upstream_http_lock:
             if self._upstream_http is None or self._upstream_http_env != env:
-                from core.llm.http_pool import http2_enabled, pool_limits
+                from core.llm.http_pool import (
+                    http2_enabled,
+                    pool_limits,
+                    response_event_hooks,
+                )
                 old = self._upstream_http
                 self._upstream_http = httpx.Client(
                     timeout=_upstream_timeout(), limits=pool_limits(),
                     http2=http2_enabled(),
+                    event_hooks=response_event_hooks(),
                 )
                 self._upstream_http_env = env
                 if old is not None:
@@ -881,11 +886,22 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                 url = rule.upstream_base_url + upstream_path
 
             # ---- forward to upstream + stream response back ----
+            _up_http_version = None
             try:
                 with dispatcher._upstream_client().stream(
                     method, url, content=body, headers=forwarded,
                     timeout=_upstream_timeout(),
                 ) as up:
+                    try:
+                        from core.llm.http_pool import (
+                            _normalize_http_version,
+                        )
+
+                        _up_http_version = _normalize_http_version(
+                            up.http_version,
+                        )
+                    except Exception:
+                        _up_http_version = None
                     self.send_response(up.status_code)
                     for k, v in up.headers.items():
                         # Strip hop-by-hop headers only. ``content-
@@ -912,7 +928,14 @@ def _make_request_handler(dispatcher: LLMDispatcher) -> type:
                     peer_pid=None, peer_uid=None,
                     token_id=_short(rec.value), worker_label=rec.worker_label,
                     status="ok",
-                    extra={"provider": provider_name, "method": method, "path": upstream_path},
+                    extra={
+                        "provider": provider_name, "method": method,
+                        "path": upstream_path,
+                        # Negotiated protocol on the upstream leg
+                        # (h1/h2) — makes HTTP/2 service provable
+                        # from the dispatch audit trail.
+                        "http_version": _up_http_version,
+                    },
                 ))
             except (httpx.HTTPError, OSError) as exc:
                 dispatcher._audit(AuditEvent(

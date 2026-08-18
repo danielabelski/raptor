@@ -49,6 +49,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import threading
 
 import httpx
 
@@ -116,6 +117,67 @@ def http2_enabled() -> bool:
     return True
 
 
+# ── Negotiated-protocol observability ─────────────────────────────
+#
+# ``RAPTOR_HTTP2=1`` requests HTTP/2, but what actually got
+# negotiated (ALPN, end-to-end through CONNECT tunnels) was invisible
+# in run artifacts — "h2 active" could not be proven or disproven
+# after the fact. Every client built here (and the dispatcher's
+# upstream client) installs the response hook below; the LLM
+# telemetry records attach ``last_http_version()`` per call so the
+# negotiated protocol is provable from ``llm-telemetry.jsonl``.
+
+_protocol_lock = threading.Lock()
+_protocol_counts: dict[str, int] = {}
+_last_http_version: str | None = None
+
+
+def _normalize_http_version(raw: str) -> str:
+    v = (raw or "").strip().upper()
+    if v == "HTTP/2":
+        return "h2"
+    if v == "HTTP/1.1":
+        return "h1"
+    return v.lower() or "unknown"
+
+
+def note_http_version(raw: str) -> None:
+    """Record one response's negotiated protocol (normalized h1/h2)."""
+    global _last_http_version
+    v = _normalize_http_version(raw)
+    with _protocol_lock:
+        _last_http_version = v
+        _protocol_counts[v] = _protocol_counts.get(v, 0) + 1
+
+
+def last_http_version() -> str | None:
+    """Most recently negotiated protocol seen by any pooled client in
+    this process (``"h2"`` / ``"h1"``), or None before the first
+    response. Telemetry attaches this per call — best-effort under
+    concurrency, exact when the pool multiplexes one protocol."""
+    return _last_http_version
+
+
+def protocol_counts() -> dict[str, int]:
+    """Snapshot of responses seen per negotiated protocol."""
+    with _protocol_lock:
+        return dict(_protocol_counts)
+
+
+def _response_hook(response: httpx.Response) -> None:
+    try:
+        note_http_version(response.http_version)
+    except Exception:  # noqa: BLE001 — observability must never break a call
+        logger.debug("http_version note failed", exc_info=True)
+
+
+def response_event_hooks() -> dict[str, list]:
+    """``event_hooks`` mapping that records negotiated protocols.
+    Shared by :func:`sdk_http_client` and the dispatcher's upstream
+    client so both transport legs feed the same registry."""
+    return {"response": [_response_hook]}
+
+
 def pool_limits() -> httpx.Limits:
     """Connection-pool limits for LLM transports.
 
@@ -154,11 +216,16 @@ def sdk_http_client(
         trust_env=trust_env,
         limits=pool_limits(),
         http2=http2_enabled(),
+        event_hooks=response_event_hooks(),
     )
 
 
 __all__ = [
     "http2_enabled",
+    "last_http_version",
+    "note_http_version",
     "pool_limits",
+    "protocol_counts",
+    "response_event_hooks",
     "sdk_http_client",
 ]

@@ -238,3 +238,68 @@ class TestGeminiHttpOptions:
             assert isinstance(client, httpx.Client)
         finally:
             client.close()
+
+
+class TestNegotiatedProtocolTelemetry:
+    """RAPTOR_HTTP2 requested HTTP/2, but nothing recorded what ALPN
+    actually negotiated — h2 service could not be proven from run
+    artifacts. Every pooled client installs a response hook that
+    feeds a process-wide protocol registry the telemetry reads."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_registry(self, monkeypatch):
+        monkeypatch.setattr(http_pool, "_last_http_version", None)
+        monkeypatch.setattr(http_pool, "_protocol_counts", {})
+
+    def test_note_normalizes_h1_h2(self):
+        assert http_pool.last_http_version() is None
+        http_pool.note_http_version("HTTP/2")
+        assert http_pool.last_http_version() == "h2"
+        http_pool.note_http_version("HTTP/1.1")
+        assert http_pool.last_http_version() == "h1"
+        assert http_pool.protocol_counts() == {"h2": 1, "h1": 1}
+
+    def test_unknown_version_kept_lowercased(self):
+        http_pool.note_http_version("HTTP/3")
+        assert http_pool.last_http_version() == "http/3"
+        http_pool.note_http_version("")
+        assert http_pool.last_http_version() == "unknown"
+
+    def test_sdk_client_installs_response_hook(self):
+        client = http_pool.sdk_http_client(timeout=5.0)
+        try:
+            assert http_pool._response_hook in client.event_hooks["response"]
+        finally:
+            client.close()
+
+    def test_response_feeds_registry(self):
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, extensions={"http_version": b"HTTP/1.1"},
+            ),
+        )
+        with httpx.Client(
+            transport=transport,
+            event_hooks=http_pool.response_event_hooks(),
+        ) as client:
+            client.get("http://unit.test/x")
+        assert http_pool.last_http_version() == "h1"
+        assert http_pool.protocol_counts() == {"h1": 1}
+
+    def test_client_emit_sites_carry_http_version(self):
+        """Every per-attempt telemetry emit in the LLM client attaches
+        the negotiated protocol (source-level wiring check: 2 ok sites
+        + 2 attempt_failed sites)."""
+        from pathlib import Path
+
+        import core.llm.client as client_mod
+
+        src = Path(client_mod.__file__).read_text()
+        assert src.count("http_version=_transport_http_version()") == 4
+
+    def test_transport_http_version_helper(self):
+        from core.llm.client import _transport_http_version
+
+        assert _transport_http_version() is None
+        http_pool.note_http_version("HTTP/2")
+        assert _transport_http_version() == "h2"

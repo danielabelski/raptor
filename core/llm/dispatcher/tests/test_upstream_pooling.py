@@ -159,3 +159,56 @@ class TestForwardingUsesPool:
 
         assert seen["timeout"] is not None
         assert seen["timeout"].read == 77.0
+
+
+class TestNegotiatedProtocolObservability:
+
+    def test_upstream_client_has_protocol_hook(self, dispatcher):
+        from core.llm.http_pool import _response_hook
+
+        client = dispatcher._upstream_client()
+        assert _response_hook in client.event_hooks["response"]
+
+    def test_dispatch_audit_records_http_version(
+        self, dispatcher, tmp_path, monkeypatch,
+    ):
+        """The request.dispatch audit row carries the negotiated
+        protocol of the upstream leg (h1/h2) so HTTP/2 service is
+        provable from the dispatch audit trail."""
+        import json
+        from contextlib import contextmanager
+
+        pooled = dispatcher._upstream_client()
+
+        class FakeUpstreamResponse:
+            status_code = 200
+            headers = httpx.Headers({"content-type": "application/json"})
+            http_version = "HTTP/2"
+
+            def iter_raw(self):
+                return iter([b"{}"])
+
+        @contextmanager
+        def fake_stream(method, url, **kwargs):
+            yield FakeUpstreamResponse()
+
+        monkeypatch.setattr(pooled, "stream", fake_stream)
+        token = _issue_token(dispatcher, "http-version-audit")
+
+        transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+        with httpx.Client(transport=transport, timeout=10.0) as c:
+            resp = c.post(
+                "http://_/anthropic/v1/messages",
+                headers={_TOKEN_HEADER: token},
+                content=b"{}",
+            )
+            assert resp.status_code == 200
+
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+        ]
+        dispatched = [e for e in events if e.get("event") == "request.dispatch"]
+        assert dispatched, "no request.dispatch audit row written"
+        # AuditEvent.extra is spread flat into the on-disk row.
+        assert dispatched[-1]["http_version"] == "h2"

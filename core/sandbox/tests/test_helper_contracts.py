@@ -248,8 +248,16 @@ class TestCoordLauncherContract:
             pytest.skip("no interpreter satisfies the trusted-path check")
         coord = built.parent / "netns_coordinator.py"
         r = _run([str(built / "raptor-coord-launcher"), interp, str(coord)])
-        if r.returncode == 1 and "unshare" in r.stderr:
-            pytest.skip("host blocks unprivileged userns for this binary")
+        if r.returncode == 1 and ("unshare" in r.stderr
+                                  or "write_id_maps" in r.stderr):
+            # Two LSM refusal shapes: unshare(CLONE_NEWUSER) denied
+            # outright, or the userns is granted but the uid_map /
+            # gid_map write EPERMs (AppArmor unprivileged_userns
+            # confinement, SELinux). Both mean the host blocks the
+            # setup this happy path needs; the launcher's diagnostic
+            # already names the grant to install.
+            pytest.skip("host LSM blocks unprivileged userns setup "
+                        "for this binary")
         assert r.returncode == 0, r.stderr
         assert "COORD-OK" in r.stdout
 

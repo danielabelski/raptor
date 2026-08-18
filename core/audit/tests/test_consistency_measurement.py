@@ -260,3 +260,173 @@ class TestCleanupGroundTruth:
         result = evaluate_run(out, load_ground_truth(target))
         assert len(result.true_positives) == 1
         assert result.false_positives == []
+
+
+class TestSanitizeSinkGroundTruth:
+    """§3.3 corpus entry: the operator-annotated-convention shape (the
+    dimension's only promote-capable premise) measured end to end
+    through the prepass + measurement machinery."""
+
+    def _writer(self, i: int) -> str:
+        return (
+            f"int writer_{i}(const char *raw) {{\n"
+            f"    char *q = escape_sql(raw);\n"
+            f"    db_exec(q);\n"
+            f"    return 0;\n}}\n"
+        )
+
+    def _run(self, tmp_path, *, deviant: bool):
+        from core.annotations.models import Annotation
+        from core.annotations.storage import write_annotation
+        from core.evidence import EvidenceTier
+        from core.iris.specs import TaintSpec
+        from core.iris.store import save_specs
+
+        target = tmp_path / "target"
+        target.mkdir()
+        parts = [self._writer(i) for i in range(9)]
+        if deviant:
+            parts.append(
+                "int writer_dev(const char *raw) {\n"
+                "    db_exec(raw);\n    return 0;\n}\n"
+            )
+        else:
+            parts.append(self._writer(99))
+        (target / "writers.c").write_text("\n".join(parts))
+        (target / "ground-truth.json").write_text(json.dumps([{
+            "id": "GT-SANITIZE-SINK-1",
+            "file": "writers.c",
+            "function": "writer_dev",
+            "vuln_type": "CWE-89",
+            "depth": "L1",
+        }]))
+        out = tmp_path / "out"
+        out.mkdir()
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        write_annotation(ann_dir, Annotation(
+            file="writers.c",
+            function="db_exec",
+            body="Raw SQL executor — callers must escape first.",
+            metadata={"status": "sink", "source": "human",
+                      "cwe": "CWE-89"},
+        ))
+        save_specs(out, [TaintSpec(
+            function="escape_sql",
+            file="writers.c",
+            role="sanitiser",
+            evidence_tier=EvidenceTier.XREF_BACKED,
+        )])
+        prepass = run_consistency_prepass(
+            {"writers.c": (target / "writers.c").read_text()},
+            target_path=target,
+            out_dir=out,
+            annotations_dir=ann_dir,
+        )
+        found = [
+            f for f in prepass["findings"]
+            if f["dimension"] == "sanitize-sink"
+        ]
+        (out / "findings.json").write_text(json.dumps([
+            {
+                "file": f["file"],
+                "function": f["function"],
+                "status": f["status"],
+            }
+            for f in found
+        ]))
+        return evaluate_run(out, load_ground_truth(target)), found
+
+    def test_raw_writer_scores_true_positive(self, tmp_path):
+        result, found = self._run(tmp_path, deviant=True)
+        assert found and found[0]["rule_id"] == \
+            "consistency:sanitize-sink"
+        assert len(result.true_positives) == 1
+        assert result.true_positives[0].id == "GT-SANITIZE-SINK-1"
+        assert result.false_positives == []
+
+    def test_conforming_twin_scores_no_false_positive(self, tmp_path):
+        result, found = self._run(tmp_path, deviant=False)
+        assert found == []
+        assert result.false_positives == []
+        assert len(result.false_negatives) == 1
+
+
+class TestGuardPresenceGroundTruth:
+    """§3.4 corpus entry: the SMT-witnessed upgrade shape, hermetic —
+    the solver leg is stubbed feasible/absent exactly as the design's
+    test plan prescribes (no z3 subprocess in the corpus), so the
+    entry measures the comparator + verdict + measurement machinery,
+    not solver availability."""
+
+    def _guarded(self, i: int) -> str:
+        return (
+            f"int use_{i}(map_t *m) {{\n"
+            f"    entry_t *e = lookup_entry(m);\n"
+            f"    if (!e)\n        return -1;\n"
+            f"    return e->value;\n}}\n"
+        )
+
+    def _run(self, tmp_path, *, deviant: bool):
+        from types import SimpleNamespace
+
+        from core.audit.consistency_dimensions import (
+            detect_guard_presence_deviations,
+        )
+        from core.audit.consistency_verify import guard_presence_verdict
+
+        target = tmp_path / "target"
+        target.mkdir()
+        parts = [self._guarded(i) for i in range(9)]
+        if deviant:
+            parts.append(
+                "int use_dev(map_t *m) {\n"
+                "    entry_t *e = lookup_entry(m);\n"
+                "    return e->value;\n}\n"
+            )
+        else:
+            parts.append(self._guarded(99))
+        (target / "map.c").write_text("\n".join(parts))
+        (target / "ground-truth.json").write_text(json.dumps([{
+            "id": "GT-GUARD-PRESENCE-1",
+            "file": "map.c",
+            "function": "use_dev",
+            "vuln_type": "CWE-476",
+            "depth": "L1",
+        }]))
+        out = tmp_path / "out"
+        out.mkdir()
+        texts = {"map.c": (target / "map.c").read_text()}
+        findings = []
+        for dev in detect_guard_presence_deviations(texts):
+            res = guard_presence_verdict(
+                dev,
+                source_texts=texts,
+                smt_check=lambda d: SimpleNamespace(
+                    feasible=True, reasoning="sat", witness={"e": 0},
+                ),
+            )
+            if res.outcome == "confirmed" \
+                    and not res.rule_id.endswith("-majority"):
+                findings.append({
+                    "file": dev.file,
+                    "function": dev.enclosing_function,
+                    "status": "suspicious",
+                    "rule_id": res.rule_id,
+                })
+        (out / "findings.json").write_text(json.dumps(findings))
+        return evaluate_run(out, load_ground_truth(target)), findings
+
+    def test_unguarded_deref_scores_true_positive(self, tmp_path):
+        result, findings = self._run(tmp_path, deviant=True)
+        assert findings and findings[0]["rule_id"] == \
+            "consistency:guard-presence"
+        assert len(result.true_positives) == 1
+        assert result.true_positives[0].id == "GT-GUARD-PRESENCE-1"
+        assert result.false_positives == []
+
+    def test_conforming_twin_scores_no_false_positive(self, tmp_path):
+        result, findings = self._run(tmp_path, deviant=False)
+        assert findings == []
+        assert result.false_positives == []
+        assert len(result.false_negatives) == 1

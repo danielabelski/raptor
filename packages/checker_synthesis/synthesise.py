@@ -390,6 +390,16 @@ def _dual_control(
                 f"({len(neg_matches)} hit(s) — rule is too broad)"
             )
             return False, errors
+        if neg_errors:
+            # Engine error on the negative run: zero matches proves
+            # nothing (the fixture may not even have parsed). Fail
+            # closed — same policy as _fix_mutant_control's
+            # engine-errored-on-patched-copy verdict.
+            errors.append(
+                "dual control: engine errored on negative fixture — "
+                "silence is not a pass (control not verifiable)"
+            )
+            return False, errors
 
     return True, errors
 
@@ -443,6 +453,16 @@ def _ground_truth_control(
             f"ground-truth control: rule matched the FIXED fixture "
             f"({len(neg_matches)} hit(s) — pattern does not "
             "distinguish the fix)"
+        )
+        return True, False, errors
+    if neg_errors:
+        # Engine error on the fixed fixture: zero matches proves
+        # nothing. Fail closed — an unverifiable negative must not
+        # cascade into fix_mutant_control=True + rule_tier="library".
+        errors.append(
+            "ground-truth control: engine errored on the FIXED "
+            "fixture — silence is not a pass (negative control "
+            "not verifiable)"
         )
         return True, False, errors
     return True, True, errors
@@ -702,11 +722,20 @@ def synthesise_and_run(
                 )
                 if ok and gt_negative_ok is False:
                     result.errors.extend(f"{tag}: {e}" for e in run_errors)
-                    feedback = (
-                        "The rule matched the known-vulnerable fixture "
-                        "but ALSO matched the fixed form. Refine the "
-                        "pattern so the patched code does not match."
-                    )
+                    if any("not verifiable" in e for e in run_errors):
+                        feedback = (
+                            "The engine errored while running the rule "
+                            "against the fixed form of the code — the "
+                            "rule (or fixture) may not parse. Produce a "
+                            "simpler, syntactically valid pattern."
+                        )
+                    else:
+                        feedback = (
+                            "The rule matched the known-vulnerable "
+                            "fixture but ALSO matched the fixed form. "
+                            "Refine the pattern so the patched code "
+                            "does not match."
+                        )
                     rule = None
                     rule_path = None
                     continue
@@ -792,9 +821,12 @@ def synthesise_and_run(
     if ground_truth_fixtures is not None:
         # External seed: the repo-anchored fix-mutant control cannot
         # run (seed file absent). The ground-truth negative fixture is
-        # its analogue — the rule already proved silent on the fixed
-        # form when one was supplied.
-        if result.dual_control and ground_truth_fixtures[1] is not None:
+        # its analogue — the grant requires the negative control to
+        # have VERIFIED silence on the fixed form (gt_negative_ok is
+        # True), not merely that a negative fixture was supplied: an
+        # engine error on the negative run reads as False now, and a
+        # missing fixture as None — neither may grant the library tier.
+        if result.dual_control and gt_negative_ok is True:
             result.fix_mutant_control = True
             result.rule_tier = "library"
     elif result.dual_control:

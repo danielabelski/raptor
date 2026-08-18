@@ -106,6 +106,11 @@ class LibraryEntry:
     targets: list[TargetRecord] = field(default_factory=list)
     archived: bool = False
     source: str = ""
+    # Mechanical-control tier at persist time: "library" only when
+    # every control passed (positive + dual + fix-mutant / verified
+    # ground-truth negative). Legacy manifests without the field
+    # deserialise as "sweep_once" — fail-closed for graduation.
+    rule_tier: str = "sweep_once"
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -125,6 +130,7 @@ class LibraryEntry:
             "total_matches": self.total_matches,
             "targets": [t.to_dict() for t in self.targets],
             "archived": self.archived,
+            "rule_tier": self.rule_tier,
         }
         if self.source:
             d["source"] = self.source
@@ -150,6 +156,16 @@ class LibraryEntry:
             targets=[TargetRecord.from_dict(t) for t in d.get("targets", [])],
             archived=d.get("archived", False),
             source=d.get("source", ""),
+            # Legacy manifests predate the field. dual_control=True
+            # could only be stamped by promote(), whose gate already
+            # required rule_tier="library" at persist time; add_rule
+            # always stamped dual_control=False. So the flag is a
+            # sound tier witness for old rows; everything else stays
+            # sweep_once (fail-closed).
+            rule_tier=d.get(
+                "rule_tier",
+                "library" if d.get("dual_control") else "sweep_once",
+            ),
         )
 
 
@@ -384,6 +400,7 @@ class RuleLibrary:
             total_matches=len(result.matches),
             targets=targets,
             source=source,
+            rule_tier="library",
         )
 
         self._load().append(entry)
@@ -414,6 +431,11 @@ class RuleLibrary:
                 ))
         entry.total_variants += variant_count
         entry.total_matches += len(result.matches)
+        # Only called from the promote() path, whose gate already
+        # required every mechanical control — an existing add_rule
+        # (sweep_once) copy of the same body is upgraded in place.
+        entry.dual_control = True
+        entry.rule_tier = "library"
         self._recompute_aggregate(entry)
 
     def update(
@@ -491,6 +513,8 @@ class RuleLibrary:
         seed_function: str = "",
         source: str = "",
         timestamp: str = "",
+        dual_control: bool = False,
+        rule_tier: str = "sweep_once",
     ) -> LibraryEntry:
         """Add a rule directly (no CheckerSynthesisResult needed).
 
@@ -498,7 +522,24 @@ class RuleLibrary:
         and doesn't always have a full CheckerSynthesisResult.  Deduplicates
         by body hash — returns the existing entry if the rule body already
         exists.
+
+        Tier gate (same policy as :meth:`promote`): callers thread the
+        synthesis result's ``dual_control`` / ``rule_tier`` through, and
+        ``rule_tier="library"`` is only accepted alongside
+        ``dual_control=True`` — otherwise it is downgraded to
+        ``sweep_once`` with a warning. Defaults keep legacy callers
+        fail-closed: an add_rule entry without control evidence can
+        never graduate to the engine rules dir.
         """
+        if rule_tier == "library" and not dual_control:
+            logger.warning(
+                "add_rule %s: rule_tier='library' requires "
+                "dual_control=True — downgrading to sweep_once",
+                rule_id,
+            )
+            rule_tier = "sweep_once"
+        if rule_tier not in ("library", "sweep_once"):
+            rule_tier = "sweep_once"
         with self._lock:
             self._ensure_dirs()
             bh = _body_hash(body)
@@ -522,12 +563,13 @@ class RuleLibrary:
                 rationale=rationale,
                 seed_file=seed_file,
                 seed_function=seed_function,
-                dual_control=False,
+                dual_control=dual_control,
                 promoted_at=timestamp,
                 tp_rate=0.0,
                 fp_rate=0.0,
                 total_variants=0,
                 source=source,
+                rule_tier=rule_tier,
             )
             self._load().append(entry)
             self._save()
@@ -580,14 +622,20 @@ class RuleLibrary:
         """Promote high-confidence rules to the engine rules directory.
 
         Graduated rules run as first-class scanner rules in /scan and
-        /agentic. Requires: >=2 true positives, >=3 total matches,
-        precision >=80%.
+        /agentic. Requires the mechanical-control tier (dual_control
+        AND rule_tier="library" — precision statistics alone cannot
+        substitute for the controls, since record_match feedback can
+        inflate tp_rate on a rule that never proved it distinguishes
+        fixed from unfixed code) plus the precision thresholds:
+        >=2 true positives, >=3 total matches, precision >=80%.
 
         Returns list of graduated rule_ids.
         """
         graduated: list[str] = []
         for entry in self._load():
             if entry.archived:
+                continue
+            if not entry.dual_control or entry.rule_tier != "library":
                 continue
             total_matches = sum(t.matches for t in entry.targets)
             if entry.total_variants < 2 or total_matches < 3:

@@ -104,6 +104,28 @@ class TestGroundTruthControl:
         assert neg_ok is False
         assert any("FIXED fixture" in e for e in errors)
 
+    def test_unit_negative_engine_error_fails_closed(
+        self, tmp_path, monkeypatch,
+    ):
+        """Engine error on the FIXED fixture returns zero matches —
+        silence proves nothing and must NOT read as a verified
+        negative (it used to cascade into rule_tier='library')."""
+        def fake_run(rule, rule_path, target):
+            text = Path(target).read_text(encoding="utf-8")
+            if "VULN" in text:
+                return [Match(file=str(target), line=1)], []
+            return [], ["spatch: parse error in fixture"]
+
+        monkeypatch.setattr(synth_mod, "_run_engine", fake_run)
+        rule_path = tmp_path / "rule.yml"
+        rule_path.write_text("rules: []")
+        pos_ok, neg_ok, errors = synth_mod._ground_truth_control(
+            _seed(), rule_path, "semgrep", VULN_TEXT, FIXED_TEXT,
+        )
+        assert pos_ok is True
+        assert neg_ok is False
+        assert any("not verifiable" in e for e in errors)
+
     def test_unit_positive_miss_fails(self, tmp_path, monkeypatch):
         _content_engine(
             monkeypatch, matcher=lambda t: False, repo_matches=[],
@@ -225,6 +247,42 @@ class TestSynthesiseWithGroundTruth:
         # fix-mutant control.
         assert result.fix_mutant_control is True
         assert result.rule_tier == "library"
+
+
+    def test_negative_engine_error_does_not_earn_library_tier(
+        self, tmp_path, monkeypatch,
+    ):
+        """An engine error while checking the fixed form must fail
+        closed: no fix_mutant_control credit, no library tier."""
+        def fake_run(rule, rule_path, target):
+            target = Path(target)
+            if target.is_dir():
+                return [], []
+            text = target.read_text(encoding="utf-8")
+            if "VULN" in text or "bad_fixture" in text:
+                return [Match(file=str(target), line=1)], []
+            if "FIXED" in text:
+                return [], ["spatch: parse error in fixture"]
+            return [], []
+
+        monkeypatch.setattr(synth_mod, "_run_engine", fake_run)
+        llm = _stub_llm([
+            {
+                "rule_body": "rules:\n  - id: x\n",
+                "rationale": "r",
+                "test_positive": "x = bad_fixture()",
+                "test_negative": "x = good()",
+            },
+        ] * 3)
+        result = synthesise_and_run(
+            _seed(),
+            tmp_path,
+            tmp_path / "out",
+            llm,
+            ground_truth_fixtures=(VULN_TEXT, FIXED_TEXT),
+        )
+        assert result.fix_mutant_control is not True
+        assert result.rule_tier != "library"
 
 
 class TestSeedProvenance:

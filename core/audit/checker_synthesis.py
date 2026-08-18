@@ -52,6 +52,11 @@ class SynthesisResult:
     origin_function: str
     hits: list[dict[str, Any]] = field(default_factory=list)
     cost_usd: float = 0.0
+    # Mechanical-control evidence, threaded into RuleLibrary.add_rule
+    # so persistence carries the tier gate (library requires
+    # dual_control AND every control passed).
+    dual_control: bool = False
+    rule_tier: str = "sweep_once"
 
 
 def _synthesis_class_cost(client: Any) -> float:
@@ -432,6 +437,8 @@ def synthesize_and_sweep(
         origin_function=function,
         hits=new_hits,
         cost_usd=_synthesis_class_cost(llm_client) - cost_before,
+        dual_control=bool(cs_result.dual_control),
+        rule_tier=getattr(cs_result, "rule_tier", "sweep_once"),
     )
 
 
@@ -532,6 +539,8 @@ def synthesize_from_external_seed(
         origin_function=seed.function,
         hits=hits,
         cost_usd=_synthesis_class_cost(llm_client) - cost_before,
+        dual_control=bool(cs_result.dual_control),
+        rule_tier=getattr(cs_result, "rule_tier", "sweep_once"),
     )
 
 
@@ -683,6 +692,11 @@ def synthesize_verification_rule(
                 seed_file=file_path,
                 seed_function=function,
                 source="audit-ondemand",
+                # Tier gate: positive+dual alone is sweep_once; only
+                # a full control run (incl. fix-mutant) stamps
+                # rule_tier="library" on the synthesis result.
+                dual_control=bool(cs.dual_control),
+                rule_tier=getattr(cs, "rule_tier", "sweep_once"),
             )
         except Exception:
             logger.debug(

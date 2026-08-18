@@ -723,3 +723,98 @@ class TestAtomicRuleWrites:
         assert dest.read_text() == result.rule.body
         leftovers = [p for p in dest.parent.iterdir() if p.name != dest.name]
         assert leftovers == []
+
+
+class TestAddRuleTierGate:
+    """add_rule persists /audit-side rules; the tier gate must ride
+    along or graduate() would ship uncontrolled rules to /scan."""
+
+    def test_default_add_rule_is_sweep_once(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        entry = lib.add_rule("r1", "semgrep", "rules:\n  - id: r1\n")
+        assert entry.rule_tier == "sweep_once"
+        assert entry.dual_control is False
+
+    def test_library_tier_requires_dual_control(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        entry = lib.add_rule(
+            "r1", "semgrep", "rules:\n  - id: r1\n",
+            rule_tier="library",  # claims library without controls
+        )
+        assert entry.rule_tier == "sweep_once"
+
+    def test_full_control_evidence_accepted(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        entry = lib.add_rule(
+            "r1", "semgrep", "rules:\n  - id: r1\n",
+            dual_control=True, rule_tier="library",
+        )
+        assert entry.rule_tier == "library"
+        assert entry.dual_control is True
+
+    def test_unknown_tier_normalised_fail_closed(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        entry = lib.add_rule(
+            "r1", "semgrep", "rules:\n  - id: r1\n",
+            dual_control=True, rule_tier="totally-made-up",
+        )
+        assert entry.rule_tier == "sweep_once"
+
+    def test_tier_roundtrips_through_manifest(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.add_rule(
+            "r1", "semgrep", "rules:\n  - id: r1\n",
+            dual_control=True, rule_tier="library",
+        )
+        fresh = RuleLibrary(tmp_path / "lib")
+        entry = fresh.get_by_body_hash(
+            lib.get_by_body_hash.__self__._load()[0].body_hash,
+        )
+        assert entry.rule_tier == "library"
+
+    def test_legacy_manifest_infers_tier_from_dual_control(self):
+        legacy = {
+            "rule_id": "r", "engine": "semgrep", "cwe": "CWE-89",
+            "body_hash": "x", "rule_path": "semgrep/r.yml",
+            "dual_control": True,
+        }
+        assert LibraryEntry.from_dict(legacy).rule_tier == "library"
+        legacy["dual_control"] = False
+        assert LibraryEntry.from_dict(legacy).rule_tier == "sweep_once"
+
+
+class TestGraduateRequiresControls:
+    """graduate() must require dual_control + rule_tier='library' —
+    record_match-inflated tp_rate alone cannot ship a rule to the
+    engine rules dir as a first-class /scan rule."""
+
+    def test_uncontrolled_rule_never_graduates(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.add_rule("r1", "semgrep", "rules:\n  - id: r1\n")
+        # Inflate precision through match feedback alone.
+        for _ in range(5):
+            lib.record_match("r1", is_tp=True)
+        # Give it target records so total_matches passes the threshold.
+        match_list = [Match(file=f"src/f{i}.py", line=i) for i in range(5)]
+        triage_list = [
+            MatchTriage(match=m, status="variant", reasoning="t")
+            for m in match_list
+        ]
+        lib.update("r1", target_hash="t1",
+                   matches=match_list, triage=triage_list)
+        entry = next(e for e in lib._load() if e.rule_id == "r1")
+        assert entry.tp_rate >= 0.80          # thresholds all pass...
+        assert sum(t.matches for t in entry.targets) >= 3
+        graduated = lib.graduate(tmp_path / "engine")
+        assert graduated == []                # ...controls still gate
+
+    def test_promoted_rule_still_graduates(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        result = _result(matches=3)
+        rule_file = tmp_path / "r1.yml"
+        rule_file.write_text(result.rule.body)
+        result.rule_path = rule_file
+        assert lib.promote(result, target_hash="t1", timestamp="ts") \
+            is not None
+        graduated = lib.graduate(tmp_path / "engine")
+        assert graduated == ["r1"]

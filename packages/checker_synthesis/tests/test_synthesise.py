@@ -553,6 +553,34 @@ class TestDualControl:
         assert result.rule is None
         assert result.dual_control is False
 
+    def test_dual_control_negative_engine_error_fails_closed(
+        self, tmp_path, monkeypatch,
+    ):
+        """Engine error on the negative fixture returns zero matches —
+        silence must NOT read as "rule stayed silent" (an unparseable
+        LLM fixture used to pass the negative half and cascade into
+        the library tier)."""
+        seed = _seed(tmp_path)
+        seed_match = Match(file="src/auth.py", line=3)
+        pos_match = Match(file="test_positive.py", line=2)
+        _stub_engines_sequence(monkeypatch, [
+            ([seed_match], []),                       # pos control
+            ([pos_match], []),                        # dual pos HIT
+            ([], ["semgrep: fixture parse error"]),   # dual neg ERROR
+        ])
+        llm = _stub_llm([{
+            "rule_body": "rules:\n  - id: a",
+            "rationale": "a",
+            "test_positive": "bad()",
+            "test_negative": "not ( valid python",
+        }])
+        result = synthesise_and_run(
+            seed, tmp_path, tmp_path / "out", llm, max_retries=0,
+        )
+        assert result.dual_control is False
+        assert result.rule_tier != "library"
+        assert any("not verifiable" in e for e in result.errors)
+
     def test_fixture_ext_python(self):
         from packages.checker_synthesis.synthesise import _fixture_ext
         seed = SeedBug(

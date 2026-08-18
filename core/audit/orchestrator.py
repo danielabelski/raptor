@@ -2328,6 +2328,10 @@ def review_one_function(
                         seed_file=outcome.file,
                         seed_function=outcome.function,
                         source="audit",
+                        dual_control=bool(
+                            getattr(synth, "dual_control", False)),
+                        rule_tier=getattr(
+                            synth, "rule_tier", "sweep_once"),
                     )
                 logger.info(
                     "mid-loop synthesis: %d new targets from %s:%s",
@@ -11405,6 +11409,9 @@ def _synthesize_external_seeds(
                     seed_file=synth.origin_file,
                     seed_function=synth.origin_function,
                     source="audit-external",
+                    dual_control=bool(
+                        getattr(synth, "dual_control", False)),
+                    rule_tier=getattr(synth, "rule_tier", "sweep_once"),
                 )
             except Exception:
                 logger.debug(

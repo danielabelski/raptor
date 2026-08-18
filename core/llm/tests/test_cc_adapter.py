@@ -603,6 +603,25 @@ class TestMintChildAwsCredentials:
         frozen.token = token
         return frozen
 
+    def _install_botocore_stub(self, monkeypatch, session_cls):
+        """Install a stub ``botocore.session`` module in sys.modules.
+
+        The code under test is RAPTOR's minting logic, not botocore —
+        stubbing the module (rather than monkeypatching the real one)
+        keeps these tests running on bare CI where botocore, an
+        optional parent-only dependency, is not installed
+        (test_bedrock_detection precedent). On provisioned hosts the
+        stub shadows the real module for the test's duration only.
+        """
+        import sys
+        import types
+        pkg = types.ModuleType("botocore")
+        mod = types.ModuleType("botocore.session")
+        mod.Session = session_cls
+        pkg.session = mod
+        monkeypatch.setitem(sys.modules, "botocore", pkg)
+        monkeypatch.setitem(sys.modules, "botocore.session", mod)
+
     def _patch_session(self, monkeypatch, frozen):
         from unittest.mock import MagicMock
         creds = MagicMock()
@@ -610,8 +629,7 @@ class TestMintChildAwsCredentials:
         session = MagicMock()
         session.get_credentials.return_value = creds
         session_cls = MagicMock(return_value=session)
-        import botocore.session
-        monkeypatch.setattr(botocore.session, "Session", session_cls)
+        self._install_botocore_stub(monkeypatch, session_cls)
         return session_cls
 
     def test_mints_when_no_secret_material(self, monkeypatch):
@@ -651,12 +669,11 @@ class TestMintChildAwsCredentials:
     def test_resolution_failure_is_loud_and_nonfatal(
         self, monkeypatch, caplog,
     ):
-        import botocore.session
-
         from core.llm.cc_adapter import _mint_child_aws_credentials
+
         def boom(**kwargs):
             raise RuntimeError("no chain")
-        monkeypatch.setattr(botocore.session, "Session", boom)
+        self._install_botocore_stub(monkeypatch, boom)
         env = {"AWS_PROFILE": "mythos"}
         with caplog.at_level("WARNING", logger="core.llm.cc_adapter"):
             _mint_child_aws_credentials(env)  # must not raise
@@ -667,13 +684,11 @@ class TestMintChildAwsCredentials:
     def test_empty_chain_is_loud_and_nonfatal(self, monkeypatch, caplog):
         from unittest.mock import MagicMock
 
-        import botocore.session
-
         from core.llm.cc_adapter import _mint_child_aws_credentials
         session = MagicMock()
         session.get_credentials.return_value = None
-        monkeypatch.setattr(
-            botocore.session, "Session", MagicMock(return_value=session),
+        self._install_botocore_stub(
+            monkeypatch, MagicMock(return_value=session),
         )
         env = {}
         with caplog.at_level("WARNING", logger="core.llm.cc_adapter"):
@@ -687,11 +702,9 @@ class TestMintChildAwsCredentials:
         sandboxed dispatch sites opt in."""
         from unittest.mock import MagicMock
 
-        import botocore.session
-
         from core.llm.cc_adapter import cc_subprocess_env
         session_cls = MagicMock()
-        monkeypatch.setattr(botocore.session, "Session", session_cls)
+        self._install_botocore_stub(monkeypatch, session_cls)
         monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
         monkeypatch.setenv("AWS_PROFILE", "mythos")
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
@@ -714,11 +727,24 @@ class TestMintChildAwsCredentials:
     def test_non_bedrock_never_mints(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        import botocore.session
-
         from core.llm.cc_adapter import cc_subprocess_env
         session_cls = MagicMock()
-        monkeypatch.setattr(botocore.session, "Session", session_cls)
+        self._install_botocore_stub(monkeypatch, session_cls)
         monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
         cc_subprocess_env(mint_aws_credentials=True)
         session_cls.assert_not_called()
+
+    def test_botocore_absent_is_loud_and_nonfatal(self, monkeypatch, caplog):
+        """Degradation contract for botocore-less installs: no mint,
+        no raise, a warning that names the missing piece. Simulated by
+        forcing the import to fail regardless of the host install."""
+        import sys
+
+        from core.llm.cc_adapter import _mint_child_aws_credentials
+        monkeypatch.setitem(sys.modules, "botocore", None)
+        monkeypatch.setitem(sys.modules, "botocore.session", None)
+        env = {"AWS_PROFILE": "mythos"}
+        with caplog.at_level("WARNING", logger="core.llm.cc_adapter"):
+            _mint_child_aws_credentials(env)  # must not raise
+        assert "AWS_ACCESS_KEY_ID" not in env
+        assert any("botocore" in r.getMessage() for r in caplog.records)

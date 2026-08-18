@@ -1282,9 +1282,18 @@ def test_seed_from_config_modelless_entry_is_wildcard(tmp_path, monkeypatch):
 
 def test_signer_region_override_changes_scope_and_host(monkeypatch):
     """The override region flows into BOTH the signing scope and the
-    endpoint hostname — one value, they must agree."""
+    endpoint hostname — one value, they must agree.
+
+    Resolution is faked with an opaque credentials object: the logic
+    under test is the store's region plumbing, not botocore (which is
+    optional and absent on bare CI — the resolver would answer None
+    there and mask the assertion)."""
     store = CredentialStore()
     store.set_aws(access_key=_FAKE_AK, secret_key=_FAKE_SK, region=_REGION)
+    monkeypatch.setattr(
+        store, "_resolve_aws_credentials",
+        lambda profile=None: (object(), _REGION),
+    )
     signer = store.aws_signer("mantle", region="eu-west-1")
     assert signer is not None
     _credentials, region, endpoint = signer
@@ -1307,9 +1316,10 @@ def test_signer_cache_is_per_profile(monkeypatch):
         calls.append(profile)
         if profile == "broken":
             return None
-        import botocore.credentials
-        return (botocore.credentials.Credentials(_FAKE_AK, _FAKE_SK),
-                _REGION)
+        # Opaque credentials: the cache keying under test never looks
+        # inside them, and importing botocore here would couple this
+        # pure-RAPTOR test to an optional dependency.
+        return (object(), _REGION)
 
     monkeypatch.setattr(store, "_resolve_aws_credentials", _fake_resolve)
     assert store.aws_signer("mantle", profile="broken") is None

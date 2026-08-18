@@ -608,6 +608,16 @@
   "count": 13,
   "kind": "alternation"
  },
+ "core/audit/ptr_lifecycle.py::_HYPOTHESIS_STOPWORDS": {
+  "count": 42,
+  "kind": "literal",
+  "note": "English stopword list for hypothesis-text parsing (not API vocabulary)"
+ },
+ "core/audit/ptr_lifecycle.py::run_ptr_lifecycle_prepass": {
+  "count": 13,
+  "kind": "literal",
+  "note": "framework-internal lead-dict keys (not target API names)"
+ },
  "core/audit/refutation.py::_CALLEE_VULN_PATTERNS": {
   "count": 17,
   "kind": "alternation"

@@ -31,6 +31,8 @@ from core.recall.manifest import SCHEMA_VERSION
 OWASP_REPO_URL = "https://github.com/OWASP-Benchmark/BenchmarkJava"
 OWASP_PINNED_SHA = "b06d6efaebd577a327514364951916e7df3290b4"
 OWASP_DEFAULT_CLONE = "out/dataflow-corpus-fixtures/owasp-benchmark-java"
+# Retained for operators who explicitly want a traced build (trusted
+# clone): the historical Benchmark package command.
 OWASP_BUILD_COMMAND = "mvn -B -DskipTests clean package"
 _TESTCODE_DIR = "src/main/java/org/owasp/benchmark/testcode"
 _EXPECTED_CSV = "expectedresults-1.2.csv"
@@ -135,7 +137,11 @@ def generate_manifest(clone_dir: Path, *, cwes: list[int] | None = None,
             "local_path": str(clone_dir),
         },
         "language": "java",
-        "build_command": OWASP_BUILD_COMMAND,
+        # No build_command: Java databases extract buildless by default
+        # (--build-mode=none), and a traced Maven build cannot fetch
+        # dependencies under the network-blocked create sandbox anyway —
+        # emitting one only buys a doomed traced attempt before the
+        # buildless fallback fires.
         "profile": "scan-codeql",
         "tolerance": {"line_drift": 0, "cwe_family_match": True},
         "expected": expected,

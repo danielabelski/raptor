@@ -496,6 +496,7 @@ def run_command_streaming(
     else:
         token_fd = None
 
+    process = None
     try:
         process = subprocess.Popen(
             cmd,
@@ -609,11 +610,16 @@ def run_command_streaming(
         return -1, "", "Timeout"
     except Exception as e:  # noqa: BLE001
         logger.error("Command failed: %s", e)
-        # kill() on an already-dead child raises OSError; wait() can
-        # time out (SubprocessError). A miswired handle propagates.
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            process.kill()
-            process.wait(timeout=5)
+        # ``process`` stays None when Popen itself raised (bad
+        # executable, exec failure) — kill() on the unbound name
+        # raised UnboundLocalError here pre-fix, masking the real
+        # error instead of returning the graceful (-1, "", str(e)).
+        if process is not None:
+            # kill() on an already-dead child raises OSError; wait() can
+            # time out (SubprocessError). A miswired handle propagates.
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                process.kill()
+                process.wait(timeout=5)
         return -1, "", str(e)
 
 
@@ -768,6 +774,8 @@ def _replay_fuzz_crashes(*, binary_path: Path, crash_files: list[Path], out_dir:
                         block_network=True,
                         target=str(candidate.parent),
                         output=str(out_dir),
+                        restrict_reads=True,
+                        fake_home=True,
                         capture_output=True,
                         timeout=15,
                         env=env,

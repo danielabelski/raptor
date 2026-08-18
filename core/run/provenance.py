@@ -623,8 +623,10 @@ def aggregate_provenance(
         if not isinstance(m, dict):
             m = {}
         if not m or m.get("provenance") == "unavailable":
-            if m.get("provenance") == "unavailable":
-                summary["unavailable"] += 1
+            # A run with no manifest at all is just as provenance-less
+            # as one carrying the explicit "unavailable" stamp — both
+            # count as unavailable rather than being guessed at.
+            summary["unavailable"] += 1
             summary["reproducible"]["unknown"] += 1
             continue
         sc = m.get("source_control") or {}

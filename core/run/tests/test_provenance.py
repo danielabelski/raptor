@@ -560,6 +560,21 @@ class TestAggregateProvenance(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(aggregate_provenance([])["runs"], 0)
 
+    def test_no_manifest_counts_as_unavailable(self):
+        # A run with no manifest at all (legacy / adopted) is counted
+        # as unavailable — same as the explicit "unavailable" stamp,
+        # never guessed. Both land in reproducible.unknown too.
+        metas = [
+            {"some_other_field": True},          # manifest key absent
+            {"manifest": {}},                    # empty manifest
+            {"manifest": "not-a-dict"},          # malformed manifest
+            {"manifest": {"provenance": "unavailable"}},
+        ]
+        s = aggregate_provenance(metas)
+        self.assertEqual(s["runs"], 4)
+        self.assertEqual(s["unavailable"], 4)
+        self.assertEqual(s["reproducible"]["unknown"], 4)
+
     def test_tolerates_non_dict_engines(self):
         # Malformed/imported manifest with engines as a list must not crash.
         s = aggregate_provenance([{"manifest": {

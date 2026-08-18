@@ -71,12 +71,10 @@ class FuzzingState:
 
     # Strategy metrics
     current_strategy: str = "default"
-    strategies_tried: List[str] = field(default_factory=list)
     successful_strategies: Dict[str, int] = field(default_factory=dict)
 
     # Goal state
     target_goal: Optional[str] = None
-    goal_progress: float = 0.0
 
     # Binary characteristics
     binary_path: Optional[Path] = None

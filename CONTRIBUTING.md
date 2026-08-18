@@ -127,6 +127,28 @@ but a failure is actionable:
   names through one of those seams, or baseline the entry with a note.
 
 
+### Deliberate keep-blocks (REVISIT)
+
+The miswiring baseline carries two blocks of dead-code entries that
+were deliberately KEPT by operator decision (2026-08-16) rather than
+deleted — each entry's `note` says why:
+
+- `kept: public API surface … — revisit` —
+  `packages/exploit_feasibility` names kept as library surface with
+  zero in-repo consumers.
+- `kept: pending work — autonomous fuzzing loop feature seed …` —
+  `packages/autonomous` seeds for the planned autonomous fuzzing loop,
+  unwired since introduction.
+
+The convention is grep, not automation (deliberate — these are
+judgement calls, not mechanically decidable): when you touch one of
+those modules, grep the baseline for its keep-block phrasing
+(`grep 'kept:' .github/scripts/miswiring_baseline.json`) and re-ask
+whether the block still deserves keeping — wire the entries you are
+adopting, or delete the ones your change obsoletes and drain their
+baseline entries in the same commit.
+
+
 ## Security conventions
 
 RAPTOR scans untrusted repositories. Code that processes untrusted input

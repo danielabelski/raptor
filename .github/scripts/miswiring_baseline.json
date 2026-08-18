@@ -377,9 +377,6 @@
   "artifacts:write_only_artifact::web_scan_report.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "dead:dead_class:core/audit/degradation.py:ToolTier": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_class:core/logging/tests/test_security_event.py:MethodEmissionTest": {
    "note": "unittest.TestCase collected by the pytest unittest plugin regardless of python_classes naming; not dead"
   },

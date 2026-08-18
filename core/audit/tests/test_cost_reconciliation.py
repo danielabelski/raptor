@@ -340,9 +340,14 @@ class TestEndToEndReconciliation:
         self, tmp_path,
     ):
         """A review call that raises after the client billed the
-        attempt: the delta lands in failed_attempts_cost_usd, the
-        client ledger in totals.total_spend_usd, and the summary line
-        reports the split."""
+        attempt: the attempt is COUNTED (failed_calls) but books no
+        per-call cost figure — the before/after client-ledger delta
+        multiply-booked every concurrent worker's successful spend as
+        "failed-attempt cost" (~9x real spend on parallel runs). The
+        money still reaches the operator exactly once: the client
+        ledger lands in totals.total_spend_usd and the billed-but-
+        failed spend surfaces as the unattributed residual, labelled
+        as such (not as a phantom "failed/timed-out" figure)."""
         from core.audit.orchestrator import run_orchestrator
         from core.audit.tests.test_budget_terminal import (
             _config,
@@ -367,20 +372,26 @@ class TestEndToEndReconciliation:
         cfg = _config(target, out, llm_budget_client=client)
         result = run_orchestrator(cfg, review_fn)
 
-        # The main-pass attempt billed 1.7 and was booked as a failed
-        # attempt on the review phase; the error-retry pass's second
-        # 1.7 attempt has no phase attribution and must surface as
-        # unattributed rather than vanish.
+        # The failed main-pass attempt is counted, but carries NO
+        # per-call cost figure (concurrent-spend multiply-booking
+        # fix); its billed money must surface as unattributed instead
+        # of vanishing.
         assert result.errors == 1
-        assert abs(result.failed_attempts_cost_usd - 1.7) < 1e-6
+        assert result.failed_attempts_cost_usd == 0.0
         assert abs(result.llm_spend_usd - client.total_cost) < 1e-6
 
         breakdown = json.loads((out / "cost-breakdown.json").read_text())
         review_phase = breakdown["phases"]["review"]
         assert review_phase["failed_calls"] == 1
-        assert abs(review_phase["failed_attempts_cost_usd"] - 1.7) < 1e-6
+        assert review_phase["failed_attempts_cost_usd"] == 0.0
         totals = breakdown["totals"]
         assert abs(totals["total_spend_usd"] - client.total_cost) < 1e-3
+        # Nothing vanishes: every billed-but-failed dollar is in the
+        # unattributed residual, and the three buckets reconcile to
+        # the client ledger.
+        assert totals["unattributed_cost_usd"] == pytest.approx(
+            client.total_cost - 0.5, abs=1e-3,
+        )
         assert abs(
             totals["cost_usd"]
             + totals["failed_attempts_cost_usd"]
@@ -394,10 +405,10 @@ class TestEndToEndReconciliation:
         assert line.startswith(
             f"Cost: {total_s} ($0.50 across 1 completed review;",
         )
-        # Only the BOOKED failed-attempt spend carries the failed
-        # label; the error-retry pass's second billed attempt has no
-        # phase attribution and surfaces as unattributed instead of
-        # being lumped into "failed/timed-out".
-        assert "$1.70 on failed/timed-out attempts" in line
-        other_s = f"${client.total_cost - 0.5 - 1.7:.2f}"
+        # No phantom "failed/timed-out" figure: with per-call failed
+        # cost no longer fabricated from ledger deltas, the billed
+        # spend of failed attempts is reported under the honest
+        # unattributed label.
+        assert "failed/timed-out" not in line
+        other_s = f"${client.total_cost - 0.5:.2f}"
         assert f"{other_s} on unattributed calls" in line

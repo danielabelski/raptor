@@ -166,7 +166,7 @@ _FALLBACK_HARNESS_C = """/* Auto-generated libFuzzer harness fallback.
 #include <stddef.h>
 #include <string.h>
 #include "{header_basename}"
-
+{extra_includes}
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {{
     if (size == 0) return 0;
     /* TODO: replace this stub with a call to {target_function} */
@@ -175,6 +175,30 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {{
     return 0;
 }}
 """
+
+# Conservative allowlist for caller-supplied extra include names. The
+# fallback harness is compiled and executed, so anything outside a
+# plain relative header path (quotes, newlines, `..`) is dropped rather
+# than interpolated into source text.
+_SAFE_INCLUDE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*\.(h|hh|hpp)$")
+
+
+def _render_extra_includes(extra_includes: list[str]) -> str:
+    """Render spec.extra_includes as ``#include`` lines (fallback path).
+
+    Silently drops names that fail the conservative allowlist or that
+    try to traverse upward.
+    """
+    lines = []
+    for name in extra_includes:
+        name = str(name).strip()
+        if not _SAFE_INCLUDE_RE.match(name) or ".." in name:
+            logger.warning(
+                "harness_generator: dropping unsafe extra include %r", name
+            )
+            continue
+        lines.append(f'#include "{name}"')
+    return ("\n".join(lines) + "\n") if lines else ""
 
 
 def _extract_target_signature(header_text: str, function_name: str) -> str | None:
@@ -217,6 +241,7 @@ class HarnessGenerator:
             source = _FALLBACK_HARNESS_C.format(
                 header_basename=spec.header_path.name,
                 target_function=spec.target_function,
+                extra_includes=_render_extra_includes(spec.extra_includes),
             )
             filename = f"fuzz_{_c_identifier(spec.target_function)}.c"
             return GeneratedHarness(
@@ -276,6 +301,7 @@ class HarnessGenerator:
         source = _FALLBACK_HARNESS_C.format(
             header_basename=spec.header_path.name,
             target_function=spec.target_function,
+            extra_includes=_render_extra_includes(spec.extra_includes),
         )
         filename = f"fuzz_{_c_identifier(spec.target_function)}.c"
         return GeneratedHarness(
@@ -334,6 +360,28 @@ class HarnessGenerator:
             blocks.append(UntrustedBlock(
                 content=spec.notes,
                 kind="caller-notes",
+                origin="harness-spec",
+            ))
+        # The system prompt promises the LLM "any additional context
+        # (setup requirements, lifecycle constraints)" — honour the
+        # spec fields that carry it. Same untrusted envelope as notes:
+        # the generated harness is compiled and executed.
+        if spec.setup_code:
+            blocks.append(UntrustedBlock(
+                content=spec.setup_code,
+                kind="caller-setup-code",
+                origin="harness-spec",
+            ))
+        if spec.teardown_code:
+            blocks.append(UntrustedBlock(
+                content=spec.teardown_code,
+                kind="caller-teardown-code",
+                origin="harness-spec",
+            ))
+        if spec.extra_includes:
+            blocks.append(UntrustedBlock(
+                content="\n".join(str(i) for i in spec.extra_includes),
+                kind="caller-extra-includes",
                 origin="harness-spec",
             ))
 

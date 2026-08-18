@@ -53,6 +53,31 @@ class TestHarnessGenerator(unittest.TestCase):
         finally:
             header.unlink()
 
+    def test_fallback_emits_safe_extra_includes_and_drops_unsafe(self):
+        """spec.extra_includes must reach the fallback source — a spec
+        field the generator silently ignored is worse than no field.
+        Unsafe names (traversal, quote-breakout) are dropped, not
+        interpolated into compiled source."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".h", delete=False) as f:
+            f.write("int parse_buf(const uint8_t *p, size_t n);\n")
+            header = Path(f.name)
+        try:
+            spec = HarnessSpec(
+                target_function="parse_buf",
+                header_path=header,
+                extra_includes=[
+                    "mylib/extra.h",
+                    "../../../etc/passwd.h",
+                    'evil.h"\n#include "backdoor.h',
+                ],
+            )
+            harness = HarnessGenerator(llm=None).generate(spec)
+            self.assertIn('#include "mylib/extra.h"', harness.source_code)
+            self.assertNotIn("passwd", harness.source_code)
+            self.assertNotIn("backdoor", harness.source_code)
+        finally:
+            header.unlink()
+
     def test_llm_success_path(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".h", delete=False) as f:
             f.write("int parse_buf(const uint8_t *p, size_t n);\n")
@@ -416,6 +441,25 @@ class TestPromptEnvelope(unittest.TestCase):
         self.assertIn('<slot name="target_function"', prompt)
         # The pre-envelope free-prose format must not come back.
         self.assertNotIn("Header contents (truncated", prompt)
+
+    def test_setup_teardown_and_includes_ride_in_untrusted_envelopes(self):
+        """The system prompt promises the LLM 'any additional context
+        (setup requirements, lifecycle constraints)' — the spec fields
+        carrying it must actually reach the prompt, and only inside
+        untrusted envelopes (the harness is compiled and executed)."""
+        kwargs = self._generate_and_capture(
+            "int parse_buf(const uint8_t *p, size_t n);\n",
+            setup_code="ctx = lib_init(); /* SETUP_MARKER */",
+            teardown_code="lib_free(ctx); /* TEARDOWN_MARKER */",
+            extra_includes=["mylib/extra.h"],
+        )
+        prompt = kwargs["prompt"]
+        self.assertIn('kind="caller-setup-code"', prompt)
+        self.assertIn("SETUP_MARKER", prompt)
+        self.assertIn('kind="caller-teardown-code"', prompt)
+        self.assertIn("TEARDOWN_MARKER", prompt)
+        self.assertIn('kind="caller-extra-includes"', prompt)
+        self.assertIn("mylib/extra.h", prompt)
 
     def test_system_prompt_primed_and_free_of_header_text(self):
         kwargs = self._generate_and_capture(

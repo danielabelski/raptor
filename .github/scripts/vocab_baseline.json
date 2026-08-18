@@ -393,6 +393,11 @@
   "count": 10,
   "kind": "literal"
  },
+ "core/audit/fail_open_census.py::_lead_from": {
+  "count": 12,
+  "kind": "literal",
+  "note": "lead receipt-dict field names (schema keys, not a function-name vocabulary)"
+ },
  "core/audit/fail_open_lang.py::_classify_ignored_return_site": {
   "count": 10,
   "kind": "literal",
@@ -485,8 +490,9 @@
   "kind": "literal"
  },
  "core/audit/orchestrator.py::_compute_audit_prep": {
-  "count": 56,
-  "kind": "literal"
+  "count": 57,
+  "kind": "literal",
+  "note": "prep-result dict keys (channel artifacts join here as they land; not a function-name vocabulary)"
  },
  "core/audit/orchestrator.py::_make_tier_counters": {
   "count": 29,

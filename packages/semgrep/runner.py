@@ -118,14 +118,28 @@ def _default_sandbox_runner(target: Path, config: str):
     needs_registry = str(config).startswith(("p/", "category/"))
 
     def _runner(cmd, **kwargs):
-        return sandbox_run(
-            cmd,
-            block_network=not needs_registry,
-            target=str(target),
-            caller_label="semgrep-runner",
-            env_caller_filtered=True,
-            **{k: v for k, v in kwargs.items() if k != "shell"},
-        )
+        # Fake HOME in a per-call scratch dir: semgrep unconditionally
+        # appends to ``~/.semgrep/semgrep.log`` (and reads/writes
+        # ``~/.semgrep/settings.yml``); the operator's real HOME is
+        # not sandbox-writable, so every scan died rc=1 with
+        # "write outside allowed paths denied to ~/.semgrep/semgrep.log".
+        # fake_home requires output= (the Landlock-writable location
+        # the .home dir materialises under). The scratch dir — and the
+        # log noise semgrep writes there — is removed on return;
+        # semgrep's stderr still carries any real failure.
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="semgrep-sbx-") as scratch:
+            return sandbox_run(
+                cmd,
+                block_network=not needs_registry,
+                target=str(target),
+                caller_label="semgrep-runner",
+                env_caller_filtered=True,
+                output=scratch,
+                fake_home=True,
+                **{k: v for k, v in kwargs.items() if k != "shell"},
+            )
 
     return _runner
 

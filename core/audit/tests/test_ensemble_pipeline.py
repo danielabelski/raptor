@@ -1315,8 +1315,9 @@ err:
         assert "double fetch" in result.reasoning
 
     def test_sweep_dispatch(self):
-        from core.audit.sweep import _SMT_VERBS
-        assert "check-toctou" in _SMT_VERBS
+        from core.audit.sweep import _SMT_DIRECT_ONLY_VERBS, _SMT_VERB_ROLES
+        assert "check-toctou" in _SMT_DIRECT_ONLY_VERBS
+        assert "check-toctou" in _SMT_VERB_ROLES
 
 
 # ── W8: Dual code path unification ──────────────────────────────────

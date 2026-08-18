@@ -7,6 +7,7 @@ from typing import ClassVar
 
 import pytest
 
+import core.audit.sweep as sweep_mod
 from core.audit.sweep import (
     SarifCache,
     SweepResult,
@@ -159,6 +160,28 @@ class TestRunSmtSweep:
         assert result.outcome == "error"
         assert result.tool == "smt"
         assert any("unknown" in e.lower() for e in result.errors)
+
+    def test_every_mapped_shim_exists_on_disk(self):
+        raptor_dir = Path(sweep_mod.__file__).resolve().parents[2]
+        for verb, shim_name in sweep_mod._SMT_VERBS.items():
+            shim = raptor_dir / "libexec" / shim_name
+            assert shim.is_file(), f"{verb} maps to missing shim {shim}"
+
+    def test_direct_only_verb_routes_to_helpful_error(self):
+        for verb in sweep_mod._SMT_DIRECT_ONLY_VERBS:
+            result = run_smt_sweep(
+                file_path="a.c",
+                function_name="foo",
+                verb=verb,
+                smt_args={},
+            )
+            assert result.outcome == "error"
+            assert any("run_smt_verb_direct" in e for e in result.errors)
+
+    def test_every_verb_has_a_role(self):
+        all_verbs = set(sweep_mod._SMT_VERBS) | sweep_mod._SMT_DIRECT_ONLY_VERBS
+        missing = all_verbs - set(sweep_mod._SMT_VERB_ROLES)
+        assert not missing, f"verbs without a role entry: {sorted(missing)}"
 
     def test_valid_verb_runs(self):
         result = run_smt_sweep(

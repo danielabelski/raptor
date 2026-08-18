@@ -1036,7 +1036,12 @@ def run_coccinelle_sweep(
         )
 
 
-# SMT verb names → libexec shim basenames
+# SMT verb names → libexec shim basenames. Only verbs with an actual
+# shim on disk belong here; the source-analysis verbs (check-auth-bypass,
+# check-lock-discipline, check-resource-leak, check-null-propagation,
+# check-integer-narrowing, check-early-release, check-lock-domain,
+# check-toctou) have no CLI shim and run in-process via
+# run_smt_verb_direct().
 _SMT_VERBS = {
     "check-overflow": "raptor-smt-check-overflow",
     "check-oob": "raptor-smt-check-oob",
@@ -1044,15 +1049,19 @@ _SMT_VERBS = {
     "check-overflow-to-oob": "raptor-smt-check-overflow-to-oob",
     "check-negative-bypass": "raptor-smt-check-negative-bypass",
     "validate-path": "raptor-smt-validate-path",
-    "check-auth-bypass": "raptor-smt-check-auth-bypass",
-    "check-lock-discipline": "raptor-smt-check-lock-discipline",
-    "check-resource-leak": "raptor-smt-check-resource-leak",
-    "check-null-propagation": "raptor-smt-check-null-propagation",
-    "check-integer-narrowing": "raptor-smt-check-integer-narrowing",
-    "check-early-release": "raptor-smt-check-early-release",
-    "check-lock-domain": "raptor-smt-check-lock-domain",
-    "check-toctou": "raptor-smt-check-toctou",
 }
+
+# Verbs served only by run_smt_verb_direct() (no libexec shim).
+_SMT_DIRECT_ONLY_VERBS = frozenset({
+    "check-auth-bypass",
+    "check-lock-discipline",
+    "check-resource-leak",
+    "check-null-propagation",
+    "check-integer-narrowing",
+    "check-early-release",
+    "check-lock-domain",
+    "check-toctou",
+})
 
 _SMT_VERB_ROLES = {
     # Invariant-preservation harness (core.audit.invariant_smt): a sat
@@ -1142,6 +1151,17 @@ def run_smt_sweep(
     """
     shim_name = _SMT_VERBS.get(verb)
     if not shim_name:
+        if verb in _SMT_DIRECT_ONLY_VERBS:
+            return SweepResult(
+                tool="smt",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=[
+                    (f"SMT verb {verb!r} has no CLI shim; "
+                     "call run_smt_verb_direct() instead"),
+                ],
+            )
         return SweepResult(
             tool="smt",
             file_path=file_path,

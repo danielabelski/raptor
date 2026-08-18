@@ -63,6 +63,13 @@ logger = logging.getLogger(__name__)
 # to absorb pathological scheduler stalls (CI under heavy load).
 _TRACER_READY_TIMEOUT_S = 5.0
 
+# How long to wait for the tracer to exit on its own after the target
+# is reaped. A healthy tracer exits promptly once its last tracee is
+# gone (it only appends the end-of-run summary record first); a wedged
+# tracer must never hang the spawn parent, so the reap escalates to
+# _kill_and_reap after this grace.
+_TRACER_REAP_TIMEOUT_S = 5.0
+
 # How long the stdio drain loop waits in one select() before
 # re-checking that the target is still alive. Idle ticks are NOT
 # treated as EOF — see _drain_pipes_until_eof.
@@ -690,15 +697,29 @@ def run_landlock_audit(
             finally:
                 target_pid = -1
 
-        # Reap the tracer (PTRACE_O_EXITKILL means it exits when
-        # the target's pid leaves; should be fast).
+        # Reap the tracer — bounded. A healthy tracer exits promptly
+        # once its last tracee is gone (should be fast), but a wedged
+        # tracer must never convert into an indefinite parent hang:
+        # after _TRACER_REAP_TIMEOUT_S escalate to TERM → KILL.
         if tracer_pid > 0:
-            try:
-                os.waitpid(tracer_pid, 0)
-            except (ChildProcessError, OSError):
-                pass
-            finally:
-                tracer_pid = -1
+            reap_deadline = time.monotonic() + _TRACER_REAP_TIMEOUT_S
+            while time.monotonic() < reap_deadline:
+                try:
+                    done, _ = os.waitpid(tracer_pid, os.WNOHANG)
+                except (ChildProcessError, OSError):
+                    break
+                if done != 0:
+                    break
+                time.sleep(0.02)
+            else:
+                logger.warning(
+                    "landlock-audit: tracer (pid %d) still alive %.1fs "
+                    "after target exit; killing it (observe/audit "
+                    "records may be truncated)",
+                    tracer_pid, _TRACER_REAP_TIMEOUT_S,
+                )
+                _kill_and_reap(tracer_pid)
+            tracer_pid = -1
 
         # Marshal output to the requested type.
         if text:

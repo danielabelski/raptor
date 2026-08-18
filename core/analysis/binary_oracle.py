@@ -813,6 +813,12 @@ def classify_binary_evidence(
     binary_path = Path(binary_path)
     if not binary_path.is_file():
         return {}
+    # Resolve symlinks BEFORE handing the path to the sandboxed tools:
+    # the sandbox scopes its read view to the RESOLVED parent directory
+    # (see _run/_stream), so a symlink living elsewhere is not in the
+    # view and every tool silently reads nothing — the classifier then
+    # reported every function ``absent`` on mount-ns hosts.
+    binary_path = binary_path.resolve()
 
     _missing = [t for t in ("nm", "objdump", "readelf") if not shutil.which(t)]
     if _missing:

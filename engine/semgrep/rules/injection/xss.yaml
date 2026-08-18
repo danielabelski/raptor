@@ -133,11 +133,21 @@ rules:
           - pattern: (PrintWriter $PW).println($X)
           - pattern: (PrintWriter $PW).print($X)
     pattern-sanitizers:
+      # HTML-body context encoders only: the sinks above are response-body
+      # writes, so forHtml/forHtmlContent/escapeHtml4/htmlEscape/
+      # encodeForHTML neutralise them (forHtmlAttribute over-encodes — a
+      # safe superset). JavaScript/CSS/URL encoders are deliberately NOT
+      # listed: they do not neutralise HTML-body injection and would
+      # suppress real findings.
       - pattern: StringEscapeUtils.escapeHtml4(...)
       - pattern: HtmlUtils.htmlEscape(...)
       - pattern: Encode.forHtml(...)
       - pattern: Encode.forHtmlContent(...)
       - pattern: Encode.forHtmlAttribute(...)
+      - pattern: org.owasp.encoder.Encode.forHtml(...)
+      # OWASP ESAPI, both the chained singleton and a typed Encoder ref
+      - pattern: ESAPI.encoder().encodeForHTML(...)
+      - pattern: (Encoder $ENC).encodeForHTML(...)
     metadata:
       cwe: ["CWE-79"]
       owasp_top_10: ["A3:2021-Injection"]

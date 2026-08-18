@@ -37,6 +37,14 @@ _CASES = {
         ["protopoll_impl_pos.js"],
         ["protopoll_impl_neg.js"],
     ),
+    "java/trust-boundary.yaml": (
+        ["trustbound_java_pos.java"],
+        ["trustbound_java_neg.java"],
+    ),
+    "injection/xss.yaml": (
+        ["xss_java_pos.java"],
+        ["xss_java_encoder_neg.java"],
+    ),
 }
 
 pytestmark = pytest.mark.skipif(

@@ -1,0 +1,26 @@
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+
+public class trustbound_java_pos extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) {
+        String param = request.getParameter("input");
+
+        // tainted value into the session via the chained form
+        request.getSession().setAttribute("userValue", param);
+
+        // tainted value through a typed session variable
+        HttpSession session = request.getSession(true);
+        session.setAttribute("stored", param);
+
+        // tainted KEY is also a boundary violation
+        session.setAttribute(param, "constant");
+
+        // deprecated API spelling
+        session.putValue("legacy", param);
+
+        // application scope
+        getServletContext().setAttribute("appWide", request.getHeader("X-Custom"));
+    }
+}

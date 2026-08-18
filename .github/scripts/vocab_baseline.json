@@ -875,6 +875,16 @@
   "count": 14,
   "kind": "literal"
  },
+ "core/dataflow/extension_pack.py::DEFAULT_SINK_KINDS": {
+  "count": 12,
+  "kind": "literal",
+  "note": "CodeQL models-as-data kind taxonomy (upstream engine-defined sink kind strings, threat-model/MaD spec) \u2014 engine vocabulary like the QL predicate names themselves, not project APIs; learned project names flow through ModelRow validation, never this list"
+ },
+ "core/dataflow/extension_pack.py::DEFAULT_SOURCE_KINDS": {
+  "count": 11,
+  "kind": "literal",
+  "note": "CodeQL models-as-data kind taxonomy (upstream engine-defined source kind strings, threat-model/MaD spec) \u2014 engine vocabulary like the QL predicate names themselves, not project APIs; learned project names flow through ModelRow validation, never this list"
+ },
  "core/dataflow/path_annotator.py::_COMMON_NOISE": {
   "count": 31,
   "kind": "literal"

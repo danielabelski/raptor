@@ -29,8 +29,6 @@ class IntraFunctionAsymmetry:
     kind: str  # "cleanup", "operator", "guard"
     description: str
     line: int = 0
-    deviant_block: str = ""
-    majority_pattern: str = ""
 
 
 _CLEANUP_CALLS = re.compile(
@@ -144,7 +142,6 @@ def check_cleanup_consistency(
                         f"does not"
                     ),
                     line=line_no,
-                    majority_pattern=f"{cleanup_fn}()",
                 ))
 
     return results
@@ -197,8 +194,6 @@ def check_operator_consistency(
                         f"{line_no} uses `{op}`"
                     ),
                     line=line_no,
-                    majority_pattern=f"{var_name} {majority_op}",
-                    deviant_block=f"{var_name} {op}",
                 ))
 
     return results

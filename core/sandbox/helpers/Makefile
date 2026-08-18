@@ -37,7 +37,18 @@ SAFETY_CFLAGS  = -O2 -std=c11 -Wall -Wextra -Werror -Wshadow -Wformat=2 \
                  -Wformat-security -Wstrict-prototypes \
                  -Wmissing-prototypes -fstack-protector-strong -fPIE \
                  -D_FORTIFY_SOURCE=2
-SAFETY_LDFLAGS = -pie -Wl,-z,now -Wl,-z,relro -Wl,-z,noexecstack
+
+# Linker hardening is GNU/ELF-specific. On Darwin, PIE is the default for
+# executables (and clang's -Werror,-Wunused-command-line-argument rejects a
+# redundant -pie on the compile+link line), ld64 has no -z now/relro/
+# noexecstack equivalents to opt into — full bind-at-launch and
+# non-executable stacks are already the platform behaviour.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    SAFETY_LDFLAGS =
+else
+    SAFETY_LDFLAGS = -pie -Wl,-z,now -Wl,-z,relro -Wl,-z,noexecstack
+endif
 
 CFLAGS  ?=
 LDFLAGS ?=

@@ -20,32 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class TypeStateTransition:
-    """A state change triggered by calling a method."""
-
-    method: str
-    from_state: str
-    to_state: str
-
-
-@dataclass
-class ForbiddenTransition:
-    """A transition that indicates a bug."""
-
-    from_state: str
-    to_state: str
-    reason: str
-
-
-@dataclass
 class TypeStateModel:
-    """Lifecycle state machine for a resource type."""
+    """Lifecycle state machine for a resource type.
+
+    The checker (`check_typestate_violations`) drives its transitions
+    from `alloc_methods`/`free_methods` lookups; the forbidden
+    transitions are encoded in its control flow per violation kind.
+    """
 
     type_name: str
     states: list[str] = field(default_factory=list)
-    transitions: list[TypeStateTransition] = field(default_factory=list)
-    valid_ops: dict[str, set[str]] = field(default_factory=dict)
-    forbidden: list[ForbiddenTransition] = field(default_factory=list)
     alloc_methods: list[str] = field(default_factory=list)
     free_methods: list[str] = field(default_factory=list)
 
@@ -134,42 +118,16 @@ def _build_alloc_free_model(alloc: str, free: str) -> TypeStateModel:
     is_lock = alloc in _LOCK_METHODS
 
     if is_lock:
-        states = ["unlocked", "locked"]
         return TypeStateModel(
             type_name=f"{alloc}/{free}",
-            states=states,
-            transitions=[
-                TypeStateTransition(alloc, "unlocked", "locked"),
-                TypeStateTransition(free, "locked", "unlocked"),
-            ],
-            valid_ops={
-                alloc: {"unlocked"},
-                free: {"locked"},
-            },
-            forbidden=[
-                ForbiddenTransition("locked", "locked", f"double {alloc} (deadlock)"),
-                ForbiddenTransition("unlocked", "unlocked", f"{free} without {alloc}"),
-            ],
+            states=["unlocked", "locked"],
             alloc_methods=[alloc],
             free_methods=[free],
         )
 
-    states = ["unallocated", "allocated", "freed"]
     return TypeStateModel(
         type_name=f"{alloc}/{free}",
-        states=states,
-        transitions=[
-            TypeStateTransition(alloc, "unallocated", "allocated"),
-            TypeStateTransition(free, "allocated", "freed"),
-        ],
-        valid_ops={
-            free: {"allocated"},
-        },
-        forbidden=[
-            ForbiddenTransition("freed", "freed", f"double {free}"),
-            ForbiddenTransition("freed", "allocated", f"use after {free}"),
-            ForbiddenTransition("unallocated", "freed", f"{free} without {alloc}"),
-        ],
+        states=["unallocated", "allocated", "freed"],
         alloc_methods=[alloc],
         free_methods=[free],
     )

@@ -38,8 +38,8 @@ class TestBuildBuiltinModels:
         m = models["malloc/free"]
         assert "allocated" in m.states
         assert "freed" in m.states
-        assert len(m.transitions) >= 2
-        assert len(m.forbidden) >= 1
+        assert m.alloc_methods == ["malloc"]
+        assert m.free_methods == ["free"]
 
     def test_lock_model_structure(self):
         models = build_builtin_models()

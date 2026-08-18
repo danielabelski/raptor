@@ -186,6 +186,15 @@ class RaptorConfig:
     # Per-run CLI override: `/codeql --no-curated-queries`.
     CODEQL_CURATED_ENABLED: bool = True
 
+    # Learned-models measurement pass on the /codeql agent: emit the
+    # project's tool-corroborated IRIS taint specs as a models-as-data
+    # extension pack and run the baseline-vs-augmented measurement over
+    # a small per-language query set. Augmented-only findings join the
+    # report as candidates (provenance=learned-model); suppression is
+    # measurement-only — nothing is dropped. Per-run CLI override:
+    # `/codeql --no-learned-models`.
+    CODEQL_LEARNED_MODELS_ENABLED: bool = True
+
     # Threat models passed to `codeql database analyze` on the STANDARD
     # suite pass (`--threat-model=<name>` per entry, additive to the
     # always-on `default`/remote model). `local` enables the

@@ -68,6 +68,49 @@ def _normalise_language(name: str) -> str:
     return _LANGUAGE_ALIASES.get(name.strip().lower(), name.strip().lower())
 
 
+def _write_candidates_sarif(augmented_sarif, new_ids, out_path):
+    """Write the augmented-only results as a candidates SARIF.
+
+    Filters the augmented run's results down to the finding ids the
+    baseline lacked (the learned models exposed them) and stamps each
+    with ``properties.provenance = "learned-model"`` so downstream
+    triage can see why the finding exists. Returns the written path as
+    a string, or None on any failure — candidates are additive signal,
+    never worth failing the pass over.
+    """
+    import json as _json
+
+    try:
+        from core.dataflow.adapters.codeql import from_sarif_result
+
+        with open(augmented_sarif, encoding="utf-8") as f:
+            sarif = _json.load(f)
+        kept_any = False
+        for run in sarif.get("runs", []) or []:
+            kept = []
+            for result in run.get("results", []) or []:
+                try:
+                    finding = from_sarif_result(result)
+                except ValueError:
+                    continue
+                if finding is None or finding.finding_id not in new_ids:
+                    continue
+                props = result.setdefault("properties", {})
+                props["provenance"] = "learned-model"
+                kept.append(result)
+            run["results"] = kept
+            kept_any = kept_any or bool(kept)
+        if not kept_any:
+            return None
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_json.dumps(sarif, indent=2), encoding="utf-8")
+        return str(out_path)
+    except Exception:  # noqa: BLE001 — additive signal only
+        logger.debug("candidates SARIF write failed", exc_info=True)
+        return None
+
+
 @dataclass
 class CodeQLWorkflowResult:
     """Complete workflow result."""
@@ -87,6 +130,10 @@ class CodeQLWorkflowResult:
     # subsumed by `--threat-model=local`. Additive; consumers tolerate
     # its absence.
     threat_model_overlap: dict | None = None
+    # Per-language learned-models measurement (rows emitted/rejected,
+    # baseline-vs-augmented finding diff, count of augmented-only
+    # candidates surfaced). Additive; consumers tolerate its absence.
+    learned_models: dict | None = None
 
     def to_dict(self):
         """
@@ -630,6 +677,24 @@ class CodeQLAgent:
                                 lang, cells["standard"], cells["iris"],
                             )
 
+            # Learned-models measurement pass: emit the project's
+            # tool-corroborated IRIS taint specs as a models-as-data
+            # pack and measure baseline-vs-augmented over a small
+            # per-language query set. Augmented-only findings join
+            # sarif_files as candidates (provenance=learned-model);
+            # suppressed ids are recorded, never dropped from the
+            # standard results. Failures degrade to a warning.
+            learned_models = self._run_learned_models_pass(successful_dbs)
+            for lang, cell in (learned_models or {}).items():
+                sarif = cell.get("candidates_sarif")
+                if sarif:
+                    sarif_files.append(sarif)
+                    total_findings += cell.get("candidates", 0)
+                    logger.info(
+                        "  - %s learned models: %s candidate finding(s)",
+                        lang, cell.get("candidates", 0),
+                    )
+
             # PHASE 5: Generate Report
             logger.info("\n%s", '=' * 70)
             logger.info("PHASE 5: REPORT GENERATION")
@@ -647,6 +712,7 @@ class CodeQLAgent:
                 sarif_files=sarif_files,
                 errors=errors,
                 threat_model_overlap=threat_model_overlap,
+                learned_models=learned_models,
             )
 
             # Save report
@@ -669,6 +735,108 @@ class CodeQLAgent:
                 sarif_files=[],
                 errors=[str(e)] + errors,
             )
+
+    def _run_learned_models_pass(self, successful_dbs) -> dict | None:
+        """Emit learned taint specs as a model pack and measure the diff.
+
+        Per emitter-supported language with a successful DB: load the
+        project's IRIS specs, convert (the converter enforces the
+        XREF_BACKED tier + confidence gates and refuses unverified
+        provenance), run the baseline-vs-augmented measurement over
+        that language's small in-repo query set, and surface
+        augmented-only findings as a candidates SARIF (every result
+        tagged ``provenance=learned-model``) so they enter the normal
+        validation stream. Suppressed ids are recorded in the report
+        cell only — the standard-suite results are never filtered.
+
+        Returns a per-language dict, or None when the pass is disabled,
+        no language qualifies, or no specs survived conversion.
+        Failures degrade to a warning; they never kill the scan.
+        """
+        if not RaptorConfig.CODEQL_LEARNED_MODELS_ENABLED:
+            return None
+        try:
+            from core.dataflow.codeql_augmented_run import (
+                run_learned_models_measurement,
+            )
+            from core.dataflow.extension_pack import (
+                SUPPORTED_LANGUAGES,
+                rows_from_taint_specs,
+            )
+            from core.iris.api import load_project_specs
+        except ImportError:
+            logger.debug("learned-models pass unavailable", exc_info=True)
+            return None
+
+        query_roots = {
+            "cpp": RaptorConfig.CODEQL_QUERIES_DIR / "cpp",
+            "python": (
+                RaptorConfig.EXTRA_CODEQL_PACK_ROOTS[0] / "python-queries"
+                if RaptorConfig.EXTRA_CODEQL_PACK_ROOTS else None
+            ),
+        }
+
+        try:
+            specs = load_project_specs(
+                out_dir=self.out_dir, target_path=self.repo_path,
+            )
+        except Exception:
+            logger.debug("IRIS spec load failed", exc_info=True)
+            return None
+        if not specs:
+            return None
+
+        out: dict[str, dict] = {}
+        for lang, db in successful_dbs.items():
+            if lang not in SUPPORTED_LANGUAGES:
+                continue
+            root = query_roots.get(lang)
+            if root is None or not root.is_dir():
+                continue
+            db_path = getattr(db, "database_path", None)
+            if not db_path:
+                continue
+            conv = rows_from_taint_specs(specs, language=lang)
+            if not conv.rows:
+                if conv.rejected:
+                    logger.info(
+                        "  - %s learned models: 0 rows survived "
+                        "conversion (%d rejected)", lang, len(conv.rejected),
+                    )
+                continue
+            try:
+                measurement = run_learned_models_measurement(
+                    Path(db_path),
+                    [str(root)],
+                    conv.rows,
+                    language=lang,
+                    out_dir=self.out_dir / "learned-models" / lang,
+                )
+            except Exception as e:  # noqa: BLE001 — degrade, never kill
+                logger.warning("learned-models measurement failed for %s: %s",
+                               lang, e)
+                continue
+            diff = measurement.diff
+            candidates_sarif = None
+            n_candidates = 0
+            if diff.new_ids:
+                candidates_sarif = _write_candidates_sarif(
+                    measurement.augmented.sarif_path,
+                    set(diff.new_ids),
+                    self.out_dir / f"codeql_{lang}_learned.sarif",
+                )
+                if candidates_sarif:
+                    n_candidates = len(diff.new_ids)
+            out[lang] = {
+                "rows_written": measurement.pack.rows_written,
+                "rows_rejected": len(measurement.pack.rejected),
+                "baseline_count": diff.baseline_count,
+                "augmented_count": diff.augmented_count,
+                "suppressed_ids": list(diff.suppressed_ids),
+                "candidates": n_candidates,
+                "candidates_sarif": candidates_sarif,
+            }
+        return out or None
 
     def _save_report(self, result: CodeQLWorkflowResult):
         """Save workflow report to JSON.
@@ -958,6 +1126,13 @@ Examples:
              "standard-suite-only verdicts.",
     )
     parser.add_argument(
+        "--no-learned-models", action="store_true",
+        help="Skip the learned-models measurement pass (IRIS taint "
+             "specs emitted as a models-as-data pack, baseline vs "
+             "augmented diff). Use when the pack's candidate findings "
+             "add noise on a specific target.",
+    )
+    parser.add_argument(
         "--threat-models",
         help="Comma-separated CodeQL threat models to enable on the "
              "standard suite (default: local). Passed as repeated "
@@ -997,6 +1172,11 @@ Examples:
     if args.no_curated_queries:
         from core.config import RaptorConfig
         RaptorConfig.CODEQL_CURATED_ENABLED = False
+
+    # Same process-scoped pattern for the learned-models pass.
+    if args.no_learned_models:
+        from core.config import RaptorConfig
+        RaptorConfig.CODEQL_LEARNED_MODELS_ENABLED = False
 
     # Same process-scoped pattern for threat models. Explicit negative
     # beats positive when both are passed.

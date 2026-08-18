@@ -86,6 +86,10 @@ def run_autonomous_workflow(args):
     if getattr(args, "no_curated_queries", False):
         RaptorConfig.CODEQL_CURATED_ENABLED = False
 
+    # Same process-scoped pattern for the learned-models pass.
+    if getattr(args, "no_learned_models", False):
+        RaptorConfig.CODEQL_LEARNED_MODELS_ENABLED = False
+
     # Same process-scoped pattern for threat models. Explicit negative
     # beats positive when both are passed.
     if getattr(args, "threat_models", None):
@@ -389,6 +393,13 @@ Examples:
              "RaptorConfig.CODEQL_CURATED_ENABLED). Use when a curated "
              "query produces noise on a specific target or when "
              "comparing standard-suite-only verdicts.",
+    )
+    parser.add_argument(
+        "--no-learned-models", action="store_true",
+        help="Skip the learned-models measurement pass (IRIS taint "
+             "specs emitted as a models-as-data pack, baseline vs "
+             "augmented diff; flips "
+             "RaptorConfig.CODEQL_LEARNED_MODELS_ENABLED).",
     )
     parser.add_argument(
         "--threat-models",

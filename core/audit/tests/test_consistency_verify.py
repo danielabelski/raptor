@@ -3,6 +3,14 @@
 Hermetic fixture pairs throughout: the deviant form must confirm with
 full PeerEvidence receipts; the conforming / acknowledged twin must
 refute or demote with the exact enumerated reason string.
+
+The channel adjudicates over the return census, which has two
+extraction tiers (tree-sitter / regex fallback). The tests that
+historically flipped between tiers — peer counts inflated by header
+prototypes, function binding collapsing to ``<module>`` — are
+parametrised over ``parser_tier`` so both contracts stay pinned:
+identical verdicts and receipts on both tiers, except the error-path
+demotion, which needs a tree (the fallback has no error-path walk).
 """
 
 from __future__ import annotations
@@ -30,6 +38,26 @@ from core.audit.consistency_verify import (
     run_consistency_check,
 )
 from core.audit.fail_open_roles import RoleContext
+from core.testing import force_census_regex_fallback, ts_parser_available
+
+
+@pytest.fixture(params=["tree-sitter", "regex-fallback"])
+def parser_tier(request, monkeypatch):
+    """Adjudicate over both census extraction tiers."""
+    if request.param == "regex-fallback":
+        force_census_regex_fallback(monkeypatch)
+    return request.param
+
+
+def _tier(parser_tier: str, *langs: str) -> str:
+    if parser_tier == "tree-sitter":
+        missing = [lang for lang in langs if not ts_parser_available(lang)]
+        if missing:
+            pytest.skip(
+                "no tree-sitter grammar for: " + ", ".join(missing),
+            )
+        return "ts"
+    return "rx"
 
 
 def _fixture(checked: int, unchecked: int = 1, *,
@@ -105,7 +133,11 @@ class TestHypothesisClassifier:
 
 
 class TestRegistryContractPath:
-    def test_wur_contract_confirms_promote_capable(self):
+    def test_wur_contract_confirms_promote_capable(self, parser_tier):
+        # Regression (both tiers): the fallback used to count the
+        # header prototype below as an 11th, DISCARDED call site —
+        # a phantom deviant inflating the peer receipts.
+        _tier(parser_tier, "c")
         texts = _fixture(9, 1)
         texts["include/api.h"] = (
             "__attribute__((warn_unused_result)) int do_auth(void);\n"
@@ -208,7 +240,8 @@ class TestRefutationsAndDemotions:
         assert res.outcome == "refuted"
         assert res.reason.startswith(REFUTED_VOID_CALLEE)
 
-    def test_deviant_on_error_path_is_inconclusive(self):
+    def test_deviant_on_error_path_is_inconclusive(self, parser_tier):
+        tier = _tier(parser_tier, "python")
         parts = []
         for i in range(9):
             parts.append(
@@ -225,8 +258,14 @@ class TestRefutationsAndDemotions:
                     release_slot()
         """))
         res = _verdict({"app.py": "\n".join(parts)}, "release_slot")
-        assert res.outcome == "inconclusive"
-        assert res.reason.startswith(REASON_DEVIANT_ON_ERROR_PATH)
+        if tier == "ts":
+            assert res.outcome == "inconclusive"
+            assert res.reason.startswith(REASON_DEVIANT_ON_ERROR_PATH)
+        else:
+            # Fallback contract: no error-path walk without a tree —
+            # the demotion cannot fire, so the majority evidence
+            # confirms. Grammar-less hosts trade this refinement away.
+            assert res.outcome == "confirmed"
 
 
 class TestHypothesisAdjudication:
@@ -243,7 +282,8 @@ class TestHypothesisAdjudication:
             p.write_text(content)
         return tmp_path
 
-    def test_end_to_end_confirms_with_receipts(self, tmp_path):
+    def test_end_to_end_confirms_with_receipts(self, tmp_path, parser_tier):
+        _tier(parser_tier, "c")
         target = self._tree(tmp_path, wur=True)
         res = run_consistency_check(
             target, "src/callers.c", "u0",
@@ -266,7 +306,11 @@ class TestHypothesisAdjudication:
         assert res.outcome == "confirmed"
         assert res.rule_id == RULE_RETURN_CHECK_MAJORITY
 
-    def test_claim_refuted_when_function_checks(self, tmp_path):
+    def test_claim_refuted_when_function_checks(self, tmp_path, parser_tier):
+        # Function-precise binding: needs the enclosing function of
+        # each site, which the fallback's C header tracking now
+        # supplies too (it used to collapse every site to <module>).
+        _tier(parser_tier, "c")
         target = self._tree(tmp_path, wur=True)
         res = run_consistency_check(
             target, "src/callers.c", "c0",
@@ -285,9 +329,10 @@ class TestHypothesisAdjudication:
         assert res.outcome == "inconclusive"
         assert res.reason.startswith(REASON_HYPOTHESIS_UNBINDABLE)
 
-    def test_arithmetic_recomputed_not_trusted(self, tmp_path):
+    def test_arithmetic_recomputed_not_trusted(self, tmp_path, parser_tier):
         """A hypothesis over-claiming the majority (99/100) still gets
         the recomputed 9/10 receipt — the channel verifies arithmetic."""
+        _tier(parser_tier, "c")
         target = self._tree(tmp_path, wur=True)
         res = run_consistency_check(
             target, "src/callers.c", "u0",

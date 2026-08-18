@@ -13,6 +13,7 @@ documentation — the LLM sees them, so the output shape is explicit.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterable
 from typing import Any
 
@@ -33,6 +34,8 @@ def _envelope(
     blocks: Iterable[UntrustedBlock],
     slots: dict[str, TaintedString],
     model_id: str,
+    *,
+    transparent_payload: bool = False,
 ) -> tuple[str, str]:
     """Render ``(user, system)`` through the prompt envelope.
 
@@ -41,8 +44,20 @@ def _envelope(
     ride in slots.  Profile resolution mirrors sibling callsites:
     ``get_profile_for`` when the model is known, CONSERVATIVE
     otherwise.
+
+    ``transparent_payload=True`` renders the untrusted blocks in the
+    clear (no base64, no datamark sentinels) while keeping the nonce
+    envelope, tag-forgery neutralization, autofetch stripping, and
+    slot discipline — the same opt-out ``core.audit._util
+    .envelope_prompt`` reserves for the security-extraction classes,
+    for the same measured reason (the extraction ask over an encoded
+    payload is hard-refused; over plaintext it succeeds).
     """
     profile = get_profile_for(model_id) if model_id else CONSERVATIVE
+    if transparent_payload and (profile.base64_code or profile.datamarking):
+        profile = dataclasses.replace(
+            profile, base64_code=False, datamarking=False,
+        )
     bundle = build_prompt(
         system=system,
         profile=profile,
@@ -333,7 +348,18 @@ def build_synthesis_prompt(
         ),
         "seed_cwe": TaintedString(value=seed.cwe, trust="untrusted"),
     }
-    return _envelope("\n".join(system_parts), blocks, slots, model_id)
+    # transparent_payload: the rule-synthesis ask ("produce the
+    # detection rule that verifies this hypothesis") over an ENCODED
+    # hypothesis+snippet payload is hard-refused by Claude models —
+    # measured 4/4 (stop_reason=refusal) with framing, verification
+    # wording, and evidence grounding all present; the same
+    # conjunction fixed for the taint-summary and spec-inference
+    # classes. Triage keeps the encoded envelope (judgment-shaped
+    # ask, never refused).
+    return _envelope(
+        "\n".join(system_parts), blocks, slots, model_id,
+        transparent_payload=True,
+    )
 
 
 # ---------------------------------------------------------------------------

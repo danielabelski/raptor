@@ -22,11 +22,11 @@ from core.security.prompt_framing import (
     SECURITY_AUDIT_FRAMING,
     with_audit_framing,
 )
-
 from packages.checker_synthesis.models import SeedBug
 from packages.checker_synthesis.prompts import (
     SYNTHESIS_SCHEMA,
     build_synthesis_prompt,
+    build_triage_prompt,
 )
 
 _PARSER_FIELDS = {
@@ -103,20 +103,47 @@ class TestUntrustedBlockShape:
         assert seed.snippet.strip() not in system
 
 
-class TestDefenseStateUnchanged:
-    """The refusal fix is ask-shape only — the per-model envelope
-    defence configuration must be exactly what it was before."""
+class TestDefenseState:
+    """Synthesis opts out of payload encoding (measured hard-refusal
+    of the extraction ask over an encoded payload — operator-approved
+    transparent_payload, mirroring the taint-summary/spec-inference
+    classes); triage keeps the encoded envelope."""
 
-    def test_conservative_profile_renders_plaintext(self):
+    def test_synthesis_renders_plaintext_all_profiles(self):
         seed = _seed()
-        user, _system = build_synthesis_prompt(seed, "semgrep", model_id="")
-        assert "strcpy" in user  # payload in the clear
-        assert not re.search(r"[A-Za-z0-9+/=]{80,}", user)
+        for model_id in ("", "claude-opus-4-8", "anthropic.claude-mythos-5"):
+            user, _system = build_synthesis_prompt(
+                seed, "semgrep", model_id=model_id,
+            )
+            assert "strcpy" in user  # payload in the clear
+            assert not re.search(r"[A-Za-z0-9+/=]{80,}", user)
 
-    def test_claude_profile_still_encodes_payload(self):
+    def test_synthesis_keeps_structural_defenses(self):
         seed = _seed()
         user, _system = build_synthesis_prompt(
             seed, "semgrep", model_id="claude-opus-4-8",
         )
-        assert "strcpy" not in user  # payload not in the clear
+        # nonce envelope + slot discipline survive the transparent
+        # rendering; only the encoding is dropped.
+        assert re.search(r"</untrusted-[0-9a-f]+>", user)
+        assert '<slot name="seed_function"' in user
+
+    def test_triage_still_encodes_payload(self):
+        from packages.checker_synthesis.models import (
+            Match,
+            SynthesisedRule,
+        )
+
+        seed = _seed()
+        rule = SynthesisedRule(
+            rule_id="test-rule", engine="semgrep",
+            body="rules: []", rationale="pinned fixture",
+        )
+        match = Match(
+            file="src/x.c", line=10,
+            snippet="strcpy(dst, src);", metavars={},
+        )
+        user, _system = build_triage_prompt(
+            seed, rule, match, model_id="claude-opus-4-8",
+        )
         assert re.search(r"[A-Za-z0-9+/=]{40,}", user)

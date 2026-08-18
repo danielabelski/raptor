@@ -188,6 +188,18 @@ def render_flow(cve_id: str, jsonl_lines: list[str], *,
     out.append("")
     for step in steps:
         out.append(_render_intent_step(step))
+    disc = (stage_signals or {}).get("discover") or {}
+    if disc.get("rationale"):
+        out.append("")
+        out.append(f"**Verdict rationale:** {disc['rationale']}")
+    if disc.get("tokens") or disc.get("cost_usd") or disc.get("elapsed_s"):
+        verified = disc.get("verified_candidates") or 0
+        out.append(
+            f"**Loop cost:** {disc.get('tokens', 0)} tokens, "
+            f"${disc.get('cost_usd', 0.0):.4f}, "
+            f"{disc.get('elapsed_s', 0.0):.1f}s"
+            + (f" · {verified} candidate(s) verified" if verified else "")
+        )
     out.append("")
 
     # ---- Stages 2-5: ALWAYS rendered ----

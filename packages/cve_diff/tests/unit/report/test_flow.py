@@ -182,6 +182,45 @@ def test_render_flow_pass_shows_all_5_pipeline_stages(tmp_path: Path) -> None:
     assert "agree" in md  # extraction agreement
 
 
+def test_render_flow_discover_shows_agent_verdict_provenance() -> None:
+    """The discover stage carries the AgentResult provenance: WHY the
+    agent picked this (slug, sha) plus what the loop cost."""
+    from cve_diff.report.markdown import render_flow
+
+    lines = [
+        json.dumps({"i": 0, "tool": "submit_result",
+                    "args": {"outcome": "rescued"}}),
+    ]
+    stage_signals = {
+        "discover": {
+            "rationale": "OSV references name the fix commit directly",
+            "tokens": 1234,
+            "cost_usd": 0.0567,
+            "elapsed_s": 8.25,
+            "verified_candidates": 2,
+        },
+    }
+    md = render_flow("CVE-X", lines, ok=True, error_class="PASS",
+                     stage_signals=stage_signals)
+    assert "OSV references name the fix commit directly" in md
+    assert "1234 tokens" in md
+    assert "$0.0567" in md
+    assert "8.2s" in md or "8.3s" in md
+    assert "2 candidate(s) verified" in md
+
+
+def test_render_flow_discover_block_absent_without_signals() -> None:
+    from cve_diff.report.markdown import render_flow
+
+    lines = [
+        json.dumps({"i": 0, "tool": "submit_result",
+                    "args": {"outcome": "rescued"}}),
+    ]
+    md = render_flow("CVE-X", lines, ok=True, error_class="PASS")
+    assert "Verdict rationale" not in md
+    assert "Loop cost" not in md
+
+
 # ----- Stage 4: per-source diff agreement (the user's primary success metric) -----
 
 def test_render_flow_diff_shows_three_sources_when_all_three_extractors_ran(

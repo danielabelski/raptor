@@ -133,7 +133,20 @@ def _flow_from_pipeline(
             slug = None
         if slug is None:
             slug = (bundle.repo_ref.repository_url or "").lower()
+        # Discover provenance: the AgentResult is the only structured
+        # record of WHY the agent picked this (slug, sha) — verdict
+        # rationale plus loop cost. On PASS this is an AgentOutput.
+        ar = pipeline_result.agent_result
         stage_signals = {
+            "discover": {
+                "rationale": getattr(ar, "rationale", "") or "",
+                "tokens": getattr(ar, "tokens", 0),
+                "cost_usd": getattr(ar, "cost_usd", 0.0),
+                "elapsed_s": getattr(ar, "elapsed_s", 0.0),
+                "verified_candidates": len(
+                    getattr(ar, "verified_candidates", ()) or ()
+                ),
+            },
             "acquire": {"layer": layer},
             "resolve": {
                 "before": (bundle.commit_before or "?")[:12],

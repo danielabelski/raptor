@@ -57,6 +57,48 @@ def _safe_path(target_path: Path, file_path: str) -> Path | None:
     return full
 
 
+# Hard cap on a single target-source file read. Real source files —
+# even generated amalgamations — sit far below this; anything past it
+# is a planted blob whose only effect is memory exhaustion (context
+# assembly re-reads files per function, amplifying the cost). Over-cap
+# files are treated exactly like unreadable ones.
+_MAX_SOURCE_FILE_BYTES = 64 * 1024 * 1024
+
+
+def _read_target_text(full_path: Path) -> str | None:
+    """Stat-then-bounded-read of a target-source file.
+
+    Returns the decoded text, or None when the file is unreadable OR
+    larger than ``_MAX_SOURCE_FILE_BYTES`` — callers take their
+    existing unreadable-file fallback in both cases. The bounded read
+    of cap+1 bytes detects a file that grew past the cap between stat
+    and read without ever loading more than the cap into memory.
+    """
+    try:
+        st = full_path.stat()
+        if st.st_size > _MAX_SOURCE_FILE_BYTES:
+            logger.warning(
+                "target source file too large (%.0f MiB > %.0f MiB cap), "
+                "skipping: %s",
+                st.st_size / 1024 / 1024,
+                _MAX_SOURCE_FILE_BYTES / 1024 / 1024,
+                full_path,
+            )
+            return None
+        with full_path.open("rb") as f:
+            raw = f.read(_MAX_SOURCE_FILE_BYTES + 1)
+        if len(raw) > _MAX_SOURCE_FILE_BYTES:
+            logger.warning(
+                "target source file grew past %.0f MiB cap during read, "
+                "skipping: %s",
+                _MAX_SOURCE_FILE_BYTES / 1024 / 1024, full_path,
+            )
+            return None
+        return raw.decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def _build_tool_catalog() -> str:
     """Build a dynamic tool catalog based on what's actually installed."""
     import shutil
@@ -365,11 +407,10 @@ def _file_has_kernel_markers(ctx: dict[str, Any]) -> bool:
     if target:
         full = _safe_path(Path(target), fp)
         if full is not None and full.is_file():
-            try:
-                head = full.read_text(errors="replace")[:4096]
+            text = _read_target_text(full)
+            if text is not None:
+                head = text[:4096]
                 result = any(m in head for m in _KERNEL_SOURCE_MARKERS)
-            except OSError:
-                result = True
     _kernel_file_cache[fp] = result
     return result
 
@@ -1697,10 +1738,10 @@ def _read_source(
     if full_path is None or not full_path.exists():
         return "(file not found)"
 
-    try:
-        lines = full_path.read_text(errors="replace").splitlines()
-    except OSError:
+    text = _read_target_text(full_path)
+    if text is None:
         return "(read error)"
+    lines = text.splitlines()
 
     start = max(0, line_start - 1)
     end = line_end if line_end is not None else min(start + 50, len(lines))
@@ -1758,10 +1799,10 @@ def _enrich_callers_with_call_sites(
         full_path = _safe_path(target_path, caller_file)
         if full_path is None or not full_path.exists():
             continue
-        try:
-            lines = full_path.read_text(errors="replace").splitlines()
-        except OSError:
+        text = _read_target_text(full_path)
+        if text is None:
             continue
+        lines = text.splitlines()
 
         caller_line = caller.get("line_start", 0)
         search_start = max(0, caller_line - 1) if caller_line else 0
@@ -1841,9 +1882,8 @@ def _resolve_types(
     for header in _find_headers(target_path, file_path):
         if len(results) >= max_types:
             break
-        try:
-            content = header.read_text(errors="replace")
-        except OSError:
+        content = _read_target_text(header)
+        if content is None:
             continue
 
         for name in list(type_names):
@@ -1955,7 +1995,7 @@ def _callee_security_priority(callee: dict[str, Any]) -> int:
     """Lower = higher priority for source enrichment."""
     full_name = callee.get("name", "").lower()
     short_name = full_name.split(".")[-1]
-    if full_name in _DANGEROUS_APIS or short_name in _DANGEROUS_APIS:
+    if full_name in _DANGEROUS_APIS_LOWER or short_name in _DANGEROUS_APIS_LOWER:
         return 0
     for pat in _SANITIZER_PATTERNS:
         if pat in short_name:
@@ -2023,10 +2063,10 @@ def _enrich_callees_with_source(
         full_path = _safe_path(target_path, callee_file)
         if full_path is None or not full_path.exists():
             continue
-        try:
-            lines = full_path.read_text(errors="replace").splitlines()
-        except OSError:
+        text = _read_target_text(full_path)
+        if text is None:
             continue
+        lines = text.splitlines()
 
         start = max(0, line_start - 1) if line_start else 0
         end = line_end if line_end else min(start + max_lines, len(lines))
@@ -2222,8 +2262,18 @@ def _wrap_operator_note(
             .replace("<", "&lt;")
             .replace(">", "&gt;")
     )
+    # file/function are target-derived (checklist paths) — escape
+    # quotes too so a crafted name cannot break out of the attribute.
+    attr_file = (
+        file.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;")
+    )
+    attr_function = (
+        function.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;")
+    )
     return (
-        f'<operator_note file="{file}" function="{function}" '
+        f'<operator_note file="{attr_file}" function="{attr_function}" '
         f'trust="advisory">\n<body>\n{escaped}{truncated_note}\n</body>\n'
         f'</operator_note>'
     )
@@ -2354,7 +2404,13 @@ def _build_api_regex(api: str) -> re.Pattern[str]:
     return re.compile(r"\b" + re.escape(api) + r"\b")
 
 
-_DANGEROUS_API_RE = {api: _build_api_regex(api) for api in _DANGEROUS_APIS}
+# Patterns are matched against LOWERCASED source, so fold the API
+# names first — a mixed-case name (subprocess.Popen) would otherwise
+# never match.
+_DANGEROUS_API_RE = {
+    api: _build_api_regex(api.lower()) for api in _DANGEROUS_APIS
+}
+_DANGEROUS_APIS_LOWER = frozenset(api.lower() for api in _DANGEROUS_APIS)
 
 _SANITIZER_PATTERNS = frozenset({
     "validate", "sanitize", "escape", "encode", "normalize",
@@ -2748,8 +2804,11 @@ _SINK_CWE_MAP = {
 
 def _sink_to_cwe_hint(sink_name: str) -> str | None:
     """Best-effort CWE mapping from a sink name."""
+    name_lower = sink_name.lower()
     for pattern, cwe in _SINK_CWE_MAP.items():
-        if pattern in sink_name.lower():
+        # Fold the pattern too: mixed-case map keys (innerHTML,
+        # subprocess.Popen) can never occur in a lowercased name.
+        if pattern.lower() in name_lower:
             return cwe
     return None
 
@@ -3499,10 +3558,10 @@ def _read_flow_node_source(
                     line_end = item.get("line_end")
                     break
 
-    try:
-        lines = full_path.read_text(errors="replace").splitlines()
-    except OSError:
+    text = _read_target_text(full_path)
+    if text is None:
         return ""
+    lines = text.splitlines()
 
     start = max(0, node_line - 1) if node_line else 0
     end = line_end if line_end else min(start + max_lines, len(lines))

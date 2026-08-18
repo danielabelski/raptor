@@ -17,6 +17,7 @@ from core.audit.orchestrator import (
     _check_finding_gates,
     _ContentFilterError,
     _hypothesis_to_tool_chain,
+    _is_verification_evidence_for_gate,
     _joern_live_query,
     _multi_pass_review,
     _promote_hypothesis_inconsistent,
@@ -2157,6 +2158,78 @@ class TestResolveGateDemoted:
         )
         # SMT evidence is immune to provenance override — stays suspicious
         assert result.outcomes[0].status == "suspicious"
+
+
+def _gate_outcome(evidence_tool: str = "", review: dict | None = None) -> ReviewOutcome:
+    return ReviewOutcome(
+        file="src/a.c",
+        function="f",
+        status="suspicious",
+        body="",
+        evidence_tool=evidence_tool,
+        review_result=review,
+    )
+
+
+class TestReviewFallbackSanitised:
+    """LLM evidence_tool sentinels must not defeat the suspicious→clean gate.
+
+    _is_verification_evidence_for_gate falls back to the RAW LLM
+    review["evidence_tool"] when the outcome carries no genuine stamp.
+    That fallback must go through _sanitize_llm_et — otherwise an
+    LLM-emitted sentinel like "none" (which is not a _NON_MECHANICAL
+    prefix) passes pipeline._is_verification_evidence and silently blocks
+    the Joern-era demotion gate."""
+
+    @pytest.mark.parametrize("sentinel", [
+        "none", "n/a", "manual", "None", "N/A", "Manual",
+        "manual code review", "manual review", "code review",
+        "llm", "llm review", "  none  ",
+    ])
+    def test_llm_sentinel_is_not_verification_evidence(self, sentinel):
+        outcome = _gate_outcome(review={"evidence_tool": sentinel})
+        assert _is_verification_evidence_for_gate(outcome) is False
+
+    def test_llm_freeform_tool_claim_is_not_verification_evidence(self):
+        # A hallucinated tool name must land under llm-claimed:, which
+        # pipeline._is_verification_evidence rejects as non-mechanical.
+        outcome = _gate_outcome(review={"evidence_tool": "semgrep"})
+        assert _is_verification_evidence_for_gate(outcome) is False
+
+    @pytest.mark.parametrize("joined", [
+        "none+manual",
+        "manual+none",
+        "semgrep+manual",
+        "none+n/a+manual",
+    ])
+    def test_plus_joined_llm_values_sanitised_per_part(self, joined):
+        # Sanitizing the joined string whole would prefix only the first
+        # part — every part must be sanitised before the "+" split.
+        outcome = _gate_outcome(review={"evidence_tool": joined})
+        assert _is_verification_evidence_for_gate(outcome) is False
+
+    def test_empty_review_fallback_is_not_verification_evidence(self):
+        assert _is_verification_evidence_for_gate(_gate_outcome(review={})) is False
+        assert _is_verification_evidence_for_gate(_gate_outcome(review=None)) is False
+
+
+class TestGenuineOutcomeStampUnchanged:
+    def test_genuine_outcome_stamp_still_counts(self):
+        # outcome.evidence_tool is pipeline-controlled — genuine stamps
+        # keep their gate protection (sanitizing them was a regression).
+        outcome = _gate_outcome(evidence_tool="joern:flow")
+        assert _is_verification_evidence_for_gate(outcome) is True
+
+    def test_genuine_stamp_wins_over_review_sentinel(self):
+        outcome = _gate_outcome(
+            evidence_tool="joern:flow",
+            review={"evidence_tool": "none"},
+        )
+        assert _is_verification_evidence_for_gate(outcome) is True
+
+    def test_prefilter_stamp_is_not_verification(self):
+        outcome = _gate_outcome(evidence_tool="prefilter:some-rule")
+        assert _is_verification_evidence_for_gate(outcome) is False
 
 
 class TestRejournalFinalStatuses:

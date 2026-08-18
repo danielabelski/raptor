@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import shutil
+import sys
 import textwrap
 
 import pytest
 
+from core.audit.dark_verify import _execute as ex
+from core.audit.dark_verify._execute import (
+    _run_native_binary,
+    _run_script_witness,
+    _sandboxed_compile,
+    _toolchain_read_paths,
+)
 from core.audit.dark_verify import (
     DarkVerifyResult,
     DarkWitnessSpec,
@@ -2601,3 +2611,184 @@ class TestArgExpressionAllowlist:
         err = validate_spec(self._spec([expr]))
         assert err is not None
         assert "arg_expression" in err
+
+
+# -- restricted reads ---------------------------------------------------------
+#
+# On Landlock-only hosts (no mount namespace) the sandbox's default is
+# restrict_reads=False, so untrusted witness/target code could read $HOME
+# credentials and echo them into match_detail — which is persisted to
+# dark-verify-results.json. Every execution AND compile site in
+# core.audit.dark_verify._execute must therefore pass restrict_reads=True.
+
+
+def _witness_spec(**overrides) -> DarkWitnessSpec:
+    base = dict(
+        finding_key="src/a.py:f",
+        file="src/a.py",
+        function="f",
+        language="python",
+        module_path="a",
+    )
+    base.update(overrides)
+    return DarkWitnessSpec(**base)
+
+
+class TestRunScriptWitnessRestrictsReads:
+    def test_sandbox_run_receives_restrict_reads_true(self, monkeypatch, tmp_path):
+        fake = _SandboxSpy([_completed(stdout=json.dumps(
+            {"status": "returned", "value": "1"}))])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: fake)
+
+        result = _run_script_witness(
+            _witness_spec(), "print('x')", suffix=".py",
+            cmd_prefix=[sys.executable],
+            target_root=tmp_path, timeout_s=5,
+            language="python",
+        )
+
+        assert result.verdict != "error"
+        assert len(fake.calls) == 1
+        _, kwargs = fake.calls[0]
+        assert kwargs["restrict_reads"] is True
+        assert kwargs["block_network"] is True
+
+
+class TestRunNativeBinaryRestrictsReads:
+    def test_sandbox_run_receives_restrict_reads_true(self, monkeypatch, tmp_path):
+        fake = _SandboxSpy([_completed(stdout=json.dumps(
+            {"status": "returned", "value": "1"}))])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: fake)
+        binary = tmp_path / "harness_bin"
+        binary.write_bytes(b"\x7fELF")
+
+        result = _run_native_binary(
+            _witness_spec(language="c", file="src/a.c"), binary, tmp_path, 5, "c",
+        )
+
+        assert result.verdict != "error"
+        assert len(fake.calls) == 1
+        _, kwargs = fake.calls[0]
+        assert kwargs["restrict_reads"] is True
+        assert kwargs["block_network"] is True
+
+
+class TestSandboxedCompileRestrictsReads:
+    def test_compile_receives_restrict_reads_true(self, tmp_path):
+        fake = _SandboxSpy([_completed()])
+        _sandboxed_compile(
+            fake, ["cc", "-o", "x", "x.c"],
+            target_root=tmp_path, work_dir=tmp_path,
+            caller_label="test-compile",
+        )
+
+        assert len(fake.calls) == 1
+        _, kwargs = fake.calls[0]
+        assert kwargs["restrict_reads"] is True
+        assert kwargs["block_network"] is True
+        # work_dir stays readable through tool_paths.
+        assert str(tmp_path) in kwargs["tool_paths"]
+
+
+class TestNoCallSiteOmitsRestrictReads:
+    """Structural check: no sandbox call site in the module omits
+    restrict_reads."""
+
+    def test_every_sandbox_run_call_passes_restrict_reads_true(self):
+        source = inspect.getsource(ex)
+        tree = ast.parse(source)
+        call_sites = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "sandbox_run"
+        ]
+        # _sandboxed_compile's inner call, the script witness, the
+        # native run, and the Java run step.
+        assert len(call_sites) >= 4
+        for call in call_sites:
+            kwargs = {kw.arg: kw.value for kw in call.keywords}
+            assert "restrict_reads" in kwargs, (
+                f"sandbox_run call at line {call.lineno} omits restrict_reads"
+            )
+            value = kwargs["restrict_reads"]
+            assert isinstance(value, ast.Constant) and value.value is True, (
+                f"sandbox_run call at line {call.lineno} must pass "
+                f"restrict_reads=True"
+            )
+
+
+class TestToolchainReadPaths:
+    def test_empty_binary_yields_no_paths(self):
+        assert _toolchain_read_paths(None) == []
+        assert _toolchain_read_paths("") == []
+
+    def test_python_interpreter_delegates_to_runtime_helper(self):
+        from core.sandbox.python_paths import python_runtime_tool_paths
+        assert _toolchain_read_paths(sys.executable) == (
+            python_runtime_tool_paths()
+        )
+
+    def test_never_grants_home_or_root(self, tmp_path, monkeypatch):
+        home = tmp_path / "home" / "user"
+        bin_dir = home / "bin"
+        bin_dir.mkdir(parents=True)
+        tool = bin_dir / "sometool"
+        tool.write_text("#!/bin/sh\n")
+        monkeypatch.setenv("HOME", str(home))
+
+        paths = _toolchain_read_paths(str(tool))
+        assert str(home) not in paths
+        assert "/" not in paths
+        # The narrow bin dir itself is acceptable; $HOME is not.
+        for p in paths:
+            assert p == str(bin_dir)
+
+    def test_system_prefix_binaries_need_no_extra_grant(self):
+        # /bin, /usr are already in the restricted read allowlist.
+        assert _toolchain_read_paths("/bin/sh") == []
+
+    def test_user_local_toolchain_root_granted(self, tmp_path):
+        root = tmp_path / "toolchains" / "x"
+        bin_dir = root / "bin"
+        bin_dir.mkdir(parents=True)
+        tool = bin_dir / "toolc"
+        tool.write_text("#!/bin/sh\n")
+
+        paths = _toolchain_read_paths(str(tool))
+        assert str(bin_dir) in paths
+        assert str(root) in paths
+
+
+class TestSourcePathContainment:
+    def test_traversal_file_is_rejected(self, tmp_path):
+        outside = tmp_path / "secret.py"
+        outside.write_text("def f():\n    return 1\n")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = execute_witness(
+            _witness_spec(file="../secret.py", finding_key="../secret.py:f"),
+            repo,
+        )
+        assert result.verdict == "error"
+        assert "escapes target root" in result.match_detail
+
+    def test_in_tree_missing_file_still_reports_not_found(self, tmp_path):
+        result = execute_witness(_witness_spec(file="src/missing.py"), tmp_path)
+        assert result.verdict == "error"
+        assert "not found" in result.match_detail
+
+
+class TestValidateSpecLanguageFallback:
+    def test_dangerous_builtin_caught_with_autodetected_language(self):
+        spec = _witness_spec(language="", function="eval")
+        err = validate_spec(spec)
+        assert err is not None
+        assert "dangerous builtin" in err
+
+    def test_explicit_language_still_caught(self):
+        spec = _witness_spec(language="python", function="eval")
+        err = validate_spec(spec)
+        assert err is not None
+        assert "dangerous builtin" in err

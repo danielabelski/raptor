@@ -2866,6 +2866,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             format_layer0_summary,
         )
         from .binary_layer0 import (
+            callees_from_source as layer0_callees,
             scan_function as layer0_scan,
         )
 
@@ -2874,7 +2875,18 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             src = _read_function_source(config.target_path, rec.file, rec.function)
             if not src:
                 continue
-            l0_findings = layer0_scan(rec.function, [], source=src, file=rec.file)
+            # Derive a coarse callee list from the source in hand —
+            # calls=[] silently disabled all six calls-based Layer-0
+            # checks (format string, buffer mismatch, unchecked
+            # return, TOCTOU, lock imbalance, missing clear) on this
+            # path, leaving only the source/instruction checks live.
+            _l0_ext = os.path.splitext(rec.file)[1].lower()
+            _l0_lang = {"": "c", ".c": "c", ".h": "c", ".cc": "cpp",
+                        ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+                        ".m": "objc"}.get(_l0_ext, "other")
+            l0_findings = layer0_scan(rec.function, layer0_callees(src),
+                                      source=src, file=rec.file,
+                                      language=_l0_lang)
             if l0_findings:
                 rec.binary_layer0_findings = l0_findings
                 l0_result.findings.extend(l0_findings)
@@ -6408,9 +6420,22 @@ def _run_audit_body(
     try:
         from .postcondition_verify import verify_postconditions
 
+        # Call graphs unlock the ordering/composition/completeness
+        # tier — every production call used to pass None here, so
+        # that whole tier had never executed. Same loader the
+        # compositional analyzer and sentinel collapse use; a load
+        # failure degrades to extraction-only, as before.
+        _pc_call_graphs = None
+        try:
+            from core.inventory.call_graph import load_call_graphs
+            _pc_call_graphs = load_call_graphs(config.target_path, None)
+        except Exception:
+            logger.debug("postcondition: call-graph load failed",
+                         exc_info=True)
         pc_result = verify_postconditions(
             gaps,
             taint_summary_results or {},
+            call_graphs=_pc_call_graphs,
         )
         if pc_result.violations:
             for v in pc_result.violations:
@@ -14818,7 +14843,7 @@ def _run_critique(
             if _check_sink_guarded_cached(
                     outcome.function, joern_server) == "guarded":
                 logger.info(
-                    "critique promotion blocked %s:%s — all sink calls "
+                    "critique promotion blocked %s:%s — all tested sink calls "
                     "guarded", outcome.file, outcome.function,
                 )
                 continue
@@ -16261,7 +16286,7 @@ def _promote_suspicious(
         if mech_tool:
             if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
                 logger.info(
-                    "sweep promotion blocked %s:%s via %s — all sink calls guarded",
+                    "sweep promotion blocked %s:%s via %s — all tested sink calls guarded",
                     outcome.file,
                     outcome.function,
                     mech_tool,
@@ -16401,7 +16426,7 @@ def _promote_suspicious(
                 continue
             if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
                 logger.info(
-                    "sweep promotion blocked %s:%s via %s — all sink calls guarded",
+                    "sweep promotion blocked %s:%s via %s — all tested sink calls guarded",
                     outcome.file,
                     outcome.function,
                     "+".join(confirmed),
@@ -16490,7 +16515,7 @@ def _synthesize_unmapped_suspicious(
         )
         logger.info(
             "on-demand synthesis promotion blocked %s:%s via %s — "
-            "all sink calls guarded",
+            "all tested sink calls guarded",
             outcome.file, outcome.function, synth.stamp,
         )
         return
@@ -17118,7 +17143,7 @@ def _promote_clean_refuted(
                     outcome.function, joern_server) == "guarded":
                 logger.info(
                     "refuted-hypothesis promotion blocked %s:%s via %s — "
-                    "all sink calls guarded",
+                    "all tested sink calls guarded",
                     outcome.file, outcome.function, "+".join(high_prec),
                 )
                 continue
@@ -17325,7 +17350,7 @@ def _dispatch_secondary_hypotheses(
                     outcome.function, joern_server) == "guarded":
                 logger.info(
                     "secondary-hypothesis promotion blocked %s:%s via %s — "
-                    "all sink calls guarded",
+                    "all tested sink calls guarded",
                     outcome.file, outcome.function, "+".join(high_prec),
                 )
                 continue
@@ -18931,8 +18956,17 @@ def _is_verification_evidence_for_gate(outcome: ReviewOutcome) -> bool:
     """
     ev = outcome.evidence_tool or ""
     if not ev:
+        # review["evidence_tool"] is the RAW LLM response — sanitize it
+        # so sentinels ("none", "manual") collapse to empty and free-form
+        # claims land under llm-claimed:, never as verification evidence.
+        # Per "+"-part: namespacing the joined string whole would leave
+        # parts after the first un-prefixed once the split below runs.
         review = outcome.review_result or {}
-        ev = review.get("evidence_tool", "")
+        raw = str(review.get("evidence_tool", "") or "")
+        ev = "+".join(
+            p for p in (_sanitize_llm_et(part.strip()) for part in raw.split("+"))
+            if p
+        )
     if not ev:
         return False
     from .pipeline import _is_verification_evidence

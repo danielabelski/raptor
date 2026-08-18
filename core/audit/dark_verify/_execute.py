@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -151,8 +152,11 @@ def validate_spec(spec: DarkWitnessSpec) -> str | None:
     """
     if not _IDENTIFIER_RE.match(spec.function):
         return f"invalid function name: {spec.function!r}"
-    if spec.language in ("python", "ruby", "php", "perl", "javascript", "typescript",
-                         "lua") and spec.function.lower() in _DANGEROUS_INTERP_FUNCS:
+    # Derive the language the same way execute_witness dispatches — a
+    # spec with language unset must not skip the interpreter check.
+    lang = spec.language or language_for_file(spec.file) or ""
+    if lang in ("python", "ruby", "php", "perl", "javascript", "typescript",
+                "lua") and spec.function.lower() in _DANGEROUS_INTERP_FUNCS:
         return f"dangerous builtin as function name: {spec.function!r}"
 
     lc = spec.lang_config
@@ -213,7 +217,23 @@ def execute_witness(
             match_detail=f"unsupported language: {lang or '(unknown)'}",
         )
 
+    # spec.file is documented as repo-relative; a traversal value
+    # ("../../...") would make the host-side source reads below (Go and
+    # Rust executors read the file unsandboxed and splice it into the
+    # compiled witness) pull in arbitrary operator files.
     source_file = target_root / spec.file
+    try:
+        contained = source_file.resolve().is_relative_to(
+            Path(target_root).resolve())
+    except OSError:
+        contained = False
+    if not contained:
+        return DarkVerifyResult(
+            finding_key=spec.finding_key,
+            verdict="error",
+            language=lang,
+            match_detail=f"source path escapes target root: {spec.file}",
+        )
     if not source_file.is_file():
         return DarkVerifyResult(
             finding_key=spec.finding_key,
@@ -387,6 +407,51 @@ def _sandbox_refusal_result(
     )
 
 
+_SYSTEM_TOOLCHAIN_PREFIXES = ("/usr/", "/lib/", "/lib64/", "/etc/", "/bin/", "/sbin/")
+
+
+def _toolchain_read_paths(binary: str | None) -> list[str]:
+    """Read-allowance roots for a toolchain binary under restrict_reads.
+
+    Every witness step runs with ``restrict_reads=True`` — on
+    Landlock-only hosts (no mount namespace) that flag is the only
+    thing keeping ``$HOME`` credentials out of reach of the untrusted
+    code, and witness stdout is echoed into match_detail and persisted,
+    so an unrestricted read is a straight exfil channel.  The
+    restricted allowlist covers the system prefixes (/usr, /lib, /etc,
+    ...) but not user-local toolchain installs (rustup, nvm, sdkman,
+    venvs).  For the running Python interpreter the canonical helper
+    knows the prefix layout; for anything else grant the resolved
+    binary's bin dir plus its parent (the runtime root holding the
+    sibling lib/ tree).  ``$HOME`` itself — or any ancestor of it — is
+    never granted: that would reopen the exact channel restrict_reads
+    closes.
+    """
+    if not binary:
+        return []
+    resolved = os.path.realpath(shutil.which(binary) or binary)
+    if resolved == os.path.realpath(sys.executable):
+        try:
+            from core.sandbox.python_paths import python_runtime_tool_paths
+        except ImportError:
+            return []
+        return python_runtime_tool_paths()
+    paths: list[str] = []
+    home = os.path.realpath(os.path.expanduser("~"))
+    bin_dir = os.path.dirname(resolved)
+    for cand in (bin_dir, os.path.dirname(bin_dir)):
+        if not cand or not os.path.isdir(cand):
+            continue
+        if any(cand == p.rstrip("/") or cand.startswith(p)
+               for p in _SYSTEM_TOOLCHAIN_PREFIXES):
+            continue
+        if cand in ("/", home) or home.startswith(cand + "/"):
+            continue
+        if cand not in paths:
+            paths.append(cand)
+    return paths
+
+
 def _sandboxed_compile(
     sandbox_run: Callable,
     compile_cmd: list[str],
@@ -401,7 +466,10 @@ def _sandboxed_compile(
     Network blocked, env sanitised (get_safe_env by default; a caller env
     is stripped of DANGEROUS_ENV_VARS via strict_env), reads/writes
     confined by the same policy as the run steps: toolchain + target_root
-    + the throwaway work_dir.
+    + the throwaway work_dir.  restrict_reads=True keeps $HOME unreadable
+    even on Landlock-only hosts where the mount namespace is unavailable
+    — the compile executes target-derived code, so it gets the read
+    restriction too.
     """
     kwargs: dict = {}
     if env is not None:
@@ -410,11 +478,12 @@ def _sandboxed_compile(
     return sandbox_run(
         compile_cmd,
         block_network=True,
+        restrict_reads=True,
         target=str(target_root),
         capture_output=True, text=True,
         timeout=_COMPILE_TIMEOUT_S,
         caller_label=caller_label,
-        tool_paths=[str(work_dir)],
+        tool_paths=[str(work_dir), *_toolchain_read_paths(compile_cmd[0])],
         **kwargs,
     )
 
@@ -456,11 +525,13 @@ def _run_script_witness(
         proc = sandbox_run(
             cmd_prefix + [str(script_file)],
             block_network=True,
+            restrict_reads=True,
             target=str(target_root),
             capture_output=True, text=True,
             timeout=timeout_s,
             caller_label=f"audit-dark-verify-{language}",
-            tool_paths=[str(script_dir)],
+            tool_paths=[str(script_dir),
+                        *_toolchain_read_paths(cmd_prefix[0])],
         )
 
         stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
@@ -547,6 +618,7 @@ def _run_native_binary(
     proc = sandbox_run(
         [str(binary)],
         block_network=True,
+        restrict_reads=True,
         target=str(target_root),
         capture_output=True, text=True,
         timeout=timeout_s,
@@ -1015,11 +1087,13 @@ def _execute_java(
             proc = sandbox_run(
                 run_cmd,
                 block_network=True,
+                restrict_reads=True,
                 target=str(target_root),
                 capture_output=True, text=True,
                 timeout=timeout_s,
                 caller_label="audit-dark-verify-java",
-                tool_paths=[str(work_dir)],
+                tool_paths=[str(work_dir),
+                            *_toolchain_read_paths(java_bin)],
             )
 
             stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]

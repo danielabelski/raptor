@@ -320,6 +320,7 @@ def generate_ts_harness(
 
     return textwrap.dedent(f"""\
         import * as path from 'path';
+        process.chdir({json.dumps(target_str)});
         let mod: any;
         try {{
             mod = require(path.resolve({json.dumps(target_str)}, {json.dumps(require_path)}));

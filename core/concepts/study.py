@@ -79,7 +79,11 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
                     key: Any = (
                         entry.get("acquire"), entry.get("release"),
                         entry.get("kind"),
-                    ) if attr == "paired_operations" else entry.get("name")
+                    ) if attr == "paired_operations" else (
+                        entry.get("name")
+                        or entry.get("field")
+                        or entry.get("field_or_macro")
+                    )
                 else:
                     key = entry
                 merged[key] = entry
@@ -100,6 +104,8 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
         auth_predicates=_merge_vocab("auth_predicates"),
         security_fields=_merge_vocab("security_fields"),
         fallibility_contracts=_merge_vocab("fallibility_contracts"),
+        resource_limits=_merge_vocab("resource_limits"),
+        state_fields=_merge_vocab("state_fields"),
     )
 
 
@@ -383,6 +389,14 @@ Include invariants about:
 - **Corrupted input escalation**: what an attacker gains if they \
   can corrupt the data structure (e.g. via DMA overwrite). Can they \
   achieve arbitrary read/write?
+- **Protocol-state relations**: when two state fields must satisfy \
+  an ordering relation for the protocol to be sound (an acknowledged \
+  counter never exceeding the sent counter, a window edge never \
+  regressing), state the relation IN LINEAR-ARITHMETIC FORM over the \
+  field names — `a <= b`, `a + len <= b` — in the `statement`, and \
+  quote the code or document that establishes it. A mechanical \
+  harness checks these per write site; prose-only relations cannot \
+  be checked.
 
 Do NOT produce trivial invariants ("pointer must not be NULL") or \
 formulaic restatements of state machine transitions ("X is serialised \
@@ -423,9 +437,13 @@ be resolved from the provided items, leave the entry out (or raise \
 it in `unresolved_references`).
 - `paired_operations`: acquire/release pairs — alloc/free \
   (kind `alloc`), lock/unlock (kind `lock`), refcount get/put \
-  (kind `refcount`), and async-callback register vs cancel — timer \
+  (kind `refcount`), async-callback register vs cancel — timer \
   arm/disarm, work-item queue/cancel, handler register/unregister \
-  (kind `callback`).
+  (kind `callback`), collection insert vs remove — list/queue/table \
+  add vs delete (kind `collection`), and verify-then-release — the \
+  call reporting whether decryption/authentication succeeded \
+  (acquire) vs the call handing data to the consumer (release) \
+  (kind `verify_release`).
 - `nullable_returns`: functions whose return value can be \
   NULL/None/error and must be checked before use.
 - `auth_predicates`: privilege/permission gate functions — the \
@@ -442,6 +460,14 @@ it in `unresolved_references`).
   `exception` (failure raises — the return value carries no error \
   signal). Only claim `can_fail: false` when the provided body \
   demonstrably cannot fail; when unsure, omit the entry.
+- `resource_limits`: fields or macros that bound a resource \
+  (MAX_*/quota/limit fields, capacity macros) plus what they apply \
+  to — only when both names literally appear in the items.
+- `state_fields`: protocol/lifecycle state variables, each with \
+  its authority (`local` = this endpoint computes it, `peer` = set \
+  from peer-supplied data, `derived`) and monotonicity \
+  (`increase`/`decrease`/`none`) when evident from the provided \
+  code.
 
 **Struct annotations**: cover EVERY struct in the focus items — \
 1-3 fields per struct, breadth first. Do not annotate 4 fields on \
@@ -920,7 +946,8 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
                                 "type": "string",
                                 "enum": [
                                     "alloc", "lock", "refcount",
-                                    "callback",
+                                    "callback", "collection",
+                                    "verify_release",
                                 ],
                             },
                             "note": {"type": "string"},
@@ -996,6 +1023,48 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
                             },
                         },
                         "required": ["name", "can_fail"],
+                    },
+                },
+                "resource_limits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field_or_macro": {"type": "string"},
+                            "applies_to": {
+                                "type": "string",
+                                "description": (
+                                    "The collection/resource this "
+                                    "limit bounds."
+                                ),
+                            },
+                        },
+                        "required": ["field_or_macro"],
+                    },
+                },
+                "state_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field": {"type": "string"},
+                            "struct": {"type": "string"},
+                            "authority": {
+                                "type": "string",
+                                "enum": ["local", "peer", "derived"],
+                            },
+                            "monotonic": {
+                                "type": "string",
+                                "enum": [
+                                    "increase", "decrease", "none",
+                                ],
+                            },
+                            "invariant_refs": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["field", "authority"],
                     },
                 },
             },
@@ -2103,6 +2172,70 @@ def _parse_api_vocabulary(
             entry["when"] = str(fc["when"])
         entries.append(entry)
 
+    bounds_signal = (
+        _names_in_signal(items, "bounds_guards")
+        | _names_in_signal(items, "clamping_patterns")
+        | _names_in_signal(items, "validation_bounds")
+    )
+    for lim in vocab_raw.get("resource_limits") or []:
+        if not isinstance(lim, dict):
+            continue
+        name = str(lim.get("field_or_macro") or "").strip()
+        if not name:
+            continue
+        if name not in universe:
+            _discard("resource_limits", name)
+            continue
+        tier = (
+            TIER_MECHANICAL if name in bounds_signal
+            else TIER_LLM_SUMMARIZED
+        )
+        entry = {
+            "class": "resource_limits",
+            "field_or_macro": name,
+            "provenance": tier,
+        }
+        if lim.get("applies_to"):
+            entry["applies_to"] = str(lim["applies_to"])
+        entries.append(entry)
+
+    state_signal = _names_in_signal(items, "state_transitions")
+    for sf in vocab_raw.get("state_fields") or []:
+        if not isinstance(sf, dict):
+            continue
+        name = str(sf.get("field") or "").strip()
+        authority = str(sf.get("authority") or "").lower()
+        if not name or authority not in ("local", "peer", "derived"):
+            continue
+        if name not in universe:
+            _discard("state_fields", name)
+            continue
+        # Field membership is verifiable; the authority/monotonicity
+        # classification is the LLM's judgement unless the field rode
+        # a mechanically extracted state-transition signal.
+        tier = (
+            TIER_MECHANICAL if name in state_signal
+            else TIER_LLM_SUMMARIZED
+        )
+        entry = {
+            "class": "state_fields",
+            "field": name,
+            "authority": authority,
+            "provenance": tier,
+        }
+        if sf.get("struct"):
+            entry["struct"] = str(sf["struct"])
+        if str(sf.get("monotonic") or "") in ("increase", "decrease",
+                                              "none"):
+            entry["monotonic"] = str(sf["monotonic"])
+        refs = [
+            str(r) for r in (sf.get("invariant_refs") or [])
+            if isinstance(r, str)
+        ]
+        if refs:
+            entry["invariant_refs"] = refs
+        entries.append(entry)
+
     return entries
 
 
@@ -2112,11 +2245,13 @@ def _assemble_vocabulary(
     list[dict[str, Any]], list[dict[str, Any]],
     list[dict[str, Any]], list[dict[str, Any]],
     list[dict[str, Any]],
+    list[dict[str, Any]], list[dict[str, Any]],
 ]:
-    """Dedup flat vocab entries into the five DomainModel lists.
+    """Dedup flat vocab entries into the seven DomainModel lists.
 
-    Keyed by (acquire, release, kind) for pairs and name for the name
-    classes; the higher provenance tier wins on collision
+    Keyed by (acquire, release, kind) for pairs and the entry name
+    (``name`` / ``field`` / ``field_or_macro``) for the name classes;
+    the higher provenance tier wins on collision
     (mechanical > llm_summarized).
     """
     from .receipts import tier_rank
@@ -2132,6 +2267,8 @@ def _assemble_vocabulary(
         "auth_predicates": {},
         "security_fields": {},
         "fallibility_contracts": {},
+        "resource_limits": {},
+        "state_fields": {},
     }
     for entry in entries:
         vclass = entry.get("class")
@@ -2145,7 +2282,11 @@ def _assemble_vocabulary(
                 entry.get("kind"),
             )
         else:
-            key = entry.get("name")
+            key = (
+                entry.get("name")
+                or entry.get("field")
+                or entry.get("field_or_macro")
+            )
         prior = bucket.get(key)
         bucket[key] = entry if prior is None else _better(prior, entry)
 
@@ -2155,6 +2296,8 @@ def _assemble_vocabulary(
         list(by_class["auth_predicates"].values()),
         list(by_class["security_fields"].values()),
         list(by_class["fallibility_contracts"].values()),
+        list(by_class["resource_limits"].values()),
+        list(by_class["state_fields"].values()),
     )
 
 
@@ -3264,6 +3407,8 @@ def run_study(
             model.auth_predicates,
             model.security_fields,
             model.fallibility_contracts,
+            model.resource_limits,
+            model.state_fields,
         ) = _assemble_vocabulary(vocab_entries)
         if on_progress:
             on_progress(
@@ -3273,7 +3418,9 @@ def run_study(
                 f"{len(model.auth_predicates)} auth predicates, "
                 f"{len(model.security_fields)} security fields, "
                 f"{len(model.fallibility_contracts)} fallibility "
-                f"contracts",
+                f"contracts, "
+                f"{len(model.resource_limits)} resource limits, "
+                f"{len(model.state_fields)} state fields",
             )
 
     out_path = output_dir / "domain-model.json"

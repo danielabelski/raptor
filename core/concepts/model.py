@@ -205,6 +205,12 @@ class DomainModel:
     #       zero_ok | boolean | exception). Consumed by
     #       core.audit.return_contracts as a return-check contract
     #       witness (mechanical tier ⇒ registry-grade).
+    #   resource_limits:   {field_or_macro, applies_to[, provenance]}
+    #   state_fields:      {field[, struct, authority, monotonic,
+    #                        invariant_refs, provenance, receipt]}
+    # resource_limits / state_fields are parsed channel-locally
+    # (resource_bounds / protocol_state) — deliberately NOT surfaced
+    # through DomainVocabulary.
     paired_operations: list[dict[str, Any]] = field(default_factory=list)
     nullable_returns: list[Any] = field(default_factory=list)
     auth_predicates: list[Any] = field(default_factory=list)
@@ -212,6 +218,8 @@ class DomainModel:
     fallibility_contracts: list[dict[str, Any]] = field(
         default_factory=list,
     )
+    resource_limits: list[Any] = field(default_factory=list)
+    state_fields: list[Any] = field(default_factory=list)
 
     # ----- persistence -------------------------------------------
 
@@ -282,6 +290,14 @@ class DomainModel:
             fallibility_contracts=[
                 p for p in _vocab_list("fallibility_contracts")
                 if isinstance(p, dict)
+            ],
+            resource_limits=[
+                r for r in _vocab_list("resource_limits")
+                if isinstance(r, dict)
+            ],
+            state_fields=[
+                s for s in _vocab_list("state_fields")
+                if isinstance(s, dict)
             ],
         )
 

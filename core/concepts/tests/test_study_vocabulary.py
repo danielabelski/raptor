@@ -109,6 +109,7 @@ class TestElicitationSurface:
             "paired_operations", "nullable_returns",
             "auth_predicates", "security_fields",
             "fallibility_contracts",
+            "resource_limits", "state_fields",
         }
         pair_props = props["paired_operations"]["items"]["properties"]
         assert "callback" in pair_props["kind"]["enum"]
@@ -271,7 +272,7 @@ class TestFallibilityContracts:
         )
 
     def test_assembly_and_model_round_trip(self, tmp_path):
-        _, _, _, _, fallible = _assemble_vocabulary(self._parse(
+        _, _, _, _, fallible, _, _ = _assemble_vocabulary(self._parse(
             {"name": "foo_send", "can_fail": True,
              "convention": "negative"},
         ))
@@ -298,7 +299,7 @@ class TestAssembly:
                 "kind": "permission", "provenance": TIER_MECHANICAL,
             },
         ]
-        _, _, auth, _, _ = _assemble_vocabulary(entries)
+        _, _, auth, _, _, _, _ = _assemble_vocabulary(entries)
         assert len(auth) == 1
         assert auth[0]["provenance"] == TIER_MECHANICAL
 
@@ -315,7 +316,7 @@ class TestAssembly:
                 "provenance": TIER_MECHANICAL,
             },
         ]
-        pairs, _, _, _, _ = _assemble_vocabulary(entries)
+        pairs, _, _, _, _, _, _ = _assemble_vocabulary(entries)
         assert len(pairs) == 2
 
 
@@ -328,6 +329,8 @@ class TestPersistence:
             model.auth_predicates,
             model.security_fields,
             model.fallibility_contracts,
+            model.resource_limits,
+            model.state_fields,
         ) = _assemble_vocabulary(
             _parse_api_vocabulary(_response(), _items())
         )
@@ -379,3 +382,103 @@ class TestPersistence:
             "auth_predicates", "security_fields",
         ):
             assert key in d
+
+
+class TestChannelVocabClasses:
+    """The five-channel programme's additive elicitation: collection /
+    verify_release pair kinds plus resource_limits / state_fields."""
+
+    def _items(self) -> list[StudyItem]:
+        return [
+            StudyItem(
+                id="func_conn_track",
+                kind="function",
+                name="conn_track",
+                file="net/conn.c",
+                line=5,
+                definition=(
+                    "void conn_track(struct port *p, struct conn *c)\n"
+                    "{\n    conn_list_add(p, c);\n}\n"
+                ),
+                calls=["conn_list_add", "conn_list_del"],
+                bounds_guards=["if (p->n_conns >= MAX_CONNS)"],
+                state_transitions=["highest_sent = pkt"],
+                fields=["highest_sent", "largest_acked_pkt", "n_conns"],
+            ),
+        ]
+
+    def test_prompt_and_schema_carry_new_classes(self):
+        for token in ("collection", "verify_release",
+                      "resource_limits", "state_fields"):
+            assert token in _SYSTEM_PROMPT, token
+        props = _RESPONSE_SCHEMA["properties"]["api_vocabulary"][
+            "properties"]
+        kinds = props["paired_operations"]["items"]["properties"][
+            "kind"]["enum"]
+        assert "collection" in kinds and "verify_release" in kinds
+        assert props["state_fields"]["items"]["required"] == [
+            "field", "authority",
+        ]
+
+    def test_parse_verifies_and_tiers_new_classes(self):
+        raw = {"api_vocabulary": {
+            "paired_operations": [
+                {"acquire": "conn_list_add", "release": "conn_list_del",
+                 "kind": "collection"},
+            ],
+            "resource_limits": [
+                {"field_or_macro": "MAX_CONNS",
+                 "applies_to": "n_conns"},
+                {"field_or_macro": "MAX_FROM_TRAINING"},
+            ],
+            "state_fields": [
+                {"field": "highest_sent", "authority": "local",
+                 "monotonic": "increase"},
+                {"field": "largest_acked_pkt", "authority": "peer"},
+                {"field": "not_in_items", "authority": "peer"},
+                {"field": "bad_authority", "authority": "wat"},
+            ],
+        }}
+        discards: list = []
+        entries = _parse_api_vocabulary(raw, self._items(), discards)
+        by_class: dict = {}
+        for e in entries:
+            by_class.setdefault(e["class"], []).append(e)
+        pair = by_class["paired_operations"][0]
+        assert pair["kind"] == "collection"
+        # MAX_CONNS rides the bounds_guards signal → mechanical.
+        lim = by_class["resource_limits"]
+        assert len(lim) == 1
+        assert lim[0]["field_or_macro"] == "MAX_CONNS"
+        assert lim[0]["provenance"] == TIER_MECHANICAL
+        sf = {e["field"]: e for e in by_class["state_fields"]}
+        # highest_sent rides state_transitions → mechanical; the
+        # peer-authority classification of largest_acked_pkt is the
+        # LLM's judgement.
+        assert sf["highest_sent"]["provenance"] == TIER_MECHANICAL
+        assert sf["highest_sent"]["monotonic"] == "increase"
+        assert sf["largest_acked_pkt"]["provenance"] == (
+            TIER_LLM_SUMMARIZED
+        )
+        assert "not_in_items" not in sf          # discarded: unverified
+        assert "bad_authority" not in sf         # invalid enum dropped
+        assert any(
+            d["id"] == "MAX_FROM_TRAINING" for d in discards
+        )
+
+    def test_model_round_trips_new_lists(self, tmp_path):
+        model = DomainModel(
+            target="net/",
+            resource_limits=[{"field_or_macro": "MAX_CONNS",
+                              "provenance": TIER_MECHANICAL}],
+            state_fields=[{"field": "highest_sent",
+                           "authority": "local",
+                           "provenance": TIER_MECHANICAL}],
+        )
+        path = tmp_path / "domain-model.json"
+        model.save(path)
+        loaded = DomainModel.load(path)
+        assert loaded.resource_limits[0]["field_or_macro"] == "MAX_CONNS"
+        assert loaded.state_fields[0]["field"] == "highest_sent"
+        merged = _merge_domain_models(DomainModel(), loaded)
+        assert merged.resource_limits and merged.state_fields

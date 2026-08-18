@@ -129,7 +129,7 @@ def _safe_int(value: Any, *, default: int) -> int:
 # after the helpers above rather than in the top import block; the
 # conditional SDK re-imports below depend on these flags at module
 # scope.
-from .detection import (  # noqa: E402
+from .detection import (
     ANTHROPIC_SDK_AVAILABLE,
     GENAI_SDK_AVAILABLE,
     OPENAI_SDK_AVAILABLE,
@@ -186,10 +186,12 @@ class StructuredResponse:
     provider: str = ""
     duration: float = 0.0
     cached: bool = False
-    # Token split + prompt-cache counters. Populated by LLMClient from
-    # per-call provider-counter deltas (the provider tracks totals via
-    # track_usage; the client diffs before/after the call), so they
-    # are best-effort: 0 when the provider surfaces no usage data.
+    # Token split + prompt-cache counters. Populated by the provider
+    # from the SDK response's per-call usage when available; the
+    # LLMClient falls back to aggregate provider-counter deltas ONLY
+    # when a provider returns no per-call figures (bare-tuple legacy
+    # paths) — counter deltas are racy under parallel workers, so
+    # they are best-effort: 0 when the provider surfaces no usage.
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -635,11 +637,22 @@ class LLMProvider(ABC):
             parsed = _coerce_to_schema(parsed, _normalize_schema(schema))
             validated = pydantic_model.model_validate(parsed)
             result_dict = validated.model_dump()
-            # Carry the resolved model from the underlying generate() call so
-            # the JSON-fallback path attributes correctly too.
+            # Carry the resolved model AND the per-call usage from the
+            # underlying generate() call so the JSON-fallback path
+            # attributes correctly too (usage was tracked by
+            # self.generate() — surfacing it here adds no double
+            # counting; the client stops diffing shared aggregate
+            # counters when per-call figures are present).
             return StructuredResponse(
                 result=result_dict,
                 raw=json.dumps(result_dict, indent=2),
+                cost=response.cost,
+                tokens_used=response.tokens_used,
+                duration=response.duration,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cache_read_tokens=response.cache_read_tokens,
+                cache_write_tokens=response.cache_write_tokens,
                 resolved_model=response.resolved_model,
             )
         except Exception as e:
@@ -1451,9 +1464,19 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
 
                 self._note_instructor_success()
+                # Per-call usage rides on the response — the client's
+                # aggregate-counter before/after diff multiply-books
+                # concurrent calls' spend under parallel workers (see
+                # the Anthropic provider's identical note).
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
+                    cost=cost,
+                    tokens_used=tokens_used,
+                    duration=duration,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
                     resolved_model=extract_resolved_model(completion),
                 )
 
@@ -2326,9 +2349,24 @@ class AnthropicProvider(LLMProvider):
                 )
 
                 self._note_instructor_success()
+                # Per-call usage rides on the response. The client
+                # previously re-derived it by diffing the provider's
+                # SHARED aggregate counters before/after the call —
+                # under parallel workers that delta swallows every
+                # concurrent call's spend and multiply-books the same
+                # money (observed live: a $38 run enforced as $85+ and
+                # terminated at 25/40 reviews). The exact figures are
+                # computed right here; return them.
                 return StructuredResponse(
                     result=result_dict,
                     raw=full_response,
+                    cost=cost,
+                    tokens_used=tokens_used,
+                    duration=duration,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                     resolved_model=extract_resolved_model(completion),
                 )
 

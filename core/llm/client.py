@@ -2596,6 +2596,33 @@ class LLMClient:
                                 provider, "total_cache_write_tokens",
                             ) - cwrite_before)
 
+                        # Exact per-call usage reported by the provider
+                        # takes precedence over the aggregate-counter
+                        # deltas above: the provider counters are SHARED
+                        # across parallel workers, so a before/after
+                        # diff swallows every concurrent call's spend
+                        # and multiply-books the same money into this
+                        # ledger (observed live: $38 of real spend
+                        # enforced as budget-exhausted, terminating a
+                        # run at 25/40 reviews with 62% of the cap
+                        # unspent). Deltas remain the fallback for
+                        # legacy providers that return no usage.
+                        _pc_cost = float(
+                            getattr(result_tuple, "cost", 0.0) or 0.0)
+                        _pc_tokens = int(
+                            getattr(result_tuple, "tokens_used", 0) or 0)
+                        if _pc_cost > 0 or _pc_tokens > 0:
+                            cost_delta = _pc_cost
+                            tokens_delta = _pc_tokens
+                            in_delta = int(getattr(
+                                result_tuple, "input_tokens", 0) or 0)
+                            out_delta = int(getattr(
+                                result_tuple, "output_tokens", 0) or 0)
+                            cread_delta = int(getattr(
+                                result_tuple, "cache_read_tokens", 0) or 0)
+                            cwrite_delta = int(getattr(
+                                result_tuple, "cache_write_tokens", 0) or 0)
+
                         # Reconcile reservation → actual. Skip the
                         # reservation cancel when cost-tracking is
                         # disabled (see ``generate`` for the rationale).

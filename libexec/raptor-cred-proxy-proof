@@ -48,6 +48,7 @@ if not (os.environ.get("CLAUDECODE")
 # fmt: on
 # ─── end trust-marker check ─────────────────────────────────
 
+import hashlib  # noqa: E402
 import argparse  # noqa: E402
 import json  # noqa: E402
 import re  # noqa: E402
@@ -227,9 +228,23 @@ def main() -> int:
             proxy_auth_token=token,
         )
         env_path = out_dir / "child-env.txt"
+
+        def _masked(value: str) -> str:
+            # The evidence dump proves which VARS the child received —
+            # never persist the live token value itself. Mask it with a
+            # fingerprint so the transcript stays verifiable.
+            if token and token in value:
+                digest = hashlib.sha256(token.encode()).hexdigest()[:12]
+                return value.replace(
+                    token, f"<masked sha256:{digest} len={len(token)}>"
+                )
+            return value
+
         with open(env_path, "w", encoding="utf-8") as fh:
-            fh.writelines(f"{k}={env[k]}\n" for k in sorted(env))
-        os.chmod(env_path, 0o600)  # carries the (scoped) minted token
+            fh.writelines(
+                f"{k}={_masked(str(env[k]))}\n" for k in sorted(env)
+            )
+        os.chmod(env_path, 0o600)
         offenders = sorted(k for k in env if _CRED_SHAPED.search(k))
         token_vars = sorted(
             k for k, v in env.items() if token and token in str(v)

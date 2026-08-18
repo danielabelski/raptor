@@ -61,6 +61,13 @@ jobs:
           uv venv $VENV_PATH
           source $VENV_PATH/bin/activate
           uv pip install -r requirements-dev.txt
+          # semgrep is deliberately NOT a requirements dep (optional
+          # tool, same as radare2/LLVM below), but the audit-pipeline
+          # slow tests exercise real sweeps: G2's receipt gate demands
+          # an EXECUTED confirmed sweep, so without the binary those
+          # tests can only skip. Installed here so the nightly keeps
+          # covering the sweep → record → report → feedback chain.
+          uv pip install semgrep==1.172.0
 
       - name: Install binary-analysis toolchain (radare2 + LLVM 21)
         continue-on-error: true

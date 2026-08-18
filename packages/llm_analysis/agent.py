@@ -15,6 +15,7 @@ import argparse
 import contextlib
 import json
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -1860,7 +1861,9 @@ class AutonomousSecurityAgentV2:
 
     def _stop_guard_dominance_server(self) -> None:
         if getattr(self, "_gd_server", None) is not None:
-            with contextlib.suppress(Exception):
+            # JoernServer.stop() can leak OSError from signalling and
+            # subprocess.TimeoutExpired from the post-SIGKILL wait.
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
                 self._gd_server.stop()
         self._gd_server = None
         self._gd_server_probed = False
@@ -2803,8 +2806,9 @@ class AutonomousSecurityAgentV2:
                             # one-stop ``suppressions.jsonl`` so an
                             # operator can ``jq`` / count instead of
                             # walking each per-finding annotation.
-                            # Best-effort; never blocks.
-                            with contextlib.suppress(Exception):
+                            # Best-effort on IO only; the callee
+                            # already swallows its own OSErrors.
+                            with contextlib.suppress(OSError):
                                 from core.analysis.reach_chokepoint import (
                                     record_suppression,
                                 )
@@ -2867,7 +2871,9 @@ class AutonomousSecurityAgentV2:
                                     "sage_verdict": prior["verdict"],
                                 }
                                 sage_fp_skipped_this = True
-                                with contextlib.suppress(Exception):
+                                # Best-effort on IO only; the callee
+                                # already swallows its own OSErrors.
+                                with contextlib.suppress(OSError):
                                     from core.analysis.reach_chokepoint import (
                                         record_suppression,
                                     )
@@ -2925,7 +2931,9 @@ class AutonomousSecurityAgentV2:
                                 "guard_dominance": gd_evidence,
                             }
                             gd_skipped_this = True
-                            with contextlib.suppress(Exception):
+                            # Best-effort on IO only; the callee
+                            # already swallows its own OSErrors.
+                            with contextlib.suppress(OSError):
                                 from core.analysis.reach_chokepoint import (
                                     record_suppression,
                                 )
@@ -2959,8 +2967,10 @@ class AutonomousSecurityAgentV2:
                     # RuleLibrary.record_match so graduation /
                     # retirement keeps tracking real-world precision
                     # (a scan hit judged FP must count against the
-                    # rule). Best-effort — never blocks analysis.
-                    with contextlib.suppress(Exception):
+                    # rule). Best-effort against manifest IO failures
+                    # — never blocks analysis; RuleLibrary handles
+                    # corrupt-manifest shapes itself.
+                    with contextlib.suppress(OSError):
                         self._record_graduated_rule_feedback(vuln)
 
                     # Track dataflow validation

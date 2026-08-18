@@ -680,16 +680,18 @@ def orchestrate(
     extra_str = f" ({', '.join(extras)})" if extras else ""
     print(f"\n  {n} finding{'s' if n != 1 else ''} → {model_label}{extra_str}")
 
-    # Best-effort ETA line — scorecard/estimator absence must never
-    # stall the dispatch itself.
-    with contextlib.suppress(Exception):
-        from core.run.estimator import estimate_from_scorecard, format_estimate
-        _sc_est = estimate_from_scorecard(
-            analysis_model_name or "", n, max_parallel=max_parallel,
-        )
-        _sc_line = format_estimate(_sc_est)
-        if _sc_line:
-            print(f"  {_sc_line}")
+    # Best-effort ETA line — estimate_from_scorecard returns None on
+    # every internal failure (missing/corrupt scorecard, too little
+    # history) and format_estimate maps None to "", so no suppression
+    # is needed: anything raising here is a wiring bug that should
+    # surface, not stall silently.
+    from core.run.estimator import estimate_from_scorecard, format_estimate
+    _sc_est = estimate_from_scorecard(
+        analysis_model_name or "", n, max_parallel=max_parallel,
+    )
+    _sc_line = format_estimate(_sc_est)
+    if _sc_line:
+        print(f"  {_sc_line}")
 
     # --- Build dispatch callable ---
     from core.security.prompt_defense_profiles import (
@@ -1683,8 +1685,12 @@ def orchestrate(
     if groups:
         print(f"  Cross-finding groups: {len(groups)}")
     if n_stability:
-        # Best-effort summary line — scorecard shape drift must never
-        # fail the merged-report write that follows.
+        # Best-effort summary line. Broad by design: the persisted
+        # scorecard (out/llm_scorecard.json) is external mutable state
+        # — an old-schema or hand-edited file legitimately surfaces as
+        # KeyError/TypeError/AttributeError from get_stats()/the
+        # events[] access, and shape drift must never fail the
+        # merged-report write that follows.
         with contextlib.suppress(Exception):
             from core.llm.scorecard.scorecard import EventType
             _stats = sc.get_stats() if sc else []

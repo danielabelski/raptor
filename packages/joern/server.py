@@ -119,6 +119,13 @@ def _jvm_gc_flags() -> list[str]:
     jdk = _java_version()
     if jdk is not None and 21 <= jdk < 24:
         flags.append("-J-XX:+ZGenerational")
+    if jdk is not None and jdk >= 25:
+        # JEP 519 (product in 25): 4-byte object headers. CPGs are
+        # node/edge-dense — per-object savings compound on exactly
+        # this workload. Verified compatible with the joern launcher
+        # on this JDK; the flag-set retry below is the safety net
+        # for JVMs that reject it.
+        flags.append("-J-XX:+UseCompactObjectHeaders")
     flags.append("-J-XX:+UseStringDeduplication")
     return flags
 
@@ -265,7 +272,8 @@ class JoernServer:
 
         heap_flags: list[str] = []
         if self._heap_mb is not None:
-            heap_flags.append(f"-J-Xms{self._heap_mb}m")
+            # Ceiling only — no -Xms pin (measured: no benefit at any
+            # scale, boot-fragile at very large heaps).
             heap_flags.append(f"-J-Xmx{self._heap_mb}m")
 
         # Attempt tuned GC flags first; if the JVM rejects them (flag
@@ -288,6 +296,9 @@ class JoernServer:
                 self._workdir = tempfile.mkdtemp(prefix="raptor-joern-ws-")
 
             cmd = [binary] + heap_flags + tuning_flags + [
+                # RAPTOR strips ANSI from every response anyway
+                # (_strip_ansi); emitting it just bloats payloads.
+                "--nocolors",
                 "--server",
                 "--server-host", "127.0.0.1",
                 "--server-port", str(self._port),

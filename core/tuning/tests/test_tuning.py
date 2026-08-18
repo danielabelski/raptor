@@ -404,3 +404,32 @@ class TestTuningFrozen(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestJoernHeapDeadZone:
+    """Proportional heap sizing must not land in the compressed-oops
+    dead zone (32-48 GiB): those heaps pay doubled references without
+    holding more objects than the 31 GiB compressed maximum."""
+
+    def _heap_for_total(self, total_mb, monkeypatch):
+        import core.tuning as t
+        monkeypatch.setattr(t, "_detect_total_ram_mb", lambda: total_mb)
+        return t._detect_joern_heap_mb()
+
+    def test_small_host_proportional(self, monkeypatch):
+        assert self._heap_for_total(64 * 1024, monkeypatch) == 16 * 1024
+
+    def test_dead_zone_clamps_down(self, monkeypatch):
+        # 25% of 160 GiB = 40 GiB — inside the dead zone.
+        assert self._heap_for_total(160 * 1024, monkeypatch) == 31 * 1024
+
+    def test_boundary_just_over_32g_clamps(self, monkeypatch):
+        assert self._heap_for_total(132 * 1024, monkeypatch) == 31 * 1024
+
+    def test_above_dead_zone_stays_proportional(self, monkeypatch):
+        # 25% of 495 GiB ≈ 124 GiB — raw capacity beats compressed.
+        total = 495 * 1024
+        assert self._heap_for_total(total, monkeypatch) == total // 4
+
+    def test_floor_untouched(self, monkeypatch):
+        assert self._heap_for_total(1024, monkeypatch) == 1024

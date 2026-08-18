@@ -290,7 +290,7 @@ class TestJoernServerZGCFlags:
         assert "-J-XX:+ZGenerational" in captured_cmd
         assert "-J-XX:+UseStringDeduplication" in captured_cmd
         assert "-J-Djava.util.concurrent.ForkJoinPool.common.parallelism=6" in captured_cmd
-        assert "-J-Xms8192m" in captured_cmd
+        assert "-J-Xms8192m" not in captured_cmd  # ceiling only, no Xms pin
         assert "-J-Xmx8192m" in captured_cmd
 
         self._safe_stop(srv)

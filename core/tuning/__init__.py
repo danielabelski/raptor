@@ -140,17 +140,38 @@ def _detect_fuzz_parallel() -> int:
     return _detect_half_cpu_parallelism()
 
 
+# Compressed-oops boundary: above ~32 GiB heaps HotSpot disables
+# UseCompressedOops (verified with -XX:+PrintFlagsFinal on this
+# JDK: true at -Xmx31g, false at -Xmx126916m) and every object
+# reference doubles to 8 bytes. A heap in the (32, ~48] GiB band is
+# strictly worse than 31 GiB: it pays the doubled references without
+# holding more objects than the compressed 31 GiB heap does. CPGs
+# are exactly the pointer-dense workload where this bites.
+_JOERN_OOPS_SAFE_MB = 31 * 1024          # stay under the 32 GiB flip
+_JOERN_OOPS_DEAD_ZONE_TOP_MB = 48 * 1024
+
+
 def _detect_joern_heap_mb() -> int:
-    """25% of system RAM, floor 1024 MB, no upper clamp.
+    """25% of system RAM, floor 1024 MB, compressed-oops-aware.
 
     -Xmx is a ceiling, not a reservation — the JVM commits only what
-    it uses — and RAPTOR runs a single Joern server per run, so a
-    proportional ceiling is safe. The former 4096 MB cap starved
-    CPG queries on large targets when the host had RAM to spare
-    (a 500 GB box was clamped to a laptop-sized heap).
+    it uses (measured: a 124 GiB -Xms/-Xmx pair held RSS at ~0.9 GiB
+    on an nginx-sized CPG) — and RAPTOR runs a single Joern server
+    per run, so a proportional ceiling is safe. The former 4096 MB
+    cap starved CPG queries on large targets when the host had RAM
+    to spare (a 500 GB box was clamped to a laptop-sized heap).
+
+    One exception: a proportional value landing in the compressed-
+    oops dead zone (see _JOERN_OOPS_SAFE_MB) is clamped DOWN to the
+    31 GiB compressed maximum — more effective capacity, not less.
+    Values above the dead zone keep the proportional size: there the
+    raw capacity genuinely exceeds what compressed 31 GiB can hold.
     """
     total_mb = _detect_total_ram_mb()
-    return max(1024, total_mb // 4)
+    heap = max(1024, total_mb // 4)
+    if _JOERN_OOPS_SAFE_MB < heap <= _JOERN_OOPS_DEAD_ZONE_TOP_MB:
+        return _JOERN_OOPS_SAFE_MB
+    return heap
 
 
 def _detect_inventory_workers() -> int:

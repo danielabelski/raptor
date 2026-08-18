@@ -227,7 +227,24 @@ def build_cpg(
     joern_parse = _joern_parse_path() or _JOERN_PARSE_BIN
     heap_flags: list = []
     if heap_mb is not None:
-        heap_flags = [f"-J-Xms{heap_mb}m", f"-J-Xmx{heap_mb}m"]
+        # Ceiling only — no -Xms pin. Measured: equal Xms/Xmx bought
+        # nothing (lazy commit keeps RSS at working-set size), it is
+        # boot-fragile at very large values, and the c2cpg frontend
+        # child (which inherits this Xmx via the driver's
+        # maxMemoryParameter forwarding) never receives Xms anyway.
+        heap_flags = [f"-J-Xmx{heap_mb}m"]
+    # JEP 519 compact object headers (product in JDK 25): per-object
+    # savings compound on the node-dense CPG the parse builds. Guarded
+    # JVM-side rather than by probing `java -version` — build_cpg must
+    # not spawn raw subprocesses (sandbox-purity contract), and
+    # IgnoreUnrecognizedVMOptions makes pre-25 JDKs skip the unknown
+    # flag instead of aborting startup. The Ignore flag only applies
+    # to flags AFTER it; our own flags are static and test-pinned, so
+    # its typo-masking cost is nil here.
+    heap_flags.extend([
+        "-J-XX:+IgnoreUnrecognizedVMOptions",
+        "-J-XX:+UseCompactObjectHeaders",
+    ])
     cmd = [joern_parse, *heap_flags, "--output", str(cpg_path), str(target)]
 
     if languages:

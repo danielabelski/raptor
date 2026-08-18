@@ -131,13 +131,21 @@ same repository.
 
 Implemented in `packages/codeql/database_manager.py`.
 
-**Buildless C/C++ (default).** C/C++ databases are created with
-`--build-mode=none`: the extractor parses source without invoking any
-build system, so no repo-controlled code executes during
+**Buildless C/C++ and Java (default).** C/C++ and Java databases are
+created with `--build-mode=none`: the extractor parses source without
+invoking any build system, so no repo-controlled code executes during
 `database create`. This is the untrusted-repo posture — a build
 system is repo code, and there is no mechanical signal that running
-it is safe. Requires CodeQL CLI >= 2.16; older CLIs get a clear skip,
-never a silent fallback to a traced build.
+it is safe. For Java it is also the only mode that works by
+construction: `database create` runs with the sandbox network
+blocked, so an autobuild that needs to fetch dependencies always
+fails, while buildless extraction proceeds with unresolved
+dependencies at reduced type fidelity. Version floors: CLI >= 2.16
+for C/C++, >= 2.16.4 for Java; older CLIs get a clear skip, never a
+silent fallback to a traced build. When an operator's explicit
+traced build (`--traced-build` / `--build-command`) fails for a
+buildless-capable language, one buildless retry runs with a loud
+degradation warning and a provenance note on the result.
 
 The trade-off is accuracy: buildless extraction cannot see
 build-generated headers (`config.h`, yacc/protobuf output), so TUs

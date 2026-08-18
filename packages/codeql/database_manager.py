@@ -41,19 +41,32 @@ from packages.codeql.tunables import CodeQLTunables
 logger = get_logger()
 
 # Languages whose databases are created with ``--build-mode=none``
-# (buildless extraction) BY DEFAULT.  For C/C++ a traced build runs the
-# target repo's build system — attacker-controlled code — so untrusted
-# repos must never trigger it implicitly.  Buildless extraction parses
-# the source without executing anything from the repo, removing the
-# repo-code-execution vector entirely.  Operators opt back into traced
-# builds explicitly (``--traced-build`` on the CLI, an explicit
-# ``--build-command``, or ``create_database(traced_build=True)``).
-BUILDLESS_DEFAULT_LANGUAGES = frozenset({"cpp"})
+# (buildless extraction) BY DEFAULT.  A traced build (and Java's
+# autobuild) runs the target repo's build system — attacker-controlled
+# code — so untrusted repos must never trigger it implicitly.
+# Buildless extraction parses the source without executing anything
+# from the repo, removing the repo-code-execution vector entirely.
+# For Java there is a second forcing constraint: ``database create``
+# runs with the sandbox network blocked, so an autobuild that needs to
+# fetch dependencies fails by construction; buildless extraction is
+# documented to proceed with unresolved dependencies (reduced type
+# fidelity, verified offline in a no-network namespace).  Operators
+# opt back into traced builds explicitly (``--traced-build`` on the
+# CLI, an explicit ``--build-command``, or
+# ``create_database(traced_build=True)``).
+BUILDLESS_DEFAULT_LANGUAGES = frozenset({"cpp", "java"})
 
-# ``codeql database create --build-mode=none`` for C/C++ requires
-# CodeQL CLI >= 2.16.  Older CLIs degrade to a clear skip, never a
-# crash and never a silent fallback to a traced build.
-BUILDLESS_CPP_MIN_VERSION = (2, 16)
+# Minimum CLI version for ``--build-mode=none`` per language.  Older
+# CLIs degrade to a clear skip, never a crash and never a silent
+# fallback to a traced build.  Java's buildless extractor stabilised
+# later than C/C++'s.
+BUILDLESS_MIN_VERSIONS = {
+    "cpp": (2, 16),
+    "java": (2, 16, 4),
+}
+
+# Back-compat alias — external callers referenced the cpp constant.
+BUILDLESS_CPP_MIN_VERSION = BUILDLESS_MIN_VERSIONS["cpp"]
 
 # Diagnostic messages the extractor emits when an #include could not
 # be resolved.  Matched loosely across CLI versions.
@@ -290,19 +303,31 @@ class DatabaseManager:
             logger.warning("Failed to get CodeQL version: %s", e)
             return None
 
-    def supports_buildless_cpp(self) -> tuple:
-        """Probe whether the CLI supports C/C++ ``--build-mode=none``.
+    def supports_buildless(self, language: str) -> tuple:
+        """Probe whether the CLI supports ``--build-mode=none`` for *language*.
 
         Returns ``(supported, detail)`` — ``detail`` is the version on
-        success, a human-readable reason on failure.  Requires CodeQL
-        CLI >= 2.16 (:data:`BUILDLESS_CPP_MIN_VERSION`).  Never raises;
-        an absent/unparseable CLI reads as unsupported so callers can
+        success, a human-readable reason on failure.  Version floors
+        come from :data:`BUILDLESS_MIN_VERSIONS`; a language absent
+        from that table reads as unsupported.  Never raises; an
+        absent/unparseable CLI reads as unsupported so callers can
         degrade with a clear skip instead of a crash.  Cached per
-        manager instance (the CLI doesn't change mid-run).
+        manager instance and language (the CLI doesn't change mid-run).
         """
-        cached = getattr(self, "_buildless_probe", None)
-        if cached is not None:
-            return cached
+        cache = getattr(self, "_buildless_probes", None)
+        if cache is None:
+            cache = self._buildless_probes = {}
+        if language in cache:
+            return cache[language]
+        min_version = BUILDLESS_MIN_VERSIONS.get(language)
+        if min_version is None:
+            result = (
+                False,
+                f"--build-mode=none has no supported version floor for "
+                f"language {language!r}",
+            )
+            cache[language] = result
+            return result
         version = self.get_codeql_version()
         if not version:
             result = (False, "CodeQL CLI version could not be determined")
@@ -312,19 +337,23 @@ class DatabaseManager:
             except ValueError:
                 result = (False, f"unparseable CodeQL version {version!r}")
             else:
-                if parts < BUILDLESS_CPP_MIN_VERSION:
+                if parts < min_version:
                     result = (
                         False,
                         (
                             f"CodeQL {version} < "
-                            f"{'.'.join(map(str, BUILDLESS_CPP_MIN_VERSION))} "
-                            "— C/C++ --build-mode=none unsupported"
+                            f"{'.'.join(map(str, min_version))} "
+                            f"— {language} --build-mode=none unsupported"
                         ),
                     )
                 else:
                     result = (True, version)
-        self._buildless_probe = result
+        cache[language] = result
         return result
+
+    def supports_buildless_cpp(self) -> tuple:
+        """Back-compat wrapper: :meth:`supports_buildless` for cpp."""
+        return self.supports_buildless("cpp")
 
     def compute_repo_hash(self, repo_path: Path) -> str:
         """
@@ -709,6 +738,59 @@ class DatabaseManager:
         except OSError:
             pass  # raced with another evictor; harmless
 
+    def _buildless_fallback(
+        self,
+        repo_path: Path,
+        language: str,
+        traced_build: bool,
+        *,
+        force: bool,
+        audit_run_dir: Path | None,
+        failed_errors: list,
+    ) -> "DatabaseResult | None":
+        """Retry a failed traced/autobuild create with ``--build-mode=none``.
+
+        Fires only when the failed attempt was an explicit traced build
+        for a language with buildless support — the buildless-default
+        path can never recurse (its attempts carry
+        ``traced_build=False``).  Returns the fallback's DatabaseResult,
+        or None when no fallback applies (caller returns its own
+        failure).  The fallback result carries a provenance note in
+        ``errors`` and the loud degradation warning in the run log —
+        a traced build the operator asked for silently downgrading
+        would misrepresent extraction fidelity.
+        """
+        if not traced_build or language not in BUILDLESS_DEFAULT_LANGUAGES:
+            return None
+        supported, detail = self.supports_buildless(language)
+        if not supported:
+            logger.warning(
+                "traced %s build failed and buildless fallback is "
+                "unavailable: %s", language, detail,
+            )
+            return None
+        logger.warning(
+            "traced %s build failed — falling back to buildless "
+            "extraction (--build-mode=none): build-generated code is "
+            "invisible and dependency types resolve best-effort. "
+            "Traced failure: %s",
+            language,
+            "; ".join(failed_errors[:2]) or "see extractor log",
+        )
+        result = self.create_database(
+            repo_path, language,
+            build_system=None,
+            force=force,
+            audit_run_dir=audit_run_dir,
+            traced_build=False,
+        )
+        result.errors.append(
+            f"buildless fallback: the traced {language} build failed "
+            "and extraction proceeded with --build-mode=none "
+            "(reduced fidelity)"
+        )
+        return result
+
     def create_database(
         self,
         repo_path: Path,
@@ -728,15 +810,20 @@ class DatabaseManager:
             build_system: Build system info (None for no-build mode)
             traced_build: Opt into traced-build extraction for
                 languages in :data:`BUILDLESS_DEFAULT_LANGUAGES`.
-                Default False: C/C++ databases are created with
-                ``--build-mode=none`` so an untrusted repo's build
-                scripts NEVER execute (any ``build_system`` command is
-                ignored with a log line).  Buildless C/C++ requires
-                CodeQL CLI >= 2.16 — older CLIs return a clear failed
-                DatabaseResult (graceful skip, no crash, no silent
-                traced fallback).  ``traced_build=True`` restores the
-                pre-existing traced path, which runs the repo build
-                under the sandbox — the operator asserts trust.
+                Default False: C/C++ and Java databases are created
+                with ``--build-mode=none`` so an untrusted repo's
+                build scripts NEVER execute (any ``build_system``
+                command is ignored with a log line).  Buildless needs
+                the per-language CLI floor in
+                :data:`BUILDLESS_MIN_VERSIONS` — older CLIs return a
+                clear failed DatabaseResult (graceful skip, no crash,
+                no silent traced fallback).  ``traced_build=True``
+                restores the traced path, which runs the repo build
+                under the sandbox — the operator asserts trust; when a
+                traced attempt for a buildless-capable language fails,
+                one buildless retry runs with a loud degradation
+                warning and provenance note (see
+                :meth:`_buildless_fallback`).
             audit_run_dir: When --audit is engaged, where the tracer
                 should drop the audit JSONL. Decoupled from output= so
                 Landlock writable_paths isn't restricted (codeql
@@ -857,10 +944,14 @@ class DatabaseManager:
             language in BUILDLESS_DEFAULT_LANGUAGES and not traced_build
         )
         if buildless:
-            supported, detail = self.supports_buildless_cpp()
+            supported, detail = self.supports_buildless(language)
             if not supported:
                 logger.error(
                     "✗ Buildless %s extraction unavailable: %s", language, detail,
+                )
+                _floor = BUILDLESS_MIN_VERSIONS.get(language)
+                _floor_txt = (
+                    '.'.join(map(str, _floor)) if _floor else "a newer release"
                 )
                 return DatabaseResult(
                     success=False,
@@ -871,7 +962,7 @@ class DatabaseManager:
                         (
                             f"buildless {language} extraction unavailable: "
                             f"{detail}. Upgrade the CodeQL CLI (>= "
-                            f"{'.'.join(map(str, BUILDLESS_CPP_MIN_VERSION))}) "
+                            f"{_floor_txt}) "
                             "or explicitly opt into traced-build mode "
                             "(--traced-build / --build-command) if the repo "
                             "is trusted — traced builds EXECUTE the repo's "
@@ -1070,8 +1161,20 @@ class DatabaseManager:
             if success and buildless:
                 # Degradation visibility: silently reduced coverage
                 # must not read as full coverage in the run log.
-                _hits, _summary = buildless_degradation_summary(staging_path)
-                (logger.warning if _hits else logger.info)("%s", _summary)
+                if language == "cpp":
+                    _hits, _summary = buildless_degradation_summary(staging_path)
+                    (logger.warning if _hits else logger.info)("%s", _summary)
+                else:
+                    # The include-diagnostic census is cpp-specific;
+                    # for other buildless languages state the generic
+                    # fidelity caveat instead of a misleading
+                    # "no degradation detected".
+                    logger.info(
+                        "Buildless %s extraction: build-generated code is "
+                        "invisible and dependency types resolve best-effort "
+                        "(no dependency fetch under the network-blocked "
+                        "sandbox)", language,
+                    )
 
             if not success:
                 errors.append(f"Database creation failed with exit code {result.returncode}")
@@ -1257,6 +1360,15 @@ class DatabaseManager:
             if did_promote:
                 self.save_metadata(metadata)
 
+            if not success:
+                fallback = self._buildless_fallback(
+                    repo_path, language, traced_build,
+                    force=force, audit_run_dir=audit_run_dir,
+                    failed_errors=errors,
+                )
+                if fallback is not None:
+                    return fallback
+
             return DatabaseResult(
                 success=success,
                 language=language,
@@ -1270,6 +1382,14 @@ class DatabaseManager:
         except subprocess.TimeoutExpired:
             errors.append(f"Database creation timed out after {RaptorConfig.CODEQL_TIMEOUT}s")
             logger.error("✗ Database creation timed out for %s", language)
+
+            fallback = self._buildless_fallback(
+                repo_path, language, traced_build,
+                force=force, audit_run_dir=audit_run_dir,
+                failed_errors=errors,
+            )
+            if fallback is not None:
+                return fallback
 
             return DatabaseResult(
                 success=False,

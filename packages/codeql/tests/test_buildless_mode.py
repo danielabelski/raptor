@@ -153,13 +153,24 @@ class TestBuildlessDefault:
         assert result.success
         assert "--build-mode=none" not in cmd
 
-    def test_non_cpp_keeps_build_command(self, db_manager, tmp_path):
+    def test_java_defaults_to_buildless(self, db_manager, tmp_path):
         result, cmd = _run_create(
             db_manager, tmp_path, language="java",
             build_system=_build_system(tmp_path, "mvn"),
         )
         assert result.success
+        assert "--build-mode=none" in cmd
+        assert "--command" not in cmd
+
+    def test_non_buildless_language_keeps_build_command(
+            self, db_manager, tmp_path):
+        result, cmd = _run_create(
+            db_manager, tmp_path, language="go",
+            build_system=_build_system(tmp_path, "go build ./..."),
+        )
+        assert result.success
         assert "--command" in cmd
+        assert "--build-mode=none" not in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -451,3 +462,143 @@ class TestTracedBuildTrustIndependence:
         ql, cc = self._run_main(tmp_path, [])
         assert ql is False
         assert cc is False
+
+
+# ---------------------------------------------------------------------------
+# Per-language probe + traced-failure buildless fallback
+# ---------------------------------------------------------------------------
+
+
+class TestSupportsBuildlessPerLanguage:
+    def _probe(self, db_manager, language, version):
+        with patch.object(db_manager, 'get_codeql_version',
+                          return_value=version):
+            return db_manager.supports_buildless(language)
+
+    def test_java_modern_cli_supported(self, db_manager):
+        supported, detail = self._probe(db_manager, "java", "2.26.3")
+        assert supported
+        assert detail == "2.26.3"
+
+    def test_java_exact_minimum_supported(self, db_manager):
+        supported, _ = self._probe(db_manager, "java", "2.16.4")
+        assert supported
+
+    def test_java_below_minimum_unsupported(self, db_manager):
+        supported, detail = self._probe(db_manager, "java", "2.16.3")
+        assert not supported
+        assert "java" in detail
+
+    def test_unknown_language_unsupported(self, db_manager):
+        supported, detail = self._probe(db_manager, "go", "2.26.3")
+        assert not supported
+        assert "go" in detail
+
+    def test_probe_cached_per_language(self, db_manager):
+        with patch.object(db_manager, 'get_codeql_version',
+                          return_value="2.26.3") as gv:
+            db_manager.supports_buildless("java")
+            db_manager.supports_buildless("java")
+            db_manager.supports_buildless("cpp")
+        assert gv.call_count == 2  # one probe per language, then cached
+
+    def test_java_in_buildless_defaults(self):
+        assert "java" in BUILDLESS_DEFAULT_LANGUAGES
+
+
+class TestBuildlessFallback:
+    def _run_with_failure_then_success(self, db_manager, tmp_path, *,
+                                       language, traced_build):
+        """First (traced) create fails; a buildless retry succeeds."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.stdout = ""
+            if "database" in cmd and "create" in cmd:
+                calls.append(list(cmd))
+                if "--build-mode=none" in cmd:
+                    r.returncode = 0
+                    r.stderr = "Finalizing database.\n"
+                else:
+                    r.returncode = 1
+                    r.stderr = "autobuild failed\n"
+            else:
+                r.returncode = 0
+                r.stderr = ""
+            return r
+
+        db_path = tmp_path / "db"
+        with patch('core.sandbox.run', side_effect=fake_run), \
+             patch.object(db_manager, 'get_codeql_version',
+                          return_value="2.26.3"), \
+             patch.object(db_manager, '_count_database_files',
+                          return_value=0), \
+             patch.object(db_manager, 'save_metadata'), \
+             patch.object(db_manager, '_salvage_creation_log',
+                          return_value=""), \
+             patch.object(db_manager, 'get_cached_database',
+                          return_value=None), \
+             patch.object(db_manager, 'compute_repo_hash',
+                          return_value='abc'), \
+             patch.object(db_manager, 'get_database_dir',
+                          return_value=db_path):
+            result = db_manager.create_database(
+                tmp_path, language,
+                _build_system(tmp_path, "mvn package"),
+                traced_build=traced_build,
+            )
+        return result, calls
+
+    def test_traced_java_failure_falls_back_to_buildless(
+            self, db_manager, tmp_path):
+        result, calls = self._run_with_failure_then_success(
+            db_manager, tmp_path, language="java", traced_build=True)
+        assert len(calls) == 2
+        assert "--command" in calls[0] or "--build-mode=none" not in calls[0]
+        assert "--build-mode=none" in calls[1]
+        assert result.success
+        assert any("buildless fallback" in e for e in result.errors)
+
+    def test_untraced_failure_never_recurses(self, db_manager, tmp_path):
+        # go is not buildless-capable: a plain failure returns failure,
+        # exactly one create attempt.
+        result, calls = self._run_with_failure_then_success(
+            db_manager, tmp_path, language="go", traced_build=False)
+        assert len(calls) == 1
+        assert not result.success
+
+    def test_fallback_skipped_below_version_floor(
+            self, db_manager, tmp_path):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.stdout = ""
+            r.stderr = "autobuild failed\n"
+            r.returncode = 1
+            if "database" in cmd and "create" in cmd:
+                calls.append(list(cmd))
+            return r
+
+        db_path = tmp_path / "db"
+        with patch('core.sandbox.run', side_effect=fake_run), \
+             patch.object(db_manager, 'get_codeql_version',
+                          return_value="2.16.3"), \
+             patch.object(db_manager, '_count_database_files',
+                          return_value=0), \
+             patch.object(db_manager, 'save_metadata'), \
+             patch.object(db_manager, '_salvage_creation_log',
+                          return_value=""), \
+             patch.object(db_manager, 'get_cached_database',
+                          return_value=None), \
+             patch.object(db_manager, 'compute_repo_hash',
+                          return_value='abc'), \
+             patch.object(db_manager, 'get_database_dir',
+                          return_value=db_path):
+            result = db_manager.create_database(
+                tmp_path, "java", _build_system(tmp_path, "mvn package"),
+                traced_build=True,
+            )
+        assert len(calls) == 1
+        assert not result.success

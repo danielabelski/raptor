@@ -84,6 +84,42 @@ def test_empty_report_states_no_findings(tmp_path: Path) -> None:
     assert "Dependencies analysed: **42**" in md
 
 
+def test_project_license_rendered_in_header(tmp_path: Path) -> None:
+    """The project's own manifest-declared license is a project-level
+    fact — it shows in the header, not on any per-dep row."""
+    md = render_markdown_report(
+        target=tmp_path,
+        deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[],
+        project_license="MIT",
+    )
+    assert "_Project license: `MIT`_" in md
+
+
+def test_project_license_line_omitted_when_unknown(tmp_path: Path) -> None:
+    md = render_markdown_report(
+        target=tmp_path,
+        deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[],
+    )
+    assert "Project license" not in md
+
+
+def test_project_license_defanged_in_header(tmp_path: Path) -> None:
+    """The license string comes from the scanned tree — hostile bytes
+    must not survive into the rendered report."""
+    md = render_markdown_report(
+        target=tmp_path,
+        deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[],
+        project_license="MIT\x1b[31mDANGER\x1b[0m",
+    )
+    assert "\x1b[" not in md
+
+
 def test_report_surfaces_parser_failures(tmp_path: Path) -> None:
     """Parser warnings (malformed pom.xml, broken Pipfile.lock,
     etc.) must show in report.md so operators don't mistake an

@@ -131,6 +131,7 @@ def render_markdown_report(
     cache_evictions: int | None = None,
     generated_at: datetime | None = None,
     parse_failures: Sequence = (),
+    project_license: str | None = None,
 ) -> str:
     """Return the full report as a single markdown string."""
     generated_at = generated_at or datetime.now(timezone.utc)
@@ -155,7 +156,8 @@ def render_markdown_report(
     )
 
     parts: list[str] = []
-    parts.append(_render_header(target, generated_at))
+    parts.append(_render_header(target, generated_at,
+                                project_license=project_license))
     parts.append(_render_summary(
         deps_analysed=deps_analysed,
         vuln_findings=sorted_vulns,
@@ -254,11 +256,24 @@ def write_markdown_report(path: Path, content: str) -> None:
 # Sections
 # ---------------------------------------------------------------------------
 
-def _render_header(target: Path, generated_at: datetime) -> str:
-    return (
+def _render_header(
+    target: Path,
+    generated_at: datetime,
+    *,
+    project_license: str | None = None,
+) -> str:
+    header = (
         f"# SCA Report — {target}\n\n"
         f"_Generated: {generated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}_\n"
     )
+    if project_license:
+        # The scanned project's OWN manifest-declared license — a
+        # project-level fact, never attached to per-dep rows. The
+        # value comes from the scanned tree, so it's defanged like
+        # any other target-controlled string.
+        spdx = sanitise_string(project_license, max_chars=120)
+        header += f"_Project license: `{spdx}`_\n"
+    return header
 
 
 def _render_summary(

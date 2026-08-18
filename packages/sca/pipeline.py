@@ -939,6 +939,12 @@ def run_sca(
 
     # 9. Write artefacts.
     progress.stage("emit")
+    # Project-level license: what the root manifest declares for the
+    # scanned project itself. Belongs on the SBOM metadata/root
+    # component and the report header — never on dep rows (those get
+    # registry-enriched licenses or stay None).
+    from .license import detect_project_license
+    project_license = detect_project_license(target)
     findings_path = output_dir / "findings.json"
     report_path = output_dir / "report.md"
     write_findings_json(
@@ -959,6 +965,7 @@ def run_sca(
         cache_misses=cache.misses,
         cache_evictions=cache.memo_evictions,
         parse_failures=parse_failures,
+        project_license=project_license,
     )
     write_markdown_report(report_path, md)
 
@@ -988,6 +995,7 @@ def run_sca(
         vuln_findings=vuln_findings,
         target_name=target.name,
         image_fingerprints=image_fingerprints or None,
+        project_license=project_license,
     )
 
     # Optional SPDX 2.3 SBOM alongside CycloneDX. Some compliance
@@ -1001,6 +1009,7 @@ def run_sca(
             output_dir / "sbom.spdx.json",
             deps=joined,
             target_name=target.name,
+            project_license=project_license,
         )
 
     # Re-read the rows we just wrote — SARIF emission consumes the
@@ -1447,9 +1456,10 @@ def _run_version_diff_review(client, canonical, supply_chain_findings, http, out
             source_kind=dep.source_kind,
         )
 
-        verdict = review_version_diff(client, old_dep, dep, http)
-        if verdict is None:
+        reviewed = review_version_diff(client, old_dep, dep, http)
+        if reviewed is None:
             continue
+        verdict, sink_changes = reviewed
 
         for f in supply_chain_findings:
             if f.dependency.key() == dep.key():
@@ -1459,6 +1469,8 @@ def _run_version_diff_review(client, canonical, supply_chain_findings, http, out
                     f.evidence["llm_version_diff_anomalies"] = [
                         a.model_dump() for a in verdict.anomalies
                     ]
+                if sink_changes:
+                    f.evidence["version_diff_sink_changes"] = sink_changes
         count += 1
 
     logger.info("sca.pipeline: LLM version-diff reviewed %d dep(s)", count)

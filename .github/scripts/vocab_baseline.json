@@ -1535,6 +1535,11 @@
   "count": 11,
   "kind": "literal"
  },
+ "packages/checker_synthesis/replay_sweep.py::summary_dict": {
+  "count": 10,
+  "kind": "literal",
+  "note": "structured summary-report field names (counts/paths for the variant-sweep summary.json), not name vocabulary \u2014 same class as the finding-dict field-name entries"
+ },
  "packages/coccinelle/runner.py::_COCCI_POS_VAR_DENY": {
   "count": 59,
   "kind": "literal"

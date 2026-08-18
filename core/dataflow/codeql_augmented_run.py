@@ -45,6 +45,12 @@ from pathlib import Path
 from typing import Any
 
 from core.config import RaptorConfig
+from core.dataflow.extension_pack import (
+    ExtensionPackResult,
+    ModelRow,
+    write_extension_pack,
+)
+from core.dataflow.finding_diff import FindingDiff, diff_sarif_files
 from packages.codeql.tunables import CodeQLTunables
 
 DEFAULT_TIMEOUT_SECONDS = 600
@@ -232,3 +238,70 @@ def run_baseline_and_augmented(
         runner=runner,
     )
     return baseline, augmented
+
+
+@dataclass(frozen=True)
+class LearnedModelsMeasurement:
+    """End-to-end outcome: pack emission + baseline/augmented runs + diff."""
+
+    pack: ExtensionPackResult
+    baseline: AnalysisResult
+    augmented: AnalysisResult
+    diff: FindingDiff
+
+    def to_dict(self) -> dict:
+        return {
+            "pack": self.pack.to_dict(),
+            "baseline_sarif": str(self.baseline.sarif_path),
+            "augmented_sarif": str(self.augmented.sarif_path),
+            "diff": self.diff.to_dict(),
+        }
+
+
+def run_learned_models_measurement(
+    db_path: Path,
+    queries: Sequence[str],
+    rows: Sequence[ModelRow],
+    *,
+    language: str,
+    out_dir: Path,
+    pack_name: str | None = None,
+    codeql_bin: str = DEFAULT_CODEQL_BIN,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    runner: RunnerFn | None = None,
+) -> LearnedModelsMeasurement:
+    """Vocab → pack → baseline/augmented runs → finding diff, end to end.
+
+    Emits the learned-model extension pack under ``out_dir/pack``,
+    runs the baseline and augmented analyses, and returns the
+    :class:`FindingDiff` alongside the emission result (whose
+    ``rejected`` list callers must surface — rejected rows are the
+    difference between "the models found nothing" and "the models
+    were never emitted").
+
+    Raises :class:`ValueError` when every input row was rejected:
+    an augmented run with an empty pack would measure nothing while
+    looking like a clean zero-suppression result.
+    """
+    pack = write_extension_pack(
+        rows, language=language, out_dir=Path(out_dir) / "pack",
+        pack_name=pack_name,
+    )
+    if pack.rows_written == 0:
+        raise ValueError(
+            "no model rows survived validation; rejected: "
+            + "; ".join(f"{r.row} ({r.reason})" for r in pack.rejected[:10])
+        )
+    baseline, augmented = run_baseline_and_augmented(
+        db_path,
+        queries,
+        pack.pack_dir,
+        Path(out_dir),
+        codeql_bin=codeql_bin,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
+    diff = diff_sarif_files(baseline.sarif_path, augmented.sarif_path)
+    return LearnedModelsMeasurement(
+        pack=pack, baseline=baseline, augmented=augmented, diff=diff,
+    )

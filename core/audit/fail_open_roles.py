@@ -184,7 +184,13 @@ SEED_EXEMPLARS: tuple[RoleAPI, ...] = (
             "tristate:1=ok,0=fail,-1=error", ("c", "cpp"), "seed_exemplar"),
 )
 
-# ── Tier B: framework hook mechanics (phase 1: Python frameworks) ───
+# ── Tier B: framework hook mechanics ────────────────────────────────
+# Registration mechanics only — decorator / annotation / signature /
+# implements-clause shapes, never per-project API name lists. Phase 1
+# shipped the Python frameworks; phase 2 adds Spring/Jakarta
+# filter+interceptor registration.
+
+TIER_B_HOOK_CAP = 16
 
 TIER_B_FRAMEWORK_HOOKS: tuple[FrameworkHook, ...] = (
     FrameworkHook(
@@ -203,6 +209,31 @@ TIER_B_FRAMEWORK_HOOKS: tuple[FrameworkHook, ...] = (
     FrameworkHook(
         "fastapi", "validation",
         r"\bDepends\s*\(|@(?:field_)?validator\b",
+    ),
+    # Spring method security (annotation mechanics) and filter /
+    # interceptor registration (extends / implements / hook-method
+    # signature mechanics).
+    FrameworkHook(
+        "spring", "auth",
+        r"@(?:PreAuthorize|PostAuthorize|Secured)\b",
+    ),
+    FrameworkHook(
+        "spring", "request_filter",
+        r"\bextends\s+(?:OncePerRequestFilter|GenericFilterBean)\b"
+        r"|\bimplements\s+HandlerInterceptor\b"
+        r"|\bboolean\s+preHandle\s*\(",
+    ),
+    # Jakarta/javax servlet filters + JSR-250 authorization
+    # annotations.
+    FrameworkHook(
+        "jakarta", "auth",
+        r"@(?:RolesAllowed|DenyAll|ServletSecurity)\b",
+    ),
+    FrameworkHook(
+        "jakarta", "request_filter",
+        r"@WebFilter\b"
+        r"|\bimplements\s+(?:jakarta\.servlet\.|javax\.servlet\.)?Filter\b"
+        r"|\bvoid\s+doFilter\s*\(",
     ),
 )
 
@@ -384,6 +415,12 @@ def registry_budget_violations() -> list[str]:
                 f"(cap {SEED_SET_CAP})",
             )
 
+    if len(TIER_B_FRAMEWORK_HOOKS) > TIER_B_HOOK_CAP:
+        violations.append(
+            f"TIER_B_FRAMEWORK_HOOKS has {len(TIER_B_FRAMEWORK_HOOKS)} "
+            f"entries (cap {TIER_B_HOOK_CAP}) — hook mechanics are a "
+            "bounded vocabulary; per-project names are Tier C (learned)",
+        )
     for hook in TIER_B_FRAMEWORK_HOOKS:
         try:
             re.compile(hook.pattern)

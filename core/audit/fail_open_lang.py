@@ -17,6 +17,14 @@ and C/C++ (ignored-return + tri-state comparison shapes on ts_extract
 / tree-sitter primitives, degrading to line-regex with the parser
 recorded on every result).
 
+Phase 2 adds Java (catch-clause outcomes: empty catch,
+catch-and-continue, swallowed checked exceptions, log-and-proceed —
+tree-sitter ``catch_clause`` bodies with caught-type resolution from
+the catch parameter). The Java leg has no regex fallback: a missing
+parser reports ``None`` and the channel returns
+``inconclusive("language-unsupported")`` rather than guessing at
+brace-delimited handler bodies.
+
 Suffix→language mapping is strictly
 ``core.inventory.languages.LANGUAGE_MAP`` — no new extension list
 (dedup wave-3 rule). Unsupported languages are the caller's problem:
@@ -34,9 +42,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Languages with a phase-1 analyzer. Grows per phase (Java/Go in
-# phase 2, JS/TS/Rust in phase 3).
-SUPPORTED_LANGUAGES = frozenset({"python", "c", "cpp"})
+# Languages with an analyzer. Grows per phase (JS/TS/Rust in
+# phase 3).
+SUPPORTED_LANGUAGES = frozenset({"python", "c", "cpp", "java"})
 
 # Handler outcome kinds (permissive unless noted).
 OUTCOME_PASS = "pass"
@@ -397,7 +405,7 @@ def python_function_raises(
 # ── C legs: tree-sitter primary, line-regex fallback ────────────────
 
 
-def _c_parser(language: str):
+def _ts_parser(language: str):
     try:
         from core.audit.condition_extraction import _get_parser
         return _get_parser(language)
@@ -587,7 +595,7 @@ def c_ignored_return_sites(
     function). tree-sitter primary; line-regex fallback with
     ``parser="regex"`` recorded on every site.
     """
-    parser = _c_parser(language)
+    parser = _ts_parser(language)
     if parser is not None:
         try:
             src = source.encode("utf-8", errors="replace")
@@ -766,7 +774,7 @@ def c_tristate_sites(
 ) -> list[CallSiteOutcome]:
     """Comparison-shape classification of every ``callee`` call for
     the tri-state contract leg (1=ok, 0=fail, -1=error)."""
-    parser = _c_parser(language)
+    parser = _ts_parser(language)
     if parser is not None:
         try:
             src = source.encode("utf-8", errors="replace")
@@ -794,7 +802,7 @@ def c_function_span(
 
     tree-sitter primary; brace-counting regex fallback.
     """
-    parser = _c_parser(language)
+    parser = _ts_parser(language)
     if parser is not None:
         try:
             src = source.encode("utf-8", errors="replace")
@@ -822,4 +830,380 @@ def c_function_span(
             if opened and depth <= 0:
                 return (idx, j + 1)
         return (idx, len(lines))
+    return None
+
+
+# ── Java handler-outcome analyzer (tree-sitter) ─────────────────────
+# Catch-clause classification mirrors the Python census port: the
+# same outcome vocabulary, computed from the java grammar's
+# catch_clause bodies. "Swallowed checked exception" is the channel's
+# Java-specific fallibility story (fail_open_verify._java_fallibility):
+# the type system forced the author to handle a declared-throws type
+# and the handler is reflexively empty.
+
+_JAVA_BROAD_TYPES = frozenset({"Exception", "Throwable", "RuntimeException"})
+_JAVA_LOUD_LOG_RE = re.compile(r"\.(?:error|severe|fatal|warn(?:ing)?)\s*\(")
+_JAVA_QUIET_LOG_RE = re.compile(
+    r"\.(?:debug|trace|info|config|fine|finer|finest|log)\s*\(",
+)
+_JAVA_ABORT_RE = re.compile(
+    r"\bSystem\.exit\s*\(|\.halt\s*\(",
+)
+_JAVA_PRINT_RE = re.compile(
+    r"\bprintStackTrace\s*\(|\bSystem\.(?:err|out)\b",
+)
+_JAVA_RESTRICTIVE_RETURNS = frozenset({"false", "null", "0", "-1", '""'})
+
+_JAVA_TRY_TYPES = ("try_statement", "try_with_resources_statement")
+_JAVA_FUNC_TYPES = ("method_declaration", "constructor_declaration")
+_JAVA_COMMENT_TYPES = ("line_comment", "block_comment", "{", "}")
+
+
+def _java_stmts(block) -> list:
+    """Named statement children of a block, comments excluded."""
+    if block is None:
+        return []
+    return [
+        c for c in block.children
+        if c.is_named and c.type not in _JAVA_COMMENT_TYPES
+    ]
+
+
+def _java_catch_types(clause, src: bytes) -> tuple[list[str], bool]:
+    """(caught type names, broad?) from the catch formal parameter
+    (union types ``A | B`` yield both names)."""
+    names: list[str] = []
+    for param in clause.children:
+        if param.type != "catch_formal_parameter":
+            continue
+        for child in param.children:
+            if child.type != "catch_type":
+                continue
+            for t in child.children:
+                if t.is_named:
+                    name = _ts_node_text(t, src)
+                    names.append(name.rsplit(".", 1)[-1])
+    broad = any(n in _JAVA_BROAD_TYPES for n in names)
+    return (names or ["<expr>"]), broad
+
+
+def _java_calls_in(node, src: bytes) -> list[str]:
+    """Dotted method-invocation names inside a node."""
+    calls: list[str] = []
+    stack = list(node.children) if node is not None else []
+    while stack:
+        cur = stack.pop()
+        if cur.type in ("method_invocation", "object_creation_expression"):
+            if cur.type == "method_invocation":
+                name_node = cur.child_by_field_name("name")
+                obj = cur.child_by_field_name("object")
+                name = _ts_node_text(name_node, src) if name_node else ""
+                if obj is not None and obj.type in (
+                        "identifier", "field_access"):
+                    name = f"{_ts_node_text(obj, src)}.{name}"
+            else:
+                type_node = cur.child_by_field_name("type")
+                name = (_ts_node_text(type_node, src)
+                        if type_node is not None else "")
+            if name:
+                calls.append(name)
+        stack.extend(cur.children)
+    return calls
+
+
+def _classify_java_catch(clause, src: bytes) -> tuple[str, str]:
+    """(outcome_kind, permissive_value) for one catch clause —
+    the census classification vocabulary on the Java grammar."""
+    block = clause.child_by_field_name("body")
+    text = _ts_node_text(clause, src)
+
+    def _has_descendant(node, node_type: str) -> bool:
+        stack = list(node.children) if node is not None else []
+        while stack:
+            cur = stack.pop()
+            if cur.type == node_type:
+                return True
+            # A nested try's throw still aborts this handler's
+            # continuation — do not descend past lambda bodies though.
+            if cur.type != "lambda_expression":
+                stack.extend(cur.children)
+        return False
+
+    if _has_descendant(block, "throw_statement"):
+        return OUTCOME_FAIL_CLOSED, "re-throws"
+    if _JAVA_ABORT_RE.search(text):
+        return OUTCOME_FAIL_CLOSED, "aborts"
+
+    stmts = _java_stmts(block)
+    if not stmts:
+        return OUTCOME_PASS, ""
+
+    returns = [s for s in stmts if s.type == "return_statement"]
+    if returns and all(s.type == "return_statement" for s in stmts):
+        ret = returns[0]
+        exprs = [c for c in ret.children if c.is_named]
+        value = _ts_node_text(exprs[0], src).strip() if exprs else ""
+        if value == "" or value in _JAVA_RESTRICTIVE_RETURNS:
+            return OUTCOME_FAIL_CLOSED, f"returns {value or '<void>'}"
+        if value == "true":
+            return OUTCOME_RETURN_PERMISSIVE, value
+        if ret and exprs and exprs[0].type in (
+                "decimal_integer_literal", "string_literal",
+                "character_literal",
+        ):
+            return OUTCOME_RETURN_PERMISSIVE, value
+        return OUTCOME_FALLBACK_ACTION, value
+
+    if _JAVA_LOUD_LOG_RE.search(text):
+        return OUTCOME_FALLBACK_ACTION, "loud-log-and-continue"
+    if _JAVA_PRINT_RE.search(text):
+        return OUTCOME_FALLBACK_ACTION, "prints-and-continues"
+
+    if all(s.type in ("continue_statement", "break_statement")
+           for s in stmts):
+        return OUTCOME_CONTINUE, ""
+    if _JAVA_QUIET_LOG_RE.search(text) and all(
+        s.type in ("expression_statement", "return_statement")
+        for s in stmts
+    ):
+        # Quiet log only (permissive returns alongside keep the
+        # quiet-log classification; restrictive ones were caught by
+        # the all-returns branch above only when the log is absent).
+        non_return = [s for s in stmts if s.type == "expression_statement"]
+        if all(
+            _JAVA_QUIET_LOG_RE.search(_ts_node_text(s, src))
+            for s in non_return
+        ):
+            return OUTCOME_QUIET_LOG_ONLY, ""
+
+    assigns = [
+        s for s in stmts
+        if s.type == "local_variable_declaration"
+        or (s.type == "expression_statement" and s.children
+            and s.children[0].type == "assignment_expression")
+    ]
+    if assigns and all(
+        s.type in ("expression_statement", "local_variable_declaration")
+        for s in stmts
+    ):
+        calls = [
+            s for s in stmts
+            if s.type == "expression_statement" and s.children
+            and s.children[0].type == "method_invocation"
+        ]
+        if calls:
+            return OUTCOME_FALLBACK_ACTION, "handler calls fallback code"
+        first = assigns[0]
+        value = ""
+        if first.type == "expression_statement" and first.children:
+            rhs = first.children[0].child_by_field_name("right")
+            value = _ts_node_text(rhs, src) if rhs is not None else ""
+        else:
+            decl = next(
+                (c for c in first.children
+                 if c.type == "variable_declarator"), None,
+            )
+            rhs = (decl.child_by_field_name("value")
+                   if decl is not None else None)
+            value = _ts_node_text(rhs, src) if rhs is not None else ""
+        return OUTCOME_ASSIGN_DEFAULT, value
+    return OUTCOME_FALLBACK_ACTION, "substantial handler body"
+
+
+def _java_enclosing_function(node, src: bytes) -> str:
+    cur = node.parent
+    while cur is not None:
+        if cur.type in _JAVA_FUNC_TYPES:
+            name_node = cur.child_by_field_name("name")
+            return _ts_node_text(name_node, src) if name_node else ""
+        cur = cur.parent
+    return ""
+
+
+def java_handlers(
+    source: str, file_path: str,
+) -> list[HandlerOutcome] | None:
+    """All classified catch clauses in a Java source file.
+
+    ``None`` when no tree-sitter java parser is available (the channel
+    reports ``language-unsupported`` — there is no honest regex
+    fallback for brace-delimited handler bodies); empty list when the
+    file has no handlers.
+    """
+    parser = _ts_parser("java")
+    if parser is None:
+        return None
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        logger.debug("fail_open_lang: java parse failed for %s",
+                     file_path, exc_info=True)
+        return None
+    lines = source.splitlines()
+    out: list[HandlerOutcome] = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type not in _JAVA_TRY_TYPES:
+            continue
+        body = node.child_by_field_name("body")
+        try_calls = _java_calls_in(body, src)
+        try_span = (
+            (body.start_point[0] + 1, body.end_point[0] + 1)
+            if body is not None else (_line_of(node), _line_of(node))
+        )
+        enclosing = _java_enclosing_function(node, src)
+        for clause in node.children:
+            if clause.type != "catch_clause":
+                continue
+            outcome_kind, value = _classify_java_catch(clause, src)
+            caught, broad = _java_catch_types(clause, src)
+            line = _line_of(clause)
+            snippet_end = min(clause.end_point[0] + 1, line + 2)
+            out.append(HandlerOutcome(
+                idiom=f"catch_{outcome_kind}",
+                file=file_path,
+                line=line,
+                caught=caught,
+                broad=broad,
+                outcome_kind=outcome_kind,
+                permissive_value=value,
+                evidence_snippet=" ".join(
+                    ln.strip() for ln in lines[line - 1:snippet_end]
+                ),
+                parser="tree-sitter",
+                enclosing_function=enclosing,
+                try_calls=try_calls,
+                try_span=try_span,
+            ))
+    return out
+
+
+def java_function_throws(source: str, function_name: str) -> list[str]:
+    """Exception types a same-file Java method declares (``throws``
+    clause) or raises (``throw new X``) — leg-2b fallibility evidence.
+
+    The declared-throws leg is the checked-exception story: the type
+    system forced every caller to handle these.
+    """
+    parser = _ts_parser("java")
+    if parser is None:
+        return []
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        return []
+    tail = function_name.rsplit(".", 1)[-1]
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type not in _JAVA_FUNC_TYPES:
+            continue
+        name_node = node.child_by_field_name("name")
+        if name_node is None or _ts_node_text(name_node, src) != tail:
+            continue
+        thrown: list[str] = []
+        for child in node.children:
+            if child.type != "throws":
+                continue
+            for t in child.children:
+                if t.is_named:
+                    thrown.append(
+                        _ts_node_text(t, src).rsplit(".", 1)[-1],
+                    )
+        inner = [node]
+        while inner:
+            cur = inner.pop()
+            inner.extend(cur.children)
+            if cur.type == "throw_statement":
+                for c in cur.children:
+                    if c.type == "object_creation_expression":
+                        type_node = c.child_by_field_name("type")
+                        if type_node is not None:
+                            thrown.append(_ts_node_text(
+                                type_node, src).rsplit(".", 1)[-1])
+        return list(dict.fromkeys(thrown))
+    return []
+
+
+def java_method_segment(source: str, function_name: str) -> str:
+    """Source of a Java method (annotations included — the node span
+    covers its modifiers) plus the enclosing class declaration header,
+    for Tier-B hook-mechanics matching (``implements Filter``,
+    ``@WebFilter``, ``@PreAuthorize`` live on the class or method)."""
+    parser = _ts_parser("java")
+    if parser is None:
+        return ""
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        return ""
+    tail = function_name.rsplit(".", 1)[-1]
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type not in _JAVA_FUNC_TYPES:
+            continue
+        name_node = node.child_by_field_name("name")
+        if name_node is None or _ts_node_text(name_node, src) != tail:
+            continue
+        segment = _ts_node_text(node, src)
+        cur = node.parent
+        while cur is not None and cur.type not in (
+                "class_declaration", "interface_declaration"):
+            cur = cur.parent
+        if cur is not None:
+            body = cur.child_by_field_name("body")
+            header_end = (body.start_byte if body is not None
+                          else cur.end_byte)
+            header = src[cur.start_byte:header_end].decode(
+                "utf-8", errors="replace",
+            )
+            segment = header.strip() + "\n" + segment
+        return segment
+    return ""
+
+
+def java_class_extends(source: str, type_name: str) -> str | None:
+    """Superclass name of a same-file Java class declaration, or
+    ``None`` when the type is not declared (or not subclassed) in this
+    file.
+
+    Used to decide whether a *specifically* caught exception type is
+    checked: ``catch (X e)`` around a try body compiles only when the
+    body can throw ``X`` — but only for checked ``X`` (javac rejects a
+    catch of a checked type nothing in the body throws). A same-file
+    ``class X extends Exception`` (not RuntimeException/Error) makes
+    the catch clause itself the fallibility witness.
+    """
+    parser = _ts_parser("java")
+    if parser is None:
+        return None
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        return None
+    tail = type_name.rsplit(".", 1)[-1]
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type != "class_declaration":
+            continue
+        name_node = node.child_by_field_name("name")
+        if name_node is None or _ts_node_text(name_node, src) != tail:
+            continue
+        for child in node.children:
+            if child.type == "superclass":
+                for t in child.children:
+                    if t.is_named:
+                        return _ts_node_text(t, src).rsplit(".", 1)[-1]
+        return None
     return None

@@ -65,6 +65,10 @@ from .fail_open_lang import (
     c_function_span,
     c_ignored_return_sites,
     c_tristate_sites,
+    java_class_extends,
+    java_function_throws,
+    java_handlers,
+    java_method_segment,
     language_for_path,
     python_function_raises,
     python_handlers,
@@ -506,6 +510,199 @@ def _run_python_check(
     return result
 
 
+# ── Java leg: catch-clause outcome ──────────────────────────────────
+
+
+def _java_fallibility(
+    handler: HandlerOutcome, source: str,
+) -> dict[str, Any] | None:
+    """Leg 2b for Java: evidence that the guarded region can throw.
+
+    Strongest form is the swallowed-checked-exception story: a callee
+    inside the try body *declares* (or raises) the very type the
+    handler catches — the type system forced the author to write this
+    handler and its body is permissive anyway. Broad catches accept
+    any call with the weaker ``any-call-under-broad-catch`` receipt.
+    """
+    caught = set(handler.caught)
+    line = handler.try_span[0] if handler.try_span else 0
+    for callee in handler.try_calls:
+        thrown = java_function_throws(source, callee)
+        if not thrown:
+            continue
+        declared_and_caught = set(thrown) & caught
+        if declared_and_caught:
+            return {
+                "callee": callee,
+                "line": line,
+                "evidence": "declared-throws",
+                "types": thrown,
+            }
+        if handler.broad:
+            return {
+                "callee": callee,
+                "line": line,
+                "evidence": "throws",
+                "types": thrown,
+            }
+    if handler.broad and handler.try_calls:
+        return {
+            "callee": handler.try_calls[0],
+            "line": line,
+            "evidence": "catchable: any-call-under-broad-catch",
+            "types": sorted(caught),
+        }
+    return None
+
+
+def _run_java_check(
+    source: str,
+    file_path: str,
+    function_name: str,
+    role_context: RoleContext,
+    inventory: dict[str, Any] | None,
+) -> FailOpenResult:
+    all_handlers = java_handlers(source, file_path)
+    if all_handlers is None:
+        return _inconclusive(
+            REASON_LANGUAGE_UNSUPPORTED,
+            "no tree-sitter java parser available — the Java leg has "
+            "no honest regex fallback for brace-delimited handlers",
+            language="java",
+        )
+    handlers = [
+        h for h in all_handlers
+        if _handler_in_function(h, function_name)
+    ]
+    if not handlers:
+        return _inconclusive(
+            REASON_HYPOTHESIS_UNBINDABLE,
+            f"no catch clause found in {function_name}",
+            language="java",
+        )
+
+    permissive = [h for h in handlers if h.is_permissive]
+    fail_closed = [h for h in handlers if h.is_fail_closed]
+    undecided = [
+        h for h in handlers
+        if not h.is_permissive and not h.is_fail_closed
+    ]
+
+    if not permissive:
+        if fail_closed and not undecided:
+            first = fail_closed[0]
+            return FailOpenResult(
+                outcome="refuted",
+                reason=(
+                    f"fail-closed handler(s) demonstrated: "
+                    f"{first.evidence_snippet} at {file_path}:"
+                    f"{first.line} ({first.permissive_value}); no "
+                    f"permissive handler present in {function_name}"
+                ),
+                rule_id=RULE_HANDLER_OUTCOME,
+                language="java",
+                handler=first.to_dict(),
+            )
+        first = undecided[0] if undecided else handlers[0]
+        return _inconclusive(
+            REASON_HANDLER_UNDECIDED,
+            f"handler at {file_path}:{first.line} does substantial "
+            f"fallback work ({first.permissive_value}) — outcome not "
+            "structurally decidable",
+            language="java",
+        )
+
+    segment = java_method_segment(source, function_name)
+    role: RoleEvidence | None = None
+    chosen: HandlerOutcome | None = None
+    for handler in permissive:
+        role = bind_role(
+            handler.try_calls,
+            function_name,
+            file_path,
+            language="java",
+            context=role_context,
+            enclosing_source=segment,
+        )
+        if role is not None:
+            chosen = handler
+            break
+    if role is None or chosen is None:
+        return _inconclusive(
+            REASON_ROLE_UNBOUND,
+            "could not bind a security role to the guarded region "
+            f"(calls: {', '.join(permissive[0].try_calls) or '<none>'})",
+            language="java",
+        )
+
+    fallible = _java_fallibility(chosen, source)
+    if fallible is None and chosen.try_calls and not chosen.broad:
+        # Checked-exception compilability witness: a specific catch of
+        # a checked type compiles only when the try body can throw it.
+        # Resolvable same-file as unchecked -> no witness; type not
+        # declared in this file -> its checkedness is unknowable here.
+        unresolved: list[str] = []
+        for caught_type in chosen.caught:
+            superclass = java_class_extends(source, caught_type)
+            if superclass is None:
+                if caught_type not in ("<expr>",):
+                    unresolved.append(caught_type)
+                continue
+            if superclass not in ("RuntimeException", "Error") \
+                    and superclass.endswith(("Exception", "Throwable")):
+                fallible = {
+                    "callee": chosen.try_calls[0],
+                    "line": chosen.try_span[0] if chosen.try_span else 0,
+                    "evidence": (
+                        f"checked-exception-catch:{caught_type} "
+                        "(the catch compiles only if the try body can "
+                        "throw it)"
+                    ),
+                    "types": [caught_type],
+                }
+                break
+        if fallible is None and unresolved:
+            return _inconclusive(
+                REASON_TYPES_UNRESOLVED,
+                f"caught type(s) {', '.join(unresolved)} not "
+                "resolvable in this file — cannot decide checked "
+                "(compilability witness) vs unchecked, and no "
+                "same-file callee declares them",
+                language="java",
+            )
+    if fallible is None:
+        return _inconclusive(
+            REASON_FALLIBILITY_UNRESOLVED,
+            "no throw-capable callee resolvable inside the try body "
+            "(no same-file declared-throws and the catch is not "
+            "broad) — a swallow around code that cannot throw is "
+            "vacuous",
+            language="java",
+        )
+
+    rule_id = _apply_role_grade(RULE_HANDLER_OUTCOME, role)
+    caught_desc = ", ".join(chosen.caught)
+    reason = (
+        f"{chosen.evidence_snippet or chosen.idiom} at "
+        f"{file_path}:{chosen.line} swallows {fallible['callee']} "
+        f"({caught_desc}) inside {role.kind}-role region; control "
+        f"proceeds as if the check passed"
+    )
+    result = FailOpenResult(
+        outcome="confirmed",
+        reason=reason,
+        rule_id=rule_id,
+        language="java",
+        role=role.to_dict(),
+        handler=chosen.to_dict(),
+        fallible=fallible,
+    )
+    result.reachability = _entry_reachability(
+        role_context, inventory, file_path, function_name,
+    )
+    return result
+
+
 # ── C legs: ignored return + tri-state ──────────────────────────────
 
 
@@ -768,7 +965,7 @@ def run_fail_open_check(
     if language is None or language not in SUPPORTED_LANGUAGES:
         return _inconclusive(
             REASON_LANGUAGE_UNSUPPORTED,
-            f"no phase-1 fail-open analyzer for "
+            f"no fail-open analyzer for "
             f"{language or Path(file_path).suffix or 'unknown'}",
             language=language or "",
         )
@@ -783,6 +980,10 @@ def run_fail_open_check(
 
     if language == "python":
         return _run_python_check(
+            source, file_path, function_name, ctx, inventory,
+        )
+    if language == "java":
+        return _run_java_check(
             source, file_path, function_name, ctx, inventory,
         )
     return _run_c_check(

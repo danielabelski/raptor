@@ -24,6 +24,7 @@ import pytest
 from core.audit.fail_open_lang import (
     c_ignored_return_sites,
     c_tristate_sites,
+    java_handlers,
     python_handlers,
 )
 from core.audit.fail_open_roles import (
@@ -45,6 +46,7 @@ from core.audit.fail_open_verify import (
     REASON_HYPOTHESIS_UNBINDABLE,
     REASON_LANGUAGE_UNSUPPORTED,
     REASON_ROLE_UNBOUND,
+    REASON_TYPES_UNRESOLVED,
     RULE_HANDLER_OUTCOME,
     RULE_IGNORED_RETURN,
     RULE_TRISTATE,
@@ -540,7 +542,7 @@ class TestCAnalyzers:
 
     def test_regex_fallback_when_parser_absent(self, monkeypatch):
         import core.audit.fail_open_lang as fol
-        monkeypatch.setattr(fol, "_c_parser", lambda lang: None)
+        monkeypatch.setattr(fol, "_ts_parser", lambda lang: None)
         sites = c_ignored_return_sites(self.IGNORED, "a.c", "setuid")
         assert sites and sites[0].verdict == "unguarded"
         assert sites[0].parser == "regex"
@@ -835,6 +837,305 @@ class TestVerdictsC:
         assert res.fallible is not None
         assert res.fallible["evidence"].startswith("wur:validate_tx")
         assert "TU" in res.fallible["evidence"]
+
+
+
+
+class TestJavaHandlerAnalyzer:
+    def test_empty_catch_classified(self):
+        src = (
+            "class A {\n"
+            "    void f(Request req) {\n"
+            "        try { authz.check(req); }\n"
+            "        catch (Exception e) { /* TODO */ }\n"
+            "    }\n"
+            "}\n"
+        )
+        handlers = java_handlers(src, "A.java")
+        assert handlers is not None and len(handlers) == 1
+        h = handlers[0]
+        assert h.outcome_kind == "pass"
+        assert h.broad is True
+        assert h.enclosing_function == "f"
+        assert "authz.check" in h.try_calls
+        assert h.parser == "tree-sitter"
+
+    def test_union_catch_types_resolved(self):
+        src = (
+            "class A {\n"
+            "    void f() {\n"
+            "        try { verify(); }\n"
+            "        catch (SignatureException | CertificateException e) "
+            "{}\n"
+            "    }\n"
+            "}\n"
+        )
+        h = java_handlers(src, "A.java")[0]
+        assert h.caught == ["SignatureException", "CertificateException"]
+        assert h.broad is False
+
+    def test_rethrow_is_fail_closed(self):
+        src = (
+            "class A {\n"
+            "    void f() {\n"
+            "        try { check(); }\n"
+            "        catch (AccessDeniedException e) "
+            "{ throw new SecurityException(e); }\n"
+            "    }\n"
+            "}\n"
+        )
+        h = java_handlers(src, "A.java")[0]
+        assert h.outcome_kind == "fail_closed"
+        assert h.permissive_value == "re-throws"
+
+    def test_return_true_is_permissive(self):
+        src = (
+            "class A {\n"
+            "    boolean f() {\n"
+            "        try { return acl.check(); }\n"
+            "        catch (LookupException e) { return true; }\n"
+            "    }\n"
+            "}\n"
+        )
+        h = java_handlers(src, "A.java")[0]
+        assert h.outcome_kind == "return_permissive"
+        assert h.permissive_value == "true"
+
+    def test_return_false_is_fail_closed(self):
+        src = (
+            "class A {\n"
+            "    boolean f() {\n"
+            "        try { return acl.check(); }\n"
+            "        catch (LookupException e) { return false; }\n"
+            "    }\n"
+            "}\n"
+        )
+        h = java_handlers(src, "A.java")[0]
+        assert h.outcome_kind == "fail_closed"
+
+    def test_quiet_log_only_classified(self):
+        src = (
+            "class A {\n"
+            "    void f() {\n"
+            "        try { verifier.verify(chain); }\n"
+            "        catch (CertificateException e) "
+            "{ LOG.debug(\"failed\", e); }\n"
+            "    }\n"
+            "}\n"
+        )
+        h = java_handlers(src, "A.java")[0]
+        assert h.outcome_kind == "quiet_log_only"
+
+    def test_loud_log_is_undecided(self):
+        src = (
+            "class A {\n"
+            "    void f() {\n"
+            "        try { verifier.verify(chain); }\n"
+            "        catch (CertificateException e) "
+            "{ LOG.error(\"failed\", e); }\n"
+            "    }\n"
+            "}\n"
+        )
+        h = java_handlers(src, "A.java")[0]
+        assert h.outcome_kind == "fallback_action"
+        assert not h.is_permissive
+        assert not h.is_fail_closed
+
+    def test_abort_is_fail_closed(self):
+        src = (
+            "class A {\n"
+            "    void f() {\n"
+            "        try { check(); }\n"
+            "        catch (Exception e) { System.exit(1); }\n"
+            "    }\n"
+            "}\n"
+        )
+        h = java_handlers(src, "A.java")[0]
+        assert h.outcome_kind == "fail_closed"
+        assert h.permissive_value == "aborts"
+
+    def test_parser_absent_returns_none(self, monkeypatch):
+        import core.audit.fail_open_lang as fol
+        monkeypatch.setattr(fol, "_ts_parser", lambda lang: None)
+        assert java_handlers("class A {}", "A.java") is None
+
+
+class TestVerdictsJava:
+    """Fixture pairs 5 (trust-manager) and 6 (filter catch-and-
+    continue) from the design, plus the swallowed-checked-exception
+    compilability witness."""
+
+    FILTER_VULN = (
+        "class AccessDeniedException extends Exception {}\n"
+        "public class AuthzFilter implements Filter {\n"
+        "    public void doFilter(ServletRequest req, "
+        "ServletResponse res, FilterChain chain) {\n"
+        "        try { authz.check(req); }\n"
+        "        catch (AccessDeniedException e) { /* TODO */ }\n"
+        "        chain.doFilter(req, res);\n"
+        "    }\n"
+        "}\n"
+    )
+    HYP_FILTER = (
+        "authorization failure swallowed by the empty catch; the "
+        "filter chain proceeds"
+    )
+
+    def test_filter_empty_catch_confirms_via_tier_b(self, tmp_path):
+        _write(tmp_path, "src/AuthzFilter.java", self.FILTER_VULN)
+        res = run_fail_open_check(
+            tmp_path, "src/AuthzFilter.java", "doFilter",
+            self.HYP_FILTER,
+        )
+        assert res.outcome == "confirmed"
+        assert res.rule_id == RULE_HANDLER_OUTCOME
+        assert res.role is not None
+        assert res.role["source"] == "framework_registry"
+        assert res.role["provenance"].startswith("tier_b:jakarta")
+        assert res.role["grade"] == "registry"
+        assert res.handler is not None
+        assert res.handler["outcome_kind"] == "pass"
+        # The checked-exception compilability witness: the catch of a
+        # same-file `extends Exception` type compiles only when the
+        # try body can throw it.
+        assert res.fallible is not None
+        assert res.fallible["evidence"].startswith(
+            "checked-exception-catch:AccessDeniedException",
+        )
+
+    def test_filter_rethrow_twin_refutes(self, tmp_path):
+        safe = self.FILTER_VULN.replace(
+            "{ /* TODO */ }", "{ throw new SecurityException(e); }",
+        )
+        _write(tmp_path, "src/AuthzFilter.java", safe)
+        res = run_fail_open_check(
+            tmp_path, "src/AuthzFilter.java", "doFilter",
+            self.HYP_FILTER,
+        )
+        assert res.outcome == "refuted"
+        assert res.handler is not None
+        assert res.handler["outcome_kind"] == "fail_closed"
+
+    TRUST_VULN = (
+        "public class ChainValidator {\n"
+        "    public boolean validate(X509Certificate[] chain) {\n"
+        "        try { checkValidity(chain); }\n"
+        "        catch (CertificateException e) "
+        "{ LOG.debug(\"cert check failed\", e); }\n"
+        "        return true;\n"
+        "    }\n"
+        "    void checkValidity(X509Certificate[] c) "
+        "throws CertificateException "
+        "{ throw new CertificateException(); }\n"
+        "}\n"
+    )
+    HYP_TRUST = (
+        "certificate validation fails open: the CertificateException "
+        "is swallowed with a debug log and the method returns true"
+    )
+
+    def test_trust_manager_quiet_log_confirms(self, tmp_path):
+        _write(tmp_path, "src/ChainValidator.java", self.TRUST_VULN)
+        out = _out_dir_with_spec(
+            tmp_path, "checkValidity", tier="xref_backed",
+        )
+        res = run_fail_open_check(
+            tmp_path, "src/ChainValidator.java", "validate",
+            self.HYP_TRUST, role_context=RoleContext(out_dir=out),
+        )
+        assert res.outcome == "confirmed"
+        assert res.rule_id == RULE_HANDLER_OUTCOME
+        assert res.handler is not None
+        assert res.handler["outcome_kind"] == "quiet_log_only"
+        # Swallowed checked exception: the callee DECLARES the very
+        # type the handler catches.
+        assert res.fallible is not None
+        assert res.fallible["evidence"] == "declared-throws"
+        assert "CertificateException" in res.fallible["types"]
+
+    def test_trust_manager_naming_only_is_detection_variant(
+        self, tmp_path,
+    ):
+        _write(tmp_path, "src/ChainValidator.java", self.TRUST_VULN)
+        res = run_fail_open_check(
+            tmp_path, "src/ChainValidator.java", "validate",
+            self.HYP_TRUST,
+        )
+        assert res.outcome == "confirmed"
+        assert res.rule_id == RULE_HANDLER_OUTCOME + "-naming"
+        assert is_detection_rule_id(res.rule_id)
+
+    def test_spring_preauthorize_binds_tier_b(self, tmp_path):
+        src = (
+            "public class OrderService {\n"
+            "    @PreAuthorize(\"hasRole('ADMIN')\")\n"
+            "    public void cancel(Order order) {\n"
+            "        try { doCancel(order); }\n"
+            "        catch (Exception e) { }\n"
+            "    }\n"
+            "    void doCancel(Order o) throws CancelException "
+            "{ throw new CancelException(); }\n"
+            "}\n"
+        )
+        _write(tmp_path, "src/OrderService.java", src)
+        res = run_fail_open_check(
+            tmp_path, "src/OrderService.java", "cancel",
+            "errors during the protected cancel operation are "
+            "swallowed by the broad catch and processing continues",
+        )
+        assert res.outcome == "confirmed"
+        assert res.role is not None
+        assert res.role["provenance"].startswith("tier_b:spring")
+
+    def test_unresolved_specific_catch_is_types_unresolved(
+        self, tmp_path,
+    ):
+        src = (
+            "public class AuthzFilter implements Filter {\n"
+            "    public void doFilter(ServletRequest req, "
+            "ServletResponse res, FilterChain chain) {\n"
+            "        try { authz.check(req); }\n"
+            "        catch (AccessDeniedException e) { /* TODO */ }\n"
+            "        chain.doFilter(req, res);\n"
+            "    }\n"
+            "}\n"
+        )
+        _write(tmp_path, "src/AuthzFilter.java", src)
+        res = run_fail_open_check(
+            tmp_path, "src/AuthzFilter.java", "doFilter",
+            self.HYP_FILTER,
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_TYPES_UNRESOLVED in res.reason
+        assert "AccessDeniedException" in res.reason
+
+    def test_no_catch_in_function_is_unbindable(self, tmp_path):
+        src = (
+            "class A {\n"
+            "    int f(int x) { return x + 1; }\n"
+            "}\n"
+        )
+        _write(tmp_path, "src/A.java", src)
+        res = run_fail_open_check(
+            tmp_path, "src/A.java", "f",
+            "auth check failure swallowed silently",
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_HYPOTHESIS_UNBINDABLE in res.reason
+
+    def test_parser_absent_is_language_unsupported(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.fail_open_lang as fol
+        monkeypatch.setattr(fol, "_ts_parser", lambda lang: None)
+        _write(tmp_path, "src/A.java", "class A {}")
+        res = run_fail_open_check(
+            tmp_path, "src/A.java", "f",
+            "auth check failure swallowed silently",
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_LANGUAGE_UNSUPPORTED in res.reason
+
 
 
 class TestCalibrationCases:

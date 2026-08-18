@@ -1580,24 +1580,16 @@ def review_one_function(
 
     # ── LLM review ────────────────────────────────────────────────────
     review_start = time.monotonic()
-    # Snapshot the client ledger so a failed attempt's spend (timeouts,
-    # exhausted retries — the client tracks each attempt's cost even
-    # when the call ultimately raises) is booked as failed-attempt cost
-    # instead of silently vanishing from every report while still
-    # counting against the budget. Best-effort attribution: with
-    # parallel workers the delta may include a concurrent call's spend;
-    # the end-of-run reconciliation against the client ledger keeps the
-    # aggregate exact.
-    _spend_before = (
-        (getattr(_budget_client, "total_cost", 0.0) or 0.0)
-        if _budget_client is not None else 0.0
-    )
-
-    def _failed_attempt_cost() -> float:
-        if _budget_client is None:
-            return 0.0
-        spent = getattr(_budget_client, "total_cost", 0.0) or 0.0
-        return max(0.0, spent - _spend_before)
+    # Failed attempts are counted (failed_calls) but carry NO per-call
+    # cost figure: the old client-ledger before/after snapshot booked
+    # every CONCURRENT worker's successful spend from the failure's
+    # wall-clock window as this function's "failed-attempt cost" —
+    # 8-way parallel runs multiply-booked the same money until the
+    # summary ledger showed ~9x real spend and the cap tripped with
+    # most of the budget unspent. Money genuinely consumed by failed
+    # attempts stays on the LLM client's provider ledger and surfaces
+    # once, at end-of-run reconciliation (_finalise_cost_ledger), as
+    # the unattributed residual.
 
     # Cross-model panels (--model A --model B) must reach the
     # multi-model branch regardless of --review-passes: gating the
@@ -1626,13 +1618,9 @@ def review_one_function(
         except Exception as exc:
             from core.llm.client import is_budget_exceeded_error
 
-            _attempt_cost = _failed_attempt_cost()
-            if _attempt_cost > 0:
-                result.cost_tracker.record_failed_attempt(
-                    "review", cost_usd=_attempt_cost,
-                )
-                with result._lock:
-                    result.failed_attempts_cost_usd += _attempt_cost
+            result.cost_tracker.record_failed_attempt(
+                "review", cost_usd=0.0,
+            )
             if is_budget_exceeded_error(exc):
                 # Budget exhaustion is terminal for the run, not a
                 # per-function error: re-raise so the executor stops
@@ -6242,7 +6230,14 @@ def _reconcile_cost_ledgers(config, result) -> None:
             )
     client = getattr(config, "llm_budget_client", None)
     if client is not None:
-        spent = float(getattr(client, "total_cost", 0.0) or 0.0)
+        # The provider ledger is the honest floor for money actually
+        # gone: it includes failed-attempt spend the client ledger
+        # deliberately does not book per-call (unattributable under
+        # parallel workers). max() never double-counts.
+        spent = max(
+            float(getattr(client, "total_cost", 0.0) or 0.0),
+            float(getattr(client, "provider_spend_usd", 0.0) or 0.0),
+        )
         result.cost_tracker.set_total_spend(spent)
     result.llm_spend_usd = result.cost_tracker.total_spend_usd
     if config.out_dir:

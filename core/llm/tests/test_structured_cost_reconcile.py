@@ -1,19 +1,24 @@
-"""Exception-path cost reconciliation in ``generate_structured``.
+"""Exception-path cost handling in ``generate_structured``.
 
 When a provider incurs cost and then raises (e.g. the JSON-fallback
-made a real API call before the parse failed), the client records the
-incurred cost and cancels the budget reservation. With cost tracking
-disabled no reservation was ever taken (``_acquire_budget`` is a
-no-op), so the cancellation must be skipped — the old code subtracted
-the reservation unconditionally, drifting ``total_cost`` low by $0.10
-per such failure.
+made a real API call before the parse failed), the client releases the
+budget reservation and books NOTHING into its own ledger: per-call
+attribution from the provider's shared aggregate counters is impossible
+under parallel workers (the before/after delta swallows every
+concurrent call's spend — a live 8-worker run multiply-booked ~9x its
+real spend and tripped the cap with most of the budget unspent).
+
+The genuinely-spent money is not lost: it stays on the provider's own
+ledger, which budget enforcement reads via
+``max(total_cost, provider_spend_usd)`` and end-of-run reconciliation
+surfaces as the unattributed residual.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from core.llm.client import _BUDGET_RESERVATION, LLMClient
+from core.llm.client import LLMClient
 from core.llm.config import LLMConfig, ModelConfig
 
 
@@ -48,29 +53,59 @@ def _client(*, cost_tracking: bool) -> tuple[LLMClient, _CostlyFailingProvider]:
     client = LLMClient(config)
     provider = _CostlyFailingProvider()
     client._get_provider = lambda model_config: provider
+    # Register the fake so the provider-ledger surface sees it (the
+    # _get_provider stub bypasses the caching dict).
+    client.providers["anthropic:test-model"] = provider
     return client, provider
 
 
 _SCHEMA = {"type": "object", "properties": {"x": {"type": "string"}}}
 
 
-def test_no_reservation_subtracted_when_cost_tracking_disabled():
+def test_failure_books_nothing_into_client_ledger():
     client, provider = _client(cost_tracking=False)
     with pytest.raises(RuntimeError):
         client.generate_structured("prompt", _SCHEMA)
     assert provider.calls == 1
-    # Only the incurred cost lands — no phantom reservation cancel
-    # (old behaviour: 0.05 - 0.10 = -0.05 per failure).
-    assert client.total_cost == pytest.approx(0.05)
+    # No per-call attribution on failure — the client ledger stays
+    # untouched (the old delta booking charged concurrent workers'
+    # spend to the failing call under parallelism).
+    assert client.total_cost == pytest.approx(0.0)
+    # The money is still visible on the provider-ledger surface.
+    assert client.provider_spend_usd == pytest.approx(0.05)
 
 
-def test_reservation_still_reconciled_when_cost_tracking_enabled():
+def test_reservation_released_and_provider_ledger_enforced():
     client, provider = _client(cost_tracking=True)
     with pytest.raises(RuntimeError):
         client.generate_structured("prompt", _SCHEMA)
     assert provider.calls == 1
-    # _acquire_budget pre-debited the reservation; the except path
-    # nets it back out and records the actual cost.
-    assert client.total_cost == pytest.approx(
-        _BUDGET_RESERVATION + (0.05 - _BUDGET_RESERVATION),
+    # The pre-debited reservation was released in full — total_cost
+    # returns to its pre-call value instead of stranding the hold or
+    # booking a phantom delta.
+    assert client.total_cost == pytest.approx(0.0)
+    assert client.provider_spend_usd == pytest.approx(0.05)
+
+
+def test_budget_enforcement_sees_failed_attempt_spend():
+    """is_budget_exhausted gates on the provider ledger, so money spent
+    by failed attempts still counts against the cap exactly once."""
+    config = LLMConfig(
+        primary_model=ModelConfig(
+            provider="anthropic", model_name="test-model", api_key="test-key",
+        ),
+        enable_caching=False,
+        enable_fallback=False,
+        enable_cost_tracking=True,
+        max_retries=1,
+        max_cost_per_scan=1.0,
     )
+    client = LLMClient(config)
+    provider = _CostlyFailingProvider()
+    client._get_provider = lambda model_config: provider
+    client.providers["anthropic:test-model"] = provider
+    assert not client.is_budget_exhausted(estimated_cost=0.5)
+    # Simulate failed-attempt spend accumulating on the provider only.
+    provider.total_cost = 0.9
+    assert client.total_cost == pytest.approx(0.0)
+    assert client.is_budget_exhausted(estimated_cost=0.5)

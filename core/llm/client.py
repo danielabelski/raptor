@@ -1704,6 +1704,39 @@ class LLMClient:
             - (getattr(self, "_budget_reserve", 0.0) or 0.0)
         )
 
+    @property
+    def provider_spend_usd(self) -> float:
+        """Spend recorded on THIS client's own provider instances.
+
+        Each provider's ``track_usage`` books every completed SDK call
+        — including calls whose result was later discarded (JSON parse
+        failures, schema violations, instructor retries). The client
+        ledger (``total_cost``) books only attributable outcomes, so
+        the provider ledger is the honest floor for "money actually
+        gone". Budget enforcement gates on the max of the two (see
+        ``_effective_spent_locked``)."""
+        with self._stats_lock:
+            providers = list(getattr(self, "providers", {}).values())
+        total = 0.0
+        for p in providers:
+            try:
+                total += float(getattr(p, "total_cost", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    def _effective_spent_locked(self) -> float:
+        """The spend figure budget checks gate on. Callers hold
+        _stats_lock (RLock — the provider-ledger read re-enters it).
+
+        ``total_cost`` carries attributable outcomes plus in-flight
+        reservations; the provider ledger carries every completed SDK
+        call including failed-attempt spend the client deliberately
+        does not book per-call (per-call attribution from shared
+        counters is impossible under parallel workers). The max of
+        the two never double-counts and misses neither surface."""
+        return max(self.total_cost, self.provider_spend_usd)
+
     def hold_budget_reserve(self, amount: float) -> float:
         """Hold back ``amount`` of the per-scan cap from ordinary
         dispatch.
@@ -1742,7 +1775,10 @@ class LLMClient:
             return True
 
         with self._stats_lock:
-            if self.total_cost + estimated_cost > self._effective_cap_locked():
+            if (
+                self._effective_spent_locked() + estimated_cost
+                > self._effective_cap_locked()
+            ):
                 self._log_budget_exceeded_locked(estimated_cost)
                 return False
 
@@ -1758,7 +1794,7 @@ class LLMClient:
             return False
         with self._stats_lock:
             return (
-                self.total_cost + estimated_cost
+                self._effective_spent_locked() + estimated_cost
                 > self._effective_cap_locked()
             )
 
@@ -1844,7 +1880,10 @@ class LLMClient:
             return True
 
         with self._stats_lock:
-            if self.total_cost + reservation > self._effective_cap_locked():
+            if (
+                self._effective_spent_locked() + reservation
+                > self._effective_cap_locked()
+            ):
                 self._log_budget_exceeded_locked(reservation)
                 return False
             self.total_cost += reservation
@@ -2547,32 +2586,26 @@ class LLMClient:
                                 prompt, schema, system_prompt, **kwargs,
                             )
                         except Exception:
-                            # The provider may have made an API call (e.g.
-                            # fallback called generate()) before the JSON
-                            # parse failed. Record any cost incurred so
-                            # tracking stays accurate.
-                            cost_delta = provider.total_cost - cost_before
-                            if cost_delta > 0:
-                                with self._stats_lock:
-                                    # Cancel the reservation only when
-                                    # one was actually taken — with
-                                    # cost tracking disabled
-                                    # _acquire_budget was a no-op, and
-                                    # subtracting here would drift
-                                    # total_cost low by the
-                                    # reservation per failed call
-                                    # (mirrors the success path below).
-                                    if self.config.enable_cost_tracking:
-                                        self.total_cost += cost_delta - reservation
-                                    else:
-                                        self.total_cost += cost_delta
-                                    self.request_count += 1
-                                    if task_type:
-                                        self.task_type_costs[task_type] = (
-                                            self.task_type_costs.get(task_type, 0.0) + cost_delta
-                                        )
-                            else:
-                                self._release_budget(reservation)
+                            # Release the reservation and book NOTHING.
+                            # The old path recorded the provider-counter
+                            # delta (total_cost - cost_before) as this
+                            # call's failed spend — but the counters are
+                            # SHARED across parallel workers, so a call
+                            # failing after a 6-minute timeout booked
+                            # every concurrent worker's spend from that
+                            # window into the enforced ledger a second
+                            # time (observed live: 11 timeouts booked
+                            # ~$26 each on a run whose real total spend
+                            # was $38, tripping the cap at 25/40
+                            # reviews). Money genuinely spent by a
+                            # failed attempt (e.g. the JSON fallback
+                            # completed an API call before the parse
+                            # failed) is already on the provider's own
+                            # ledger — budget enforcement reads
+                            # ``max(total_cost, provider_spend_usd)``
+                            # (see ``_effective_spent_locked``) so it
+                            # still counts, exactly once.
+                            self._release_budget(reservation)
                             raise
                         duration = time.monotonic() - t_start
 

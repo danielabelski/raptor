@@ -458,9 +458,6 @@
   "dead:dead_function:packages/exploit_feasibility/schema.py:validate_context_file": {
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
   },
-  "dead:dead_function:packages/source_intel/discovery.py:alias_is_curated": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_method:core/audit/checker_library.py:CheckerLibrary.active_checkers": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
@@ -576,12 +573,6 @@
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
   "dead:dead_method:packages/joern/server.py:JoernServer.run_taint_queries_batch": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/source_intel/analyze.py:SourceIntelResult.function_attrs": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_method:packages/source_intel/analyze.py:SourceIntelResult.function_has_kind": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
   "dead:dead_method:packages/web/client.py:WebClient.get_cookies": {

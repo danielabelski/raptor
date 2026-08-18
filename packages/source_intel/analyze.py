@@ -615,25 +615,11 @@ class SourceIntelResult:
         """Filter observations by attribute kind."""
         return tuple(a for a in self.attributes if a.kind == kind)
 
-    def function_attrs(self, name: str) -> tuple[AttributeEvidence, ...]:
-        """All attribute observations for a given function name."""
-        return tuple(a for a in self.attributes if a.function_name == name)
-
     def function_has_wur(self, name: str) -> AttributeEvidence | None:
         """Lookup: is function ``name`` annotated WUR? Returns first
         observation or None. Back-compat from Phase 2."""
         for a in self.attributes:
             if a.kind == KIND_WUR and a.function_name == name:
-                return a
-        return None
-
-    def function_has_kind(
-        self, name: str, kind: str,
-    ) -> AttributeEvidence | None:
-        """Generalised lookup — returns first observation of ``kind``
-        on function ``name``, or None."""
-        for a in self.attributes:
-            if a.kind == kind and a.function_name == name:
                 return a
         return None
 

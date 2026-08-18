@@ -676,6 +676,89 @@ class LLMProvider(ABC):
             )
             self.instructor_client = None
 
+    @staticmethod
+    def _instructor_exception_route(exc: Exception) -> str:
+        """Route an instructor-funnel failure by the failure taxonomy.
+
+        Returns ``"fallback"`` when the JSON-in-prompt fallback is a
+        sensible next step (shape/library failures — a different
+        sampling may succeed), or a boundary label (``"blocked"``,
+        ``"auth"``, ``"quota"``) for failures where instantly
+        re-sending the SAME payload is wasteful or harmful:
+
+        - refusals / content-filter blocks: a model boundary — an
+          identical re-send cannot change the outcome and burns money
+        - auth errors (401/403): every re-send fails identically
+        - rate limits (429): the client's retry loop applies backoff;
+          an instant fallback re-send hammers the limiter with zero
+          backoff
+
+        Boundary failures re-raise to the client's retry policy and do
+        NOT count toward the instructor-disable strike counter — they
+        say nothing about instructor's reliability.
+        """
+        from core.llm.structured_call import (
+            is_auth_error_text,
+            is_content_filter_text,
+        )
+        text = str(exc)
+        if is_content_filter_text(text):
+            return "blocked"
+        type_name = type(exc).__name__
+        lowered = text.lower()
+        # Quota before auth: AUTH_KEYWORDS_RE deliberately covers
+        # billing vocabulary ("quota", "rate limit"), so the
+        # rate-limit check must win for the label to be honest.
+        if (
+            getattr(exc, "status_code", None) == 429
+            or "RateLimitError" in type_name
+            or "429" in text
+            or "rate limit" in lowered
+            or ("quota" in lowered and "exceeded" in lowered)
+        ):
+            return "quota"
+        if "AuthenticationError" in type_name or is_auth_error_text(text):
+            return "auth"
+        return "fallback"
+
+    def _book_instructor_failure_usage(
+        self, exc: Exception, duration: float,
+    ) -> None:
+        """Book the spend of a failed instructor call.
+
+        A pydantic-validation failure happens AFTER a completed (paid)
+        API generation; instructor attaches the last completion to its
+        retry exceptions. Without this, the failed attempt's spend
+        reached neither ledger — the client books nothing on failure
+        and relies on the provider ledger as the failed-attempt floor.
+        Handles both OpenAI- and Anthropic-shaped usage objects; never
+        raises.
+        """
+        try:
+            completion = getattr(exc, "last_completion", None)
+            usage = getattr(completion, "usage", None)
+            if usage is None:
+                return
+            input_tokens = getattr(usage, "prompt_tokens", None)
+            if input_tokens is None:
+                input_tokens = getattr(usage, "input_tokens", 0)
+            output_tokens = getattr(usage, "completion_tokens", None)
+            if output_tokens is None:
+                output_tokens = getattr(usage, "output_tokens", 0)
+            input_tokens = int(input_tokens or 0)
+            output_tokens = int(output_tokens or 0)
+            if input_tokens <= 0 and output_tokens <= 0:
+                return
+            cost = self._calculate_cost_split(input_tokens, output_tokens, 0)
+            self.track_usage(
+                input_tokens + output_tokens, cost,
+                input_tokens, output_tokens, duration,
+            )
+        except Exception as book_exc:  # noqa: BLE001 — best-effort booking
+            logger.debug(
+                "instructor failure usage booking skipped: %s", book_exc,
+            )
+
     def _structured_fallback(self, prompt: str, schema: dict[str, Any],
                              pydantic_model, system_prompt: str | None = None,
                              timeout_s: float | None = None,
@@ -700,10 +783,17 @@ class LLMProvider(ABC):
         )
         response = self.generate(prompt, augmented_system, timeout_s=timeout_s)
         if response.finish_reason in ("max_tokens", "length"):
-            raise json.JSONDecodeError(
-                "Response truncated (output token limit reached)",
-                response.content[:200] if response.content else "",
-                0,
+            # RuntimeError, not json.JSONDecodeError: the client's
+            # retry loop treats JSON decode failures as retryable, but
+            # an identical retry at the same max_tokens re-truncates
+            # deterministically — up to max_retries paid calls for the
+            # same guaranteed failure. Non-retryable, matching the
+            # Gemini native structured truncation guard. The message
+            # keeps the "truncated (output token limit" phrasing the
+            # audit orchestrator's _classify_error keys on.
+            raise RuntimeError(
+                "Response truncated (output token limit reached, "
+                f"finish_reason={response.finish_reason})"
             )
         try:
             # Strip markdown fences via the shared hardened helper.
@@ -1510,6 +1600,7 @@ class OpenAICompatibleProvider(LLMProvider):
         # Try Instructor first (skip for Anthropic via OpenAI-compat — response_format is ignored)
         is_anthropic_compat = self.config.provider.lower() == "anthropic"
         if self.instructor_client is not None and not is_anthropic_compat:
+            t_start = time.monotonic()
             try:
                 messages = []
                 if system_prompt:
@@ -1572,6 +1663,22 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
 
             except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
+                # A completed-but-invalid generation still spent money.
+                self._book_instructor_failure_usage(
+                    e, time.monotonic() - t_start)
+                route = self._instructor_exception_route(e)
+                if route != "fallback":
+                    # Boundary failure (blocked/auth/quota): re-sending
+                    # the same payload via the JSON fallback is wasteful
+                    # (auth/refusal fail identically; 429 needs the
+                    # client's backoff, not an instant re-send). Not an
+                    # instructor strike either.
+                    logger.info(
+                        "Instructor failure routed to caller (%s) for "
+                        "%s/%s — skipping JSON fallback re-send",
+                        route, self.config.provider, self.config.model_name,
+                    )
+                    raise
                 self._note_instructor_failure(e)
 
         # Fallback: JSON-in-prompt
@@ -2433,6 +2540,7 @@ class AnthropicProvider(LLMProvider):
 
         # Try Instructor first
         if self.instructor_client is not None:
+            t_start = time.monotonic()
             try:
                 messages = [{"role": "user", "content": prompt}]
 
@@ -2519,6 +2627,9 @@ class AnthropicProvider(LLMProvider):
                 )
 
             except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
+                # A completed-but-invalid generation still spent money.
+                self._book_instructor_failure_usage(
+                    e, time.monotonic() - t_start)
                 refusal = _instructor_refusal_stop(e)
                 if refusal is not None:
                     # Hard refusal surfaced through the tool-use leg as
@@ -2534,6 +2645,17 @@ class AnthropicProvider(LLMProvider):
                         f"(stop_reason={refusal}, instructor tool-use "
                         "leg — tool args empty)"
                     ) from e
+                route = self._instructor_exception_route(e)
+                if route != "fallback":
+                    # Boundary failure (blocked/auth/quota): see the
+                    # OpenAI-shape funnel — no fallback re-send, no
+                    # instructor strike.
+                    logger.info(
+                        "Instructor failure routed to caller (%s) for "
+                        "%s/%s — skipping JSON fallback re-send",
+                        route, self.config.provider, self.config.model_name,
+                    )
+                    raise
                 self._note_instructor_failure(e)
 
         # Fallback: JSON-in-prompt
@@ -3457,6 +3579,26 @@ class GeminiProvider(LLMProvider):
                     "Gemini native structured response truncated "
                     f"(finish_reason={finish_reason}, "
                     f"output_tokens={output_tokens})"
+                )
+
+            # Safety/prohibited-content block: empty text with a
+            # blocking finish_reason previously fell through to
+            # json.loads("") → JSONDecodeError → silent JSON-in-prompt
+            # fallback re-send of the same payload (which usually
+            # blocks again — double spend). Raise with the "blocked
+            # response" phrasing so the failure classifies as blocked
+            # (non-retryable, own disposition), matching generate().
+            _blocked_reasons = (
+                "safety", "recitation", "blocked", "prohibited_content",
+                "other",
+            )
+            if not (response.text or "").strip() and (
+                finish_reason in _blocked_reasons
+            ):
+                raise RuntimeError(
+                    f"Gemini blocked response (finish_reason="
+                    f"{finish_reason}). This typically happens with "
+                    f"exploit code or attack scenario prompts."
                 )
 
             # Shared hardened fence-stripping (last-block preference

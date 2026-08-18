@@ -209,6 +209,10 @@ def from_labeled_attempt(la: LabeledAttempt) -> Optional[VerifiedOutcome]:
         when ``is_sound=True``). Reproducible.
       * ``web_evidence`` + ``outcome="success"`` → VERIFIED. NOT
         reproducible (live-HTTP point-in-time).
+      * ``web_evidence`` + ``outcome="reasoned_failure"`` +
+        ``response_evidence.refuted_by_control`` → REFUTED (the web
+        oracle's benign-control experiment showed the signal is page
+        noise).
       * Anything else → INCONCLUSIVE.
 
     Returns ``None`` for records that carry no oracle evidence at all
@@ -279,13 +283,27 @@ def from_labeled_attempt(la: LabeledAttempt) -> Optional[VerifiedOutcome]:
 
     if la.web_evidence is not None:
         we = la.web_evidence
+        # REFUTED requires BOTH the producer committing to a reasoned
+        # failure AND the evidence carrying a positive control
+        # refutation (the web oracle's benign-control legs showed the
+        # signal is page noise). A mere failed replay never sets the
+        # flag, so flakiness stays INCONCLUSIVE — matching the CodeQL
+        # branch's rule that REFUTED needs technical evidence, not
+        # just a non-success outcome.
+        refuted = (
+            la.outcome == "reasoned_failure"
+            and bool((we.response_evidence or {}).get("refuted_by_control"))
+        )
+        if la.outcome == "success":
+            web_status = OutcomeStatus.VERIFIED
+        elif refuted:
+            web_status = OutcomeStatus.REFUTED
+        else:
+            web_status = OutcomeStatus.INCONCLUSIVE
         return VerifiedOutcome(
             finding_id=la.finding_id,
             oracle=Oracle.WEB,
-            status=(
-                OutcomeStatus.VERIFIED if la.outcome == "success"
-                else OutcomeStatus.INCONCLUSIVE
-            ),
+            status=web_status,
             reproducible=False,  # live-HTTP point-in-time
             evidence={
                 "target_url": we.target_url,
@@ -491,6 +509,18 @@ def collect_outcomes(
                 outcomes.append(vo)
         if project_root is not None:
             for la in _safe_records(lambda: project_pool_path(project_root)):
+                vo = from_labeled_attempt(la)
+                if vo is not None:
+                    outcomes.append(vo)
+        # A run output directory may carry its own per-run pool
+        # (producers like the /web oracle write to
+        # <out_dir>/labeled_attempts). Read it unless it IS the
+        # project pool already read above.
+        if output_dir is not None and (
+            project_root is None
+            or Path(output_dir).resolve() != Path(project_root).resolve()
+        ):
+            for la in _safe_records(lambda: project_pool_path(output_dir)):
                 vo = from_labeled_attempt(la)
                 if vo is not None:
                     outcomes.append(vo)

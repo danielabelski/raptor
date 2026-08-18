@@ -40,12 +40,17 @@ class WebScanner:
         max_pages: int = 100,
         ffuf_config: FfufConfig | None = None,
         block_private_ips: bool = True,
+        verify_findings: bool = True,
+        max_verifications: int = 25,
     ):
         self.base_url = base_url
         self.llm = llm
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.ffuf_config = ffuf_config
+        self.verify_findings = verify_findings
+        self.max_verifications = max_verifications
+        self.reveal_secrets = reveal_secrets
 
         # Initialize components
         self.client = WebClient(
@@ -82,6 +87,7 @@ class WebScanner:
 
         # Phase 2: Intelligent Fuzzing
         fuzzing_findings = []
+        probe_contexts = []
 
         if self.fuzzer:
             logger.info("Phase 2: Intelligent Fuzzing")
@@ -108,6 +114,12 @@ class WebScanner:
                         vulnerability_types=['sqli', 'xss', 'command_injection']
                     )
                     fuzzing_findings.extend(findings)
+                    # Probe context (unredacted url + verb) pairs each
+                    # finding with what verification must replay; the
+                    # finding dict itself only carries the redacted url.
+                    probe_contexts.extend(
+                        (f, target_url, param, "GET") for f in findings
+                    )
 
             for form in self.crawler.discovered_forms:
                 method = form.get("method", "GET").upper()
@@ -123,8 +135,20 @@ class WebScanner:
                         method=method,
                     )
                     fuzzing_findings.extend(findings)
+                    probe_contexts.extend(
+                        (f, action, param_name, method) for f in findings
+                    )
         else:
             logger.warning("Phase 2: Skipping fuzzing (no LLM available)")
+
+        # Phase 2.5: mechanical verification of heuristic hits —
+        # replay + control differentials through the same scoped,
+        # rate-limited client. Findings are never dropped here;
+        # verification adds an evidence tier and LabeledAttempt
+        # records for raptor-verified-outcomes.
+        verification_summary = None
+        if self.verify_findings and probe_contexts:
+            verification_summary = self._verify_findings(probe_contexts)
 
         # Optional Phase 2b: explicit ffuf content discovery.
         ffuf_results = None
@@ -140,6 +164,8 @@ class WebScanner:
             'findings': fuzzing_findings,
             'total_vulnerabilities': len(fuzzing_findings),
         }
+        if verification_summary is not None:
+            report['verification'] = verification_summary
         if ffuf_results is not None:
             report['ffuf'] = ffuf_results
 
@@ -151,6 +177,79 @@ class WebScanner:
         logger.info("Report saved to %s", report_file)
 
         return report
+
+    def _verify_findings(self, probe_contexts: list) -> dict[str, Any]:
+        """Phase 2.5 — replay/control verification of heuristic hits.
+
+        Annotates each finding dict in place with a ``verification``
+        block, writes LabeledAttempt records for the run, and returns
+        the summary for the report. Soft by design: nothing is
+        dropped, and any per-finding failure degrades to
+        ``inconclusive``.
+        """
+        from packages.web.attempts import build_web_attempt, write_web_attempts
+        from packages.web.oracle import VerificationOracle
+
+        logger.info(
+            "Phase 2.5: Verifying %d heuristic finding(s) (cap %d)",
+            len(probe_contexts), self.max_verifications,
+        )
+        oracle = VerificationOracle(self.client)
+        counts = {"verified": 0, "refuted": 0, "inconclusive": 0, "skipped": 0}
+        attempts = []
+
+        for i, (finding, url, param, method) in enumerate(probe_contexts):
+            if i >= self.max_verifications:
+                finding['verification'] = {
+                    'status': 'skipped',
+                    'reason': 'per-run verification cap reached',
+                }
+                counts["skipped"] += 1
+                continue
+            result = oracle.verify(
+                url, param, finding.get('payload', ''),
+                finding.get('vulnerability_type', ''), method,
+            )
+            finding['verification'] = {
+                'status': result.status,
+                'evidence_type': result.evidence_type,
+                'reason': result.reason,
+                'requests_used': result.requests_used,
+            }
+            counts[result.status] = counts.get(result.status, 0) + 1
+            try:
+                attempts.append(build_web_attempt(
+                    url=url, param=param,
+                    payload=finding.get('payload', ''),
+                    vuln_type=finding.get('vulnerability_type', ''),
+                    method=method, result=result,
+                    reveal_secrets=self.reveal_secrets,
+                ))
+            except Exception:
+                logger.debug("labeled-attempt build failed", exc_info=True)
+
+        written = write_web_attempts(attempts, self.out_dir)
+        summary = dict(counts)
+        summary["requests_used"] = oracle.requests_used
+        summary["transport_errors"] = oracle.errors
+        summary["records_written"] = len(written)
+        if oracle.errors:
+            # Loud: an unreachable/flaky target means verification is
+            # partial — the operator must not read heuristic findings
+            # as oracle-checked.
+            logger.warning(
+                "Verification degraded: %d transport error(s); "
+                "%d finding(s) remain inconclusive/heuristic-tier",
+                oracle.errors, counts["inconclusive"],
+            )
+        logger.info(
+            "Verification: %d verified, %d refuted, %d inconclusive, "
+            "%d skipped (%d requests)",
+            counts["verified"], counts["refuted"],
+            counts["inconclusive"], counts["skipped"],
+            oracle.requests_used,
+        )
+        return summary
 
     def close(self) -> None:
         """Release the underlying HTTP client resources."""
@@ -248,6 +347,17 @@ Examples:
         action="store_true",
         help="Preserve secrets in web artifacts for local debugging; defaults to redaction",
     )
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip the replay/control verification pass on heuristic findings",
+    )
+    parser.add_argument(
+        "--max-verifications",
+        type=int,
+        default=25,
+        help="Maximum findings to verify per run; the rest are marked skipped (default: 25)",
+    )
     return parser
 
 
@@ -329,6 +439,8 @@ def main():
         max_depth=args.max_depth,
         max_pages=args.max_pages,
         ffuf_config=ffuf_config,
+        verify_findings=not args.no_verify,
+        max_verifications=args.max_verifications,
     )
 
     try:
@@ -340,6 +452,14 @@ def main():
         print(f"✓ Pages crawled: {results['discovery'].get('total_pages', 0)}")
         print(f"✓ Parameters found: {results['discovery'].get('total_parameters', 0)}")
         print(f"✓ Vulnerabilities found: {results['total_vulnerabilities']}")
+        verification = results.get('verification')
+        if verification:
+            print(
+                f"✓ Oracle verification: {verification['verified']} verified, "
+                f"{verification['refuted']} refuted, "
+                f"{verification['inconclusive']} inconclusive, "
+                f"{verification['skipped']} skipped"
+            )
         print(f"\n📁 Results saved to: {out_dir}")
         print(f"   - Crawl results: {out_dir}/crawl_results.json")
         print(f"   - Security report: {out_dir}/web_scan_report.json")

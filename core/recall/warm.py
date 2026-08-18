@@ -107,7 +107,20 @@ def apply_would_suppress(
     counted and attributed, never dropped.
     """
     malformed = sum(1 for r in records if r.get("_malformed"))
-    live = [r for r in records if not r.get("_malformed")]
+    # Only ENFORCEABLE verdicts score: sanitizer_dominated is the
+    # verdict class an enforcement flip would drop; candidate-tier
+    # records (sanitizer_candidate and any future hint kinds) are
+    # evidence for operators, not suppressions — counting them as
+    # would-suppress overstated both the FP reduction and, worse, the
+    # recall-damage number (observed: 108 phantom "damaged" true
+    # findings, every one a candidate hint). They surface separately
+    # as candidate_records.
+    live = [r for r in records
+            if not r.get("_malformed")
+            and str(r.get("verdict", "")) == "sanitizer_dominated"]
+    candidate_records = [r for r in records
+                         if not r.get("_malformed")
+                         and str(r.get("verdict", "")) != "sanitizer_dominated"]
 
     fp_suppressed: list[dict[str, Any]] = []
     fp_by_cwe_raw: Counter[str] = Counter()
@@ -159,6 +172,7 @@ def apply_would_suppress(
         "records_malformed": malformed,
         "raw_clean_region_fps": raw_fp,
         "would_suppress_fps": len(fp_suppressed),
+        "candidate_records": len(candidate_records),
         "warm_clean_region_fps": warm_fp,
         "per_cwe": per_cwe,
         "fp_suppressions": fp_suppressed,

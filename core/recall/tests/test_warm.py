@@ -103,3 +103,27 @@ class TestMatchedExpected:
         report = {"missed": [{"id": "B"}]}
         got = matched_expected_entries(report, expected)
         assert [e["id"] for e in got] == ["A"]
+
+
+def test_candidate_records_never_score_as_suppressions():
+    """sanitizer_candidate is evidence, not a suppression — it must
+    contribute to neither would-suppress nor recall damage."""
+    from core.recall.warm import apply_would_suppress
+    report = {"clean_region_fps": [
+        {"id": "T1", "cwe": "CWE-79",
+         "file": "src/T1.java", "line_start": None, "line_end": None},
+    ]}
+    rec = {"verdict": "sanitizer_candidate", "rule_id": "r",
+           "file_path": "/repo/src/T1.java", "line": 10,
+           "dropped": False}
+    matched = [{"id": "E1", "cwe": "CWE-79", "file": "src/T1.java",
+                "line_start": None, "line_end": None}]
+    warm = apply_would_suppress(report, [rec], matched_expected=matched)
+    assert warm["would_suppress_fps"] == 0
+    assert warm["true_finding_damage_count"] == 0
+    assert warm["candidate_records"] == 1
+    dominated = dict(rec, verdict="sanitizer_dominated")
+    warm2 = apply_would_suppress(report, [dominated],
+                                 matched_expected=matched)
+    assert warm2["would_suppress_fps"] == 1
+    assert warm2["true_finding_damage_count"] == 1

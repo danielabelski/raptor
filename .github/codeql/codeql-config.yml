@@ -42,6 +42,11 @@ paths-ignore:
   - core/llm/tests/**
   - core/git/tests/**
   - core/forensics/tests/**
+  # sandbox helpers_test.c sets directory permissions then calls
+  # validate_exec_target — inherently TOCTOU by test design.
+  # The write_file_mode TOCTOU is fixed (fchmod on fd), but the
+  # chmod→validate pairs are the test exercising the security check.
+  - core/sandbox/helpers/*_test*
   # Intentionally vulnerable testbeds used by /scan and /codeql self-tests
   # (python_sql_injection.py, javascript_xss.js, smt_codeql_testbench.c).
   - test/data/**

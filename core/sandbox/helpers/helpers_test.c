@@ -13,6 +13,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <pwd.h>
 #include <sched.h>
@@ -41,17 +42,24 @@ static int failures = 0;
 
 static void write_file_mode(const char *path, const char *content,
                             mode_t mode) {
-    FILE *f = fopen(path, "w");
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) {
+        fprintf(stderr, "harness: open(%s): %s\n", path, strerror(errno));
+        exit(1);
+    }
+    if (fchmod(fd, mode) != 0) {
+        fprintf(stderr, "harness: fchmod(%s): %s\n", path, strerror(errno));
+        close(fd);
+        exit(1);
+    }
+    FILE *f = fdopen(fd, "w");
     if (f == NULL) {
-        fprintf(stderr, "harness: fopen(%s): %s\n", path, strerror(errno));
+        fprintf(stderr, "harness: fdopen(%s): %s\n", path, strerror(errno));
+        close(fd);
         exit(1);
     }
     fputs(content, f);
     fclose(f);
-    if (chmod(path, mode) != 0) {
-        fprintf(stderr, "harness: chmod(%s): %s\n", path, strerror(errno));
-        exit(1);
-    }
 }
 
 

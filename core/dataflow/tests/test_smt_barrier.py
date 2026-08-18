@@ -482,9 +482,9 @@ def test_extract_java_with_throw():
 
 
 @pytest.mark.parametrize("line,expected_charset,expected_var", [
-    ("+return error unless name =~ /^[A-Za-z0-9_.+-]+$/", "A-Za-z0-9_.+-", "name"),
-    ("+raise ArgumentError unless slug =~ /^[a-z0-9]+$/", "a-z0-9", "slug"),
-    ("+raise 'bad' if name !~ /^[A-Za-z0-9]+$/", "A-Za-z0-9", "name"),
+    (r"+return error unless name =~ /\A[A-Za-z0-9_.+-]+\z/", "A-Za-z0-9_.+-", "name"),
+    (r"+raise ArgumentError unless slug =~ /\A[a-z0-9]+\z/", "a-z0-9", "slug"),
+    (r"+raise 'bad' if name !~ /\A[A-Za-z0-9]+\z/", "A-Za-z0-9", "name"),
 ])
 def test_extract_ruby_guard_and_exit(line, expected_charset, expected_var):
     diff = line + "\n"
@@ -492,6 +492,32 @@ def test_extract_ruby_guard_and_exit(line, expected_charset, expected_var):
     assert spec is not None and spec.kind == "charset"
     assert spec.charset == expected_charset
     assert spec.var_name == expected_var
+
+
+@pytest.mark.parametrize("line", [
+    "+return error unless name =~ /^[A-Za-z0-9_.+-]+$/",
+    "+raise ArgumentError unless slug =~ /^[a-z0-9]+$/",
+    "+raise 'bad' if name !~ /^[A-Za-z0-9]+$/",
+    # \Z admits one trailing newline — same hazard class, must not lift.
+    r"+raise 'bad' unless name =~ /\A[A-Za-z0-9]+\Z/",
+])
+def test_extract_ruby_line_anchored_guard_refused(line):
+    """Ruby ^/$ are ALWAYS line anchors: /^[chars]+$/ passes any string
+    containing one conforming line, so the guard does not bound the
+    whole string and must never lift as a charset validator.
+
+    Bypass witness (Ruby semantics; Python re.MULTILINE has identical
+    anchor behaviour and serves as the executable demonstration since
+    no ruby interpreter is assumed on test hosts):
+    "safe\\n../../../etc/passwd" satisfies /^[A-Za-z0-9_.+-]+$/ via its
+    first line while carrying path traversal on the second.
+    """
+    import re as _re
+    # The executable form of the docstring claim: line anchors match a
+    # conforming line inside a hostile multi-line string.
+    assert _re.search(r"^[A-Za-z0-9_.+-]+$", "safe\n../../../etc/passwd", _re.M)
+    diff = line + "\n"
+    assert sb.extract_validator(diff, language="ruby") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1066,9 +1092,32 @@ def test_try_tier0_sound_on_java_archetype(tmp_path: Path):
 
 def test_try_tier0_sound_on_ruby_archetype(tmp_path: Path):
     (tmp_path / "app.rb").write_text(
-        "def get_config(name)\n"                                          # line 1
-        "  raise ArgumentError unless name =~ /^[A-Za-z0-9_.+-]+$/\n"     # line 2
-        "  File.open(File.join(BASE, name))\n"                            # line 3
+        "def get_config(name)\n"                                            # line 1
+        "  raise ArgumentError unless name =~ /\\A[A-Za-z0-9_.+-]+\\z/\n"   # line 2
+        "  File.open(File.join(BASE, name))\n"                              # line 3
+        "end\n"
+    )
+    diff = (
+        "@@ -1,2 +1,3 @@\n"
+        " def get_config(name)\n"
+        "+  raise ArgumentError unless name =~ /\\A[A-Za-z0-9_.+-]+\\z/\n"
+        "   File.open(File.join(BASE, name))\n"
+    )
+    r = sb.try_tier0(
+        fix_diff=diff, repo_root=tmp_path,
+        sink_uri="app.rb", sink_line=3, sink_class="pathtrav",
+        language="ruby",
+    )
+    assert r.status is sb.Tier0Status.SOUND
+
+
+def test_try_tier0_declines_line_anchored_ruby_guard(tmp_path: Path):
+    """The pre-fix behaviour claimed SOUND here — unsoundly: Ruby ^/$
+    line anchors admit "safe\\n../../etc/passwd" through the guard."""
+    (tmp_path / "app.rb").write_text(
+        "def get_config(name)\n"
+        "  raise ArgumentError unless name =~ /^[A-Za-z0-9_.+-]+$/\n"
+        "  File.open(File.join(BASE, name))\n"
         "end\n"
     )
     diff = (
@@ -1082,7 +1131,7 @@ def test_try_tier0_sound_on_ruby_archetype(tmp_path: Path):
         sink_uri="app.rb", sink_line=3, sink_class="pathtrav",
         language="ruby",
     )
-    assert r.status is sb.Tier0Status.SOUND
+    assert r.status is not sb.Tier0Status.SOUND
 
 
 def test_try_tier0_not_applicable_when_substitution_var_reassigned(tmp_path: Path):

@@ -269,14 +269,21 @@ _JAVA_GUARD = _re.compile(
 )
 
 # Ruby — `return|raise … unless <var> =~ /^[chars]+$/`
+# Ruby anchors: ^ and $ are ALWAYS line anchors (Onigmo has no flag
+# that changes this; /m only alters `.`), so /^[chars]+$/ passes any
+# string containing ONE conforming line — "safe\n../../etc/passwd"
+# satisfies the guard while smuggling the danger characters on another
+# line. Only \A...\z proves whole-string membership (\Z would readmit
+# the trailing-newline hazard). Line-anchored Ruby guards therefore
+# never lift; the fix author must use \A\z for the proof to hold.
 _RUBY_GUARD_UNLESS = _re.compile(
     r"(?:return|raise)\b[^\n]*?\s+unless\s+(?P<var>[a-z_][a-z_0-9]*)\s*=~\s*"
-    r"/\^\[(?P<chars>[^\]]+)\][+*]\$/"
+    r"/\\A\[(?P<chars>[^\]]+)\][+*]\\z/"
 )
-# Ruby — `return|raise … if <var> !~ /^[chars]+$/`
+# Ruby — `return|raise … if <var> !~ /\A[chars]+\z/`
 _RUBY_GUARD_IF_NOT_MATCH = _re.compile(
     r"(?:return|raise)\b[^\n]*?\s+if\s+(?P<var>[a-z_][a-z_0-9]*)\s*!~\s*"
-    r"/\^\[(?P<chars>[^\]]+)\][+*]\$/"
+    r"/\\A\[(?P<chars>[^\]]+)\][+*]\\z/"
 )
 
 
@@ -407,7 +414,12 @@ def _try_java_validator(line: str) -> ValidatorSpec | None:
 
 
 def _try_ruby_validator(line: str) -> ValidatorSpec | None:
-    """Ruby ``unless x =~ /…/`` and ``if x !~ /…/`` guard shapes."""
+    """Ruby ``unless x =~ /…/`` and ``if x !~ /…/`` guard shapes.
+
+    Only ``\\A[chars]+\\z``-anchored patterns lift — Ruby ``^``/``$``
+    are line anchors, so a line-anchored guard does not bound the whole
+    string (see the anchor note on the guard regexes above).
+    """
     m = _RUBY_GUARD_UNLESS.search(line) or _RUBY_GUARD_IF_NOT_MATCH.search(line)
     if m is None or not _charset_body_is_safe(m.group("chars")):
         return None

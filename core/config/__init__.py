@@ -186,6 +186,22 @@ class RaptorConfig:
     # Per-run CLI override: `/codeql --no-curated-queries`.
     CODEQL_CURATED_ENABLED: bool = True
 
+    # Threat models passed to `codeql database analyze` on the STANDARD
+    # suite pass (`--threat-model=<name>` per entry, additive to the
+    # always-on `default`/remote model). `local` enables the
+    # environment / commandargs / stdin / file / database source kinds
+    # on stock queries — the same source classes RAPTOR's in-repo IRIS
+    # packs model by hand (the IRIS pass stays: its verdicts feed the
+    # refute-downgrade path). Version-gated in the runner: CLIs older
+    # than CODEQL_THREAT_MODEL_MIN_VERSION never see the flag. The flag
+    # is a no-op for query packs / languages without threat-model
+    # support (CLI-documented behavior), so passing it is safe.
+    # Kill-switch: CODEQL_THREAT_MODELS_ENABLED = False.
+    # Per-run CLI overrides: `/codeql --threat-models <csv>` and
+    # `/codeql --no-threat-models`.
+    CODEQL_THREAT_MODELS_ENABLED: bool = True
+    CODEQL_THREAT_MODELS: ClassVar[tuple] = ("local",)
+
     # Timeout Configuration (seconds)
     DEFAULT_TIMEOUT = 1800          # 30 minutes
     SEMGREP_TIMEOUT = 900            # 15 minutes (scan over local rule dirs)

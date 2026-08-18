@@ -57,6 +57,8 @@ autonomous analysis pipeline.
 | `--sanitizer-cut-parity-log <path>` | auto | Parity-log path for `--sanitizer-cut shadow` (default: `<run_dir>/sanitizer_cut_parity.jsonl`) |
 | `--no-iris-tier1` | off | Skip IRIS Tier 1 in-repo LocalFlowSource pack analysis |
 | `--no-curated-queries` | off | Skip the curated in-repo query pass (`engine/codeql/queries/<lang>/`) |
+| `--threat-models <csv>` | `local` | Threat models enabled on the standard suite (`--threat-model=<name>` per entry) |
+| `--no-threat-models` | off | Pass no `--threat-model` flag (stock remote-only source models) |
 | `--sandbox <profile>` | full | [Sandbox](sandbox.md) profile (`full` / `strict` / `debug` / `target_run` / `frida` / `network-only` / `none`) |
 | `--no-sandbox` | off | Alias for `--sandbox none` |
 | `--audit` | off | Engage [sandbox](sandbox.md) audit mode |
@@ -217,6 +219,21 @@ the upstream stdlib already covers local flow sources. Disable with
 
 Per-language SARIF files are written to the output directory. IRIS
 findings produce a separate `codeql_<lang>_iris.sarif` file.
+
+**Threat models on the standard suite:** The standard-suite pass runs
+with `--threat-model=local` by default (CLI ≥ 2.15.3; older CLIs never
+see the flag). This enables the environment / commandargs / stdin /
+file / database source kinds on stock queries for languages whose
+packs support threat models — the same source classes the IRIS packs
+model by hand. The flag is a documented no-op for packs without
+threat-model support. Override the set per run with
+`--threat-models <csv>` (e.g. `local,!environment` — entries are
+processed in order, `!` disables), disable with `--no-threat-models`,
+or flip `RaptorConfig.CODEQL_THREAT_MODELS_ENABLED`. When both the
+IRIS pass and threat models ran, the agent logs a per-(language, CWE)
+standard-vs-IRIS finding-count comparison and records it as
+`threat_model_overlap` in `codeql_report.json` — data for deciding
+whether individual IRIS queries are subsumed.
 
 ### Phase 5 -- Reporting
 

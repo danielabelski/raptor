@@ -81,6 +81,12 @@ class CodeQLWorkflowResult:
     total_findings: int
     sarif_files: list[str]
     errors: list[str]
+    # Per-(language, CWE) standard-vs-IRIS finding counts, present only
+    # when the standard pass ran with threat models AND the IRIS pass
+    # produced a SARIF — data for deciding whether IRIS queries are
+    # subsumed by `--threat-model=local`. Additive; consumers tolerate
+    # its absence.
+    threat_model_overlap: dict | None = None
 
     def to_dict(self):
         """
@@ -599,6 +605,31 @@ class CodeQLAgent:
                             result.findings_count
                         )
 
+            # Standard-vs-IRIS overlap: when the standard suite ran
+            # with threat models AND the IRIS pass produced SARIFs,
+            # log the per-(lang, CWE) counts. Pure diagnostics for the
+            # "is IRIS subsumed by --threat-model=local?" question.
+            threat_model_overlap = None
+            if self.query_runner.active_threat_models():
+                iris_langs = [
+                    lang for lang, r in iris_results.items()
+                    if r.success and r.sarif_path
+                ]
+                if iris_langs:
+                    from packages.codeql.query_runner import (
+                        iris_overlap_summary,
+                    )
+                    threat_model_overlap = iris_overlap_summary(
+                        self.out_dir, iris_langs,
+                    ) or None
+                    if threat_model_overlap:
+                        for lang, cells in threat_model_overlap.items():
+                            logger.info(
+                                "  - %s standard-vs-IRIS overlap: "
+                                "standard=%s iris=%s",
+                                lang, cells["standard"], cells["iris"],
+                            )
+
             # PHASE 5: Generate Report
             logger.info("\n%s", '=' * 70)
             logger.info("PHASE 5: REPORT GENERATION")
@@ -615,6 +646,7 @@ class CodeQLAgent:
                 total_findings=total_findings,
                 sarif_files=sarif_files,
                 errors=errors,
+                threat_model_overlap=threat_model_overlap,
             )
 
             # Save report
@@ -925,6 +957,18 @@ Examples:
              "produces noise on a specific target or when comparing "
              "standard-suite-only verdicts.",
     )
+    parser.add_argument(
+        "--threat-models",
+        help="Comma-separated CodeQL threat models to enable on the "
+             "standard suite (default: local). Passed as repeated "
+             "--threat-model flags; skipped automatically on CLIs "
+             "older than 2.15.3.",
+    )
+    parser.add_argument(
+        "--no-threat-models", action="store_true",
+        help="Do not pass any --threat-model flag to codeql database "
+             "analyze (stock remote-only source models).",
+    )
 
     # Sandbox CLI flags (--sandbox / --no-sandbox / --audit / --audit-verbose)
     # so the agentic-driven invocation can propagate audit mode into this
@@ -953,6 +997,17 @@ Examples:
     if args.no_curated_queries:
         from core.config import RaptorConfig
         RaptorConfig.CODEQL_CURATED_ENABLED = False
+
+    # Same process-scoped pattern for threat models. Explicit negative
+    # beats positive when both are passed.
+    if args.threat_models:
+        from core.config import RaptorConfig
+        RaptorConfig.CODEQL_THREAT_MODELS = tuple(
+            m.strip() for m in args.threat_models.split(",") if m.strip()
+        )
+    if args.no_threat_models:
+        from core.config import RaptorConfig
+        RaptorConfig.CODEQL_THREAT_MODELS_ENABLED = False
 
     # Parse languages
     languages = None

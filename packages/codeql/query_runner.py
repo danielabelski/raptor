@@ -172,6 +172,12 @@ class QueryResult:
     queries_executed: int = 0
 
 
+# `codeql database analyze --threat-model` first shipped in CLI 2.15.3.
+# Older CLIs reject the flag as unknown, so the runner version-gates it
+# (skip entirely below this) rather than risking a failed analyze.
+THREAT_MODEL_MIN_VERSION = (2, 15, 3)
+
+
 class QueryRunner:
     """
     Execute CodeQL queries and suites against databases.
@@ -245,6 +251,83 @@ class QueryRunner:
         """
         from pathlib import Path
         return [str(Path(self.codeql_cli).resolve().parent)]
+
+    def _codeql_version(self) -> str | None:
+        """CLI version string (e.g. ``"2.26.3"``), cached per instance.
+
+        Same probe posture as DatabaseManager.get_codeql_version:
+        `env=get_safe_env()` so the JVM launcher doesn't inherit
+        LD_PRELOAD / JAVA_TOOL_OPTIONS-class variables from the parent.
+        Never raises — an absent/odd CLI reads as None so callers
+        degrade instead of crash.
+        """
+        cached = getattr(self, "_version_probe", None)
+        if cached is not None:
+            return cached or None
+        version = None
+        try:
+            result = subprocess.run(
+                [self.codeql_cli, "version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                env=RaptorConfig.get_safe_env(),
+            )
+            if result.returncode == 0:
+                m = re.search(r'\d+(?:\.\d+){1,3}', result.stdout, re.ASCII)
+                if m:
+                    version = m.group(0)
+        except Exception as e:  # noqa: BLE001 — best-effort probe
+            logger.warning("Failed to get CodeQL version: %s", e)
+        # Cache falsy as "" so a failed probe isn't retried per suite.
+        self._version_probe = version or ""
+        return version
+
+    def active_threat_models(self) -> tuple:
+        """Threat models the standard-suite pass will request.
+
+        Empty when the kill-switch is off, the configured set is empty,
+        or the CLI predates ``--threat-model``
+        (:data:`THREAT_MODEL_MIN_VERSION`). The version-gate outcome is
+        cached per instance; the config reads are fresh on every call
+        so per-run CLI overrides (``--threat-models`` /
+        ``--no-threat-models``) take effect regardless of call order.
+        """
+        if not RaptorConfig.CODEQL_THREAT_MODELS_ENABLED:
+            return ()
+        models = tuple(RaptorConfig.CODEQL_THREAT_MODELS or ())
+        if not models:
+            return ()
+        gate = getattr(self, "_threat_model_gate", None)
+        if gate is None:
+            version = self._codeql_version()
+            gate = False
+            if version:
+                try:
+                    parts = tuple(int(p) for p in version.split(".")[:3])
+                except ValueError:
+                    logger.info(
+                        "threat models skipped: unparseable CodeQL "
+                        "version %r", version,
+                    )
+                else:
+                    gate = parts >= THREAT_MODEL_MIN_VERSION
+                    if not gate:
+                        logger.info(
+                            "threat models skipped: CodeQL %s < %s",
+                            version,
+                            ".".join(map(str, THREAT_MODEL_MIN_VERSION)),
+                        )
+            else:
+                logger.info(
+                    "threat models skipped: CodeQL version unknown")
+            self._threat_model_gate = gate
+        return models if gate else ()
+
+    def _threat_model_args(self) -> list:
+        """``--threat-model=<name>`` flags for the analyze command."""
+        return [f"--threat-model={m}" for m in self.active_threat_models()]
 
     def run_suite(
         self,
@@ -366,6 +449,11 @@ class QueryRunner:
             "--format=sarif-latest",
             f"--output={sarif_path}",
             "--no-rerun",  # Don't rerun queries if results exist
+            # Additive source models (e.g. `local` = environment /
+            # commandargs / stdin / file / database) on stock queries.
+            # Empty on old CLIs / kill-switch; CLI-documented no-op for
+            # packs without threat-model support.
+            *self._threat_model_args(),
         ]
         # Central CodeQL resource tunables (-j / -M, tuning.json-backed).
         # ``include_disk_cache=False`` because ``database analyze``
@@ -1174,6 +1262,40 @@ class QueryRunner:
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to generate SARIF summary: %s", e)
             return {}
+
+
+def iris_overlap_summary(out_dir: Path, languages) -> dict:
+    """Per-(language, CWE) finding counts: standard suite vs IRIS pass.
+
+    Cheap, mechanical data for the standing question of whether the
+    in-repo IRIS packs are subsumed once the standard suite runs with
+    `--threat-model=local` — nothing here changes verdicts. Only
+    languages where BOTH `codeql_<lang>.sarif` and
+    `codeql_<lang>_iris.sarif` exist appear in the result.
+    """
+    from core.sarif.parser import parse_sarif_findings
+
+    def _counts(path: Path) -> dict:
+        counts: dict = {}
+        for finding in parse_sarif_findings(path):
+            cwe = finding.get("cwe_id") or "unknown"
+            counts[cwe] = counts.get(cwe, 0) + 1
+        return counts
+
+    summary: dict = {}
+    for lang in languages:
+        std = out_dir / f"codeql_{lang}.sarif"
+        iris = out_dir / f"codeql_{lang}_iris.sarif"
+        if not (std.is_file() and iris.is_file()):
+            continue
+        try:
+            summary[lang] = {
+                "standard": _counts(std),
+                "iris": _counts(iris),
+            }
+        except Exception as e:  # noqa: BLE001 — diagnostics only, never fatal
+            logger.debug("iris overlap summary skipped for %s: %s", lang, e)
+    return summary
 
 
 def main():

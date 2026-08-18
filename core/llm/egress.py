@@ -102,16 +102,21 @@ _KNOWN_DEFAULTS = {
 # / vLLM / LiteLLM-on-localhost loop back through the proxy and break
 # its allowlist semantics for non-loopback callers. ::1 and 0.0.0.0
 # included: operators point clients at "0.0.0.0:11434" surprisingly
-# often (copy-pasted from the server's bind address), and it resolves
-# to loopback on connect.
+# often (copy-pasted from the server's bind address), and it
+# genuinely resolves to loopback on connect (kernel routes 0.0.0.0 to
+# the local host), so it carries no extra reach.
+#
+# 169.254.169.254 (EC2 IMDS) is deliberately NOT here: it is a
+# credential-bearing metadata service, not a local service. Listing
+# it made every _LOCAL_BYPASS consumer treat IMDS as loopback-safe —
+# url_is_loopback()/loopback_safe_get() would fetch it DIRECT and the
+# NO_PROXY augmentation exempted it from the chokepoint, so hostile
+# in-process code could read role credentials without ever meeting
+# the allowlist. IMDS is plain HTTP; the chokepoint only rewrites
+# HTTPS_PROXY, so botocore's role-credential fetch is unaffected by
+# its removal.
 _LOCAL_BYPASS = (
     "localhost", "127.0.0.1", "::1", "0.0.0.0",
-    # EC2 instance metadata (IMDS) — link-local, never proxyable.
-    # botocore's credential fetch honours env proxies; routing an IMDS
-    # request through any proxy breaks credential resolution for
-    # profile/role SigV4, so it must always be NO_PROXY-exempt even on
-    # hosts whose operator NO_PROXY lacks the entry.
-    "169.254.169.254",
 )
 
 
@@ -217,8 +222,39 @@ def _bedrock_hosts_for(model) -> set[str]:
     """
     endpoint_override = os.environ.get("AWS_ENDPOINT_URL_BEDROCK")
     if endpoint_override:
+        # The override replaces the SURFACE endpoint only — botocore
+        # still refreshes profile/role credentials through STS, so
+        # the STS hosts must ride the allowlist too or every
+        # credential refresh 503s at the chokepoint. Global STS
+        # always; regional STS when a region resolves (botocore
+        # defaults to regional endpoints).
         host = _hostname_of(endpoint_override)
-        return {host} if host else set()
+        hosts = {host} if host else set()
+        if hosts:
+            hosts.add("sts.amazonaws.com")
+            region = _bedrock_region_for(model)
+            if region:
+                hosts.add(f"sts.{region}.amazonaws.com")
+        return hosts
+    region = _bedrock_region_for(model)
+    if not region:
+        return set()
+    surface = getattr(model, "bedrock_api", "mantle") or "mantle"
+    if surface == "runtime":
+        endpoint_host = f"bedrock-runtime.{region}.amazonaws.com"
+    else:
+        endpoint_host = f"bedrock-mantle.{region}.api.aws"
+    return {
+        endpoint_host,
+        "sts.amazonaws.com",
+        f"sts.{region}.amazonaws.com",
+    }
+
+
+def _bedrock_region_for(model) -> str | None:
+    """Resolved AWS region for *model*: entry pin → env → the
+    profile's configured region via the botocore chain (no-network
+    lookup). ``None`` when nothing resolves."""
     region = (
         getattr(model, "aws_region", None)
         or os.environ.get("AWS_REGION")
@@ -235,18 +271,7 @@ def _bedrock_hosts_for(model) -> set[str]:
             region = session.get_config_variable("region")
         except Exception:  # noqa: BLE001 — botocore optional here
             region = None
-    if not region:
-        return set()
-    surface = getattr(model, "bedrock_api", "mantle") or "mantle"
-    if surface == "runtime":
-        endpoint_host = f"bedrock-runtime.{region}.amazonaws.com"
-    else:
-        endpoint_host = f"bedrock-mantle.{region}.api.aws"
-    return {
-        endpoint_host,
-        "sts.amazonaws.com",
-        f"sts.{region}.amazonaws.com",
-    }
+    return region or None
 
 
 def _hostname_of(url: str) -> str:
@@ -338,7 +363,7 @@ def enable_llm_egress(config: LLMConfig) -> None:
     models configured) — saves the proxy bring-up cost and avoids
     surprising env mutation in CC-only or autodetect-empty modes.
     """
-    global _enabled
+    global _enabled, _original_proxy_env
 
     allowlist = derive_allowlist(config)
     # Drop loopback hosts from the proxy allowlist — they bypass the
@@ -364,6 +389,17 @@ def enable_llm_egress(config: LLMConfig) -> None:
             os.environ.get(v) for v in
             ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
         ):
+            # Snapshot the operator's proxy env BEFORE this mutation
+            # too — operator_proxy_env() must hand trusted
+            # subprocesses the operator's NO_PROXY, not our augmented
+            # one (pre-fix this path mutated without snapshotting, so
+            # the snapshot taken later — or never — reflected our own
+            # edit).
+            if _original_proxy_env is None:
+                _original_proxy_env = {
+                    k: v for k in _PROXY_VAR_NAMES
+                    if (v := os.environ.get(k)) is not None
+                }
             existing = (os.environ.get("NO_PROXY")
                         or os.environ.get("no_proxy") or "")
             new_no_proxy = _augment_no_proxy(existing)
@@ -401,11 +437,11 @@ def enable_llm_egress(config: LLMConfig) -> None:
     # carries the TLS). Snapshot the operator's values first so
     # operator_proxy_env() can hand trusted subprocesses the real
     # route instead of our loopback pointer.
-    global _original_proxy_env
-    _original_proxy_env = {
-        k: v for k in _PROXY_VAR_NAMES
-        if (v := os.environ.get(k)) is not None
-    }
+    if _original_proxy_env is None:
+        _original_proxy_env = {
+            k: v for k in _PROXY_VAR_NAMES
+            if (v := os.environ.get(k)) is not None
+        }
     os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy.port}"
     os.environ["https_proxy"] = os.environ["HTTPS_PROXY"]
 

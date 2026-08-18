@@ -416,6 +416,26 @@ class TestOllamaOnlyProxiedHost:
         assert os.environ["HTTPS_PROXY"] == "http://proxy.corp:3128"
         assert stub_proxy == []                 # no chokepoint
 
+    def test_loopback_path_snapshots_operator_env(self, stub_proxy,
+                                                   monkeypatch):
+        """The loopback-only NO_PROXY mutation must snapshot the
+        operator's proxy env FIRST — operator_proxy_env() hands
+        trusted subprocesses the operator's route, and pre-fix this
+        path mutated without snapshotting so children inherited our
+        augmented NO_PROXY."""
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+        monkeypatch.setenv("NO_PROXY", "corp.example")
+        cfg = _config(primary=_model(
+            provider="ollama",
+            model_name="llama3",
+            api_base="http://localhost:11434/v1",
+        ))
+        egress.enable_llm_egress(cfg)
+        assert "localhost" in os.environ["NO_PROXY"]  # mutated live env
+        snap = egress.operator_proxy_env()
+        assert snap["NO_PROXY"] == "corp.example"     # pristine snapshot
+        assert snap["HTTPS_PROXY"] == "http://proxy.corp:3128"
+
     def test_no_mutation_without_operator_proxy(self, stub_proxy,
                                                 monkeypatch):
         """Unproxied host: the Ollama-only path stays mutation-free."""
@@ -483,6 +503,33 @@ class TestDeriveAllowlistBedrock:
         hosts = egress.derive_allowlist(cfg)
         assert "bedrock-stub.test" in hosts
 
+    def test_endpoint_override_still_covers_sts(self, monkeypatch):
+        """The override replaces the surface endpoint only — botocore
+        still refreshes credentials through STS, so the STS hosts
+        must ride the allowlist or every refresh 503s at the
+        chokepoint."""
+        monkeypatch.setenv(
+            "AWS_ENDPOINT_URL_BEDROCK", "https://bedrock-stub.test:9443",
+        )
+        cfg = _config(primary=self._bedrock_model(aws_region="us-east-1"))
+        hosts = egress.derive_allowlist(cfg)
+        assert "sts.amazonaws.com" in hosts
+        assert "sts.us-east-1.amazonaws.com" in hosts
+
+    def test_endpoint_override_no_region_keeps_global_sts(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv(
+            "AWS_ENDPOINT_URL_BEDROCK", "https://bedrock-stub.test:9443",
+        )
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "absent"))
+        cfg = _config(primary=self._bedrock_model())
+        hosts = egress.derive_allowlist(cfg)
+        assert "bedrock-stub.test" in hosts
+        assert "sts.amazonaws.com" in hosts
+        assert not any(h.startswith("sts.") and h != "sts.amazonaws.com"
+                       for h in hosts)
+
     def test_no_region_yields_no_guess(self, monkeypatch, tmp_path):
         """Unresolvable region → no invented host; the dispatcher's
         own no-region 503 carries the diagnostic."""
@@ -503,11 +550,27 @@ class TestDeriveAllowlistBedrock:
         assert "sts.eu-west-1.amazonaws.com" in hosts
 
 
-def test_no_proxy_augmentation_includes_imds():
-    """IMDS is link-local and never proxyable — the NO_PROXY
-    augmentation must exempt it even when the operator's NO_PROXY
-    lacks the entry, or profile/role credential resolution dies
-    behind the proxy."""
+def test_no_proxy_augmentation_excludes_imds():
+    """IMDS is a credential-bearing metadata service, not a local
+    service — it must NEVER bypass the chokepoint. Listing it in
+    _LOCAL_BYPASS made url_is_loopback()/loopback_safe_get() treat it
+    as loopback-safe and exempted it from every proxied path, so
+    hostile in-process code could read role credentials without
+    meeting the allowlist. (IMDS is plain HTTP and the chokepoint
+    rewrites HTTPS_PROXY only, so botocore's role-credential fetch
+    does not need the exemption.)"""
     out = egress._augment_no_proxy("corp.example")
-    assert "169.254.169.254" in out.split(",")
+    assert "169.254.169.254" not in out.split(",")
     assert out.startswith("corp.example")
+
+
+def test_imds_is_not_loopback():
+    assert not egress._is_loopback("169.254.169.254")
+    assert not egress.url_is_loopback("http://169.254.169.254/latest/api")
+
+
+def test_operator_no_proxy_imds_entry_preserved():
+    """An operator who explicitly NO_PROXY-exempts IMDS keeps their
+    entry — we only stop ADDING it ourselves."""
+    out = egress._augment_no_proxy("169.254.169.254,corp.example")
+    assert out.split(",")[0] == "169.254.169.254"

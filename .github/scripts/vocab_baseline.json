@@ -132,10 +132,6 @@
   "count": 26,
   "kind": "literal"
  },
- "core/analysis/typestate.py::_LOCK_METHODS": {
-  "count": 13,
-  "kind": "literal"
- },
  "core/ast/view.py::_CALL_GRAPH_DISPATCH": {
   "count": 12,
   "kind": "literal"
@@ -152,6 +148,11 @@
   "count": 11,
   "kind": "literal",
   "note": "structured finding-dict field names (line refs, counter reg, CWE) for the asm zero-length-loop check - not a name vocabulary"
+ },
+ "core/audit/binary_layer0.py::_CALLEE_KEYWORDS": {
+  "count": 40,
+  "kind": "literal",
+  "note": "language-keyword stopwords for callee extraction, not an API vocabulary"
  },
  "core/audit/binary_layer0.py::_CHECKED_RETURN_CALLS": {
   "count": 24,
@@ -390,7 +391,7 @@
   "kind": "literal"
  },
  "core/audit/evidence_grade.py::_TOOL_NAMESPACES": {
-  "count": 13,
+  "count": 15,
   "kind": "literal",
   "note": "framework-internal enum/namespace vocabulary (not target API names); grew to 13 with the five-channel programme's resource_bounds/release_order/protocol_state namespaces"
  },
@@ -500,7 +501,7 @@
   "kind": "literal"
  },
  "core/audit/orchestrator.py::_REFUTED_CHEAP_CHANNELS": {
-  "count": 10,
+  "count": 12,
   "kind": "literal",
   "note": "framework-internal channel-name registry for the refuted-hypothesis cheap re-verification lane (not target API names); grew to 10 when the five-channel programme's resource_bounds/release_order/protocol_state joined"
  },
@@ -515,7 +516,7 @@
   "note": "audit-log demotion record field names (framework record keys, not target API names)"
  },
  "core/audit/orchestrator.py::_make_tier_counters": {
-  "count": 32,
+  "count": 34,
   "kind": "literal"
  },
  "core/audit/orchestrator.py::_review_items": {
@@ -815,6 +816,11 @@
   "count": 31,
   "kind": "alternation"
  },
+ "core/audit/value_space_checker.py::to_dict": {
+  "count": 10,
+  "kind": "literal",
+  "note": "serialization field names, not a name vocabulary"
+ },
  "core/concepts/audit_bridge.py::_STOPWORDS": {
   "count": 24,
   "kind": "literal"
@@ -921,6 +927,11 @@
  "core/inventory/exclusions.py::ROOT_ANCHORED_EXCLUDE_DIRS": {
   "count": 13,
   "kind": "literal"
+ },
+ "core/inventory/exclusions.py::_GENERATED_PATH_HINTS": {
+  "count": 12,
+  "kind": "literal",
+  "note": "path-convention tokens corroborating generated-file markers, not API names"
  },
  "core/inventory/extractors.py::C_TYPE_HINTS": {
   "count": 18,
@@ -1184,7 +1195,7 @@
   "kind": "literal"
  },
  "core/sandbox/proxy.py::event": {
-  "count": 10,
+  "count": 11,
   "kind": "literal",
   "note": "proxy tunnel-event telemetry field names (framework record keys, not target API names)"
  },
@@ -1195,6 +1206,11 @@
  "core/sandbox/seccomp.py::_SECCOMP_BLOCK_ALWAYS": {
   "count": 13,
   "kind": "literal"
+ },
+ "core/sandbox/tracer.py::_NAME_TO_TYPE": {
+  "count": 12,
+  "kind": "literal",
+  "note": "Linux syscall names (POSIX/kernel ABI), permitted like libc vocab"
  },
  "core/sarif/import_normalizer.py::_DEPENDENCY_MANIFEST_NAMES": {
   "count": 22,
@@ -1249,7 +1265,7 @@
   "kind": "literal"
  },
  "core/security/rule_of_two.py::_CI_ENV_VARS": {
-  "count": 16,
+  "count": 17,
   "kind": "literal"
  },
  "core/status/__init__.py::_STATUS_ALIASES": {
@@ -1561,16 +1577,12 @@
   "count": 31,
   "kind": "literal"
  },
- "packages/cve_diff/cve_diff/report/markdown.py::_DISCOVER_TOOLS": {
-  "count": 16,
-  "kind": "literal"
- },
  "packages/cve_diff/cve_diff/report/markdown.py::_TOOL_INTENT": {
   "count": 17,
   "kind": "literal"
  },
  "packages/cve_diff/cve_diff/report/markdown.py::_humanize_class": {
-  "count": 14,
+  "count": 15,
   "kind": "literal"
  },
  "packages/describe/report.py::doc": {

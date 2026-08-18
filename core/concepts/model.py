@@ -199,10 +199,19 @@ class DomainModel:
     #   nullable_returns:  {name[, when, provenance]} or bare string
     #   auth_predicates:   {name[, kind, provenance]} or bare string
     #   security_fields:   {name[, why, provenance]} or bare string
+    #   fallibility_contracts: {name, can_fail[, convention, when,
+    #       provenance]} — per-function fallibility (design §2.2.2
+    #       structured field; convention: null | negative | errno |
+    #       zero_ok | boolean | exception). Consumed by
+    #       core.audit.return_contracts as a return-check contract
+    #       witness (mechanical tier ⇒ registry-grade).
     paired_operations: list[dict[str, Any]] = field(default_factory=list)
     nullable_returns: list[Any] = field(default_factory=list)
     auth_predicates: list[Any] = field(default_factory=list)
     security_fields: list[Any] = field(default_factory=list)
+    fallibility_contracts: list[dict[str, Any]] = field(
+        default_factory=list,
+    )
 
     # ----- persistence -------------------------------------------
 
@@ -270,6 +279,10 @@ class DomainModel:
             nullable_returns=_vocab_list("nullable_returns"),
             auth_predicates=_vocab_list("auth_predicates"),
             security_fields=_vocab_list("security_fields"),
+            fallibility_contracts=[
+                p for p in _vocab_list("fallibility_contracts")
+                if isinstance(p, dict)
+            ],
         )
 
     # ----- query helpers -----------------------------------------

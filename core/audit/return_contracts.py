@@ -213,6 +213,20 @@ def _annotation_contract(
 
 # ── study domain-model contracts ────────────────────────────────────
 
+# core.concepts.receipts.TIER_MECHANICAL — inlined to keep the import
+# lazy-free on this hot path; pinned by the fallibility-feed tests.
+_TIER_MECHANICAL = "mechanical"
+
+
+def _fallibility_entry(
+    model: dict[str, Any], tail: str,
+) -> dict[str, Any] | None:
+    for entry in model.get("fallibility_contracts") or []:
+        if isinstance(entry, dict) and \
+                str(entry.get("name") or "").rsplit(".", 1)[-1] == tail:
+            return entry
+    return None
+
 
 def _domain_model_contract(
     callee: str, ctx: RoleContext,
@@ -227,6 +241,35 @@ def _domain_model_contract(
         logger.debug("return contract: domain model load failed",
                      exc_info=True)
         return None
+
+    # Structured fallibility contracts first (§2.2.2 phase-3 field):
+    # the study loop's elicited {name, can_fail, convention} entries,
+    # name-verified and tier-stamped. Prose-mining below stays the
+    # fallback, not the mechanism. Tier discipline: the mechanical
+    # tier (a study-prep signal corroborated the claim) is
+    # registry-grade; llm_summarized binds detection-grade only (the
+    # ``-majority`` rule-id variant at the verdict layer). Entries
+    # whose failure signal is exception-borne — or which assert the
+    # callee cannot fail — bind nothing: neither is a return-check
+    # obligation.
+    fallibility = _fallibility_entry(model, tail)
+    if fallibility is not None:
+        can_fail = bool(fallibility.get("can_fail"))
+        convention = str(fallibility.get("convention") or "").lower()
+        if can_fail and convention not in ("", "exception"):
+            tier = str(fallibility.get("provenance") or "")
+            return ContractEvidence(
+                source="domain_model",
+                provenance=(
+                    f"domain_model:fallibility:{tier or 'unstamped'}"
+                ),
+                grade=(
+                    GRADE_REGISTRY if tier == _TIER_MECHANICAL
+                    else GRADE_DETECTION
+                ),
+                detail=convention,
+            )
+
     for contract in model.get("contracts") or []:
         if not isinstance(contract, dict):
             continue

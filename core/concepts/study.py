@@ -99,6 +99,7 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
         nullable_returns=_merge_vocab("nullable_returns"),
         auth_predicates=_merge_vocab("auth_predicates"),
         security_fields=_merge_vocab("security_fields"),
+        fallibility_contracts=_merge_vocab("fallibility_contracts"),
     )
 
 
@@ -433,6 +434,14 @@ it in `unresolved_references`).
 - `security_fields`: struct fields holding privilege, credential, \
   or access-control state (uid/gid fields, capability masks, \
   security flags, ACL pointers).
+- `fallibility_contracts`: per-function fallibility — can the \
+  function fail, and how is failure signalled? `convention` is one \
+  of: `null` (returns NULL/None on failure), `negative` (negative \
+  return code), `errno` (errno-style code), `zero_ok` (zero is \
+  success, nonzero failure), `boolean` (false on failure), \
+  `exception` (failure raises — the return value carries no error \
+  signal). Only claim `can_fail: false` when the provided body \
+  demonstrably cannot fail; when unsure, omit the entry.
 
 **Struct annotations**: cover EVERY struct in the focus items — \
 1-3 fields per struct, breadth first. Do not annotate 4 fields on \
@@ -962,6 +971,31 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
                             "why": {"type": "string"},
                         },
                         "required": ["name"],
+                    },
+                },
+                "fallibility_contracts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "can_fail": {"type": "boolean"},
+                            "convention": {
+                                "type": "string",
+                                "enum": [
+                                    "null", "negative", "errno",
+                                    "zero_ok", "boolean", "exception",
+                                ],
+                            },
+                            "when": {
+                                "type": "string",
+                                "description": (
+                                    "When the failure occurs, if "
+                                    "known."
+                                ),
+                            },
+                        },
+                        "required": ["name", "can_fail"],
                     },
                 },
             },
@@ -2023,6 +2057,52 @@ def _parse_api_vocabulary(
             entry["why"] = str(fld["why"])
         entries.append(entry)
 
+    # Fallibility contracts (§2.2.2 structured field): mechanical
+    # tier only when a study-prep signal corroborates the specific
+    # *return-borne* failure claim — a `null` convention against the
+    # null_guards signal, a code convention (negative/errno/zero_ok/
+    # boolean) against the error_gotos signal. `exception` and
+    # `can_fail: false` claims have no extraction signal to agree
+    # with, so they stay llm_summarized.
+    goto_signal = _names_in_signal(items, "error_gotos")
+    code_conventions = frozenset({
+        "negative", "errno", "zero_ok", "boolean",
+    })
+    for fc in vocab_raw.get("fallibility_contracts") or []:
+        if not isinstance(fc, dict):
+            continue
+        name = _bare_name(str(fc.get("name") or ""))
+        if not name:
+            continue
+        if name not in universe:
+            _discard("fallibility_contracts", name)
+            continue
+        can_fail = bool(fc.get("can_fail"))
+        convention = str(fc.get("convention") or "").lower()
+        if can_fail and convention == "null":
+            tier = (
+                TIER_MECHANICAL if name in null_signal
+                else TIER_LLM_SUMMARIZED
+            )
+        elif can_fail and convention in code_conventions:
+            tier = (
+                TIER_MECHANICAL if name in goto_signal
+                else TIER_LLM_SUMMARIZED
+            )
+        else:
+            tier = TIER_LLM_SUMMARIZED
+        entry = {
+            "class": "fallibility_contracts",
+            "name": name,
+            "can_fail": can_fail,
+            "provenance": tier,
+        }
+        if convention:
+            entry["convention"] = convention
+        if fc.get("when"):
+            entry["when"] = str(fc["when"])
+        entries.append(entry)
+
     return entries
 
 
@@ -2031,8 +2111,9 @@ def _assemble_vocabulary(
 ) -> tuple[
     list[dict[str, Any]], list[dict[str, Any]],
     list[dict[str, Any]], list[dict[str, Any]],
+    list[dict[str, Any]],
 ]:
-    """Dedup flat vocab entries into the four DomainModel lists.
+    """Dedup flat vocab entries into the five DomainModel lists.
 
     Keyed by (acquire, release, kind) for pairs and name for the name
     classes; the higher provenance tier wins on collision
@@ -2050,6 +2131,7 @@ def _assemble_vocabulary(
         "nullable_returns": {},
         "auth_predicates": {},
         "security_fields": {},
+        "fallibility_contracts": {},
     }
     for entry in entries:
         vclass = entry.get("class")
@@ -2072,6 +2154,7 @@ def _assemble_vocabulary(
         list(by_class["nullable_returns"].values()),
         list(by_class["auth_predicates"].values()),
         list(by_class["security_fields"].values()),
+        list(by_class["fallibility_contracts"].values()),
     )
 
 
@@ -3180,6 +3263,7 @@ def run_study(
             model.nullable_returns,
             model.auth_predicates,
             model.security_fields,
+            model.fallibility_contracts,
         ) = _assemble_vocabulary(vocab_entries)
         if on_progress:
             on_progress(
@@ -3187,7 +3271,9 @@ def run_study(
                 f"API vocabulary: {len(model.paired_operations)} pairs, "
                 f"{len(model.nullable_returns)} nullable returns, "
                 f"{len(model.auth_predicates)} auth predicates, "
-                f"{len(model.security_fields)} security fields",
+                f"{len(model.security_fields)} security fields, "
+                f"{len(model.fallibility_contracts)} fallibility "
+                f"contracts",
             )
 
     out_path = output_dir / "domain-model.json"

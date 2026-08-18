@@ -108,6 +108,7 @@ class TestElicitationSurface:
         assert set(props) == {
             "paired_operations", "nullable_returns",
             "auth_predicates", "security_fields",
+            "fallibility_contracts",
         }
         pair_props = props["paired_operations"]["items"]["properties"]
         assert "callback" in pair_props["kind"]["enum"]
@@ -197,6 +198,94 @@ class TestProvenanceTiers:
         assert entries[0]["provenance"] == TIER_LLM_SUMMARIZED
 
 
+class TestFallibilityContracts:
+    """§2.2.2 structured fallibility field: elicitation, name
+    verification, and the mechanical-corroboration tier discipline."""
+
+    def _items(self) -> list:
+        return [
+            StudyItem(
+                id="f", kind="function", name="foo_send",
+                file="drv/foo.c",
+                calls=["foo_get_ctx", "foo_flush"],
+                null_guards=["if (!foo_get_ctx(f))"],
+                error_gotos=["if (foo_send(f) < 0) goto err;"],
+            ),
+        ]
+
+    def _parse(self, *entries) -> list[dict]:
+        return [
+            e for e in _parse_api_vocabulary(
+                {"api_vocabulary": {
+                    "fallibility_contracts": list(entries),
+                }},
+                self._items(),
+            )
+            if e["class"] == "fallibility_contracts"
+        ]
+
+    def test_prompt_and_schema_carry_the_class(self):
+        assert "fallibility_contracts" in _SYSTEM_PROMPT
+        assert "can_fail" in _SYSTEM_PROMPT
+        items_schema = _RESPONSE_SCHEMA["properties"]["api_vocabulary"][
+            "properties"]["fallibility_contracts"]["items"]
+        assert set(items_schema["required"]) == {"name", "can_fail"}
+        assert "exception" in items_schema["properties"][
+            "convention"]["enum"]
+
+    def test_hallucinated_name_discarded(self):
+        assert self._parse(
+            {"name": "kstrtoul", "can_fail": True,
+             "convention": "negative"},
+        ) == []
+
+    def test_null_convention_corroborated_by_null_guards(self):
+        entries = self._parse(
+            {"name": "foo_get_ctx", "can_fail": True,
+             "convention": "null"},
+        )
+        assert entries[0]["provenance"] == TIER_MECHANICAL
+
+    def test_code_convention_corroborated_by_error_gotos(self):
+        entries = self._parse(
+            {"name": "foo_send", "can_fail": True,
+             "convention": "negative"},
+        )
+        assert entries[0]["provenance"] == TIER_MECHANICAL
+
+    def test_uncorroborated_claim_is_llm_summarized(self):
+        entries = self._parse(
+            {"name": "foo_flush", "can_fail": True,
+             "convention": "negative"},
+        )
+        assert entries[0]["provenance"] == TIER_LLM_SUMMARIZED
+
+    def test_exception_and_infallible_claims_never_mechanical(self):
+        entries = self._parse(
+            {"name": "foo_send", "can_fail": True,
+             "convention": "exception"},
+            {"name": "foo_get_ctx", "can_fail": False},
+        )
+        assert all(
+            e["provenance"] == TIER_LLM_SUMMARIZED for e in entries
+        )
+
+    def test_assembly_and_model_round_trip(self, tmp_path):
+        _, _, _, _, fallible = _assemble_vocabulary(self._parse(
+            {"name": "foo_send", "can_fail": True,
+             "convention": "negative"},
+        ))
+        assert len(fallible) == 1
+        model = DomainModel(target="drv/")
+        model.fallibility_contracts = fallible
+        path = tmp_path / "domain-model.json"
+        model.save(path)
+        loaded = DomainModel.load(path)
+        assert loaded.fallibility_contracts == fallible
+        merged = _merge_domain_models(model, DomainModel(target="drv/"))
+        assert merged.fallibility_contracts == fallible
+
+
 class TestAssembly:
     def test_dedup_prefers_stronger_tier(self):
         entries = [
@@ -209,7 +298,7 @@ class TestAssembly:
                 "kind": "permission", "provenance": TIER_MECHANICAL,
             },
         ]
-        _, _, auth, _ = _assemble_vocabulary(entries)
+        _, _, auth, _, _ = _assemble_vocabulary(entries)
         assert len(auth) == 1
         assert auth[0]["provenance"] == TIER_MECHANICAL
 
@@ -226,7 +315,7 @@ class TestAssembly:
                 "provenance": TIER_MECHANICAL,
             },
         ]
-        pairs, _, _, _ = _assemble_vocabulary(entries)
+        pairs, _, _, _, _ = _assemble_vocabulary(entries)
         assert len(pairs) == 2
 
 
@@ -238,6 +327,7 @@ class TestPersistence:
             model.nullable_returns,
             model.auth_predicates,
             model.security_fields,
+            model.fallibility_contracts,
         ) = _assemble_vocabulary(
             _parse_api_vocabulary(_response(), _items())
         )

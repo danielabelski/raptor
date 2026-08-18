@@ -94,7 +94,10 @@ jobs:
           RAPTOR_RANDOMISE_TESTS: ${{ github.run_id }}
         run: |
           source $VENV_PATH/bin/activate
-          python -m pytest -m slow core packages -q --durations=25
+          # .github test dirs included for their slow-marked
+          # whole-repo import-graph classes (excluded from ci-lint's
+          # bounded PR job by the default addopts marker filter).
+          python -m pytest -m slow core packages .github/tests .github/scripts/tests -q --durations=25
 
       - name: Run integration tests (retry once on external outage)
         env:

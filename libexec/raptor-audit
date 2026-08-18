@@ -1177,7 +1177,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         if (candidate / "raptor-project.json").exists():
             project_dir = candidate
         else:
-            with contextlib.suppress(Exception):
+            # Best-effort active-project detection: symlink reads and
+            # projects-dir mkdir raise OSError; a corrupt project file
+            # can surface ValueError (e.g. NUL in a stored path). A
+            # miswired call propagates instead of skipping the check.
+            with contextlib.suppress(OSError, ValueError):
                 from core.project.project import ProjectManager
                 pm = ProjectManager()
                 active_name = pm.get_active()

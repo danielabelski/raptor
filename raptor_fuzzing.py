@@ -623,8 +623,11 @@ Examples:
             try:
                 from core.json import save_json as _save_json
                 _save_json(out_dir / "fuzzing_report.json", zero_report)
-            except Exception:  # noqa: BLE001, S110 — best effort: don't mask the
-                # operator's already-printed advice with a save error.
+            except OSError:
+                # Best effort: don't mask the operator's already-printed
+                # advice with a write error. zero_report is a literal
+                # dict, so only the atomic write itself can
+                # legitimately fail.
                 pass
             sys.exit(0)
 

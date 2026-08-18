@@ -186,7 +186,11 @@ def _preflight_cost_gate(
             f"Raise the cap or re-run without --max-cost-usd.",
             file=sys.stderr, flush=True,
         )
-        with contextlib.suppress(Exception):
+        # Best-effort status flip: fail_run raises FileNotFoundError
+        # when .raptor-run.json doesn't exist yet and ValueError when
+        # it is malformed on disk — neither should mask the gate
+        # verdict. Anything else (e.g. a miswired call) propagates.
+        with contextlib.suppress(OSError, ValueError):
             fail_run(out_dir, "pre-flight cost gate exceeded")
         return True
     return False
@@ -238,7 +242,7 @@ def _rewrite_target_arg(args: list, old: str, new: str) -> list:
 # same archive). Re-exported here under the old private name
 # for backward compatibility with anything in this module that
 # still references _safe_cache_name.
-from core.archive import safe_cache_name as _safe_cache_name  # noqa: E402
+from core.archive import safe_cache_name as _safe_cache_name
 
 
 def _unpack_archive_target(target: str, args: list, out_dir: Path):
@@ -442,7 +446,10 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # Target shape summary — operator sees what RAPTOR detected
     # before any LLM cost incurs.
     if target:
-        with contextlib.suppress(Exception):
+        # format_start_line self-guards (returns None on any detector
+        # failure); only the print can legitimately fail here — a
+        # closed/broken stdout pipe. A miswired call propagates.
+        with contextlib.suppress(OSError):
             from packages.describe.start_line import format_start_line
             _start_line = format_start_line(Path(target))
             if _start_line:
@@ -693,8 +700,11 @@ def _run_script(script_path: Path, args: list) -> int:
         # and clears the active-run pointer; subsequent
         # invocations get a clean slate.
             # Best-effort. Don't mask the original Ctrl-C
-            # by raising secondary errors during cleanup.
-        with contextlib.suppress(Exception):
+            # by raising secondary errors during cleanup:
+            # cancel_run raises FileNotFoundError when the run
+            # metadata is gone and ValueError when it's malformed.
+            # A miswired call (TypeError etc.) still propagates.
+        with contextlib.suppress(OSError, ValueError):
             from core.run.metadata import cancel_run
             from core.sandbox.summary import get_active_run_dir
             active = get_active_run_dir()

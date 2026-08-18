@@ -115,9 +115,11 @@ def main():
         configured_out = RaptorConfig.get_out_dir()
         if configured_out.is_dir() and configured_out not in scan_dirs:
             scan_dirs.append(configured_out)
-    except Exception:
-        # core.config import failure shouldn't break the hook;
-        # fall back to the hardcoded default.
+    except (ImportError, OSError, ValueError):
+        # core.config import failure shouldn't break the hook, and
+        # get_out_dir raises ValueError when RAPTOR_OUT_DIR points at
+        # a forbidden system prefix; fall back to the hardcoded
+        # default in both cases. A miswired call still propagates.
         pass
     out_dir = REPO_ROOT / "out"
     if out_dir.is_dir() and out_dir not in scan_dirs:
@@ -169,14 +171,18 @@ def main():
                     else:
                         complete_run(d)
                     (d / FAILURE_MARKER).unlink(missing_ok=True)
-                except Exception as e:
+                except (OSError, ValueError) as e:
+                    # Missing/malformed .raptor-run.json or an unlink
+                    # failure — report and keep scanning other runs.
                     print(f"lifecycle-hook: failed to finalize {d}: {e}",
                           file=sys.stderr)
             else:  # session-end
                 try:
                     fail_run(d, "session ended without explicit completion")
                     (d / FAILURE_MARKER).unlink(missing_ok=True)
-                except Exception as e:
+                except (OSError, ValueError) as e:
+                    # Missing/malformed .raptor-run.json or an unlink
+                    # failure — report and keep scanning other runs.
                     print(f"lifecycle-hook: failed to finalize {d}: {e}",
                           file=sys.stderr)
 

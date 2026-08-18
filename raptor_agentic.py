@@ -447,9 +447,11 @@ def run_command_streaming(
                 f"[RAPTOR stream_output reader aborted: "
                 f"{type(exc).__name__}: {exc!s}]\n"
             )
-            with contextlib.suppress(Exception):
-                storage.append(sentinel)
-            with contextlib.suppress(Exception):
+            storage.append(sentinel)
+            # Last-ditch surface at thread abort: stderr may be a
+            # closed/broken pipe (OSError) or a closed text stream
+            # (ValueError) — nothing else is worth dying over here.
+            with contextlib.suppress(OSError, ValueError):
                 print(sentinel, end="", file=sys.stderr, flush=True)
         finally:
             pipe.close()
@@ -607,7 +609,9 @@ def run_command_streaming(
         return -1, "", "Timeout"
     except Exception as e:  # noqa: BLE001
         logger.error("Command failed: %s", e)
-        with contextlib.suppress(Exception):
+        # kill() on an already-dead child raises OSError; wait() can
+        # time out (SubprocessError). A miswired handle propagates.
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
             process.kill()
             process.wait(timeout=5)
         return -1, "", str(e)
@@ -1762,7 +1766,9 @@ Examples:
                 try:
                     shutil.rmtree(str(p))
                 except OSError as e:
-                    with contextlib.suppress(Exception):
+                    # At interpreter teardown stderr can be a closed
+                    # stream (ValueError) or broken fd (OSError).
+                    with contextlib.suppress(OSError, ValueError):
                         sys.stderr.write(
                             f"[atexit] git_temp_dir cleanup failed for "
                             f"{p}: {e}\n",
@@ -2119,8 +2125,9 @@ Examples:
     scan_inventory = None
     _checklist_path = out_dir / "checklist.json"
     if _checklist_path.exists():
-        with contextlib.suppress(Exception):
-            scan_inventory = load_json(_checklist_path)
+        # load_json is non-strict: returns None on unreadable/corrupt
+        # input and logs a warning naming the file — nothing to suppress.
+        scan_inventory = load_json(_checklist_path)
     def _try_cached_joern(target: Path, run_out_dir: Path):
         """Start a Joern server only if a cached CPG exists for this project."""
         try:

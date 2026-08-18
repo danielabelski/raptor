@@ -240,6 +240,11 @@ class JoernServer:
         self._workdir: str | None = None
         self._auth_user: str | None = None
         self._auth_password: str | None = None
+        # Learned FlowSemantic rows (packages.joern.semantics), applied
+        # to the dataflow EngineContext of the tiered sweep and batch
+        # taint queries. Instance-level: semantics describe the loaded
+        # CPG's project.
+        self._flow_semantics: list[Any] = []
 
     def start(self) -> None:
         """Boot the Joern server and wait for readiness."""
@@ -1061,6 +1066,31 @@ class JoernServer:
             elapsed_ms=elapsed_ms,
         )
 
+    def set_flow_semantics(self, rows: list[Any]) -> int:
+        """Install learned FlowSemantic rows for subsequent taint queries.
+
+        *rows* are ``packages.joern.semantics.SemanticRow`` items (or
+        vocabulary-shaped strings/dicts, converted via
+        ``rows_from_vocab``). Invalid rows and ``llm_prior``-provenance
+        rows are dropped loudly by the semantics module. Returns the
+        number of rows retained. Passing an empty list clears the
+        installed semantics.
+        """
+        from .semantics import SemanticRow, filter_valid_rows, rows_from_vocab
+
+        if rows and not isinstance(rows[0], SemanticRow):
+            valid = rows_from_vocab(rows)
+        else:
+            valid, _rejected = filter_valid_rows(rows)
+        self._flow_semantics = valid
+        if valid:
+            logger.info(
+                "flow semantics installed: %d row(s) (%s)",
+                len(valid),
+                ", ".join(r.method for r in valid[:8]),
+            )
+        return len(valid)
+
     def close_workspace(self) -> None:
         """Close the active CPG and free memory."""
         resp = self._post_sync("workspace.reset", timeout=30)
@@ -1170,6 +1200,9 @@ class JoernServer:
         if not valid_pairs:
             return []
 
+        from .semantics import render_context_arg, render_semantics_decl
+        sem_decl = render_semantics_decl(self._flow_semantics)
+        sem_arg = render_context_arg(self._flow_semantics)
         lines = [
             "import io.joern.dataflowengineoss.queryengine._",
             "import io.joern.dataflowengineoss.language._",
@@ -1177,11 +1210,13 @@ class JoernServer:
             "import io.shiftleft.codepropertygraph.generated.nodes.CfgNode",
             "import scala.util.Try",
         ]
+        if sem_decl:
+            lines.append(sem_decl.rstrip("\n"))
         lines += [
             f"val batchConfig = EngineConfig(maxCallDepth = {max_call_depth})",
             (
                 "implicit val batchContext: EngineContext = "
-                "EngineContext(config = batchConfig)"
+                f"EngineContext({sem_arg}config = batchConfig)"
             ),
         ]
 
@@ -1292,6 +1327,14 @@ class JoernServer:
         )
         content = content.replace(
             "__MAX_OUTPUT_ARGS__", str(lang_profile.max_output_args_expansion),
+        )
+
+        from .semantics import render_context_arg, render_semantics_decl
+        content = content.replace(
+            "__SEMANTICS_DECL__\n", render_semantics_decl(self._flow_semantics),
+        )
+        content = content.replace(
+            "__CTX_SEMANTICS__", render_context_arg(self._flow_semantics),
         )
 
         return self._submit_query(

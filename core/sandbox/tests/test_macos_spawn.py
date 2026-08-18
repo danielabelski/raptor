@@ -426,9 +426,14 @@ def test_audit_budget_drops_when_cap_hit(tmp_path):
         if decision == audit_budget.KEEP:
             streamer._append_record(record)
     streamer.stop()
+    # The streamer appends through the held evidence fd, which lives
+    # at <run_dir>/.audit/<name> (core.sandbox.evidence placement) —
+    # read it back from there, like the other audit tests above, not
+    # from the legacy top-level spot.
+    from core.sandbox.evidence import evidence_write_path
+    jsonl_path = evidence_write_path(audit_dir, seatbelt_audit.DENIALS_FILE)
     records = [json.loads(line) for line in
-                (audit_dir / seatbelt_audit.DENIALS_FILE)
-                .read_text().splitlines() if line.strip()]
+                jsonl_path.read_text().splitlines() if line.strip()]
     markers = [r for r in records
                 if r.get("type") in ("category_budget_exceeded",
                                      "category_budget_exceeded_sampling")]

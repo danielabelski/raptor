@@ -56,6 +56,7 @@ autonomous analysis pipeline.
 | `--sanitizer-cut <mode>` | off | Sanitiser-cut value-bound suppression mode (`off` / `on` / `strict` / `shadow`) |
 | `--sanitizer-cut-parity-log <path>` | auto | Parity-log path for `--sanitizer-cut shadow` (default: `<run_dir>/sanitizer_cut_parity.jsonl`) |
 | `--no-iris-tier1` | off | Skip IRIS Tier 1 in-repo LocalFlowSource pack analysis |
+| `--no-curated-queries` | off | Skip the curated in-repo query pass (`engine/codeql/queries/<lang>/`) |
 | `--sandbox <profile>` | full | [Sandbox](sandbox.md) profile (`full` / `strict` / `debug` / `target_run` / `frida` / `network-only` / `none`) |
 | `--no-sandbox` | off | Alias for `--sandbox none` |
 | `--audit` | off | Engage [sandbox](sandbox.md) audit mode |
@@ -369,7 +370,16 @@ generated per dataflow path via
 
 RAPTOR ships 8 hand-written queries under `engine/codeql/queries/`,
 complementing the upstream suites with patterns that CodeQL's standard
-packs do not cover.
+packs do not cover. They run automatically after the standard suite
+for every language that has a curated pack, writing
+`codeql_<lang>_curated.sarif` alongside the suite SARIF (same
+downstream consumption path as the IRIS pass). Opt out per run with
+`--no-curated-queries`; the master switch is
+`RaptorConfig.CODEQL_CURATED_ENABLED`. Import resolution prefers the
+`<lang>-all` library vendored inside the already-cached
+`codeql/<lang>-queries` pack (no network needed); a lazy
+`codeql pack install` is attempted otherwise, and a failure degrades
+to a warning without affecting the standard-suite results.
 
 ### C++ (`engine/codeql/queries/cpp/`)
 

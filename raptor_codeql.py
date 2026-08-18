@@ -82,6 +82,10 @@ def run_autonomous_workflow(args):
     if getattr(args, "no_iris_tier1", False):
         RaptorConfig.IRIS_TIER1_ENABLED = False
 
+    # Same process-scoped pattern for the curated in-repo query pass.
+    if getattr(args, "no_curated_queries", False):
+        RaptorConfig.CODEQL_CURATED_ENABLED = False
+
     # Parse languages — filter out empty entries from leading /
     # trailing / consecutive commas. Pre-fix `--languages
     # ",python,"` produced `["", "python", ""]`; the empty
@@ -368,6 +372,14 @@ Examples:
              "for this run (flips RaptorConfig.IRIS_TIER1_ENABLED). Use "
              "when the in-repo packs produce noise on a specific target "
              "or when comparing stdlib-only vs LocalFlowSource verdicts.",
+    )
+    parser.add_argument(
+        "--no-curated-queries", action="store_true",
+        help="Skip the curated in-repo query pass "
+             "(engine/codeql/queries/<lang>/) for this run (flips "
+             "RaptorConfig.CODEQL_CURATED_ENABLED). Use when a curated "
+             "query produces noise on a specific target or when "
+             "comparing standard-suite-only verdicts.",
     )
     parser.add_argument("--scan-only", action="store_true", help="Scan only (skip autonomous analysis)")
     parser.add_argument(

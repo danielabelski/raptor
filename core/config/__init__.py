@@ -179,6 +179,13 @@ class RaptorConfig:
     # /exploit and /validate inherit through `tier1_check_finding`.
     IRIS_TIER1_ENABLED: bool = True
 
+    # Curated in-repo CodeQL query packs (CODEQL_QUERIES_DIR/<lang>/)
+    # kill-switch. When False, `QueryRunner.analyze_curated_packs`
+    # skips the curated pass entirely. Defaults to True so the
+    # hand-written queries run alongside the standard suites.
+    # Per-run CLI override: `/codeql --no-curated-queries`.
+    CODEQL_CURATED_ENABLED: bool = True
+
     # Timeout Configuration (seconds)
     DEFAULT_TIMEOUT = 1800          # 30 minutes
     SEMGREP_TIMEOUT = 900            # 15 minutes (scan over local rule dirs)

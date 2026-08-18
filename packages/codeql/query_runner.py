@@ -20,13 +20,12 @@ from typing import ClassVar
 # packages/codeql/query_runner.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
-from core.config import RaptorConfig
-from core.logging import get_logger
-from core.sandbox import SandboxSetupError
-from packages.codeql.tunables import CodeQLTunables
+from core.config import RaptorConfig  # noqa: E402
+from core.logging import get_logger  # noqa: E402
+from core.sandbox import SandboxSetupError  # noqa: E402
+from packages.codeql.tunables import CodeQLTunables  # noqa: E402
 
 logger = get_logger()
-
 
 # Tightened from `[\w/.-]+\S*` which accepted any path-like
 # blob (path-traversal `../../etc/passwd`, multi-segment
@@ -83,6 +82,41 @@ def _iris_pack_deps_already_resolved(pack_dir: Path) -> bool:
         if not version or not (cache / dep_name / version).is_dir():
             return False
     return True
+
+
+def _vendored_stdlib_roots(lang: str) -> list[Path]:
+    """Library-pack roots vendored inside cached standard query packs.
+
+    `codeql pack download codeql/<lang>-queries` (which the standard
+    suite performs on demand) vendors the `<lang>-all` library pack
+    under `.codeql/libraries/codeql/` inside the downloaded pack.
+    Pointing `--additional-packs` at that root lets in-repo query
+    packs without a committed lockfile resolve `import <lang>` on
+    hosts with no registry egress. Returns the newest cached version's
+    root, or an empty list when nothing usable is cached.
+    """
+    base = Path.home() / ".codeql" / "packages" / "codeql" / f"{lang}-queries"
+    if not base.is_dir():
+        return []
+
+    def _version_key(p: Path) -> tuple:
+        try:
+            return tuple(int(part) for part in p.name.split("."))
+        except ValueError:
+            return (0,)
+
+    try:
+        versions = sorted(
+            (d for d in base.iterdir() if d.is_dir()),
+            key=_version_key, reverse=True,
+        )
+    except OSError:
+        return []
+    for version_dir in versions:
+        cand = version_dir / ".codeql" / "libraries" / "codeql"
+        if cand.is_dir():
+            return [cand]
+    return []
 
 
 _STDERR_LENGTH_CAP = 256 * 1024  # 256 KB; codeql stderr is typically <16 KB
@@ -816,12 +850,124 @@ class QueryRunner:
                     )
         return results
 
+    def analyze_curated_packs(
+        self,
+        databases: dict[str, Path],
+        out_dir: Path,
+        max_workers: int | None = None,
+    ) -> dict[str, "QueryResult"]:
+        """Run RAPTOR's curated in-repo query packs
+        (`engine/codeql/queries/<lang>/`) against each database.
+
+        Hand-written queries complementing the standard suites (e.g.
+        cpp use-after-move / iterator invalidation, java XXE / SSRF
+        annotation sources). Same DBs the standard suite uses; output
+        `codeql_<lang>_curated.sarif` joins the report's `sarif_files`
+        exactly like the IRIS pass, so downstream consumers pick it up
+        without changes.
+
+        Returns one `QueryResult` per language whose curated pack
+        exists (a directory with a `qlpack.yml` and at least one
+        `.ql`). Languages without one are silently skipped.
+
+        Dependency resolution: the curated packs pin their stdlib dep
+        with `*` and may not carry a committed lockfile. `codeql pack
+        install` is attempted lazily (warning on failure, mirroring
+        the IRIS pass), but when the standard suite has already cached
+        `codeql/<lang>-queries`, the `<lang>-all` library vendored
+        inside that cache is passed via `--additional-packs` — so on
+        hosts without registry egress the curated queries still
+        resolve their imports.
+        """
+        from core.config import RaptorConfig
+
+        if not RaptorConfig.CODEQL_ENABLED:
+            logger.info("Curated query analysis skipped: CODEQL_ENABLED is False")
+            return {}
+
+        if not RaptorConfig.CODEQL_CURATED_ENABLED:
+            logger.info(
+                "Curated query analysis skipped: CODEQL_CURATED_ENABLED is False"
+            )
+            return {}
+
+        pack_root = RaptorConfig.CODEQL_QUERIES_DIR
+        if not pack_root.is_dir():
+            return {}
+
+        analyzable: dict[str, tuple[Path, Path]] = {}
+        for lang, db in databases.items():
+            pack_dir = pack_root / lang
+            if (
+                pack_dir.is_dir()
+                and (pack_dir / "qlpack.yml").is_file()
+                and any(pack_dir.glob("*.ql"))
+            ):
+                analyzable[lang] = (db, pack_dir)
+        if not analyzable:
+            return {}
+
+        max_workers = max_workers or RaptorConfig.MAX_CODEQL_WORKERS
+        results: dict[str, QueryResult] = {}
+
+        def _run_one(lang: str, db: Path, pack_dir: Path) -> "QueryResult":
+            vendored = _vendored_stdlib_roots(lang)
+            extra: tuple[str, ...] = tuple(
+                f"--additional-packs={root}" for root in vendored
+            )
+            return self._run_local_pack(
+                lang, db, pack_dir, out_dir,
+                suite_name="raptor-curated",
+                sarif_name=f"codeql_{lang}_curated.sarif",
+                label="curated queries",
+                extra_analyze_args=extra,
+                # A vendored stdlib root resolves the imports without
+                # the (network-dependent) install round-trip.
+                skip_install=bool(vendored),
+            )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_lang = {
+                executor.submit(_run_one, lang, db, pack_dir): lang
+                for lang, (db, pack_dir) in analyzable.items()
+            }
+            for future in as_completed(future_to_lang):
+                lang = future_to_lang[future]
+                try:
+                    results[lang] = future.result()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("curated queries (%s) raised: %s", lang, e)
+                    db, _ = analyzable[lang]
+                    results[lang] = QueryResult(
+                        success=False, language=lang,
+                        database_path=db, sarif_path=None, findings_count=0,
+                        duration_seconds=0.0, errors=[str(e)],
+                        suite_name="raptor-curated",
+                    )
+        return results
+
     def _run_iris_pack(
         self, lang: str, db: Path, pack_dir: Path, out_dir: Path,
     ) -> "QueryResult":
         """Per-language worker for `analyze_iris_packs` — pack install
-        followed by analyze. Extracted so the parallel orchestrator
-        above is just dispatch + result aggregation."""
+        followed by analyze."""
+        return self._run_local_pack(
+            lang, db, pack_dir, out_dir,
+            suite_name="raptor-iris-local",
+            sarif_name=f"codeql_{lang}_iris.sarif",
+            label="IRIS LocalFlowSource",
+        )
+
+    def _run_local_pack(
+        self, lang: str, db: Path, pack_dir: Path, out_dir: Path,
+        *, suite_name: str, sarif_name: str, label: str,
+        extra_analyze_args: tuple[str, ...] = (),
+        skip_install: bool = False,
+    ) -> "QueryResult":
+        """Per-language worker shared by `analyze_iris_packs` and
+        `analyze_curated_packs` — lazy pack install followed by a
+        sandboxed `database analyze`. Extracted so the parallel
+        orchestrators above are just dispatch + result aggregation."""
         from core.config import RaptorConfig
         from core.sandbox import run as sandbox_run
 
@@ -833,8 +979,11 @@ class QueryRunner:
         # avoids both the subprocess and the sandbox network-permit
         # round-trip. Sandboxed CI environments without a populated
         # pack cache fall through to the install attempt as before.
-        if _iris_pack_deps_already_resolved(pack_dir):
-            logger.debug("IRIS pack (%s): deps satisfied from pack cache, skipping install", lang)
+        if skip_install or _iris_pack_deps_already_resolved(pack_dir):
+            logger.debug(
+                "%s pack (%s): deps already resolvable, skipping install",
+                label, lang,
+            )
         else:
             # Lazy `codeql pack install` — populates dependency cache
             # from the committed lockfile. Idempotent and fast on
@@ -874,20 +1023,22 @@ class QueryRunner:
                         install_proc.stderr or install_proc.stdout or ""
                     ).strip()[:300]
                     logger.warning(
-                        "IRIS pack install (%s) returned %s: %s",
+                        "%s pack install (%s) returned %s: %s",
+                        label,
                         lang,
                         install_proc.returncode,
                         install_err
                     )
             except Exception as e:  # noqa: BLE001
-                logger.warning("IRIS pack install (%s) raised: %s", lang, e)
+                logger.warning("%s pack install (%s) raised: %s", label, lang, e)
 
-        sarif_path = out_dir / f"codeql_{lang}_iris.sarif"
+        sarif_path = out_dir / sarif_name
         cmd = [
             self.codeql_cli, "database", "analyze",
             str(db), str(pack_dir),
             "--format=sarif-latest",
             f"--output={sarif_path}",
+            *extra_analyze_args,
         ]
         CodeQLTunables.from_tuning().append_to(cmd, include_disk_cache=False)
         analysis_start = time.time()
@@ -903,33 +1054,33 @@ class QueryRunner:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
 
         except Exception as e:  # noqa: BLE001
-            logger.warning("IRIS LocalFlowSource (%s) analyze raised: %s", lang, e)
+            logger.warning("%s (%s) analyze raised: %s", label, lang, e)
             return QueryResult(
                 success=False, language=lang,
                 database_path=db, sarif_path=None, findings_count=0,
                 duration_seconds=time.time() - analysis_start,
-                errors=[str(e)], suite_name="raptor-iris-local",
+                errors=[str(e)], suite_name=suite_name,
             )
 
         if proc.returncode == 0 and sarif_path.exists():
             n = self._count_sarif_findings(sarif_path)
-            logger.info("✓ IRIS LocalFlowSource (%s): %s findings", lang, n)
+            logger.info("✓ %s (%s): %s findings", label, lang, n)
             return QueryResult(
                 success=True, language=lang,
                 database_path=db, sarif_path=sarif_path,
                 findings_count=n,
                 duration_seconds=time.time() - analysis_start,
-                errors=[], suite_name="raptor-iris-local",
+                errors=[], suite_name=suite_name,
             )
 
         err = (proc.stderr or proc.stdout or "").strip()[:300]
-        logger.warning("IRIS LocalFlowSource (%s) failed: %s", lang, err)
+        logger.warning("%s (%s) failed: %s", label, lang, err)
         return QueryResult(
             success=False, language=lang,
             database_path=db, sarif_path=None, findings_count=0,
             duration_seconds=time.time() - analysis_start,
             errors=[err] if err else [],
-            suite_name="raptor-iris-local",
+            suite_name=suite_name,
         )
 
     def _count_sarif_findings(self, sarif_path: Path) -> int:

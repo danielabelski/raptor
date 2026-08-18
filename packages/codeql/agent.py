@@ -554,6 +554,16 @@ class CodeQLAgent:
                 successful_dbs, self.out_dir,
             )
 
+            # Curated in-repo query pass — the hand-written packs
+            # under engine/codeql/queries/<lang>/ (cpp use-after-move,
+            # java XXE, ...). Empty dict when no curated pack exists
+            # for any of the languages we built DBs for. Failures
+            # degrade to a warning inside the runner; they never kill
+            # the scan.
+            curated_results = self.query_runner.analyze_curated_packs(
+                successful_dbs, self.out_dir,
+            )
+
             # Collect SARIF files and count findings
             sarif_files = []
             total_findings = 0
@@ -574,6 +584,17 @@ class CodeQLAgent:
                     if result.findings_count:
                         logger.info(
                             "  - %s IRIS LocalFlowSource: %s extra findings",
+                            lang,
+                            result.findings_count
+                        )
+
+            for lang, result in curated_results.items():
+                if result.success and result.sarif_path:
+                    sarif_files.append(str(result.sarif_path))
+                    total_findings += result.findings_count
+                    if result.findings_count:
+                        logger.info(
+                            "  - %s curated queries: %s extra findings",
                             lang,
                             result.findings_count
                         )
@@ -897,6 +918,13 @@ Examples:
              "Use when the in-repo packs produce noise on a specific target "
              "or when comparing stdlib-only vs LocalFlowSource verdicts.",
     )
+    parser.add_argument(
+        "--no-curated-queries", action="store_true",
+        help="Skip the curated in-repo query pass "
+             "(engine/codeql/queries/<lang>/). Use when a curated query "
+             "produces noise on a specific target or when comparing "
+             "standard-suite-only verdicts.",
+    )
 
     # Sandbox CLI flags (--sandbox / --no-sandbox / --audit / --audit-verbose)
     # so the agentic-driven invocation can propagate audit mode into this
@@ -920,6 +948,11 @@ Examples:
     if args.no_iris_tier1:
         from core.config import RaptorConfig
         RaptorConfig.IRIS_TIER1_ENABLED = False
+
+    # Same process-scoped pattern for the curated in-repo query pass.
+    if args.no_curated_queries:
+        from core.config import RaptorConfig
+        RaptorConfig.CODEQL_CURATED_ENABLED = False
 
     # Parse languages
     languages = None

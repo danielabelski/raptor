@@ -608,6 +608,10 @@
   "count": 10,
   "kind": "alternation"
  },
+ "core/audit/sandbox_policy.py::_LLM_PHASES": {
+  "count": 27,
+  "kind": "literal"
+ },
  "core/audit/sandbox_policy.py::_TOOL_POLICIES": {
   "count": 13,
   "kind": "literal"
@@ -679,6 +683,10 @@
  "core/audit/transform_sequence.py::_SECURITY_TRANSFORM_RE": {
   "count": 23,
   "kind": "alternation"
+ },
+ "core/audit/triage.py::_MEM_WRITERS": {
+  "count": 17,
+  "kind": "literal"
  },
  "core/audit/ts_extract.py::_ASSIGNMENT_TYPES": {
   "count": 12,

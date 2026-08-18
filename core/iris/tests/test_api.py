@@ -84,15 +84,60 @@ class TestGetProjectSinks:
 
 
 class TestGetProjectSanitisers:
-    def test_returns_frozenset(self, tmp_path):
+    """Suppression-direction reader — evidence-tier gated.
+
+    A recognised sanitiser downgrades guard-adequacy findings, so
+    only tool-corroborated tiers (>= XREF_BACKED) may flow through;
+    heuristic-tier (LLM-refined, unconfirmed) sanitisers are
+    prompt-context only.
+    """
+
+    def test_returns_frozenset_of_corroborated(self, tmp_path):
         run_dir = tmp_path / "project" / "run_001"
         run_dir.mkdir(parents=True)
         save_specs(run_dir, [
-            _make_spec(fn="sanitize_html", role="sanitiser"),
-            _make_spec(fn="exec_cmd", role="sink"),
+            _make_spec(fn="sanitize_html", role="sanitiser",
+                       evidence_tier=EvidenceTier.XREF_BACKED),
+            _make_spec(fn="exec_cmd", role="sink",
+                       evidence_tier=EvidenceTier.XREF_BACKED),
         ])
         sani = get_project_sanitisers(out_dir=run_dir)
+        assert isinstance(sani, frozenset)
         assert sani == {"sanitize_html"}
+
+    def test_heuristic_tier_cannot_suppress(self, tmp_path):
+        """An LLM-refined sanitiser at heuristic tier must NOT reach
+        the suppression-direction reader — a hallucinated sanitiser
+        would otherwise mark a guard adequate and bury a finding."""
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            _make_spec(fn="llm_imagined_sanitiser", role="sanitiser",
+                       evidence_tier=EvidenceTier.HEURISTIC),
+        ])
+        assert get_project_sanitisers(out_dir=run_dir) == frozenset()
+        # ...but it IS still visible to prompt-direction consumers as
+        # unverified context (load_project_specs, untiered default).
+        hints = load_project_specs(out_dir=run_dir, roles={"sanitiser"})
+        assert [s.function for s in hints] == ["llm_imagined_sanitiser"]
+
+    def test_corroborated_tiers_can_suppress(self, tmp_path):
+        """Tool-confirmed (xref) and stronger tiers pass the gate."""
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            _make_spec(fn="xref_sani", role="sanitiser",
+                       evidence_tier=EvidenceTier.XREF_BACKED),
+            _make_spec(fn="smt_sani", role="sanitiser",
+                       evidence_tier=EvidenceTier.SMT_PROVED),
+            _make_spec(fn="heuristic_sani", role="sanitiser",
+                       evidence_tier=EvidenceTier.HEURISTIC),
+            _make_spec(fn="hint_sani", role="sanitiser",
+                       evidence_tier=EvidenceTier.HEADER_BACKED),
+        ])
+        assert get_project_sanitisers(out_dir=run_dir) == {
+            "xref_sani", "smt_sani",
+        }
 
 
 class TestGetProjectSources:

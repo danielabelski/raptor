@@ -89,17 +89,38 @@ def get_project_sinks(
     return frozenset(s.function for s in specs)
 
 
+# Suppression-direction evidence gate: recognising a function as a
+# sanitiser can only ever *weaken* scrutiny (guard adequacy treats a
+# recognised sanitiser as adequate, downgrading the finding), so a
+# spec must be tool-corroborated before it may flow in that direction.
+# XREF_BACKED is the floor: reached only via tool confirmation in the
+# refine loop (_promote_confirmed) or an interactive operator
+# annotation (promote_spec_on_annotation, human_grade). Heuristic /
+# hint-tier specs (LLM-synthesised, machine-attributed annotations)
+# stay prompt-direction only — they are still returned by
+# ``load_project_specs`` for unverified-context injection, but never
+# by the suppression-direction readers below.
+SUPPRESSION_MIN_TIER = EvidenceTier.XREF_BACKED
+
+
 def get_project_sanitisers(
     out_dir: Path | None = None,
     target_path: Path | None = None,
 ) -> frozenset[str]:
-    """Return IRIS-confirmed sanitiser function names.
+    """Return tool-corroborated sanitiser function names.
 
     Used by guard quality analysis and condition_adequacy to recognise
     project-specific sanitisation that the static set wouldn't know.
+
+    Suppression-direction reader: only specs at or above
+    ``SUPPRESSION_MIN_TIER`` (tool-corroborated / operator-confirmed)
+    are returned. An LLM-refined sanitiser at heuristic tier must not
+    be able to mark a guard adequate — that would let a hallucinated
+    sanitiser suppress a real finding.
     """
     specs = load_project_specs(
         out_dir=out_dir, target_path=target_path, roles={"sanitiser"},
+        min_tier=SUPPRESSION_MIN_TIER,
     )
     return frozenset(s.function for s in specs)
 

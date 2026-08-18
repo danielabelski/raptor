@@ -242,7 +242,7 @@ def _rewrite_target_arg(args: list, old: str, new: str) -> list:
 # same archive). Re-exported here under the old private name
 # for backward compatibility with anything in this module that
 # still references _safe_cache_name.
-from core.archive import safe_cache_name as _safe_cache_name
+from core.archive import safe_cache_name as _safe_cache_name  # noqa: E402
 
 
 def _unpack_archive_target(target: str, args: list, out_dir: Path):
@@ -397,11 +397,6 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
             target = _extract_target(args)
 
     start_run(out_dir, command, target=target, target_identity=target_identity)
-    # Mirror libexec/raptor-run-lifecycle's sentinel so direct
-    # `python3 raptor.py <mode>` invocation honours the OUTPUT_DIR=<path>
-    # contract documented in CLAUDE.md. Downstream tooling that greps
-    # stdout for the sentinel works on both invocation paths.
-    print(f"OUTPUT_DIR={out_dir}", flush=True)
 
     # Surface the target's license at lifecycle start, BEFORE any
     # tool actually runs — operators about to use CodeQL get the
@@ -464,6 +459,15 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     if max_cost_usd is not None:  # noqa: SIM102
         if _preflight_cost_gate(target, max_cost_usd, out_dir):
             return 1
+
+    # Mirror libexec/raptor-run-lifecycle's sentinel so direct
+    # `python3 raptor.py <mode>` invocation honours the OUTPUT_DIR=<path>
+    # contract documented in CLAUDE.md (sentinel is the LAST line of the
+    # lifecycle-start block). Printed after the license/target-shape/
+    # estimate lines and after the failable pre-flight cost gate, so a
+    # refused run never hands the caller a directory to write into, and
+    # downstream tooling that greps stdout works on both invocation paths.
+    print(f"OUTPUT_DIR={out_dir}", flush=True)
 
 
     # Re-inject --max-cost-usd for downstream runtime enforcement.

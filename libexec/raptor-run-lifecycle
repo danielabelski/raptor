@@ -174,14 +174,16 @@ def main():
             sys.exit(1)
 
         start_run(out_dir, args.command, target=target_path)
-        print(f"OUTPUT_DIR={out_dir}")
 
         # Pre-flight cost gate (scorecard-derived). When
         # --max-cost-usd is set, compare against the scorecard
         # estimate. Shared implementation lives in raptor.py so the
         # two entry points cannot drift; the estimate line goes to
         # stderr so stdout stays single-line OUTPUT_DIR= for callers
-        # that parse it.
+        # that parse it. The gate runs BEFORE the sentinel prints:
+        # callers treat OUTPUT_DIR= as "the run started, write here",
+        # so a gate refusal (exit 1, run marked failed) must not hand
+        # them a directory to write into.
         if args.max_cost_usd is not None and target_path:
             try:
                 from raptor import _preflight_cost_gate
@@ -194,6 +196,8 @@ def main():
                 raise
             except Exception as e:  # noqa: BLE001
                 sys.stderr.write(f"  (estimate skipped: {e})\n")
+
+        print(f"OUTPUT_DIR={out_dir}")
 
     elif action == "complete":
         if len(sys.argv) < 3:

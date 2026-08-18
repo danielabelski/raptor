@@ -344,3 +344,44 @@ class TestUnresolvableExcludedFromDrain:
         assert by_id["rl-1"]["resolved"]
         assert not by_id["rl-2"].get("resolved")
         assert by_id["rl-2"]["unresolvable"]
+
+
+class TestCompileInvariantsExitCode:
+    """A compile-invariants failure must propagate into the loop's exit
+    code like the prep and study-run legs do — not exit 0 with zero
+    compiled rules."""
+
+    def _run_main(self, tmp_path, compile_rc: int) -> int:
+        target = tmp_path / "src"
+        target.mkdir()
+        out = tmp_path / "out"
+        out.mkdir()
+        # Prep artefacts pre-seeded: the patched _run is a no-op, so
+        # the files the real subcommands would write must exist.
+        (out / "study-list.json").write_text(
+            json.dumps({"items": []}), encoding="utf-8",
+        )
+        (out / "domain-model.json").write_text(
+            json.dumps({"invariants": [{
+                "statement": "refcount never drops below zero",
+                "negation": "refcount drops below zero",
+            }]}),
+            encoding="utf-8",
+        )
+
+        def fake_run(cmd, *, verbose=False):
+            if "raptor-compile-invariants" in cmd[1]:
+                return compile_rc
+            return 0
+
+        argv = ["raptor-study-loop", str(target), str(out),
+                "--identifier", "some_func"]
+        with patch.object(_loop, "_run", side_effect=fake_run), \
+                patch.object(sys, "argv", argv):
+            return _loop.main()
+
+    def test_compile_failure_sets_exit_code(self, tmp_path):
+        assert self._run_main(tmp_path, compile_rc=3) == 3
+
+    def test_compile_success_exits_zero(self, tmp_path):
+        assert self._run_main(tmp_path, compile_rc=0) == 0

@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import raptor
+import raptor  # noqa: E402
 
 
 class PreflightCostGateTests(unittest.TestCase):
@@ -72,6 +72,44 @@ class LifecycleUsesSharedGateTests(unittest.TestCase):
         # The drifted inline copy is gone.
         self.assertNotIn("estimate_from_scorecard", src)
         self.assertNotIn("PROVIDER_DEFAULT_MODELS", src)
+
+
+class SentinelAfterGateTests(unittest.TestCase):
+    """OUTPUT_DIR= must print AFTER the failable pre-flight cost gate.
+
+    Callers treat the sentinel as "the run started, write here"; a gate
+    refusal after the sentinel hands them a directory belonging to a
+    failed run. Pinned at source level for both entry points so the
+    ordering cannot silently regress.
+    """
+
+    @staticmethod
+    def _order(src: str, first: str, second: str) -> None:
+        i, j = src.index(first), src.index(second)
+        assert i < j, f"{first!r} must appear before {second!r}"
+
+    def test_lifecycle_gate_precedes_sentinel(self):
+        src = (REPO_ROOT / "libexec" / "raptor-run-lifecycle").read_text(
+            encoding="utf-8"
+        )
+        self._order(src, "from raptor import _preflight_cost_gate",
+                    'print(f"OUTPUT_DIR={out_dir}")')
+
+    def test_raptor_py_gate_precedes_sentinel(self):
+        src = (REPO_ROOT / "raptor.py").read_text(encoding="utf-8")
+        # Scope to the lifecycle-start block: the gate call site, then
+        # the sentinel print.
+        self._order(src, "if _preflight_cost_gate(target, max_cost_usd",
+                    'print(f"OUTPUT_DIR={out_dir}", flush=True)')
+
+    def test_raptor_py_sentinel_is_last_start_block_line(self):
+        """License/start-line informational prints precede the sentinel."""
+        src = (REPO_ROOT / "raptor.py").read_text(encoding="utf-8")
+        sentinel = src.index('print(f"OUTPUT_DIR={out_dir}", flush=True)')
+        for marker in ("detect_target_license", "format_start_line"):
+            assert src.index(marker) < sentinel, (
+                f"{marker} should print before the OUTPUT_DIR sentinel"
+            )
 
 
 if __name__ == "__main__":

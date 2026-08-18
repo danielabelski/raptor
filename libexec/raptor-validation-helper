@@ -1911,8 +1911,21 @@ def prepare_1(workdir, target=None, model=None):
         manifest = None
     try:
         complete_run(Path(workdir), manifest=manifest)
-    except Exception as e:  # noqa: BLE001
-        print(f"⚠️  Lifecycle error: {e}", file=sys.stderr)
+    except FileNotFoundError as e:
+        # No .raptor-run.json in the workdir: it was materialised
+        # outside the run lifecycle (e.g. /agentic's fuzz-validation
+        # handoff builds a validate-style dir and runs stage 1 on
+        # it directly). There is no run to orphan — informational
+        # only, stage output stands.
+        print(f"⚠️  Lifecycle skipped (not a lifecycle-managed run "
+              f"dir): {e}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
+        # Match raptor-run-lifecycle `complete` semantics: a failed
+        # completion of a STARTED run must exit nonzero, otherwise
+        # the run is orphaned with status=running while the caller
+        # believes the pipeline sealed it.
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

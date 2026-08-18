@@ -38,7 +38,6 @@ class FridaObservation:
     args: list[str] = field(default_factory=list)
     retval: str | None = None
     callees: list[str] = field(default_factory=list)
-    timestamp_ms: float = 0.0
 
 
 @dataclass
@@ -456,7 +455,6 @@ def _parse_observations(log_file: Path) -> list[FridaObservation]:
                 function=func_name,
                 file="",
                 args=data.get("args", []),
-                timestamp_ms=data.get("ts", 0.0),
             )
             call_stack[func_name] = obs
             observations.append(obs)

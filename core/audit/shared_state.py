@@ -92,9 +92,6 @@ class SharedState:
     # Semantic consistency outlier findings across peer groups.
     semantic_findings: list[Any] = field(default_factory=list)
 
-    # Contract pair index: function name → list of ContractPairGroup objects.
-    contract_pair_index: dict[str, list[Any]] = field(default_factory=dict)
-
     # Cross-function / cross-file mechanical detector results; keyed by
     # "file:function".
     mechanical_findings: dict[str, list[Any]] = field(default_factory=dict)
@@ -148,9 +145,6 @@ class SharedState:
     # Checklist lookup: maps (file, function_name) → gap dict for O(1)
     # lookups during chain injection.
     checklist_index: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
-
-    # IRIS bypass findings loaded from a prior run; keyed by target function.
-    iris_bypass_by_func: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     # Domain model (concepts + invariants) loaded from the journal.
     domain_model: dict[str, Any] | None = None
@@ -237,7 +231,6 @@ class SharedState:
         prop_config: PropagationConfig | None,
         iris_taint_specs: list[Any],
         call_edges: list[dict[str, Any]],
-        iris_bypass_by_func: dict[str, list[dict[str, Any]]] | None = None,
         domain_model: dict[str, Any] | None = None,
         capability_displacements: list[Any] | None = None,
         struct_accessor_index: dict[str, list[Any]] | None = None,
@@ -311,7 +304,6 @@ class SharedState:
             call_edges=call_edges,
             call_edge_index=edge_index,
             checklist_index=cl_index,
-            iris_bypass_by_func=iris_bypass_by_func if iris_bypass_by_func is not None else {},
             domain_model=domain_model,
             capability_displacements=capability_displacements if capability_displacements is not None else [],
             struct_accessor_index=struct_accessor_index if struct_accessor_index is not None else {},

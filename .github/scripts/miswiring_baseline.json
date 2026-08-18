@@ -591,13 +591,13 @@
    "note": "pending wiring: safe_when is the fail-open channel's planned per-flag suppression predicate"
   },
   "plumbing:orphan_config_field:core/binary/elf.py:_SectionHeader.sh_link": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+   "note": "kept: spec-defined ELF section-header member (2026-08-17 config-orphan pass). The canonical .dynstr resolution is sections[dynsym.sh_link]; today elf.py matches by name+type (elf.py:198-205), which fails on renamed sections from exotic toolchains \u2014 sh_link is the upgrade path. Struct unpack offsets come from the format string, so the field is layout-inert."
   },
   "plumbing:orphan_config_field:core/llm/tool_use/types.py:TurnStarted.input_token_estimate": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+   "note": "kept: published observability API (2026-08-17 config-orphan pass). TurnStarted is a frozen event dataclass exported in core.llm.tool_use.__all__ for external subscribers; per-turn input-token telemetry is the point of the event. The in-repo hunt_dispatch subscriber deliberately skips TurnStarted; the value is computed regardless for the context-policy gate (loop.py)."
   },
   "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
+   "note": "kept: autonomous fuzzing loop feature seed (operator decision 2026-08-16; re-affirmed 2026-08-17 config-orphan pass \u2014 goal_progress and strategies_tried deleted as shadowed by Goal.progress / successful_strategies). This is the natural input the wired loop derives coverage_plateau_duration from."
   },
   "artifacts:orphan_reader::diagram-stdout.log": {
    "note": "self-test harness log: ctx.run() writes per-case logs dynamically as f\"{name}.log\"; case_diagram_stdout reads its own log back to assert diagram output \u2014 write side invisible to the static pass"

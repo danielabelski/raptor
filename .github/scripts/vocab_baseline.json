@@ -1259,6 +1259,11 @@
   "count": 17,
   "kind": "literal"
  },
+ "core/smt_solver/path_feasibility.py::_CALL_SUMMARIES": {
+  "count": 11,
+  "kind": "literal",
+  "note": "libc/POSIX call-summary axiom table (strlen/abs/min-max family) \u2014 language-runtime names, doctrine-sanctioned hardcoding; project-API summaries must come from learned vocabulary, never this table (enforced by the table comment)"
+ },
  "core/status/__init__.py::_STATUS_ALIASES": {
   "count": 24,
   "kind": "literal"

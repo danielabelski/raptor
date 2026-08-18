@@ -282,7 +282,7 @@ class TestLlmFailureIsErrorState:
         )
         monkeypatch.setattr(
             dv, "check_path_feasibility",
-            lambda conditions, profile=None: smt,
+            lambda conditions, profile=None, **kwargs: smt,
         )
         monkeypatch.setattr(
             validator, "_cheap_dataflow_fp_check", lambda dataflow: None,
@@ -350,6 +350,7 @@ class TestLlmFailureIsErrorState:
 from types import SimpleNamespace  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
+from core.smt_solver.path_feasibility import PathCondition  # noqa: E402
 from packages.codeql.dataflow_validator import (  # noqa: E402
     MAX_SMT_PATHS,
     SMT_INFEASIBLE_CONFIDENCE,
@@ -529,3 +530,56 @@ class TestMultiPathSMT:
             result = v.validate_dataflow_path(dp, _Path("/nonexistent-repo"))
         assert result.smt_paths_checked == MAX_SMT_PATHS
         assert v._extract_path_conditions.call_count == MAX_SMT_PATHS
+
+
+class TestWitnessSteering:
+    def test_steering_target_picks_last_condition_identifier(self):
+        from packages.codeql.dataflow_validator import _steering_target
+        conds = [
+            PathCondition("size > 0", step_index=0),
+            PathCondition("Count * 16 < limit", step_index=1),
+        ]
+        assert _steering_target(conds) == "count"
+
+    def test_steering_target_skips_null_and_literals(self):
+        from packages.codeql.dataflow_validator import _steering_target
+        assert _steering_target(
+            [PathCondition("NULL != 0x10", step_index=0)]
+        ) is None
+        assert _steering_target([]) is None
+
+    def _capture_prefer(self, rule_id, conditions):
+        v = _validator()
+        v._extract_path_conditions = MagicMock(return_value=(conditions, {}))
+        dp = v.extract_dataflow_from_sarif(_sarif_two_flows())
+        dp.rule_id = rule_id
+        with patch(
+            "packages.codeql.dataflow_validator.check_path_feasibility",
+            return_value=_smt(True, "sat"),
+        ) as smt_mock, patch(
+            "core.llm.scorecard.prefilter_decision",
+            return_value=SimpleNamespace(short_circuit=False),
+        ), patch("core.llm.scorecard.record_prefilter_outcome"), patch(
+            "packages.codeql.dataflow_validator.load_methodology",
+            return_value="",
+        ):
+            v.validate_dataflow_path(dp, _Path("/nonexistent-repo"))
+        return smt_mock.call_args.kwargs.get("prefer_witness")
+
+    def test_overflow_rule_steers_to_max(self):
+        prefer = self._capture_prefer(
+            "cpp/integer-overflow",
+            [PathCondition("count * size < cap", step_index=0)],
+        )
+        assert prefer == ("count", "max")
+
+    def test_non_overflow_rule_does_not_steer(self):
+        prefer = self._capture_prefer(
+            "cpp/buffer-overflow",
+            [PathCondition("count * size < cap", step_index=0)],
+        )
+        assert prefer is None
+
+    def test_unidentifiable_target_skips_steering(self):
+        prefer = self._capture_prefer("cpp/integer-overflow", [])
+        assert prefer is None

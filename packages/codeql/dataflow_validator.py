@@ -280,6 +280,29 @@ SMT_INFEASIBLE_CONFIDENCE = 0.7
 MAX_SMT_PATHS = 3
 
 
+# Digit lookbehind so the identifier scan cannot start mid-literal
+# (``0x10`` must not yield ``x10``).
+_STEER_IDENT_RE = __import__("re").compile(r"(?<![0-9A-Za-z_])[A-Za-z_][A-Za-z0-9_]*")
+_STEER_NON_VARS = frozenset({"null", "not", "and", "or"})
+
+
+def _steering_target(conditions: list) -> str | None:
+    """Pick the variable to drive toward its maximum for overflow
+    witnesses: the first identifier of the LAST extracted condition
+    (the sink-adjacent guard). Returns the lowercased name (the SMT
+    parser interns variables lowercased) or None when the last
+    condition names no plain identifier — the caller then skips
+    steering rather than guessing."""
+    if not conditions:
+        return None
+    for tok in _STEER_IDENT_RE.findall(conditions[-1].text):
+        low = tok.lower()
+        if low in _STEER_NON_VARS or low.startswith("0x"):
+            continue
+        return low
+    return None
+
+
 def _is_overflow_rule(rule_id: str) -> bool:
     """Word-boundary check whether the rule_id signals an integer
     overflow/underflow rule. See _OVERFLOW_MARKERS_RE comment for
@@ -779,7 +802,19 @@ class DataflowValidator:
         for path_index, candidate in enumerate(candidate_paths):
             conditions, profile_hint = self._extract_path_conditions(candidate, repo_path)
             profile = _infer_bv_profile(candidate.rule_id, profile_hint)
-            smt_result = check_path_feasibility(conditions, profile=profile)
+            # Overflow-family rules: steer the witness toward the
+            # maximum of the sink-adjacent variable so a sat model
+            # lands in the wraparound region instead of the trivial
+            # x=0 assignment. Witness-only — the sat/unsat verdict is
+            # unaffected, and an unresolvable target skips steering.
+            prefer = None
+            if _is_overflow_rule(candidate.rule_id):
+                target = _steering_target(conditions)
+                if target is not None:
+                    prefer = (target, "max")
+            smt_result = check_path_feasibility(
+                conditions, profile=profile, prefer_witness=prefer,
+            )
             if smt_result.feasible is False:
                 self.logger.info(
                     "SMT: path %d/%d infeasible — %s",

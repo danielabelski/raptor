@@ -237,6 +237,95 @@ def request_shutdown() -> None:
     _shutdown_event.set()
 
 
+# ── SIGTERM grace ────────────────────────────────────────────────────
+# External supervisors stop long audits with SIGTERM (or a plain kill
+# after a shell cap). First TERM: stop dispatching, harvest in-flight
+# completions via the executor's shutdown path, flush ledgers/journal,
+# write the salvage exports, and let the CLI mark the lifecycle
+# `interrupted` with a resume hint — bounded by a ~30s watchdog that
+# forces exit 130 if the drain stalls. Second TERM: immediate exit 130
+# (after the best-effort flush hooks).
+
+_SIGTERM_GRACE_S = 30.0
+_sigterm_event = _threading.Event()
+_sigterm_state: dict[str, Any] = {"installed": False, "count": 0}
+#: Best-effort callables run before any FORCED exit (watchdog expiry /
+#: second TERM): collector flush, lifecycle interrupt marking. The
+#: graceful path runs the real salvage sequence instead.
+_sigterm_flush_hooks: list[Callable[[], None]] = []
+
+
+def is_sigterm_requested() -> bool:
+    return _sigterm_event.is_set()
+
+
+def _run_sigterm_flush_hooks() -> None:
+    # Snapshot: run_orchestrator's finally clears the registry
+    # concurrently with a late watchdog.
+    hooks = list(_sigterm_flush_hooks)
+    for hook in hooks:
+        try:
+            hook()
+        except Exception:
+            logger.debug("sigterm flush hook failed", exc_info=True)
+
+
+def _sigterm_watchdog(grace_s: float) -> None:
+    time.sleep(grace_s)
+    logger.warning(
+        "SIGTERM grace (%.0fs) expired — forcing exit 130 after "
+        "best-effort flush (salvage may be incomplete; resume with "
+        "`raptor-audit resume <out-dir>`)",
+        grace_s,
+    )
+    _run_sigterm_flush_hooks()
+    os._exit(130)
+
+
+def _handle_sigterm(signum, frame) -> None:  # signal-handler API shape
+    _sigterm_state["count"] += 1
+    if _sigterm_state["count"] >= 2:
+        _run_sigterm_flush_hooks()
+        os._exit(130)
+    logger.warning(
+        "SIGTERM received — stopping dispatch, harvesting in-flight "
+        "completions, then flushing ledgers/journal and writing the "
+        "salvage report (bounded grace ~%.0fs; a second SIGTERM exits "
+        "immediately). Resume later with: raptor-audit resume <out-dir>",
+        _SIGTERM_GRACE_S,
+    )
+    _sigterm_event.set()
+    request_shutdown()
+    _threading.Thread(
+        target=_sigterm_watchdog,
+        args=(_SIGTERM_GRACE_S,),
+        daemon=True,
+        name="sigterm-watchdog",
+    ).start()
+
+
+def install_sigterm_grace() -> bool:
+    """Install the graceful TERM handler — main thread, once.
+
+    Returns True when the handler is (already) installed. Library
+    callers on worker threads (and platforms where signal
+    registration fails) keep the default disposition — the run then
+    dies as before, and `raptor-audit resume` remains the recovery.
+    """
+    if _sigterm_state["installed"]:
+        return True
+    if _threading.current_thread() is not _threading.main_thread():
+        return False
+    import signal as _signal
+    try:
+        _signal.signal(_signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError):
+        logger.debug("SIGTERM handler installation failed", exc_info=True)
+        return False
+    _sigterm_state["installed"] = True
+    return True
+
+
 def _update_run_progress(out_dir: Path, result: Any) -> None:
     """Update run metadata with progress checkpoint."""
     meta_path = out_dir / ".raptor-run.json"
@@ -766,6 +855,26 @@ def run_orchestrator(
         OrchestratorResult summarizing the run.
     """
     start_time = time.monotonic()
+
+    # Graceful SIGTERM (main thread, once): drain + salvage instead of
+    # dying mid-write when an external supervisor stops the run.
+    install_sigterm_grace()
+    if config.out_dir:
+        _out_dir_for_term = Path(config.out_dir)
+
+        def _mark_interrupted_on_forced_exit() -> None:
+            # Forced-exit path only (watchdog expiry / second TERM) —
+            # the graceful path lets the CLI record the lifecycle
+            # transition. interrupt_run is terminal-guarded, so a
+            # late double-mark is refused, not corrupting.
+            from core.run.metadata import interrupt_run
+            interrupt_run(
+                _out_dir_for_term,
+                "SIGTERM — forced exit before salvage completed",
+            )
+
+        _sigterm_flush_hooks.append(_mark_interrupted_on_forced_exit)
+
     if prep_cache is None or not prep_cache.get("_caches_cleared"):
         _sink_guard_cache.clear()
         _file_lines_cache.clear()
@@ -835,6 +944,9 @@ def run_orchestrator(
             prep_cache=prep_cache,
         )
     finally:
+        # This run's flush hooks must not outlive it (a later run in
+        # the same process registers its own).
+        _sigterm_flush_hooks.clear()
         if _telemetry_sink is not None:
             try:
                 from core.llm.telemetry import set_sink
@@ -5002,6 +5114,10 @@ def _run_audit_body(
             target_path=config.target_path,
             run_id=config.out_dir.name if config.out_dir else "",
         )
+        # Buffered audit-log rows must survive a FORCED SIGTERM exit
+        # (watchdog expiry / second TERM) — journal rows are appended
+        # per-outcome and already safe.
+        _sigterm_flush_hooks.append(collector.flush)
     except Exception:
         logger.debug("collector init failed", exc_info=True)
 
@@ -5359,6 +5475,16 @@ def _run_audit_body(
                 or _check_budget(config, start_time, result)
             ),
         )
+
+    # --- SIGTERM salvage: skip every optional post pass ---
+    # In-flight completions are already harvested (the executor's
+    # shutdown path) and the study consumer drained above. Everything
+    # past this point is enrichment the ~30s grace cannot afford —
+    # flush what exists, write the partial exports, and return so the
+    # CLI can write the salvage report and mark the lifecycle
+    # interrupted.
+    if is_sigterm_requested():
+        return _sigterm_salvage(result, config, collector, start_time)
 
     # --- Concept discovery: mine outcomes for invariants ---
     try:
@@ -6761,6 +6887,66 @@ def _run_audit_body(
             )
     except Exception:
         logger.debug("sandbox policy validation failed", exc_info=True)
+
+    return result
+
+
+def _sigterm_salvage(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+    collector: Any,
+    start_time: float,
+) -> OrchestratorResult:
+    """Bounded SIGTERM conclusion: flush and export what exists.
+
+    Runs the durable tail only — collector flush (journal fsync +
+    buffered audit-log rows), corrective re-journal of final statuses,
+    the graded findings export (mechanical, no LLM), tier diagnostics,
+    and ledger reconciliation — then returns so the CLI writes the
+    salvage report and marks the lifecycle ``interrupted``. Every step
+    is best-effort: one failed export must not cost the rest.
+    """
+    logger.warning(
+        "SIGTERM salvage: flushing journal/ledgers and writing "
+        "partial exports (%d outcomes harvested)",
+        len(result.outcomes),
+    )
+    result.terminated_by = "sigterm"
+    result.total_duration_s = time.monotonic() - start_time
+
+    if collector is not None:
+        try:
+            collector.flush()
+        except Exception:
+            logger.debug("salvage: collector flush failed", exc_info=True)
+
+    try:
+        _rejournal_final_statuses(result, config)
+    except Exception:
+        logger.debug("salvage: re-journal pass failed", exc_info=True)
+
+    try:
+        from .findings_export import export_findings, write_graded_findings
+
+        graded = export_findings(
+            list(result.outcomes),
+            evidence_index=None,
+            attack_chains=None,
+            out_dir=config.out_dir,
+        )
+        write_graded_findings(graded, config.out_dir)
+    except Exception:
+        logger.debug("salvage: graded export failed", exc_info=True)
+
+    try:
+        write_tier_diagnostics(result.tier_counters, config.out_dir)
+    except Exception:
+        logger.debug("salvage: tier diagnostics failed", exc_info=True)
+
+    try:
+        _reconcile_cost_ledgers(config, result)
+    except Exception:
+        logger.debug("salvage: ledger reconciliation failed", exc_info=True)
 
     return result
 
@@ -8861,6 +9047,12 @@ def _check_budget(
     result: OrchestratorResult,
 ) -> bool:
     """Return True when budget is exhausted."""
+    # SIGTERM rides the budget-exhaustion rails: every loop and
+    # post-loop pass that polls this stops dispatching, and the study
+    # consumer's state-aware drain sees "exhausted" and stops too.
+    if is_sigterm_requested():
+        result.terminated_by = "sigterm"
+        return True
     if config.max_seconds and time.monotonic() - start_time >= config.max_seconds:
         result.terminated_by = "max_seconds"
         return True

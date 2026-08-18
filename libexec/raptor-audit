@@ -1405,7 +1405,23 @@ def _finalize_run(
         except (OSError, ValueError):
             pass
 
-    # --- lifecycle complete ---
+    # --- lifecycle transition ---
+    if result.terminated_by == "sigterm":
+        # SIGTERM conclusion: the salvage report above covers whatever
+        # the journal holds; the run stays re-enterable.
+        subprocess.run(
+            [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
+             "interrupt", str(out_dir),
+             "SIGTERM — salvage report written"],
+            capture_output=True, check=False,
+        )
+        print(
+            f"Interrupted by SIGTERM — salvage report written. "
+            f"Resume with: libexec/raptor-audit resume {out_dir}",
+            flush=True,
+        )
+        return 130
+
     lifecycle_args = [
         str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
         "complete", str(out_dir),

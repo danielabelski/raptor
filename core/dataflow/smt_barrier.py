@@ -883,6 +883,36 @@ def _maybe_record_parity(
         pass
 
 
+def _record_value_bound_audit(finding, result) -> None:
+    """Record-only audit bridge: write the value-bound gate's verdict
+    to ``suppressions.jsonl`` under the configured audit dir
+    (``sanitizer_cut_config.audit_dir`` — set by the consuming
+    command's ``--sanitizer-cut on|strict`` + run dir).
+
+    Always ``enforce=False``: the sanitizer-cut witness has not earned
+    hard-suppression on the zero-false-suppress corpus
+    (``libexec/raptor-sanitizer-cut-precision``), so every record
+    carries ``dropped: false`` — evidence for the operator, never a
+    drop. Best-effort: telemetry must not break a run.
+    """
+    try:
+        audit = _sc_config.audit_dir()
+        if not audit:
+            return
+        from pathlib import Path as _Path
+
+        from core.analysis.sanitizer_cut import (
+            record_sanitizer_cut_suppression,
+        )
+        record = dict(finding)
+        record.setdefault("line", finding.get("sink_line"))
+        record_sanitizer_cut_suppression(
+            _Path(audit), record, result, enforce=False,
+        )
+    except Exception:                                       # noqa: BLE001
+        return
+
+
 def _value_bound_dominates(
     *,
     file_path: str | None,
@@ -964,6 +994,7 @@ def _value_bound_dominates(
         )
     except Exception:                                       # noqa: BLE001
         return None
+    _record_value_bound_audit(finding, result)
     if result.verdict == VERDICT_SUPPRESS:
         return True
     if result.verdict == VERDICT_NO_SUPPRESS:

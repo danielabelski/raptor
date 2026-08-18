@@ -4,7 +4,9 @@ The chokepoint records every Phase 4 verdict the suppressor reaches,
 so operators can grep / jq the trail of decisions:
 
 * ``VERDICT_SUPPRESS`` → ``verdict="sanitizer_dominated"``,
-  ``dropped=true``, ``bindings`` carries the value-bound witness.
+  ``dropped=true`` ONLY under ``enforce=True`` (the corpus-earned
+  enforcement path; the record-only default writes ``dropped=false``),
+  ``bindings`` carries the value-bound witness.
 * ``VERDICT_CANDIDATE_ONLY`` → ``verdict="sanitizer_candidate"``,
   ``dropped=false``, ``catalog_matches`` carries the full match set,
   ``bindings`` is empty.
@@ -139,12 +141,14 @@ class TestSuppressRecord:
             source_symbols={"x"},
             sink_arg="y",
         )
-        record_sanitizer_cut_suppression(tmp_path, _finding(), result)
+        record_sanitizer_cut_suppression(
+            tmp_path, _finding(), result, enforce=True)
         records = _read_jsonl(tmp_path)
         assert len(records) == 1
         r = records[0]
         assert r["verdict"] == VERDICT_SANITIZER_DOMINATED
         assert r["dropped"] is True
+        assert r["enforced"] is True
         assert r["sink_arg"] == "y"
         # One value-bound binding witnessing the suppression.
         assert len(r["bindings"]) == 1
@@ -342,7 +346,8 @@ class TestLegacyPath:
             cwe="CWE-79", language="python",
             # No source_symbols / sink_arg.
         )
-        record_sanitizer_cut_suppression(tmp_path, _finding(), result)
+        record_sanitizer_cut_suppression(
+            tmp_path, _finding(), result, enforce=True)
         records = _read_jsonl(tmp_path)
         assert len(records) == 1
         r = records[0]

@@ -708,15 +708,28 @@ def record_sanitizer_cut_suppression(
     out_dir: Path,
     finding: Dict[str, Any],
     result: SanitizerCutResult,
+    *,
+    enforce: bool = False,
 ) -> None:
     """Write a sanitizer-cut record to ``suppressions.jsonl``.
 
     Phase 6 extended this helper to emit records for BOTH the
-    ``suppress`` verdict (the finding is dropped — ``dropped:
-    true``) and the ``candidate_only`` verdict (the finding
-    survives to the LLM, but the value-bound suppressor saw enough
-    catalog matches to be worth recording — ``dropped: false``).
-    ``no_suppress`` is still a no-op; nothing to log.
+    ``suppress`` verdict and the ``candidate_only`` verdict (the
+    finding survives to the LLM, but the value-bound suppressor saw
+    enough catalog matches to be worth recording — ``dropped:
+    false``). ``no_suppress`` is still a no-op; nothing to log.
+
+    ``enforce`` controls the ``dropped`` field for the ``suppress``
+    verdict. The default is ``False`` — record-only: the verdict is
+    written as evidence (``dropped: false``, ``enforced: false``)
+    without asserting that any finding was removed. The sanitizer-cut
+    witness kind has NOT yet earned hard-suppression on a
+    zero-false-suppress corpus (run
+    ``libexec/raptor-sanitizer-cut-precision`` — the corpus that has
+    to stay clean before an enforcement consumer may pass
+    ``enforce=True``; see the ``sanitizer_dominated`` entry in
+    :mod:`core.analysis.reach_witness` for the earning contract).
+    Until then every caller records evidence, never a drop.
 
     Verdict tags:
 
@@ -748,17 +761,18 @@ def record_sanitizer_cut_suppression(
     operators can ``jq 'select(.dropped == false)'`` to see what
     the value-bound gate flagged but didn't drop.
 
-    NOT YET WIRED into the live pipeline (review #6 on PR #794): only
-    tests call this helper today, so it never races the binary-oracle
-    chokepoint on a real run. When it IS wired, the binary-oracle
-    reachability suppression runs first (pre-LLM), so a function it
-    dropped never reaches this gate — see
+    Live wiring: :func:`core.dataflow.smt_barrier._value_bound_dominates`
+    calls this (record-only, ``enforce=False``) whenever the value-bound
+    gate runs with an audit directory configured
+    (``sanitizer_cut_config.audit_dir``). The binary-oracle reachability
+    suppression runs first (pre-LLM), so a function it dropped never
+    reaches this gate — see
     :func:`core.analysis.reach_chokepoint.record_suppression` for the
     full order-of-operations contract.
     """
     if result.verdict == VERDICT_SUPPRESS:
         verdict_tag = VERDICT_SANITIZER_DOMINATED
-        dropped = True
+        dropped = bool(enforce)
     elif result.verdict == VERDICT_CANDIDATE_ONLY:
         verdict_tag = VERDICT_SANITIZER_CANDIDATE
         dropped = False
@@ -780,6 +794,7 @@ def record_sanitizer_cut_suppression(
         "bindings": [_binding_to_json(b) for b in value_bindings],
         "catalog_matches": [_binding_to_json(b) for b in catalog_matches],
         "witness_lines": sorted({b.lineno for b in catalog_matches}),
+        "enforced": bool(enforce),
     }
 
     record_suppression(

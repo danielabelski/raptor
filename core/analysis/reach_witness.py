@@ -43,6 +43,10 @@ class WitnessKind(str, Enum):
     BUILD_EXCLUDED = "build_excluded"
     NO_PATH_FROM_ENTRY = "no_path_from_entry"
     NOT_CALLED = "not_called"
+    # taint-unreachable (sink unreachable from source in the value
+    # graph — the sanitizer-cut vertex-cut argument, not a
+    # function-reachability fact)
+    SANITIZER_CUT = "sanitizer_cut"
     # reachable
     HAS_CALLER = "has_caller"
     FRAMEWORK_CALLABLE = "framework_callable"
@@ -207,6 +211,31 @@ VERDICTS: Dict[str, VerdictSpec] = {
             "reachability:not_called — entry function {fq} is not called from "
             "any non-test project source"),
         # prompt_verdict: rendered by the ``priority == low`` catch-all branch.
+    ),
+    # Sanitizer-cut: the value-bound vertex-cut proved every tainted
+    # source→sink path crosses a catalog sanitizer whose cleaned value
+    # reaches the sink (core.analysis.sanitizer_cut, verdict tag
+    # ``sanitizer_dominated``). SOUND as a candidate class — the cut is
+    # a structural graph argument — but ``earns_suppression=False``: the
+    # kind flips to True only after the zero-false-suppress corpus
+    # (``libexec/raptor-sanitizer-cut-precision``) is clean across every
+    # covered sink class AND the run's report is recorded alongside the
+    # flip (the binary-oracle earning protocol, CLAUDE.md
+    # binary-oracle-reachability §corpus-earned). Until then the
+    # chokepoint can never fire on it (STRUCTURALLY_SUPPRESSIBLE_KINDS
+    # excludes it) and the live producer records evidence with
+    # ``dropped: false`` only.
+    "sanitizer_dominated": VerdictSpec(
+        Reachability.UNREACHABLE, WitnessKind.SANITIZER_CUT,
+        Soundness.SOUND, earns_suppression=False,
+        summary=(
+            "value-bound vertex-cut: every tainted source→sink path "
+            "crosses a catalog sanitizer whose output reaches the sink"),
+        prompt_verdict=(
+            "Verdict: SANITIZER_DOMINATED — the value-bound vertex-cut "
+            "proved every tainted path to this sink crosses a catalog "
+            "sanitizer whose cleaned value reaches the sink. Recorded as "
+            "evidence; does not suppress (corpus gate not yet earned)."),
     ),
     "called": VerdictSpec(
         Reachability.REACHABLE, WitnessKind.HAS_CALLER, Soundness.HEURISTIC,

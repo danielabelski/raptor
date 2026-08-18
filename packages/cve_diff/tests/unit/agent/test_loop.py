@@ -13,7 +13,7 @@ Migrated from Anthropic SDK fakes to core.llm substrate fakes on
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from cve_diff.agent.loop import AgentConfig, AgentLoop
@@ -24,6 +24,9 @@ from core.llm.tool_use.types import (
     StopReason,
     TextBlock,
     ToolCall,
+    ToolCallDispatched,
+    ToolCallReturned,
+    ToolLoopResult,
     ToolResult,
     TurnResponse,
 )
@@ -472,6 +475,152 @@ def test_verified_candidates_skipped_when_gh_returns_error(monkeypatch: pytest.M
     result = AgentLoop().run(cfg, AgentContext(cve_id="CVE-X"))
     assert isinstance(result, AgentSurrender)
     assert result.verified_candidates == ()
+
+
+# ---------- call_id-keyed (slug, sha) recovery ----------
+#
+# The cgit_fetch / gitlab_commit verification arm recovers the
+# (slug, sha) pair a tool call was dispatched with. Keying recovery off
+# the globally most-recently-dispatched input misattributes pairs into
+# ``verified`` (the evidence store behind the verified-SHA gate) under
+# parallel dispatch or out-of-order returns; the dispatched input must
+# ride along in the call_id index so each return recovers exactly the
+# input it was dispatched with. The real ToolUseLoop is replaced with a
+# scripted fake that drives the events callback with interleaved
+# orderings the serial loop cannot currently produce — the regression
+# net for any future async/parallel loop substrate.
+
+_SHA_A = "a" * 40
+_SHA_B = "b" * 40
+
+
+def _ok_result(call_id: str, content: str = '{"url": "u", "body": "ok"}') -> ToolResult:
+    return ToolResult(tool_use_id=call_id, content=content)
+
+
+def _scripted_loop_result() -> ToolLoopResult:
+    return ToolLoopResult(
+        final_text="",
+        terminal_tool_input={
+            "outcome": "rescued",
+            "repository_url": "https://github.com/proj/alpha",
+            "fix_commit": _SHA_A,
+            "rationale": "stub",
+        },
+        messages=[],
+        iterations=1,
+        tool_calls_made=2,
+        total_input_tokens=10,
+        total_output_tokens=5,
+        total_cost_usd=0.0,
+        terminated_by="terminal_tool",
+    )
+
+
+def _fake_loop_cls(script: Callable[[Callable], ToolLoopResult]) -> type:
+    """A ToolUseLoop stand-in whose run() replays ``script(events)``."""
+
+    class _FakeLoop:
+        def __init__(self, **kwargs: Any) -> None:
+            self._events = kwargs["events"]
+
+        def run(self, _user_message: str) -> ToolLoopResult:
+            return script(self._events)
+
+    return _FakeLoop
+
+
+def _run_with_script(
+    monkeypatch: pytest.MonkeyPatch,
+    script: Callable[[Callable], ToolLoopResult],
+    *tool_names: str,
+) -> AgentResult:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("RAPTOR_TRAJECTORY_DIR", raising=False)
+    monkeypatch.setattr("cve_diff.agent.loop.create_provider", lambda config: object())
+    monkeypatch.setattr("cve_diff.agent.loop.ToolUseLoop", _fake_loop_cls(script))
+    cfg = _cfg(tools=tuple(_tool(n) for n in tool_names))
+    return AgentLoop().run(cfg, AgentContext(cve_id="CVE-2024-1"))
+
+
+def test_parallel_cgit_dispatch_attributes_each_return_to_its_own_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two cgit_fetch calls dispatched before either returns: each
+    return must land the (slug, sha) it was dispatched with, not the
+    most recently dispatched pair."""
+    call_a = ToolCall(id="c1", name="cgit_fetch",
+                      input={"host": "h", "slug": "proj/alpha", "sha": _SHA_A})
+    call_b = ToolCall(id="c2", name="cgit_fetch",
+                      input={"host": "h", "slug": "proj/beta", "sha": _SHA_B})
+
+    def script(emit: Callable) -> ToolLoopResult:
+        emit(ToolCallDispatched(iteration=0, call=call_a))
+        emit(ToolCallDispatched(iteration=0, call=call_b))
+        emit(ToolCallReturned(iteration=0, call_id="c1",
+                              result=_ok_result("c1"), duration_s=0.0))
+        emit(ToolCallReturned(iteration=0, call_id="c2",
+                              result=_ok_result("c2"), duration_s=0.0))
+        return _scripted_loop_result()
+
+    result = _run_with_script(monkeypatch, script, "cgit_fetch")
+    assert isinstance(result, AgentOutput)
+    assert result.verified_candidates == (
+        ("proj/alpha", _SHA_A),
+        ("proj/beta", _SHA_B),
+    )
+
+
+def test_out_of_order_gitlab_returns_still_attributed_by_call_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Returns arriving in reverse dispatch order must still recover
+    each call's own (slug, sha)."""
+    call_a = ToolCall(id="g1", name="gitlab_commit",
+                      input={"host": "h", "slug": "grp/alpha", "sha": _SHA_A})
+    call_b = ToolCall(id="g2", name="gitlab_commit",
+                      input={"host": "h", "slug": "grp/beta", "sha": _SHA_B})
+    body = json.dumps({"id": _SHA_A, "title": "fix"})
+
+    def script(emit: Callable) -> ToolLoopResult:
+        emit(ToolCallDispatched(iteration=0, call=call_a))
+        emit(ToolCallDispatched(iteration=0, call=call_b))
+        emit(ToolCallReturned(iteration=0, call_id="g2",
+                              result=_ok_result("g2", body), duration_s=0.0))
+        emit(ToolCallReturned(iteration=0, call_id="g1",
+                              result=_ok_result("g1", body), duration_s=0.0))
+        return _scripted_loop_result()
+
+    result = _run_with_script(monkeypatch, script, "gitlab_commit")
+    assert isinstance(result, AgentOutput)
+    assert result.verified_candidates == (
+        ("grp/beta", _SHA_B),
+        ("grp/alpha", _SHA_A),
+    )
+
+
+def test_cgit_return_after_unrelated_dispatch_uses_own_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cgit_fetch return arriving after a LATER unrelated dispatch
+    (the exact 'most recent dispatch' trap) must not pick up the
+    unrelated call's arguments."""
+    cgit = ToolCall(id="c1", name="cgit_fetch",
+                    input={"host": "h", "slug": "proj/alpha", "sha": _SHA_A})
+    other = ToolCall(id="o1", name="osv_raw", input={"cve_id": "CVE-2024-1"})
+
+    def script(emit: Callable) -> ToolLoopResult:
+        emit(ToolCallDispatched(iteration=0, call=cgit))
+        emit(ToolCallDispatched(iteration=0, call=other))
+        emit(ToolCallReturned(iteration=0, call_id="c1",
+                              result=_ok_result("c1"), duration_s=0.0))
+        emit(ToolCallReturned(iteration=0, call_id="o1",
+                              result=_ok_result("o1", '{"x": 1}'), duration_s=0.0))
+        return _scripted_loop_result()
+
+    result = _run_with_script(monkeypatch, script, "cgit_fetch", "osv_raw")
+    assert isinstance(result, AgentOutput)
+    assert result.verified_candidates == (("proj/alpha", _SHA_A),)
 
 
 def test_provider_error_surrenders_as_llm_error(monkeypatch: pytest.MonkeyPatch) -> None:

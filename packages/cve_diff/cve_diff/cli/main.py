@@ -447,7 +447,7 @@ def run(
                 "the record likely names a tag rather than the fix commit.",
                 err=True,
             )
-            _write_failure_md(output_dir, cve_id, "IdenticalCommits",
+            _write_failure_md(output_dir, cve_id, "IdenticalCommitsError",
                               f"IdenticalCommitsError: {exc}")
             if pipeline_slot[0] is not None:
                 _flow_from_pipeline(output_dir, cve_id, pipeline_slot[0],

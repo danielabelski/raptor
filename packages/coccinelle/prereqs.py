@@ -141,8 +141,9 @@ def evaluate_finding(
 
     Output shape:
       {
-        "applicable": bool,    # False when prereqs were skipped
-                               # OR finding's file isn't C/C++.
+        "applicable": bool,    # False when prereqs were skipped,
+                               # the finding carries no function
+                               # name, OR its file isn't C/C++.
         "checks": {
           "function_exists": bool | null,
           "function_has_callers": bool | null,

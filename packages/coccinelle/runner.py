@@ -767,9 +767,10 @@ def _inject_harness(rule_text: str, rule_name: str) -> str:
 
     Adds an @script:python block that emits COCCIRESULT JSON lines for
     each match. Binds the first position metavariable from the first
-    named rule — only correct for single-rule SmPL files. Multi-rule
-    files where the position variable is declared in a later rule will
-    produce an "unbound metavariable" error from spatch.
+    named rule — only correct for single-rule SmPL files, so files
+    with more than one distinct rule name are detected and returned
+    un-harnessed (spatch still runs, just without COCCIRESULT
+    structured output).
 
     If no position metavariable is found, returns the rule unchanged
     (matches won't produce structured output, but spatch still runs).

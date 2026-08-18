@@ -3,11 +3,16 @@
 This is the human-facing router behind ``/binary`` and ``raptor.py binary``.
 It keeps the substrate mechanical:
 
-- ``map`` reads bytes and radare2 output only.
+- ``map`` reads bytes and radare2 output, and can ingest evidence
+  from EXISTING runtime / fuzz run directories (``--runtime-dir`` /
+  ``--fuzz-dir``) — it never executes the target itself.
 - ``runtime`` is an explicit Frida run.
 - ``harness`` turns one evidence-backed ingress into a harness plan.
 - ``fuzz`` is an explicit handoff to the existing fuzz workflow.
-- ``graph`` / ``report`` / ``handoff`` / ``diagram`` are read-only views.
+- ``graph`` / ``report`` / ``handoff`` are read-only views.
+- ``diagram`` is a derived view too, but writes ``diagrams.md`` into
+  the run dir by default (``--stdout`` prints instead; ``--force``
+  overwrites).
 
 The CLI does not silently execute an unknown target during ``map``.
 """

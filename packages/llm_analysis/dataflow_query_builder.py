@@ -533,7 +533,8 @@ def build_template_query(
         query_id: Stable identifier embedded in the query metadata.
 
     Returns:
-        Full .ql text, or None when the language has no template.
+        Full .ql text, or None when the language has no template or
+        when either predicate body is empty / blank.
     """
     template = _TAINT_TEMPLATES.get(language.lower())
     if template is None:

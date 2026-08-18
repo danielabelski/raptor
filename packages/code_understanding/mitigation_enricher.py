@@ -1,7 +1,7 @@
 """Enrich ``context-map.json`` sinks with target-mitigation context.
 
 Reads ``exploit_feasibility.analyze_binary`` output and enriches each
-sink under ``context-map.json``'s ``sinks[]`` with a
+sink under ``context-map.json``'s ``sink_details[]`` with a
 ``mitigation_context`` blob describing which classical exploitation
 primitives (arbitrary write, `%n` write, GOT overwrite, `.fini_array`,
 hook overwrite, stack smash) the target's build actually permits.

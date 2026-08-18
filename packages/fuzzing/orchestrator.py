@@ -1,7 +1,9 @@
 """Fuzzing orchestrator -- the public entry point for /fuzz.
 
 Detects the target type, checks the host's capabilities, picks the right
-fuzzer, generates a harness if needed, and runs the campaign. Designed
+fuzzer, flags when a harness must be built first (source targets plan
+with a blocker telling the operator to build one — nothing here
+generates it), and runs the campaign. Designed
 to fail loudly and helpfully when the target cannot be fuzzed on the
 current host rather than crashing six commands deep into AFL++.
 """

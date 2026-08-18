@@ -67,6 +67,27 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "sinks": ["memcpy", "memmove", "strncpy", "recv", "recvfrom",
                   "recvmsg", "read", "fread"],
     },
+    # Argument-shape consistency family (§3.6): incorrect calculation
+    # of buffer size (length-vs-capacity confusion) and sizeof-on-a-
+    # pointer. No dedicated dataflow channel adjudicates these; the
+    # consistency channel is the verifier
+    # (consistency_verify.CONSISTENCY_CWES) — the sizeof(ptr) sub-case
+    # carries a declared-type witness, the rest is detection-grade
+    # peer-majority evidence.
+    "CWE-131": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
+    "CWE-467": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
     # Integer
     "CWE-190": {
         "smt": "check-overflow",

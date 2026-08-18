@@ -34,17 +34,23 @@ DETECTION_VARIANT_SUFFIX = "-majority"
 # Cap on conforming-sibling exhibits carried per receipt (§4.1).
 MAX_EXHIBITS = 3
 
-# Contract sources a PeerEvidence receipt can carry (§2.2 order).
-CONTRACT_SOURCES = (
+# Contract sources that are registry-grade (promote-capable premise),
+# in §2.2 strength order. ``type_witness`` is the §3.6 argument-shape
+# premise: a deterministic declared-type fact (sizeof over a pointer
+# where the siblings pass the pointed-to buffer's size) — provable
+# without any majority, so it is registry-grade like the other
+# deterministic sources.
+_REGISTRY_SOURCES_ORDERED = (
     "wur", "annotation", "domain_model", "iris_spec", "convention",
-    "fix_commit", "tier_a", "majority", "none",
+    "fix_commit", "tier_a", "type_witness",
 )
 
-# Contract sources that are registry-grade (promote-capable premise).
-REGISTRY_CONTRACT_SOURCES = frozenset({
-    "wur", "annotation", "domain_model", "iris_spec", "convention",
-    "fix_commit", "tier_a",
-})
+REGISTRY_CONTRACT_SOURCES = frozenset(_REGISTRY_SOURCES_ORDERED)
+
+# Every contract source a PeerEvidence receipt can carry (§2.2 order):
+# the registry-grade premises, then the detection-grade statistical
+# source and the explicit absence marker.
+CONTRACT_SOURCES = (*_REGISTRY_SOURCES_ORDERED, "majority", "none")
 
 
 def rule_id(dimension: str, *, detection: bool) -> str:
@@ -82,8 +88,8 @@ class PeerEvidence:
 
     dimension: str        # "return-check" | "cleanup" | "flag-mode" | ...
     formation: str        # peer_groups layer id (l0_co_callee..l6_paired)
-                          #   | same_callee | same_sink | clone | branch
-                          #   | interface
+                          #   | same_callee | same_callee_pair
+                          #   | same_sink | clone | branch | interface
     group_key: str        # callee / sink / table / clone-cluster id
     n: int = 0
     conforming: int = 0

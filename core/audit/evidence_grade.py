@@ -269,6 +269,14 @@ _RECEIPT_MAP: dict[str, tuple] = {
             "paths perform on the same acquisition"
         ),
     ),
+    "consistency:argument-shape": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a sizeof-over-pointer argument contradicts the declared "
+            "type and the buffer-sizing convention of the sibling "
+            "call sites (declared-type witness receipts)"
+        ),
+    ),
     "consistency": (
         EvidenceSource.TREE_SITTER,
         "peer-majority consistency evidence (PeerEvidence receipts)",

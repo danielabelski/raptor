@@ -52,10 +52,12 @@ logger = logging.getLogger(__name__)
 
 DIMENSION_RETURN_CHECK = "return-check"
 DIMENSION_CLEANUP = "cleanup"
+DIMENSION_ARGUMENT_SHAPE = "argument-shape"
 
 RULE_RETURN_CHECK = rule_id(DIMENSION_RETURN_CHECK, detection=False)
 RULE_RETURN_CHECK_MAJORITY = rule_id(DIMENSION_RETURN_CHECK, detection=True)
 RULE_CLEANUP = rule_id(DIMENSION_CLEANUP, detection=False)
+RULE_ARGUMENT_SHAPE = rule_id(DIMENSION_ARGUMENT_SHAPE, detection=False)
 
 # Mechanical-path thresholds (§2.3 — stricter than the lead path).
 VERDICT_MIN_SITES = 4
@@ -527,6 +529,58 @@ def cleanup_verdict(
         ctx, inventory, deviation.file, deviation.enclosing_function,
     )
     return result
+
+
+def argument_shape_verdict(
+    deviation: Any,
+    *,
+    context: RoleContext | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> ConsistencyResult:
+    """Adjudicate one argument-shape deviation (§3.6).
+
+    The ``sizeof(ptr)``-among-buffer-sizes sub-case carries a
+    deterministic declared-type witness and is promote-capable
+    (CWE-467) — the type fact is the premise, the sibling majority is
+    corroboration. Every other shape deviation is detection-grade
+    (``-majority`` rule-id): legitimate shape variance is high, so a
+    statistical outlier alone never promotes.
+    """
+    ctx = context or RoleContext()
+    if deviation.type_witness:
+        result = ConsistencyResult(
+            outcome="confirmed",
+            reason=(
+                f"{deviation.description} — declared-type witness: "
+                f"sizeof over a pointer measures the pointer, not the "
+                f"buffer"
+            ),
+            rule_id=RULE_ARGUMENT_SHAPE,
+            dimension=DIMENSION_ARGUMENT_SHAPE,
+            callee=deviation.callee,
+            peer_evidence=deviation.peer_evidence,
+            contract={
+                "source": "type_witness",
+                "provenance": f"type_witness:{deviation.detail}",
+                "grade": "registry",
+            },
+        )
+        result.reachability = _entry_reachability(
+            ctx, inventory, deviation.file,
+            deviation.enclosing_function,
+        )
+        return result
+    return ConsistencyResult(
+        outcome="confirmed",
+        reason=(
+            f"{deviation.description} (majority evidence only — "
+            f"detection grade)"
+        ),
+        rule_id=rule_id(DIMENSION_ARGUMENT_SHAPE, detection=True),
+        dimension=DIMENSION_ARGUMENT_SHAPE,
+        callee=deviation.callee,
+        peer_evidence=deviation.peer_evidence,
+    )
 
 
 # ── hypothesis adjudication ─────────────────────────────────────────

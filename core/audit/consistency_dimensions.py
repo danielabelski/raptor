@@ -794,6 +794,366 @@ def detect_cleanup_deviations(
     return deviations[:_MAX_DEVIATIONS]
 
 
+# ── argument-shape consistency (§3.6) ───────────────────────────────
+#
+# "9 callers pass sizeof(buf), 1 passes sizeof(ptr); n pass len,
+# 1 passes capacity." Peer group: same-callee, same-argument-position
+# sites. Each argument expression is classified into a shape class:
+#
+# * ``sizeof_array`` / ``sizeof_pointer`` / ``sizeof_deref`` /
+#   ``sizeof_type`` — the identifier's declared kind is resolved by a
+#   tree-sitter declaration lookup inside the enclosing function
+#   (parameters included); a ``sizeof`` over a *pointer-typed*
+#   identifier where the siblings size the pointed-to buffer is a
+#   deterministic type fact (CWE-467) — the one promote-capable
+#   sub-case, carried as the ``type_witness`` contract source;
+# * ``stem_length`` / ``stem_size`` / ``stem_capacity`` /
+#   ``stem_count`` — universal English identifier stems (not project
+#   vocabulary), the length-vs-capacity confusion class (CWE-131);
+# * ``literal`` / ``variable`` / ``expr`` — literal-vs-variable
+#   variance (CWE-805 when a literal majority meets a variable
+#   deviant or vice versa).
+#
+# Statistic (two-tier, per §2.3's registry-vs-majority split):
+# n ≥ ``ARGSHAPE_MIN_SITES`` classified sites at the position, and
+#
+# * statistical shapes (stems, literal-vs-variable) need majority
+#   ratio ≥ ``ARGSHAPE_RATIO`` (0.9 — legitimate shape variance is
+#   high, stricter than the other dimensions);
+# * the type-witness sub-case needs only ``CONSISTENCY_RATIO``
+#   (0.75) — the declared-type fact is the premise, the sibling
+#   majority is corroboration, not evidence.
+#
+# Minority strictly smaller in both tiers. Everything except the
+# type-witness sub-case is detection-grade
+# (``consistency:argument-shape-majority``).
+
+DIMENSION_ARGUMENT_SHAPE = "argument-shape"
+
+ARGSHAPE_MIN_SITES = 4
+ARGSHAPE_RATIO = 0.9
+
+_SIZEOF_ARG_RE = re.compile(
+    r"^sizeof\s*\(?\s*(\**)\s*([A-Za-z_]\w*)\s*(\[[^\]]*\])?\s*\)?$",
+)
+_TYPEISH_RE = re.compile(
+    r"^(?:struct|union|enum)\b|_t$|^u?int\d+_t$",
+)
+_IDENT_ONLY_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+# Universal (non-project) identifier stems for the length-vs-capacity
+# class. Substring match on the lowercased identifier.
+_SHAPE_STEMS = (
+    ("stem_capacity", ("capacity", "cap")),
+    ("stem_length", ("length", "len")),
+    ("stem_size", ("size", "sz")),
+    ("stem_count", ("count", "cnt", "num")),
+)
+
+_SIZEOF_SHAPES = frozenset({
+    "sizeof_array", "sizeof_pointer", "sizeof_deref", "sizeof_type",
+    "sizeof_other",
+})
+
+
+@dataclass
+class _ShapeSite:
+    """One call site's argument shape at a fixed position."""
+
+    file: str
+    line: int
+    enclosing_function: str
+    shape: str
+    arg_text: str
+    detail: str = ""      # type-witness detail for sizeof shapes
+    snippet: str = ""
+
+
+def _declared_kind(func_node, name: str, src: bytes) -> tuple[str, str]:
+    """(kind, declaration text) for *name* inside *func_node*.
+
+    Kind is ``pointer`` / ``array`` / ``value`` / `""` (not declared
+    here). Declarations and parameter declarations both count; the
+    kind comes from the declarator chain between the declaration node
+    and the identifier (``pointer_declarator`` / ``array_declarator``).
+    """
+    if func_node is None:
+        return "", ""
+    decl_types = (
+        "declaration", "parameter_declaration", "field_declaration",
+    )
+    for node in _walk_descendants(func_node):
+        if node.type not in decl_types:
+            continue
+        ident = None
+        for n in _walk_descendants(node):
+            if n.type in ("identifier", "field_identifier") \
+                    and _node_text(n, src) == name:
+                ident = n
+                break
+        if ident is None:
+            continue
+        kind = "value"
+        walker = ident.parent
+        while walker is not None and walker is not node.parent:
+            if walker.type == "array_declarator":
+                kind = "array"
+                break
+            if walker.type == "pointer_declarator":
+                kind = "pointer"
+                break
+            walker = walker.parent
+        decl_text = _node_text(node, src).strip()[:120]
+        return kind, decl_text
+    return "", ""
+
+
+def _classify_arg_shape(
+    arg_text: str,
+    func_node,
+    src: bytes,
+) -> tuple[str, str]:
+    """(shape class, detail) for one argument expression."""
+    text = arg_text.strip()
+    m = _SIZEOF_ARG_RE.match(text)
+    if text.startswith("sizeof") and m:
+        stars, ident, subscript = m.group(1), m.group(2), m.group(3)
+        if stars or subscript:
+            # sizeof(*p) / sizeof(p[0]) size the pointed-to element.
+            return "sizeof_deref", ident
+        kind, decl = _declared_kind(func_node, ident, src)
+        if kind == "pointer":
+            return "sizeof_pointer", decl or ident
+        if kind == "array":
+            return "sizeof_array", decl or ident
+        if kind == "value":
+            return "sizeof_other", decl or ident
+        if _TYPEISH_RE.search(ident):
+            return "sizeof_type", ident
+        return "sizeof_other", ident
+    if text.startswith("sizeof"):
+        return "sizeof_type", text[:80]
+    if _parse_int_literal(text) is not None:
+        return "literal", ""
+    if _IDENT_ONLY_RE.match(text):
+        lowered = text.lower()
+        for shape, stems in _SHAPE_STEMS:
+            if any(s in lowered for s in stems):
+                return shape, text
+        return "variable", text
+    return "expr", ""
+
+
+@dataclass
+class ArgShapeDeviation:
+    """One argument-shape outlier (§3.6)."""
+
+    callee: str
+    position: str          # "arg2"
+    file: str
+    line: int
+    enclosing_function: str
+    majority_shape: str
+    deviant_shape: str
+    deviant_arg: str
+    detail: str            # declaration text for the type witness
+    n: int
+    conforming: int
+    type_witness: bool = False
+    cwe: str = ""
+    peer_evidence: PeerEvidence | None = None
+
+    @property
+    def ratio(self) -> float:
+        return self.conforming / self.n if self.n else 0.0
+
+    @property
+    def description(self) -> str:
+        witness = (
+            f" [type witness: {self.detail}]" if self.type_witness
+            else ""
+        )
+        return (
+            f"{self.callee}({self.position}): {self.conforming}/"
+            f"{self.n} sites pass a {self.majority_shape} argument; "
+            f"this site passes {self.deviant_arg!r} "
+            f"({self.deviant_shape}){witness}"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "callee": self.callee,
+            "position": self.position,
+            "file": self.file,
+            "line": self.line,
+            "enclosing_function": self.enclosing_function,
+            "majority_shape": self.majority_shape,
+            "deviant_shape": self.deviant_shape,
+            "deviant_arg": self.deviant_arg,
+            "n": self.n,
+            "conforming": self.conforming,
+            "ratio": round(self.ratio, 3),
+            "type_witness": self.type_witness,
+            "cwe": self.cwe,
+        }
+        if self.detail:
+            d["detail"] = self.detail
+        if self.peer_evidence is not None:
+            d["peer_evidence"] = self.peer_evidence.to_dict()
+        return d
+
+
+def _argshape_cwe(majority: str, deviant: str) -> str:
+    if majority in _SIZEOF_SHAPES or deviant in _SIZEOF_SHAPES:
+        return "CWE-467"
+    if majority.startswith("stem_") and deviant.startswith("stem_"):
+        return "CWE-131"
+    if {majority, deviant} & {"literal"}:
+        return "CWE-805"
+    return "CWE-131"
+
+
+def _extract_shape_sites(
+    source_texts: dict[str, str],
+) -> dict[tuple[str, int], list[_ShapeSite]]:
+    """Per (callee, position) shape views, one parse per file."""
+    if not _TS_AVAILABLE:
+        return {}
+    by_key: dict[tuple[str, int], list[_ShapeSite]] = {}
+    for file_path, source in source_texts.items():
+        tree, lang = parse_source_cached(file_path, source)
+        if tree is None or lang is None:
+            continue
+        call_types = _CALL_TYPES.get(lang, ())
+        if not call_types:
+            continue
+        src = source.encode("utf-8", errors="replace")
+        lines = source.splitlines()
+        for node in _walk_descendants(tree.root_node):
+            if node.type not in call_types:
+                continue
+            callee = _callee_name_ts(node, lang, src)
+            if not callee or callee in _KEYWORDS or len(callee) < 2:
+                continue
+            arg_node = node.child_by_field_name("arguments")
+            if arg_node is None:
+                continue
+            enclosing = _find_enclosing_function(node, lang)
+            func_name = (
+                _get_func_name(enclosing, lang, src)
+                if enclosing else "<module>"
+            )
+            line = _node_line(node)
+            snippet = (
+                lines[line - 1].strip()[:200]
+                if 1 <= line <= len(lines) else ""
+            )
+            pos = 0
+            for child in arg_node.children:
+                if not child.is_named or child.type == "comment" \
+                        or child.type == "keyword_argument":
+                    continue
+                if pos >= _MAX_ARG_POSITIONS:
+                    break
+                arg_text = _node_text(child, src).strip()
+                shape, detail = _classify_arg_shape(
+                    arg_text, enclosing, src,
+                )
+                by_key.setdefault((callee, pos), []).append(_ShapeSite(
+                    file=file_path,
+                    line=line,
+                    enclosing_function=func_name,
+                    shape=shape,
+                    arg_text=arg_text[:80],
+                    detail=detail,
+                    snippet=snippet,
+                ))
+                pos += 1
+    return by_key
+
+
+def detect_argument_shape_deviations(
+    source_texts: dict[str, str],
+    *,
+    min_sites: int = ARGSHAPE_MIN_SITES,
+    ratio: float = ARGSHAPE_RATIO,
+) -> list[ArgShapeDeviation]:
+    """Argument-shape consistency comparator (§3.6). See the section
+    docstring for shape classes, the type-witness sub-case and bounds.
+    """
+    deviations: list[ArgShapeDeviation] = []
+    for (callee, pos), sites in sorted(_extract_shape_sites(
+            source_texts).items()):
+        if len(sites) < min_sites:
+            continue
+        counts: dict[str, int] = {}
+        for s in sites:
+            counts[s.shape] = counts.get(s.shape, 0) + 1
+        majority_shape = max(counts, key=lambda k: counts[k])
+        if counts[majority_shape] < len(sites) * CONSISTENCY_RATIO:
+            continue
+        conforming = [s for s in sites if s.shape == majority_shape]
+        if len(conforming) == len(sites) \
+                or len(sites) - len(conforming) >= len(conforming):
+            continue
+        statistical_tier = counts[majority_shape] >= len(sites) * ratio
+        for s in sites:
+            if s.shape == majority_shape:
+                continue
+            if s.shape in ("expr", "variable") \
+                    and majority_shape in ("expr", "variable"):
+                continue  # no signal between the catch-all classes
+            witness = (
+                s.shape == "sizeof_pointer"
+                and majority_shape in ("sizeof_array", "sizeof_deref")
+            )
+            if not witness and not statistical_tier:
+                continue  # 0.9 floor for the statistical shapes
+            deviations.append(ArgShapeDeviation(
+                callee=callee,
+                position=f"arg{pos}",
+                file=s.file,
+                line=s.line,
+                enclosing_function=s.enclosing_function,
+                majority_shape=majority_shape,
+                deviant_shape=s.shape,
+                deviant_arg=s.arg_text,
+                detail=s.detail,
+                n=len(sites),
+                conforming=len(conforming),
+                type_witness=witness,
+                cwe=_argshape_cwe(majority_shape, s.shape),
+                peer_evidence=PeerEvidence(
+                    dimension=DIMENSION_ARGUMENT_SHAPE,
+                    formation="same_callee",
+                    group_key=f"{callee}[arg{pos}]",
+                    n=len(sites),
+                    conforming=len(conforming),
+                    ratio=len(conforming) / len(sites),
+                    deviant=PeerExhibit(s.file, s.line, s.snippet),
+                    exhibits=[
+                        PeerExhibit(c.file, c.line, c.snippet)
+                        for c in conforming[:3]
+                    ],
+                    contract_source=(
+                        "type_witness" if witness else "majority"
+                    ),
+                    provenance=(
+                        f"type_witness:{s.detail}" if witness
+                        else f"argument_shape:{majority_shape}"
+                    ),
+                ),
+            ))
+            if len(deviations) >= _MAX_DEVIATIONS:
+                break
+        if len(deviations) >= _MAX_DEVIATIONS:
+            break
+    deviations.sort(
+        key=lambda d: (not d.type_witness, d.file, d.line),
+    )
+    return deviations[:_MAX_DEVIATIONS]
+
+
 # ── ordering (A-then-B) consistency (§3.5) ──────────────────────────
 #
 # "n sites do check-then-use, 1 does use-then-check." Peer group:

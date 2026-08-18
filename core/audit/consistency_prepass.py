@@ -367,6 +367,81 @@ def run_consistency_prepass(
                 ],
             })
 
+    # ── argument-shape dimension (§3.6) ─────────────────────────────
+    if not _over_budget():
+        try:
+            from .consistency_dimensions import (
+                DIMENSION_ARGUMENT_SHAPE,
+                detect_argument_shape_deviations,
+            )
+            from .consistency_verify import argument_shape_verdict
+            shape_devs = detect_argument_shape_deviations(source_texts)
+        except Exception:
+            logger.debug("consistency prepass: argument shape failed",
+                         exc_info=True)
+            shape_devs = []
+        if shape_devs:
+            counts = _dim(DIMENSION_ARGUMENT_SHAPE)
+            for dev in shape_devs:
+                try:
+                    res = argument_shape_verdict(
+                        dev, context=ctx, inventory=inventory,
+                    )
+                except Exception:
+                    logger.debug("consistency prepass: argument-shape "
+                                 "verdict failed", exc_info=True)
+                    continue
+                counts[res.outcome] = counts.get(res.outcome, 0) + 1
+                mechanical.append({
+                    "file": dev.file,
+                    "function": dev.enclosing_function,
+                    "detector": "argument_shape_deviation",
+                    "line": dev.line,
+                    "description": dev.description,
+                    "callee": dev.callee,
+                    "rule_id": res.rule_id,
+                    "cwe": dev.cwe,
+                })
+                if dev.type_witness and res.outcome == "confirmed":
+                    pe = res.peer_evidence
+                    source_key = pe.contract_source if pe else "none"
+                    telemetry["contract_sources"][source_key] = (
+                        telemetry["contract_sources"].get(source_key, 0)
+                        + 1
+                    )
+                    status = _status_for(res, detection=False)
+                    if status == "finding":
+                        telemetry["promotions"] += 1
+                    if len(findings) < MAX_FINDINGS:
+                        findings.append({
+                            "file": dev.file,
+                            "function": dev.enclosing_function,
+                            "line": dev.line,
+                            "callee": dev.callee,
+                            "dimension": DIMENSION_ARGUMENT_SHAPE,
+                            "rule_id": res.rule_id,
+                            "evidence_tool": res.rule_id,
+                            "status": status,
+                            "detection_grade": False,
+                            "cwe": dev.cwe,
+                            "hypothesis": (
+                                f"{dev.callee}({dev.position}) receives "
+                                f"sizeof over a pointer at "
+                                f"{dev.file}:{dev.line} while "
+                                f"{dev.conforming}/{dev.n} sites pass "
+                                f"the buffer size"
+                            ),
+                            "description": res.reason,
+                            "receipts": res.to_dict(),
+                        })
+                leads.append(_lead_from_result(
+                    res,
+                    file=dev.file,
+                    function=dev.enclosing_function,
+                    line=dev.line,
+                    security_relevant=dev.type_witness,
+                ))
+
     # ── learned pairs (shared by cleanup §3.2 and ordering §3.5) ────
     learned_pairs: list[Any] = []
     try:

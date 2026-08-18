@@ -593,9 +593,6 @@
   "plumbing:orphan_config_field:core/binary/elf.py:_SectionHeader.sh_link": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },
-  "plumbing:orphan_config_field:core/coverage/clean.py:CleanConsequence.coverage_files": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
   "plumbing:orphan_config_field:core/dataflow/smt_barrier.py:ValidatorSpec.diff_line_offset": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },

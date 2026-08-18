@@ -383,3 +383,53 @@ class TrustMarkerPropagationTests(unittest.TestCase):
         env = captured.get("env") or {}
         self.assertFalse(env.get("CLAUDECODE"))
         self.assertFalse(env.get("_RAPTOR_TRUSTED"))
+
+
+class SpawnContextTests(unittest.TestCase):
+    """S4 launch-path regression: the CC skill child must not inherit
+    the operator's cwd (an arbitrary project root whose workspace-trust
+    posture the CLI then ignores), and — being sandboxed away from
+    ~/.aws and IMDS — must get AWS credentials minted at the parent's
+    trust boundary."""
+
+    def _dispatch_kwargs(self, parent_env, run_dir_holder=None):
+        captured = {}
+
+        def sandbox(cmd, **kwargs):
+            captured.update(kwargs)
+            return _ok()
+
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            if run_dir_holder is not None:
+                run_dir_holder.append(run_dir)
+            with patch.dict("os.environ", parent_env):
+                result = _run(tmp, run_dir, sandbox=sandbox)
+            self.assertTrue(result.ran)
+        return captured
+
+    def test_child_cwd_is_the_run_dir(self):
+        holder = []
+        captured = self._dispatch_kwargs({"CLAUDECODE": "1"}, holder)
+        self.assertEqual(captured.get("cwd"), str(holder[0]))
+
+    def test_spawn_opts_into_credential_minting(self):
+        """The spawn site passes mint_aws_credentials=True — wiring
+        check via a recording stand-in for cc_subprocess_env."""
+        seen = {}
+
+        def fake_env(**kwargs):
+            seen.update(kwargs)
+            return {"PATH": "/usr/bin"}
+
+        def sandbox(cmd, **kwargs):
+            return _ok()
+
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            with patch("core.llm.cc_adapter.cc_subprocess_env",
+                       side_effect=fake_env), \
+                 patch.dict("os.environ", {"CLAUDECODE": "1"}):
+                result = _run(tmp, run_dir, sandbox=sandbox)
+            self.assertTrue(result.ran)
+        self.assertIs(seen.get("mint_aws_credentials"), True)

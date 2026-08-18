@@ -70,8 +70,17 @@ def resolve_claude_cli(explicit: str | None = None) -> str | None:
         return path
 
 
-def cc_subprocess_env() -> dict:
+def cc_subprocess_env(*, mint_aws_credentials: bool = False) -> dict:
     """Sanitised env for spawning the trusted ``claude`` binary.
+
+    ``mint_aws_credentials=True`` additionally resolves the parent's
+    AWS credential chain and attaches the frozen session credentials
+    when the Bedrock overlay carries no secret material (see
+    :func:`_mint_child_aws_credentials`). Opt-in per call site: only
+    SANDBOXED children need it (Landlock denies ``~/.aws``, egress
+    denies IMDS); unsandboxed substrate children resolve their own
+    chain, and defaulting to minting would widen credential exposure
+    to every CLI child.
 
     Starts from ``RaptorConfig.get_safe_env()`` (drops shell-evaluated
     / exec-capable vars a poisoned dotfile might set), then overlays
@@ -108,8 +117,79 @@ def cc_subprocess_env() -> dict:
     for key, value in os.environ.items():
         if key.startswith(_CC_BACKEND_ENV_PREFIXES) or bedrock and key.startswith(_CC_BEDROCK_ENV_PREFIX):
             env[key] = value
+    if bedrock and mint_aws_credentials:
+        _mint_child_aws_credentials(env)
     env.update(operator_proxy_env())
     return env
+
+
+def _mint_child_aws_credentials(env: dict) -> None:
+    """Attach resolved AWS session credentials for a Bedrock-backed
+    CLI child that cannot resolve its own.
+
+    The ``AWS_*`` overlay above copies whatever the parent env holds —
+    but on IAM-role hosts that is only *names* (``AWS_PROFILE``,
+    ``AWS_REGION``), never secret material: the real credentials live
+    behind ``~/.aws`` + IMDS. The child runs sandboxed — Landlock
+    denies ``~/.aws`` and the egress allowlist has no route to IMDS
+    (169.254.169.254:80) — so every provider in the child's own AWS
+    credential chain is dead and the CLI exits 1 with "Could not load
+    credentials from any providers" (the observed validate post-pass
+    failure).
+
+    Resolve the chain HERE, at the parent's trust boundary, and pass
+    the frozen (short-lived, auto-expiring for role/session
+    identities) credentials by env — the same model the LLM dispatcher
+    applies to workers ("the dispatcher attaches them at the parent's
+    trust boundary"). No trust is widened: the child receives exactly
+    the identity the parent already holds, scoped to env vars, only on
+    installs that opted into Bedrock. Never raises; failure is loud
+    (the child is about to fail anyway — say why).
+    """
+    if env.get("AWS_ACCESS_KEY_ID") or env.get("AWS_BEARER_TOKEN_BEDROCK"):
+        return  # static material already present — nothing to mint
+    try:
+        import botocore.session
+    except ImportError:
+        logger.warning(
+            "Bedrock-backed CLI child has no credential path: env "
+            "carries no AWS secret material and botocore is not "
+            "installed to mint session credentials",
+        )
+        return
+    frozen = None
+    try:
+        session = botocore.session.Session(
+            profile=env.get("AWS_PROFILE") or None,
+        )
+        creds = session.get_credentials()
+        if creds is not None:
+            frozen = creds.get_frozen_credentials()
+    except Exception:  # noqa: BLE001 — resolution failure must not break the spawn
+        logger.warning(
+            "AWS credential resolution for the CLI child failed — the "
+            "child has no credential path (sandbox denies ~/.aws and "
+            "IMDS)", exc_info=True,
+        )
+        return
+    if frozen is None:
+        logger.warning(
+            "AWS credential chain resolved nothing — the Bedrock-backed "
+            "CLI child will fail with 'Could not load credentials from "
+            "any providers'",
+        )
+        return
+    env["AWS_ACCESS_KEY_ID"] = frozen.access_key
+    env["AWS_SECRET_ACCESS_KEY"] = frozen.secret_key
+    if frozen.token:
+        env["AWS_SESSION_TOKEN"] = frozen.token
+    # The AWS SDKs' default provider chain SKIPS env credentials when
+    # AWS_PROFILE is set — and the profile is unreadable inside the
+    # sandbox. Drop the profile/config pointers so the minted env
+    # credentials are actually used; region pins stay.
+    for var in ("AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE",
+                "AWS_CONFIG_FILE"):
+        env.pop(var, None)
 
 
 _neutral_cwd: str | None = None

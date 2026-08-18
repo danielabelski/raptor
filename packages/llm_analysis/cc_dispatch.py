@@ -94,7 +94,11 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
         proc = run_untrusted_networked(
             cmd, input=prompt, capture_output=True, text=True,
             timeout=timeout, target=str(repo_path), output=str(out_dir),
-            env=cc_subprocess_env(),
+            # mint_aws_credentials: sandboxed child — Landlock denies
+            # ~/.aws, egress denies IMDS; on IAM-role Bedrock hosts its
+            # own AWS chain is dead. The parent attaches frozen session
+            # credentials at its trust boundary.
+            env=cc_subprocess_env(mint_aws_credentials=True),
             readable_paths=readable_paths_for_cc_dispatch(claude_bin),
             proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
             caller_label="claude-sub-agent",

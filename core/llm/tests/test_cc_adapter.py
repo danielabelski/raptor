@@ -587,3 +587,138 @@ class TestResolveClaudeCli:
         p = tmp_path / "claude"
         p.write_text("#!/bin/sh\n")
         assert resolve_claude_cli(str(p)) == str(p.resolve())
+
+
+class TestMintChildAwsCredentials:
+    """S4 validate post-pass root cause: sandboxed CLI children cannot
+    resolve IAM-role credentials themselves (Landlock denies ~/.aws,
+    egress denies IMDS) — the parent must resolve its chain and attach
+    frozen session credentials at its own trust boundary."""
+
+    def _frozen(self, token="tok"):
+        from unittest.mock import MagicMock
+        frozen = MagicMock()
+        frozen.access_key = "ASIAMINTED"
+        frozen.secret_key = "secret-minted"
+        frozen.token = token
+        return frozen
+
+    def _patch_session(self, monkeypatch, frozen):
+        from unittest.mock import MagicMock
+        creds = MagicMock()
+        creds.get_frozen_credentials.return_value = frozen
+        session = MagicMock()
+        session.get_credentials.return_value = creds
+        session_cls = MagicMock(return_value=session)
+        import botocore.session
+        monkeypatch.setattr(botocore.session, "Session", session_cls)
+        return session_cls
+
+    def test_mints_when_no_secret_material(self, monkeypatch):
+        from core.llm.cc_adapter import _mint_child_aws_credentials
+        session_cls = self._patch_session(monkeypatch, self._frozen())
+        env = {"AWS_PROFILE": "mythos", "AWS_REGION": "us-east-1",
+               "AWS_CONFIG_FILE": "/home/op/.aws/config"}
+        _mint_child_aws_credentials(env)
+        assert env["AWS_ACCESS_KEY_ID"] == "ASIAMINTED"
+        assert env["AWS_SECRET_ACCESS_KEY"] == "secret-minted"
+        assert env["AWS_SESSION_TOKEN"] == "tok"
+        # Profile/config pointers dropped: the SDK default chain skips
+        # env credentials when AWS_PROFILE is set, and the profile is
+        # unreadable inside the sandbox anyway. Region pin survives.
+        assert "AWS_PROFILE" not in env
+        assert "AWS_CONFIG_FILE" not in env
+        assert env["AWS_REGION"] == "us-east-1"
+        # The parent's profile drove the resolution.
+        assert session_cls.call_args.kwargs["profile"] == "mythos"
+
+    def test_static_key_present_no_mint(self, monkeypatch):
+        from core.llm.cc_adapter import _mint_child_aws_credentials
+        session_cls = self._patch_session(monkeypatch, self._frozen())
+        env = {"AWS_ACCESS_KEY_ID": "AKIASTATIC", "AWS_PROFILE": "p"}
+        _mint_child_aws_credentials(env)
+        session_cls.assert_not_called()
+        assert env["AWS_ACCESS_KEY_ID"] == "AKIASTATIC"
+        assert env["AWS_PROFILE"] == "p"
+
+    def test_bearer_token_present_no_mint(self, monkeypatch):
+        from core.llm.cc_adapter import _mint_child_aws_credentials
+        session_cls = self._patch_session(monkeypatch, self._frozen())
+        env = {"AWS_BEARER_TOKEN_BEDROCK": "bearer"}
+        _mint_child_aws_credentials(env)
+        session_cls.assert_not_called()
+
+    def test_resolution_failure_is_loud_and_nonfatal(
+        self, monkeypatch, caplog,
+    ):
+        import botocore.session
+
+        from core.llm.cc_adapter import _mint_child_aws_credentials
+        def boom(**kwargs):
+            raise RuntimeError("no chain")
+        monkeypatch.setattr(botocore.session, "Session", boom)
+        env = {"AWS_PROFILE": "mythos"}
+        with caplog.at_level("WARNING", logger="core.llm.cc_adapter"):
+            _mint_child_aws_credentials(env)  # must not raise
+        assert "AWS_ACCESS_KEY_ID" not in env
+        assert any("credential" in r.getMessage().lower()
+                   for r in caplog.records)
+
+    def test_empty_chain_is_loud_and_nonfatal(self, monkeypatch, caplog):
+        from unittest.mock import MagicMock
+
+        import botocore.session
+
+        from core.llm.cc_adapter import _mint_child_aws_credentials
+        session = MagicMock()
+        session.get_credentials.return_value = None
+        monkeypatch.setattr(
+            botocore.session, "Session", MagicMock(return_value=session),
+        )
+        env = {}
+        with caplog.at_level("WARNING", logger="core.llm.cc_adapter"):
+            _mint_child_aws_credentials(env)
+        assert "AWS_ACCESS_KEY_ID" not in env
+        assert any("Could not load credentials" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_cc_subprocess_env_minting_is_opt_in(self, monkeypatch):
+        """Default calls never touch the credential chain — only
+        sandboxed dispatch sites opt in."""
+        from unittest.mock import MagicMock
+
+        import botocore.session
+
+        from core.llm.cc_adapter import cc_subprocess_env
+        session_cls = MagicMock()
+        monkeypatch.setattr(botocore.session, "Session", session_cls)
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("AWS_PROFILE", "mythos")
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        env = cc_subprocess_env()
+        session_cls.assert_not_called()
+        assert env["AWS_PROFILE"] == "mythos"
+
+    def test_cc_subprocess_env_mints_when_opted_in(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        self._patch_session(monkeypatch, self._frozen())
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("AWS_PROFILE", "mythos")
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        env = cc_subprocess_env(mint_aws_credentials=True)
+        assert env["AWS_ACCESS_KEY_ID"] == "ASIAMINTED"
+        assert env["AWS_SESSION_TOKEN"] == "tok"
+        assert "AWS_PROFILE" not in env
+
+    def test_non_bedrock_never_mints(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import botocore.session
+
+        from core.llm.cc_adapter import cc_subprocess_env
+        session_cls = MagicMock()
+        monkeypatch.setattr(botocore.session, "Session", session_cls)
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        cc_subprocess_env(mint_aws_credentials=True)
+        session_cls.assert_not_called()

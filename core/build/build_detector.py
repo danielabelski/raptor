@@ -1470,7 +1470,10 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
             result = _sandbox_run(
                 build_cc_command(config),
                 target=repo_path, output=repo_path,
-                env=cc_subprocess_env(),
+                # mint_aws_credentials: sandboxed child (see
+                # cc_adapter._mint_child_aws_credentials) — an IAM-role
+                # Bedrock host leaves it credential-starved otherwise.
+                env=cc_subprocess_env(mint_aws_credentials=True),
                 use_egress_proxy=True,
                 proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
                 caller_label="codeql-build-detect",

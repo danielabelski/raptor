@@ -400,7 +400,25 @@ def run_skill_dispatch(
                 input=prompt, text=True,
                 timeout=timeout_s,
                 target=str(target), output=str(run_dir),
-                env=cc_subprocess_env(),
+                # Explicit cwd: the claude CLI treats its working
+                # directory as a project root (CLAUDE.md, .claude
+                # settings, workspace-trust posture). Inheriting the
+                # parent's cwd handed the child whatever project the
+                # OPERATOR happened to be sitting in — an untrusted
+                # workspace whose permission rules the CLI loudly
+                # ignores. The run dir is RAPTOR-owned, carries no
+                # project config, and is already writable via
+                # output=; tool grants come from --allowed-tools.
+                cwd=str(run_dir),
+                # mint_aws_credentials: this child is sandboxed —
+                # Landlock denies ~/.aws and the egress allowlist has
+                # no IMDS route, so on IAM-role Bedrock hosts its own
+                # AWS credential chain is dead ("Could not load
+                # credentials from any providers", rc=1). The parent
+                # resolves the chain and attaches frozen session
+                # credentials at its trust boundary — the dispatcher's
+                # worker model applied to CLI children.
+                env=cc_subprocess_env(mint_aws_credentials=True),
                 # Trust-marker propagation: this child is RAPTOR's own
                 # claude binary running a skill pass on the same
                 # operator-approved run (gated above by cc-trust +

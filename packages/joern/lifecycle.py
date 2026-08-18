@@ -338,6 +338,25 @@ def _start_fresh(tunables: JoernTunables) -> JoernServer | None:
         return None
 
 
+def _signal_server(pid: int, sig: int) -> None:
+    """Signal the server's whole process group when we can.
+
+    The joern launcher is a shell wrapper whose JVM child survives a
+    plain ``kill(pid)`` — the server was started with
+    ``start_new_session=True`` precisely so the group can be
+    signalled (``JoernServer.stop()`` does the same). Only ``killpg``
+    when the pid leads its own group; anything else means the pid was
+    reused and the group is not ours to signal.
+    """
+    try:
+        if os.getpgid(pid) == pid:
+            os.killpg(pid, sig)
+            return
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    os.kill(pid, sig)
+
+
 def _kill_server(state: dict[str, Any]) -> None:
     pid = state.get("pid")
     if not pid:
@@ -345,7 +364,7 @@ def _kill_server(state: dict[str, Any]) -> None:
     if not _pid_is_our_server(state):
         return
     try:
-        os.kill(pid, signal.SIGTERM)
+        _signal_server(pid, signal.SIGTERM)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if not _pid_alive(pid):
@@ -354,6 +373,44 @@ def _kill_server(state: dict[str, Any]) -> None:
         # Re-verify before SIGKILL: the pid may have died and been
         # reused during the grace window.
         if _pid_is_our_server(state):
-            os.kill(pid, signal.SIGKILL)
+            _signal_server(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def note_server_replaced(
+    old_pid: int | None,
+    old_port: int | None,
+    srv: JoernServer,
+) -> None:
+    """Record a restarted server in the lifecycle state file.
+
+    ``JoernServer.restart()`` boots a NEW process with a new pid,
+    port, and per-boot credential. When the state file was tracking
+    the old process, it must follow the replacement — otherwise
+    ``joern_release`` can neither authenticate against nor stop the
+    new multi-GB JVM (unreleasable orphan), and later acquires kill
+    an unrelated pid. No-op when the state file tracks a different
+    server (or none).
+    """
+    new_pid = srv.pid
+    if new_pid is None:
+        return
+    with _locked() as fd:
+        state = _read_state(fd)
+        if state is None:
+            return
+        if state.get("pid") != old_pid and state.get("port") != old_port:
+            return
+        state["pid"] = new_pid
+        state["comm"] = _read_comm(new_pid)
+        state["port"] = srv.port
+        state["started_at"] = time.time()
+        state["auth_user"] = srv._auth_user
+        state["auth_password"] = srv._auth_password
+        _write_state(fd, state)
+        logger.info(
+            "joern lifecycle: state updated for restarted server "
+            "(pid %s -> %s, port %s -> %s)",
+            old_pid, new_pid, old_port, srv.port,
+        )

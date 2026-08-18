@@ -479,6 +479,35 @@ class JoernServer:
         """True while a restart (stop → boot → CPG reload) is running."""
         return self._restarting.is_set()
 
+    def health_check(self, *, timeout: float = 5.0) -> bool:
+        """Cheap endpoint-liveness probe (``1+1`` via /query-sync).
+
+        The authoritative check for handles that don't own their
+        process (lifecycle reuse): ``poll()`` has nothing to say
+        there. Mirrors ``lifecycle._health_check``. False on any
+        transport/parse failure, and when the handle has no endpoint.
+        """
+        if not self._base_url:
+            return False
+        from urllib.error import URLError
+        from urllib.request import Request
+
+        url = f"{self._base_url}/query-sync"
+        payload = json.dumps({"query": "1+1"}).encode("utf-8")
+        req = Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json",
+                     **self._auth_headers()},
+            method="POST",
+        )
+        try:
+            with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
+                data = json.loads(resp.read(1024 * 1024).decode("utf-8"))
+                return data.get("success", False) is not False
+        except (URLError, OSError, json.JSONDecodeError,
+                TimeoutError, ValueError):
+            return False
+
     def ensure_alive(
         self, *, cooldown_s: float = _RELAUNCH_COOLDOWN_S,
     ) -> bool:
@@ -504,13 +533,22 @@ class JoernServer:
         proc = self._proc
         if proc is not None and proc.poll() is None:
             return True
-        # Dead process, or a previous relaunch died inside start()
-        # (proc is None). Only revive handles that actually served a
-        # CPG — a never-started client (e.g. a lifecycle reuse handle
-        # for a process this object doesn't own) has nothing to
-        # relaunch.
-        if proc is None and self._cpg_path is None:
-            return False
+        if proc is None:
+            # This object doesn't own a process (lifecycle-reused
+            # handle) or a previous relaunch died inside start().
+            # poll() can't answer liveness for a reused handle —
+            # probe the HTTP endpoint instead. Pre-fix a healthy
+            # shared server was judged dead here on the first
+            # orchestrator tick after import_cpg, and the relaunch
+            # spawned a DUPLICATE multi-GB JVM beside it (with a pid
+            # the lifecycle state file never learned about).
+            if self.health_check():
+                return True
+            # Endpoint dead too. Only revive handles that actually
+            # served a CPG — a never-started client has nothing to
+            # relaunch.
+            if self._cpg_path is None:
+                return False
         now = time.monotonic()
         if (
             self._relaunch_last_attempt is not None
@@ -565,6 +603,8 @@ class JoernServer:
         self._restarting.set()
         try:
             cpg_path = self._cpg_path
+            old_pid = self._proc.pid if self._proc is not None else None
+            old_port = self._port
             logger.info("restarting Joern server (stuck query recovery)")
             self.stop()
             try:
@@ -572,7 +612,31 @@ class JoernServer:
             except RuntimeError:
                 logger.error("Joern server failed to restart")
                 return False
-            if cpg_path is not None and cpg_path.exists():
+            # The restarted JVM has a new pid/port/credential — record
+            # it in the lifecycle state file (when this server is the
+            # one it tracks) so joern_release can still stop it.
+            try:
+                from .lifecycle import note_server_replaced
+                note_server_replaced(
+                    old_pid=old_pid, old_port=old_port, srv=self,
+                )
+            except Exception:  # noqa: BLE001 — bookkeeping must not fail restart
+                logger.debug(
+                    "lifecycle state update after restart failed",
+                    exc_info=True,
+                )
+            if cpg_path is not None:
+                if not cpg_path.exists():
+                    # Pre-fix this returned True with _cpg_loaded
+                    # False: ensure_alive kept reporting healthy while
+                    # every query failed "no CPG loaded" — a
+                    # fabricated-healthy wedge.
+                    logger.error(
+                        "CPG vanished during restart: %s — reporting "
+                        "restart failure (queries would have no CPG)",
+                        cpg_path,
+                    )
+                    return False
                 return self.import_cpg(cpg_path)
             return True
         finally:

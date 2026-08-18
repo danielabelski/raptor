@@ -49,6 +49,7 @@ import re
 import threading
 import time
 from collections.abc import Iterator
+from http.client import HTTPException as _HTTPException
 from typing import Any
 from urllib import parse as _urlparse
 
@@ -809,8 +810,10 @@ class UrllibClient:
             # draining poisons the pool — the next request that
             # picks up the connection sees the leftover bytes
             # prepended to its OWN response. Drain (urllib3 caps
-            # internally at ~64KB), then release.
-            with contextlib.suppress(Exception):
+            # internally at ~64KB), then release. Transport errors
+            # only — a drain failure means we leak one connection,
+            # which beats crashing the cleanup path.
+            with contextlib.suppress(OSError, _U3HTTPError, _HTTPException):
                 if hasattr(resp, "drain_conn"):
                     resp.drain_conn()
             # Released whether the generator was fully consumed,
@@ -1327,8 +1330,8 @@ class UrllibClient:
             # buffer is empty when release_conn returns the conn
             # to the pool. If drain itself fails we fall through
             # to release — better to leak a single connection
-            # than to crash the cleanup path.
-            with contextlib.suppress(Exception):
+            # than to crash the cleanup path. Transport errors only.
+            with contextlib.suppress(OSError, _U3HTTPError, _HTTPException):
                 if hasattr(resp, "drain_conn"):
                     resp.drain_conn()
             resp.release_conn()

@@ -141,7 +141,7 @@ def _promote_to_project(per_run_path: Path, output_dir: Path) -> None:
     except OSError:
         logger.debug("domain-model promotion failed", exc_info=True)
         if tmp:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 Path(tmp).unlink(missing_ok=True)
 
 
@@ -3413,7 +3413,9 @@ def _apply_sage_prior(
     # Try to load a local domain model for skip (concept reconstruction)
     local_model = None
     for candidate in _find_local_models(output_dir):
-        with contextlib.suppress(Exception):
+        # DomainModel.load handles malformed JSON itself; only an
+        # unreadable candidate file is a legitimate skip here.
+        with contextlib.suppress(OSError):
             local_model = DomainModel.load(candidate)
             break
 

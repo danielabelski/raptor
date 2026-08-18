@@ -978,6 +978,9 @@ def is_project_output_dir(directory: Path) -> bool:
         for project in mgr.list_projects():
             if project.output_path.resolve() == resolved:
                 return True
-    except Exception:  # noqa: BLE001, S110 — best-effort check, default False
+    except (OSError, ValueError):
+        # Best-effort check, default False. OSError: registry dir /
+        # glob / resolve failures; ValueError: NUL bytes in a
+        # hand-edited project file's output_dir path.
         pass
     return False

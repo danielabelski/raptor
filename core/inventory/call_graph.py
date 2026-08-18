@@ -1678,7 +1678,9 @@ class _GoCallGraph:
                     self.graph.package_name = pkg_ident.text.decode(
                         "utf-8", errors="replace",
                     ).strip()
-                except Exception:  # noqa: BLE001, S110 — malformed package clause: keep walking
+                except AttributeError:
+                    # tree-sitter Node.text is None on a malformed
+                    # package clause — keep walking.
                     pass
             return
 

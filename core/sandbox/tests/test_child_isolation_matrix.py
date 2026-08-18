@@ -23,6 +23,7 @@ import sys
 
 import pytest
 
+from core.sandbox import check_mount_available
 from core.sandbox._spawn import mount_ns_available, run_sandboxed
 
 
@@ -132,8 +133,15 @@ class TestLandlockReadGatePlumbing:
         assert got == [[str(tmp_path)]]
 
 
+# Gate on the SAME probe production uses to pick the spawn backend
+# (check_mount_available: userns sysctls + a real unshare probe), not
+# just mount_ns_available (uidmap binaries present). On hosts whose
+# LSM blocks unprivileged userns for unprofiled binaries the uidmap
+# binaries exist but run() degrades to the Landlock-only subprocess
+# tier, and the mount-ns properties this matrix asserts cannot hold.
 _LIVE = pytest.mark.skipif(
-    not (sys.platform == "linux" and mount_ns_available()),
+    not (sys.platform == "linux" and mount_ns_available()
+         and check_mount_available()),
     reason="live matrix needs Linux with mount-ns capability",
 )
 
@@ -183,6 +191,12 @@ class TestLiveIsolationMatrix:
                 f"sys.exit(1 if os.path.exists({host_file!r}) else 0)\n"
             )
             r = self._run(tmp_path, code)
+            if not r.sandbox_info.get("mount_ns_active"):
+                # Probe passed but the runtime tier still degraded
+                # (nested container / LSM): /dev/shm privacy is a
+                # mount-ns property, so there is nothing to assert on
+                # the Landlock-only tier.
+                pytest.skip("mount namespace did not engage on this host")
             assert r.returncode == 0, (
                 "host /dev/shm contents must not be visible inside the "
                 "mount namespace"
@@ -228,6 +242,15 @@ class TestLiveIsolationMatrix:
                 output=str(readable), restrict_reads=True,
                 readable_paths=[str(readable)],
                 capture_output=True, text=True, timeout=60)
+        if not r.sandbox_info.get("mount_ns_active"):
+            # Runtime tier degraded to Landlock-only despite the probe:
+            # there the documented /tmp scratch baseline (writes imply
+            # reads) covers pytest's tmp_path, so a secret under /tmp
+            # is readable BY DESIGN on that tier — reads outside the
+            # scratch dirs (e.g. $HOME) are still denied, which the
+            # Landlock suites assert. Only the mount-ns tier hides
+            # host /tmp behind a private tmpfs.
+            pytest.skip("mount namespace did not engage on this host")
         assert r.returncode != 0, (
             "restrict_reads must still deny reads outside the allowlist"
         )

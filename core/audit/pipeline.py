@@ -100,6 +100,12 @@ class AuditPipelineOpts:
     # prior-run verdicts for functions whose source hash is unchanged
     # instead of silently suppressing them.
     verdict_reuse: bool = True
+    # Ignore all prior review state — coverage records, the per-run
+    # review journal, the project journal index, and recall caches —
+    # so every scheduled function is re-reviewed. The corpus runner
+    # sets this: a label pin must never be suppressed by state left
+    # behind by an earlier run. Production default unchanged (off).
+    force: bool = False
     # Opt-in (--pre-scan): bounded semgrep baseline pass when no scan
     # SARIF exists in this run or any fresh sibling run.
     pre_scan: bool = False
@@ -255,6 +261,7 @@ def _build_orchestrator_config(
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
+        force=opts.force,
         pre_scan=opts.pre_scan,
         schedule=opts.schedule,
         on_demand_synthesis=opts.on_demand_synthesis,

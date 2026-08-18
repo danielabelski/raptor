@@ -71,7 +71,8 @@ overview:
 | [SAGE](sage.md) | Persistent memory: setup, HMAC key, CPU/GPU, use cases, upgrades |
 | [Security](security.md) | RAPTOR's own security model |
 | [Threat Model](threat-model.md) | Per-project threat model feature |
-| [Configuration](configuration.md) | tuning.json, env vars, sandbox calibration |
+| [Configuration](configuration.md) | tuning.json, sandbox calibration |
+| [Environment Variables](environment.md) | Operator knobs, credentials, routing family, proxy behavior, internal plumbing |
 | [Dependencies](dependencies.md) | Tool requirements and licensing |
 | [Troubleshooting](troubleshooting.md) | Common failures and fixes by subsystem |
 | [Python CLI](python-cli.md) | Direct `raptor.py` usage for CI and scripting |

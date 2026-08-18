@@ -110,6 +110,9 @@ python3 raptor.py agentic \
 
 ## Environment Variables
 
+The common exports for direct CLI use. Full registry:
+[Environment Variables](environment.md).
+
 ```bash
 # LLM provider (at least one recommended for analysis modes)
 export ANTHROPIC_API_KEY="sk-ant-..."   # Recommended

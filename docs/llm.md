@@ -578,6 +578,11 @@ the two transports with real failure modes need a deliberate one:
 
 ## Environment Variables Summary
 
+The LLM-relevant subset. The complete, drift-checked registry —
+including the Bedrock knob family, the routing family's spawn
+behavior, and credential-isolation details — is
+[Environment Variables](environment.md).
+
 | Variable | Purpose |
 |----------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key |

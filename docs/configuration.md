@@ -43,16 +43,10 @@ Unknown keys warn and are ignored.
 
 ## Environment variables
 
-LLM provider keys and model config are documented in
-[LLM Providers](llm.md#environment-variables-summary). The remaining
-RAPTOR-specific variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RAPTOR_DIR` | Set by launcher | Installation root; used by libexec scripts |
-| `RAPTOR_OUT_DIR` | `out/` | Output directory override |
-| `RAPTOR_TARGET_KIND` | `auto` | Target classification: `auto`, `library`, `hybrid`, `application` |
-| `RAPTOR_CALLER_DIR` | Set by launcher | User's working directory before RAPTOR switched to repo dir |
+The canonical, drift-checked registry of every environment variable —
+operator knobs, provider credentials, the LLM routing family, proxy
+behavior, and the internal plumbing RAPTOR sets for its own children —
+is [Environment Variables](environment.md).
 
 
 ## Sandbox calibration cache

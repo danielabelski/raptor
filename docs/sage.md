@@ -423,6 +423,9 @@ authoritative hook-to-domain table.
 
 ### Environment Variables
 
+(SAGE rows also appear in the drift-checked registry,
+[Environment Variables](environment.md).)
+
 **RAPTOR-side** (set in `.claude/settings.local.json` or shell):
 
 | Variable | Default | Description |

@@ -97,6 +97,8 @@ proxy: set the conventional `https_proxy` / `http_proxy` (or
 egress chokepoint chains upstream through them, JVM children get
 matching `java.net` sysprops injected, `core.http` clients honour them,
 and loopback sidecars (SAGE, Ollama, Joern) are exempted automatically.
+The precise strip/normalise/augment rules are in
+[Environment Variables](environment.md#proxy-family-http_proxy-https_proxy-no_proxy-all_proxy).
 
 Operator-side installs of external tools (joern, AFL++, frida-server,
 jadx) happen outside RAPTOR — export the same proxy variables in the

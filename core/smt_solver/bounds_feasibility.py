@@ -18,9 +18,18 @@ logger = logging.getLogger(__name__)
 
 _OVERFLOW_CWES = frozenset({"120", "121", "122", "787", "190"})
 
+# The source text comes from the scanned target, so the pattern must stay
+# linear on adversarial input: the (?!keyword) loop pins the match to the
+# first size keyword (no ambiguous [^)]* overlap to backtrack through) and
+# every inner quantifier is bounded, so unclosed-paren keyword-repeating
+# input cannot trigger super-linear backtracking. Conditions longer than
+# the bounds are degenerate and deliberately unmatched.
+_SIZE_KEYWORD = r"(?:len|size|length|count|MAX|LIMIT|BUFSIZ|sizeof)"
 _BOUNDS_CONDITION_RE = re.compile(
-    r"if\s*\(\s*([^)]*(?:len|size|length|count|MAX|LIMIT|BUFSIZ|sizeof)[^)]*"
-    r"(?:[<>=!]+)[^)]*)\)",
+    r"if\s*\("
+    r"((?:(?!" + _SIZE_KEYWORD + r")[^)]){0,512}"
+    + _SIZE_KEYWORD
+    + r"[^)<>=!]{0,256}[<>=!]{1,4}[^)]{0,256})\)",
     re.IGNORECASE,
 )
 

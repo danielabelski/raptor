@@ -4,7 +4,7 @@ Tracks what commands do: start, complete, fail, cancel. Every run
 directory gets a .raptor-run.json recording the outcome.
 
 Public API:
-    from core.run import tracked_run, start_run, complete_run, fail_run
+    from core.run import tracked_run, start_run, complete_run, fail_run, cancel_run
 """
 
 from .metadata import (

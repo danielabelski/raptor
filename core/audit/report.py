@@ -58,7 +58,8 @@ def generate_report(
 
     Returns a dict with:
         summary: human-readable summary string
-        stats: {reviewed, clean, suspicious, finding, error}
+        stats: {reviewed, clean, suspicious, finding, dormant, dark,
+            error, mechanical}
         findings_count: number of tool-confirmed findings
         coverage_delta: functions reviewed this run
         gaps_remaining: number of unreviewed functions

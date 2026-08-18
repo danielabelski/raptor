@@ -21,7 +21,8 @@ Concurrency:
   the new version, never a torn write.
 
 Failure modes (silent, by design):
-  - Cache root unwritable → in-memory-only mode (every put no-ops,
+  - Cache root unwritable → caching disabled (every put no-ops without
+    retaining the value anywhere — not even the in-process memo — and
     every get returns None). The run still succeeds, just slower.
   - Corrupted entries (truncated, invalid JSON, missing fields) →
     treated as miss, caller refetches.

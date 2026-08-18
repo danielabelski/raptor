@@ -231,9 +231,10 @@ def import_journal(
         #   1. Explicit ``producer`` field on the entry — set by the
         #      write path per amendment §1 A2, always accurate.
         #   2. ``run_id`` prefix heuristic for legacy entries without
-        #      ``producer`` — /agentic runs conventionally start with
-        #      ``agentic_`` or ``scan``; everything else defaults to
-        #      ``audit`` (historical checked_by convention).
+        #      ``producer`` — any run_id starting with ``agentic`` or
+        #      ``scan`` (no underscore required) labels as agentic;
+        #      everything else defaults to ``audit`` (historical
+        #      checked_by convention).
         tool = getattr(entry, "producer", None)
         if not tool:
             tool = "audit"

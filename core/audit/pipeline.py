@@ -477,9 +477,8 @@ def run_ensemble_pipeline(opts: AuditPipelineOpts):
     """Per-function pipelined ensemble: pass 1 → conditional pass 2 → merge.
 
     Each function is reviewed in security mode first.  If the result is not
-    a confident clean (non-clean status, has evidence, or compelling
-    counter-hypothesis), a bug_first review runs immediately and the two
-    outcomes are merged.  The executor parallelises across functions, so
+    a confident clean (non-clean status or has evidence), a bug_first
+    review runs immediately and the two outcomes are merged.  The executor parallelises across functions, so
     pass-2 reviews for early functions overlap with pass-1 reviews for
     later ones — wall-clock ≈ max(per-function chains), not sum-of-passes.
     """

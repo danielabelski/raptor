@@ -121,8 +121,11 @@ def _dict_is_dispatch(
     str_keys = _string_keys_from_dict(node)
     if len(str_keys) < 2:
         return False
-    # Check if at least one value looks callable (Name, Attribute, Lambda,
-    # Call, or another non-constant expression).
+    # Check if at least one value looks callable: a bare Name, an
+    # Attribute (module.handler), or a Lambda. Call-valued dicts
+    # (e.g. {"a": partial(handle_a, ctx)}) are deliberately NOT
+    # accepted — widening to ast.Call would classify plain
+    # data-construction dicts as dispatch tables.
     for v in node.values:
         if isinstance(v, (ast.Name, ast.Attribute, ast.Lambda)):
             return True

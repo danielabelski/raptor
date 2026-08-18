@@ -105,7 +105,9 @@ def _relax_bottlenecks(
     the rest proceed without waiting and get repassed later.
 
     *max_repass* caps the total number of relaxed edges.  When 0
-    (the default), the cap is ``total_tasks // 20`` (5%).
+    (the default), no cap is applied; the production caller passes
+    ``max(total_tasks // 20, max_workers)`` to keep relaxation at
+    roughly 5%.
     """
     callee_to_callers: dict[str, set[str]] = {}
     for caller, callees in caller_to_callees.items():

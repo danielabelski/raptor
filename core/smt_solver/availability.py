@@ -32,9 +32,11 @@ except Exception as e:  # noqa: BLE001 — installed-but-broken z3 can raise any
     #   * `RuntimeError` from Z3's C++ ctor on architectures
     #     where the wheel's prebuilt binary is incompatible
     #     (musl/Alpine vs the manylinux wheel).
-    #   * `ImportError` re-raised from a transitive deep dep
-    #     (caught by the outer `Exception` arm only on
-    #     unusual stack-walks; normally caught above).
+    #
+    # (An `ImportError` — even one re-raised from a transitive
+    # deep dep — is always caught by the `ImportError` arm
+    # above; except-clause ordering guarantees it never
+    # reaches this arm.)
     #
     # In every case, SMT-dependent features (CodeQL dataflow
     # path-feasibility, exploit_feasibility one-gadget SMT)

@@ -201,8 +201,9 @@ MODEL_COSTS = {
 #   Anthropic: platform.claude.com/docs/en/api/rate-limits — published
 #              per-tier tables; Start tier (1,000 RPM all families).
 #   OpenAI:    developers.openai.com/api/docs/models/<model-id> —
-#              published per-tier tables; Tier 1 (most 500, mini 1K,
-#              gpt-5.5-pro 50).
+#              published per-tier tables; Tier 1 (most 500 — recorded
+#              conservatively for most mini models too; o3-mini /
+#              o4-mini 1K; gpt-5.5-pro 50).
 #   Gemini:    operator-observed defaults. Pro=1K, Flash=2K,
 #              Flash-Lite=10K, Gemma=30.
 #   Mistral:   operator-observed defaults (RPS × 60 → RPM).

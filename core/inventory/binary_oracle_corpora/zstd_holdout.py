@@ -120,7 +120,7 @@ def _build_fresh(tag_dir: Path, build_o0: Path, build_o2: Path) -> None:
             # live_set is forced empty when live_set is empty).
             #
             # The workload now spans: 5 input files of different sizes
-            # and entropy classes; 6 compression levels (fast/normal/
+            # and entropy classes; 5 compression levels (fast/normal/
             # high); long-range mode; multi-threaded mode; dictionary
             # training + use; decompression of every produced artefact.
             # Combined ground-truth coverage of zstd's hot paths is

@@ -303,7 +303,13 @@ def _aggregate(reports: Sequence[CorpusReport]) -> dict[str, object]:
             "absent_precision": (a_c / a_n if a_n else None),
         })
         n_total += r.n_functions
-    rule_of_three_ub = (3.0 / abs_n) if abs_n else None
+    # Rule-of-three is only a valid 95% upper bound when ZERO misses
+    # were observed (that is the rule's whole premise). With misses
+    # present, 3/n understates the plausible miss rate — report None
+    # so nobody quotes an invalid over-optimistic bound.
+    rule_of_three_ub = (
+        (3.0 / abs_n) if abs_n and abs_correct == abs_n else None
+    )
     aggregate_precision = (abs_correct / abs_n) if abs_n else None
     # n-concentration warning: the aggregate is a meaningful estimate
     # of generalization ONLY if no single corpus dominates. If one
@@ -333,7 +339,8 @@ def _aggregate(reports: Sequence[CorpusReport]) -> dict[str, object]:
         "absent_n_total": abs_n,
         "absent_correct_total": abs_correct,
         "aggregate_absent_precision": aggregate_precision,
-        # 95% Wilson upper bound on miss rate when 0 misses observed.
+        # Rule-of-three 95% upper bound (3/n) on miss rate when 0
+        # misses observed.
         "rule_of_three_95_upper_bound_miss_rate": rule_of_three_ub,
         "n_concentration_dominator": dominator,
         "per_corpus": per_corpus,

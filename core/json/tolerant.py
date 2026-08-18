@@ -23,9 +23,11 @@ Strategy ladder:
 2. **Fence** — locate the first markdown code fence (```````
    or ``~~~``, optionally with a language marker), extract the payload,
    parse.
-3. **Brace-span** — regex-locate the largest balanced-brace ``{...}``
-   span anywhere in the text. Handles prose-before, prose-after, and
-   the "model wrote a paragraph before the JSON" shape.
+3. **Brace-span** — single linear scan locating the LAST top-level
+   balanced-brace ``{...}`` span in the text (see
+   :func:`_extract_brace_span` for why last-wins beats largest-wins).
+   Handles prose-before, prose-after, and the "model wrote a paragraph
+   before the JSON" shape.
 4. **Quasi-JSON fixup** — after brace-span extraction, apply common
    post-hoc fixups: strip trailing commas, single-quote → double-quote,
    Python literals (``None`` / ``True`` / ``False``) → JSON. Each fixup
@@ -127,8 +129,11 @@ class ExtractionDiagnostic:
     #: whatever the model wrote otherwise.
     fence_language: str = ""
 
-    #: Populated when ``strategy == 'brace_span'``. Byte length of the
-    #: prose before / after the JSON payload — useful for observability
+    #: Populated when ``strategy`` is ``'brace_span'`` or
+    #: ``'quasi_json_fixup'`` (the fixup path builds on the brace-span
+    #: extraction). Length of the prose before / after the JSON payload,
+    #: counted in Unicode code points (``len(str)`` arithmetic — not
+    #: UTF-8 bytes, despite the field names) — useful for observability
     #: (a rising trend suggests prompt drift).
     prose_before_bytes: int = 0
     prose_after_bytes: int = 0

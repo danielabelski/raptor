@@ -117,8 +117,9 @@ def run_multi_model(
           no annotations but the run continues.
         - aggregator.aggregate() exceptions are caught, logged, and
           produce aggregation={} per the documented tri-state.
-        - cost_gate.budget_ratio() exceptions are caught once and gating
-          is disabled for the rest of the run.
+        - cost_gate.budget_ratio() exceptions are caught and suspend
+          gating for a cooldown (then re-probe automatically); a
+          non-numeric return permanently disables gating for the run.
     """
     # Materialize models to list once — defends against generators that
     # would be consumed by validation and leave dispatch with nothing.
@@ -560,5 +561,5 @@ def _apply_reviewer(
     return [by_id[adapter.item_id(orig)] for orig in merged]
 
 
-# _over_budget is now inlined inside run_multi_model() to capture
+# over_budget is now inlined inside run_multi_model() to capture
 # per-run gate state without mutating the external cost_gate object.

@@ -56,8 +56,9 @@ def import_validation_results(
 
     Args:
         validation_report: Path to /validate output — accepts
-            ``findings.json`` (flat list or ``{"findings": [...]}``)
-            or ``stage-d.json`` (``{"findings": [...],"summary":...}``).
+            ``findings.json`` (flat list or ``{"findings": [...]}``),
+            ``stage-d.json`` (``{"findings": [...],"summary":...}``),
+            or a ``{"results": [...]}`` wrapper.
         annotations_dir: Path to the audit annotations directory.
             Consulted for human-source annotation vetoes only.
         audit_out_dir: If provided, appends correction journal

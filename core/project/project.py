@@ -518,7 +518,8 @@ class ProjectManager:
     # Reserved names that cannot be used as project names
     RESERVED_NAMES: ClassVar[set] = {"none"}
 
-    # Project names must match: alphanumeric, hyphens, dots (not leading).
+    # Project names must match: alphanumeric, hyphens, dots, underscores
+    # (first character must be alphanumeric).
     # This prevents shell metacharacters, control characters, spaces, and
     # path separators from ever appearing in filenames or directory names.
     #

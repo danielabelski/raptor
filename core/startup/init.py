@@ -225,9 +225,11 @@ def check_llm() -> tuple[list, list]:
                     # Wrap each `future.result()` in its own
                     # per-task `timeout=5` so each provider gets a
                     # full 5-second budget independent of others.
-                    # The outer as_completed's timeout still bounds
-                    # total wall-clock at ~5×N seconds worst case
-                    # (acceptable for startup banner).
+                    # as_completed itself has no timeout; the
+                    # per-future result(timeout=5) (plus _test_key's
+                    # own request timeout) bounds total wall-clock
+                    # at ~5×N seconds worst case (acceptable for
+                    # startup banner).
                     for future in as_completed(futures):
                         provider = futures[future]
                         try:
@@ -382,7 +384,10 @@ def _key_source(provider: str, model_entry: dict | None = None) -> str:
 
 
 def check_env(unavailable_features: set) -> tuple[list, list]:
-    """Check environment: output dir, disk, config vars, tree-sitter.
+    """Check environment: output dir, disk, config vars.
+
+    Tree-sitter language support is checked separately by
+    :func:`check_lang`.
 
     Returns (env_parts, warnings).
     """

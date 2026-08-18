@@ -1,4 +1,4 @@
-"""Binary-oracle call-edge extraction — Inc 2b Tier 1.
+"""Binary-oracle call-edge extraction — Inc 2b Tiers 1 and 2.
 
 The asymmetric companion to Inc 2's ``absent``-direction suppression
 witness: extract the binary's direct call graph, then for each
@@ -8,11 +8,14 @@ graph thinks no caller exists — gets a positive reachability witness
 (``binary_call_edge``).
 
 Tier scope (per design §6 + Phase 4 edge-gap measurement):
-  * Tier 1 (this module) — DIRECT edges via r2 ``axffj`` per function.
-    Catches ~92% of all binary call sites (the indirect-call fraction
-    sat at 8.1% aggregate in the 4-corpus measurement). Misses fn-
+  * Tier 1 — DIRECT edges via r2 ``axffj`` per function. Catches
+    ~92% of all binary call sites (the indirect-call fraction sat
+    at 8.1% aggregate in the 4-corpus measurement). Misses fn-
     pointer / vtable / ESIL-needed cases.
-  * Tier 2 (deferred) — vtable resolution via r2 ``avtv`` for C++.
+  * Tier 2 — vtable resolution via r2 ``av`` for C++. Runs
+    unconditionally after Tier 1; each vtable slot becomes a
+    synthetic ``<vtable@addr>`` → method edge merged into the same
+    edge index. No-op on binaries without vtables.
   * Tier 3 (deferred) — ESIL emulation for constant fn-pointer
     propagation.
 

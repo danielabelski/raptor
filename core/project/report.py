@@ -213,8 +213,8 @@ def render_grouped_findings_markdown(
     """Render all findings into one project-level Markdown report.
 
     Code findings are grouped by severity. SCA / dependency findings
-    (``sca_findings``) render in their own "Supply chain (SCA)" section
-    below — they're dep-level (no source file:line), so bucketing them
+    (``sca_findings``) render in their own "Supply chain / dependencies
+    (SCA)" section below — they're dep-level (no source file:line), so bucketing them
     separately keeps the severity-grouped code view clean. Mirrors the
     interactive ``/project findings`` view.
     """

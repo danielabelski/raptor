@@ -18,10 +18,11 @@ Resolution layers (priority high → low):
   3. Provider env vars — ``CLAUDE_CODE_USE_BEDROCK`` / ``USE_VERTEX``
      / ``USE_FOUNDRY``: each declares an alternative LLM-provider
      topology that needs different hostnames than the Anthropic API.
-  4. Default — ``["api.anthropic.com"]`` for the standard Anthropic
-     API; default readable-paths set covering the documented
-     Claude Code install layout (``~/.local/bin``, ``~/.claude``,
-     etc.).
+  4. Default — ``_DEFAULT_ANTHROPIC_HOSTS`` (``api.anthropic.com``
+     plus the MCP-proxy and downloads hosts Claude Code now needs)
+     for the standard Anthropic API; default readable-paths set
+     covering the documented Claude Code install layout
+     (``~/.local/bin``, ``~/.claude``, etc.).
 
 The egress proxy itself enforces ``deny by default`` regardless of
 what this module returns. If a future Claude Code version adds an
@@ -95,8 +96,9 @@ def _default_readable_paths() -> list[str]:
     ]
 
 
-# Opt-in env var: when set to "1" AND an Anthropic API key is
-# available, calibration uses a real ``claude -p`` probe that
+# Opt-in env var: when set to "1" AND provider auth is available
+# (an Anthropic API key, or a Bedrock / Vertex / Foundry provider
+# var), calibration uses a real ``claude -p`` probe that
 # networks. The default ``--version`` probe captures filesystem
 # reach but produces empty proxy_hosts — operators who want the
 # calibrated proxy_hosts to actually populate (and catch new
@@ -113,7 +115,8 @@ _NETWORK_PROBE_OPT_IN_ENV = "RAPTOR_CC_CALIBRATE_NETWORK_PROBE"
 
 def _network_probe_enabled() -> bool:
     """True when the operator opted in to the network-engaging
-    probe AND an Anthropic API key is set.
+    probe AND provider auth is available — an Anthropic API key, or
+    one of the Bedrock / Vertex / Foundry provider env vars.
 
     Without an API key the network probe would just hit the proxy
     once and fail auth — the proxy_hosts capture still works

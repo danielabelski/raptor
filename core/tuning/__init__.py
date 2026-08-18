@@ -2,7 +2,7 @@
 
 Reads ``tuning.json`` from the repo root, resolves ``"auto"`` values
 using hardware detection, validates per-key, and exposes resolved
-integers to consumers via ``get_tuning()``.
+integers and booleans to consumers via ``get_tuning()``.
 
 Invalid keys warn and fall back to defaults per-key — a single typo
 never blocks a session.
@@ -71,7 +71,7 @@ _KEY_COMMENTS = {
     "max_codeql_workers": "parallel CodeQL DB builds (auto = half available CPUs, capped)",
     "max_fuzz_parallel": "ceiling for AFL++ parallel instances (auto = half available CPUs)",
     "max_inventory_workers": "per-file extractor pool for tree-sitter parse (auto = half CPUs, capped at 8)",
-    "max_json_memo_mb": "byte budget for JsonCache in-process memo; oldest entries evicted past this",
+    "max_json_memo_mb": "MB budget for JsonCache in-process memo; oldest entries evicted past this",
     "max_llm_workers": "parallel LLM API calls (consumed by core/llm/concurrency.py)",
     "throttle_cooldown_s": "seconds to wait between LLM batches when rate-limited",
 }

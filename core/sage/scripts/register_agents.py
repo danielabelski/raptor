@@ -282,8 +282,12 @@ async def _register_one(
 ) -> tuple[str, str]:
     """Propose an agent's role + xref memories. Returns (name, status).
 
-    status ∈ {"stored", "skipped", "failed: <err>"}. Skipped when both
-    memories are already present in SAGE and --force isn't set.
+    status ∈ {"stored", "skipped", "partial", "force-restored",
+    "failed: <err>"}. Skipped when both memories are already present
+    in SAGE and --force isn't set; "partial" when exactly one half was
+    already present and only the missing half was proposed;
+    "force-restored" when --force rewrote entries regardless of
+    presence.
     """
     async with sem:
         name = agent["name"]

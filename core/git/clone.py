@@ -355,7 +355,9 @@ def _validate_writable_path(p: Path, *, role: str) -> None:
         state — refuse and require the caller to be explicit);
       - filesystem root (``/``);
       - direct children of root (``/foo``, ``/etc``, …) where parent
-        is still ``/``.
+        is still ``/``;
+      - paths under system pseudo-fs prefixes (``/dev/``, ``/proc/``,
+        ``/sys/``, ``/run/``) — see the denylist commentary below.
     """
     if not p.is_absolute():
         raise ValueError(

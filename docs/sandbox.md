@@ -511,7 +511,10 @@ budget, default 10 s. Slow, authenticated, or loaded corporate
 proxies that legitimately need more can be accommodated with
 `RAPTOR_PROXY_UPSTREAM_HANDSHAKE_TIMEOUT_S` (seconds, read once at
 proxy construction). Only the handshake budget widens — the per-IO
-read budget keeps failing fast on dead targets.
+read budget keeps failing fast on dead targets. The signal that you
+need it: `upstream_failed` events in `proxy-events.jsonl` whose
+reason names the upstream connect or CONNECT handshake, on a proxy
+that is otherwise working.
 
 ### Proxy events
 

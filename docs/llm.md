@@ -529,6 +529,53 @@ tunnel payload). Off by default so proxied hosts don't silently
 exercise different code paths than direct hosts; the task-budget
 beta endpoint always stays on plain `create`.
 
+### Choosing the knobs
+
+The defaults are chosen so the pure-win changes need no opt-in and
+the two transports with real failure modes need a deliberate one:
+
+- **Keepalive (default 60 s)** must outlive the think-time gap
+  between calls but stay inside middlebox idle-kill horizons (squid's
+  default `read_timeout` is 15 minutes; NAT tables usually 5+). The
+  default sits well inside both bounds — tune only if your proxy's
+  idle timer is unusually tight.
+- **HTTP/2** is a per-deployment, evidence-based opt-in. A clean
+  sequential smoke test is *not* sufficient evidence — the risk cases
+  are multiplexed concurrency under packet loss (TCP head-of-line
+  blocking stalls every stream at once) and middleboxes that
+  misbehave on long-lived multiplexed tunnels. Soak it on a real
+  concurrent run (e.g. `/agentic`) before pinning it in the launcher
+  environment. Do not enable it behind a TLS-intercepting
+  (`ssl_bump`-style) proxy — ALPN then terminates at the proxy.
+- **Stream transport** only pays off when the upstream proxy's
+  idle timer on relayed bytes is *shorter* than your longest model
+  silence. Check the proxy config first (`read_timeout` on squid);
+  with the common defaults it buys nothing and just moves you onto
+  the less-travelled code path.
+- **`RAPTOR_PROXY_UPSTREAM_HANDSHAKE_TIMEOUT_S`** stays at 10 s so a
+  dead proxy fails fast. Widen it only on evidence: `upstream_failed`
+  events with handshake reasons in `proxy-events.jsonl`.
+
+### Verifying the transport behaviour
+
+- **Connection reuse:** count tunnels per call. Every CONNECT through
+  the egress chokepoint is one record in the run's
+  `proxy-events.jsonl`; a healthy pooled transport opens one tunnel
+  per provider host per run (plus one STS tunnel on SigV4 routes),
+  not one per call.
+- **TCP keepalive:** `ss -tno` during a run shows
+  `timer:(keepalive,…)` on the established legs toward the upstream
+  proxy.
+- **Negotiated protocol:** with `RAPTOR_HTTP2=1`, httpx keeps proxied
+  connections under the client's proxy *mounts* (not the default
+  transport pool); their `info()` strings report `HTTP/2` once a
+  request has flowed.
+- **Benchmarking pitfalls:** vary prompts with a per-run nonce or the
+  LLM response cache serves repeats in ~1 ms and fakes a win; and
+  give thinking-tier models an adequate `max_tokens` — a tiny budget
+  is consumed by the thinking block and returns zero text with
+  `stop_reason=max_tokens`.
+
 ## Environment Variables Summary
 
 | Variable | Purpose |

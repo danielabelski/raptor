@@ -70,6 +70,12 @@ def _set_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     from core.project import trust
     monkeypatch.setattr(trust, "active_project_trust",
                         lambda: (dict(_MARKER), "proj"))
+    # Markers only apply when the run target matches the project
+    # target; these tests exercise the precedence table, so pin a
+    # match. Target-mismatch behaviour is pinned in
+    # core/project/tests/test_trust_consumption.py.
+    monkeypatch.setattr(trust, "run_target_matches_project",
+                        lambda target: True)
 
 
 def _assert_both_overrides(calls: dict, expected: bool) -> None:

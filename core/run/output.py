@@ -129,6 +129,26 @@ def get_output_dir(command: str, target_name: str = "",
         active = _resolve_active_project()
         if active:
             logger.warning("--out overrides active project '%s' output directory", active[1])
+            # --out is the sanctioned escape hatch for running against
+            # a different tree while a project is active (results do
+            # not land in the project dir), so a mismatch is not fatal
+            # here — but it must be VISIBLE, and project trust must
+            # not leak: core.project.trust gates every marker on the
+            # run target matching the project target, --out runs
+            # included.
+            _proj_dir, project_name, project_target = active
+            effective_target = target_path or os.environ.get("RAPTOR_CALLER_DIR")
+            if effective_target and project_target:
+                try:
+                    _check_target_mismatch(
+                        effective_target, project_name, project_target)
+                except TargetMismatchError:
+                    logger.warning(
+                        "--out run targets %s, outside active project "
+                        "'%s' (%s) — treated as standalone; project "
+                        "trust markers do not apply",
+                        effective_target, project_name, project_target,
+                    )
         return Path(explicit_out).resolve()
 
     active = _resolve_active_project()

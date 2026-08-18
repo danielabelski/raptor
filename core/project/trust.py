@@ -29,6 +29,9 @@ SECURITY:
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from core.project.project import VALID_TRUST_MARKERS
 
 
@@ -56,6 +59,69 @@ def active_project_trust() -> tuple[dict[str, str], str | None]:
         return {}, None
 
 
+def active_project_target() -> str | None:
+    """The active project's target path, or ``None``. Best-effort,
+    same failure posture as :func:`active_project_trust`."""
+    try:
+        from core.project.project import ProjectManager
+        mgr = ProjectManager()
+        active = mgr.get_active()
+        if not active:
+            return None
+        proj = mgr.load(active)
+        if not proj:
+            return None
+        return getattr(proj, "target", None) or None
+    except Exception:  # noqa: BLE001 — trust loading must never break a run
+        return None
+
+
+def run_target_matches_project(target_path: str | Path | None) -> bool:
+    """True when the run's target IS the active project's target or
+    lives inside it (resolved-path comparison).
+
+    Fail-closed: an unknown run target, an unknown project target, or
+    an unresolvable path all return ``False`` — a trust marker is an
+    assertion about ONE target, so when the run's target cannot be
+    shown to be that target the marker must not apply.
+    """
+    project_target = active_project_target()
+    if not project_target or not target_path:
+        return False
+    try:
+        run_res = Path(target_path).resolve()
+        proj_res = Path(project_target).resolve()
+    except OSError:
+        return False
+    return run_res == proj_res or proj_res in run_res.parents
+
+
+def _derive_run_target(args) -> str | None:
+    """The run's target path from the entry point's parsed args
+    (``--repo`` for /agentic and /codeql, ``--target``/positional for
+    /sca), falling back to ``RAPTOR_CALLER_DIR`` — the same signal
+    ``get_output_dir`` uses for its project target check."""
+    for attr in ("repo", "target", "target_path", "path"):
+        val = getattr(args, attr, None)
+        if val:
+            return str(val)
+    return os.environ.get("RAPTOR_CALLER_DIR") or None
+
+
+def _emit_marker_target_mismatch(markers: list[str],
+                                 run_target: str | None) -> None:
+    """Loud notice when persisted markers are IGNORED because the run
+    targets a different tree than the project. Trust state must never
+    be invisible — silently dropping the markers would read as a
+    marker that mysteriously stopped working."""
+    shown = run_target or "<unknown>"
+    print(
+        f"[*] project trust: {', '.join(sorted(markers))} marker(s) "
+        f"IGNORED — run target {shown} is not the active project's "
+        f"target (markers assert trust for one target only)"
+    )
+
+
 def resolve_trust_flag(
     negative: bool, positive: bool, marker_set: bool, default: bool = False,
 ) -> bool:
@@ -78,7 +144,9 @@ def emit_trust_banner(affecting: list[str]) -> None:
               f"(per-run flags override)")
 
 
-def apply_project_trust_flags(args, *, banner: bool = True) -> list[str]:
+def apply_project_trust_flags(
+    args, *, banner: bool = True, target_path: str | Path | None = None,
+) -> list[str]:
     """Resolve the ``config`` and ``build`` markers into
     ``args.trust_repo`` / ``args.traced_build`` for the /agentic and
     /codeql entry points.
@@ -89,11 +157,24 @@ def apply_project_trust_flags(args, *, banner: bool = True) -> list[str]:
     actually affected this run (marker present AND no explicit per-run
     flag in either direction).
 
+    Markers only apply when the run's target matches the project's
+    target (resolved-path comparison; ``--out`` runs included — the
+    output-dir gate never fires for those). A marker asserts trust for
+    ONE target; pre-fix ``--repo /untrusted/x --out /tmp/o`` with any
+    project active silently ran with that project's trust. A mismatch
+    drops the markers with a loud notice; explicit per-run flags are
+    unaffected either way.
+
     ``dynamic`` is deliberately NOT handled here — it is consumed where
     ``config.dynamic_validation`` is built (see
     :func:`resolve_dynamic_validation`).
     """
     markers, _name = active_project_trust()
+    if markers:
+        run_target = target_path or _derive_run_target(args)
+        if not run_target_matches_project(run_target):
+            _emit_marker_target_mismatch(list(markers), run_target and str(run_target))
+            markers = {}
     affecting: list[str] = []
 
     neg_trust = bool(getattr(args, "no_trust_repo", False))
@@ -119,15 +200,26 @@ def apply_project_trust_flags(args, *, banner: bool = True) -> list[str]:
 
 def resolve_dynamic_validation(
     explicit: bool | None, *, banner: bool = True,
+    target_path: str | Path | None = None,
 ) -> bool:
     """Resolve ``config.dynamic_validation`` for /audit-/validate-side
     consumers: explicit per-run choice (True/False from ``--dynamic`` /
     ``--no-dynamic``) wins; else the project's ``dynamic`` marker; else
-    off."""
+    off.
+
+    The marker only applies when *target_path* matches the active
+    project's target (same one-target rule as
+    :func:`apply_project_trust_flags`; ``RAPTOR_CALLER_DIR`` is the
+    fallback signal when the caller passes none).
+    """
     if explicit is not None:
         return bool(explicit)
     markers, _name = active_project_trust()
     if "dynamic" in markers:
+        run_target = target_path or os.environ.get("RAPTOR_CALLER_DIR")
+        if not run_target_matches_project(run_target):
+            _emit_marker_target_mismatch(["dynamic"], run_target and str(run_target))
+            return False
         if banner:
             emit_trust_banner(["dynamic"])
         return True
@@ -135,9 +227,11 @@ def resolve_dynamic_validation(
 
 
 __all__ = [
+    "active_project_target",
     "active_project_trust",
     "apply_project_trust_flags",
     "emit_trust_banner",
     "resolve_dynamic_validation",
     "resolve_trust_flag",
+    "run_target_matches_project",
 ]

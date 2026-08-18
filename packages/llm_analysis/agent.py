@@ -3527,7 +3527,9 @@ def main() -> None:
         _execute_explicit = True
     try:
         from core.project.trust import resolve_dynamic_validation
-        execute_exploits = resolve_dynamic_validation(_execute_explicit)
+        execute_exploits = resolve_dynamic_validation(
+            _execute_explicit, target_path=repo_path,
+        )
     except ImportError:
         execute_exploits = bool(_execute_explicit)
 

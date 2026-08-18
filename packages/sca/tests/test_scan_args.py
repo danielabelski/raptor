@@ -267,12 +267,36 @@ def test_config_marker_implies_trust_repo(
         trust, "active_project_trust",
         lambda: ({"config": "2026-01-01T00:00:00Z"}, "proj"),
     )
+    # Marker applies only when the run target matches the project
+    # target — precedence is under test here, so pin a match.
+    monkeypatch.setattr(trust, "run_target_matches_project",
+                        lambda target: True)
     p = _parser_with_scan_args()
     args = p.parse_args(["./target"])
     apply_no_llm_umbrella(args)
     opts = options_from_args(args)
     assert opts.trust_repo is True
     assert "project trust: config" in capsys.readouterr().out
+
+
+def test_config_marker_ignored_for_foreign_target(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """A marker asserts trust for ONE target: a run against a
+    different tree must not inherit it, and the drop must be loud."""
+    from core.project import trust
+    monkeypatch.setattr(
+        trust, "active_project_trust",
+        lambda: ({"config": "2026-01-01T00:00:00Z"}, "proj"),
+    )
+    monkeypatch.setattr(trust, "run_target_matches_project",
+                        lambda target: False)
+    p = _parser_with_scan_args()
+    args = p.parse_args(["./target"])
+    apply_no_llm_umbrella(args)
+    opts = options_from_args(args)
+    assert opts.trust_repo is False
+    assert "IGNORED" in capsys.readouterr().out
 
 
 def test_no_trust_repo_overrides_config_marker(

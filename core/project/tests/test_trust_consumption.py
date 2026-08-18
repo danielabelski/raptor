@@ -40,6 +40,7 @@ class TrustProjectFixture(unittest.TestCase):
         self.projects_dir = root / "projects"
         target = root / "code"
         target.mkdir()
+        self.target = target
         self.mgr = ProjectManager(projects_dir=self.projects_dir)
         self.mgr.create("p", str(target), output_dir=str(root / "out"))
         self.mgr.set_active("p")
@@ -48,10 +49,11 @@ class TrustProjectFixture(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _apply(self, ns):
+    def _apply(self, ns, target=None):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            affecting = apply_project_trust_flags(ns)
+            affecting = apply_project_trust_flags(
+                ns, target_path=target or self.target)
         return affecting, out.getvalue()
 
 
@@ -154,6 +156,70 @@ class TestApplyProjectTrustFlags(TrustProjectFixture):
         self.assertEqual(affecting, [])
         self.assertFalse(hasattr(ns, "trust_repo"))
 
+    def test_marker_ignored_for_foreign_target(self):
+        """A marker asserts trust for ONE target: a run against a
+        different tree (e.g. --repo /untrusted/x --out /tmp/o) must
+        not inherit it, and the drop must be loud."""
+        self.mgr.set_trust_marker("p", "config")
+        self.mgr.set_trust_marker("p", "build")
+        other = Path(self._tmp.name) / "other-code"
+        other.mkdir()
+        ns = _ns()
+        affecting, out = self._apply(ns, target=other)
+        self.assertEqual(affecting, [])
+        self.assertFalse(ns.trust_repo)
+        self.assertFalse(ns.traced_build)
+        self.assertIn("IGNORED", out)
+
+    def test_marker_ignored_when_target_unknown(self):
+        """Fail-closed: no derivable run target means the marker's
+        one-target assertion cannot be verified."""
+        import os as _os
+        self.mgr.set_trust_marker("p", "config")
+        ns = _ns()
+        saved = _os.environ.pop("RAPTOR_CALLER_DIR", None)
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                affecting = apply_project_trust_flags(ns)
+        finally:
+            if saved is not None:
+                _os.environ["RAPTOR_CALLER_DIR"] = saved
+        self.assertEqual(affecting, [])
+        self.assertFalse(ns.trust_repo)
+        self.assertIn("IGNORED", out.getvalue())
+
+    def test_marker_applies_to_subdirectory_of_target(self):
+        self.mgr.set_trust_marker("p", "config")
+        sub = self.target / "src"
+        sub.mkdir()
+        ns = _ns()
+        affecting, out = self._apply(ns, target=sub)
+        self.assertEqual(affecting, ["config"])
+        self.assertTrue(ns.trust_repo)
+
+    def test_run_target_derived_from_args_repo(self):
+        """Entry points that don't pass target_path still get the
+        gate keyed on their --repo/--target argument."""
+        self.mgr.set_trust_marker("p", "config")
+        ns = _ns(repo=str(self.target))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            affecting = apply_project_trust_flags(ns)
+        self.assertEqual(affecting, ["config"])
+        self.assertTrue(ns.trust_repo)
+
+    def test_explicit_flag_unaffected_by_mismatch(self):
+        """The gate drops MARKERS only — an explicit per-run flag is
+        the operator's direct assertion and stands."""
+        self.mgr.set_trust_marker("p", "config")
+        other = Path(self._tmp.name) / "other2"
+        other.mkdir()
+        ns = _ns(trust_repo=True)
+        affecting, _ = self._apply(ns, target=other)
+        self.assertEqual(affecting, [])
+        self.assertTrue(ns.trust_repo)
+
 
 class TestActiveProjectTrust(TrustProjectFixture):
 
@@ -179,10 +245,11 @@ class TestActiveProjectTrust(TrustProjectFixture):
 
 class TestResolveDynamicValidation(TrustProjectFixture):
 
-    def _resolve(self, explicit):
+    def _resolve(self, explicit, target=None):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            result = resolve_dynamic_validation(explicit)
+            result = resolve_dynamic_validation(
+                explicit, target_path=target or self.target)
         return result, out.getvalue()
 
     def test_default_off_without_marker(self):
@@ -208,6 +275,14 @@ class TestResolveDynamicValidation(TrustProjectFixture):
         self.assertTrue(result)
         self.assertNotIn("project trust", out)
 
+    def test_marker_ignored_for_foreign_target(self):
+        self.mgr.set_trust_marker("p", "dynamic")
+        other = Path(self._tmp.name) / "other-dyn"
+        other.mkdir()
+        result, out = self._resolve(None, target=other)
+        self.assertFalse(result)
+        self.assertIn("IGNORED", out)
+
 
 class TestAuditPipelineDynamicOptr(unittest.TestCase):
     """The audit pipeline's tri-state resolver defers to the project
@@ -217,7 +292,9 @@ class TestAuditPipelineDynamicOptr(unittest.TestCase):
         from core.audit.pipeline import AuditPipelineOpts, _resolve_dynamic
         with patch("core.project.trust.active_project_trust",
                    return_value=({"dynamic": "2026-01-01T00:00:00+00:00"},
-                                 "p")):
+                                 "p")), \
+             patch("core.project.trust.run_target_matches_project",
+                   return_value=True):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 self.assertTrue(

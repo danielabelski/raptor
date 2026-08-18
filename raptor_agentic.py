@@ -1875,7 +1875,14 @@ Examples:
     # Generate output directory with repository name and timestamp
     repo_name = repo_path.name  # Define repo_name for logging
     from core.run import get_output_dir
-    out_dir = get_output_dir("agentic", target_name=repo_name, explicit_out=args.out if args.out else None)
+    # target_path wired through so the project target-mismatch gate
+    # actually fires for direct invocations (pre-fix it only ran when
+    # RAPTOR_CALLER_DIR happened to be set).
+    out_dir = get_output_dir(
+        "agentic", target_name=repo_name,
+        explicit_out=args.out if args.out else None,
+        target_path=str(repo_path),
+    )
     # Parent (RAPTOR_DIR/out/, project dir, or --out target's parent) is
     # raptor-controlled — plain mkdir is fine. The leaf is the predictable
     # timestamp+PID name and gets the symlink/UID/world-write check.

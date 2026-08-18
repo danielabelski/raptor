@@ -335,3 +335,248 @@ class TestReceiptEntries:
         tool_items = [i for i in items if i.source.value == "mechanical:joern"]
         assert tool_items
         assert "reachableByFlows" in tool_items[0].description
+
+
+class TestLifecycleChannelChainEmission:
+    """Phase-A lifecycle channels (ptr_lifecycle / lock_region):
+    classifier stanzas, CWE fallback membership, tier keys — additive
+    wiring per the five-channel programme."""
+
+    def test_ptr_lifecycle_owned_cwes(self):
+        for cwe in ("CWE-825", "CWE-672"):
+            assert "ptr_lifecycle" in _types(_cwe_fallback_chain(cwe)), cwe
+
+    def test_cwe_416_membership_is_additive(self):
+        types = _types(_cwe_fallback_chain("CWE-416"))
+        assert "ptr_lifecycle" in types
+        # The existing rich entry keeps its channels.
+        assert "coccinelle_flow" in types
+        assert "smt" in types
+
+    def test_lock_region_owned_cwe(self):
+        assert "lock_region" in _types(_cwe_fallback_chain("CWE-833"))
+
+    def test_cwe_667_membership_is_additive(self):
+        types = _types(_cwe_fallback_chain("CWE-667"))
+        assert "lock_region" in types
+        assert "smt" in types
+        assert "coccinelle" in types
+
+    def test_hypothesis_dispatches_ptr_lifecycle(self):
+        chain = _hypothesis_to_tool_chain(
+            "stale pointer: `obj->port` cached alias outlives the "
+            "freed engine",
+            "src/a.c",
+        )
+        assert "ptr_lifecycle" in _types(chain)
+        assert "lock_region" not in _types(chain)
+
+    def test_hypothesis_dispatches_lock_region(self):
+        chain = _hypothesis_to_tool_chain(
+            "the remove callback is invoked while the lock is held",
+            "src/a.c",
+        )
+        assert "lock_region" in _types(chain)
+        assert "ptr_lifecycle" not in _types(chain)
+
+    def test_cross_channel_negatives(self):
+        # Plain use-after-free stays with the CWE-416 tool chain; a
+        # majority claim stays consistency; neither dispatches the
+        # new channels by keyword.
+        for hyp in (
+            "use-after-free of `conn` in handler",
+            "9/10 other callers check do_auth()'s return; this one "
+            "discards it",
+        ):
+            types = _types(_hypothesis_to_tool_chain(hyp, "src/a.c"))
+            assert "ptr_lifecycle" not in types, hyp
+            assert "lock_region" not in types, hyp
+
+    def test_tier_counters_exist(self):
+        counters = orch._make_tier_counters()
+        assert "ptr_lifecycle" in counters
+        assert "lock_region" in counters
+
+    def test_cheap_lane_membership(self):
+        assert "ptr_lifecycle" in orch._REFUTED_CHEAP_CHANNELS
+        assert "lock_region" in orch._REFUTED_CHEAP_CHANNELS
+
+    def test_detection_only_variants(self):
+        from core.audit.orchestrator import _is_detection_only
+        assert _is_detection_only("ptr_lifecycle:stale-alias-naming")
+        assert not _is_detection_only("ptr_lifecycle:stale-alias")
+        assert _is_detection_only(
+            "lock_region:callback-under-lock-naming",
+        )
+        assert not _is_detection_only("lock_region:callback-under-lock")
+
+    def test_stamps_are_tool_evidence(self):
+        from core.audit.evidence_grade import is_tool_evidence
+        for stamp in (
+            "ptr_lifecycle:stale-alias",
+            "ptr_lifecycle:stale-alias-naming",
+            "lock_region:callback-under-lock",
+            "lock_region:callback-under-lock-naming",
+        ):
+            assert is_tool_evidence(stamp), stamp
+
+    def test_receipt_descriptions(self):
+        from core.audit.evidence_grade import grade_review_result
+        items = grade_review_result(
+            {"hypothesis": "h"},
+            evidence_tool="ptr_lifecycle:stale-alias",
+        )
+        assert any("alias" in i.description for i in items)
+        items = grade_review_result(
+            {"hypothesis": "h"},
+            evidence_tool="lock_region:callback-under-lock",
+        )
+        assert any("lock" in i.description for i in items)
+
+
+class TestLifecycleChannelDispatch:
+    """_run_tool_chain branches for the phase-A channels, entry points
+    monkeypatched so nothing external runs."""
+
+    HYP_STALE = "stale pointer: cached alias outlives the freed owner"
+    HYP_LOCK = "callback invoked while the lock is held"
+
+    @pytest.fixture()
+    def lifecycle_counters(self):
+        return {
+            "ptr_lifecycle": TierCounters(),
+            "lock_region": TierCounters(),
+        }
+
+    def _run(self, tmp_path, chain, hypothesis, counters):
+        return _run_tool_chain(
+            chain,
+            config=_Cfg(tmp_path),
+            file_path="src/a.c",
+            function_name="f",
+            source="",
+            hypothesis=hypothesis,
+            tier_counters=counters,
+            joern_server=None,
+        )
+
+    @staticmethod
+    def _alias_res(outcome, rule_id="ptr_lifecycle:stale-alias"):
+        from core.audit.ptr_lifecycle import AliasEvidence
+        return AliasEvidence(
+            outcome=outcome, reason="stubbed", rule_id=rule_id,
+        )
+
+    @staticmethod
+    def _lock_res(outcome, rule_id="lock_region:callback-under-lock"):
+        from core.audit.lock_region import LockRegionEvidence
+        return LockRegionEvidence(
+            outcome=outcome, reason="stubbed", rule_id=rule_id,
+            lock={"acquire": "a_lock", "release": "a_unlock"},
+        )
+
+    def test_ptr_lifecycle_confirm_stamps(
+        self, tmp_path, lifecycle_counters, monkeypatch,
+    ):
+        import core.audit.ptr_lifecycle as plmod
+        monkeypatch.setattr(
+            plmod, "run_ptr_lifecycle_check",
+            lambda *a, **kw: self._alias_res("confirmed"),
+        )
+        confirmed = self._run(
+            tmp_path,
+            [{"type": "ptr_lifecycle", "config": {}}],
+            self.HYP_STALE, lifecycle_counters,
+        )
+        assert confirmed == ["ptr_lifecycle:stale-alias"]
+        assert lifecycle_counters["ptr_lifecycle"].confirmed == 1
+
+    def test_ptr_lifecycle_inconclusive_never_confirms(
+        self, tmp_path, lifecycle_counters, monkeypatch,
+    ):
+        import core.audit.ptr_lifecycle as plmod
+        monkeypatch.setattr(
+            plmod, "run_ptr_lifecycle_check",
+            lambda *a, **kw: self._alias_res("inconclusive"),
+        )
+        confirmed = self._run(
+            tmp_path,
+            [{"type": "ptr_lifecycle", "config": {}}],
+            self.HYP_STALE, lifecycle_counters,
+        )
+        assert confirmed == []
+        assert lifecycle_counters["ptr_lifecycle"].inconclusive == 1
+
+    def test_lock_region_confirm_adds_cocci_corroboration(
+        self, tmp_path, lifecycle_counters, monkeypatch,
+    ):
+        import core.audit.lock_region as lrmod
+        monkeypatch.setattr(
+            lrmod, "run_lock_region_check",
+            lambda *a, **kw: self._lock_res("confirmed"),
+        )
+        monkeypatch.setattr(
+            lrmod, "cocci_corroboration",
+            lambda *a, **kw: "coccinelle:callback_under_lock",
+        )
+        confirmed = self._run(
+            tmp_path,
+            [{"type": "lock_region", "config": {}}],
+            self.HYP_LOCK, lifecycle_counters,
+        )
+        # Two INDEPENDENT namespaces: the channel receipt plus the
+        # parametric cocci stamp (the aggregation shape).
+        assert confirmed == [
+            "lock_region:callback-under-lock",
+            "coccinelle:callback_under_lock",
+        ]
+        assert lifecycle_counters["lock_region"].confirmed == 1
+
+    def test_lock_region_refuted_skips_cocci(
+        self, tmp_path, lifecycle_counters, monkeypatch,
+    ):
+        import core.audit.lock_region as lrmod
+        monkeypatch.setattr(
+            lrmod, "run_lock_region_check",
+            lambda *a, **kw: self._lock_res("refuted"),
+        )
+
+        def _explode(*a, **kw):
+            raise AssertionError("cocci leg must not run on refuted")
+
+        monkeypatch.setattr(lrmod, "cocci_corroboration", _explode)
+        confirmed = self._run(
+            tmp_path,
+            [{"type": "lock_region", "config": {}}],
+            self.HYP_LOCK, lifecycle_counters,
+        )
+        assert confirmed == []
+        assert lifecycle_counters["lock_region"].refuted == 1
+
+    def test_channel_exception_does_not_break_chain(
+        self, tmp_path, lifecycle_counters, monkeypatch,
+    ):
+        import core.audit.lock_region as lrmod
+        import core.audit.ptr_lifecycle as plmod
+
+        def _boom(*a, **kw):
+            raise RuntimeError("channel exploded")
+
+        monkeypatch.setattr(plmod, "run_ptr_lifecycle_check", _boom)
+        monkeypatch.setattr(
+            lrmod, "run_lock_region_check",
+            lambda *a, **kw: self._lock_res("confirmed"),
+        )
+        monkeypatch.setattr(
+            lrmod, "cocci_corroboration", lambda *a, **kw: None,
+        )
+        confirmed = self._run(
+            tmp_path,
+            [
+                {"type": "ptr_lifecycle", "config": {}},
+                {"type": "lock_region", "config": {}},
+            ],
+            self.HYP_STALE + " and " + self.HYP_LOCK,
+            lifecycle_counters,
+        )
+        assert confirmed == ["lock_region:callback-under-lock"]

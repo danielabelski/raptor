@@ -512,6 +512,8 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "joern_flow": TierCounters(),
         "coccinelle_flow": TierCounters(),
         "joern_dominance": TierCounters(),
+        "ptr_lifecycle": TierCounters(),
+        "lock_region": TierCounters(),
     }
 
 
@@ -3592,6 +3594,97 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                     })
     except Exception:
         logger.debug("fail-open census failed", exc_info=True)
+
+    # Field-access census + phase-A lifecycle channel pre-passes
+    # (five-channel programme §0/§3/§5): the shared field-census.json
+    # artifact, ptr_lifecycle leg-A parity leads (consistency
+    # namespace, detection grade) + leg-B stale-alias candidates, and
+    # lock_region callback-under-lock candidates. Mechanical entries
+    # and injected hypotheses only — verdicts stay with the dispatch
+    # channels (G1 holds: the hypothesis exists before any finding).
+    try:
+        from .condition_smt import DomainVocabulary
+        from .fail_open_roles import RoleContext as _CensusRoleCtx
+        from .field_census import (
+            build_field_census,
+            priority_fields_from_study_list,
+            seed_injected_hypotheses,
+            write_census_artifact,
+        )
+        from .lock_region import run_lock_region_prepass
+        from .ptr_lifecycle import run_ptr_lifecycle_prepass
+
+        census_texts: dict[str, str] = {}
+        for gap in gaps:
+            fp = gap.get("file", "")
+            if fp and fp not in census_texts:
+                with contextlib.suppress(Exception):
+                    src_path = config.target_path / fp
+                    if src_path.is_file():
+                        census_texts[fp] = src_path.read_text(
+                            errors="replace",
+                        )
+        if census_texts:
+            channel_vocab = DomainVocabulary.from_domain_model(
+                prep_domain_model, target_path=config.target_path,
+            )
+            field_census = build_field_census(
+                census_texts,
+                priority_fields=priority_fields_from_study_list(
+                    config.out_dir,
+                ),
+            )
+            if config.out_dir:
+                write_census_artifact(field_census, config.out_dir)
+            census_ctx = _CensusRoleCtx(
+                out_dir=config.out_dir,
+                annotations_dir=getattr(
+                    config, "annotations_dir", None,
+                ),
+                inventory=getattr(config, "inventory", None),
+                context_map=context_map,
+            )
+            pl_prepass = run_ptr_lifecycle_prepass(
+                census_texts,
+                census=field_census,
+                domain_vocab=channel_vocab,
+                inventory=getattr(config, "inventory", None),
+                context=census_ctx,
+            )
+            lr_prepass = run_lock_region_prepass(
+                census_texts,
+                domain_vocab=channel_vocab,
+                inventory=getattr(config, "inventory", None),
+                context=census_ctx,
+            )
+            n_channel_seeded = 0
+            for chan_prepass, action, source_tag in (
+                (pl_prepass, "ptr_lifecycle_prepass",
+                 "ptr_lifecycle_census"),
+                (lr_prepass, "lock_region_prepass",
+                 "lock_region_census"),
+            ):
+                for mf in chan_prepass.get("mechanical", []):
+                    key = f"{mf['file']}:{mf['function']}"
+                    mechanical_findings.setdefault(key, []).append(mf)
+                n_channel_seeded += seed_injected_hypotheses(
+                    gaps, chan_prepass.get("handoffs", []),
+                    source=source_tag,
+                )
+                if config.out_dir:
+                    with contextlib.suppress(Exception):
+                        append_audit_log(config.out_dir, {
+                            "action": action,
+                            **(chan_prepass.get("telemetry") or {}),
+                        })
+            if n_channel_seeded:
+                logger.info(
+                    "lifecycle channel prepass: %d handoff "
+                    "hypotheses injected",
+                    n_channel_seeded,
+                )
+    except Exception:
+        logger.debug("lifecycle channel prepass failed", exc_info=True)
 
     if mechanical_findings and config.out_dir:
         try:
@@ -11780,6 +11873,35 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "consistency", "config": {}})
                 seen_types.add("consistency")
 
+    # Stale-alias hypotheses ("cached pointer outlives the freed
+    # owner", "sibling fields re-targeted but this one not"): the
+    # ptr_lifecycle channel adjudicates the alias-hop class the flow
+    # tools miss (the alias hop breaks the dataflow). Plain
+    # use-after-free phrasing stays with the CWE-416 chain.
+    if "ptr_lifecycle" not in seen_types:
+        try:
+            from .ptr_lifecycle import is_ptr_lifecycle_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_ptr_lifecycle_hypothesis(hypothesis):
+                chain.append({"type": "ptr_lifecycle", "config": {}})
+                seen_types.add("ptr_lifecycle")
+
+    # Callback-under-lock hypotheses ("remove_cb fired while ctx->lock
+    # is held"): the lock_region channel composes learned lock pairs
+    # with the indirect-call shape — invoke-callback-while-held only
+    # (imbalance stays CWE-667's smt/cocci chain).
+    if "lock_region" not in seen_types:
+        try:
+            from .lock_region import is_lock_region_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_lock_region_hypothesis(hypothesis):
+                chain.append({"type": "lock_region", "config": {}})
+                seen_types.add("lock_region")
+
     # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
     # the preservation harness checks the stated invariant against the
     # function's mutation sites — the channel gap that left every
@@ -11908,6 +12030,31 @@ def _record_consistency_receipt(
         append_audit_log(config.out_dir, record)
     except Exception:
         logger.debug("consistency receipt write failed", exc_info=True)
+
+
+def _record_channel_receipt(
+    config: OrchestratorConfig,
+    action: str,
+    file_path: str,
+    function_name: str,
+    res: Any,
+) -> None:
+    """Persist a lifecycle-channel receipt (ptr_lifecycle four-receipt
+    conjunction / lock_region region+invocation+setter evidence) to
+    the audit log — the shared shape of the per-channel recorders
+    above."""
+    try:
+        if not config.out_dir:
+            return
+        record = {
+            "action": action,
+            "file": file_path,
+            "function": function_name,
+        }
+        record.update(res.to_dict())
+        append_audit_log(config.out_dir, record)
+    except Exception:
+        logger.debug("%s receipt write failed", action, exc_info=True)
 
 
 def _record_invariant_receipt(
@@ -12078,6 +12225,29 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         cocci_flow_entry = chain_entry_for_cwe(cwe)
         if cocci_flow_entry:
             chain.append(cocci_flow_entry)
+
+    try:
+        from .ptr_lifecycle import ptr_lifecycle_applicable
+    except ImportError:
+        pass
+    else:
+        # Alias-hop lifecycle family (PTR_LIFECYCLE_CWES — CWE-825 /
+        # CWE-672 are channel-owned; the CWE-416 membership is
+        # additive, the channel joins after the existing
+        # smt/cocci/codeql entries).
+        if ptr_lifecycle_applicable(cwe):
+            chain.append({"type": "ptr_lifecycle", "config": {}})
+
+    try:
+        from .lock_region import lock_region_applicable
+    except ImportError:
+        pass
+    else:
+        # Callback-under-lock family (LOCK_REGION_CWES — CWE-833 is
+        # channel-owned; the CWE-667 membership is additive to its
+        # existing smt/cocci lock-imbalance entry).
+        if lock_region_applicable(cwe):
+            chain.append({"type": "lock_region", "config": {}})
 
     if cwe and not chain:
         _warn_unmapped_cwe(cwe)
@@ -12539,6 +12709,137 @@ def _run_tool_chain(
                     if tier_counters:
                         _increment_tier_dict(
                             tier_counters, "consistency",
+                            "inconclusive",
+                        )
+
+            elif tool_type == "ptr_lifecycle":
+                from .fail_open_roles import RoleContext as _PlRoleCtx
+                from .ptr_lifecycle import run_ptr_lifecycle_check
+
+                pl_ctx = _PlRoleCtx(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                )
+                pl_res = run_ptr_lifecycle_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    context=pl_ctx,
+                    domain_vocab=domain_vocab,
+                )
+                # Receipts already earned by earlier chain steps
+                # (smt check-early-release, cocci use_after_free,
+                # typestate) corroborate the alias claim.
+                pl_res.corroboration.extend(
+                    c for c in confirmed
+                    if not c.startswith("ptr_lifecycle")
+                )
+                _record_channel_receipt(
+                    config, "ptr_lifecycle_check", file_path,
+                    function_name, pl_res,
+                )
+                if pl_res.outcome == "confirmed":
+                    confirmed.append(pl_res.rule_id)
+                    logger.info(
+                        "ptr-lifecycle confirmed %s:%s — %s",
+                        file_path, function_name, pl_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "ptr_lifecycle", "confirmed",
+                        )
+                elif pl_res.outcome == "refuted":
+                    logger.info(
+                        "ptr-lifecycle refuted %s:%s — %s",
+                        file_path, function_name, pl_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "ptr_lifecycle", "refuted",
+                        )
+                else:
+                    logger.info(
+                        "ptr-lifecycle inconclusive %s:%s — %s",
+                        file_path, function_name, pl_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "ptr_lifecycle",
+                            "inconclusive",
+                        )
+
+            elif tool_type == "lock_region":
+                from .fail_open_roles import RoleContext as _LrRoleCtx
+                from .lock_region import (
+                    cocci_corroboration,
+                    run_lock_region_check,
+                )
+
+                lr_ctx = _LrRoleCtx(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                )
+                lr_res = run_lock_region_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    context=lr_ctx,
+                    domain_vocab=domain_vocab,
+                )
+                lr_res.corroboration.extend(
+                    c for c in confirmed
+                    if not c.startswith("lock_region")
+                )
+                _record_channel_receipt(
+                    config, "lock_region_check", file_path,
+                    function_name, lr_res,
+                )
+                if lr_res.outcome == "confirmed":
+                    confirmed.append(lr_res.rule_id)
+                    logger.info(
+                        "lock-region confirmed %s:%s — %s",
+                        file_path, function_name, lr_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "lock_region", "confirmed",
+                        )
+                    # Parametric cocci corroboration leg: an
+                    # INDEPENDENT coccinelle-namespace stamp (the
+                    # aggregation rule needs two namespaces; a receipt
+                    # riding inside corroboration[] does not count).
+                    cocci_stamp = cocci_corroboration(
+                        effective_target, lr_res,
+                    )
+                    if cocci_stamp and cocci_stamp not in confirmed:
+                        confirmed.append(cocci_stamp)
+                elif lr_res.outcome == "refuted":
+                    logger.info(
+                        "lock-region refuted %s:%s — %s",
+                        file_path, function_name, lr_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "lock_region", "refuted",
+                        )
+                else:
+                    logger.info(
+                        "lock-region inconclusive %s:%s — %s",
+                        file_path, function_name, lr_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "lock_region",
                             "inconclusive",
                         )
 
@@ -15823,7 +16124,24 @@ def _is_detection_only(tool_id: str) -> bool:
         # promote directly. All consistency dimensions share ONE
         # namespace, so two of them can never satisfy the two-
         # independent-namespaces aggregation rule by themselves.
+        # (The ptr_lifecycle field-parity leg emits under this
+        # namespace by construction — the same rule applies to it
+        # with zero extra code.)
         from core.audit.peer_evidence import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
+
+    if tool_id.startswith("ptr_lifecycle:"):
+        # -naming variants (naming-stem event vocabulary / degraded
+        # census) may not promote alone; registry-grade stale-alias
+        # confirmations promote directly (the fail_open pattern).
+        from core.audit.ptr_lifecycle import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
+
+    if tool_id.startswith("lock_region:"):
+        # -naming variants (naming-stem lock pair / internal-only
+        # setter) may not promote alone; registry-grade confirmations
+        # promote through the both-escalators status rule.
+        from core.audit.lock_region import is_detection_rule_id
         return is_detection_rule_id(tool_id)
 
     return False
@@ -15856,7 +16174,7 @@ def _source_has_arithmetic(source: str) -> bool:
 # refuted class is a demoted-priority queue, not a zero-priority one.
 _REFUTED_CHEAP_CHANNELS = frozenset({
     "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
-    "fail_open", "consistency",
+    "fail_open", "consistency", "ptr_lifecycle", "lock_region",
 })
 
 # Bound the extra tool work per function: at most this many hypotheses

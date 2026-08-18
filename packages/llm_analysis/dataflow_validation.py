@@ -864,18 +864,25 @@ def _build_hypothesis(finding: dict, analysis: dict, repo_path: Path):
         )
 
     # RAPTOR's own prior verified outcomes for this finding (Tier-3
-    # retrieval). Self-collects from the active project's sibling runs;
+    # retrieval). L3-retrieved exemplars first (recency / dedup /
+    # diversity ranked), legacy VerifiedOutcome rollup as fallback;
     # best-effort, empty (no prior corpus) -> no block. These carry
-    # scanned-repo-derived fields (file paths), so they go INSIDE the
-    # untrusted envelope, not trusted_parts; the renderer already
-    # tag-forgery-defangs the values.
+    # scanned-repo-derived fields (exploit code, file paths), so they
+    # go INSIDE the untrusted envelope, not trusted_parts; the renderer
+    # already tag-forgery-defangs the values.
     try:
-        from core.labeled_attempts.view import exemplar_block_for_finding
-        ve_block = exemplar_block_for_finding(
+        from core.labeled_attempts.view import exemplar_slot_for_finding
+        slot = exemplar_slot_for_finding(
             {"id": rule_id, "cwe_id": cwe, "file": file_path},
         )
-        if ve_block:
-            untrusted_inner.append(ve_block)
+        if slot.block:
+            untrusted_inner.append(slot.block)
+        if slot.exemplar_ids:
+            # The analysis record persists with the run output — carry
+            # which exemplars were in the validator's prompt so A/B
+            # attribution can join them to the validation outcome
+            # (same shape as LabeledAttempt.exemplars_used).
+            analysis["exemplars_used"] = list(slot.exemplar_ids)
     except Exception:
         logger.warning("exemplar lookup failed for %s", rule_id, exc_info=True)
 

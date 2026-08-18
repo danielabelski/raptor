@@ -1130,6 +1130,10 @@ class AutonomousSecurityAgentV2:
             logger.debug("flow-context injection failed: %s", exc)
         extra_blocks.extend(extra_context_blocks)
 
+        # Filled by the bundle builder when L3-retrieved exemplars land
+        # in the prompt; persisted onto the analysis record below so
+        # A/B attribution can join exemplars to outcomes.
+        exemplar_usage: dict = {}
         bundle = build_analysis_prompt_bundle(
             rule_id=vuln.rule_id,
             level=vuln.level,
@@ -1155,6 +1159,7 @@ class AutonomousSecurityAgentV2:
                 if self.use_verified_exemplars else ()
             ),
             budget_tokens=self._prompt_budget(),
+            exemplar_usage=exemplar_usage,
         )
         prompt = next(m.content for m in bundle.messages if m.role == "user")
         system_prompt = next(m.content for m in bundle.messages if m.role == "system")
@@ -1196,6 +1201,13 @@ class AutonomousSecurityAgentV2:
 
             vuln.exploitable = analysis.get("is_exploitable") or False
             vuln.exploitability_score = analysis.get("exploitability_score") or 0.0
+            if exemplar_usage.get("exemplars_used"):
+                # Which L3 exemplars primed this analysis — persisted
+                # with the finding so exemplar contribution is
+                # attributable (LabeledAttempt.exemplars_used shape).
+                analysis.setdefault(
+                    "exemplars_used", exemplar_usage["exemplars_used"],
+                )
             vuln.analysis = analysis
 
             logger.info("✓ LLM analysis complete:")

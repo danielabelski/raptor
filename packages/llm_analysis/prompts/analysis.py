@@ -16,8 +16,6 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from core.security.prompt_defense_profiles import CONSERVATIVE
 from core.security.prompt_envelope import (
     ModelDefenseProfile,
@@ -28,6 +26,8 @@ from core.security.prompt_envelope import (
 )
 
 from .schemas import ANALYSIS_SCHEMA, DATAFLOW_SCHEMA_FIELDS
+
+logger = logging.getLogger(__name__)
 
 _ANALYSIS_BLOCK_PRIORITIES: dict[str, int] = {
     "vulnerable-code": 0,
@@ -478,30 +478,36 @@ def _build_verified_exemplar_block(
     cwe_id: str | None,
     file_path: str,
     verified_outcomes: Iterable[Any],
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
     """Render RAPTOR's own prior verified outcomes for this finding.
 
-    Tier-3 retrieval: the nearest previously-confirmed outcomes (witness /
-    CodeQL backends) primed as exemplars beside the curated CVE ones — RAPTOR's
-    own ground truth, so the set sharpens as it runs. Empty when nothing
-    matches or the substrate is absent. Best-effort: analysis continues
-    regardless. The caller places the returned text inside an
-    ``UntrustedBlock`` envelope (it carries scanned-repo-derived fields), not
-    the trusted system prompt.
+    Tier-3 retrieval: L3-retrieved exemplars first (recency / dedup /
+    diversity ranked), with the caller's pre-collected VerifiedOutcome
+    corpus as fallback — RAPTOR's own ground truth, so the set sharpens
+    as it runs. The empty-corpus early-out preserves the caller's
+    opt-in gate: no supplied corpus means the exemplar slot stays off.
+    Best-effort: analysis continues regardless. The caller places the
+    returned text inside an ``UntrustedBlock`` envelope (it carries
+    scanned-repo-derived fields), not the trusted system prompt.
+
+    Returns ``(block, exemplar_ids)`` — ids are non-empty only when L3
+    retrieval served the block, so the caller can record which
+    exemplars were in the prompt (``LabeledAttempt.exemplars_used``).
     """
     outcomes = list(verified_outcomes)
     if not outcomes:
-        return ""
+        return "", ()
     try:
-        from core.labeled_attempts.view import render_verified_exemplars
+        from core.labeled_attempts.view import exemplar_slot_for_finding
     except Exception:  # noqa: BLE001 — substrate probe, never fatal
-        return ""  # substrate absent (older deployment) — skip silently
+        return "", ()  # substrate absent (older deployment) — skip silently
     try:
         finding = {"id": rule_id, "cwe_id": cwe_id, "file": file_path}
-        return render_verified_exemplars(finding, outcomes)
+        slot = exemplar_slot_for_finding(finding, outcomes=outcomes)
+        return slot.block, slot.exemplar_ids
     except Exception as e:
         logger.debug("verified-exemplar block render failed: %s", e, exc_info=True)
-        return ""
+        return "", ()
 
 
 def build_analysis_prompt_bundle(
@@ -530,6 +536,7 @@ def build_analysis_prompt_bundle(
     allow_unreachable: bool = False,
     verified_outcomes: Iterable[Any] = (),
     budget_tokens: int = 0,
+    exemplar_usage: dict[str, Any] | None = None,
 ) -> PromptBundle:
     """Build the analysis prompt as a PromptBundle (system + user, role-separated).
 
@@ -583,12 +590,18 @@ def build_analysis_prompt_bundle(
     # untrusted-block envelope rather than the trusted system prompt. Empty
     # unless the caller supplies a corpus and something ranks against this
     # finding, so default behaviour is unchanged.
-    verified_block = _build_verified_exemplar_block(
+    verified_block, exemplar_ids = _build_verified_exemplar_block(
         rule_id=rule_id,
         cwe_id=cwe_id,
         file_path=file_path,
         verified_outcomes=verified_outcomes,
     )
+    if exemplar_ids and exemplar_usage is not None:
+        # PromptBundle is frozen (messages + nonce only), so which
+        # L3 exemplars landed in the prompt travels back through this
+        # caller-supplied dict; the caller persists it on the finding's
+        # analysis record (LabeledAttempt.exemplars_used shape).
+        exemplar_usage["exemplars_used"] = list(exemplar_ids)
     if verified_block:
         blocks.append(UntrustedBlock(
             content=verified_block,

@@ -403,6 +403,12 @@ class LabeledAttempt:
                 f"failure_mode={self.failure_mode!r}. A successful "
                 f"attempt has no failure to classify."
             )
+        # Reproducibility invariant: web evidence is a live-HTTP
+        # point-in-time confirmation — never replayable. Derived (not
+        # rejected) so records persisted by producers that left the
+        # default ``reproducible=True`` load with the correct value.
+        if self.web_evidence is not None and self.reproducible:
+            object.__setattr__(self, "reproducible", False)
         # Normalise timestamp at construction so it is always ISO-8601
         # parseable. Producers that pass garbage get rejected here,
         # not silently mismatched with the filename later. Empty

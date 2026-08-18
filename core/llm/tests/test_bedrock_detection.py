@@ -240,6 +240,24 @@ def test_bedrock_builder_works_without_region(monkeypatch):
     assert cfg is not None and cfg.model_name.startswith("anthropic.")
 
 
+def test_bedrock_builder_timeout_covers_long_generations(monkeypatch):
+    """The worker-leg timeout must cover a full non-streaming frontier
+    generation and stay within the dispatcher's forwarding-leg ceiling
+    (whose contract note pins the worker side at <= its 600s default).
+    At the 120s dataclass default, every Bedrock generation over 120s
+    was silently abandoned and re-sent by the SDK's internal retries
+    while the dispatcher ran each abandoned generation to completion —
+    billed upstream, booked nowhere (observed live: 200-360s audit
+    calls, 3x duplicated, surfacing as BrokenPipeError audit rows)."""
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "t")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    from core.llm.config import _build_bedrock_config
+    from core.llm.dispatcher.server import _UPSTREAM_DEFAULT_TIMEOUT_S
+    cfg = _build_bedrock_config()
+    assert cfg is not None
+    assert cfg.timeout == _UPSTREAM_DEFAULT_TIMEOUT_S == 600
+
+
 def test_bedrock_builder_carries_bearer_in_api_key(monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token-abc")
     monkeypatch.setenv("AWS_REGION", "us-east-1")

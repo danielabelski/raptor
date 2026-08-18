@@ -609,6 +609,21 @@ def _build_bedrock_config() -> Optional['ModelConfig']:
         # SigV4 mode this stays None — the dispatcher resolves the AWS
         # credential chain and signs per request.
         api_key=bearer,
+        # Worker-leg request timeout. Must cover a full non-streaming
+        # frontier generation and match the dispatcher's forwarding-leg
+        # ceiling (``_UPSTREAM_DEFAULT_TIMEOUT_S = 600`` — its contract
+        # note says the upstream leg must be AT LEAST the largest
+        # worker-side timeout, which pins the worker side at <= 600).
+        # At the 120s dataclass default every Bedrock generation longer
+        # than 120s died inside the SDK's silent internal retries: the
+        # worker abandons the request at 120s and re-sends, while the
+        # dispatcher's upstream leg keeps each abandoned generation
+        # running to completion — billed upstream, booked nowhere, and
+        # surfacing only as dispatcher BrokenPipeError audit rows when
+        # the write-back hits the closed worker socket (observed live:
+        # 200-360s audit calls, 3x duplicated). Call classes that want
+        # a tighter wall still get it per request via ``timeout_s``.
+        timeout=600,
         max_tokens=limits.get("max_output", _DEFAULT_MAX_OUTPUT_FRONTIER),
         max_context=limits.get("max_context", _DEFAULT_MAX_CONTEXT_FRONTIER),
         temperature=0.7,

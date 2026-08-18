@@ -56,6 +56,31 @@ _ZERO_PRICE_WARNED: set[str] = set()
 # won't kill Instructor for the rest of the session.
 _INSTRUCTOR_MAX_CONSEC_FAILURES = 3
 
+
+def _instructor_refusal_stop(exc: Exception) -> str | None:
+    """Stop reason when an instructor failure is really a model refusal.
+
+    A hard refusal on the tool-use leg surfaces as tool args missing
+    every field: the API ends the turn with ``stop_reason="refusal"``
+    and no tool call, instructor parses ``{}``, and the resulting
+    exception reads like a schema-validation flake — so instructor
+    burns its re-asks against a model boundary an identical retry
+    cannot move (observed live: 4 attempts per call, all ``{}``, then
+    the JSON fallback got the explicit refusal on the same content).
+    The raw completions ride on ``InstructorRetryException``
+    (``last_completion`` + ``failed_attempts[*].completion``); any of
+    them carrying a refusal stop reason makes the whole call a model
+    boundary, not a shape failure. ``getattr``-probed so non-instructor
+    exceptions fall through untouched.
+    """
+    completions = [getattr(exc, "last_completion", None)]
+    for attempt in getattr(exc, "failed_attempts", None) or ():
+        completions.append(getattr(attempt, "completion", None))
+    for completion in completions:
+        if getattr(completion, "stop_reason", None) == "refusal":
+            return "refusal"
+    return None
+
 _TEMPERATURE_DEPRECATED_FROM = (4, 7)
 _CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)(?:-(\d+))?")
 
@@ -129,7 +154,7 @@ def _safe_int(value: Any, *, default: int) -> int:
 # after the helpers above rather than in the top import block; the
 # conditional SDK re-imports below depend on these flags at module
 # scope.
-from .detection import (
+from .detection import (  # noqa: E402 — deliberate placement, see comment above
     ANTHROPIC_SDK_AVAILABLE,
     GENAI_SDK_AVAILABLE,
     OPENAI_SDK_AVAILABLE,
@@ -2400,6 +2425,21 @@ class AnthropicProvider(LLMProvider):
                 )
 
             except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
+                refusal = _instructor_refusal_stop(e)
+                if refusal is not None:
+                    # Hard refusal surfaced through the tool-use leg as
+                    # empty tool args. Not instructor unreliability —
+                    # don't count it toward the instructor-disable cap —
+                    # and not retryable — don't re-send the same content
+                    # via the JSON fallback. Phrased with "model
+                    # refused" so classify_error_text buckets it
+                    # 'blocked' (same contract as generate()'s
+                    # empty-content refusal path).
+                    raise RuntimeError(
+                        "Anthropic model refused request "
+                        f"(stop_reason={refusal}, instructor tool-use "
+                        "leg — tool args empty)"
+                    ) from e
                 self._note_instructor_failure(e)
 
         # Fallback: JSON-in-prompt

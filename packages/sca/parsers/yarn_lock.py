@@ -92,9 +92,14 @@ def _looks_like_berry(text: str) -> bool:
             data = _safe_load(text)       # type: ignore[misc]
             if isinstance(data, dict) and "__metadata" in data:
                 return True
-        except (_yaml.YAMLError, RecursionError):  # type: ignore[union-attr]
+        except (_yaml.YAMLError, RecursionError, ValueError):  # type: ignore[union-attr]
             # Best-effort sniff: malformed / pathologically nested
-            # YAML just means "not Berry".
+            # YAML just means "not Berry". ValueError included:
+            # yaml.safe_load raises it on out-of-range date scalars
+            # (e.g. `a: 2023-99-99`) — escaping here reached the
+            # parser-dispatch catch-all and the whole lockfile read as
+            # zero dependencies ("clean"); the classic parser still
+            # extracts the deps.
             pass
     return False
 
@@ -196,7 +201,10 @@ def _from_classic_block(
 def _parse_berry(text: str, path: Path) -> list[Dependency]:
     try:
         data = _safe_load(text)           # type: ignore[misc]
-    except _yaml.YAMLError as e:          # type: ignore[union-attr]
+    except (_yaml.YAMLError, ValueError) as e:  # type: ignore[union-attr]
+        # ValueError: yaml.safe_load raises it on out-of-range date
+        # scalars — report the parse failure instead of letting it
+        # escape to the dispatch catch-all as a silent zero-dep result.
         logger.warning(
             "sca.parsers.yarn_lock: Berry YAML parse failed for %s: %s",
             path, e,

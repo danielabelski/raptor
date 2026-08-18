@@ -20,6 +20,7 @@ Files inspected:
 Blocking fields in ``codeql-pack.yml`` / ``qlpack.yml``:
     extractor:                     ANY value (codeql may exec this)
     dependencies.<name>            non-canonical (not ``codeql/...``)
+    defaultSuiteFile               path-traversing value (escapes pack)
     buildCommand                   subprocess invocation
     setup / preCompileScript /
     postCompileScript              subprocess invocation
@@ -29,6 +30,7 @@ Blocking fields in ``codeql-config.yml``:
     packs.<lang>[]                 non-canonical pack reference
     queries[].uses                 external repo / URL reference
     manualBuildSteps / setup       subprocess invocation
+    pack-cache                     ANY value (in-repo pack source)
     structural: symlink, oversized, malformed → block
 
 Trust override: same module-flag pattern as cc_trust. ``--trust-repo``
@@ -138,6 +140,23 @@ def _truncate(s: str, limit: int = 80) -> str:
     return safe[:limit] + "..." if len(safe) > limit else safe
 
 
+def _mask(s: str, keep: int = 8) -> str:
+    """Render a command-bearing config value without echoing it.
+
+    Scan output lands on stdout and from there in retained CI logs;
+    extractor / build-hook command lines can embed credentials in
+    their arguments. Keep a short identifying prefix, redact the
+    tail, show the length. Mirrors cc_trust._mask.
+    """
+    safe = _safe(s)
+    if not safe:
+        return "(empty)"
+    # A prefix of a value no longer than ``keep`` IS the value —
+    # fully redact rather than echo it whole.
+    prefix = safe[:keep] if 0 < keep < len(safe) else ""
+    return f"{prefix}*** ({len(safe)} chars)"
+
+
 def _path_present(p: Path) -> bool:
     try:
         return p.is_symlink() or p.exists()
@@ -227,7 +246,7 @@ def _scan_pack_file(path: Path) -> FileScan:
     # source root.
     if doc.get("extractor"):
         fs.findings.append(
-            Finding("extractor", _truncate(str(doc["extractor"]), 120), True)
+            Finding("extractor", _mask(str(doc["extractor"])), True)
         )
 
     # dependencies: only the canonical ``codeql/`` namespace is allowed
@@ -276,7 +295,7 @@ def _scan_pack_file(path: Path) -> FileScan:
                 "preCompileScript", "postCompileScript"):
         if doc.get(key):
             fs.findings.append(
-                Finding(key, _truncate(str(doc[key]), 120), True)
+                Finding(key, _mask(str(doc[key])), True)
             )
 
     return fs
@@ -350,7 +369,7 @@ def _scan_codeql_config(path: Path) -> FileScan:
     for key in ("manualBuildSteps", "setup"):
         if doc.get(key):
             fs.findings.append(
-                Finding(key, _truncate(str(doc[key]), 120), True)
+                Finding(key, _mask(str(doc[key])), True)
             )
 
     # pack-cache: redirects codeql's pack download cache to a custom

@@ -83,7 +83,11 @@ class TestPackFile:
         assert _check(str(tmp_path)) is True
         out = capsys.readouterr().out
         assert "extractor" in out
-        assert "evil-binary" in out
+        # Masked rendering: identifying prefix only — extractor command
+        # lines can embed credentials and scan output is CI-retained.
+        assert "./build/" in out
+        assert "evil-binary" not in out
+        assert "***" in out
 
     def test_non_canonical_dependency_blocks(self, tmp_path, capsys):
         (tmp_path / "qlpack.yml").write_text(
@@ -384,15 +388,14 @@ class TestCombined:
         assert "codeql-config.yml" in out
 
     def test_findings_use_safe_truncation(self, tmp_path, capsys):
-        """Long extractor values must be truncated; control chars stripped."""
+        """Long extractor values are masked: prefix + length, no dump."""
         long_extractor = "./" + "evil" * 100  # 402 chars
         (tmp_path / "qlpack.yml").write_text(
             f"name: x\nextractor: '{long_extractor}'\n"
         )
         _check(str(tmp_path))
         out = capsys.readouterr().out
-        # Truncated to ~120 chars + "..."
-        assert "..." in out
+        assert "*** (402 chars)" in out
         # Doesn't dump the full 400+ chars
         assert long_extractor not in out
 

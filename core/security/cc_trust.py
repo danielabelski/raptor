@@ -27,9 +27,11 @@ Files inspected:
 
 Dangerous fields (block):
     settings:  apiKeyHelper, awsAuthHelper, awsAuthRefresh, gcpAuthRefresh
-               hooks.<Event>[].hooks[].command (type == "command")
+               hooks.<Event>[].hooks[].command (type == "command"), plus —
+               fail-closed — any hook entry with an unrecognised type
                env.<KEY> for KEY in _DANGEROUS_ENV_VARS (LD_PRELOAD, EDITOR, ...)
-               env.RAPTOR_* (attempts to forge our own control env vars)
+               env.RAPTOR_* / env.SAGE_* (attempts to forge our own
+               control env vars or repoint persistent memory)
     .mcp.json: mcpServers.<name>.command (stdio servers)
                mcpServers.<name> with unknown transport
     structural: symlinks, oversized, malformed (all → block)
@@ -46,6 +48,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Plain stdlib logger — cc_trust runs at startup before
 # core.logging may be configured, and the trust gate must not
@@ -186,6 +189,42 @@ def _truncate(s: str, limit: int = 80) -> str:
     return safe[:limit] + "..." if len(safe) > limit else safe
 
 
+def _mask(s: str, keep: int = 8) -> str:
+    """Render a secret-bearing config value without echoing it.
+
+    Scan output lands on stdout and from there in retained CI logs, so
+    credential-helper commands, env values, and MCP command lines must
+    not be printed verbatim — a leaked settings.json would otherwise
+    republish its secrets into every build log. Keep a short prefix
+    (enough to identify the binary/helper for triage), redact the tail,
+    and show the length so distinct values remain distinguishable.
+    ``keep=0`` fully redacts — used for env values, where the value IS
+    the secret and even a prefix is a partial leak.
+    """
+    safe = _safe(s)
+    if not safe:
+        return "(empty)"
+    # A prefix of a value no longer than ``keep`` IS the value —
+    # fully redact rather than echo it whole.
+    prefix = safe[:keep] if 0 < keep < len(safe) else ""
+    return f"{prefix}*** ({len(safe)} chars)"
+
+
+def _mask_url(s: str) -> str:
+    """Render a URL keeping only scheme + host (identifying, safe);
+    userinfo, port, path, and query are redacted — MCP endpoints embed
+    tokens in any of them."""
+    safe = _safe(s)
+    try:
+        parsed = urlsplit(safe)
+        host = parsed.hostname  # raises ValueError on malformed ports
+    except ValueError:
+        return _mask(safe)
+    if parsed.scheme and host:
+        return f"{parsed.scheme}://{host}/*** ({len(safe)} chars)"
+    return _mask(safe)
+
+
 def _path_present(p: Path) -> bool:
     try:
         return p.is_symlink() or p.exists()
@@ -298,7 +337,9 @@ def _scan_settings(path: Path) -> FileScan | None:
             val = data.get(key)
             if val:
                 value = val if isinstance(val, str) else repr(val)
-                fs.findings.append(Finding(key, _truncate(value), True))
+                # Masked: credential-helper commands routinely embed
+                # keys/tokens inline and scan output is CI-log-retained.
+                fs.findings.append(Finding(key, _mask(value), True))
 
         hooks = data.get("hooks")
         if isinstance(hooks, dict):
@@ -326,7 +367,7 @@ def _scan_settings(path: Path) -> FileScan | None:
                         hook_type = entry.get("type")
                         if hook_type == "command":
                             cmd = entry.get("command")
-                            value = _truncate(cmd) if isinstance(cmd, str) and cmd else "(empty)"
+                            value = _mask(cmd) if isinstance(cmd, str) and cmd else "(empty)"
                             fs.findings.append(Finding(f"{ev} hook", value, True))
                         else:
                             # Unknown hook type — surface the type +
@@ -366,7 +407,9 @@ def _scan_settings(path: Path) -> FileScan | None:
                 # memory the user didn't intend, etc.).
                 if (key_upper in dangerous_upper or key_upper.startswith(("RAPTOR_", "SAGE_"))):
                     k = _truncate(key_str, limit=40)
-                    fs.findings.append(Finding(f"env {k}", _truncate(str(env_val)), True))
+                    # keep=0: the env VALUE is the secret — the key
+                    # name alone carries the triage signal.
+                    fs.findings.append(Finding(f"env {k}", _mask(str(env_val), keep=0), True))
     except Exception:
         # Display-time crash → fail-closed (caller treats None as
         # ``(malformed) / treated as dangerous`` per the
@@ -401,11 +444,14 @@ def _scan_mcp(path: Path) -> FileScan | None:
                     cmd = cfg.get("command", "")
                     args = cfg.get("args", [])
                     parts = [str(cmd)] + [str(a) for a in (args if isinstance(args, list) else [])]
-                    fs.findings.append(Finding(f'stdio server "{n}"', _truncate(" ".join(parts)), True))
+                    # Command lines carry tokens in args; URLs carry
+                    # them in userinfo/path/query; unknown configs may
+                    # embed them anywhere (env, headers) — all masked.
+                    fs.findings.append(Finding(f'stdio server "{n}"', _mask(" ".join(parts)), True))
                 elif "url" in cfg:
-                    fs.findings.append(Finding(f'url server "{n}"', _truncate(str(cfg.get("url", ""))), False))
+                    fs.findings.append(Finding(f'url server "{n}"', _mask_url(str(cfg.get("url", ""))), False))
                 else:
-                    fs.findings.append(Finding(f'unknown server "{n}"', _truncate(repr(cfg)), True))
+                    fs.findings.append(Finding(f'unknown server "{n}"', _mask(repr(cfg)), True))
     except Exception:
         # Display-time crash → fail-closed. See _scan_settings above
         # for the same rationale.

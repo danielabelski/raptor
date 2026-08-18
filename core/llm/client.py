@@ -600,11 +600,41 @@ def _failure_disposition(error: Exception) -> str:
     from core.llm.structured_call import is_content_filter_text
     if is_content_filter_text(str(error)):
         return "blocked"
+    if _is_auth_error(error):
+        return "auth"
+    from core.llm.providers import is_credit_exhausted
+    if is_credit_exhausted(error) or "error_max_budget_usd" in str(error):
+        return "budget"
     if is_timeout_error(error):
         return "timeout"
     if _is_retryable_error(error):
         return "retryable"
     return "fatal"
+
+
+def _is_response_shape_failure(error: Exception) -> bool:
+    """True when a failed structured attempt points at the RESPONSE
+    SHAPE (parse failure / schema mismatch / validation) — the only
+    failure class that belongs in the schema-validity scorecard cell.
+
+    Refusals (``blocked``), auth/billing errors, budget aborts,
+    quota, and transport flakes each carry their own disposition and
+    say nothing about the model's ability to emit schema-conformant
+    output; counting them as schema failures corrupts the
+    ``_structured`` decision class (Wilson bounds / calibrated merge
+    weights drift toward a model that is merely being refused or
+    rate-limited).
+    """
+    if isinstance(error, SchemaUnknownFieldError):
+        # Retryable (a bad sample, like malformed JSON) but still a
+        # response-shape failure — record it explicitly.
+        return True
+    if _failure_disposition(error) != "fatal":
+        return False
+    # Empty content is a model/transport boundary outcome (refusal
+    # variants, output-budget exhaustion), not a shape problem.
+    err = str(error).lower()
+    return "empty content" not in err and "empty response" not in err
 
 
 def _safe_counter(obj: Any, name: str) -> int:
@@ -2784,15 +2814,12 @@ class LLMClient:
                         # schema-failing when the error class points at a
                         # response-shape problem (parse / schema-mismatch /
                         # validation), not at infra (network 5xx, timeouts,
-                        # quota). Otherwise we'd attribute provider flakes as
-                        # this model's schema unreliability and the SCHEMA_VALID
-                        # cell would drift to nonsense.
-                        # SchemaUnknownFieldError is retryable (a bad
-                        # sample, like malformed JSON) but is still a
-                        # response-shape failure — record it explicitly.
-                        if isinstance(e, SchemaUnknownFieldError) or not (
-                            _is_quota_error(e) or _is_retryable_error(e)
-                        ):
+                        # quota) or model/account boundaries (refusals,
+                        # auth, budget aborts, empty content — each keeps
+                        # its own disposition). Otherwise we'd attribute
+                        # those as this model's schema unreliability and
+                        # the SCHEMA_VALID cell would drift to nonsense.
+                        if _is_response_shape_failure(e):
                             self._record_schema_validity(model.model_name, success=False)
 
                         if getattr(e, "status_code", None) == 429:

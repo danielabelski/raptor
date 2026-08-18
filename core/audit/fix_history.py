@@ -447,6 +447,14 @@ def fix_pattern_variant_gaps(
                 gap.get("priority_score") or 0.0,
             ) + FIX_HISTORY_BOOST
             gap["from_fix_history"] = True
+            # Anchor for the clone-drift composition (§3.9): the fix
+            # commit is the contract witness; clone_drift decides
+            # whether the variant reproduces the fixed region.
+            gap["fix_anchor"] = {
+                "sha": fix.sha,
+                "guard": guard,
+                "sensitive": sensitive,
+            }
             gap["injected_hypotheses"] = [
                 {
                     "mechanism": (
@@ -538,6 +546,79 @@ def regression_gaps(
     return gaps
 
 
+# Fixed-region window for the clone-drift anchor (same ±10-line
+# convention as _window_has_guard) and a size cap on the persisted
+# region text.
+_REGION_WINDOW = 10
+_MAX_REGION_CHARS = 3000
+
+
+def _fixed_region(
+    fix: SecurityFix, guard: str, target_path: Path,
+) -> tuple[str, int, str]:
+    """(fixed_file, fixed_line, region_text) around the added guard in
+    the CURRENT tree — the clone-drift comparison anchor. Empty when
+    the guard line cannot be located."""
+    target = Path(target_path).resolve()
+    for file_path, added in fix.added.items():
+        for ln, text in added:
+            if guard not in text:
+                continue
+            try:
+                full = (target / file_path).resolve()
+                full.relative_to(target)
+                lines = full.read_text(
+                    encoding="utf-8", errors="replace",
+                ).splitlines()
+            except (ValueError, OSError):
+                continue
+            lo = max(0, ln - 1 - _REGION_WINDOW)
+            hi = min(len(lines), ln + _REGION_WINDOW)
+            region = "\n".join(lines[lo:hi])[:_MAX_REGION_CHARS]
+            if region.strip():
+                return file_path, ln, region
+    return "", 0, ""
+
+
+def _variant_site_records(
+    variant: list[dict[str, Any]],
+    fixes: list[SecurityFix],
+    target_path: Path,
+) -> list[dict[str, Any]]:
+    """Clone-drift anchor records for ``fix-history.json`` (additive
+    ``variant_sites`` field, consumed by ``core.audit.clone_drift``)."""
+    fixes_by_sha = {f.sha: f for f in fixes}
+    region_cache: dict[tuple[str, str], tuple[str, int, str]] = {}
+    records: list[dict[str, Any]] = []
+    for g in variant:
+        anchor = g.get("fix_anchor") or {}
+        sha = anchor.get("sha") or ""
+        guard = anchor.get("guard") or ""
+        if not sha or not guard:
+            continue
+        key = (sha, guard)
+        if key not in region_cache:
+            fix = fixes_by_sha.get(sha)
+            region_cache[key] = (
+                _fixed_region(fix, guard, target_path)
+                if fix is not None else ("", 0, "")
+            )
+        fixed_file, fixed_line, region = region_cache[key]
+        if not region:
+            continue
+        records.append({
+            "file": g.get("file", ""),
+            "name": g.get("name", ""),
+            "sha": sha,
+            "guard": guard,
+            "sensitive": anchor.get("sensitive") or "",
+            "fixed_file": fixed_file,
+            "fixed_line": fixed_line,
+            "fixed_region": region,
+        })
+    return records
+
+
 def apply_fix_history(
     gaps: list[dict[str, Any]],
     checklist: dict[str, Any],
@@ -596,6 +677,9 @@ def apply_fix_history(
                                 }
                                 for g in regression
                             ],
+                            "variant_sites": _variant_site_records(
+                                variant, fixes, target_path,
+                            ),
                         },
                         indent=2,
                     )

@@ -615,6 +615,132 @@ def run_consistency_prepass(
                 ],
             })
 
+    # ── clone-drift dimension (§3.9) ────────────────────────────────
+    if not _over_budget():
+        from .consistency_verify import (
+            DIMENSION_CLONE_DRIFT,
+            clone_drift_verdict,
+        )
+        counts = _dim(DIMENSION_CLONE_DRIFT)
+
+        # Fix-anchored leg (promote-capable): the fix commit is the
+        # contract witness; anchors come from apply_fix_history's
+        # variant hunt earlier in the same prep run.
+        try:
+            from .clone_drift import fix_anchored_drift, load_fix_anchors
+            anchored = fix_anchored_drift(
+                load_fix_anchors(out_dir), source_texts,
+            )
+        except Exception:
+            logger.debug("consistency prepass: fix-anchored clone "
+                         "drift failed", exc_info=True)
+            anchored = []
+        for dev in anchored:
+            try:
+                res = clone_drift_verdict(
+                    dev, context=ctx, inventory=inventory,
+                )
+            except Exception:
+                logger.debug("consistency prepass: clone-drift "
+                             "verdict failed", exc_info=True)
+                continue
+            counts[res.outcome] = counts.get(res.outcome, 0) + 1
+            mechanical.append({
+                "file": dev.file,
+                "function": dev.enclosing_function,
+                "detector": "clone_drift",
+                "line": dev.line,
+                "description": dev.description,
+                "callee": dev.token,
+                "rule_id": res.rule_id,
+                "cwe": dev.cwe,
+            })
+            if res.outcome != "confirmed":
+                continue
+            pe = res.peer_evidence
+            source_key = pe.contract_source if pe else "none"
+            telemetry["contract_sources"][source_key] = (
+                telemetry["contract_sources"].get(source_key, 0) + 1
+            )
+            status = _status_for(res, detection=False)
+            if status == "finding":
+                telemetry["promotions"] += 1
+            if len(findings) < MAX_FINDINGS:
+                findings.append({
+                    "file": dev.file,
+                    "function": dev.enclosing_function,
+                    "line": dev.line,
+                    "callee": dev.token,
+                    "dimension": DIMENSION_CLONE_DRIFT,
+                    "rule_id": res.rule_id,
+                    "evidence_tool": res.rule_id,
+                    "status": status,
+                    "detection_grade": False,
+                    "cwe": dev.cwe,
+                    "hypothesis": (
+                        f"{dev.enclosing_function} reproduces the "
+                        f"region fix {dev.fix_sha[:12]} patched but "
+                        f"lacks the added guard {dev.token}()"
+                    ),
+                    "description": res.reason,
+                    "receipts": res.to_dict(),
+                })
+            leads.append(_lead_from_result(
+                res,
+                file=dev.file,
+                function=dev.enclosing_function,
+                line=dev.line,
+                security_relevant=True,
+            ))
+
+        # Generic winnowing leg (detection-grade).
+        try:
+            from .clone_drift import detect_clone_drift
+            generic = detect_clone_drift(source_texts)
+        except Exception:
+            logger.debug("consistency prepass: clone winnowing "
+                         "failed", exc_info=True)
+            generic = []
+        for dev in generic:
+            counts["confirmed"] = counts.get("confirmed", 0) + 1
+            mechanical.append({
+                "file": dev.file,
+                "function": dev.enclosing_function,
+                "detector": "clone_drift",
+                "line": dev.line,
+                "description": dev.description,
+                "callee": dev.token,
+                "rule_id": (
+                    dev.peer_evidence.rule_id
+                    if dev.peer_evidence else ""
+                ),
+                "cwe": dev.cwe,
+            })
+            leads.append({
+                "dimension": DIMENSION_CLONE_DRIFT,
+                "callee": dev.token,
+                "file": dev.file,
+                "function": dev.enclosing_function,
+                "line": dev.line,
+                "rule_id": (
+                    dev.peer_evidence.rule_id
+                    if dev.peer_evidence else ""
+                ),
+                "description": dev.description[:300],
+                "security_relevant": dev.kind in ("guard", "bound"),
+                "n": 2,
+                "conforming": 1,
+                "ratio": dev.similarity,
+                "contract_source": "majority",
+                "sites": [
+                    f"{e.file}:{e.line} {e.snippet}".strip()
+                    for e in (
+                        dev.peer_evidence.exhibits
+                        if dev.peer_evidence else []
+                    )
+                ],
+            })
+
     capped_leads = _rank_leads(leads)
     telemetry["leads_seeded"] = len(capped_leads)
     telemetry["wall_time_s"] = round(time.monotonic() - t0, 3)

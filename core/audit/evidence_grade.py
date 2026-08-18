@@ -277,6 +277,14 @@ _RECEIPT_MAP: dict[str, tuple] = {
             "call sites (declared-type witness receipts)"
         ),
     ),
+    "consistency:clone-drift": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a near-clone of a past-security-fix region lacks the "
+            "guard the fix added (fix-commit contract witness + "
+            "token-containment receipts)"
+        ),
+    ),
     "consistency": (
         EvidenceSource.TREE_SITTER,
         "peer-majority consistency evidence (PeerEvidence receipts)",

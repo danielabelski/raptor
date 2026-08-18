@@ -53,11 +53,13 @@ logger = logging.getLogger(__name__)
 DIMENSION_RETURN_CHECK = "return-check"
 DIMENSION_CLEANUP = "cleanup"
 DIMENSION_ARGUMENT_SHAPE = "argument-shape"
+DIMENSION_CLONE_DRIFT = "clone-drift"
 
 RULE_RETURN_CHECK = rule_id(DIMENSION_RETURN_CHECK, detection=False)
 RULE_RETURN_CHECK_MAJORITY = rule_id(DIMENSION_RETURN_CHECK, detection=True)
 RULE_CLEANUP = rule_id(DIMENSION_CLEANUP, detection=False)
 RULE_ARGUMENT_SHAPE = rule_id(DIMENSION_ARGUMENT_SHAPE, detection=False)
+RULE_CLONE_DRIFT = rule_id(DIMENSION_CLONE_DRIFT, detection=False)
 
 # Mechanical-path thresholds (§2.3 — stricter than the lead path).
 VERDICT_MIN_SITES = 4
@@ -579,6 +581,55 @@ def argument_shape_verdict(
         rule_id=rule_id(DIMENSION_ARGUMENT_SHAPE, detection=True),
         dimension=DIMENSION_ARGUMENT_SHAPE,
         callee=deviation.callee,
+        peer_evidence=deviation.peer_evidence,
+    )
+
+
+def clone_drift_verdict(
+    deviation: Any,
+    *,
+    context: RoleContext | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> ConsistencyResult:
+    """Adjudicate one clone-drift deviation (§3.9).
+
+    The fix-anchored leg is promote-capable: the fix commit is a
+    registry-grade contract witness (the project asserted "this shape
+    was a bug"), the token facts (region containment + guard absence)
+    are the evidence — the namespace stays ``consistency`` per
+    ``git_oracle``'s corroboration-only rule. The generic winnowing
+    leg is detection-grade: a two-member clone group is not a
+    majority, so it aggregates and never promotes alone.
+    """
+    ctx = context or RoleContext()
+    if deviation.registry_grade:
+        result = ConsistencyResult(
+            outcome="confirmed",
+            reason=deviation.description,
+            rule_id=RULE_CLONE_DRIFT,
+            dimension=DIMENSION_CLONE_DRIFT,
+            callee=deviation.token,
+            peer_evidence=deviation.peer_evidence,
+            contract={
+                "source": "fix_commit",
+                "provenance": f"fix_commit:{deviation.fix_sha[:12]}",
+                "grade": "registry",
+            },
+        )
+        result.reachability = _entry_reachability(
+            ctx, inventory, deviation.file,
+            deviation.enclosing_function,
+        )
+        return result
+    return ConsistencyResult(
+        outcome="confirmed",
+        reason=(
+            f"{deviation.description} (clone-pair evidence only — "
+            f"detection grade)"
+        ),
+        rule_id=rule_id(DIMENSION_CLONE_DRIFT, detection=True),
+        dimension=DIMENSION_CLONE_DRIFT,
+        callee=deviation.token,
         peer_evidence=deviation.peer_evidence,
     )
 

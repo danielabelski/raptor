@@ -503,6 +503,20 @@ def build_inventory(
                 logger.warning("binary_oracle_edges extraction failed: %s",
                                exc)
 
+    # Perlasm generated-asm enrichment (asm option b): structurally
+    # detect perlasm generators, run them under the strict sandbox
+    # (fail-closed), and inventory the emitted assembly as
+    # ``asm-generated`` records so shipped generated kernels become
+    # enumerable, reviewable units. Detected-but-unanalysed generators
+    # append loud notes to ``inventory['limitations']`` — never a
+    # silent miss. Best-effort like the binary-oracle enrichment.
+    try:
+        from core.inventory.perlasm import enrich_inventory_with_perlasm
+        enrich_inventory_with_perlasm(inventory, target_path)
+    except Exception as exc:                              # noqa: BLE001
+        logger.warning("perlasm enrichment failed for %s: %s",
+                       target_path, exc)
+
     # Cumulative coverage: carry forward checked_by from previous inventory
     if old_inventory is not None:
         try:

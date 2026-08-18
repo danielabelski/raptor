@@ -1023,6 +1023,108 @@ def run_consistency_prepass(
                     security_relevant=True,
                 ))
 
+    # ── bounds/null-guard presence dimension (§3.4) ─────────────────
+    if not _over_budget():
+        try:
+            from .consistency_dimensions import (
+                DIMENSION_GUARD_PRESENCE,
+                detect_guard_presence_deviations,
+            )
+            from .consistency_verify import guard_presence_verdict
+            guard_devs = detect_guard_presence_deviations(source_texts)
+        except Exception:
+            logger.debug("consistency prepass: guard presence failed",
+                         exc_info=True)
+            guard_devs = []
+        if guard_devs:
+            counts = _dim(DIMENSION_GUARD_PRESENCE)
+            for dev in guard_devs:
+                try:
+                    res = guard_presence_verdict(
+                        dev, context=ctx, inventory=inventory,
+                        source_texts=source_texts,
+                        joern_server=_joern_arg(),
+                    )
+                    _charge_joern(res)
+                except Exception:
+                    logger.debug("consistency prepass: guard-presence "
+                                 "verdict failed", exc_info=True)
+                    continue
+                counts[res.outcome] = counts.get(res.outcome, 0) + 1
+                if res.outcome == "refuted":
+                    continue
+                promoted = (
+                    res.outcome == "confirmed"
+                    and not res.rule_id.endswith("-majority")
+                )
+                mechanical.append({
+                    "file": dev.file,
+                    "function": dev.enclosing_function,
+                    # The SMT-witnessed upgrade rides the EXISTING
+                    # insufficient_guard_smt detector id (§3.4 "through
+                    # the existing detector") so its downstream
+                    # consumers treat it exactly like a condition_smt
+                    # hit; plain outliers keep their own id.
+                    "detector": (
+                        "insufficient_guard_smt" if promoted
+                        else "guard_presence_deviation"
+                    ),
+                    "line": dev.line,
+                    "description": res.reason[:400],
+                    "callee": dev.group_key,
+                    "rule_id": res.rule_id,
+                    "cwe": dev.cwe,
+                })
+                if res.outcome == "inconclusive":
+                    reason_key = res.reason.split(":", 1)[0]
+                    telemetry["inconclusive_reasons"][reason_key] = (
+                        telemetry["inconclusive_reasons"].get(
+                            reason_key, 0,
+                        ) + 1
+                    )
+                    continue
+                if promoted:
+                    pe = res.peer_evidence
+                    source_key = pe.contract_source if pe else "none"
+                    telemetry["contract_sources"][source_key] = (
+                        telemetry["contract_sources"].get(source_key, 0)
+                        + 1
+                    )
+                    status = _status_for(res, detection=False)
+                    if status == "finding":
+                        telemetry["promotions"] += 1
+                    if len(findings) < MAX_FINDINGS:
+                        findings.append({
+                            "file": dev.file,
+                            "function": dev.enclosing_function,
+                            "line": dev.line,
+                            "callee": dev.group_key,
+                            "dimension": DIMENSION_GUARD_PRESENCE,
+                            "rule_id": res.rule_id,
+                            "evidence_tool": res.rule_id,
+                            "status": status,
+                            "detection_grade": False,
+                            "cwe": dev.cwe,
+                            "hypothesis": (
+                                f"{dev.conforming}/{dev.n} access "
+                                f"sites of {dev.group_key} apply the "
+                                f"{dev.kind} guard; "
+                                f"{dev.enclosing_function} accesses "
+                                f"{dev.guard_target!r} unguarded at "
+                                f"{dev.file}:{dev.line} on an "
+                                f"SMT-feasible path"
+                            ),
+                            "description": res.reason,
+                            "receipts": res.to_dict(),
+                        })
+                leads.append(_lead_from_result(
+                    res,
+                    file=dev.file,
+                    function=dev.enclosing_function,
+                    line=dev.line,
+                    security_relevant=True,
+                ))
+
     capped_leads = _rank_leads(leads)
     telemetry["leads_seeded"] = len(capped_leads)
     telemetry["wall_time_s"] = round(time.monotonic() - t0, 3)

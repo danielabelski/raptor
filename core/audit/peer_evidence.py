@@ -39,10 +39,13 @@ MAX_EXHIBITS = 3
 # premise: a deterministic declared-type fact (sizeof over a pointer
 # where the siblings pass the pointed-to buffer's size) — provable
 # without any majority, so it is registry-grade like the other
-# deterministic sources.
+# deterministic sources. ``smt_witness`` is its §3.4 guard-presence
+# sibling: the condition_smt sufficiency checker proved the deviant's
+# unguarded path feasible (concrete witness) — a deterministic solver
+# fact, with the sibling majority as corroboration.
 _REGISTRY_SOURCES_ORDERED = (
     "wur", "annotation", "domain_model", "iris_spec", "convention",
-    "fix_commit", "tier_a", "type_witness",
+    "fix_commit", "tier_a", "type_witness", "smt_witness",
 )
 
 REGISTRY_CONTRACT_SOURCES = frozenset(_REGISTRY_SOURCES_ORDERED)
@@ -89,7 +92,8 @@ class PeerEvidence:
     dimension: str        # "return-check" | "cleanup" | "flag-mode" | ...
     formation: str        # peer_groups layer id (l0_co_callee..l6_paired)
                           #   | same_callee | same_callee_pair
-                          #   | same_sink | clone | branch | interface
+                          #   | same_sink | same_field | clone
+                          #   | branch | interface
     group_key: str        # callee / sink / table / clone-cluster id
     n: int = 0
     conforming: int = 0

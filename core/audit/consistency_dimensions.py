@@ -1946,3 +1946,358 @@ def detect_sanitize_sink_deviations(
             break
     deviations.sort(key=lambda d: (not d.annotated, d.file, d.line))
     return deviations
+
+# ── bounds/null-guard presence (§3.4) ───────────────────────────────
+#
+# "n access sites guard, 1 doesn't." Two site-level legs, both on the
+# shared function-span pass (this is the *site*-level complement of
+# the function-level ``check_semantic_consistency`` vote phase 0
+# un-orphaned):
+#
+# * **same-callee null-guard** — sites that capture the same callee's
+#   result and later dereference the binding (``->`` / ``[`` /
+#   unary ``*``); guarded = an identifier-bound null check between
+#   the capture and the first dereference. CWE-476.
+# * **same-field bounds-guard** — subscripted accesses to the same
+#   field (``base->field[idx]`` with an identifier index); guarded =
+#   an identifier-bound comparison on the index anywhere between the
+#   function head and the access (loop bounds count — a ``for (i = 0;
+#   i < n; …)`` header is the dominating check). CWE-125.
+#
+# Both guard decisions are the preceding-in-function window
+# approximation of CFG dominance the ``api_boundary`` precedent
+# established; the identifier binding (the check must name the very
+# binding/index) is what keeps it honest. Statistic: n ≥
+# ``MIN_GROUP_SITES``, ratio ≥ ``CONSISTENCY_RATIO``, minority
+# strictly smaller.
+#
+# The comparator only *detects*; the verdict layer
+# (``consistency_verify.guard_presence_verdict``) then
+#
+# * distinguishes guard-elsewhere (caller-guarded) deviants from
+#   genuinely-unguarded ones when the guard target derives from a
+#   function parameter — a depth-3 caller walk per the
+#   resource_bounds precedent, receipt naming the searched set;
+# * hands the deviant's own dominating guards to the ``condition_smt``
+#   sufficiency checker — a feasible unguarded path upgrades the
+#   statistical outlier to a witnessed finding, infeasible refutes it.
+
+DIMENSION_GUARD_PRESENCE = "guard-presence"
+
+GUARD_KIND_NULL = "null"
+GUARD_KIND_BOUNDS = "bounds"
+
+_CAPTURE_CALL_RE = re.compile(
+    r"\b([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w{1,})\s*\(",
+)
+_FIELD_SUBSCRIPT_RE = re.compile(
+    r"\b([A-Za-z_]\w*)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\[\s*"
+    r"([A-Za-z_]\w*)\s*\]",
+)
+
+
+def _null_guard_re(name: str) -> re.Pattern[str]:
+    """Identifier-bound null-check shapes (C-family + Python/Go)."""
+    n = re.escape(name)
+    return re.compile(
+        rf"(?:\bif\s*\(\s*!\s*{n}\b"
+        rf"|\b{n}\s*[!=]=\s*(?:NULL|nullptr|nil|None|0)\b"
+        rf"|\b(?:NULL|nullptr|nil|None)\s*[!=]=\s*{n}\b"
+        rf"|\bif\s*\(\s*{n}\s*\)"
+        rf"|\b{n}\s+is\s+(?:not\s+)?None\b"
+        rf"|\bif\s+not\s+{n}\b)",
+    )
+
+
+def _bounds_guard_re(name: str) -> re.Pattern[str]:
+    """Identifier-bound comparison on the index."""
+    n = re.escape(name)
+    return re.compile(
+        rf"(?:\b{n}\s*(?:[<>]=?|[!=]=)|(?:[<>]=?|[!=]=)\s*{n}\b)",
+    )
+
+
+def _params_of(body: list[str]) -> frozenset[str]:
+    """Identifier set of the function's parameter list (the signature
+    header up to the opening brace / colon)."""
+    header_lines: list[str] = []
+    for line in body[:5]:
+        header_lines.append(line)
+        if "{" in line or line.rstrip().endswith(":"):
+            break
+    header = " ".join(header_lines)
+    start = header.find("(")
+    if start < 0:
+        return frozenset()
+    depth = 0
+    end = -1
+    for i, ch in enumerate(header[start:], start):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end < 0:
+        end = len(header)
+    idents = re.findall(r"[A-Za-z_]\w*", header[start:end])
+    return frozenset(i for i in idents if i not in _KEYWORDS)
+
+
+@dataclass
+class GuardPresenceDeviation:
+    """One access site lacking the guard its peers apply (§3.4)."""
+
+    kind: str              # GUARD_KIND_NULL | GUARD_KIND_BOUNDS
+    group_key: str         # callee (null leg) | field (bounds leg)
+    guard_target: str      # the binding / index the check must name
+    file: str
+    line: int              # access line
+    enclosing_function: str
+    n: int
+    conforming: int
+    cwe: str = ""
+    param_derived: bool = False  # guard target traced to a parameter
+    deviant_guards: list[Any] = field(default_factory=list)
+    peer_evidence: PeerEvidence | None = None
+
+    @property
+    def ratio(self) -> float:
+        return self.conforming / self.n if self.n else 0.0
+
+    @property
+    def description(self) -> str:
+        what = (
+            "null-check the result before dereferencing"
+            if self.kind == GUARD_KIND_NULL
+            else "bound the index before subscripting"
+        )
+        return (
+            f"{self.conforming}/{self.n} access sites of "
+            f"{self.group_key} {what}; this site accesses "
+            f"{self.guard_target!r} unguarded [{self.cwe}]"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "kind": self.kind,
+            "group_key": self.group_key,
+            "guard_target": self.guard_target,
+            "file": self.file,
+            "line": self.line,
+            "enclosing_function": self.enclosing_function,
+            "n": self.n,
+            "conforming": self.conforming,
+        }
+        d["ratio"] = round(self.ratio, 3)
+        d["cwe"] = self.cwe
+        d["param_derived"] = self.param_derived
+        if self.deviant_guards:
+            d["deviant_guards"] = [
+                g.to_dict() if hasattr(g, "to_dict") else str(g)
+                for g in self.deviant_guards
+            ]
+        if self.peer_evidence is not None:
+            d["peer_evidence"] = self.peer_evidence.to_dict()
+        return d
+
+
+@dataclass
+class _AccessSite:
+    """One capture-deref / field-subscript access view."""
+
+    file: str
+    line: int              # access line (1-based)
+    enclosing_function: str
+    guard_target: str
+    guarded: bool
+    guard_line: int        # 0 when unguarded
+    param_derived: bool
+    snippet: str
+
+
+def _dominating_guards_for_line(
+    source_texts: dict[str, str], file_path: str, line: int,
+) -> list[Any]:
+    """The deviant's own dominating guard conditions, for the SMT
+    escalation — extracted by the condition machinery (the guards
+    that DO enclose the access, whose conjunction the solver tests)."""
+    source = source_texts.get(file_path)
+    if not source:
+        return []
+    try:
+        from .condition_extraction import extract_sink_guards
+        sink_guards = extract_sink_guards(
+            source, file_path, sink_lines=[line],
+        )
+    except Exception:
+        logger.debug("guard presence: guard extraction failed",
+                     exc_info=True)
+        return []
+    guards: list[Any] = []
+    for sg in sink_guards:
+        guards.extend(sg.guards)
+    return guards
+
+
+def _null_leg_sites(
+    spans: list[tuple[str, str, int, list[str]]],
+) -> dict[str, list[_AccessSite]]:
+    """Same-callee capture-then-dereference sites."""
+    by_callee: dict[str, list[_AccessSite]] = {}
+    for file_path, name, start, body in spans:
+        for idx, line in enumerate(body):
+            for m in _CAPTURE_CALL_RE.finditer(line):
+                binding, callee = m.group(1), m.group(2)
+                if callee in _KEYWORDS or binding in _KEYWORDS:
+                    continue
+                b = re.escape(binding)
+                deref_re = re.compile(
+                    rf"(?:\b{b}\s*->|\b{b}\s*\[|\*\s*{b}\b)",
+                )
+                guard_re = _null_guard_re(binding)
+                deref_idx = -1
+                for j in range(idx + 1, len(body)):
+                    if deref_re.search(body[j]):
+                        deref_idx = j
+                        break
+                if deref_idx < 0:
+                    continue
+                guarded, guard_line = False, 0
+                for j in range(idx + 1, deref_idx + 1):
+                    if guard_re.search(body[j]):
+                        guarded, guard_line = True, start + j
+                        break
+                by_callee.setdefault(callee, []).append(_AccessSite(
+                    file=file_path,
+                    line=start + deref_idx,
+                    enclosing_function=name,
+                    guard_target=binding,
+                    guarded=guarded,
+                    guard_line=guard_line,
+                    param_derived=False,  # local capture — a caller
+                                          # cannot guard it
+                    snippet=body[deref_idx].strip()[:200],
+                ))
+                break  # one capture per line is plenty
+    return by_callee
+
+
+def _bounds_leg_sites(
+    spans: list[tuple[str, str, int, list[str]]],
+) -> dict[str, list[_AccessSite]]:
+    """Same-field subscripted-access sites."""
+    by_field: dict[str, list[_AccessSite]] = {}
+    for file_path, name, start, body in spans:
+        params = _params_of(body)
+        seen_lines: set[tuple[str, int]] = set()
+        for idx, line in enumerate(body):
+            for m in _FIELD_SUBSCRIPT_RE.finditer(line):
+                base, fld, index = m.group(1), m.group(2), m.group(3)
+                if index in _KEYWORDS or fld in _KEYWORDS:
+                    continue
+                if (fld, start + idx) in seen_lines:
+                    continue
+                seen_lines.add((fld, start + idx))
+                guard_re = _bounds_guard_re(index)
+                guarded, guard_line = False, 0
+                for j in range(idx + 1):
+                    text = body[j]
+                    if j == idx:
+                        # Same-line check only when it precedes the
+                        # access (a for-header bound), not the
+                        # subscript expression itself.
+                        text = text[:m.start()]
+                    if guard_re.search(text):
+                        guarded, guard_line = True, start + j
+                        break
+                by_field.setdefault(fld, []).append(_AccessSite(
+                    file=file_path,
+                    line=start + idx,
+                    enclosing_function=name,
+                    guard_target=index,
+                    guarded=guarded,
+                    guard_line=guard_line,
+                    param_derived=(
+                        index in params or base in params
+                    ),
+                    snippet=line.strip()[:200],
+                ))
+    return by_field
+
+
+def detect_guard_presence_deviations(
+    source_texts: dict[str, str],
+    *,
+    min_sites: int = MIN_GROUP_SITES,
+    ratio: float = CONSISTENCY_RATIO,
+) -> list[GuardPresenceDeviation]:
+    """Bounds/null-guard presence comparator (§3.4). See the section
+    docstring for legs, dominance approximation and bounds."""
+    spans = _function_spans(source_texts)
+    if not spans:
+        return []
+    deviations: list[GuardPresenceDeviation] = []
+
+    legs = (
+        (GUARD_KIND_NULL, "CWE-476", "same_callee",
+         _null_leg_sites(spans)),
+        (GUARD_KIND_BOUNDS, "CWE-125", "same_field",
+         _bounds_leg_sites(spans)),
+    )
+    for kind, cwe, formation, groups in legs:
+        for group_key, sites in sorted(groups.items()):
+            n = len(sites)
+            if n < min_sites:
+                continue
+            conforming = [s for s in sites if s.guarded]
+            deviants = [s for s in sites if not s.guarded]
+            if not deviants or len(conforming) < n * ratio \
+                    or len(deviants) >= len(conforming):
+                continue
+            exhibits = [
+                PeerExhibit(
+                    s.file, s.guard_line,
+                    f"{s.enclosing_function} guards "
+                    f"{s.guard_target!r} at L{s.guard_line} before "
+                    f"the access at L{s.line}",
+                )
+                for s in conforming[:3]
+            ]
+            for s in deviants:
+                deviations.append(GuardPresenceDeviation(
+                    kind=kind,
+                    group_key=group_key,
+                    guard_target=s.guard_target,
+                    file=s.file,
+                    line=s.line,
+                    enclosing_function=s.enclosing_function,
+                    n=n,
+                    conforming=len(conforming),
+                    cwe=cwe,
+                    param_derived=s.param_derived,
+                    deviant_guards=_dominating_guards_for_line(
+                        source_texts, s.file, s.line,
+                    ),
+                    peer_evidence=PeerEvidence(
+                        dimension=DIMENSION_GUARD_PRESENCE,
+                        formation=formation,
+                        group_key=group_key,
+                        n=n,
+                        conforming=len(conforming),
+                        ratio=len(conforming) / n,
+                        deviant=PeerExhibit(s.file, s.line, s.snippet),
+                        exhibits=exhibits,
+                        contract_source="majority",
+                        provenance=f"guard_presence:{kind}",
+                    ),
+                ))
+                if len(deviations) >= _MAX_DEVIATIONS:
+                    break
+            if len(deviations) >= _MAX_DEVIATIONS:
+                break
+        if len(deviations) >= _MAX_DEVIATIONS:
+            break
+    deviations.sort(key=lambda d: (d.file, d.line, d.group_key))
+    return deviations

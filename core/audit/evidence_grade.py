@@ -285,6 +285,14 @@ _RECEIPT_MAP: dict[str, tuple] = {
             "convention witness + sanitizing-exhibit receipts)"
         ),
     ),
+    "consistency:guard-presence": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "an access site lacks the bounds/null guard its sibling "
+            "sites apply and condition_smt proves the unguarded path "
+            "feasible (solver witness + caller-walk receipts)"
+        ),
+    ),
     "consistency:clone-drift": (
         EvidenceSource.TREE_SITTER,
         (

@@ -55,6 +55,7 @@ DIMENSION_CLEANUP = "cleanup"
 DIMENSION_ARGUMENT_SHAPE = "argument-shape"
 DIMENSION_CLONE_DRIFT = "clone-drift"
 DIMENSION_SANITIZE_SINK = "sanitize-sink"
+DIMENSION_GUARD_PRESENCE = "guard-presence"
 
 RULE_RETURN_CHECK = rule_id(DIMENSION_RETURN_CHECK, detection=False)
 RULE_RETURN_CHECK_MAJORITY = rule_id(DIMENSION_RETURN_CHECK, detection=True)
@@ -62,6 +63,7 @@ RULE_CLEANUP = rule_id(DIMENSION_CLEANUP, detection=False)
 RULE_ARGUMENT_SHAPE = rule_id(DIMENSION_ARGUMENT_SHAPE, detection=False)
 RULE_CLONE_DRIFT = rule_id(DIMENSION_CLONE_DRIFT, detection=False)
 RULE_SANITIZE_SINK = rule_id(DIMENSION_SANITIZE_SINK, detection=False)
+RULE_GUARD_PRESENCE = rule_id(DIMENSION_GUARD_PRESENCE, detection=False)
 
 # Mechanical-path thresholds (§2.3 — stricter than the lead path).
 VERDICT_MIN_SITES = 4
@@ -76,6 +78,7 @@ REASON_DEVIANT_ON_ERROR_PATH = "deviant-on-error-path"
 REASON_EXTRACTOR_UNAVAILABLE = "extractor-unavailable"
 REASON_HYPOTHESIS_UNBINDABLE = "hypothesis-unbindable"
 REASON_OWNERSHIP_UNRESOLVED = "ownership-unresolved"
+REASON_GUARD_ELSEWHERE = "guard-elsewhere"
 
 INCONCLUSIVE_REASONS = frozenset({
     REASON_CONTRACT_UNRESOLVED,
@@ -86,6 +89,7 @@ INCONCLUSIVE_REASONS = frozenset({
     REASON_EXTRACTOR_UNAVAILABLE,
     REASON_HYPOTHESIS_UNBINDABLE,
     REASON_OWNERSHIP_UNRESOLVED,
+    REASON_GUARD_ELSEWHERE,
 })
 
 # Enumerated refutation reasons.
@@ -93,6 +97,7 @@ REFUTED_ACKNOWLEDGED = "acknowledged-discard"
 REFUTED_DISCARD_OK = "majority-discard-convention"
 REFUTED_SITE_CHECKS = "site-tests-the-value"
 REFUTED_VOID_CALLEE = "void-return-callee"
+REFUTED_PATH_INFEASIBLE = "deviant-path-infeasible"
 
 # CWE families the channel joins via the fallback chain (§4.3).
 # CWE-252 keeps its existing cocci entry; consistency joins its chain
@@ -745,6 +750,310 @@ def sanitize_sink_verdict(
         callee=deviation.sink,
         peer_evidence=deviation.peer_evidence,
     )
+
+
+# Guard-elsewhere caller walk (§3.4): depth / visited caps per the
+# resource_bounds precedent ("caller walk depth 3 / 200 visited");
+# the receipt always names how far the search went.
+GUARD_WALK_MAX_DEPTH = 3
+GUARD_WALK_MAX_VISITED = 200
+_GUARD_WALK_NAMED = 8  # searched-set names quoted in the receipt
+
+
+def _caller_guard_walk(
+    deviation: Any,
+    inventory: dict[str, Any] | None,
+    source_texts: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Depth-3 caller walk deciding guard-elsewhere vs
+    genuinely-unguarded for a parameter-derived guard target.
+
+    For every caller reached within ``GUARD_WALK_MAX_DEPTH`` hops of
+    the deviant's enclosing function, the caller's body is searched
+    for a kind-appropriate guard shape preceding its call into the
+    walked-from function. Returns ``{"status": "unavailable" |
+    "searched", "searched": [names], "guarding": [{caller, file,
+    line}]}`` — the caller puts the searched set on the receipt
+    either way (the honesty rule the resource_bounds design states:
+    a negative claim must name how far the search went)."""
+    if not inventory or not source_texts:
+        return {"status": "unavailable", "searched": [], "guarding": []}
+    try:
+        from core.analysis.reachability import InternalFunction, callers_of
+    except ImportError:
+        return {"status": "unavailable", "searched": [], "guarding": []}
+    from .consistency_dimensions import (
+        GUARD_KIND_NULL,
+        _function_spans,
+    )
+    from .sibling_analysis import _BOUNDS_GUARD_RE, _NULL_GUARD_RE
+    guard_re = (
+        _NULL_GUARD_RE if deviation.kind == GUARD_KIND_NULL
+        else _BOUNDS_GUARD_RE
+    )
+    by_key: dict[tuple[str, str], list[str]] = {}
+    by_name: dict[str, tuple[str, list[str]]] = {}
+    for fp, fn, _start, body in _function_spans(source_texts):
+        by_key.setdefault((fp, fn), body)
+        by_name.setdefault(fn, (fp, body))
+
+    def _seed_candidates() -> list[Any]:
+        """Canonicalise the deviant's enclosing function to its
+        inventory item record(s) — ``InternalFunction`` identity
+        includes the definition line, so a synthetic line-0 node
+        would never hit the reverse-edge index."""
+        exact: list[Any] = []
+        by_name_only: list[Any] = []
+        for frec in inventory.get("files", []) or []:
+            if not isinstance(frec, dict):
+                continue
+            path = frec.get("path") or ""
+            for it in frec.get("items", []) or []:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("kind") not in (None, "function"):
+                    continue
+                if it.get("name") != deviation.enclosing_function:
+                    continue
+                node = InternalFunction(
+                    file_path=path,
+                    name=deviation.enclosing_function,
+                    line=int(it.get("line_start") or 0),
+                )
+                if path == deviation.file:
+                    exact.append(node)
+                else:
+                    by_name_only.append(node)
+        return exact or by_name_only
+
+    seeds = _seed_candidates()
+    if not seeds:
+        return {"status": "unavailable", "searched": [], "guarding": []}
+
+    searched: list[str] = []
+    guarding: list[dict[str, Any]] = []
+    visited: set[tuple[str, str]] = {
+        (s.file_path, s.name) for s in seeds
+    }
+    frontier: list[Any] = list(seeds)
+    depth = 0
+    try:
+        while frontier and depth < GUARD_WALK_MAX_DEPTH \
+                and len(visited) < GUARD_WALK_MAX_VISITED:
+            next_frontier: list[Any] = []
+            for node in frontier:
+                result = callers_of(inventory, node)
+                call_re = re.compile(
+                    rf"\b{re.escape(node.name)}\s*\(",
+                )
+                for caller in result.all_callers:
+                    key = (caller.file_path, caller.name)
+                    if key in visited:
+                        continue
+                    visited.add(key)
+                    searched.append(caller.name)
+                    body = by_key.get(key)
+                    if body is None:
+                        named = by_name.get(caller.name)
+                        body = named[1] if named else None
+                    next_frontier.append(caller)
+                    if body is None:
+                        continue
+                    call_idx = next(
+                        (i for i, ln in enumerate(body)
+                         if call_re.search(ln)),
+                        len(body),
+                    )
+                    for i in range(call_idx):
+                        if guard_re.search(body[i]):
+                            guarding.append({
+                                "caller": caller.name,
+                                "file": caller.file_path,
+                                "line": i + 1,
+                            })
+                            break
+            frontier = next_frontier
+            depth += 1
+    except Exception:
+        logger.debug("guard presence: caller walk failed",
+                     exc_info=True)
+        return {"status": "unavailable", "searched": searched,
+                "guarding": guarding}
+    return {"status": "searched", "searched": searched,
+            "guarding": guarding}
+
+
+def _searched_set_note(walk: dict[str, Any]) -> str:
+    names = walk.get("searched") or []
+    if walk.get("status") != "searched":
+        return "caller walk unavailable (no inventory call graph)"
+    if not names:
+        return (
+            f"no callers found within {GUARD_WALK_MAX_DEPTH} hops"
+        )
+    quoted = ", ".join(sorted(names)[:_GUARD_WALK_NAMED])
+    more = len(names) - min(len(names), _GUARD_WALK_NAMED)
+    suffix = f" (+{more} more)" if more > 0 else ""
+    return (
+        f"searched {len(names)} caller(s) within "
+        f"{GUARD_WALK_MAX_DEPTH} hops: {quoted}{suffix}"
+    )
+
+
+def _default_guard_smt(deviation: Any) -> Any:
+    """Hand the deviant's own dominating guards to the existing
+    ``condition_smt`` sufficiency machinery (§3.4): feasible = the
+    path to the access is reachable under every guard that IS there,
+    so the missing majority guard is load-bearing."""
+    guards = list(getattr(deviation, "deviant_guards", []) or [])
+    if not guards:
+        return None
+    try:
+        from .condition_smt import check_path_feasibility
+        return check_path_feasibility(guards)
+    except Exception:
+        logger.debug("guard presence: SMT escalation failed",
+                     exc_info=True)
+        return None
+
+
+def guard_presence_verdict(
+    deviation: Any,
+    *,
+    context: RoleContext | None = None,
+    inventory: dict[str, Any] | None = None,
+    source_texts: dict[str, str] | None = None,
+    joern_server: Any = None,
+    smt_check: Any = None,
+) -> ConsistencyResult:
+    """Adjudicate one bounds/null-guard presence deviation (§3.4).
+
+    Order of business:
+
+    1. **guard-elsewhere vs genuinely-unguarded** — when the guard
+       target derives from a function parameter, the obligation may
+       live in a caller: a depth-3 caller walk (the resource_bounds
+       precedent) searches the caller set for the guard shape. A
+       guarding caller ⇒ enumerated ``guard-elsewhere`` inconclusive;
+       either way the receipt names the searched set.
+    2. **SMT escalation** — the deviant's own dominating guards go to
+       the ``condition_smt`` sufficiency checker. Feasible ⇒ the
+       statistical outlier is upgraded to a witnessed promote-capable
+       confirmation (``consistency:guard-presence``, contract source
+       ``smt_witness``) when the majority meets the promote-adjacent
+       floor; infeasible ⇒ refuted (``deviant-path-infeasible``);
+       solver unavailable / unconstrained ⇒ the confirmation stays
+       detection-grade (``-majority``), aggregation-eligible only.
+    """
+    ctx = context or RoleContext()
+    walk_note = ""
+    walk: dict[str, Any] | None = None
+    if deviation.param_derived:
+        walk = _caller_guard_walk(deviation, inventory, source_texts)
+        walk_note = _searched_set_note(walk)
+        if walk["status"] == "searched" and walk["guarding"]:
+            g = walk["guarding"][0]
+            result = ConsistencyResult(
+                outcome="inconclusive",
+                reason=(
+                    f"{REASON_GUARD_ELSEWHERE}: "
+                    f"{g['caller']} ({g['file']}:{g['line']}) applies "
+                    f"the {deviation.kind} guard before calling into "
+                    f"{deviation.enclosing_function} — caller-guarded; "
+                    f"{walk_note}"
+                ),
+                rule_id=RULE_GUARD_PRESENCE,
+                dimension=DIMENSION_GUARD_PRESENCE,
+                callee=deviation.group_key,
+                peer_evidence=deviation.peer_evidence,
+            )
+            result.corroboration.append({"caller_guard_walk": walk})
+            return result
+
+    smt = smt_check(deviation) if smt_check is not None \
+        else _default_guard_smt(deviation)
+    feasible = getattr(smt, "feasible", None)
+    smt_reason = getattr(smt, "reasoning", "") or ""
+    witness = getattr(smt, "witness", None)
+
+    if feasible is False:
+        result = ConsistencyResult(
+            outcome="refuted",
+            reason=(
+                f"{REFUTED_PATH_INFEASIBLE}: the guards dominating "
+                f"{deviation.file}:{deviation.line} make the "
+                f"unguarded path unsatisfiable ({smt_reason})"
+            ),
+            rule_id=RULE_GUARD_PRESENCE,
+            dimension=DIMENSION_GUARD_PRESENCE,
+            callee=deviation.group_key,
+        )
+        return result
+
+    unguarded_note = (
+        "genuinely-unguarded within the searched caller set — "
+        f"{walk_note}; " if walk is not None and not walk["guarding"]
+        else ""
+    )
+    from .consistency_dimensions import RATIO_PROMOTE
+    if feasible is True and deviation.ratio >= RATIO_PROMOTE:
+        pe = deviation.peer_evidence
+        if pe is not None:
+            pe.contract_source = "smt_witness"
+            pe.provenance = f"condition_smt:{witness or 'feasible'}"
+        detail = f" (witness: {witness})" if witness else ""
+        result = ConsistencyResult(
+            outcome="confirmed",
+            reason=(
+                f"{deviation.description} — {unguarded_note}"
+                f"condition_smt proves the path feasible under the "
+                f"deviant's own guards{detail}: the missing majority "
+                f"guard is load-bearing"
+            ),
+            rule_id=RULE_GUARD_PRESENCE,
+            dimension=DIMENSION_GUARD_PRESENCE,
+            callee=deviation.group_key,
+            peer_evidence=pe,
+            contract={
+                "source": "smt_witness",
+                "provenance": (
+                    f"condition_smt:{witness or 'feasible'}"
+                ),
+                "grade": "registry",
+            },
+        )
+        if walk is not None:
+            result.corroboration.append({"caller_guard_walk": walk})
+        result.reachability = _escalate_reachability(
+            ctx, inventory, deviation.file,
+            deviation.enclosing_function, joern_server,
+        )
+        return result
+
+    result = ConsistencyResult(
+        outcome="confirmed",
+        reason=(
+            f"{deviation.description} — {unguarded_note}"
+            f"majority evidence only (detection grade"
+            + (
+                f"; SMT feasible but ratio "
+                f"{deviation.ratio:.2f} < {RATIO_PROMOTE}"
+                if feasible is True else "; no SMT witness"
+            )
+            + ")"
+        ),
+        rule_id=rule_id(DIMENSION_GUARD_PRESENCE, detection=True),
+        dimension=DIMENSION_GUARD_PRESENCE,
+        callee=deviation.group_key,
+        peer_evidence=deviation.peer_evidence,
+    )
+    if walk is not None:
+        result.corroboration.append({"caller_guard_walk": walk})
+    # Detection-grade never reaches `finding` — cheap leg only.
+    result.reachability = _entry_reachability(
+        ctx, inventory, deviation.file, deviation.enclosing_function,
+    )
+    return result
 
 
 def clone_drift_verdict(

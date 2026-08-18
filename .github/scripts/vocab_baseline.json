@@ -669,6 +669,11 @@
   "kind": "literal",
   "note": "English stopword list for hypothesis-text parsing (not API vocabulary)"
  },
+ "core/audit/resource_bounds.py::_STEM_INSERT_RE": {
+  "count": 16,
+  "kind": "alternation",
+  "note": "structural naming-stem tier (verb morphology + generic collection nouns, the lock_region _STEM_LOCK_RE policy) \u2014 binds macro-generated insert APIs at detection grade only; no target API names"
+ },
  "core/audit/resource_bounds.py::run_resource_bounds_prepass": {
   "count": 11,
   "kind": "literal",

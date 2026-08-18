@@ -193,7 +193,6 @@ def _connect_existing(state: dict[str, Any]) -> JoernServer | None:
     srv._base_url = f"http://127.0.0.1:{port}"
     srv._cpg_loaded = False
     srv._cpg_path = None
-    srv._http_client = None
     srv._last_post_error = ""
     srv._restart_lock = threading.Lock()
     srv._workdir = None

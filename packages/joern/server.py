@@ -206,7 +206,6 @@ class JoernServer:
         self._base_url: str | None = None
         self._cpg_loaded = False
         self._cpg_path: Path | None = None
-        self._http_client: Any | None = None
         self._last_post_error: str = ""
         self._restart_lock = threading.Lock()
         # Set while a restart is in progress so concurrent queries
@@ -409,13 +408,6 @@ class JoernServer:
         except OSError:
             pass
 
-        if self._http_client is not None:
-            # Closing an httpx client tears down pooled sockets —
-            # OSError is the only legitimate failure; anything else
-            # is a wiring bug.
-            with contextlib.suppress(OSError):
-                self._http_client.close()
-            self._http_client = None
         self._proc = None
         self._port = None
         self._base_url = None
@@ -770,20 +762,13 @@ class JoernServer:
         url = f"{self._base_url}/query"
         payload = {"query": query_str}
         try:
-            if _httpx is not None and self._http_client is not None:
-                resp = self._http_client.post(
-                    url, json=payload, timeout=10,
-                    headers=self._auth_headers(),
-                )
-                data = resp.json()
-            else:
-                body = json.dumps(payload).encode("utf-8")
-                req = Request(url, data=body,
-                              headers={"Content-Type": "application/json",
-                                       **self._auth_headers()},
-                              method="POST")
-                with _NO_PROXY_OPENER.open(req, timeout=10) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+            body = json.dumps(payload).encode("utf-8")
+            req = Request(url, data=body,
+                          headers={"Content-Type": "application/json",
+                                   **self._auth_headers()},
+                          method="POST")
+            with _NO_PROXY_OPENER.open(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
             return data.get("uuid") or data.get("id")
         except Exception as e:  # noqa: BLE001 — submit is best-effort
             logger.debug("async query submit failed: %s", e)
@@ -795,16 +780,10 @@ class JoernServer:
             return None
         url = f"{self._base_url}/result/{uuid}"
         try:
-            if _httpx is not None and self._http_client is not None:
-                resp = self._http_client.get(
-                    url, timeout=5, headers=self._auth_headers(),
-                )
-                data = resp.json()
-            else:
-                req = Request(url, method="GET",
-                              headers=self._auth_headers())
-                with _NO_PROXY_OPENER.open(req, timeout=5) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+            req = Request(url, method="GET",
+                          headers=self._auth_headers())
+            with _NO_PROXY_OPENER.open(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
             if data.get("success") is not None:
                 return data
             return None

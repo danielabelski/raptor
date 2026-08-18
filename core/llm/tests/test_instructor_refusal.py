@@ -66,6 +66,7 @@ class TestInstructorRefusalStop:
 
 @pytest.fixture
 def provider(monkeypatch):
+    pytest.importorskip("anthropic")
     monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
     config = ModelConfig(
         provider="anthropic",

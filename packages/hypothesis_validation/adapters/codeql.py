@@ -614,6 +614,15 @@ class CodeQLAdapter(ToolAdapter):
                 error=f"workspace setup failed: {e}",
             )
 
+        if matches is None:
+            # Parse failure is a tool failure, never a default-refuted
+            # "no matches" — the runner grades success=False as
+            # inconclusive.
+            return ToolEvidence(
+                tool=self.name, rule=rule, success=False,
+                error="SARIF output unreadable (parse failure)",
+            )
+
         n = len(matches)
         files = sorted({m["file"] for m in matches if m.get("file")})
         if n:
@@ -658,28 +667,39 @@ def _qlpack_yaml(rule: str) -> str:
     )
 
 
-def _parse_sarif(sarif_path: Path) -> list[dict]:
-    """Extract matches from a CodeQL SARIF file."""
+def _parse_sarif(sarif_path: Path) -> list[dict] | None:
+    """Extract matches from a CodeQL SARIF file.
+
+    Returns ``None`` on any read/parse/extraction failure so the caller
+    can report a tool failure — an empty list strictly means "the file
+    parsed and contained no results". Collapsing failures into ``[]``
+    made an unreadable SARIF indistinguishable from a genuine
+    no-matches run, which downstream graded as a refuted hypothesis.
+    The extraction loop is inside the guard too (adapters must not
+    raise; hostile SARIF can put non-numeric values where startLine
+    belongs).
+    """
     try:
         data = json.loads(sarif_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    matches: list[dict] = []
-    for run in data.get("runs", []) or []:
-        for result in run.get("results", []) or []:
-            msg = result.get("message", {})
-            text = msg.get("text", "") if isinstance(msg, dict) else str(msg)
-            file = ""
-            line = 0
-            locs = result.get("locations", []) or []
-            if locs and isinstance(locs[0], dict):
-                phys = locs[0].get("physicalLocation", {})
-                file = (phys.get("artifactLocation", {}) or {}).get("uri", "")
-                line = int((phys.get("region", {}) or {}).get("startLine", 0))
-            matches.append({
-                "file": file,
-                "line": line,
-                "rule": result.get("ruleId", ""),
-                "message": text,
-            })
+        matches: list[dict] = []
+        for run in data.get("runs", []) or []:
+            for result in run.get("results", []) or []:
+                msg = result.get("message", {})
+                text = msg.get("text", "") if isinstance(msg, dict) else str(msg)
+                file = ""
+                line = 0
+                locs = result.get("locations", []) or []
+                if locs and isinstance(locs[0], dict):
+                    phys = locs[0].get("physicalLocation", {})
+                    file = (phys.get("artifactLocation", {}) or {}).get("uri", "")
+                    line = int((phys.get("region", {}) or {}).get("startLine", 0))
+                matches.append({
+                    "file": file,
+                    "line": line,
+                    "rule": result.get("ruleId", ""),
+                    "message": text,
+                })
+    except Exception:  # noqa: BLE001 — adapter MUST-NOT-raise contract
+        logger.warning("codeql SARIF parse failed: %s", sarif_path)
+        return None
     return matches

@@ -150,6 +150,23 @@ class TestCodeQLAdapterRun:
         assert ev.matches[0]["line"] == 42
         assert "1 match" in ev.summary
 
+    def test_run_corrupt_sarif_is_tool_failure(self, tmp_path):
+        """A written-but-unreadable SARIF is success=False, never a
+        default-refuted zero-match success."""
+        a, db = self._adapter(tmp_path)
+
+        def fake_run(cmd, **kwargs):
+            for arg in cmd:
+                if arg.startswith("--output="):
+                    Path(arg.split("=", 1)[1]).write_text("{corrupt")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            ev = a.run("import cpp\nselect 1\n", tmp_path)
+        assert not ev.success
+        assert "unreadable" in ev.error
+        assert ev.matches == []
+
     def test_run_subprocess_no_matches(self, tmp_path):
         a, db = self._adapter(tmp_path)
 
@@ -300,13 +317,35 @@ class TestParseSarif:
         p.write_text(json.dumps({"runs": []}))
         assert _parse_sarif(p) == []
 
-    def test_missing_file(self, tmp_path):
-        assert _parse_sarif(tmp_path / "nonexistent") == []
+    def test_missing_file_is_parse_failure(self, tmp_path):
+        # None (tool failure), never [] — an unreadable SARIF must not
+        # grade as a refuted "no matches".
+        assert _parse_sarif(tmp_path / "nonexistent") is None
 
-    def test_invalid_json(self, tmp_path):
+    def test_invalid_json_is_parse_failure(self, tmp_path):
         p = tmp_path / "x.sarif"
         p.write_text("not json")
-        assert _parse_sarif(p) == []
+        assert _parse_sarif(p) is None
+
+    def test_hostile_start_line_is_parse_failure(self, tmp_path):
+        # Extraction is inside the MUST-NOT-raise guard: a non-numeric
+        # startLine reports a parse failure instead of raising.
+        p = tmp_path / "x.sarif"
+        p.write_text(json.dumps({
+            "runs": [{
+                "results": [{
+                    "ruleId": "r1",
+                    "message": {"text": "msg"},
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": "a.c"},
+                            "region": {"startLine": "NaN-ish"},
+                        },
+                    }],
+                }],
+            }],
+        }))
+        assert _parse_sarif(p) is None
 
     def test_basic_parse(self, tmp_path):
         p = tmp_path / "x.sarif"

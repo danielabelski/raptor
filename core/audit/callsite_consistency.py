@@ -152,6 +152,12 @@ class CallSite:
     #: acting on the value there may be impossible (§2.3
     #: ``deviant-on-error-path``).
     on_error_path: bool = False
+    #: Which extractor produced this row: "ts" (tree-sitter, in-file)
+    #: or "cpg" (Joern, cross-file). Provenance for the mixed majority
+    #: statistic, plus the deviation pass's safety rule: a deviation
+    #: verdict must not rest on a usage class the extracting engine
+    #: cannot produce.
+    engine: str = "ts"
 
     def __post_init__(self) -> None:
         if not self.usage:
@@ -172,6 +178,7 @@ class CallSite:
             "enclosing_function": self.enclosing_function,
             "usage": self.usage,
             "on_error_path": self.on_error_path,
+            "engine": self.engine,
         }
 
 
@@ -1099,9 +1106,20 @@ def _extract_callsites_cpg(
             f"  val blank = assigns.nonEmpty && assigns.forall(a => "
             f"a.argument(1).code.trim.matches(\"_(\\\\s*,\\\\s*_)*\"))\n"
             f"  val captured = assigns.nonEmpty && !blank\n"
+            # Consumed as an argument to a REAL call (f(g(x))): the
+            # value is observed — tree-sitter's leg classifies this
+            # captured_used, and without the parity this leg called
+            # it discarded (deviant), flipping majority stats by
+            # extraction engine. <operator>.* calls are excluded:
+            # assignment/arithmetic operators are calls in the CPG,
+            # and the assignment case must stay governed by the
+            # blank-LHS logic above.
+            f"  val asArg = call.inCall"
+            f".filterNot(_.name.startsWith(\"<operator>\")).nonEmpty\n"
             f"  val usage = if (tested) \"tested\" "
             f"else if (propagated) \"propagated\" "
             f"else if (captured) \"captured_used\" "
+            f"else if (asArg) \"captured_used\" "
             f"else \"discarded\"\n"
             f"  val callee = call.name\n"
             f"  (callee, enc, fname, ln, usage)\n"
@@ -1130,6 +1148,7 @@ def _extract_callsites_cpg(
                 callee=orig,
                 enclosing_function=str(item[1]),
                 usage=usage,
+                engine="cpg",
             ))
 
     return sites

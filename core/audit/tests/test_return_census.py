@@ -495,3 +495,54 @@ class TestCpgUsage:
         )
         sites = _extract_callsites_cpg(object(), frozenset({"doWork"}))
         assert sites[0].usage == USAGE_DISCARDED
+
+
+class TestEngineParity:
+    """The two extraction legs must classify shared shapes
+    identically — a call-used-as-argument used to be captured_used on
+    the tree-sitter leg and discarded on the CPG leg, flipping the
+    majority statistic by extraction engine rather than by code."""
+
+    def test_ts_call_as_argument_is_captured_used(self):
+        src = textwrap.dedent("""\
+            int outer(int x) {
+                consume(doWork(x));
+                return 0;
+            }
+        """)
+        usages = _usages({"a.c": src})
+        assert usages[("doWork", "outer")] == USAGE_CAPTURED_USED
+
+    def test_query_carries_argument_consumption_clause(self, monkeypatch):
+        """The generated Scala classifies argument-consumed calls as
+        captured_used, excluding <operator>.* pseudo-calls so the
+        assignment logic keeps governing RHS shapes."""
+        import core.audit.cross_function_verify as cfv
+        captured = {}
+
+        def spy(server, query):
+            captured["q"] = query
+            return []
+
+        monkeypatch.setattr(cfv, "_run_query", spy)
+        _extract_callsites_cpg(object(), frozenset({"doWork"}))
+        q = captured["q"]
+        assert "inCall" in q
+        assert '<operator>' in q
+        assert "asArg" in q
+
+    def test_cpg_rows_carry_engine_tag(self, monkeypatch):
+        rows = [["doWork", "run", "a.c", 10, "discarded"]]
+        monkeypatch.setattr(
+            "core.audit.cross_function_verify._run_query",
+            lambda server, query: rows,
+        )
+        sites = _extract_callsites_cpg(object(), frozenset({"doWork"}))
+        assert sites and all(s.engine == "cpg" for s in sites)
+
+    def test_ts_rows_default_engine_tag(self):
+        src = "int f(void) { doWork(); return 0; }\n"
+        census = build_return_census({"a.c": src})
+        for c in census.values():
+            for site in c.sites:
+                assert site.engine == "ts"

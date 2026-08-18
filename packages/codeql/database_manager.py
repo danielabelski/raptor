@@ -717,6 +717,7 @@ class DatabaseManager:
         force: bool = False,
         audit_run_dir: Path | None = None,
         traced_build: bool = False,
+        concurrent_workers: int = 1,
     ) -> DatabaseResult:
         """
         Create CodeQL database.
@@ -905,7 +906,9 @@ class DatabaseManager:
         # tuning.json-backed).  ``include_disk_cache=True`` because
         # ``database create`` accepts the flag; ``database analyze``
         # would reject it.
-        CodeQLTunables.from_tuning().append_to(cmd, include_disk_cache=True)
+        CodeQLTunables.from_tuning(
+            concurrent_workers=concurrent_workers,
+        ).append_to(cmd, include_disk_cache=True)
 
         # Set working directory and environment.
         #
@@ -1359,6 +1362,10 @@ class DatabaseManager:
             max_workers
         )
 
+        # Core-share per child build: N concurrent -j0 extractions
+        # would each claim every core; divide instead (an explicit
+        # numeric codeql_threads is respected inside from_tuning).
+        _share = min(max_workers, len(language_build_map)) or 1
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             future_to_lang = {
@@ -1370,6 +1377,7 @@ class DatabaseManager:
                     force,
                     audit_run_dir,
                     lang in (traced_languages or ()),
+                    _share,
                 ): lang
                 for lang, build_system in language_build_map.items()
             }

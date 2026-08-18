@@ -7,6 +7,7 @@ producing SARIF output for vulnerability analysis.
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -26,8 +27,6 @@ from packages.codeql.tunables import CodeQLTunables
 
 logger = get_logger()
 
-
-import re
 
 # Tightened from `[\w/.-]+\S*` which accepted any path-like
 # blob (path-traversal `../../etc/passwd`, multi-segment
@@ -219,7 +218,8 @@ class QueryRunner:
         language: str,
         out_dir: Path,
         suite: str | None = None,
-        use_extended: bool = False
+        use_extended: bool = False,
+        concurrent_workers: int = 1,
     ) -> QueryResult:
         """
         Execute CodeQL suite against database.
@@ -336,7 +336,9 @@ class QueryRunner:
         # Central CodeQL resource tunables (-j / -M, tuning.json-backed).
         # ``include_disk_cache=False`` because ``database analyze``
         # rejects ``--max-disk-cache`` as an unknown flag.
-        CodeQLTunables.from_tuning().append_to(cmd, include_disk_cache=False)
+        CodeQLTunables.from_tuning(
+            concurrent_workers=concurrent_workers,
+        ).append_to(cmd, include_disk_cache=False)
 
         # DO NOT add search-path - it causes pack conflicts when multiple copies exist
         # Instead, we always use absolute paths (resolved above) to avoid ambiguity
@@ -662,6 +664,10 @@ class QueryRunner:
             "Analyzing %d databases in parallel (max workers: %s)", len(databases), max_workers
         )
 
+        # Core-share for each child: N concurrent -j0 analyses would
+        # each claim every core; divide instead (explicit numeric
+        # codeql_threads is respected inside from_tuning).
+        _share = min(max_workers, len(databases)) or 1
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             future_to_lang = {
@@ -671,7 +677,8 @@ class QueryRunner:
                     lang,
                     out_dir,
                     None,
-                    use_extended
+                    use_extended,
+                    _share,
                 ): lang
                 for lang, db_path in databases.items()
             }

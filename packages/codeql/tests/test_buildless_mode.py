@@ -233,9 +233,13 @@ class TestParallelThreading:
     def test_traced_languages_forwarded(self, db_manager, tmp_path):
         calls = {}
 
+        shares = {}
+
         def fake_create(repo_path, lang, build_system, force,
-                        audit_run_dir, traced_build=False):
+                        audit_run_dir, traced_build=False,
+                        concurrent_workers=1):
             calls[lang] = traced_build
+            shares[lang] = concurrent_workers
             r = MagicMock()
             r.success = True
             return r
@@ -247,13 +251,19 @@ class TestParallelThreading:
                 traced_languages={"cpp"},
             )
         assert calls == {"cpp": True, "javascript": False}
+        # Two concurrent builds share the cores two ways.
+        assert set(shares.values()) == {2}
 
     def test_default_is_untraced(self, db_manager, tmp_path):
         calls = {}
 
+        shares = {}
+
         def fake_create(repo_path, lang, build_system, force,
-                        audit_run_dir, traced_build=False):
+                        audit_run_dir, traced_build=False,
+                        concurrent_workers=1):
             calls[lang] = traced_build
+            shares[lang] = concurrent_workers
             r = MagicMock()
             r.success = True
             return r
@@ -261,6 +271,8 @@ class TestParallelThreading:
         with patch.object(db_manager, 'create_database', side_effect=fake_create):
             db_manager.create_databases_parallel(tmp_path, {"cpp": None})
         assert calls == {"cpp": False}
+        # A single build keeps the full-core auto value downstream.
+        assert shares == {"cpp": 1}
 
 
 # ---------------------------------------------------------------------------

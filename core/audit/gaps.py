@@ -491,8 +491,10 @@ def hoist_pins(
     if unmatched:
         logger.warning(
             "--pin: %d pin(s) matched no gap and will not be reviewed: "
-            "%s (already-reviewed functions are not gaps — use --force "
-            "to re-review)",
+            "%s (the function is missing from the checklist inventory, "
+            "outside --scope, or already reviewed — re-review needs "
+            "--force; a missing inventory entry usually means the "
+            "name or file path does not exist in the analysed tree)",
             len(unmatched), ", ".join(unmatched),
         )
     if not pinned:

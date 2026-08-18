@@ -847,6 +847,43 @@ def _line_near(line: int, target_lines: set, *, tolerance: int = 3) -> bool:
     return any(abs(line - t) <= tolerance for t in target_lines)
 
 
+def _fn_filter_match(gap: dict[str, Any], fn_filter: tuple) -> bool:
+    """True when *gap* matches a ``--functions`` spec.
+
+    Specs are ``file:name`` (simple) or ``file:name:line`` (line-scoped,
+    matched with ``_line_near``'s tolerance). Class-qualified specs
+    (``file:Class.method``) match through the gap's ``class_name``
+    metadata.
+    """
+    simple, lined = fn_filter
+    key = f"{gap['file']}:{gap['name']}"
+    line = gap.get("line_start", 0)
+    meta = gap.get("metadata") or {}
+    cls = meta.get("class_name")
+    qual_key = f"{gap['file']}:{cls}.{gap['name']}" if cls else key
+    if key in simple or qual_key in simple:
+        return True
+    return (
+        _line_near(line, lined.get(key, set()))
+        or _line_near(line, lined.get(qual_key, set()))
+    )
+
+
+def _fn_filter_keep(gap: dict[str, Any], fn_filter: tuple) -> bool:
+    """True when the ``--functions`` filter keeps *gap* for review.
+
+    Pinned gaps are always kept: an operator pin is an explicit review
+    order, and pins carry no line number — a spec whose line number has
+    drifted from the current source must not silently drop the pinned
+    function. (Observed: a calibration run where the ±3 line tolerance
+    dropped every pinned label from the workqueue, so none of them was
+    ever reviewed.)
+    """
+    if gap.get("pinned"):
+        return True
+    return _fn_filter_match(gap, fn_filter)
+
+
 def run_orchestrator(
     config: OrchestratorConfig,
     review_fn: Callable[[dict[str, Any], OrchestratorConfig], ReviewOutcome],
@@ -4836,6 +4873,15 @@ def _run_audit_body(
         if key in reviewed_set:
             result.skipped += 1
             continue
+        # --functions filter first, so a kept gap carries force_review
+        # BEFORE the mechanical clean-resolvers below — an explicitly
+        # selected (or pinned) function must reach a real review, not
+        # be resolved by the guard-clean / sarif-clean shortcuts.
+        if fn_filter is not None:
+            if not _fn_filter_keep(gap, fn_filter):
+                result.skipped += 1
+                continue
+            gap["force_review"] = True
         if (
             key in guard_clean_keys
             and key not in entry_points
@@ -4865,22 +4911,6 @@ def _run_audit_body(
             result.prefilter_skipped += 1
             guard_clean_resolved += 1
             continue
-        if fn_filter is not None:
-            simple, lined = fn_filter
-            line = gap.get("line_start", 0)
-            meta = gap.get("metadata") or {}
-            cls = meta.get("class_name")
-            qual_key = f"{gap['file']}:{cls}.{gap['name']}" if cls else key
-            in_simple = key in simple or qual_key in simple
-            in_lined = (
-                _line_near(line, lined.get(key, set()))
-                or _line_near(line, lined.get(qual_key, set()))
-            )
-            if not in_simple and not in_lined:
-                result.skipped += 1
-                continue
-            gap["force_review"] = True
-
         if (
             sarif_clean_files
             and not gap.get("force_review")

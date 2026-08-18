@@ -39,7 +39,18 @@ import core.startup.process_init  # noqa: E402,F401
 
 
 def write_env_file():
-    """Write the env file with static vars. Overwrites to ensure clean state."""
+    """Write the env file with static vars. Overwrites to ensure clean state.
+
+    The env file is *sourced* by the session shell, so the checkout
+    path must be written shell-safe: an unescaped path containing
+    ``$(``, a backtick, or ``"`` would execute inside every session
+    shell. ``shlex.quote`` single-quotes anything outside the safe
+    character set (typical paths stay bare). The ``$PATH`` reference
+    stays in its own double quotes, outside the quoted path, so it
+    still expands.
+    """
+    import shlex
+
     env_file = os.environ.get("CLAUDE_ENV_FILE")
     if not env_file:
         return
@@ -48,8 +59,8 @@ def write_env_file():
     bin_dir = str(REPO_ROOT / "bin")
 
     content = (
-        f'export RAPTOR_DIR="{repo_root}"\n'
-        f'export PATH="$PATH:{bin_dir}"\n'
+        f'export RAPTOR_DIR={shlex.quote(repo_root)}\n'
+        f'export PATH="$PATH":{shlex.quote(bin_dir)}\n'
     )
 
     try:

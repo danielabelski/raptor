@@ -331,29 +331,6 @@ _ALLOWLIST: tuple[AllowlistEntry, ...] = (
             'source is RAPTOR-internal'
         ),
     ),
-    # ----- packages/hypothesis_validation/runner.py -----
-    AllowlistEntry(
-        file='packages/hypothesis_validation/runner.py',
-        func_name='_evaluate',
-        attr='summary',
-        expr_text='{evidence.summary}',
-        audit_note=(
-            'exception-path return value (verdict, reasoning) for '
-            'operator display; reasoning is not directly fed back into '
-            'an LLM prompt by callers'
-        ),
-    ),
-    AllowlistEntry(
-        file='packages/hypothesis_validation/runner.py',
-        func_name='_evaluate',
-        attr='summary',
-        expr_text='{evidence.summary}',
-        audit_note=(
-            'exception-path return value (verdict, reasoning) for '
-            'operator display; reasoning is not directly fed back into '
-            'an LLM prompt by callers'
-        ),
-    ),
     # ----- packages/hypothesis_validation/runner.py (_evaluate_with_refinement) -----
     AllowlistEntry(
         file='packages/hypothesis_validation/runner.py',
@@ -479,10 +456,29 @@ def audit_file(path: Path) -> list[Violation]:
                 continue
             return None
 
+    def _tainted_trust_is_untrusted(call: ast.Call) -> bool:
+        """True only when a ``TaintedString`` construction labels its
+        value with the literal ``trust="untrusted"``. A ``"trusted"``
+        label routes the value through the light trusted-rendering
+        path (no envelope pipeline) — so a mislabeled untrusted attr
+        would bypass every defence while passing the lint. A
+        non-literal trust argument can't be proven either way; both
+        cases fire the rule and need an explicit allowlist entry."""
+        trust: ast.AST | None = None
+        for kw in call.keywords:
+            if kw.arg == "trust":
+                trust = kw.value
+                break
+        if trust is None and len(call.args) >= 2:
+            trust = call.args[1]
+        return isinstance(trust, ast.Constant) and trust.value == "untrusted"
+
     def _is_sanitised(node: ast.AST) -> bool:
         """Return True if this expression is wrapped in a call that's
         known to neutralise injection (tag-forgery defang or
-        envelope wrap)."""
+        envelope wrap). ``TaintedString`` counts only when the trust
+        label is the literal ``"untrusted"`` — see
+        ``_tainted_trust_is_untrusted``."""
         if not isinstance(node, ast.Call):
             return False
         # Function name resolution.
@@ -493,6 +489,8 @@ def audit_file(path: Path) -> list[Violation]:
             name = func.attr
         else:
             return False
+        if name == "TaintedString":
+            return _tainted_trust_is_untrusted(node)
         return name in {
             "neutralize_tag_forgery",
             "_sanitize_for_prompt",
@@ -500,7 +498,6 @@ def audit_file(path: Path) -> list[Violation]:
             "escape_for_envelope",
             "escape_nonprintable",
             "_xml_attr_escape",
-            "TaintedString",
             "UntrustedBlock",
             "wrap_tool_result",
         }
@@ -525,12 +522,16 @@ def audit_file(path: Path) -> list[Violation]:
 
     # Constructors that carry the untrusted-content envelope contract.
     # An f-string passed as a kwarg to one of these is being captured
-    # as labelled metadata (UntrustedBlock origin/kind, TaintedString
-    # value) and gets routed through ``_xml_attr_escape`` /
-    # ``_content_for_envelope`` at render time. Safe by construction.
+    # as labelled metadata (UntrustedBlock origin/kind) and gets
+    # routed through ``_xml_attr_escape`` / ``_content_for_envelope``
+    # at render time. Safe by construction. ``MessagePart`` is
+    # deliberately NOT here — it is a zero-sanitisation dataclass
+    # (its content ships to the model verbatim), so a direct
+    # ``MessagePart(content=f"{x.message}")`` must fire the rule.
+    # ``TaintedString`` is handled separately: it exempts only when
+    # the trust label is the literal ``"untrusted"``.
     _ENVELOPE_CONSTRUCTORS = frozenset({
-        "UntrustedBlock", "TaintedString",
-        "MessagePart",  # content is a kwarg of MessagePart too
+        "UntrustedBlock",
         "wrap_tool_result",
     })
 
@@ -549,14 +550,21 @@ def audit_file(path: Path) -> list[Violation]:
         """Return True if the f-string is an argument to one of the
         envelope-aware constructors. Those constructors take the
         responsibility of escape/sanitisation themselves at render
-        time, so the raw f-string is not a violation."""
+        time, so the raw f-string is not a violation.
+        ``TaintedString`` exempts only when constructed with the
+        literal ``trust="untrusted"``."""
         for parent in reversed(parent_stack):
             if isinstance(parent, ast.Call):
                 func = parent.func
-                if isinstance(func, ast.Name) and func.id in _ENVELOPE_CONSTRUCTORS:
-                    return True
-                return (isinstance(func, ast.Attribute)
-                        and func.attr in _ENVELOPE_CONSTRUCTORS)
+                if isinstance(func, ast.Name):
+                    name = func.id
+                elif isinstance(func, ast.Attribute):
+                    name = func.attr
+                else:
+                    return False
+                if name == "TaintedString":
+                    return _tainted_trust_is_untrusted(parent)
+                return name in _ENVELOPE_CONSTRUCTORS
         return False
 
     class _Walker(ast.NodeVisitor):

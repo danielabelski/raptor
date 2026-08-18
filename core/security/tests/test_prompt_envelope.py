@@ -14,6 +14,7 @@ from core.security.prompt_envelope import (
     UntrustedBlock,
     build_prompt,
     neutralize_tag_forgery,
+    system_with_priming,
 )
 from core.security.prompt_defense_profiles import (
     ANTHROPIC_CLAUDE,
@@ -56,6 +57,22 @@ def test_nonce_is_16_hex_chars():
 def test_nonce_regenerates_per_call():
     nonces = {build_prompt(system="x", profile=CONSERVATIVE).nonce for _ in range(20)}
     assert len(nonces) == 20, "regression: nonce must be freshly generated each call (not cached at module/session)"
+
+
+def test_blocks_in_one_call_share_the_bundle_nonce():
+    """Every block in one build_prompt call is wrapped with the same
+    (bundle) nonce — the priming prose describes exactly this."""
+    profile = ModelDefenseProfile(name="x", tag_style="nonce-only")
+    bundle = build_prompt(
+        system="analyse",
+        profile=profile,
+        untrusted_blocks=(
+            UntrustedBlock(content="a", kind="source", origin="f1"),
+            UntrustedBlock(content="b", kind="source", origin="f2"),
+        ),
+    )
+    user = bundle.messages[1].content
+    assert user.count(f"<untrusted-{bundle.nonce} ") == 2
 
 
 # --- Role placement ---
@@ -377,6 +394,95 @@ def test_priming_mentions_base64_when_enabled():
     profile = ModelDefenseProfile(name="x", tag_style="nonce-only", base64_code=True)
     bundle = build_prompt(system="x", profile=profile)
     assert "base64" in bundle.messages[0].content.lower()
+
+
+# --- System prompt priming: slot grammar must match the rendered slots ---
+#
+# With slot_discipline off, _render_slots emits plain `name (trust): value`
+# lines instead of <slot> XML elements, so the priming must describe that
+# grammar. The crossed combination (non-passthrough tag_style with
+# slot_discipline False) is manufactured at runtime by _intersect_profiles
+# when a multi-model run mixes in a passthrough profile.
+
+def _crossed_profile() -> ModelDefenseProfile:
+    """Non-passthrough tag_style with slot discipline off — the
+    combination _intersect_profiles produces at runtime."""
+    return ModelDefenseProfile(
+        name="multi-crossed",
+        tag_style="nonce-only",
+        slot_discipline=False,
+    )
+
+
+def test_priming_describes_plain_slot_lines_when_discipline_off():
+    priming = system_with_priming("", _crossed_profile())
+    assert "<slot name=" not in priming
+    assert "(untrusted)" in priming
+    assert "(trusted)" in priming
+
+
+def test_priming_still_describes_xml_slots_when_discipline_on():
+    profile = ModelDefenseProfile(name="x", tag_style="nonce-only")
+    priming = system_with_priming("", profile)
+    assert '<slot name="..." trust="...">' in priming
+
+
+def test_priming_matches_rendered_slot_structure_when_discipline_off():
+    """End-to-end consistency: the grammar the priming teaches is the
+    grammar _render_slots actually emits for the crossed profile."""
+    bundle = build_prompt(
+        system="analyse",
+        profile=_crossed_profile(),
+        slots={
+            "path": TaintedString(value="src/a.py", trust="untrusted"),
+            "kind": TaintedString(value="scan", trust="trusted"),
+        },
+    )
+    system = bundle.messages[0].content
+    user = bundle.messages[1].content
+    # Rendered slots are plain lines, no XML wrapper.
+    assert "path (untrusted): src/a.py" in user
+    assert "kind (trusted): scan" in user
+    assert "<slot " not in user
+    # The priming describes exactly that shape, not <slot> elements.
+    assert "<slot name=" not in system
+    assert "(untrusted)" in system
+
+
+def test_passthrough_priming_unchanged():
+    """Regression guard: the passthrough branch already described the
+    plain-line slot grammar; it must keep doing so."""
+    profile = ModelDefenseProfile(
+        name="pt", tag_style="passthrough", slot_discipline=False,
+    )
+    priming = system_with_priming("", profile)
+    assert "<slot name=" not in priming
+    assert "(untrusted)" in priming
+
+
+def test_all_non_passthrough_styles_get_plain_slot_priming_when_off():
+    for tag_style in (
+        "nonce-only",
+        "anthropic-document",
+        "openai-untrusted-text",
+        "secalign",
+        "begin-end-marker",
+    ):
+        profile = ModelDefenseProfile(
+            name="x", tag_style=tag_style, slot_discipline=False,
+        )
+        priming = system_with_priming("", profile)
+        assert "<slot name=" not in priming, tag_style
+        assert "(untrusted)" in priming, tag_style
+
+
+def test_nonce_priming_does_not_claim_per_block_freshness():
+    """build_prompt shares one nonce across all blocks in a call, so
+    the priming must not claim per-block generation."""
+    profile = ModelDefenseProfile(name="x", tag_style="nonce-only")
+    priming = system_with_priming("", profile)
+    assert "per block" not in priming
+    assert "per prompt" in priming
 
 
 # --- Profile defaults sanity checks ---

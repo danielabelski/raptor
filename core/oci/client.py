@@ -178,10 +178,14 @@ def _parse_link_next(link_header: str | None) -> str | None:
     the header is absent / malformed.
 
     The OCI Distribution Spec lets registries paginate
-    ``/tags/list`` via this header; URLs may be relative (path
-    only) or absolute. We strip leading whitespace + the angle
-    brackets but otherwise pass the value through verbatim — the
-    HTTP client below treats both shapes.
+    ``/tags/list`` via this header; registries may emit relative
+    (path-only) or absolute URLs. We strip leading whitespace + the
+    angle brackets and pass the value through verbatim; the caller
+    then runs it through :func:`_validate_link_next`, which accepts
+    only relative ``/v2/<repository>/`` paths (absolute URLs are
+    rejected as an SSRF guard, ending pagination), and
+    ``_authed_request`` resolves the surviving path against the
+    registry's API endpoint.
     """
     if not link_header:
         return None
@@ -228,10 +232,15 @@ class OciRegistryClient:
     """Stateful client tied to a single :class:`HttpClient` and an
     optional ``BasicCredentials``-providing callable.
 
-    State held: per-(realm, service, scope) bearer-token cache. The
-    cache is a plain dict — bounded by distinct image references
+    State held: per-(realm, service, scope) bearer-token cache plus a
+    per-registry memo of the most recent challenge triple (the triple
+    is only discoverable from a 401 challenge, so the memo is what
+    lets later requests attach a cached token on their FIRST attempt).
+    Both are plain dicts — bounded by distinct image references
     consulted in a single process; tokens are short-lived (5-15 min
-    typically) so there's no hard expiry tracking.
+    typically) so there's no hard expiry tracking: an expired token
+    surfaces as a 401, which evicts it and re-exchanges. Not
+    thread-safe — one client per thread, like the HttpClient it wraps.
     """
 
     def __init__(
@@ -246,6 +255,10 @@ class OciRegistryClient:
         self._lookup = credentials_lookup or lookup_credentials
         # Token cache keyed by (realm, service, scope).
         self._tokens: dict[tuple[str, str, str], str] = {}
+        # Most recent challenge triple seen per registry — the key
+        # under which the next request for that registry looks up a
+        # cached token for its first attempt.
+        self._last_challenge: dict[str, tuple[str, str, str]] = {}
 
     # ----- Public API -----
 
@@ -513,10 +526,18 @@ class OciRegistryClient:
         full_url = f"https://{api_endpoint_for(registry)}{url_path}"
         req_headers = dict(headers) if headers else {}
         # First attempt with whatever auth is already cached for
-        # this registry's most-recent (realm, service, scope) tuple.
-        # Cache is keyed by the challenge triple, so we don't have
-        # one yet — make the unauthenticated attempt first to
-        # discover the realm.
+        # this registry's most-recent (realm, service, scope) tuple —
+        # repeat calls for the same image must skip the exchange
+        # dance. The triple is only discoverable from a 401 challenge,
+        # so the very first call for a registry goes out
+        # unauthenticated and takes the challenge path below.
+        used_cache_key: tuple[str, str, str] | None = None
+        last_challenge = self._last_challenge.get(registry)
+        if last_challenge is not None:
+            cached_token = self._tokens.get(last_challenge)
+            if cached_token is not None:
+                req_headers["Authorization"] = f"Bearer {cached_token}"
+                used_cache_key = last_challenge
         # raise_on_status=False so the 401-with-WWW-Authenticate
         # challenge reaches the retry path below instead of being
         # converted to an exception by the backend.
@@ -569,7 +590,16 @@ class OciRegistryClient:
         # hosts per registry (most are sub-domains of the registry
         # host; explicit list keeps the surface small).
         _validate_realm(registry, realm)
-        self._tokens.pop((realm, service, scope), None)
+        cache_key = (realm, service, scope)
+        # Evict only the token that actually failed: a 401 while
+        # presenting the cached token for THIS exact triple means that
+        # token is stale/expired. A 401 with no token attached (first
+        # contact) or with a token cached under a different triple
+        # (scope change between repositories) says nothing about other
+        # cache entries — those stay.
+        if used_cache_key == cache_key:
+            self._tokens.pop(cache_key, None)
+        self._last_challenge[registry] = cache_key
         token = self._exchange_token(registry, realm, service, scope)
         req_headers["Authorization"] = f"Bearer {token}"
         resp.close()

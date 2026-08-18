@@ -126,6 +126,30 @@ def _drop_separator_records(record: logging.LogRecord) -> bool:
     return not (len(msg) >= 10 and set(msg) <= _SEPARATOR_CHARS)
 
 
+class _OwnerOnlyFileHandler(logging.FileHandler):
+    """``FileHandler`` whose audit file is created owner-only (0o600).
+
+    The JSONL audit trail persists exception bodies and prompt
+    fragments; the stdlib default 0644 let any other local user read
+    them on a shared host. Match the deliberate 0o600 on the LLM
+    response cache and ``LLMConfig.to_file``. Mode is applied at
+    creation via ``os.open`` (not a post-hoc chmod), so there is no
+    world-readable window; a stricter umask still tightens further.
+    """
+
+    def _open(self):
+        fd = os.open(
+            self.baseFilename,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o600,
+        )
+        try:
+            return open(fd, self.mode, encoding=self.encoding, errors=self.errors)
+        except Exception:
+            os.close(fd)
+            raise
+
+
 def _file_log_level() -> int:
     """Audit-trail file level: INFO unless RAPTOR_LOG_FILE_LEVEL says
     otherwise (unknown names fall back to INFO rather than erroring
@@ -193,11 +217,10 @@ class RaptorLogger:
             #
             # Same shape as `core/run/output.unique_run_suffix` (batch
             # 143): wall-clock second + pid + 4-digit monotonic-ns tail.
-            import os as _os
             ns_tail = time.monotonic_ns() % 10_000
             log_file = (
                 RaptorConfig.LOG_DIR
-                / f"raptor_{int(time.time())}_pid{_os.getpid()}_{ns_tail:04d}.jsonl"
+                / f"raptor_{int(time.time())}_pid{os.getpid()}_{ns_tail:04d}.jsonl"
             )
             # `delay=True` defers opening the file until the first emit.
             # Pre-fix every `RaptorLogger()` instantiation eagerly created
@@ -217,7 +240,7 @@ class RaptorLogger:
             # opening one. `delay=True` only opens the file when there's
             # actually a record to write — empty processes leave no
             # trace in `LOG_DIR`.
-            file_handler = logging.FileHandler(log_file, delay=True)
+            file_handler = _OwnerOnlyFileHandler(log_file, delay=True)
             # Default INFO, not DEBUG. At DEBUG the audit trail
             # persisted every per-LLM-call line (usage/cost, "Using
             # model", "Structured generation successful") and 3-4

@@ -420,3 +420,67 @@ class TestSingleSourcedNameAuthority:
                 "devm_kfree"} <= joern_free
         assert "free" not in joern_free
         assert "kfree_rcu" not in joern_free
+
+
+class _ScriptedJoern:
+    """Fake Joern handle: answers queries in order from a script.
+
+    Each script entry is either a value (returned) or an Exception
+    instance (raised).
+    """
+
+    def __init__(self, script):
+        self._script = list(script)
+        self.queries = []
+
+    def query(self, q):
+        self.queries.append(q)
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+_REG = [(10, "&foo->timer", "timer_cb", "init_foo")]
+_FREE = [("release_foo", 42)]
+
+
+class TestCrossCancelQueryError:
+    """A failed cancel (refuter) query is a tool error — it must never
+    fabricate a violation."""
+
+    def test_cancel_query_exception_is_inconclusive_not_violation(self):
+        from core.audit.callback_lifetime import (
+            check_callback_lifetime_cross,
+        )
+        joern = _ScriptedJoern([_REG, _FREE, RuntimeError("cancelled")])
+        r = check_callback_lifetime_cross(joern, "drv.c", "init_foo")
+        assert r.violation_found is False
+        assert not r.violations
+        assert "inconclusive" in r.reasoning
+        assert "unverified" in r.reasoning
+
+    def test_cancel_query_empty_result_still_violates(self):
+        from core.audit.callback_lifetime import (
+            check_callback_lifetime_cross,
+        )
+        joern = _ScriptedJoern([_REG, _FREE, []])
+        r = check_callback_lifetime_cross(joern, "drv.c", "init_foo")
+        assert r.violation_found is True
+        assert len(r.violations) == 1
+        assert r.violations[0].free_func == "release_foo"
+
+    def test_cancel_query_error_does_not_mask_other_violations(self):
+        """One errored pair degrades that pair only; a genuinely
+        unverified-cancel pair on another free site still reports."""
+        from core.audit.callback_lifetime import (
+            check_callback_lifetime_cross,
+        )
+        two_frees = [("release_a", 42), ("release_b", 77)]
+        joern = _ScriptedJoern(
+            [_REG, two_frees, RuntimeError("cancelled"), []],
+        )
+        r = check_callback_lifetime_cross(joern, "drv.c", "init_foo")
+        assert r.violation_found is True
+        assert len(r.violations) == 1
+        assert r.violations[0].free_func == "release_b"

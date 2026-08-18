@@ -283,6 +283,7 @@ def check_callback_lifetime_cross(
         return CallbackLifetimeResult(reasoning="no callback registrations")
 
     violations: list[CallbackLifetimeViolation] = []
+    cancel_query_errors = 0
     for entry in registrations:
         if not isinstance(entry, (list, tuple)) or len(entry) < 4:
             continue
@@ -326,11 +327,16 @@ def check_callback_lifetime_cross(
             try:
                 cancels = joern.query(cancel_query)
             except Exception:
+                # A failed refuter query is a tool error, not evidence:
+                # "we could not check for a cancel" must never read as
+                # "there is no cancel". Skip the pair and report the
+                # degradation — mirrors the reg-query failure path.
                 logger.debug(
                     "callback_lifetime: Joern cancel query failed",
                     exc_info=True,
                 )
-                cancels = None
+                cancel_query_errors += 1
+                continue
 
             if not cancels:
                 violations.append(CallbackLifetimeViolation(
@@ -355,6 +361,17 @@ def check_callback_lifetime_cross(
             reasoning=(
                 f"{len(violations)} cross-function callback-lifetime "
                 f"violation(s) found"
+            ),
+        )
+
+    if cancel_query_errors:
+        # Explicitly inconclusive: with failed cancel queries the
+        # absence of violations is unverified, not a clean bill.
+        return CallbackLifetimeResult(
+            reasoning=(
+                f"inconclusive: {cancel_query_errors} Joern cancel "
+                f"quer{'y' if cancel_query_errors == 1 else 'ies'} "
+                f"failed — cancel coverage unverified"
             ),
         )
 

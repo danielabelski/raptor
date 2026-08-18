@@ -2480,6 +2480,13 @@ def run_joern_pre_sweep(
     build_kwargs = {"timeout": stall_timeout, "on_progress": on_progress}
     if heap_mb is not None:
         build_kwargs["heap_mb"] = heap_mb
+    # Pin the joern-parse frontend to the detected dominant language
+    # (curated per-profile joern_parse_language) instead of trusting
+    # parse-side guessing on mixed-language repos.
+    from packages.joern.lang_config import parse_languages_for
+    parse_langs = parse_languages_for(str(target_path))
+    if parse_langs:
+        build_kwargs["languages"] = parse_langs
 
     if cache_dir is not None:
         cpg = build_cpg_cached(target_path, cache_dir, **build_kwargs)

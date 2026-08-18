@@ -684,6 +684,33 @@ class TestRunJoernPreSweep:
         result = run_joern_pre_sweep(f, {})
         assert result == {}
 
+    def test_build_pins_frontend_from_detected_language(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        """The local CPG build must pass the curated per-profile
+        joern-parse frontend for the detected dominant language."""
+        from core.audit.sweep import run_joern_pre_sweep
+
+        (tmp_path / "main.c").write_text("int main() { return 0; }")
+
+        from packages.joern import prereqs, runner
+        monkeypatch.setattr(prereqs, "is_available", lambda: True)
+
+        captured: dict = {}
+
+        def fake_build_cpg(target, **kwargs):
+            captured.update(kwargs)
+            from packages.joern.models import JoernCPG
+            return JoernCPG(
+                path=tmp_path / "nonexistent-cpg.bin", target=target,
+            )
+
+        monkeypatch.setattr(runner, "build_cpg", fake_build_cpg)
+
+        result = run_joern_pre_sweep(tmp_path, {})
+        assert result == {}  # fake CPG doesn't exist → empty
+        assert captured.get("languages") == {"c"}
+
 
 class TestMechanicalCheckToSemgrep:
     def test_unchecked_return_maps(self):

@@ -169,15 +169,16 @@ def _load_or_create_key() -> bytes | None:
 
     Creation uses ``O_EXCL`` so concurrent first-users race safely: the
     loser re-reads whatever the winner wrote. A briefly-empty file (the
-    winner is between ``open`` and ``write``) is retried a few times;
-    after that whatever is on disk is used as-is — a short or corrupt
-    key is still used consistently by both mint and verify, so the
-    worst case is that tokens minted before repair stop verifying
-    (the demote path, never an error).
+    winner is between ``open`` and ``write``) is retried a few times.
 
     Returns ``None`` when a key file exists but is unusable (symlink,
-    foreign owner, permissive mode): the suspect key is never used,
-    never replaced, and the caller refuses to mint/verify.
+    foreign owner, permissive mode, wrong length): the suspect key is
+    never used, never replaced, and the caller refuses to mint/verify.
+    A zero/short key (torn write from ENOSPC or a kill between the
+    ``O_EXCL`` create and the write) is refused like ``_REFUSED`` —
+    silently HMAC'ing with an empty or truncated key would make every
+    token forgeable, re-enabling the poisoned-row mechanical effect
+    the MAC exists to block.
     """
     path = _key_path()
     data = _read_existing_key(path)
@@ -185,7 +186,15 @@ def _load_or_create_key() -> bytes | None:
         return None
     if data is not None and len(data) == _KEY_LEN:
         return data
-    data = data or b""
+    if data:
+        _warn_once_suspect_key(
+            path,
+            f"key file is {len(data)} bytes (expected {_KEY_LEN}) — "
+            "torn write or truncation",
+            f"remove {path} to re-mint a fresh key (tokens minted "
+            "under the old key will demote to hint-only)",
+        )
+        return None
 
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     key = secrets.token_bytes(_KEY_LEN)
@@ -199,11 +208,19 @@ def _load_or_create_key() -> bytes | None:
             raced = _read_existing_key(path)
             if raced is _REFUSED:
                 return None
-            if raced:
+            if raced is not None and len(raced) == _KEY_LEN:
                 return raced
-            data = raced if raced is not None else b""
             time.sleep(0.01)
-        return data
+        # Still absent/empty/short after the race window: the "winner"
+        # never finished its write. Refuse — never fall back to an
+        # empty-key HMAC.
+        _warn_once_suspect_key(
+            path,
+            "key file never reached full length after the creation "
+            "race window",
+            f"remove {path} so the next store re-mints a fresh key",
+        )
+        return None
     try:
         os.write(fd, key)
     finally:

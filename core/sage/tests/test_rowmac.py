@@ -236,3 +236,51 @@ class TestKeyLifecycle(RowMacKeyTmpDirCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestShortOrEmptyKeyRefused(RowMacKeyTmpDirCase):
+    """A zero/short key file (ENOSPC or a kill between the O_EXCL
+    create and the write) must be refused like _REFUSED — silently
+    HMAC'ing with an empty/truncated key makes every token forgeable,
+    re-enabling the poisoned-row mechanical effect."""
+
+    def setUp(self):
+        super().setUp()
+        rowmac._warned_paths.clear()
+        self.key_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def test_empty_key_file_refused(self):
+        self.key_path.touch(mode=0o600)
+        self.assertIsNone(rowmac._load_or_create_key())
+
+    def test_short_key_file_refused(self):
+        self.key_path.write_bytes(b"short")
+        self.key_path.chmod(0o600)
+        self.assertIsNone(rowmac._load_or_create_key())
+
+    def test_mint_refuses_on_short_key(self):
+        self.key_path.write_bytes(b"\x00" * 8)
+        self.key_path.chmod(0o600)
+        with self.assertRaises(RuntimeError):
+            rowmac.mint({"a": "1"})
+
+    def test_verify_demotes_on_short_key(self):
+        self.key_path.write_bytes(b"\x00" * 8)
+        self.key_path.chmod(0o600)
+        self.assertFalse(rowmac.verify({"a": "1"}, "deadbeef" * 8))
+
+    def test_short_key_never_used_never_replaced(self):
+        self.key_path.write_bytes(b"short")
+        self.key_path.chmod(0o600)
+        with self.assertRaises(RuntimeError):
+            rowmac.mint({"a": "1"})
+        # The suspect key is left in place for investigation.
+        self.assertEqual(self.key_path.read_bytes(), b"short")
+
+    def test_refusal_is_loud(self):
+        self.key_path.touch(mode=0o600)
+        with self.assertLogs("raptor.core.sage.rowmac",
+                             level="WARNING") as cm:
+            rowmac._load_or_create_key()
+        joined = " ".join(cm.output)
+        self.assertIn("refusing key", joined)

@@ -1418,13 +1418,36 @@ def _verify_entries_fold(
     for file_path, items in to_verify.items():
         resolved = safe_join(Path(target_path), file_path)
         if resolved is None or not resolved.is_file():
-            # No current source to compare — keep covered (see above).
-            covered.update(key for _, key, _ in items)
+            # The reviewed file is GONE (deleted/renamed) or the path
+            # doesn't resolve inside the target — that is drift, not
+            # verification. Pre-fix these entries folded to covered
+            # and their verdicts stood as coverage; compute_drift
+            # flags the identical case as drift. Resurface instead.
+            stale += len(items)
+            for _, key, _ in items:
+                logger.debug(
+                    "journal-fold: %s source missing since %s review "
+                    "— resurfacing as gap",
+                    key, source_label,
+                )
             continue
         hashes = hash_spans(resolved, [span for _, _, span in items])
         for (entry, key, _span), current in zip(items, hashes):
             stored = entry.source_hash
-            if current and current[:len(stored)] != stored[:len(current)]:
+            if not current:
+                # Empty current hash = the recorded span no longer
+                # exists in the file (out of range) or the file is
+                # unreadable. Pre-fix the falsy hash slipped the
+                # prefix-compare and the stale verdict was reused as
+                # hash-verified at $0. Treat as drift.
+                stale += 1
+                logger.debug(
+                    "journal-fold: %s span unverifiable since %s "
+                    "review (hash %s → <none>) — resurfacing as gap",
+                    key, source_label, stored,
+                )
+                continue
+            if current[:len(stored)] != stored[:len(current)]:
                 stale += 1
                 logger.debug(
                     "journal-fold: %s changed since %s review "

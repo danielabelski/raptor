@@ -135,9 +135,12 @@ class TestHashAwareFolding:
         )
         assert "auth.c:check_pw" not in _gap_keys(gaps)
 
-    def test_missing_source_file_keeps_covered(self, tmp_path):
-        # Checklist references the file but it is gone from disk: no
-        # current source to compare — no drift evidence, stay covered.
+    def test_missing_source_file_resurfaces_as_gap(self, tmp_path):
+        # Checklist references the file but it is gone from disk:
+        # that IS drift (compute_drift flags the same case) — the
+        # prior verdict must not stand as coverage. Pre-fix this
+        # folded to covered and a deleted/renamed file's verdicts
+        # were reused silently.
         target = _write_target(tmp_path)
         stored = hash_span(target / "auth.c", 1, 5)
         project = _project_with_entry(tmp_path, stored)
@@ -146,7 +149,7 @@ class TestHashAwareFolding:
         gaps = compute_gaps(
             _checklist(target), [], project_dir=project,
         )
-        assert "auth.c:check_pw" not in _gap_keys(gaps)
+        assert "auth.c:check_pw" in _gap_keys(gaps)
 
     def test_no_target_path_keeps_covered(self, tmp_path):
         target = _write_target(tmp_path)

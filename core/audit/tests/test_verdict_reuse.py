@@ -430,3 +430,56 @@ class TestContextReducedJournalled:
         entry = load_entries(out_dir)[0]
         assert entry.context_reduced is True
         assert entry.reused is None
+
+
+class TestFoldDriftFailClosed:
+    """Deleted files and unverifiable spans are DRIFT, not coverage.
+
+    Pre-fix: a deleted source file folded its entries to covered (the
+    verdicts stood as coverage), and a span that no longer exists in
+    the file (current hash "") slipped the prefix-compare so the
+    stale verdict was reused as hash-verified at $0 — while
+    compute_drift flags the identical cases as drift."""
+
+    def test_deleted_file_resurfaces_as_gap(self, tmp_path):
+        target = _write_target(tmp_path)
+        entry = _entry(target)
+        project = _project_with(tmp_path, entry)
+        (target / "auth.c").unlink()
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert "auth.c:check_pw" in _gap_keys(gaps)
+        assert "auth.c:check_pw" not in sink
+
+    def test_out_of_range_span_resurfaces_as_gap(self, tmp_path):
+        """The recorded span is beyond the current file's end — the
+        current hash is '' and must read as drift, never verified."""
+        target = _write_target(tmp_path)
+        entry = _entry(target, line_start=100, line_end=120,
+                       source_hash="abcdef123456")
+        project = _project_with(tmp_path, entry)
+        sink: dict = {}
+        checklist = _checklist(target)
+        checklist["files"][0]["items"][0]["line_start"] = 100
+        checklist["files"][0]["items"][0]["line_end"] = 120
+        gaps = compute_gaps(
+            checklist, [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert "auth.c:check_pw" in _gap_keys(gaps)
+        assert "auth.c:check_pw" not in sink
+
+    def test_intact_file_still_folds_covered(self, tmp_path):
+        """Positive control: verification still passes when nothing
+        drifted."""
+        target = _write_target(tmp_path)
+        project = _project_with(tmp_path, _entry(target))
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert "auth.c:check_pw" not in _gap_keys(gaps)

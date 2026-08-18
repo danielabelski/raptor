@@ -593,15 +593,6 @@
   "plumbing:orphan_config_field:core/binary/elf.py:_SectionHeader.sh_link": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },
-  "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:DawidSkeneResult.class_prior": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:DawidSkeneResult.fixed_class_rate": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/llm/multi_model/dawid_skene.py:FindingPosterior.posterior_log_odds": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
   "plumbing:orphan_config_field:core/llm/tool_use/types.py:TurnStarted.input_token_estimate": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },

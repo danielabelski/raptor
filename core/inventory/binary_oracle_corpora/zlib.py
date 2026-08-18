@@ -83,10 +83,14 @@ class _ZlibDriver:
 
         live = _collect_gcov_liveness(build_o0)
         candidates = _enumerate_candidates(build_o0)
+        # Toolchain block: makes the precision number reproducible
+        # (zlib's configure picks cc; liveness comes from gcov).
+        from .toolchain import record_toolchain
         return {
             "o2_binary": build_o2 / "example",
             "candidate_functions": candidates,
             "live_set": live,
+            "toolchain": record_toolchain(cc="cc", gcov="gcov"),
         }
 
 

@@ -215,45 +215,105 @@ def _dead_pid() -> int:
 
 
 class TestFindClaudeAncestor(unittest.TestCase):
+    """Hermetic: the ancestry walk runs against a FAKE process tree.
 
-    def test_returns_int_in_claudecode(self):
-        """Inside Claude Code, _find_claude_ancestor returns the claude PID."""
-        import os
-        if not os.environ.get("CLAUDECODE"):
-            self.skipTest("Requires CLAUDECODE environment")
-        if not Path("/proc").is_dir():
-            self.skipTest("_find_claude_ancestor walks /proc — Linux only")
+    The previous versions asserted on the live process tree (a real
+    ``claude`` ancestor), which broke whenever the test battery ran
+    detached from the launching session while ``CLAUDECODE`` was still
+    in the environment (nohup'd full-battery runs). Mocking the
+    primitives (``os.getppid``, ``_read_ppid``, ``/proc/<pid>/comm``)
+    keeps the behaviour under test — the walk itself — deterministic
+    everywhere.
+    """
+
+    def _patch_tree(self, parents, comms):
+        """Patch ancestry primitives: ``parents`` maps pid -> ppid,
+        ``comms`` maps pid -> process name. Returns an ExitStack."""
+        import contextlib
+        import sys
+        from unittest import mock
+
+        import core.run.metadata as md
+
+        self_pid = 100
+
+        class _FakeProcPath:
+            def __init__(self, pid):
+                self._pid = pid
+
+            def read_text(self, encoding="utf-8"):
+                try:
+                    return comms[self._pid] + "\n"
+                except KeyError:
+                    raise OSError(f"no comm for pid {self._pid}") from None
+
+        real_path = md.Path
+
+        def _path_factory(arg, *rest):
+            s = str(arg)
+            if s.startswith("/proc/") and s.endswith("/comm") and not rest:
+                return _FakeProcPath(int(s.split("/")[2]))
+            return real_path(arg, *rest)
+
+        def _fake_read_ppid(pid):
+            try:
+                return parents[pid]
+            except KeyError:
+                raise OSError(f"no such pid {pid}") from None
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(sys, "platform", "linux"))
+        stack.enter_context(mock.patch.object(md.os, "getpid",
+                                              lambda: self_pid))
+        stack.enter_context(mock.patch.object(md.os, "getppid",
+                                              lambda: parents[self_pid]))
+        stack.enter_context(mock.patch.object(md, "_read_ppid",
+                                              _fake_read_ppid))
+        stack.enter_context(mock.patch.object(md, "Path", _path_factory))
+        return stack
+
+    # pid 100 (test) -> 50 (bash) -> 40 (claude) -> 1 (init)
+    _TREE = {100: 50, 50: 40, 40: 1}
+    _COMMS = {50: "bash", 40: "claude"}
+
+    def test_finds_claude_ancestor(self):
+        """The walk returns the nearest ancestor whose comm is claude."""
         from core.run.metadata import _find_claude_ancestor
-        pid = _find_claude_ancestor()
-        self.assertIsNotNone(pid)
-        self.assertIsInstance(pid, int)
-        self.assertGreater(pid, 1)
+        with self._patch_tree(self._TREE, self._COMMS):
+            self.assertEqual(_find_claude_ancestor(), 40)
 
     def test_stable_across_calls(self):
-        """The claude ancestor PID should be the same every time."""
-        import os
-        if not os.environ.get("CLAUDECODE"):
-            self.skipTest("Requires CLAUDECODE environment")
-        if not Path("/proc").is_dir():
-            self.skipTest("_find_claude_ancestor walks /proc — Linux only")
         from core.run.metadata import _find_claude_ancestor
-        pid1 = _find_claude_ancestor()
-        pid2 = _find_claude_ancestor()
-        self.assertEqual(pid1, pid2)
+        with self._patch_tree(self._TREE, self._COMMS):
+            self.assertEqual(_find_claude_ancestor(),
+                             _find_claude_ancestor())
+
+    def test_none_when_no_claude_in_ancestry(self):
+        """Detached process (reparented to init): no claude ancestor
+        even when CLAUDECODE is still in the environment."""
+        import os
+        from unittest import mock
+
+        from core.run.metadata import _find_claude_ancestor
+        with self._patch_tree({100: 50, 50: 1}, {50: "bash"}), \
+                mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+            self.assertIsNone(_find_claude_ancestor())
 
     def test_matches_session_pid_in_metadata(self):
-        """session_pid stored by start_run should equal _find_claude_ancestor."""
+        """session_pid stored by start_run equals the walked ancestor."""
         import os
-        if not os.environ.get("CLAUDECODE"):
-            self.skipTest("Requires CLAUDECODE environment")
-        if not Path("/proc").is_dir():
-            self.skipTest("_find_claude_ancestor walks /proc — Linux only")
+        from unittest import mock
+
         from core.run.metadata import _find_claude_ancestor
-        with TemporaryDirectory() as d:
-            out = Path(d) / "test-run"
-            start_run(out, "scan")
-            meta = load_json(out / RUN_METADATA_FILE)
-            self.assertEqual(meta["session_pid"], _find_claude_ancestor())
+        with self._patch_tree(self._TREE, self._COMMS), \
+                mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+            with TemporaryDirectory() as d:
+                out = Path(d) / "test-run"
+                start_run(out, "scan")
+                meta = load_json(out / RUN_METADATA_FILE)
+                self.assertEqual(meta["session_pid"], 40)
+                self.assertEqual(meta["session_pid"],
+                                 _find_claude_ancestor())
 
 
 class TestIsRunDirectory(unittest.TestCase):

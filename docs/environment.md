@@ -168,7 +168,7 @@ support".
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CODEQL_CLI` | `codeql` on `PATH` | Path to the CodeQL CLI binary. Env (validated) > `PATH` lookup; neither resolving raises `RuntimeError` (fail-closed). |
+| `CODEQL_CLI` | `codeql` on `PATH` | Path to the CodeQL CLI binary. Env (validated: must be an executable regular file) > `PATH` lookup; an invalid explicit value warns and falls back to `PATH`; neither resolving raises `RuntimeError` (fail-closed). |
 | `CODEQL_QUERIES` | official packs | Path to a local CodeQL queries checkout; pack references are rewritten to absolute suite paths (offline/pinned query sets). Unresolvable suites log an error and fall back to the pack reference. |
 | `CVE_DIFF_DISABLE_RULES` | rules on | Truthy disables the cve-diff agent's mechanical no-evidence surrender rule (benchmarking/ablation). Shared toggle spellings; unrecognised values warn and leave the rules on. |
 | `CVE_DIFF_SURRENDER_COST_FLOOR_USD` | `0.80` | Minimum spend before the surrender rule may fire. Read at module import; malformed falls back silently. |

@@ -616,3 +616,60 @@ class TestAutoCleanupWiring:
                           side_effect=OSError("disk went away")):
             mgr = DatabaseManager()
         assert mgr.codeql_cli == "/usr/bin/codeql"
+
+
+class TestDetectCodeqlCli:
+    """CODEQL_CLI env validation in ``_detect_codeql_cli``."""
+
+    def _detect(self, db_manager, monkeypatch, env_value, which=None):
+        if env_value is None:
+            monkeypatch.delenv("CODEQL_CLI", raising=False)
+        else:
+            monkeypatch.setenv("CODEQL_CLI", env_value)
+        with patch("packages.codeql.database_manager.shutil.which",
+                   return_value=which):
+            return db_manager._detect_codeql_cli()
+
+    def test_executable_file_accepted(self, db_manager, tmp_path, monkeypatch):
+        cli = tmp_path / "codeql"
+        cli.write_text("#!/bin/sh\n")
+        cli.chmod(0o755)
+        assert self._detect(db_manager, monkeypatch, str(cli)) == str(cli)
+
+    def test_directory_rejected_with_warning(
+        self, db_manager, tmp_path, monkeypatch, caplog,
+    ):
+        """A directory carries the x bit, so the pre-fix X_OK-only
+        check accepted CODEQL_CLI=/some/dir and later exploded at
+        subprocess.run."""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            got = self._detect(db_manager, monkeypatch, str(tmp_path),
+                               which="/opt/codeql/codeql")
+        assert got == "/opt/codeql/codeql"
+        assert any("CODEQL_CLI" in r.getMessage()
+                   and "not an executable file" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_non_executable_file_rejected_with_warning(
+        self, db_manager, tmp_path, monkeypatch, caplog,
+    ):
+        import logging
+        plain = tmp_path / "notes.txt"
+        plain.write_text("not a binary")
+        plain.chmod(0o644)
+        with caplog.at_level(logging.WARNING):
+            got = self._detect(db_manager, monkeypatch, str(plain), which=None)
+        assert got is None
+        assert any("CODEQL_CLI" in r.getMessage() for r in caplog.records)
+
+    def test_unset_env_uses_path_lookup_silently(
+        self, db_manager, monkeypatch, caplog,
+    ):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            got = self._detect(db_manager, monkeypatch, None,
+                               which="/usr/local/bin/codeql")
+        assert got == "/usr/local/bin/codeql"
+        assert not [r for r in caplog.records
+                    if "CODEQL_CLI" in r.getMessage()]

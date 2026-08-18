@@ -212,19 +212,28 @@ class DatabaseManager:
     def _detect_codeql_cli(self) -> str | None:
         """Detect CodeQL CLI path.
 
-        `os.access(path, X_OK)` instead of bare `Path.exists()`. Pre-fix
-        the env-var path was accepted as long as the file existed —
-        `CODEQL_CLI=/etc/passwd` would have us shell out to a non-
-        executable file, which then raised OSError at subprocess.run
-        with a confusing stderr instead of failing the detection
-        cleanly.
+        `os.path.isfile` + `os.access(path, X_OK)` — the same validation
+        as the sibling `packages/codeql._resolve_cli`. Pre-fix the
+        env-var path was accepted on `X_OK` alone: `CODEQL_CLI=/etc/passwd`
+        would have us shell out to a non-executable file (OSError at
+        subprocess.run with a confusing stderr), and `CODEQL_CLI=/usr/bin`
+        — a directory, which carries the x bit — slipped straight through
+        to the same fate. An invalid explicit setting warns loudly rather
+        than being silently ignored: the operator set it on purpose, so a
+        quiet fall-through to a different PATH binary masks the typo.
         """
         import os
 
         # Check environment variable
         env_cli = os.environ.get("CODEQL_CLI")
-        if env_cli and os.access(env_cli, os.X_OK):
-            return env_cli
+        if env_cli:
+            if os.path.isfile(env_cli) and os.access(env_cli, os.X_OK):
+                return env_cli
+            logger.warning(
+                "CODEQL_CLI=%r is not an executable file; "
+                "falling back to PATH lookup for 'codeql'",
+                env_cli,
+            )
 
         # Check PATH (shutil.which already requires X_OK)
         cli_path = shutil.which("codeql")

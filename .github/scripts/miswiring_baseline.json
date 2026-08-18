@@ -449,9 +449,6 @@
   "dead:dead_function:packages/checker_synthesis/synthesise.py:_validate_cocci_body": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
-  "dead:dead_function:packages/diagram/sanitize.py:detect_id_collisions": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_binary_exploitability": {
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
   },

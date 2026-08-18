@@ -20,7 +20,7 @@ from . import (
     flow_trace,
     hypotheses,
 )
-from .sanitize import sanitize as _sanitize
+from .sanitize import detect_id_collisions, sanitize as _sanitize
 
 _FLOW_TRACE_GLOB = "flow-trace-*.json"
 
@@ -51,6 +51,47 @@ def _fence(diagram: str) -> str:
 def _err(exc: object) -> str:
     """One-line sanitised rendering of an exception for report prose."""
     return sanitise_string(" ".join(str(exc).split()), max_chars=300)
+
+
+def _id_collision_warning(data: object) -> str:
+    """Markdown warning when sanitized node IDs collapse distinct nodes.
+
+    ``sanitize_id`` deterministically maps every non-``[A-Za-z0-9_-]``
+    character to ``_``, so raw ids like ``foo!`` and ``foo?`` both
+    render as the single Mermaid node ``foo_`` — structural information
+    silently lost. Surface that next to the diagram so the operator
+    knows which input ids in attack-tree.json need disambiguation.
+    Raw ids are LLM-derived (untrusted); they go through the label
+    sanitizer before landing in report prose.
+    """
+    if not isinstance(data, dict):
+        return ""
+    raw_ids = [
+        n.get("id", "?") for n in data.get("nodes", [])
+        if isinstance(n, dict)
+    ]
+    root = data.get("root")
+    if root is not None:
+        raw_ids.append(root)
+    collisions = detect_id_collisions(raw_ids)
+    if not collisions:
+        return ""
+    shown = "; ".join(
+        "%s → `%s`" % (
+            ", ".join(
+                f"`{_sanitize(r, 40)}`" for r in sorted(set(raws))
+            ),
+            sanitized,
+        )
+        for sanitized, raws in collisions[:5]
+    )
+    more = "" if len(collisions) <= 5 else f" (+{len(collisions) - 5} more)"
+    return (
+        f"\n\n> Warning: {len(collisions)} node-ID collision(s) after "
+        f"sanitization — distinct source nodes render as one Mermaid "
+        f"node: {shown}{more}. Rename the colliding ids in "
+        f"`attack-tree.json` to disambiguate."
+    )
 
 
 def _provenance_note(data: object) -> str:
@@ -218,7 +259,8 @@ def render_directory(out_dir: Path, target: str | None = None) -> str:
                 hypotheses=hyp_data,
             )
             body = (f"_Source: `attack-tree.json`_{note}{_provenance_note(data)}"
-                    f"\n\n```mermaid\n{_fence(diagram)}\n```")
+                    f"\n\n```mermaid\n{_fence(diagram)}\n```"
+                    f"{_id_collision_warning(data)}")
             sections.append(_section("Attack Tree", body))
         except Exception as exc:  # noqa: BLE001
             sections.append(_section("Attack Tree", f"> Could not render `attack-tree.json`: {_err(exc)}"))

@@ -305,9 +305,6 @@
   "artifacts:write_only_artifact::rule.yml": {
    "note": "generated Semgrep rule artifact for operator inspection / external semgrep invocation"
   },
-  "artifacts:write_only_artifact::sage_precall_validation.json": {
-   "note": "write side of the /validate SAGE precall: raptor-validation-helper stage 0 dumps recall_context_for_validation() output; no reader \u2014 the /validate skill instructions never reference it, and the parallel agentic precall chain (sage_precall_scan.json reader + --sage-precall forwarding) was removed (test_agentic_dead_plumbing pins it out); wire a stage reader or drop the dump"
-  },
   "artifacts:write_only_artifact::sarif_merge.stderr.log": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },

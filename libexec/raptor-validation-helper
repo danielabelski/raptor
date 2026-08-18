@@ -526,6 +526,29 @@ def prepare_A(workdir, target=None):
         for pt in priority_targets:
             print(f"  {pt.get('entry_point')} → {pt.get('sink')}: {pt.get('missing_boundary')}")
 
+    # Surface prior SAGE validation memories (stage-0 recall dump).
+    # Hint-only priors per core.sage.hooks.recall_context_for_validation:
+    # a prior verdict says where to look first, a prior disproven
+    # hypothesis says what failed before — every hint is re-verified
+    # against current code, never imported as a finding. Only rows the
+    # row-MAC verifies as minted by this install have their content
+    # echoed; unverified recall text is counted, not printed.
+    sage_rows = load_json(Path(workdir) / "sage_precall_validation.json")
+    if isinstance(sage_rows, list) and sage_rows:
+        verified = [
+            r for r in sage_rows
+            if isinstance(r, dict) and r.get("mac_verified")
+        ]
+        print(
+            f"SAGE recall: {len(sage_rows)} prior validation memories "
+            f"({len(verified)} MAC-verified) — hint-only, re-verify "
+            f"against current code"
+        )
+        for row in verified[:8]:
+            content = " ".join(str(row.get("content", "")).split())[:160]
+            if content:
+                print(f"  [prior] {content}")
+
     # Discover existing binaries and build PoCs for standalone C files
     if target:
         build_dir = Path(workdir) / "build"
@@ -1746,6 +1769,15 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
         if sage_memories:
             from core.json import save_json
             save_json(out_dir / "sage_precall_validation.json", sage_memories)
+            n_verified = sum(
+                1 for r in sage_memories
+                if isinstance(r, dict) and r.get("mac_verified")
+            )
+            print(
+                f"SAGE recall: {len(sage_memories)} prior validation "
+                f"memories ({n_verified} MAC-verified) → "
+                f"sage_precall_validation.json (surfaced by stage A prep)"
+            )
 
     from core.run.metadata import fail_run
     try:

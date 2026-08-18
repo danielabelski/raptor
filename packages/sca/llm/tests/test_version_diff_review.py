@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from packages.sca.llm.schemas import VersionDiffVerdict
 from packages.sca.llm.version_diff_review import (
     _archive_url,
     _diff_trees,
     _extract_text_files,
+    review_version_diff,
 )
 from packages.sca.models import Confidence, Dependency, PinStyle
+from packages.sca.supply_chain.version_diff_sinks import (
+    SinkChange,
+    VersionDiffSinkResult,
+)
 
 
 def _make_dep(
@@ -222,3 +229,141 @@ class TestExtractionBudgets:
         files = _extract_text_files(data, "PyPI")
         assert files is not None
         assert "main.py" in files
+
+
+class TestSinkAnalysisWiring:
+    """Mechanical sink evidence flows into the prompt and the result;
+    analyzer failure never blocks the review."""
+
+    _OLD_TREE = {
+        "lib/util.py": "def run(cmd, ok):\n    if ok:\n        eval(cmd)\n",
+    }
+    _NEW_TREE = {
+        "lib/util.py": "def run(cmd):\n    eval(cmd)\n",
+    }
+
+    @staticmethod
+    def _verdict() -> VersionDiffVerdict:
+        return VersionDiffVerdict(
+            verdict="suspicious",
+            confidence="medium",
+            changelog_consistent=False,
+            summary="Guard dropped around eval",
+        )
+
+    @staticmethod
+    def _sink_result() -> VersionDiffSinkResult:
+        return VersionDiffSinkResult(
+            added_sinks=[],
+            removed_sinks=[],
+            guard_changes=[
+                SinkChange(
+                    "lib/util.py", "eval", 2, "guard_removed",
+                    guard_count_old=1, guard_count_new=0,
+                    was_unconditional=False, is_unconditional=True,
+                ),
+            ],
+        )
+
+    @patch("packages.sca.llm.version_diff_review.run_stage")
+    @patch(
+        "packages.sca.supply_chain.version_diff_sinks"
+        ".analyze_version_diff_sinks"
+    )
+    @patch("packages.sca.llm.version_diff_review._build_diff")
+    def test_sink_evidence_in_prompt_and_result(
+        self, mock_build, mock_analyze, mock_run_stage,
+    ):
+        mock_build.return_value = (
+            "--- diff ---", self._OLD_TREE, self._NEW_TREE,
+        )
+        mock_analyze.return_value = self._sink_result()
+        mock_run_stage.return_value = MagicMock(
+            error=None, model=self._verdict(), preflight_hit=False,
+        )
+
+        result = review_version_diff(
+            MagicMock(),
+            _make_dep(version="1.0.0"),
+            _make_dep(version="1.1.0"),
+            MagicMock(),
+        )
+
+        assert result is not None
+        verdict, sink_changes = result
+        assert verdict.verdict == "suspicious"
+        assert sink_changes is not None
+        assert sink_changes["total_changes"] == 1
+        assert (
+            sink_changes["guard_changes"][0]["change_type"]
+            == "guard_removed"
+        )
+        assert "1 guard(s) removed" in sink_changes["summary"]
+
+        mock_analyze.assert_called_once_with(self._OLD_TREE, self._NEW_TREE)
+        blocks = mock_run_stage.call_args.kwargs["untrusted_blocks"]
+        sink_blocks = [b for b in blocks if b.kind == "SINK_DIFF"]
+        assert len(sink_blocks) == 1
+        assert "guard_removed" in sink_blocks[0].content
+        assert "eval" in sink_blocks[0].content
+
+    @patch("packages.sca.llm.version_diff_review.run_stage")
+    @patch(
+        "packages.sca.supply_chain.version_diff_sinks"
+        ".analyze_version_diff_sinks"
+    )
+    @patch("packages.sca.llm.version_diff_review._build_diff")
+    def test_analyzer_failure_review_still_runs(
+        self, mock_build, mock_analyze, mock_run_stage,
+    ):
+        mock_build.return_value = (
+            "--- diff ---", self._OLD_TREE, self._NEW_TREE,
+        )
+        mock_analyze.side_effect = RuntimeError("parser exploded")
+        mock_run_stage.return_value = MagicMock(
+            error=None, model=self._verdict(), preflight_hit=False,
+        )
+
+        result = review_version_diff(
+            MagicMock(),
+            _make_dep(version="1.0.0"),
+            _make_dep(version="1.1.0"),
+            MagicMock(),
+        )
+
+        assert result is not None
+        verdict, sink_changes = result
+        assert verdict.verdict == "suspicious"
+        assert sink_changes is None
+        blocks = mock_run_stage.call_args.kwargs["untrusted_blocks"]
+        assert not [b for b in blocks if b.kind == "SINK_DIFF"]
+
+    @patch("packages.sca.llm.version_diff_review.run_stage")
+    @patch(
+        "packages.sca.supply_chain.version_diff_sinks"
+        ".analyze_version_diff_sinks"
+    )
+    @patch("packages.sca.llm.version_diff_review._build_diff")
+    def test_empty_sink_result_omits_block(
+        self, mock_build, mock_analyze, mock_run_stage,
+    ):
+        mock_build.return_value = (
+            "--- diff ---", self._OLD_TREE, self._NEW_TREE,
+        )
+        mock_analyze.return_value = VersionDiffSinkResult([], [], [])
+        mock_run_stage.return_value = MagicMock(
+            error=None, model=self._verdict(), preflight_hit=False,
+        )
+
+        result = review_version_diff(
+            MagicMock(),
+            _make_dep(version="1.0.0"),
+            _make_dep(version="1.1.0"),
+            MagicMock(),
+        )
+
+        assert result is not None
+        _, sink_changes = result
+        assert sink_changes is None
+        blocks = mock_run_stage.call_args.kwargs["untrusted_blocks"]
+        assert not [b for b in blocks if b.kind == "SINK_DIFF"]

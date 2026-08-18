@@ -286,34 +286,36 @@ def _detect_guard_changes(
     if old_total == new_total and old_uncond == new_uncond:
         return
 
-    if new_total > old_total or (old_uncond > 0 and new_uncond == 0):
-        representative = new_guards[0]
+    # Unconditional-count movement outranks raw guard totals: a call
+    # site losing its sole guard is a removal even when another
+    # (guarded) call site pushes the aggregate guard count up, and
+    # vice versa for a site gaining its first guard.
+    if new_uncond > old_uncond:
+        change_type = "guard_removed"
+    elif new_uncond < old_uncond:
+        change_type = "guard_added"
+    elif new_total > old_total:
+        change_type = "guard_added"
+    else:
+        change_type = "guard_removed"
+
+    representative = new_guards[0]
+    categories: list[str] = []
+    if change_type == "guard_added":
         categories = sorted(
             {g.category for sg in new_guards for g in sg.guards}
         )
-        out.append(SinkChange(
-            file_path=file_path,
-            sink_api=api,
-            line=representative.sink_line,
-            change_type="guard_added",
-            guard_count_old=old_total,
-            guard_count_new=new_total,
-            was_unconditional=old_uncond > 0,
-            is_unconditional=new_uncond > 0,
-            guard_categories=categories,
-        ))
-    elif new_total < old_total or (old_uncond == 0 and new_uncond > 0):
-        representative = new_guards[0]
-        out.append(SinkChange(
-            file_path=file_path,
-            sink_api=api,
-            line=representative.sink_line,
-            change_type="guard_removed",
-            guard_count_old=old_total,
-            guard_count_new=new_total,
-            was_unconditional=old_uncond > 0,
-            is_unconditional=new_uncond > 0,
-        ))
+    out.append(SinkChange(
+        file_path=file_path,
+        sink_api=api,
+        line=representative.sink_line,
+        change_type=change_type,
+        guard_count_old=old_total,
+        guard_count_new=new_total,
+        was_unconditional=old_uncond > 0,
+        is_unconditional=new_uncond > 0,
+        guard_categories=categories,
+    ))
 
 
 __all__ = [

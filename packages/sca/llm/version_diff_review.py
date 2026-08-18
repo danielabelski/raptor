@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import difflib
 import io
+import json
 import logging
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from core.http import HttpClient
 from core.llm.task_types import TaskType
@@ -44,6 +46,10 @@ logger = logging.getLogger(__name__)
 _MAX_ARCHIVE_BYTES = 50 * 1024 * 1024  # 50 MB
 _MAX_DIFF_CHARS = 200_000               # ~200 KB to the LLM
 _MAX_FILE_SIZE = 512 * 1024             # skip files > 512 KB in diff
+# Bounds the sink-diff payload injected into the prompt and the
+# findings evidence record; ``total_changes`` still reflects the
+# untruncated count.
+_MAX_SINK_CHANGES_PER_KIND = 50
 # Aggregate extraction budget: the per-member cap alone doesn't bound
 # the sum, so many just-under-cap members (or millions of tiny ones)
 # could still exhaust memory. Either limit aborts the extraction.
@@ -84,15 +90,21 @@ def review_version_diff(
     new_dep: Dependency,
     http: HttpClient,
     changelog: str = "",
-) -> VersionDiffVerdict | None:
+) -> tuple[VersionDiffVerdict, dict[str, Any] | None] | None:
     """Diff two versions of a package and ask the LLM for a verdict.
 
-    Returns ``None`` when archives can't be fetched or the LLM is
-    unavailable — the caller falls back to mechanical-only analysis.
+    Returns ``(verdict, sink_changes)`` where ``sink_changes`` is the
+    mechanical sink-diff evidence dict (``None`` when the analyzer is
+    unavailable or found nothing).  Returns ``None`` when archives
+    can't be fetched or the LLM is unavailable — the caller falls
+    back to mechanical-only analysis.
     """
-    diff_text = _build_diff(old_dep, new_dep, http)
-    if diff_text is None:
+    built = _build_diff(old_dep, new_dep, http)
+    if built is None:
         return None
+    diff_text, old_files, new_files = built
+
+    sink_evidence = _sink_diff_evidence(old_files, new_files)
 
     slots = {
         "package_name": TaintedString(value=new_dep.name, trust="untrusted"),
@@ -109,6 +121,17 @@ def review_version_diff(
                    f"{old_dep.version}→{new_dep.version}",
         ),
     ]
+    if sink_evidence is not None:
+        blocks.append(UntrustedBlock(
+            content=(
+                "Mechanical sink analysis of this version diff "
+                "(added/removed dangerous calls and guard changes):\n"
+                + json.dumps(sink_evidence, indent=2)
+            ),
+            kind="SINK_DIFF",
+            origin=f"{new_dep.ecosystem}/{new_dep.name} "
+                   f"{old_dep.version}→{new_dep.version} sink analysis",
+        ))
     if changelog:
         blocks.append(UntrustedBlock(
             content=changelog[:10_000],
@@ -136,7 +159,7 @@ def review_version_diff(
     verdict: VersionDiffVerdict = result.model  # type: ignore[assignment]
     if result.preflight_hit and verdict.confidence == "high":
         verdict = verdict.model_copy(update={"confidence": "medium"})
-    return verdict
+    return verdict, sink_evidence
 
 
 # ------------------------------------------------------------------
@@ -147,8 +170,12 @@ def _build_diff(
     old_dep: Dependency,
     new_dep: Dependency,
     http: HttpClient,
-) -> str | None:
-    """Download, extract, and diff two package versions."""
+) -> tuple[str, dict[str, str], dict[str, str]] | None:
+    """Download, extract, and diff two package versions.
+
+    Returns ``(diff_text, old_files, new_files)`` — the file trees
+    feed the mechanical sink analysis alongside the raw diff.
+    """
     if not old_dep.version or not new_dep.version:
         return None
 
@@ -157,7 +184,37 @@ def _build_diff(
     if old_files is None or new_files is None:
         return None
 
-    return _diff_trees(old_files, new_files)
+    return _diff_trees(old_files, new_files), old_files, new_files
+
+
+def _sink_diff_evidence(
+    old_files: dict[str, str],
+    new_files: dict[str, str],
+) -> dict[str, Any] | None:
+    """Mechanical sink diff between the two version trees.
+
+    Graceful: any analyzer failure — or an empty result — returns
+    ``None`` and the review proceeds on the raw diff alone.
+    """
+    try:
+        from ..supply_chain.version_diff_sinks import (
+            analyze_version_diff_sinks,
+        )
+        result = analyze_version_diff_sinks(old_files, new_files)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "sca.llm.version_diff: sink analysis failed", exc_info=True,
+        )
+        return None
+    if result.total_changes == 0:
+        return None
+
+    evidence = result.to_dict()
+    evidence["summary"] = result.summary_line()
+    for key in ("added_sinks", "removed_sinks", "guard_changes"):
+        if len(evidence[key]) > _MAX_SINK_CHANGES_PER_KIND:
+            evidence[key] = evidence[key][:_MAX_SINK_CHANGES_PER_KIND]
+    return evidence
 
 
 def _download_and_extract(

@@ -182,6 +182,42 @@ def _load_override_config() -> list[str] | None:
     return result or None
 
 
+def _profile_config_region() -> str | None:
+    """Region from the profile's shared-config entry.
+
+    botocore when available (full chain semantics: profile
+    inheritance, credential-file merging); otherwise a minimal stdlib
+    configparser read of the same file — the AWS shared config is INI,
+    and the common ``[profile X] / region = ...`` shape needs no SDK.
+    botocore is optional (parent-only), so proxy-policy hosts must not
+    silently lose profile-region resolution without it.
+    """
+    profile = os.environ.get("AWS_PROFILE")
+    try:
+        import botocore.session
+        return botocore.session.Session(
+            profile=profile,
+        ).get_config_variable("region")
+    except ImportError:
+        pass
+    except Exception:  # noqa: BLE001 — unreadable/malformed config
+        return None
+    import configparser
+    path = os.environ.get("AWS_CONFIG_FILE") or os.path.expanduser(
+        "~/.aws/config",
+    )
+    section = (
+        f"profile {profile}" if profile and profile != "default"
+        else "default"
+    )
+    try:
+        cp = configparser.ConfigParser()
+        cp.read(path)  # missing file → empty parser, not an error
+        return cp.get(section, "region", fallback=None)
+    except (configparser.Error, OSError):
+        return None
+
+
 def _bedrock_hosts() -> list[str]:
     region = (
         os.environ.get("AWS_REGION")
@@ -189,18 +225,11 @@ def _bedrock_hosts() -> list[str]:
     )
     if not region:
         # Claude Code resolves its region through the full AWS chain
-        # (env, then the profile's shared-config entry), which this
-        # sandbox-policy module can't fully replicate without botocore.
-        # Try the profile's config-file region; fall back to us-east-1
-        # with a loud log rather than silently — a wrong guess here
-        # surfaces as an opaque proxy denial inside the CC child.
-        try:
-            import botocore.session
-            region = botocore.session.Session(
-                profile=os.environ.get("AWS_PROFILE"),
-            ).get_config_variable("region")
-        except Exception:  # noqa: BLE001 — botocore optional
-            region = None
+        # (env, then the profile's shared-config entry). Try the
+        # profile's config-file region; fall back to us-east-1 with a
+        # loud log rather than silently — a wrong guess here surfaces
+        # as an opaque proxy denial inside the CC child.
+        region = _profile_config_region()
         if not region:
             region = "us-east-1"
             logger.warning(

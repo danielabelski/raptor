@@ -790,3 +790,44 @@ class TestBedrockMantle:
         assert _hostname_in(
             hosts, "bedrock-runtime.eu-central-1.amazonaws.com",
         )
+
+    def test_profile_region_resolved_without_botocore(
+        self, isolated_env, no_override_config, no_calibrate, tmp_path,
+        monkeypatch,
+    ):
+        """botocore is optional — the shared config file is plain INI,
+        so profile-region resolution must survive on a botocore-less
+        host via the stdlib configparser fallback (simulated here by
+        forcing the import to fail)."""
+        import sys
+        monkeypatch.setitem(sys.modules, "botocore", None)
+        monkeypatch.setitem(sys.modules, "botocore.session", None)
+        config = tmp_path / "aws-config"
+        config.write_text(
+            "[profile bedrock-access]\nregion = eu-central-1\n",
+        )
+        isolated_env.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        isolated_env.setenv("AWS_PROFILE", "bedrock-access")
+        isolated_env.setenv("AWS_CONFIG_FILE", str(config))
+        hosts = proxy_hosts_for_cc_dispatch()
+        assert _hostname_in(
+            hosts, "bedrock-runtime.eu-central-1.amazonaws.com",
+        )
+
+    def test_default_profile_region_resolved_without_botocore(
+        self, isolated_env, no_override_config, no_calibrate, tmp_path,
+        monkeypatch,
+    ):
+        """The default profile lives in a bare [default] section (no
+        'profile ' prefix) — the textual fallback must read it too."""
+        import sys
+        monkeypatch.setitem(sys.modules, "botocore", None)
+        monkeypatch.setitem(sys.modules, "botocore.session", None)
+        config = tmp_path / "aws-config"
+        config.write_text("[default]\nregion = eu-west-3\n")
+        isolated_env.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        isolated_env.setenv("AWS_CONFIG_FILE", str(config))
+        hosts = proxy_hosts_for_cc_dispatch()
+        assert _hostname_in(
+            hosts, "bedrock-runtime.eu-west-3.amazonaws.com",
+        )

@@ -11,6 +11,49 @@ fetched at pinned refs into `out/audit-corpus-fixtures/<repo_key>`.
 Labels are not distributed with this tree; they are supplied locally
 under `labels/<bug_class>/`.
 
+## Run profiles: cold (default) measures raw capability
+
+Corpus runs measure **raw first-time-user capability** by default.
+The membership test for anything feeding a corpus verdict: *would a
+first-time user, default flags, cold caches, get this input?*
+Accumulated knowledge fails that test, so `--profile cold` (the
+default) turns off every such channel: IRIS (spec synthesis,
+sink-store reads, refinement with its prior-spec store reads,
+assumption passes), SAGE recall, graduated-rule library replay,
+cross-run verdict/journal import, prior domain-model import, and
+annotation reads. What stays on: the **in-run** study pass (a fresh
+concept index built from the target — `study`-mechanism labels still
+attribute), in-run on-demand checker synthesis, and every store
+*write*. Each disabled channel logs one
+`profile=cold: <channel> disabled` line at run start, so a run's log
+states its own regime.
+
+`--profile deployed` leaves every channel on — today's production
+behaviour — for accumulation comparisons (how much do the knowledge
+stores actually buy?). The profile is recorded in `results.json`
+meta and in the run-history header; records predating the field read
+as `deployed` (all channels were on back then). The history CLI
+never groups or silently compares across profiles.
+
+## Group budgets
+
+Each source group's audit runs under a cost cap that scales with the
+group's label weight instead of a flat ceiling:
+
+```
+max_cost = min(BASE + PER_LABEL * n_labels, CAP)      # 30 + 8n, cap 240
+```
+
+The base covers the per-group prep the orchestrator runs once
+(checklist, mechanical passes, study, summaries); each pinned label
+adds headroom for its review chain. Anchor: a 15-label group
+reproduces the historical flat $150 cap. On top of the cap, a
+review reserve (35% of the group budget) is held on the budget
+client until the review loop starts, so the pre-review bulk passes
+can never starve the labels — the same mechanism the deepen phase
+uses to fence its re-reviews. Constants live at the top of
+`run_corpus.py` (`GROUP_BUDGET_*`, `GROUP_REVIEW_RESERVE_FRACTION`).
+
 ## Running
 
 ```
@@ -68,6 +111,31 @@ with `corpus_metrics`:
    `mode`; ensemble runs via `security_actual` / `bug_first_actual`).
    Unexercised modes are never guessed.
 
+## Iterating on a detector (--label refires)
+
+The inner loop when improving a detector or verifier is *fix →
+refire the affected label(s) → read the flip* — never a full corpus
+run. `--label` is repeatable and composes with `--class`:
+
+```
+python3 -m core.audit.corpus.run_corpus \
+    --label '<file>:<function>' --label '<file2>:<function2>' \
+    --output refire-v2.json
+```
+
+After the run records to history, a **refire delta block** prints
+one line per refired label against its latest prior history record:
+verdict flips are phrased with the flip class
+(`clean -> finding (expected finding) — IMPROVED, now matches
+[vs <prior run>]`), unchanged labels say so (`still mismatched`),
+and first-ever labels are called out (`no prior history`). Give each
+refire its own `--output` path — the run id derives from it, and a
+reused path merges the two runs' records (deltas then degrade to
+"unchanged" instead of comparing). Subset runs are stamped with a
+`selection` field in their history header so `compare` warns instead
+of misreading a 3-label refire as a full-run regression. Run the
+full corpus only at milestones.
+
 ## Fix-and-rerun loop (--label + --splice)
 
 A run that errors on a few labels does not need a full (expensive)
@@ -106,15 +174,23 @@ temporary path. A write failure warns and never fails the run.
 
 The run header carries the run id, timestamp, the pipeline tree sha
 (`git rev-parse HEAD^{tree}` of the checkout the runner executed
-from), config (mode / triage / prefilter / model / scope / splice), a
-hash of the label set (sorted `function_id:span_sha`), recomputed
-gate outcomes, totals, and cost. Label records carry expected/actual
-status, match, the attribution cell, observed mechanisms,
-error_reason, cost, and duration.
+from), the knowledge **profile** (`cold` / `deployed`; records
+predating the field read as `deployed`), the **selection** (`full`
+or the `--class`/`--label` refire subset), config (mode / triage /
+prefilter / model / scope / splice), a hash of the label set (sorted
+`function_id:span_sha`), recomputed gate outcomes, totals, and cost.
+Label records carry expected/actual status, match, the attribution
+cell, observed mechanisms, error_reason, cost, and duration.
+Stability grouping keys on (tree, profile, config) — a cold run
+never shares a nondeterminism group with a deployed run — and
+`compare` warns when profiles differ or when either side is a
+selective refire.
 
 **Reporting-only, by design**: nothing in the audit/corpus pipeline
-reads this store to alter behavior — the read side is exclusively the
-history CLI:
+reads this store to alter behavior — the read side is the history
+CLI plus one post-run operator report (the refire delta block, which
+prints after results.json and the store are already final and feeds
+nothing back):
 
 ```
 python3 -m core.audit.corpus.history runs

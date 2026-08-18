@@ -2361,6 +2361,12 @@ class AnthropicProvider(LLMProvider):
             )
             logger.debug("AnthropicProvider: direct SDK (no dispatcher)")
 
+        # Repair instructor's reask assembly before first use: a
+        # completion carrying PARALLEL tool_use blocks otherwise
+        # retries with unpaired ids and dies on a 400 (see
+        # core.llm.instructor_reask).
+        from core.llm.instructor_reask import ensure_anthropic_reask_pairing
+        ensure_anthropic_reask_pairing()
         self._init_instructor(lambda: instructor.from_anthropic(self.client))
 
         # Per-instance flag: have we warned about silent cache-failure

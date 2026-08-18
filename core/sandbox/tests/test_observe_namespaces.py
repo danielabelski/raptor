@@ -37,7 +37,10 @@ pytestmark = [
             "ptrace tracer) — see core/sandbox/_macos_spawn.py for the macOS path"
         ),
     ),
-    # Real ptrace + real subprocess + real namespace isolation. 20s test.
+    # Real ptrace + real subprocess + real namespace isolation.
+    # (Runs in under a second since the tracer's event-driven wait
+    # loop landed; the battery-visible latency regression pin lives
+    # in test_tracer_wait_loop.py.)
     pytest.mark.integration,
 ]
 

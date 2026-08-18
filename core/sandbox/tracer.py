@@ -164,6 +164,13 @@ _NEW_TRACEE_EVENTS = frozenset((
     _PTRACE_EVENT_FORK, _PTRACE_EVENT_VFORK, _PTRACE_EVENT_CLONE,
 ))
 
+# Watchdog cadence for the tracer wait loop. This bounds how quickly
+# the tracer notices its parent died (and exits); it does NOT bound
+# event latency — with SIGCHLD blocked, ``_idle_wait_for_sigchld``
+# wakes the instant a tracee changes state, so a pending ptrace stop
+# is serviced immediately rather than on the next tick.
+_IDLE_TICK_S = 0.2
+
 # Per-record cap moved to core.sandbox.audit_budget.AuditBudget so
 # the macOS seatbelt LogStreamer and Linux ptrace tracer share one
 # budget mechanism. See audit_budget.DEFAULT_GLOBAL_CAP for the
@@ -1159,6 +1166,51 @@ def _signal_ready(sync_fd: int | None) -> None:
             pass
 
 
+def _idle_wait_for_sigchld(tick_s: float) -> None:
+    """Wait up to ``tick_s`` for a child state change; return early
+    the instant one arrives.
+
+    Caller contract: SIGCHLD must be BLOCKED (``pthread_sigmask``)
+    before the preceding ``waitpid(WNOHANG)`` drain. A tracee state
+    change raised between that drain and this call leaves SIGCHLD
+    pending, so ``sigtimedwait`` returns immediately — no lost-wakeup
+    race, no missed ptrace stop.
+
+    Why this exists (the Landlock-only observe "hang"): the wait loop
+    used a plain ``time.sleep(0.05)`` when no event was ready. A
+    tracee stopped by SCMP_ACT_TRACE stays FROZEN until the tracer
+    wakes and PTRACE_CONTs it, so every traced syscall cost up to one
+    full tick — ~20 syscalls/sec. The Landlock-only spawn path wraps
+    commands in the Python pid1-shim whose interpreter startup alone
+    is ~200 traced syscalls: 10+ seconds of wall clock for
+    ``/usr/bin/true``, blowing every caller timeout and presenting as
+    "drain never sees pipe EOF". sigtimedwait keeps the bounded-tick
+    watchdog behaviour while making event wakeups immediate.
+
+    One pending SIGCHLD may coalesce many child state changes —
+    that's fine, the caller re-drains with ``waitpid(WNOHANG)`` until
+    it returns "no event" after every wakeup.
+
+    A tick expiry or EINTR is not an error: the caller re-checks its
+    watchdog and re-drains. Falls back to a plain sleep if
+    sigtimedwait is unavailable (non-Linux — testing paths only; the
+    tracer itself is Linux-only).
+    """
+    sigtimedwait = getattr(signal, "sigtimedwait", None)
+    if sigtimedwait is None:
+        time.sleep(tick_s)
+        return
+    try:
+        sigtimedwait({signal.SIGCHLD}, tick_s)
+    except InterruptedError:
+        pass
+    except (OSError, ValueError):
+        # Defensive: a broken sigtimedwait must degrade to the old
+        # fixed-tick poll, never crash the tracer (EXITKILL would
+        # take the whole traced tree down with it).
+        time.sleep(tick_s)
+
+
 def trace(target_pid: int, run_dir: Path,
           sync_fd: int | None = None,
           audit_filter: dict | None = None) -> int:
@@ -1279,64 +1331,85 @@ def trace(target_pid: int, run_dir: Path,
     # Parent-death watchdog. The tracer subprocess has a parent
     # (cve-diff / sandbox spawn / etc.); if that parent dies abnormally,
     # the tracer should exit rather than continue running orphaned. We
-    # poll `os.getppid()` between WNOHANG-waitpids; if it ever returns 1
-    # (re-parented to init / pid namespace init), bail. WNOHANG + sleep
-    # is mandatory for the watchdog to fire — a blocking `waitpid(-1, 0)`
-    # could sit forever waiting for a tracee event that may never come
-    # (uninterruptible-sleep tracee).
+    # check `os.getppid()` on an _IDLE_TICK_S wall-clock cadence; if it
+    # ever changes / returns 1 (re-parented to init / pid-ns init),
+    # bail. A bare blocking `waitpid(-1, 0)` could sit forever waiting
+    # for a tracee event that may never come (uninterruptible-sleep
+    # tracee), so idle waits are tick-bounded — but event-driven:
+    # SIGCHLD is blocked and _idle_wait_for_sigchld wakes immediately
+    # on a tracee state change, so a pending SCMP_ACT_TRACE stop never
+    # waits for the tick (a sleep-per-event here froze the target to
+    # ~20 syscalls/sec and presented as the Landlock-only observe
+    # hang; see _idle_wait_for_sigchld).
     initial_ppid = os.getppid()
+    next_ppid_check = time.monotonic() + _IDLE_TICK_S
+    old_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK, {signal.SIGCHLD},
+    )
+    try:
+        while traced:
+            # Watchdog on a wall-clock schedule, not only on idle
+            # ticks: a tracee event storm (busy multi-process build)
+            # would otherwise starve the parent-liveness check for
+            # its whole duration.
+            now = time.monotonic()
+            if now >= next_ppid_check:
+                next_ppid_check = now + _IDLE_TICK_S
+                current_ppid = os.getppid()
+                if current_ppid != initial_ppid or current_ppid == 1:
+                    logger.warning(
+                        f"tracer: parent died (ppid was {initial_ppid}, "
+                        f"now {current_ppid}); exiting"
+                    )
+                    return 0
 
-    while traced:
-        try:
-            # waitpid(-1) catches events from ANY tracee — required for
-            # multi-process / multi-thread audit. ptrace re-parents
-            # tracees to the tracer for waitpid purposes, so this works
-            # even though target_pid wasn't biologically forked by us.
-            #
-            # Assumption: this tracer process has NO biological children
-            # of its own. That's true today (the tracer is invoked as
-            # a Python -m subprocess that doesn't fork). If a future
-            # change adds bio children to the tracer, waitpid(-1) would
-            # also pick up their events and this loop would treat them
-            # as tracees (`traced.discard(wpid)` would be silent no-op
-            # for the unrelated bio child, but the SIGSTOP-based add
-            # in the dispatch below would mistakenly add them to the
-            # traced set). Adjust the wait pattern (e.g. switch to
-            # waitid with P_PID per known tracee) if that day comes.
-            wpid, status = os.waitpid(-1, os.WNOHANG)
-        except InterruptedError:
-            continue
-        except ChildProcessError:
-            # All tracees gone — clean exit.
-            return 0
-        except OSError as e:
-            logger.error("tracer: waitpid failed: %s", e)
-            return 4
-
-        if wpid == 0:
-            # No event ready. Check parent liveness, then sleep briefly
-            # so the loop doesn't busy-spin. Sleep is short enough that
-            # event latency stays tight (records still appear within
-            # ~50ms of the syscall) but long enough to keep CPU usage
-            # near zero when the workload is idle.
-            current_ppid = os.getppid()
-            if current_ppid != initial_ppid or current_ppid == 1:
-                logger.warning(
-                    f"tracer: parent died (ppid was {initial_ppid}, "
-                    f"now {current_ppid}); exiting"
-                )
+            try:
+                # waitpid(-1) catches events from ANY tracee — required for
+                # multi-process / multi-thread audit. ptrace re-parents
+                # tracees to the tracer for waitpid purposes, so this works
+                # even though target_pid wasn't biologically forked by us.
+                #
+                # Assumption: this tracer process has NO biological children
+                # of its own. That's true today (the tracer is invoked as
+                # a Python -m subprocess that doesn't fork). If a future
+                # change adds bio children to the tracer, waitpid(-1) would
+                # also pick up their events and this loop would treat them
+                # as tracees (`traced.discard(wpid)` would be silent no-op
+                # for the unrelated bio child, but the SIGSTOP-based add
+                # in the dispatch below would mistakenly add them to the
+                # traced set). Adjust the wait pattern (e.g. switch to
+                # waitid with P_PID per known tracee) if that day comes.
+                wpid, status = os.waitpid(-1, os.WNOHANG)
+            except InterruptedError:
+                continue
+            except ChildProcessError:
+                # All tracees gone — clean exit.
                 return 0
-            time.sleep(0.05)
-            continue
+            except OSError as e:
+                logger.error("tracer: waitpid failed: %s", e)
+                return 4
 
-        _handle_waitpid_event(
-            wpid, status, traced, target_pid, arch_info,
-            run_dir, budget,
-            audit_filter=audit_filter,
-            output_filename=_filename,
-            mode_field=_mode_field,
-            observe_nonce=_observe_nonce,
-        )
+            if wpid == 0:
+                # No event ready. Wait for the next SIGCHLD (returns
+                # immediately if one is already pending), bounded by
+                # the watchdog tick.
+                _idle_wait_for_sigchld(_IDLE_TICK_S)
+                continue
+
+            _handle_waitpid_event(
+                wpid, status, traced, target_pid, arch_info,
+                run_dir, budget,
+                audit_filter=audit_filter,
+                output_filename=_filename,
+                mode_field=_mode_field,
+                observe_nonce=_observe_nonce,
+            )
+    finally:
+        # Restore the caller's signal mask — trace() is also invoked
+        # in-process by tests; leaking a blocked SIGCHLD out of this
+        # frame would be a side effect they didn't sign up for. The
+        # production tracer process exits right after anyway.
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
     # End-of-run summary record so the sandbox-summary aggregator
     # has total/dropped counts even when the run didn't hit any cap.

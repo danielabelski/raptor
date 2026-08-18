@@ -275,6 +275,11 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "dark_verify": True,
     },
     # Use-after-free / double-free
+    # CWE-416 keeps its full entry; the ptr_lifecycle channel joins
+    # its fallback chain additively (ptr_lifecycle.PTR_LIFECYCLE_CWES
+    # — the alias-hop class the flow tools miss; the consistency-
+    # joins-CWE-252 precedent). dark_verify eligibility doubles as
+    # the channel's dynamic-receipt escalator.
     "CWE-416": {
         "smt": "check-early-release",
         "cocci": "use_after_free.cocci",
@@ -284,6 +289,15 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
                   "kfree_sensitive", "devm_kfree"],
         "dark_verify": True,
     },
+    # Expired-pointer dereference / operation-after-release — the
+    # alias-hop lifecycle family. Channel-owned: the ptr_lifecycle
+    # channel (fallback chain, see
+    # ptr_lifecycle.PTR_LIFECYCLE_CWES) is the verifier; no stock
+    # tool adjudicates the cached-alias hop.
+    "CWE-825": {"smt": None, "cocci": None, "joern": False,
+                "codeql": None, "sinks": []},
+    "CWE-672": {"smt": None, "cocci": None, "joern": False,
+                "codeql": None, "sinks": []},
     "CWE-415": {
         "smt": "check-early-release",
         "cocci": "double_free.cocci",
@@ -306,6 +320,10 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # CWE-667 keeps its smt/cocci entry (lock-imbalance leg); the
+    # lock_region channel joins its fallback chain additively
+    # (lock_region.LOCK_REGION_CWES — the invoke-callback-while-held
+    # leg).
     "CWE-667": {
         "smt": "check-lock-discipline",
         "cocci": "lock_imbalance.cocci",
@@ -313,6 +331,12 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # Deadlock — channel-owned: the lock_region channel (fallback
+    # chain, see lock_region.LOCK_REGION_CWES) adjudicates the
+    # callback-invoked-while-lock-held shape; blocking-call-under-lock
+    # stays typestate territory.
+    "CWE-833": {"smt": None, "cocci": None, "joern": False,
+                "codeql": None, "sinks": []},
     # Authentication / authorisation
     "CWE-287": {
         "smt": "check-auth-bypass",

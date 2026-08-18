@@ -274,20 +274,19 @@ class TestFormatting:
         assert len(all_) == 1
         assert "subhead" in got.body
 
-    def test_body_with_double_hash_in_code_block(self, tmp_path):
-        """Markdown ``## name`` inside a fenced code block would
-        false-positive as a new section. Acceptable limitation —
-        the format expects ``## name`` only at section starts. We
-        document the limitation by pinning the current behaviour:
-        no crash, may split the section."""
+    def test_body_with_double_hash_in_code_block_rejected(self, tmp_path):
+        """Markdown ``## name`` at line start — even inside a fenced
+        code block — would be re-parsed as a new section on read.
+        Historically this "may split the section" behaviour was pinned
+        as an acceptable limitation; it is now rejected at write time
+        because the same shape is the section-forgery primitive (a
+        crafted body fabricates a human-graded section). Operators
+        keep ``###`` and indentation for structured prose."""
         body = "```\n## not_really_a_section\n```\nreal content"
         ann = Annotation(file="x.py", function="f", body=body)
-        write_annotation(tmp_path, ann)
-        # Round-trip: we read whatever the regex sees. Pin that
-        # the original section's name + first line at minimum
-        # are recoverable.
-        all_ = read_file_annotations(tmp_path, "x.py")
-        assert any(a.function == "f" for a in all_)
+        with pytest.raises(ValueError, match="section heading"):
+            write_annotation(tmp_path, ann)
+        assert read_file_annotations(tmp_path, "x.py") == []
 
 
 # ---------------------------------------------------------------------------

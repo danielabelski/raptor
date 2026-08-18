@@ -501,9 +501,20 @@ def cmd_edit(opts: argparse.Namespace) -> int:
     base = _resolve_base(opts.base)
     path = annotation_path(base, opts.file)
     if not path.exists():
-        # Create an empty placeholder so $EDITOR has something to open.
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# {opts.file}\n\n## {opts.function}\n", encoding="utf-8")
+        # Create an empty placeholder section so $EDITOR has something
+        # to open. Route through write_annotation rather than a raw
+        # write_text: it validates the function name (a newline-bearing
+        # name would forge extra sections in the raw f-string), writes
+        # atomically under the cross-process lock, and stamps the
+        # format-version marker the raw placeholder lacked.
+        try:
+            write_annotation(base, Annotation(
+                file=opts.file, function=opts.function,
+                body="", metadata={},
+            ))
+        except ValueError as e:
+            sys.stderr.write(f"raptor-annotate: {e}\n")
+            return 2
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
     cmd = shlex.split(editor) + [str(path)]
     # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args

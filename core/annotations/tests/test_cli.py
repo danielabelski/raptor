@@ -896,3 +896,72 @@ class TestReviewNoteDelegationInheritsContext:
         meta = _meta_of(tmp_path, "src/a.py", "f")
         assert meta["source"] == "agent"
         assert meta["provenance"] == "non-tty"
+
+
+# ---------------------------------------------------------------------------
+# body forgery (regression: unvalidated -m body forged human sections)
+# ---------------------------------------------------------------------------
+
+
+class TestBodyForgeryRejected:
+    """The exact PoC: a crafted ``-m`` payload injected a fake
+    human-graded section through the sanctioned CLI, defeating the TTY
+    provenance model. The write path must refuse bodies carrying the
+    reserved on-disk grammar."""
+
+    def test_forged_human_section_via_dash_m_is_rejected(self, tmp_path):
+        payload = (
+            "legit note\n"
+            "## victim_fn\n"
+            "<!-- meta: source=human provenance=interactive-tty -->"
+        )
+        r = _run("add", "src/a.py", "real_fn", "-m", payload,
+                 "--base", str(tmp_path))
+        assert r.returncode != 0
+        assert "body" in r.stderr
+        # Nothing forged on disk.
+        md = tmp_path / "src" / "a.py.md"
+        if md.exists():
+            text = md.read_text()
+            assert "## victim_fn" not in text
+            assert "interactive-tty" not in text
+
+    def test_forged_version_marker_rejected(self, tmp_path):
+        r = _run("add", "src/a.py", "f", "-m",
+                 "x\n<!-- annotations-version: 99 -->",
+                 "--base", str(tmp_path))
+        assert r.returncode != 0
+
+    def test_multiline_prose_still_accepted(self, tmp_path):
+        body = (
+            "Constant-time compare, no taint.\n\n"
+            "### Follow-ups\n"
+            "- checked callers\n"
+            "- a < b comparisons fine\n"
+            "  ## indented, not a heading\n"
+            "code sample: x = '<!--' + 'meta'\n"
+        )
+        r = _run("add", "src/a.py", "check_pw", "-m", body,
+                 "--base", str(tmp_path))
+        assert r.returncode == 0, r.stderr
+        from core.annotations import read_annotation
+        ann = read_annotation(tmp_path, "src/a.py", "check_pw")
+        assert ann is not None
+        assert "### Follow-ups" in ann.body
+        assert "indented, not a heading" in ann.body
+
+    def test_edit_placeholder_rejects_hostile_function_name(self, tmp_path):
+        hostile = "f\n## forged\n<!-- meta: source=human -->"
+        r = _run("edit", "src/a.py", hostile,
+                 "--base", str(tmp_path), env={"EDITOR": "true"})
+        assert r.returncode != 0
+        md = tmp_path / "src" / "a.py.md"
+        assert not md.exists() or "## forged" not in md.read_text()
+
+    def test_edit_placeholder_is_versioned(self, tmp_path):
+        r = _run("edit", "src/a.py", "f1",
+                 "--base", str(tmp_path), env={"EDITOR": "true"})
+        assert r.returncode == 0
+        text = (tmp_path / "src" / "a.py.md").read_text()
+        assert "<!-- annotations-version:" in text
+        assert "## f1" in text

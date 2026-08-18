@@ -191,16 +191,38 @@ _AUTOFETCH_MARKUP_RE = re.compile(
     # Real autofetch defang only cares that the URI EXISTS and gets
     # neutered; capping the mediatype at 256 chars and the payload at
     # 64 KB still recognises every realistic case.
-    r'|data:[a-zA-Z0-9+./;-]{1,256},[^\s)]{0,65536}',
+    r'|data:[a-zA-Z0-9+./;-]{1,256},[^\s)]{0,65536}'
+    # Over-long fallbacks. Each bounded arm above requires its closing
+    # delimiter within the 8 KB cap, so a URL or attribute run longer
+    # than the cap made the whole construct invisible to the strip
+    # (live-verified evasion: a >8 KB URL still auto-fetches in the
+    # renderer, which has no such cap). When the close is out of
+    # range, defang the *opening* instead — replacing `![...](`,
+    # `[...](scheme:` or `<img` leaves the oversized tail behind as
+    # inert plain text. The `(?=[^)]{8192})` / `(?=[^>]{8192})`
+    # lookaheads make these arms fire only when the bounded arms
+    # cannot (≥8192 chars with no delimiter), and keep scanning
+    # bounded.
+    r'|!\[[^\]]{0,8192}\]\((?=[^)]{8192})'
+    r'|\[[^\]]{0,8192}\]\((?:https?|ht%74ps?|data|javascript|vbscript|file|ftp)?:(?=[^)]{8192})'
+    r'|\[[^\]]{0,8192}\]\(//(?=[^)]{8192})'
+    r'|<(?:img|iframe|object|embed|video|audio|source|link|script|base|form|use|svg|meta)\b(?=[^>]{8192})'
+    r'|<a\s(?=[^>]{8192})',
     re.IGNORECASE | re.DOTALL,
 )
 
 _ENVELOPE_TAG_RE = re.compile(
-    # XML-style tags used by the structured-XML envelope.
-    r'</?\s*untrusted[-_]'
+    # XML-style tags used by the structured-XML envelope.  No suffix
+    # requirement after `untrusted`: callers emit bare `<untrusted
+    # kind=...>` / `</untrusted>` (core/audit/context.py,
+    # packages/cve_diff prompt.py) as well as the nonce-suffixed
+    # `<untrusted-XXXX>` and underscore variants (`<untrusted_text>`,
+    # `<untrusted_tool_output>`, ...).  A previous `untrusted[-_]`
+    # pattern required a suffix, so the exact bare closing tag those
+    # callers wrap evidence in passed through unneutralised.
+    r'</?\s*untrusted'
     r'|</?\s*slots?\b'
     r'|</?\s*document(?:_content)?\b'
-    r'|</?\s*untrusted_text\b'
     # Bracket-style markers used by the PASSTHROUGH / [MARK_INPT]
     # envelope (prompt_envelope._render_passthrough). Without these,
     # untrusted content containing the literal `[MARK_INPT]` or
@@ -261,13 +283,31 @@ def wrap_tool_result(content: str, tool_name: str) -> str:
     surface) can pre-approve their own ``ToolDef`` and skip the
     wrapping at the consumer layer.
     """
+    return wrap_untrusted(content, kind="tool-result", origin=tool_name)
+
+
+def wrap_untrusted(content: str, *, kind: str, origin: str) -> str:
+    """Nonce-tagged envelope for one untrusted block in a string prompt.
+
+    For callers that assemble prompts as plain strings (the audit
+    review context, refinement rounds, domain-model bridge blocks)
+    rather than through ``build_prompt``'s role-separated bundle.
+    Applies the same floor defences as ``build_prompt``'s nonce-only
+    renderer: autofetch-markup strip, control-char escape (newlines
+    preserved), tag-forgery neutralisation, and a per-call random
+    nonce so the closing tag is unforgeable from the content side.
+
+    ``kind`` and ``origin`` are caller-controlled provenance labels,
+    XML-attribute-escaped before interpolation.
+    """
     nonce = _generate_nonce()
-    safe_origin = _xml_attr_escape(tool_name)
+    safe_kind = _xml_attr_escape(kind)
+    safe_origin = _xml_attr_escape(origin)
     safe_content = _strip_autofetch_markup(content)
     safe_content = _escape_for_envelope(safe_content)
     safe_content = neutralize_tag_forgery(safe_content)
     return (
-        f'<untrusted-{nonce} kind="tool-result" origin="{safe_origin}">\n'
+        f'<untrusted-{nonce} kind="{safe_kind}" origin="{safe_origin}">\n'
         f'{safe_content}\n'
         f'</untrusted-{nonce}>'
     )

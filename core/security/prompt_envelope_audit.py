@@ -500,6 +500,7 @@ def audit_file(path: Path) -> list[Violation]:
             "_xml_attr_escape",
             "UntrustedBlock",
             "wrap_tool_result",
+            "wrap_untrusted",
         }
 
     # Functions whose f-string args are logged/displayed, not sent to
@@ -533,6 +534,7 @@ def audit_file(path: Path) -> list[Violation]:
     _ENVELOPE_CONSTRUCTORS = frozenset({
         "UntrustedBlock",
         "wrap_tool_result",
+        "wrap_untrusted",
     })
 
     def _is_in_non_llm_call(parent_stack: list[ast.AST]) -> bool:

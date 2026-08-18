@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from core.paths import confine
-from core.security.prompt_envelope import neutralize_tag_forgery
+from core.security.prompt_envelope import neutralize_tag_forgery, wrap_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -778,11 +778,17 @@ def format_context_for_prompt(
         sections.append(PromptSection("sinks", "\n".join(sp), 1))
 
     if ctx.get("mechanical_evidence"):
-        evidence_text = neutralize_tag_forgery(ctx["mechanical_evidence"])
+        # wrap_untrusted supplies the full envelope pipeline: per-call
+        # nonce (an in-content `</untrusted...>` cannot close it),
+        # autofetch-markup strip, and tag-forgery neutralisation.
+        # Trusted guidance stays OUTSIDE the envelope.
         ep = [
-            ('\n<untrusted kind="mechanical-evidence"'
-            ' origin="audit-evidence-index">'),
-            evidence_text,
+            "",
+            wrap_untrusted(
+                ctx["mechanical_evidence"],
+                kind="mechanical-evidence",
+                origin="audit-evidence-index",
+            ),
             ("\nIf your hypothesis is grounded by any of these signals, "
             "cite which one(s) in your reasoning (e.g. \"taint_approx "
             "confirms param flows to memcpy\"). Hypotheses with no "
@@ -797,7 +803,6 @@ def format_context_for_prompt(
                 "function's own code, not an issue inherited from a caller "
                 "or callee."
             )
-        ep.append("</untrusted>")
         sections.append(PromptSection("evidence", "\n".join(ep), 0))
 
     if ctx.get("mechanical_detector_findings"):
@@ -805,19 +810,23 @@ def format_context_for_prompt(
         shown = mdf[:MECHANICAL_FINDINGS_PROMPT_CAP]
         # Detector ids and descriptions embed target-derived content
         # (callee names, branch labels, dispatch keys, snippets) —
-        # defang and envelope them like the mechanical-evidence
-        # section above, and bound the section's volume.
+        # envelope them like the mechanical-evidence section above
+        # (nonce + autofetch strip + tag-forgery neutralisation via
+        # wrap_untrusted), and bound the section's volume.
+        body_mdf = []
+        for mf in shown:
+            det = str(mf.get("detector", "?"))
+            desc = str(mf.get("description", ""))
+            mf_line = mf.get("line", 0)
+            body_mdf.append(f"- [{det}] L{mf_line}: {desc}")
         lines_mdf = [
             "\n### Pre-loop mechanical findings",
-            ('<untrusted kind="mechanical-findings"'
-             ' origin="audit-mechanical-detectors">'),
+            wrap_untrusted(
+                "\n".join(body_mdf),
+                kind="mechanical-findings",
+                origin="audit-mechanical-detectors",
+            ),
         ]
-        for mf in shown:
-            det = neutralize_tag_forgery(str(mf.get("detector", "?")))
-            desc = neutralize_tag_forgery(str(mf.get("description", "")))
-            mf_line = mf.get("line", 0)
-            lines_mdf.append(f"- [{det}] L{mf_line}: {desc}")
-        lines_mdf.append("</untrusted>")
         if len(mdf) > len(shown):
             lines_mdf.append(
                 f"({len(mdf) - len(shown)} more findings withheld — "
@@ -836,30 +845,32 @@ def format_context_for_prompt(
     if ctx.get("consistency_leads"):
         leads = ctx["consistency_leads"][:CONSISTENCY_LEADS_PROMPT_CAP]
         # Callee names, descriptions and peer-site snippets are
-        # target-derived — defang and envelope like every other
-        # untrusted section, and bound the volume (§2.4.1: cap 5
+        # target-derived — envelope like every other untrusted section
+        # (nonce + autofetch strip + tag-forgery neutralisation via
+        # wrap_untrusted), and bound the volume (§2.4.1: cap 5
         # peer sites per lead).
-        lines_cl = [
-            "\n### Consistency outliers vs peers",
-            ('<untrusted kind="consistency-leads"'
-             ' origin="audit-consistency-census">'),
-        ]
+        body_cl = []
         for lead in leads:
-            dim = neutralize_tag_forgery(str(lead.get("dimension", "?")))
-            callee = neutralize_tag_forgery(str(lead.get("callee", "")))
-            desc = neutralize_tag_forgery(str(lead.get("description", "")))
+            dim = str(lead.get("dimension", "?"))
+            callee = str(lead.get("callee", ""))
+            desc = str(lead.get("description", ""))
             n = lead.get("n")
             conforming = lead.get("conforming")
             stat = (
                 f" ({conforming}/{n} peers conform)"
                 if n and conforming is not None else ""
             )
-            lines_cl.append(f"- [{dim}] `{callee}`{stat}: {desc}")
+            body_cl.append(f"- [{dim}] `{callee}`{stat}: {desc}")
             for site in (lead.get("sites") or [])[:CONSISTENCY_SITES_PROMPT_CAP]:
-                lines_cl.append(
-                    f"  peer: {neutralize_tag_forgery(str(site))}",
-                )
-        lines_cl.append("</untrusted>")
+                body_cl.append(f"  peer: {site}")
+        lines_cl = [
+            "\n### Consistency outliers vs peers",
+            wrap_untrusted(
+                "\n".join(body_cl),
+                kind="consistency-leads",
+                origin="audit-consistency-census",
+            ),
+        ]
         lines_cl.append(
             "\nConfirm intent or form a hypothesis: if the peers' "
             "behaviour is the convention, the deviation above is the "
@@ -873,39 +884,34 @@ def format_context_for_prompt(
         fo_leads = ctx["fail_open_leads"][:FAIL_OPEN_LEADS_PROMPT_CAP]
         # Idioms and grades are channel vocabulary; caught types,
         # matched identifiers and snippets are target-derived —
-        # defang and envelope like every other untrusted section.
-        lines_fo = [
-            "\n### Fail-open handler leads",
-            ('<untrusted kind="fail-open-leads"'
-             ' origin="audit-fail-open-census">'),
-        ]
+        # envelope like every other untrusted section (nonce +
+        # autofetch strip + tag-forgery neutralisation via
+        # wrap_untrusted).
+        body_fo = []
         for lead in fo_leads:
-            idiom = neutralize_tag_forgery(str(lead.get("idiom", "?")))
-            caught = neutralize_tag_forgery(
-                ", ".join(str(c) for c in lead.get("caught") or []),
-            )
-            matched = neutralize_tag_forgery(
-                str(lead.get("matched", "")),
-            )
-            role_kind = neutralize_tag_forgery(
-                str(lead.get("role_kind", "")),
-            )
-            role_source = neutralize_tag_forgery(
-                str(lead.get("role_source", "")),
-            )
+            idiom = str(lead.get("idiom", "?"))
+            caught = ", ".join(str(c) for c in lead.get("caught") or [])
+            matched = str(lead.get("matched", ""))
+            role_kind = str(lead.get("role_kind", ""))
+            role_source = str(lead.get("role_source", ""))
             fo_line = lead.get("line", 0)
             breadth = "broad " if lead.get("broad") else ""
-            lines_fo.append(
+            body_fo.append(
                 f"- [{idiom}] L{fo_line}: {breadth}handler catching "
                 f"[{caught}] wraps `{matched}` "
                 f"({role_kind} role via {role_source})",
             )
             snippet = str(lead.get("snippet", "")).strip()
             if snippet:
-                lines_fo.append(
-                    f"  code: {neutralize_tag_forgery(snippet)}",
-                )
-        lines_fo.append("</untrusted>")
+                body_fo.append(f"  code: {snippet}")
+        lines_fo = [
+            "\n### Fail-open handler leads",
+            wrap_untrusted(
+                "\n".join(body_fo),
+                kind="fail-open-leads",
+                origin="audit-fail-open-census",
+            ),
+        ]
         lines_fo.append(
             "\nEach lead is a silent error handler around a "
             "security-role call, found mechanically BEFORE your "

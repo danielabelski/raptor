@@ -1576,12 +1576,17 @@ class TestMechanicalFindingsPromptSection:
         }
 
     def test_section_is_enveloped(self):
+        import re as _re
+
         prompt = format_context_for_prompt(self._ctx([
             {"detector": "fail_open", "line": 3, "description": "x"},
         ]))
-        open_idx = prompt.find('<untrusted kind="mechanical-findings"')
-        close_idx = prompt.find("</untrusted>", open_idx)
-        assert open_idx != -1
+        m = _re.search(
+            r'<untrusted-([0-9a-f]{16}) kind="mechanical-findings"', prompt,
+        )
+        assert m is not None
+        open_idx = m.start()
+        close_idx = prompt.find(f"</untrusted-{m.group(1)}>", open_idx)
         assert close_idx != -1
         assert "[fail_open] L3: x" in prompt[open_idx:close_idx]
 

@@ -72,17 +72,23 @@ def build_refinement_prompt(
 
     Tells the LLM what it hypothesised, what the tools found, and
     asks it to refine.  Prior-LLM and tool-output free text is
-    defanged with ``neutralize_tag_forgery`` before interpolation —
-    this section lands inside the main review prompt, so forged
-    envelope tags or markdown headings in a poisoned hypothesis /
-    tool result must not survive.
+    untrusted — it lands inside the main review prompt, so it is
+    wrapped with ``wrap_untrusted`` (per-call nonce, autofetch-markup
+    strip, tag-forgery neutralisation): forged envelope tags or
+    markdown headings in a poisoned hypothesis / tool result must
+    not read as trusted prompt structure.
     """
-    from core.security.prompt_envelope import neutralize_tag_forgery
+    from core.security.prompt_envelope import wrap_untrusted
 
     lines = [
         f"## Refinement round {refinement.round_number}",
         "",
-        f"Your prior hypothesis: \"{neutralize_tag_forgery(refinement.prior_hypothesis)}\"",
+        "Your prior hypothesis:",
+        wrap_untrusted(
+            refinement.prior_hypothesis,
+            kind="prior-hypothesis",
+            origin="audit-prior-round",
+        ),
         f"Prior verdict: {refinement.prior_status}",
         "",
         f"Tools dispatched: {', '.join(sorted(refinement.tools_dispatched))}",
@@ -90,17 +96,26 @@ def build_refinement_prompt(
     ]
 
     if refinement.tool_results:
+        body = "\n".join(
+            f"- **{tr.get('tool', 'unknown')}**: {tr.get('result', 'no output')}"
+            for tr in refinement.tool_results
+        )
         lines.append("Tool results:")
-        for tr in refinement.tool_results:
-            tool = neutralize_tag_forgery(tr.get("tool", "unknown"))
-            result = neutralize_tag_forgery(tr.get("result", "no output"))
-            lines.append(f"- **{tool}**: {result}")
+        lines.append(
+            wrap_untrusted(
+                body, kind="tool-results", origin="audit-refinement-tools",
+            )
+        )
         lines.append("")
 
     if refinement.tool_query_suggestion:
-        suggestion = neutralize_tag_forgery(refinement.tool_query_suggestion)
         lines.extend([
-            f"Your prior suggested check: \"{suggestion}\"",
+            "Your prior suggested check:",
+            wrap_untrusted(
+                refinement.tool_query_suggestion,
+                kind="prior-tool-suggestion",
+                origin="audit-prior-round",
+            ),
             "",
         ])
 

@@ -260,7 +260,11 @@ class CodeQLAgent:
                     "pass --build-command to use it",
                     hint["unverified_build_command"],
                 )
-        except Exception:  # noqa: BLE001, S110 — SAGE recall is best-effort
+        except ImportError:
+            # SAGE recall is best-effort. The hooks self-catch all
+            # transport/service failures (returning []/None/{}), so
+            # only a partial install's import can legitimately fail
+            # here; anything else is a wiring bug and must propagate.
             pass
 
         try:

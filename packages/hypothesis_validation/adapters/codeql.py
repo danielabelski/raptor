@@ -547,10 +547,12 @@ class CodeQLAdapter(ToolAdapter):
                 # standard library packs the query may import).
                 # Cached after first run so subsequent invocations are
                 # fast. Failure here doesn't abort — the query may not
-                # need any external imports.
-                    # Pack install is best-effort. If the query has no
-                    # external imports it will still compile.
-                with contextlib.suppress(Exception):
+                # need any external imports: exec/timeout failures are
+                # tolerated (the analyze step below fails loudly with
+                # the same runner if the environment is truly broken).
+                # SandboxSetupError is a BaseException and passes
+                # through regardless.
+                with contextlib.suppress(OSError, subprocess.SubprocessError):
                     runner(
                         [self._codeql_bin, "pack", "install", str(pack_dir)],
                         capture_output=True, text=True,

@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Self
 
 GRAPH_FILENAME = "binary-graph.sqlite"
 SCHEMA_VERSION = 1
@@ -166,7 +167,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 class BinaryGraphStore:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._batch_depth: int = 0
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -188,7 +189,7 @@ class BinaryGraphStore:
             raise
 
     @contextmanager
-    def batch(self) -> Iterator["BinaryGraphStore"]:
+    def batch(self) -> Iterator[BinaryGraphStore]:
         """Batch multiple operations into a single transaction.
 
         Defers per-operation commits until the batch exits, reducing
@@ -211,19 +212,19 @@ class BinaryGraphStore:
             self._conn.close()
             self._conn = None
 
-    def __enter__(self) -> "BinaryGraphStore":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
     def __del__(self) -> None:
         try:
             self.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — broad by design: __del__ may run during interpreter teardown, where object state and module globals are unreliable; a raise here only spams stderr
             pass
 
-    def begin_snapshot(self, binary_sha256: str, binary_path: str, run_dir: Path, props: Optional[dict[str, Any]] = None) -> str:
+    def begin_snapshot(self, binary_sha256: str, binary_path: str, run_dir: Path, props: dict[str, Any] | None = None) -> str:
         snapshot_id = f"snap:{_hash(binary_sha256, str(Path(run_dir).resolve()))}"
         with self._connection() as conn:
             conn.execute(
@@ -243,7 +244,7 @@ class BinaryGraphStore:
             )
         return snapshot_id
 
-    def latest_snapshot_id(self) -> Optional[str]:
+    def latest_snapshot_id(self) -> str | None:
         if not self.path.exists():
             return None
         with self._connection() as conn:
@@ -282,8 +283,8 @@ class BinaryGraphStore:
         *,
         name: str = "",
         address: str = "",
-        props: Optional[dict[str, Any]] = None,
-        evidence_ids: Optional[list[str]] = None,
+        props: dict[str, Any] | None = None,
+        evidence_ids: list[str] | None = None,
     ) -> str:
         node_id = stable_node_id(binary_sha256, kind, key)
         with self._connection() as conn:
@@ -311,8 +312,8 @@ class BinaryGraphStore:
         dst_id: str,
         *,
         confidence: str = "",
-        props: Optional[dict[str, Any]] = None,
-        evidence_ids: Optional[list[str]] = None,
+        props: dict[str, Any] | None = None,
+        evidence_ids: list[str] | None = None,
     ) -> str:
         edge_id = stable_edge_id(binary_sha256, kind, src_id, dst_id)
         with self._connection() as conn:
@@ -382,7 +383,7 @@ def graph_summary(path: Path) -> dict[str, Any]:
         }
 
 
-def query_edges(path: Path, *, kind: Optional[str] = None) -> list[dict[str, Any]]:
+def query_edges(path: Path, *, kind: str | None = None) -> list[dict[str, Any]]:
     if not Path(path).exists():
         return []
     with graph_connection(path) as conn:
@@ -419,7 +420,7 @@ def query_edges(path: Path, *, kind: Optional[str] = None) -> list[dict[str, Any
         ]
 
 
-def query_evidence(path: Path, *, tier: Optional[str] = None) -> list[dict[str, Any]]:
+def query_evidence(path: Path, *, tier: str | None = None) -> list[dict[str, Any]]:
     if not Path(path).exists():
         return []
     with graph_connection(path) as conn:
@@ -457,8 +458,8 @@ def query_evidence(path: Path, *, tier: Optional[str] = None) -> list[dict[str, 
 
 
 __all__ = [
-    "BinaryGraphStore",
     "GRAPH_FILENAME",
+    "BinaryGraphStore",
     "graph_path_for_run",
     "graph_summary",
     "open_graph",

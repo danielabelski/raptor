@@ -420,7 +420,9 @@ class BinaryUnderstand:
                 try:
                     proc.kill()
                     proc.wait(timeout=2)
-                except Exception:  # noqa: BLE001, S110 — best-effort child reap
+                except (OSError, subprocess.SubprocessError):
+                    # Best-effort child reap: already-exited child
+                    # (ProcessLookupError) or a wait timeout.
                     pass
             # Give kill time to land; the worker thread is daemon so
             # an extra-stubborn r2 won't keep the Python interpreter
@@ -597,7 +599,7 @@ class BinaryUnderstand:
             if r2 is not None:
                 try:
                     r2.quit()
-                except Exception:  # noqa: BLE001, S110 — best-effort session close
+                except Exception:  # noqa: BLE001, S110 — broad by design: r2pipe.quit()'s failure surface is uncontracted third-party code (dead-pipe OSError, closed-file ValueError, post-kill internal state); last-resort session close
                     pass
             # Env restore — _saved_env is non-empty only if the lock
             # block exited before its inline restore (e.g. r2pipe.open

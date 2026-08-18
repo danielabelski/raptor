@@ -67,10 +67,11 @@ def _drive_connect(s: socket.socket, target: str) -> int:
 
 
 class TestUnixLaneIsolation:
-    def test_audit_bit_scoped_to_one_lane(self, reset_proxy, tmp_path):
+    def test_audit_bit_scoped_to_one_lane(self, reset_proxy,
+                                          short_sock_dir):
         proxy = proxy_mod.EgressProxy(allowed_hosts={"allowed.example"})
-        path_a = str(tmp_path / "a.sock")
-        path_b = str(tmp_path / "b.sock")
+        path_a = str(short_sock_dir / "a.sock")
+        path_b = str(short_sock_dir / "b.sock")
         try:
             proxy.bind_unix(path_a, label="audit-ctx")
             proxy.bind_unix(path_b, label="normal-ctx")
@@ -108,12 +109,12 @@ class TestUnixLaneIsolation:
             proxy.stop()
 
     def test_in_flight_connection_keeps_its_lane(self, reset_proxy,
-                                                 tmp_path):
+                                                 short_sock_dir):
         # A connection ACCEPTED before unbind is decided by the
         # lane object captured at accept time — deterministic, no
         # enforce/lenient flapping during teardown.
         proxy = proxy_mod.EgressProxy(allowed_hosts=set())
-        path = str(tmp_path / "w5.sock")
+        path = str(short_sock_dir / "w5.sock")
         try:
             proxy.bind_unix(path, label="w5")
             assert proxy.set_lane_audit(path, True) is True
@@ -278,10 +279,10 @@ class TestLaneScopedEventBuffers:
     would-deny records."""
 
     def test_live_events_segregate_across_lanes(self, reset_proxy,
-                                                tmp_path):
+                                                short_sock_dir):
         proxy = proxy_mod.EgressProxy(allowed_hosts=set())
-        path_a = str(tmp_path / "a.sock")
-        path_b = str(tmp_path / "b.sock")
+        path_a = str(short_sock_dir / "a.sock")
+        path_b = str(short_sock_dir / "b.sock")
         try:
             proxy.bind_unix(path_a, label="run-a")
             proxy.bind_unix(path_b, label="run-b")
@@ -309,12 +310,12 @@ class TestLaneScopedEventBuffers:
             proxy.stop()
 
     def test_unlaned_event_reaches_global_buffer_only(self, reset_proxy,
-                                                      tmp_path):
+                                                      short_sock_dir):
         """Fail-closed direction: an event with no lane attribution
         (main listener, handler errors) lands in the run-global
         buffer — never dropped, never leaked into a lane view."""
         proxy = proxy_mod.EgressProxy(allowed_hosts=set())
-        path = str(tmp_path / "a.sock")
+        path = str(short_sock_dir / "a.sock")
         try:
             proxy.bind_unix(path, label="run-a")
             tok_lane = proxy.register_sandbox(caller_label="run-a",
@@ -341,16 +342,16 @@ class TestLaneScopedEventBuffers:
             proxy.stop()
 
     def test_lane_key_lookup_miss_degrades_to_global_view(
-            self, reset_proxy, tmp_path):
+            self, reset_proxy, short_sock_dir):
         """A lane_key matching no live lane must over-capture (global
         view), never produce a silently empty audit buffer."""
         proxy = proxy_mod.EgressProxy(allowed_hosts=set())
-        path = str(tmp_path / "live.sock")
+        path = str(short_sock_dir / "live.sock")
         try:
             proxy.bind_unix(path, label="live")
             tok = proxy.register_sandbox(
                 caller_label="orphan",
-                lane_key=str(tmp_path / "never-bound.sock"),
+                lane_key=str(short_sock_dir / "never-bound.sock"),
             )
             assert _connect_unix(path, _DENIED) == 403
             events = proxy.unregister_sandbox(tok)
@@ -359,12 +360,12 @@ class TestLaneScopedEventBuffers:
             proxy.stop()
 
     def test_same_label_lanes_still_segregate(self, reset_proxy,
-                                              tmp_path):
+                                              short_sock_dir):
         """Labels are not unique across concurrent contexts; the
         subscription must key on lane identity, not the label."""
         proxy = proxy_mod.EgressProxy(allowed_hosts=set())
-        path_a = str(tmp_path / "a.sock")
-        path_b = str(tmp_path / "b.sock")
+        path_a = str(short_sock_dir / "a.sock")
+        path_b = str(short_sock_dir / "b.sock")
         try:
             proxy.bind_unix(path_a, label="sandbox")
             proxy.bind_unix(path_b, label="sandbox")
@@ -406,7 +407,8 @@ class TestLaneHostAllowlists:
     lane bound with allowed_hosts is now additionally scoped to its
     own set; gate 1 denies the rest with a lane-specific reason."""
 
-    def test_lane_scoped_to_its_own_hosts(self, reset_proxy, tmp_path):
+    def test_lane_scoped_to_its_own_hosts(self, reset_proxy,
+                                          short_sock_dir):
         """Host in the GLOBAL union but not in THIS lane's set -> 403;
         the lane's own host passes gate 1 (then fails at DNS -> 502,
         which proves gate-1 passage, not a policy deny)."""
@@ -414,7 +416,7 @@ class TestLaneHostAllowlists:
             allowed_hosts={"run-a.invalid", "run-b.invalid"},
         )
         try:
-            sock_a = str(tmp_path / "lane-a.sock")
+            sock_a = str(short_sock_dir / "lane-a.sock")
             proxy.bind_unix(sock_a, label="run-a",
                             allowed_hosts=["run-a.invalid"])
             token = proxy.register_sandbox(caller_label="run-a",
@@ -435,10 +437,10 @@ class TestLaneHostAllowlists:
         assert denied[0]["host"] == "run-b.invalid"
 
     def test_lane_without_allowlist_keeps_global_semantics(
-            self, reset_proxy, tmp_path):
+            self, reset_proxy, short_sock_dir):
         proxy = proxy_mod.EgressProxy(allowed_hosts={"run-a.invalid"})
         try:
-            sock = str(tmp_path / "lane.sock")
+            sock = str(short_sock_dir / "lane.sock")
             proxy.bind_unix(sock, label="legacy")
             # Global-allowed host passes gate 1 (DNS 502); unknown -> 403.
             assert _connect_unix(sock, "run-a.invalid:443") == 502
@@ -447,10 +449,10 @@ class TestLaneHostAllowlists:
             proxy.stop()
 
     def test_lane_allowlist_case_insensitive(self, reset_proxy,
-                                             tmp_path):
+                                             short_sock_dir):
         proxy = proxy_mod.EgressProxy(allowed_hosts={"run-a.invalid"})
         try:
-            sock = str(tmp_path / "lane.sock")
+            sock = str(short_sock_dir / "lane.sock")
             proxy.bind_unix(sock, label="run-a",
                             allowed_hosts=["RUN-A.invalid"])
             assert _connect_unix(sock, "Run-A.Invalid:443") == 502

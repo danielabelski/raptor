@@ -79,9 +79,10 @@ def _roundtrip(port: int, payload: bytes) -> bytes:
 
 class TestRunBridges:
 
-    def test_two_bridges_relay_to_their_own_upstreams(self, tmp_path):
-        path_a = str(tmp_path / "a.sock")
-        path_b = str(tmp_path / "b.sock")
+    def test_two_bridges_relay_to_their_own_upstreams(self,
+                                                      short_sock_dir):
+        path_a = str(short_sock_dir / "a.sock")
+        path_b = str(short_sock_dir / "b.sock")
         srv_a = _unix_echo_server(path_a, b"A:")
         srv_b = _unix_echo_server(path_b, b"B:")
         port_a, port_b = _free_port(), _free_port()
@@ -108,8 +109,8 @@ class TestRunBridges:
             srv_b._srv.close()
         assert not t.is_alive()
 
-    def test_single_bridge_wrapper_compatible(self, tmp_path):
-        path = str(tmp_path / "one.sock")
+    def test_single_bridge_wrapper_compatible(self, short_sock_dir):
+        path = str(short_sock_dir / "one.sock")
         srv = _unix_echo_server(path, b"X:")
         port = _free_port()
         death_r, death_w = os.pipe()
@@ -127,12 +128,12 @@ class TestRunBridges:
             os.close(death_r)
             srv._srv.close()
 
-    def test_dead_upstream_closes_client_not_relay(self, tmp_path):
+    def test_dead_upstream_closes_client_not_relay(self, short_sock_dir):
         """A bridge whose unix upstream is gone must refuse that
         connection (fail fast for the child) while the relay itself
         keeps serving its other bridges."""
-        path_dead = str(tmp_path / "dead.sock")   # never bound
-        path_live = str(tmp_path / "live.sock")
+        path_dead = str(short_sock_dir / "dead.sock")   # never bound
+        path_live = str(short_sock_dir / "live.sock")
         srv = _unix_echo_server(path_live, b"L:")
         port_dead, port_live = _free_port(), _free_port()
         death_r, death_w = os.pipe()

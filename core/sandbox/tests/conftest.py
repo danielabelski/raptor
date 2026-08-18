@@ -6,7 +6,32 @@ snapshot them before every test and restore afterwards as a safety net
 — individual tests are still free to mutate them deliberately.
 """
 
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
+
+
+@pytest.fixture
+def short_sock_dir():
+    """A directory short enough that AF_UNIX socket paths fit sun_path.
+
+    The kernel caps unix-socket paths at sizeof(sun_path) — ~104 bytes
+    on macOS/BSD, 108 on Linux. pytest's ``tmp_path`` on CI runners
+    routinely exceeds that once a socket name is appended (macOS:
+    ``/private/var/folders/.../pytest-of-runner/pytest-N/<test>N/``),
+    so ``bind()`` fails with "AF_UNIX path too long". Tests that bind
+    unix sockets must derive their socket paths from this fixture
+    instead of ``tmp_path``. Production has the equivalent guard:
+    core.sandbox.context falls back to the system tempdir when the
+    output-derived proxy socket path exceeds 104 bytes.
+    """
+    d = tempfile.mkdtemp(prefix="raptor-sk-", dir="/tmp")
+    try:
+        yield Path(d)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

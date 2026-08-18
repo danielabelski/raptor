@@ -1116,3 +1116,113 @@ def test_build_claudecode_config_uses_session_sentinel(monkeypatch) -> None:
     assert cfg is not None
     assert cfg.provider == "claudecode"
     assert cfg.model_name == CLAUDECODE_SESSION_MODEL
+
+
+# ---------------------------------------------------------------------------
+# Failed-call spend booking (budget aborts must reach the provider ledger)
+# ---------------------------------------------------------------------------
+
+
+def _stream_budget_abort(cost_usd: float = 4.8) -> StreamJsonResult:
+    """A budget-aborted call: nonzero exit, error set, real money spent."""
+    return StreamJsonResult(
+        cost_usd=cost_usd,
+        input_tokens=1000,
+        output_tokens=2000,
+        error="claude -p exited 1: error_max_budget_usd",
+    )
+
+
+def test_generate_books_failed_call_spend_before_raise(monkeypatch) -> None:
+    """A budget abort spends up to RAPTOR_CC_BUDGET_USD before failing.
+    That spend must land on the provider ledger even though the call
+    raises — the client books nothing on failure and enforces
+    ``max(total_cost, provider_spend)``, so an unbooked failure makes
+    the money invisible to max-cost enforcement."""
+    import core.llm.cc_adapter as _cc_adapter
+    monkeypatch.setattr(
+        _cc_adapter, "run_cc_streaming",
+        lambda *a, **k: _stream_budget_abort(cost_usd=4.8),
+    )
+    p = ClaudeCodeLLMProvider(_config())
+    with pytest.raises(RuntimeError, match="error_max_budget_usd"):
+        p.generate("hi")
+    assert p.total_cost == pytest.approx(4.8)
+    assert p.total_input_tokens == 1000
+    assert p.total_output_tokens == 2000
+
+
+def test_generate_structured_books_failed_call_spend_before_raise(
+    monkeypatch,
+) -> None:
+    import core.llm.cc_adapter as _cc_adapter
+    monkeypatch.setattr(
+        _cc_adapter, "run_cc_streaming",
+        lambda *a, **k: _stream_budget_abort(cost_usd=2.5),
+    )
+    p = ClaudeCodeLLMProvider(_config())
+    with pytest.raises(RuntimeError, match="error_max_budget_usd"):
+        p.generate_structured("compute", {"type": "object"})
+    assert p.total_cost == pytest.approx(2.5)
+
+
+def test_generate_structured_books_spend_on_parse_failure(monkeypatch) -> None:
+    """The API call completed (zero exit, cost incurred) but the output
+    was unparseable — the spend is real and must be booked."""
+    import core.llm.cc_adapter as _cc_adapter
+    monkeypatch.setattr(
+        _cc_adapter, "run_cc_streaming",
+        lambda *a, **k: _stream_freeform(text="not json at all", cost_usd=0.9),
+    )
+    p = ClaudeCodeLLMProvider(_config())
+    with pytest.raises(RuntimeError, match="structured parse failed"):
+        p.generate_structured("compute", {"type": "object"})
+    assert p.total_cost == pytest.approx(0.9)
+
+
+def test_turn_resumable_books_failed_call_spend(monkeypatch) -> None:
+    """The resumable-turn path returns an ERROR TurnResponse instead of
+    raising; the failed call's spend must still reach the ledger."""
+    import core.llm.cc_adapter as _cc_adapter
+    monkeypatch.setattr(
+        _cc_adapter, "run_cc_streaming",
+        lambda *a, **k: _stream_budget_abort(cost_usd=1.25),
+    )
+    p = ClaudeCodeLLMProvider(_config(), resumable=True)
+    out = p.turn(
+        messages=[Message(role="user", content=[TextBlock(text="hi")])],
+        tools=_TOOL_DEFS,
+    )
+    assert out.stop_reason is StopReason.ERROR
+    assert p.total_cost == pytest.approx(1.25)
+
+
+def test_budget_abort_spend_visible_to_client_budget_gate(monkeypatch) -> None:
+    """End-to-end: N budget-aborted CC calls must count against
+    max_cost_per_scan via the ``max(total_cost, provider_spend)``
+    gate, not undercount by ~N x the per-call cap."""
+    import core.llm.cc_adapter as _cc_adapter
+
+    from core.llm.client import LLMClient
+    from core.llm.config import LLMConfig
+
+    monkeypatch.setattr(
+        _cc_adapter, "run_cc_streaming",
+        lambda *a, **k: _stream_budget_abort(cost_usd=4.8),
+    )
+    config = LLMConfig(
+        primary_model=_config(),
+        enable_caching=False,
+        enable_fallback=False,
+        enable_cost_tracking=True,
+        max_retries=1,
+        max_cost_per_scan=5.0,
+    )
+    client = LLMClient(config)
+    assert not client.is_budget_exhausted(estimated_cost=0.5)
+    with pytest.raises(Exception):
+        client.generate_structured("prompt", {"type": "object"})
+    # The failed attempt's spend sits on the provider ledger and the
+    # budget gate sees it.
+    assert client.provider_spend_usd == pytest.approx(4.8)
+    assert client.is_budget_exhausted(estimated_cost=0.5)

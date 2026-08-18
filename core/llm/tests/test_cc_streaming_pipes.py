@@ -86,3 +86,37 @@ def test_child_exiting_before_reading_prompt_reports_exit_code():
     )
     assert sr.error is not None
     assert "exited 7" in sr.error
+
+
+def test_failed_call_carries_parsed_spend_telemetry():
+    """A budget abort exits nonzero AFTER emitting a result event with
+    the real spend. The error StreamJsonResult must carry that
+    cost/usage so the provider can book it — dropping it made
+    budget-aborted spend invisible to max-cost enforcement."""
+    result_line = json.dumps({
+        "type": "result",
+        "subtype": "error_max_budget_usd",
+        "session_id": "sess-abort",
+        "is_error": True,
+        "result": "",
+        "total_cost_usd": 4.8,
+        "usage": {"input_tokens": 1000, "output_tokens": 2000},
+    })
+    script = (
+        "import sys\n"
+        f"sys.stdout.write({result_line!r} + '\\n')\n"
+        "sys.exit(1)\n"
+    )
+    sr = run_cc_streaming(
+        [sys.executable, "-c", script],
+        prompt="",
+        env=_env(),
+        timeout_s=30,
+    )
+    assert sr.error is not None
+    assert "exited 1" in sr.error
+    assert "error_max_budget_usd" in sr.error
+    assert sr.cost_usd == 4.8
+    assert sr.input_tokens == 1000
+    assert sr.output_tokens == 2000
+    assert sr.session_id == "sess-abort"

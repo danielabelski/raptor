@@ -910,6 +910,17 @@ def run_cc_streaming(
             f"{escape_nonprintable(redact_secrets(cause[:500]))}"
         )
         err.session_id = partial.session_id
+        # A failed call still SPENT money — a budget abort
+        # (error_max_budget_usd) burns up to the per-call cap before
+        # exiting nonzero. Carry the parsed telemetry so the caller
+        # can book the spend on its ledger; dropping it here made N
+        # budget-aborted calls invisible to max-cost enforcement.
+        err.cost_usd = partial.cost_usd
+        err.input_tokens = partial.input_tokens
+        err.output_tokens = partial.output_tokens
+        err.cache_read_tokens = partial.cache_read_tokens
+        err.cache_creation_tokens = partial.cache_creation_tokens
+        err.model = partial.model
         return err
 
     return parse_stream_json_lines(collected)

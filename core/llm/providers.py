@@ -3756,9 +3756,13 @@ class ClaudeCodeLLMProvider(LLMProvider):
             raise RuntimeError(f"claude -p timed out after {call_timeout}s") from e
         duration = _time.monotonic() - start
 
-        if sr.error:
-            raise RuntimeError(sr.error)
-
+        # Book usage BEFORE the error check: a failed call (budget
+        # abort, API refusal) still spent real money — up to the
+        # per-call budget cap. The client books nothing on failure
+        # and relies on this provider ledger as the failed-attempt
+        # floor (``_effective_spent_locked`` reads
+        # ``max(total_cost, provider_spend)``), so raising first
+        # made the spend invisible to max-cost enforcement.
         total_tokens = sr.input_tokens + sr.output_tokens
         self.track_usage(
             tokens=total_tokens,
@@ -3769,6 +3773,9 @@ class ClaudeCodeLLMProvider(LLMProvider):
             cache_write_tokens=sr.cache_creation_tokens,
             duration=duration,
         )
+
+        if sr.error:
+            raise RuntimeError(sr.error)
 
         # The claude-code harness reports the model it used in the
         # stream-json output; treat that as the resolved snapshot. But
@@ -3873,6 +3880,24 @@ class ClaudeCodeLLMProvider(LLMProvider):
             raise RuntimeError(f"claude -p timed out after {call_timeout}s") from e
         duration = _time.monotonic() - start
 
+        # Book usage BEFORE the error/parse checks: a failed call
+        # (budget abort, API refusal, unparseable output) still spent
+        # real money. The client books nothing on failure and relies
+        # on this provider ledger as the failed-attempt floor
+        # (``_effective_spent_locked`` reads
+        # ``max(total_cost, provider_spend)``), so raising first
+        # made the spend invisible to max-cost enforcement.
+        total_tokens = sr.input_tokens + sr.output_tokens
+        self.track_usage(
+            tokens=total_tokens,
+            cost=sr.cost_usd,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
+            cache_read_tokens=sr.cache_read_tokens,
+            cache_write_tokens=sr.cache_creation_tokens,
+            duration=duration,
+        )
+
         if sr.error:
             raise RuntimeError(sr.error)
 
@@ -3884,17 +3909,6 @@ class ClaudeCodeLLMProvider(LLMProvider):
                 raise RuntimeError(
                     f"claude -p structured parse failed: {result['error']}"
                 )
-
-        total_tokens = sr.input_tokens + sr.output_tokens
-        self.track_usage(
-            tokens=total_tokens,
-            cost=sr.cost_usd,
-            input_tokens=sr.input_tokens,
-            output_tokens=sr.output_tokens,
-            cache_read_tokens=sr.cache_read_tokens,
-            cache_write_tokens=sr.cache_creation_tokens,
-            duration=duration,
-        )
 
         return StructuredResponse(
             result=result,
@@ -4140,6 +4154,21 @@ class ClaudeCodeLLMProvider(LLMProvider):
             )
         duration = _time.monotonic() - start
 
+        # Book usage BEFORE the error/empty-content returns: a failed
+        # turn (budget abort, refusal) still spent real money, and
+        # budget enforcement reads this ledger as the failed-attempt
+        # floor. The retry path below issues a SECOND call which books
+        # its own spend — two calls, two bookings.
+        self.track_usage(
+            tokens=sr.input_tokens + sr.output_tokens,
+            cost=sr.cost_usd,
+            input_tokens=sr.input_tokens,
+            output_tokens=sr.output_tokens,
+            cache_read_tokens=sr.cache_read_tokens,
+            cache_write_tokens=sr.cache_creation_tokens,
+            duration=duration,
+        )
+
         if sr.error:
             err_msg = sr.error
             logger.warning(f"ClaudeCodeLLMProvider._turn_resumable: {err_msg}")
@@ -4183,16 +4212,6 @@ class ClaudeCodeLLMProvider(LLMProvider):
                 output_tokens=sr.output_tokens,
                 error_message="empty response from stream-json",
             )
-
-        self.track_usage(
-            tokens=sr.input_tokens + sr.output_tokens,
-            cost=sr.cost_usd,
-            input_tokens=sr.input_tokens,
-            output_tokens=sr.output_tokens,
-            cache_read_tokens=sr.cache_read_tokens,
-            cache_write_tokens=sr.cache_creation_tokens,
-            duration=duration,
-        )
 
         if sr.structured_output is not None:
             result = sr.structured_output

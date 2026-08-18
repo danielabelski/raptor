@@ -30,6 +30,12 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
+# Interrupted: the run was stopped by an external supervisor (SIGTERM
+# grace drain, harness background-shell cap) with its artifacts intact.
+# Terminal for the double-finalisation guard, but explicitly resumable
+# via resume_run() — and deliberately NOT reaped by
+# core.run.tmp_reaper.reap_stale_runs (failed/cancelled only).
+STATUS_INTERRUPTED = "interrupted"
 
 # `_cleanup_abandoned` freshness threshold. A sibling run in
 # status=running that was created within this many seconds is treated
@@ -841,6 +847,102 @@ def cancel_run(output_dir: Path, extra: dict[str, Any] | None = None) -> None:
     _update_status(output_dir, STATUS_CANCELLED, extra)
 
 
+def interrupt_run(output_dir: Path, reason: str | None = None,
+                  extra: dict[str, Any] | None = None) -> None:
+    """Update .raptor-run.json to status=interrupted.
+
+    For runs stopped by an external supervisor (SIGTERM drain, harness
+    shell cap) whose artifacts are intact and which a later
+    :func:`resume_run` may re-enter. Unlike ``fail_run`` the run is
+    not an error: journal/ledger state on disk is coherent up to the
+    interruption point.
+    """
+    extra = dict(extra or {})
+    if reason:
+        extra["interrupt_reason"] = reason
+    _finalize_sandbox_summary(output_dir)
+    _update_status(output_dir, STATUS_INTERRUPTED, extra)
+
+
+#: Statuses :func:`resume_run` accepts as re-enterable. ``completed``
+#: is deliberately absent — a completed run's results are final; new
+#: work belongs in a new run (cross-run verdict reuse imports the
+#: prior verdicts there at $0).
+RESUMABLE_STATUSES = frozenset({
+    STATUS_INTERRUPTED, STATUS_FAILED, STATUS_CANCELLED, STATUS_RUNNING,
+})
+
+
+def resume_run(output_dir: Path, note: str | None = None) -> int:
+    """Re-enter an interrupted/failed run AS THE SAME RUN.
+
+    Flips status back to ``running`` (the one sanctioned
+    terminal→running transition — ``_update_status`` refuses it for
+    everyone else), records a segment row in ``extra.resumes`` and
+    refreshes ``session_pid``/``tool_pid`` so the abandon sweeps track
+    the resuming session, not the dead one.
+
+    A ``running`` status is also accepted — a SIGKILLed run never got
+    a terminal transition and sits in ``running`` until a sweep finds
+    it; resuming it is exactly the recovery this function exists for.
+
+    Returns the new segment number (2 for the first resume).
+    Raises FileNotFoundError when there is no run metadata, and
+    ValueError when the status is not resumable (notably
+    ``completed``).
+    """
+    path = Path(output_dir) / RUN_METADATA_FILE
+    with _metadata_lock(path):
+        metadata = load_json(path)
+        if metadata is None:
+            raise FileNotFoundError(
+                f"No {RUN_METADATA_FILE} in {output_dir} — not a run directory"
+            )
+        if not isinstance(metadata, dict):
+            # ValueError (not TypeError): malformed on-disk data — the
+            # same convention _update_status uses for this exact case.
+            raise ValueError(  # noqa: TRY004
+                f"Malformed {RUN_METADATA_FILE} in {output_dir} — "
+                "expected JSON object")
+        current = metadata.get("status")
+        if current not in RESUMABLE_STATUSES:
+            raise ValueError(
+                f"run status {current!r} is not resumable "
+                f"(resumable: {', '.join(sorted(RESUMABLE_STATUSES))})"
+            )
+        extra = metadata.get("extra") or {}
+        resumes = extra.get("resumes")
+        if not isinstance(resumes, list):
+            resumes = []
+        segment = len(resumes) + 2
+        row: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "prior_status": current,
+            "segment": segment,
+        }
+        if note:
+            row["note"] = note
+        resumes.append(row)
+        extra["resumes"] = resumes
+        metadata["extra"] = extra
+        metadata["status"] = STATUS_RUNNING
+        # The prior segment's end_timestamp/duration describe segment 1
+        # only; drop them so the eventual terminal transition records
+        # the full multi-segment envelope from the original start.
+        metadata.pop("end_timestamp", None)
+        metadata.pop("duration_seconds", None)
+        session_pid = _get_session_pid()
+        if session_pid is not None:
+            metadata["session_pid"] = session_pid
+            metadata["tool_pid"] = os.getppid()
+        save_json(path, metadata)
+    # Re-mark as the active run so sandbox summaries and coverage
+    # tracking attach to the resumed segment.
+    from core.sandbox.summary import set_active_run_dir
+    set_active_run_dir(Path(output_dir))
+    return segment
+
+
 @contextlib.contextmanager
 def tracked_run(output_dir: Path, command: str,
                 extra: dict[str, Any] | None = None,
@@ -1006,7 +1108,9 @@ def generate_run_metadata(run_dir: Path) -> None:
     save_json(run_dir / RUN_METADATA_FILE, metadata)
 
 
-_TERMINAL_STATUSES = frozenset({STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED})
+_TERMINAL_STATUSES = frozenset({
+    STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, STATUS_INTERRUPTED,
+})
 
 
 def _update_status(output_dir: Path, status: str,

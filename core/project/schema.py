@@ -3,7 +3,7 @@
 from typing import Any
 
 # Valid values
-VALID_RUN_STATUSES = {"running", "completed", "failed", "cancelled"}
+VALID_RUN_STATUSES = {"running", "completed", "failed", "cancelled", "interrupted"}
 
 
 def _validate_project(data: dict[str, Any]) -> tuple[bool, list[str]]:

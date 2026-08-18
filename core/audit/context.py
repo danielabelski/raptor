@@ -37,6 +37,11 @@ MECHANICAL_FINDINGS_PROMPT_CAP = 10
 CONSISTENCY_LEADS_PROMPT_CAP = 5
 CONSISTENCY_SITES_PROMPT_CAP = 5
 
+# Bound on the fail-open census leads prompt section (design §6.3):
+# at most this many rendered handler leads per function; the full set
+# is in the fail_open_census audit-log record.
+FAIL_OPEN_LEADS_PROMPT_CAP = 5
+
 
 def _safe_path(target_path: Path, file_path: str) -> Path | None:
     """Join target_path / file_path with traversal guard.
@@ -821,6 +826,56 @@ def format_context_for_prompt(
         )
         sections.append(PromptSection(
             "consistency_leads", "\n".join(lines_cl), 1,
+        ))
+
+    if ctx.get("fail_open_leads"):
+        fo_leads = ctx["fail_open_leads"][:FAIL_OPEN_LEADS_PROMPT_CAP]
+        # Idioms and grades are channel vocabulary; caught types,
+        # matched identifiers and snippets are target-derived —
+        # defang and envelope like every other untrusted section.
+        lines_fo = [
+            "\n### Fail-open handler leads",
+            ('<untrusted kind="fail-open-leads"'
+             ' origin="audit-fail-open-census">'),
+        ]
+        for lead in fo_leads:
+            idiom = neutralize_tag_forgery(str(lead.get("idiom", "?")))
+            caught = neutralize_tag_forgery(
+                ", ".join(str(c) for c in lead.get("caught") or []),
+            )
+            matched = neutralize_tag_forgery(
+                str(lead.get("matched", "")),
+            )
+            role_kind = neutralize_tag_forgery(
+                str(lead.get("role_kind", "")),
+            )
+            role_source = neutralize_tag_forgery(
+                str(lead.get("role_source", "")),
+            )
+            fo_line = lead.get("line", 0)
+            breadth = "broad " if lead.get("broad") else ""
+            lines_fo.append(
+                f"- [{idiom}] L{fo_line}: {breadth}handler catching "
+                f"[{caught}] wraps `{matched}` "
+                f"({role_kind} role via {role_source})",
+            )
+            snippet = str(lead.get("snippet", "")).strip()
+            if snippet:
+                lines_fo.append(
+                    f"  code: {neutralize_tag_forgery(snippet)}",
+                )
+        lines_fo.append("</untrusted>")
+        lines_fo.append(
+            "\nEach lead is a silent error handler around a "
+            "security-role call, found mechanically BEFORE your "
+            "review. For each: form a fail-open hypothesis (\"X "
+            "fails open when ...\") so it can be verified, or "
+            "explicitly discharge it as intended behaviour with the "
+            "evidence that closes it. These are detection-grade "
+            "leads, not proof."
+        )
+        sections.append(PromptSection(
+            "fail_open_leads", "\n".join(lines_fo), 1,
         ))
 
     if ctx.get("callee_contract_violation"):

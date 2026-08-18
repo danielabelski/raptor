@@ -1173,6 +1173,11 @@ def review_one_function(
     if gap.get("consistency_leads"):
         ctx["consistency_leads"] = list(gap["consistency_leads"])
 
+    # Fail-open census leads (same pattern): the renderer turns each
+    # into a hypothesize-or-discharge obligation.
+    if gap.get("fail_open_leads"):
+        ctx["fail_open_leads"] = list(gap["fail_open_leads"])
+
     # --- Mechanical gates: per-function context enrichment ---
     if provenance_map and gap_key_mech in provenance_map:
         with contextlib.suppress(*_ENRICH_ERRORS):
@@ -3515,6 +3520,54 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     except Exception:
         logger.debug("consistency prepass failed", exc_info=True)
 
+    # Fail-open census pre-pass (design §6): detection-grade leg-1 x
+    # leg-2 sweep over the handler-outcome family; leads land on gap
+    # dicts so the review prompt renders a hypothesize-or-discharge
+    # obligation. The phase-1 field runs had a quiet fail_open tier —
+    # seeding generates the candidates instead of waiting for the LLM
+    # to phrase one.
+    fail_open_census: dict[str, Any] = {}
+    try:
+        from .fail_open_census import (
+            run_fail_open_census,
+            seed_fail_open_leads,
+        )
+
+        fo_texts: dict[str, str] = {}
+        for gap in gaps:
+            fp = gap.get("file", "")
+            if fp and fp not in fo_texts:
+                with contextlib.suppress(Exception):
+                    src_path = config.target_path / fp
+                    if src_path.is_file():
+                        fo_texts[fp] = src_path.read_text(
+                            errors="replace",
+                        )
+        if fo_texts:
+            fail_open_census = run_fail_open_census(
+                fo_texts,
+                out_dir=config.out_dir,
+                annotations_dir=getattr(config, "annotations_dir", None),
+                inventory=getattr(config, "inventory", None),
+                context_map=context_map,
+            )
+            n_fo_leads = seed_fail_open_leads(
+                gaps, fail_open_census.get("leads", []),
+            )
+            if n_fo_leads:
+                logger.info(
+                    "fail-open census: %d handler leads seeded onto "
+                    "gaps", n_fo_leads,
+                )
+            if config.out_dir:
+                with contextlib.suppress(Exception):
+                    append_audit_log(config.out_dir, {
+                        "action": "fail_open_census",
+                        **(fail_open_census.get("telemetry") or {}),
+                    })
+    except Exception:
+        logger.debug("fail-open census failed", exc_info=True)
+
     if mechanical_findings and config.out_dir:
         try:
             mech_path = config.out_dir / "mechanical-findings.json"
@@ -3576,6 +3629,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "semantic_findings": semantic_findings,
         "mechanical_findings": mechanical_findings,
         "consistency_prepass": consistency_prepass,
+        "fail_open_census": fail_open_census,
         "guard_clean_keys": guard_clean_keys,
         "detector_gaps": detector_gaps,
         "provenance_map": provenance_map,
@@ -4020,6 +4074,53 @@ def _journal_undischarged_leads(
         logger.debug("undischarged-lead telemetry failed", exc_info=True)
 
 
+def _journal_undischarged_fail_open_leads(
+    fail_open_census: dict[str, Any],
+    outcomes: list[Any],
+    out_dir: Path | None,
+) -> None:
+    """``fail_open_lead:undischarged`` telemetry (design §6.4): census
+    leads seeded onto gaps whose function never reached a review —
+    the negative-space-style absence-is-signal bookkeeping."""
+    if not out_dir:
+        return
+    leads = (fail_open_census or {}).get("leads") or []
+    if not leads:
+        return
+    reviewed = {
+        (getattr(o, "file", ""),
+         (getattr(o, "function", "") or "").rsplit(".", 1)[-1])
+        for o in outcomes
+    }
+    undischarged = [
+        ld for ld in leads
+        if (ld.get("file", ""),
+            (ld.get("function", "") or "").rsplit(".", 1)[-1])
+        not in reviewed
+    ]
+    if not undischarged:
+        return
+    try:
+        append_audit_log(out_dir, {
+            "action": "fail_open_lead:undischarged",
+            "count": len(undischarged),
+            "leads": [
+                {
+                    "idiom": ld.get("idiom", ""),
+                    "role_kind": ld.get("role_kind", ""),
+                    "role_source": ld.get("role_source", ""),
+                    "file": ld.get("file", ""),
+                    "function": ld.get("function", ""),
+                    "line": ld.get("line", 0),
+                }
+                for ld in undischarged[:20]
+            ],
+        })
+    except Exception:
+        logger.debug("undischarged fail-open lead telemetry failed",
+                     exc_info=True)
+
+
 def _checklist_function_line(
     checklist: dict[str, Any],
     file_path: str,
@@ -4232,7 +4333,18 @@ def _run_audit_body(
     semantic_findings = _prep["semantic_findings"]
     mechanical_findings = _prep["mechanical_findings"]
     consistency_prepass = _prep.get("consistency_prepass") or {}
+    fail_open_census = _prep.get("fail_open_census") or {}
     guard_clean_keys = _prep.get("guard_clean_keys", set())
+
+    # Census budget overrun surfaces as a skipped tier count (design
+    # §9: abandoned, not an error).
+    try:
+        if (fail_open_census.get("telemetry") or {}).get(
+                "budget_exceeded"):
+            result.tier_counters["fail_open"].skipped += 1
+    except Exception:
+        logger.debug("fail_open census tier seeding failed",
+                     exc_info=True)
 
     # Pre-pass verdict counts surface in tier-diagnostics alongside the
     # in-loop channel adjudications (§4.4).
@@ -6022,6 +6134,13 @@ def _run_audit_body(
         )
     except Exception:
         logger.debug("consistency outcome export failed", exc_info=True)
+
+    try:
+        _journal_undischarged_fail_open_leads(
+            fail_open_census, result.outcomes, config.out_dir,
+        )
+    except Exception:
+        logger.debug("fail-open lead telemetry failed", exc_info=True)
 
     # --- Bypass-finding review pass (bounded) ---
     #

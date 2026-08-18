@@ -587,12 +587,6 @@
   "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
-  "plumbing:orphan_config_field:core/audit/condition_cpg.py:ExposureContext.http_method": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:core/audit/condition_cpg.py:ExposureContext.requires_permission": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
   "plumbing:orphan_config_field:core/audit/contracts.py:ContractViolation.violated_precondition": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },

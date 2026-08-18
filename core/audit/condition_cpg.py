@@ -514,8 +514,6 @@ class ExposureContext:
     sink_api: str
     entry_point_route: str = ""
     requires_auth: bool = False
-    requires_permission: str = ""
-    http_method: str = ""
     exposure_level: str = "unknown"  # public, authenticated, admin, internal
 
     @property

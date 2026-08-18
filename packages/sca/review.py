@@ -72,7 +72,24 @@ def main(
     http: HttpClient | None = None,
     cache: JsonCache | None = None,
 ) -> int:
-    """``raptor-sca check`` entry point."""
+    """``raptor-sca check`` entry point.
+
+    Exit-code contract (module docstring): verdicts map to 0/1/2;
+    invalid arguments and internal errors map to 3.
+    """
+    try:
+        return _checked_main(argv, http=http, cache=cache)
+    except Exception:
+        logger.exception("raptor-sca check: internal error")
+        return 3
+
+
+def _checked_main(
+    argv: Sequence[str],
+    *,
+    http: HttpClient | None = None,
+    cache: JsonCache | None = None,
+) -> int:
     from .cli import _configure_logging  # local import: avoid cycle
 
     args = _parse_args(argv)
@@ -86,7 +103,9 @@ def main(
             f"expected one of {known_list()}",
             file=sys.stderr,
         )
-        return 2
+        # Invalid arguments — exit 3 per the module exit-code
+        # contract (2 is reserved for the block verdict).
+        return 3
 
     if cache is None:
         cache = JsonCache(root=Path(args.cache_root) if args.cache_root else SCA_CACHE_ROOT)

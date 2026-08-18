@@ -367,3 +367,17 @@ def test_advisory_line_sanitises_osv_fields() -> None:
     assert "\x07" not in line
     assert "\\x1b" in line
     assert "![leak](https://evil.example/x.png)" not in line
+
+
+def test_explain_requires_target(tmp_path: Path, capsys) -> None:
+    """--explain without --target must be a parse error (the help text
+    documents the coupling), never a silent cwd-relative grep."""
+    with pytest.raises(SystemExit) as exc:
+        whatif.main(
+            ["npm", "x", "1.0", "2.0", "--explain"],
+            http=StubHttp(version_to_vulns={}, records={}),
+            cache=JsonCache(root=tmp_path),
+        )
+    assert exc.value.code == 2  # argparse usage-error exit
+    err = capsys.readouterr().err
+    assert "--target is required with --explain" in err

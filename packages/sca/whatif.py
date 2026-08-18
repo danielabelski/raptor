@@ -18,8 +18,10 @@ Two modes:
 
 Output: markdown to stdout (or ``--out``). Exit code:
 
-    0  — pairwise: at least one advisory resolved AND no new advisories
-         introduced; or candidates: at least one candidate resolves all.
+    0  — pairwise: no new advisories introduced — either at least one
+         advisory resolved, or a no-op where both versions carry the
+         same advisory set; or candidates: at least one candidate
+         resolves all.
     1  — non-trivial trade-off: some advisories regressed, or no
          candidate fully resolves the open set.
     2  — invalid arguments.
@@ -156,7 +158,9 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument(
         "--remove", metavar="ECO:NAME", action="append", default=None,
         help="propose removing a dep; report advisories the project "
-             "would no longer be exposed to. Requires --findings.",
+             "would no longer be exposed to. Needs --findings to know "
+             "which advisories currently apply; without it the report "
+             "shows nothing clearing.",
     )
     p.add_argument(
         "--from", metavar="CHANGES.JSON", dest="from_file",
@@ -201,6 +205,10 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     if args.candidates:
         extras = [c.strip() for c in args.candidates.split(",") if c.strip()]
         args.candidate = (args.candidate or []) + extras
+    # --explain greps call sites under --target; without an explicit
+    # target the analysis would silently run against an arbitrary cwd.
+    if args.explain and not args.target:
+        p.error("--target is required with --explain")
     # Determine whether we're in modal (--add/--remove/--from) or
     # positional mode. Modal mode skips the positional-required check.
     modal = bool(args.add or args.remove or args.from_file)

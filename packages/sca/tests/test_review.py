@@ -9,6 +9,14 @@ import pytest
 
 from core.json import JsonCache
 from packages.sca import review
+from packages.sca.models import (
+    Confidence,
+    Dependency,
+    PinStyle,
+    Reachability,
+    SupplyChainFinding,
+    VulnFinding,
+)
 from packages.sca.osv import OSV_VULN_URL_TEMPLATE
 
 _LODASH_VULN_RECORD = {
@@ -101,14 +109,33 @@ def test_clean_dep_returns_zero(tmp_path: Path, capsys) -> None:
     assert "No advisories found" in out
 
 
-def test_unknown_ecosystem_returns_2(tmp_path: Path, capsys) -> None:
-    """Unrecognised ecosystem rejected before any OSV call."""
+def test_unknown_ecosystem_returns_3(tmp_path: Path, capsys) -> None:
+    """Unrecognised ecosystem rejected before any OSV call.
+
+    Exit 3, not 2 — the exit-code contract reserves 2 for the block
+    verdict; invalid arguments map to 3 so CI gates keyed on 2 don't
+    treat a typo'd ecosystem as a blocked package.
+    """
     http = StubHttp()
     cache = JsonCache(root=tmp_path)
     rc = review.main(["Bogus", "requests", "0.1.0"], http=http, cache=cache)
-    assert rc == 2
+    assert rc == 3
     err = capsys.readouterr().err
     assert "unknown ecosystem" in err
+
+
+def test_internal_error_returns_3(tmp_path: Path, monkeypatch) -> None:
+    """Unexpected exceptions map to exit 3 (internal error), never to a
+    verdict code or a raw traceback exit."""
+    def _boom(*args: Any, **kwargs: Any):
+        raise RuntimeError("finding builder melted")
+
+    monkeypatch.setattr(review, "build_vuln_findings", _boom)
+    rc = review.main(
+        ["npm", "lodash", "4.17.4", "--no-transitive"],
+        http=StubHttp(), cache=JsonCache(root=tmp_path),
+    )
+    assert rc == 3
 
 
 def test_lowercase_ecosystem_canonicalised(tmp_path: Path, capsys) -> None:
@@ -516,14 +543,6 @@ def test_kev_in_transitive_escalates_verdict_to_block(
 # high-EPSS threshold additions.
 # ---------------------------------------------------------------------------
 
-from packages.sca.models import (
-    Confidence,
-    Dependency,
-    PinStyle,
-    Reachability,
-    VulnFinding,
-)
-
 
 def _vuln(severity: str = "critical", *, fixed: str | None = "9.0.0",
            in_kev: bool = False, epss: float | None = None) -> VulnFinding:
@@ -623,8 +642,6 @@ def test_single_critical_no_epss_does_not_block() -> None:
 # tested separately); this verdict pass just consumes pre-computed
 # findings and maps them onto Clean / Review / Block.
 # ---------------------------------------------------------------------------
-
-from packages.sca.models import SupplyChainFinding
 
 
 def _supply(kind: str = "recent_publish",

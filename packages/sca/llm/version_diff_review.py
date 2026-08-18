@@ -18,7 +18,6 @@ for the operator.
 
 from __future__ import annotations
 
-import contextlib
 import difflib
 import io
 import logging
@@ -353,10 +352,10 @@ def _extract_tar(data: bytes, out: dict[str, str]) -> None:
         max_total_bytes=_MAX_TOTAL_EXTRACT_BYTES,
     )
     for key, blob in raw.items():
-        # ``errors="replace"`` decoding is effectively infallible;
-        # suppress is belt-and-braces against exotic bytes-likes.
-        with contextlib.suppress(Exception):
-            out[key] = blob.decode("utf-8", errors="replace")
+        # ``errors="replace"`` decoding of the helper's ``bytes``
+        # values cannot fail; anything raised here is a wiring bug
+        # and must propagate.
+        out[key] = blob.decode("utf-8", errors="replace")
 
 
 def _extract_zip(data: bytes, out: dict[str, str]) -> None:

@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -1318,9 +1319,10 @@ def _run_self_test(
         if worktree.exists():
             # Cleanup is best-effort; rmtree below removes the
             # files regardless of whether git's bookkeeping
-            # got tidied.
-            import contextlib
-            with contextlib.suppress(Exception):
+            # got tidied. Spawn/timeout failures are the legitimate
+            # loss modes here; a bad argument is a wiring bug and
+            # must propagate.
+            try:
                 run_untrusted(
                     ["git", "worktree", "remove", "--force",
                      str(worktree)],
@@ -1330,6 +1332,11 @@ def _run_self_test(
                     cwd=str(target),
                     capture_output=True, text=True, timeout=60,
                     caller_label="sca-harden-self-test/git-worktree-remove",
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                logger.debug(
+                    "harden self-test: git worktree remove failed for "
+                    "%s (leak candidate): %s", worktree, e,
                 )
         import shutil
         shutil.rmtree(tmp_root, ignore_errors=True)

@@ -32,8 +32,9 @@ import argparse
 import json as _json
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Sequence
+from typing import NamedTuple
 
 from core.http import HttpClient
 from core.http.urllib_backend import UrllibClient
@@ -87,22 +88,22 @@ def generate_candidates(
     ratio: int = _RATIO,
     min_pos: int = _MIN_POS,
     min_len: int = _MIN_LEN,
-) -> List[Candidate]:
+) -> list[Candidate]:
     """Stage 1. ``ranked`` is most-popular-first. Emit a candidate for each name
     that is Damerau distance ≤1 from a name ranked at least ``ratio``× higher.
     Uses the detector's own metric so build-time and scan-time agree."""
     ratio = max(1, ratio)
     # Dedup, preserving rank order (first occurrence = best rank).
     seen: set = set()
-    names: List[str] = []
+    names: list[str] = []
     for n in ranked:
         if n not in seen:
             seen.add(n)
             names.append(n)
 
-    out: List[Candidate] = []
+    out: list[Candidate] = []
     # references that out-rank P by >= ratio, bucketed by length, with their rank
-    ref_by_len: Dict[int, List[tuple]] = {}
+    ref_by_len: dict[int, list[tuple]] = {}
     next_ref = 0
     for i, p in enumerate(names):
         cutoff = i // ratio
@@ -113,7 +114,7 @@ def generate_candidates(
         if i < min_pos or len(p) < min_len:
             continue
         lp = len(p)
-        twin: Optional[str] = None
+        twin: str | None = None
         twin_idx = -1
         for length in (lp - 1, lp, lp + 1):
             for q, qi in ref_by_len.get(length, ()):
@@ -147,7 +148,7 @@ def _load_name_set(path: Path, ecosystem: str) -> set:
     return set()
 
 
-def _load_name_meta(path: Path, ecosystem: str) -> Dict[str, dict]:
+def _load_name_meta(path: Path, ecosystem: str) -> dict[str, dict]:
     """``{name: metadict}`` for ``ecosystem`` — like :func:`_load_name_set` but
     keeps the per-name provenance (e.g. ``near_twin``). Bare-list entries map to
     ``{}``."""
@@ -173,7 +174,7 @@ def pending_candidates(
     denylist_path: Path = _DENYLIST_PATH,
     reviewed_legit_path: Path = _REVIEWED_LEGIT_PATH,
     **gen_kwargs,
-) -> List[Candidate]:
+) -> list[Candidate]:
     """Stage 2. Candidates minus already-classified names (denylist ∪
     reviewed-legit) — the delta a human/LLM still needs to decide."""
     skip = (_load_name_set(denylist_path, ecosystem)
@@ -184,15 +185,15 @@ def pending_candidates(
 
 def audit(
     http: HttpClient,
-    ecosystems: Optional[Sequence[str]] = None,
+    ecosystems: Sequence[str] | None = None,
     *,
     top_n: int = _DEFAULT_TOP_N,
     **gen_kwargs,
-) -> Dict[str, List[Candidate]]:
+) -> dict[str, list[Candidate]]:
     """Fetch each ecosystem's rank-ordered feed and return its pending delta.
     A feed that fails to fetch is logged and skipped (fail-soft)."""
     ecos = list(ecosystems) if ecosystems else list(_RANKED_FETCHERS)
-    results: Dict[str, List[Candidate]] = {}
+    results: dict[str, list[Candidate]] = {}
     for eco in ecos:
         fetch = _RANKED_FETCHERS.get(eco)
         if fetch is None:
@@ -207,7 +208,7 @@ def audit(
     return results
 
 
-def render_markdown(results: Dict[str, List[Candidate]]) -> str:
+def render_markdown(results: dict[str, list[Candidate]]) -> str:
     """Markdown for the refresh PR body. Returns ``""`` when nothing is pending
     (so the workflow can skip the nudge entirely)."""
     total = sum(len(v) for v in results.values())
@@ -216,10 +217,12 @@ def render_markdown(results: Dict[str, List[Candidate]]) -> str:
     lines = [
         f"### ⚠️ {total} new typosquat candidate(s) pending triage",
         "",
-        "Near-names that rode the popularity feed in and are not yet classified "
-        "(in neither `typosquat_denylist.json` nor `typosquat_reviewed_legit.json`). "
-        "Triage with `raptor-sca triage` (fetches evidence + proposes a verdict); "
-        "confirm squats into the denylist, legit near-names into reviewed-legit.",
+        (
+            "Near-names that rode the popularity feed in and are not yet classified "
+            "(in neither `typosquat_denylist.json` nor `typosquat_reviewed_legit.json`). "
+            "Triage with `raptor-sca triage` (fetches evidence + proposes a verdict); "
+            "confirm squats into the denylist, legit near-names into reviewed-legit."
+        ),
         "",
     ]
     for eco in sorted(results):
@@ -238,7 +241,7 @@ def render_markdown(results: Dict[str, List[Candidate]]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_text(results: Dict[str, List[Candidate]]) -> str:
+def render_text(results: dict[str, list[Candidate]]) -> str:
     total = sum(len(v) for v in results.values())
     if total == 0:
         return "No pending typosquat candidates.\n"
@@ -251,7 +254,7 @@ def render_text(results: Dict[str, List[Candidate]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _registry_clients(http, cache) -> Dict[str, object]:
+def _registry_clients(http, cache) -> dict[str, object]:
     """Registry clients for the evidence fetch (Stage 3), built the SAME way as
     the scan pipeline: through the SCA egress-controlled client (``default_client``
     routes via the in-process proxy with ``SCA_ALLOWED_HOSTS`` enforced — the
@@ -273,7 +276,7 @@ def _registry_clients(http, cache) -> Dict[str, object]:
 
 
 def run_llm_triage(
-    results: Dict[str, List[Candidate]],
+    results: dict[str, list[Candidate]],
     *,
     reviewed_legit_path,
 ) -> str:
@@ -285,7 +288,9 @@ def run_llm_triage(
     from .. import SCA_CACHE_ROOT, default_client
     from ..llm import get_llm_client
     from .typosquat_triage import (
-        Disposition, collect_evidence_rich, make_llm_verdict_fn,
+        Disposition,
+        collect_evidence_rich,
+        make_llm_verdict_fn,
         triage_ecosystem,
     )
     llm = get_llm_client()
@@ -295,14 +300,15 @@ def run_llm_triage(
     model_label = "llm"
     try:                                          # best-effort provenance
         model_label = str(llm.config.primary_model.model_id) or "llm"
-    except Exception:                             # noqa: BLE001
+    except AttributeError:
+        # Duck-typed probe: client doubles may lack the config chain.
         pass
     http = default_client()
     cache = JsonCache(root=SCA_CACHE_ROOT)
     clients = _registry_clients(http, cache)
-    auto: List[str] = []
-    confirm: List[str] = []
-    review: List[str] = []
+    auto: list[str] = []
+    confirm: list[str] = []
+    review: list[str] = []
     for eco, cands in sorted(results.items()):
         client = clients.get(eco)
         if not cands or client is None:
@@ -327,25 +333,25 @@ def run_llm_triage(
                 review.append(line)
     lines = [f"Auto-filed legit → reviewed_legit.json ({len(auto)}):"]
     lines += [f"  {x}" for x in auto] or ["  (none)"]
-    lines += ["", f"CONFIRM before denylisting ({len(confirm)}) — "
-              "add to typosquat_denylist.json if a squat:"]
+    lines += ["", (f"CONFIRM before denylisting ({len(confirm)}) — "
+              "add to typosquat_denylist.json if a squat:")]
     lines += [f"  {x}" for x in confirm] or ["  (none)"]
     lines += ["", f"Review ({len(review)}):"]
     lines += [f"  {x}" for x in review] or ["  (none)"]
     return "\n".join(lines) + "\n"
 
 
-def _render_reaudit(flagged: Dict[str, list]) -> str:
+def _render_reaudit(flagged: dict[str, list]) -> str:
     total = sum(len(v) for v in flagged.values())
     if total == 0:
         return ""        # nothing flagged → workflow's [ -s ] skips the issue
     lines = [f"### ⚠️ {total} reviewed-legit entr(ies) flagged for re-review", "",
-             "Names previously filed as legitimate whose CURRENT registry state "
-             "contradicts that (removed / now deprecated / now carrying a "
-             "malicious advisory). Re-review each: move to "
-             "`typosquat_denylist.json` if it should now be flagged, or drop "
-             "from `typosquat_reviewed_legit.json` to re-surface it as a "
-             "candidate.", ""]
+             ("Names previously filed as legitimate whose CURRENT registry state "
+              "contradicts that (removed / now deprecated / now carrying a "
+              "malicious advisory). Re-review each: move to "
+              "`typosquat_denylist.json` if it should now be flagged, or drop "
+              "from `typosquat_reviewed_legit.json` to re-surface it as a "
+              "candidate."), ""]
     for eco in sorted(flagged):
         lines.append(f"**{eco}:**")
         lines += [f"- `{n}` — {reason}" for n, reason in flagged[eco]]
@@ -353,7 +359,7 @@ def _render_reaudit(flagged: Dict[str, list]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_reaudit_llm(enriched: Dict[str, list]) -> str:
+def _render_reaudit_llm(enriched: dict[str, list]) -> str:
     total = sum(len(v) for v in enriched.values())
     if total == 0:
         return "No reviewed-legit entries flagged.\n"
@@ -380,8 +386,11 @@ def run_reaudit(reviewed_legit_path, *, use_llm: bool = False) -> str:
 
     from .. import SCA_CACHE_ROOT, default_client
     from .typosquat_triage import (
-        collect_evidence_rich, make_llm_verdict_fn, osv_malicious,
-        reaudit_recommendation, reaudit_reviewed_legit,
+        collect_evidence_rich,
+        make_llm_verdict_fn,
+        osv_malicious,
+        reaudit_recommendation,
+        reaudit_reviewed_legit,
     )
     http = default_client()
     cache = JsonCache(root=SCA_CACHE_ROOT)
@@ -406,7 +415,7 @@ def run_reaudit(reviewed_legit_path, *, use_llm: bool = False) -> str:
                 + "\n(no LLM configured — Tier-1 mechanical flags only)\n")
     from core.llm.concurrency import run_parallel
 
-    enriched: Dict[str, list] = {}
+    enriched: dict[str, list] = {}
     for eco, items in flagged.items():
         meta = _load_name_meta(reviewed_legit_path, eco)
         verdict_fn = make_llm_verdict_fn(llm, eco)
@@ -432,7 +441,7 @@ def run_reaudit(reviewed_legit_path, *, use_llm: bool = False) -> str:
     return _render_reaudit_llm(enriched)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="raptor-sca triage",
         description=("List typosquat-denylist candidates pending triage: "

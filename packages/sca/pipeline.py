@@ -1289,9 +1289,12 @@ def _run_slopsquat_review(
     # SAGE: recall prior SCA verdicts — short-circuit confirmed packages
     sage_confirmed = set()
     if target:
-        # Best-effort recall — SAGE being absent or unhappy must never
-        # block the slopsquat review.
-        with contextlib.suppress(Exception):
+        # Best-effort recall — SAGE being absent must never block the
+        # slopsquat review. recall_context_for_sca self-catches all
+        # transport/service failures (returns []), so only a partial
+        # install's import can legitimately fail here; anything else
+        # is a wiring bug and must propagate.
+        with contextlib.suppress(ImportError):
             from core.sage.hooks import recall_context_for_sca
             dep_names = [f.dependency.name for f in suspect_findings[:10]]
             ecosystems = list({f.dependency.ecosystem for f in suspect_findings

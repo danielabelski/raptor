@@ -286,12 +286,16 @@ class FrameworkAPI:
 
 @dataclass(slots=True)
 class UnreachableVerdict:
-    """Per-function verdict for sink unreachability eligibility."""
+    """Per-function verdict for sink unreachability eligibility.
+
+    The CWE classes actually narrowed for eligible functions come from
+    the evidence layer's ``_SINK_DEPENDENT_CWES`` constant, not from
+    the verdict.
+    """
     file: str
     function: str
     eligible: bool
     reason: str
-    narrowed_classes: list[str]
 
 
 @dataclass
@@ -660,7 +664,6 @@ def discover_sinks(
                 function=funcname,
                 eligible=False,
                 reason=f"indirection flags: {sorted(indir)}",
-                narrowed_classes=[],
             )
             continue
         unreachable_eligible[key] = UnreachableVerdict(
@@ -668,7 +671,6 @@ def discover_sinks(
             function=funcname,
             eligible=True,
             reason="no transitive reach, no indirection",
-            narrowed_classes=[],
         )
 
     logger.info(

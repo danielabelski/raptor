@@ -232,6 +232,22 @@ def _rank_leads(leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return capped
 
 
+def _inventory_function_names(inventory: Any) -> set[str]:
+    """Function/item names from an inventory dict.
+
+    The builder emits per-file "items"; older inventories carried
+    "functions" — accept both (builder-side compat reads both too).
+    """
+    names: set[str] = set()
+    for frec in (inventory or {}).get("files", []) or []:
+        if not isinstance(frec, dict):
+            continue
+        for fn in frec.get("items", frec.get("functions", [])) or []:
+            if isinstance(fn, dict) and fn.get("name"):
+                names.add(fn["name"])
+    return names
+
+
 def _status_for(res: Any, *, detection: bool) -> str:
     """G7-respecting status mapping (§2.3): a registry-grade
     confirmation promotes to ``finding`` only when the enclosing
@@ -579,11 +595,7 @@ def run_consistency_prepass(
     try:
         from .consistency_dimensions import learned_cleanup_pairs
 
-        function_names: set[str] = set()
-        for frec in (inventory or {}).get("files", []) or []:
-            for fn in frec.get("functions", []) or []:
-                if fn.get("name"):
-                    function_names.add(fn["name"])
+        function_names = _inventory_function_names(inventory)
         if not function_names:
             for entry in census.values():
                 for site in entry.sites:

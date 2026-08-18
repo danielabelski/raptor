@@ -264,7 +264,10 @@ def _callee_returns_void(
     tail = callee.rsplit(".", 1)[-1]
     if inventory:
         for frec in inventory.get("files", []) or []:
-            for fn in frec.get("functions", []) or []:
+            # The builder emits per-file "items"; older inventories
+            # carried "functions" — accept both (builder-side compat
+            # reads both too).
+            for fn in frec.get("items", frec.get("functions", [])) or []:
                 if fn.get("name") == tail:
                     ret = str(
                         (fn.get("metadata") or {}).get("return_type")

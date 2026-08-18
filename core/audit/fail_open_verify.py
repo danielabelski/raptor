@@ -971,7 +971,9 @@ def _inventory_signature(
     defined in the hypothesis's file)."""
     tail = name.rsplit(".", 1)[-1]
     for frec in (inventory or {}).get("files", []) or []:
-        for fn in frec.get("functions", []) or []:
+        # The builder emits per-file "items"; older inventories carried
+        # "functions" — accept both.
+        for fn in frec.get("items", frec.get("functions", [])) or []:
             if fn.get("name") != tail:
                 continue
             sig = fn.get("signature") or ""

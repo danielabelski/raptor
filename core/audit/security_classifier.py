@@ -137,8 +137,36 @@ def _build_classification_prompt(
     if cwe:
         slots["cwe"] = TaintedString(value=str(cwe), trust="untrusted")
 
+    # transparent_payload: measured live (calibration corpus, kernel
+    # target), this classification ask over an ENCODED payload of
+    # kernel-audit content (defect hypothesis + description +
+    # domain-security context) is hard-refused by Claude models
+    # (stop_reason=refusal) while the identical class over a smaller
+    # plaintext-adjacent payload succeeds on the same route — the
+    # fourth call class to hit the encoded-payload refusal conjunction
+    # (see envelope_prompt's docstring; summary / spec_inference /
+    # checker_synthesis landed first). Compensating defences for the
+    # plaintext rendering, per the sibling pattern: pre-call injection
+    # preflight and envelope-echo discard in classify_security_impact.
+    # Both fail toward the existing quality_finding default — a
+    # skipped or discarded call can never promote a finding to
+    # security.
     return envelope_prompt(
         _CLASSIFICATION_SYSTEM, blocks, slots, model_id=model_id,
+        transparent_payload=True,
+    )
+
+
+def _echoes_envelope(result: dict[str, Any]) -> bool:
+    """True when any string field parrots envelope structure.
+
+    A response that echoes ``<untrusted-`` tags is replaying
+    attacker-adjacent structure rather than answering — same
+    contamination floor as the summary and spec-inference classes.
+    """
+    return any(
+        isinstance(v, str) and "<untrusted-" in v
+        for v in result.values()
     )
 
 
@@ -172,9 +200,42 @@ def classify_security_impact(
         except (ValueError, AttributeError):
             pass
 
+    from core.security.prompt_input_preflight import preflight
+
     total_cost = 0.0
     for outcome in candidates:
         key = f"{outcome.file}:{outcome.function}"
+        # Injection preflight over the untrusted inputs BEFORE the
+        # call: this class renders its payload plaintext (see
+        # _build_classification_prompt), so inputs carrying known
+        # injection phrasing get no LLM pass at all — the outcome
+        # keeps the fail-safe quality default instead.
+        pf = preflight(
+            "\n".join((
+                outcome.hypothesis or "",
+                outcome.body or "",
+                security_context or "",
+            )),
+        )
+        if pf.has_injection_indicators:
+            logger.warning(
+                "security classification: injection indicators (%s) in "
+                "%s inputs — skipping LLM classification (quality "
+                "default)",
+                ",".join(pf.indicators), key,
+            )
+            results[key] = {
+                "is_security": False,
+                "classification": "quality_finding",
+                "rationale": (
+                    "classification skipped — injection preflight "
+                    "indicators in inputs"
+                ),
+            }
+            if outcome.review_result is not None:
+                outcome.review_result["security_impact"] = results[key]
+            continue
+
         prompt, system_prompt = _build_classification_prompt(
             outcome, security_context,
             model_id=model_name or getattr(llm_client, "model_name", "") or "",
@@ -190,6 +251,21 @@ def classify_security_impact(
             result = structured_result(response)
             cost = response.cost if hasattr(response, "cost") else 0.0
             total_cost += cost
+            if _echoes_envelope(result):
+                logger.warning(
+                    "security classification for %s discarded — envelope "
+                    "structure echoed in output (possible injection "
+                    "contamination)",
+                    key,
+                )
+                result = {
+                    "is_security": False,
+                    "classification": "quality_finding",
+                    "rationale": (
+                        "classification discarded — envelope structure "
+                        "echoed in output"
+                    ),
+                }
         except Exception:
             logger.warning(
                 "security classification failed for %s — defaulting to quality",

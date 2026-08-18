@@ -135,8 +135,8 @@ Semgrep, Coccinelle, CodeQL, SMT, and compilation invocations run through
 `libexec/raptor-audit sweep` so results are logged to the audit trail
 automatically.  Joern, the compiler analyzers, the expanded-view Semgrep
 pass, the fail-open channel, the consistency channel, the API-boundary
-channel, the SMT invariant channel, and the git-history oracle run as
-orchestrator channels.
+channel, the SMT invariant channel, the ptr-lifecycle and lock-region
+channels, and the git-history oracle run as orchestrator channels.
 
 | Tool | What it validates | Example use |
 |------|-------------------|-------------|
@@ -152,6 +152,8 @@ orchestrator channels.
 | **Consistency channel** | Peer-majority deviations with PeerEvidence receipts: the return-usage census (six-value enum, `return-census.json`), contract witnesses (warn_unused_result, learned contracts, the shared Tier-A registry), flag/mode and error-path-cleanup comparators. Registry-grade contract witness = promote-capable LLM-free finding, stamped `consistency:<dimension>`; majority-only = detection grade, stamped `consistency:<dimension>-majority` and never promotable alone (one shared namespace -- two consistency statistics never self-corroborate to promotion) | "9/10 call sites check `do_auth()`'s return and it is declared `warn_unused_result`; this site discards it" |
 | **API-boundary channel** | Caller-contract hypotheses about exported functions, adjudicated mechanically (`api_boundary:caller-contract`): every in-repo call site guarded = refuted; a concrete unguarded call site = confirmed; external-only callers or environment contracts = inconclusive.  Only literal violations confirm | "Every caller of `resolve_path()` must reject `..` first; `handle_upload()` doesn't" |
 | **SMT invariant channel** | Invariant-preservation checks (`smt:invariant-preservation`): per mutation site, is `invariant(pre) AND transition AND NOT invariant(post)` satisfiable?  All-unsat = preserved; sat = violable.  Linear integer arithmetic, inductive step only; degrades gracefully without z3 | "`buf_len <= buf_cap` survives every append path except the realloc-failure branch" |
+| **Ptr-lifecycle channel** | Stale-alias adjudication on the field-access census (`field-census.json`, CWE-825/672/416): alias edge + lifecycle event + live-alias invalidation search + post-event read, all four receipts (`ptr_lifecycle:stale-alias`; naming-stem event vocabulary or a degraded census = `-naming` detection variant).  The field-assignment-parity leg is a majority statistic and deliberately emits under the consistency namespace (`consistency:field-parity-majority`) so the single-namespace firewall applies to it | "`c->cached` aliases `b->pool`; the error path frees `b` without invalidating the alias and the accessor still returns it" |
+| **Lock-region channel** | Callback invoked while a lock is held (CWE-833/667): learned/pack/seed lock pairs x indirect-call or registered-name invocation, with the exported-setter registrability witness (`lock_region:callback-under-lock`; naming-stem pair or internal-only setter = `-naming`).  Confirmations cap at `suspicious` unless entry-reachable AND setter-exported (both escalators); a parametric Coccinelle rule (`callback_under_lock.cocci`, `-D lock -D unlock`) corroborates as an independent namespace | "`ctx->remove_cb(...)` fires inside the `CRYPTO_THREAD_write_lock` region and the setter is exported API" |
 
 ### SMT verbs
 
@@ -303,6 +305,7 @@ Query audit state across all four layers:
 | `.audit-log.jsonl` | Full audit trail |
 | `review-journal.jsonl` | Per-function review decisions (strategies, hypotheses, tools, cost) |
 | `return-census.json` | Return-usage census from the consistency pre-pass (six-value usage enum per call site) |
+| `field-census.json` | Field-access census from the lifecycle channel pre-pass (per-field write sites with rhs provenance, read sites with use context) |
 | `prefilter-kills.jsonl` | One record per prefilter/triage kill (summary row first, then `file`, `function`, `gate`, `reason`, plus spot-audit corroboration fields on sampled rows) |
 | `suppressions.jsonl` | Oracle-earned triage-skip audit trail (same record shape as `/agentic`/`/codeql`) |
 | `tier-diagnostics.json` | Per-channel outcome counters (prefilter, semgrep, smt, fail_open, consistency, ...) |

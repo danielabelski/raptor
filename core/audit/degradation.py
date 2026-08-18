@@ -136,7 +136,12 @@ _DEGRADATION_MATRIX: list[Fallback] = [
                "regex classes (no read-scan, no acknowledged/tested "
                "split beyond line shapes); the flag/mode and cleanup "
                "comparators need trees and report "
-               "inconclusive('extractor-unavailable') / detect nothing.",
+               "inconclusive('extractor-unavailable') / detect nothing. "
+               "field census: regex-tier records only — verdicts that "
+               "need rhs provenance gate to "
+               "inconclusive('census-incomplete') (ptr_lifecycle "
+               "refuses to guess alias edges; the field-parity leg "
+               "detects nothing).",
         fallback_description="ast for Python handlers, line-regex for "
                              "C call-site shapes and the coarse census",
     ),

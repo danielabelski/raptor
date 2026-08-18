@@ -61,6 +61,41 @@ def _child_isolation(tmp_path_factory):
     _CHILD_HOME = None
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _no_tracked_tree_side_effects():
+    """Battery-side-effect guard: the spawned raptor.py children must
+    never write into the RAPTOR checkout.
+
+    Regression this pins: the --export-seed-corpus smoke test passed a
+    RELATIVE path, so the child (cwd = the pytest cwd, i.e. the repo
+    root) materialised the built-in corpus into ``<repo>/seeds/`` —
+    every battery run regenerated seeds/manifest.json with
+    machine-local paths, and one such artifact ended up committed.
+    Compares porcelain status before/after the module so a dirty
+    developer tree doesn't trip it — only NEW modifications fail.
+    """
+    def _status() -> set[str] | None:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return set(r.stdout.splitlines()) if r.returncode == 0 else None
+
+    before = _status()
+    yield
+    if before is None:
+        return  # not a git checkout — nothing to guard
+    after = _status()
+    new = (after or set()) - before
+    assert not new, (
+        "cli-smoke children modified the RAPTOR checkout: "
+        f"{sorted(new)}"
+    )
+
+
 def _run_raptor(*args: str, timeout: float = 10.0) -> subprocess.CompletedProcess:
     """Invoke ``python raptor.py <args>`` with stdout+stderr captured.
 
@@ -241,8 +276,14 @@ def test_fuzz_accepts_autonomous():
     assert _argparse_accepted("fuzz", "--binary", "./bin", "--autonomous")
 
 
-def test_fuzz_accepts_export_seed_corpus_without_binary():
-    assert _argparse_accepted("fuzz", "--export-seed-corpus", "./seeds")
+def test_fuzz_accepts_export_seed_corpus_without_binary(tmp_path):
+    # Absolute tmp destination: --export-seed-corpus completes fast
+    # (it is not timeout-killed like the scan modes), so a relative
+    # path would materialise the corpus into the child's cwd — the
+    # repo root (see _no_tracked_tree_side_effects).
+    assert _argparse_accepted(
+        "fuzz", "--export-seed-corpus", str(tmp_path / "seeds"),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -203,6 +203,9 @@
   "artifacts:write_only_artifact::changes.pr-comment.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:write_only_artifact::child-env.txt": {
+   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg B): the exact child env, written for human re-verification of the zero-credential grep; the in-memory dict is what the proof asserts on."
+  },
   "artifacts:write_only_artifact::cocci.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -323,6 +326,12 @@
   "artifacts:write_only_artifact::rule.yml": {
    "note": "generated Semgrep rule artifact for operator inspection / external semgrep invocation"
   },
+  "artifacts:write_only_artifact::run1-envelope.json": {
+   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg A/D): the CLI's exit envelope, written for human re-verification; the proof asserts on the parsed stdout directly."
+  },
+  "artifacts:write_only_artifact::run2-output.txt": {
+   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg C): combined output of the refused child run, written for human re-verification; the proof asserts on the in-memory strings."
+  },
   "artifacts:write_only_artifact::sarif_merge.stderr.log": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -337,6 +346,9 @@
   },
   "artifacts:write_only_artifact::source-binary-map.json": {
    "note": "operator/LLM-facing output: Stage A source-to-binary map summary written by raptor-validation-helper for the validation skill stages"
+  },
+  "artifacts:write_only_artifact::spend.json": {
+   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg D): the token's dispatcher spend snapshot, written for human re-verification; the proof asserts on the snapshot dict."
   },
   "artifacts:write_only_artifact::stderr.log": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"

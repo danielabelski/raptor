@@ -33,7 +33,11 @@ from core.audit.callsite_consistency import (
     detect_callsite_deviations,
     parse_source_cached,
 )
-from core.testing import force_census_regex_fallback, ts_parser_available
+from core.testing import (
+    force_census_regex_fallback,
+    requires_ts,
+    ts_parser_available,
+)
 
 
 @pytest.fixture(params=["tree-sitter", "regex-fallback"])
@@ -503,7 +507,13 @@ class TestEngineParity:
     the tree-sitter leg and discarded on the CPG leg, flipping the
     majority statistic by extraction engine rather than by code."""
 
+    @requires_ts("c")
     def test_ts_call_as_argument_is_captured_used(self):
+        # Pins the tree-sitter leg specifically, so it needs the real
+        # grammar: on a bare host build_return_census silently takes
+        # the regex tier, whose documented coarse classes land this
+        # shape in `discarded` — the fallback tier's contract is
+        # pinned by the parser_tier-parametrised tests, not here.
         src = textwrap.dedent("""\
             int outer(int x) {
                 consume(doWork(x));

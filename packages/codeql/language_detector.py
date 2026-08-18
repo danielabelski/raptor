@@ -463,30 +463,6 @@ class LanguageDetector:
             indicators.update(patterns["indicators"])
         return indicators
 
-    def get_primary_language(self, detected: Dict[str, LanguageInfo]) -> str:
-        """
-        Get primary language (highest confidence + file count).
-
-        Args:
-            detected: Dictionary of detected languages
-
-        Returns:
-            Primary language name
-        """
-        if not detected:
-            raise ValueError("No languages detected")
-
-        # Sort by confidence, then by file count
-        sorted_langs = sorted(
-            detected.items(),
-            key=lambda x: (x[1].confidence, x[1].file_count),
-            reverse=True
-        )
-
-        primary = sorted_langs[0][0]
-        logger.info("Primary language: %s", primary)
-        return primary
-
     def filter_codeql_supported(self, detected: Dict[str, LanguageInfo]) -> Dict[str, LanguageInfo]:
         """
         Filter detected languages to only CodeQL-supported ones.

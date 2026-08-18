@@ -500,9 +500,6 @@
   "dead:dead_method:packages/checker_synthesis/library.py:RuleLibrary.active_entries": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
-  "dead:dead_method:packages/codeql/language_detector.py:LanguageDetector.get_primary_language": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_method:packages/exploit_feasibility/analyzer.py:FeasibilityAnalyzer.quick_check": {
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
   },

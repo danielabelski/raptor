@@ -811,6 +811,43 @@ class TestPreconditionVerification:
         assert "UNIVERSALLY SATISFIED" in text
         assert "mechanically refuted" in text
 
+    def test_format_verification_splits_violated_and_unknown(self):
+        """'2/5 verified' is ambiguous — 3 violated is a live lead,
+        3 unknown is benign. The split must be rendered."""
+        from core.audit.spec_inference import (
+            PreconditionVerification,
+            format_precondition_verification,
+        )
+        v = PreconditionVerification(
+            precondition="len <= BUF_SIZE",
+            total_call_sites=5,
+            verified_sites=2,
+            violated_sites=2,
+            unknown_sites=1,
+            is_universally_satisfied=False,
+        )
+        text = format_precondition_verification([v])
+        assert "2/5 callers verified" in text
+        assert "(2 violated, 1 unknown)" in text
+        assert "chase the violating call site(s)" in text
+
+    def test_format_verification_no_violations_no_callout(self):
+        from core.audit.spec_inference import (
+            PreconditionVerification,
+            format_precondition_verification,
+        )
+        v = PreconditionVerification(
+            precondition="ptr != NULL",
+            total_call_sites=4,
+            verified_sites=1,
+            violated_sites=0,
+            unknown_sites=3,
+            is_universally_satisfied=False,
+        )
+        text = format_precondition_verification([v])
+        assert "(0 violated, 3 unknown)" in text
+        assert "chase the violating" not in text
+
 
 # ── Feature 6: Convergence loop ───────────────────────────────────
 

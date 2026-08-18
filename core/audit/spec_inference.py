@@ -634,13 +634,19 @@ def format_precondition_verification(
         if v.total_call_sites == 0:
             continue
         status = "UNIVERSALLY SATISFIED" if v.is_universally_satisfied else (
-            f"{v.verified_sites}/{v.total_call_sites} callers verified"
+            f"{v.verified_sites}/{v.total_call_sites} callers verified "
+            f"({v.violated_sites} violated, {v.unknown_sites} unknown)"
         )
         lines.append(f"- `{v.precondition}`: {status}")
         if v.is_universally_satisfied:
             lines.append(
                 "  A hypothesis that callers violate this precondition "
                 "is mechanically refuted."
+            )
+        elif v.violated_sites > 0:
+            lines.append(
+                "  At least one caller mechanically violates this "
+                "precondition — chase the violating call site(s) first."
             )
     return "\n".join(lines)
 

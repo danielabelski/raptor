@@ -88,11 +88,19 @@ def import_reused_verdicts(
     evidence_index: Any = None,
     joern_server: Any = None,
     reviewed_outcomes: Any = None,
+    same_run: bool = False,
 ) -> int:
     """Materialise reuse candidates as outcomes on this run.
 
     Returns the number of verdicts imported. Best-effort per entry —
     one malformed candidate must not cost the rest.
+
+    ``same_run=True`` is the resume path (``raptor-audit resume``):
+    the candidates ARE this run's own journal entries (hash-verified
+    by the same-run fold), so the own-journal idempotence guard is
+    skipped — re-importing them is the point. Each import appends a
+    fresh ``reused=true`` journal row; ``latest_entries`` keeps one
+    verdict per function, so counts stay coherent across segments.
     """
     if not candidates:
         return 0
@@ -106,14 +114,19 @@ def import_reused_verdicts(
 
     # Idempotence guard: an ensemble/multi-pass run reusing cached
     # prep would otherwise import the same candidates once per pass —
-    # skip anything this run's own journal already carries.
+    # skip anything this run's own journal already carries. Bypassed
+    # for same-run resume, whose candidates are by construction in
+    # this run's journal.
     already: set = set()
-    try:
-        from .journal import reviewed_set
-        if getattr(config, "out_dir", None):
-            already = reviewed_set(config.out_dir)
-    except Exception:
-        logger.debug("verdict reuse: journal pre-read failed", exc_info=True)
+    if not same_run:
+        try:
+            from .journal import reviewed_set
+            if getattr(config, "out_dir", None):
+                already = reviewed_set(config.out_dir)
+        except Exception:
+            logger.debug(
+                "verdict reuse: journal pre-read failed", exc_info=True,
+            )
 
     imported = 0
     resweep_confirmed = 0
@@ -210,7 +223,13 @@ def import_reused_verdicts(
         breakdown = ", ".join(
             f"{n} {s}" for s, n in sorted(by_status.items())
         )
-        line = f"verdict reuse: {imported} imported from prior runs ({breakdown})"
+        origin_label = (
+            "this run's prior segments" if same_run else "prior runs"
+        )
+        line = (
+            f"verdict reuse: {imported} imported from "
+            f"{origin_label} ({breakdown})"
+        )
         if resweep_confirmed or resweep_demoted:
             line += (
                 f"; findings mechanically re-validated: "

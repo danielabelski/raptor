@@ -383,6 +383,21 @@ class OrchestratorConfig:
     # the single review_fn pinned to models[0] and model B was never
     # invoked at all.
     review_fns_by_model: dict[str, Callable] | None = None
+    # Same-run resume (``raptor-audit resume <out-dir>``): fold this
+    # run's OWN journal hash-aware into the reuse candidates (a $0
+    # re-import per prior-segment verdict) instead of the blanket
+    # already-reviewed suppression, and bypass the reuse importer's
+    # own-journal idempotence guard. See core.audit.resume.
+    same_run_reuse: bool = False
+    # Prior segments' reconciled ledger (cost-breakdown.json contents
+    # loaded by the resume CLI). Booked into the cost tracker as a
+    # ``prior_segments`` phase at reconciliation so the end-of-run
+    # ledger covers ALL segments while this process's budget client
+    # only ever sees the remaining cap.
+    prior_cost_breakdown: dict[str, Any] | None = None
+    # 1 for a first run; the segment number stamped by
+    # core.run.metadata.resume_run for resumed segments.
+    resume_segment: int = 1
 
 
 @dataclass
@@ -2895,10 +2910,13 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     # hash-verified, reuse-eligible prior-run journal entries; they
     # are imported as $0 outcomes just before the review loop.
     reuse_candidates: dict[str, Any] = {}
+    _same_run_reuse = (
+        getattr(config, "same_run_reuse", False) and not config.force
+    )
     _reuse_enabled = (
         getattr(config, "verdict_reuse", True)
         and not config.force
-        and _project_dir is not None
+        and (_project_dir is not None or _same_run_reuse)
     )
     _primary_model = (
         config.models[0]
@@ -2929,6 +2947,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         include_kinds=getattr(config, "include_kinds", None),
         reuse_sink=reuse_candidates if _reuse_enabled else None,
         current_model=_primary_model,
+        own_run_reuse=_same_run_reuse,
     )
 
     _joern_last_activity = [time.monotonic()]
@@ -4640,9 +4659,12 @@ def _run_audit_body(
 
     write_gaps(gaps, config.out_dir)
 
+    # Same-run resume relies on the hash-aware journal fold alone: the
+    # audit-log-derived reviewed_set would ALSO suppress the drifted
+    # functions the fold deliberately resurfaced for re-review.
     reviewed_set = (
         set()
-        if config.force
+        if config.force or getattr(config, "same_run_reuse", False)
         else get_reviewed_set(config.out_dir)
         if config.resume
         else set()
@@ -5222,6 +5244,7 @@ def _run_audit_body(
                 evidence_index=evidence_index,
                 joern_server=joern_server,
                 reviewed_outcomes=reviewed_outcomes,
+                same_run=getattr(config, "same_run_reuse", False),
             )
         except Exception:
             logger.warning(
@@ -6780,6 +6803,22 @@ def _reconcile_cost_ledgers(config, result) -> None:
                     f"{c}=${v:.2f}" for c, v in sorted(booked.items())
                 ),
             )
+    # Same-run resume: book the prior segments' reconciled spend
+    # BEFORE injecting this segment's client ledger, so the rewritten
+    # cost-breakdown.json covers the whole run (the budget client only
+    # ever saw the remaining cap for this segment).
+    prior_breakdown = getattr(config, "prior_cost_breakdown", None)
+    if prior_breakdown:
+        try:
+            from .resume import booked_spend_usd
+            result.cost_tracker.book_prior_segments(
+                booked_spend_usd(prior_breakdown),
+                segment=getattr(config, "resume_segment", 1),
+            )
+        except Exception:
+            logger.debug(
+                "prior-segment ledger booking failed", exc_info=True,
+            )
     client = getattr(config, "llm_budget_client", None)
     if client is not None:
         # The provider ledger is the honest floor for money actually
@@ -6797,7 +6836,13 @@ def _reconcile_cost_ledgers(config, result) -> None:
     logger.info(result.cost_tracker.summary())
     if sink is not None:
         tel_total = sink.total_cost_usd()
-        ledger_total = result.cost_tracker.total_spend_usd
+        # The telemetry sink counts THIS process's calls only —
+        # compare against the segment-local ledger, not the booked
+        # prior-segment spend a resumed run carries.
+        ledger_total = (
+            result.cost_tracker.total_spend_usd
+            - result.cost_tracker.prior_segments_spend_usd
+        )
         scale = max(tel_total, ledger_total)
         if scale > 0 and abs(tel_total - ledger_total) > 0.01 * scale:
             logger.warning(

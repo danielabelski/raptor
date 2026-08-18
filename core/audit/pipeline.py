@@ -116,6 +116,16 @@ class AuditPipelineOpts:
     # Slice of --max-cost held back for the deepen phase so announced
     # re-reviews can execute (None = orchestrator default).
     deepen_reserve_fraction: float | None = None
+    # Same-run resume (raptor-audit resume): re-import this run's own
+    # journal verdicts at $0 and re-review only the remaining gaps.
+    same_run_reuse: bool = False
+    # Prior segments' reconciled cost-breakdown.json contents; booked
+    # into the run ledger at reconciliation so the rewritten ledger
+    # covers all segments.
+    prior_cost_breakdown: dict[str, Any] | None = None
+    # Segment number for a resumed run (from core.run.metadata.
+    # resume_run); 1 for a first run.
+    resume_segment: int = 1
 
 
 
@@ -249,6 +259,9 @@ def _build_orchestrator_config(
         probe_determine_value=opts.probe_determine_value,
         **({"deepen_reserve_fraction": opts.deepen_reserve_fraction}
            if opts.deepen_reserve_fraction is not None else {}),
+        same_run_reuse=opts.same_run_reuse,
+        prior_cost_breakdown=opts.prior_cost_breakdown,
+        resume_segment=opts.resume_segment,
         llm_budget_client=client,
         llm_client=client,
     )

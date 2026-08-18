@@ -95,6 +95,7 @@ def compute_gaps(
     reuse_sink: dict | None = None,
     current_model: str | None = None,
     scope_floor: bool = True,
+    own_run_reuse: bool = False,
 ) -> list[dict[str, Any]]:
     """Compute the list of unreviewed functions.
 
@@ -137,6 +138,14 @@ def compute_gaps(
             running on the default/session model). Used by the reuse
             eligibility screen — a verdict recorded under a
             different model is re-reviewed, not imported.
+        own_run_reuse: Same-run resume mode (``raptor-audit resume``).
+            The run's OWN journal is folded hash-aware through the
+            same verification + eligibility screen as the project
+            index — verified entries land in ``reuse_sink`` for a $0
+            re-import, drifted/ineligible entries resurface as gaps —
+            instead of the default blanket suppression (which assumes
+            source stability within one process lifetime, an
+            assumption a resumed run cannot make).
 
     Returns:
         List of gap dicts sorted by priority, each containing:
@@ -224,6 +233,7 @@ def compute_gaps(
         reuse_sink=reuse_sink,
         current_strategies_fn=_current_strategies,
         current_model=current_model,
+        own_run_reuse=own_run_reuse,
     )
     file_tool_coverage = _build_file_tool_coverage(coverage_records)
     entry_point_set = extract_context_map_set(context_map, "entry_points")
@@ -1184,6 +1194,7 @@ def _fold_journal_into_covered(
     reuse_sink: dict | None = None,
     current_strategies_fn=None,
     current_model: str | None = None,
+    own_run_reuse: bool = False,
 ) -> None:
     """Fold review-journal entries into the covered-function set so
     LLM-reviewed functions suppress gaps mid-run.
@@ -1211,8 +1222,28 @@ def _fold_journal_into_covered(
     """
     if out_dir is not None:
         try:
-            from .journal import reviewed_set
-            covered.update(reviewed_set(out_dir))
+            if own_run_reuse and reuse_sink is not None:
+                # Same-run resume: the process died between segments,
+                # so the "source is stable within a single run"
+                # assumption no longer holds — fold this run's own
+                # journal through the same hash verification +
+                # eligibility screen as the project index. Verified
+                # entries become $0 re-import candidates; drifted
+                # entries resurface for a real re-review.
+                from .journal import latest_entries
+                _verify_entries_fold(
+                    covered,
+                    list(latest_entries(out_dir).values()),
+                    target_path=target_path,
+                    current_spans=current_spans or {},
+                    reuse_sink=reuse_sink,
+                    current_strategies_fn=current_strategies_fn,
+                    current_model=current_model,
+                    source_label="same-run",
+                )
+            else:
+                from .journal import reviewed_set
+                covered.update(reviewed_set(out_dir))
         except Exception:
             logger.warning(
                 "journal-fold: failed to read per-run journal at %s — "
@@ -1329,8 +1360,45 @@ def _fold_project_index(
     """
     from .journal import load_index
 
+    _verify_entries_fold(
+        covered,
+        list(load_index(project_dir).values()),
+        target_path=target_path,
+        current_spans=current_spans,
+        reuse_sink=reuse_sink,
+        current_strategies_fn=current_strategies_fn,
+        current_model=current_model,
+        source_label="prior-run",
+    )
+
+
+def _verify_entries_fold(
+    covered: set,
+    entries: list,
+    *,
+    target_path: Path | None,
+    current_spans: dict[str, tuple],
+    reuse_sink: dict | None,
+    current_strategies_fn,
+    current_model: str | None,
+    source_label: str,
+) -> None:
+    """Hash-verify journal *entries* and fold them into ``covered``.
+
+    Shared verification core for the project-index fold (cross-run
+    verdict reuse) and the same-run resume fold — both apply identical
+    semantics (see ``_fold_project_index``'s docstring): unverifiable
+    entries keep suppression, hash mismatches resurface as gaps,
+    verified + eligible entries land in ``reuse_sink`` via
+    ``setdefault`` so an earlier fold's candidate (the run's own
+    latest verdict) is never overwritten by a later one (a prior
+    run's).
+
+    ``source_label`` names the entry source in log lines
+    (``same-run`` / ``prior-run``).
+    """
     to_verify: dict[str, list] = {}
-    for entry in load_index(project_dir).values():
+    for entry in entries:
         if entry.verdict == "error":
             continue
         key = f"{entry.file}:{entry.function}"
@@ -1359,9 +1427,9 @@ def _fold_project_index(
             if current and current[:len(stored)] != stored[:len(current)]:
                 stale += 1
                 logger.debug(
-                    "journal-fold: %s changed since prior review "
+                    "journal-fold: %s changed since %s review "
                     "(hash %s → %s) — resurfacing as gap",
-                    key, stored, current,
+                    key, source_label, stored, current,
                 )
                 continue
             if reuse_sink is not None:
@@ -1378,21 +1446,21 @@ def _fold_project_index(
                         key, reason,
                     )
                     continue
-                reuse_sink[key] = entry
+                reuse_sink.setdefault(key, entry)
             covered.add(key)
 
     if stale:
         logger.info(
-            "journal-fold: %d prior-run review(s) stale (source "
+            "journal-fold: %d %s review(s) stale (source "
             "changed) — resurfacing as gaps for re-review",
-            stale,
+            stale, source_label,
         )
     if reuse_blocked:
         logger.info(
-            "journal-fold: %d hash-verified prior review(s) not "
+            "journal-fold: %d hash-verified %s review(s) not "
             "reusable (reduced-context / model / strategy change) — "
             "resurfacing for re-review",
-            reuse_blocked,
+            reuse_blocked, source_label,
         )
 
 

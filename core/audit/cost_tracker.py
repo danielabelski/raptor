@@ -63,11 +63,19 @@ class PhaseCost:
         return d
 
 
+PRIOR_SEGMENTS_PHASE = "prior_segments"
+
+
 @dataclass
 class PhaseCostLedger:
     """Accumulates per-phase cost for an audit run."""
 
     phases: dict[str, PhaseCost] = field(default_factory=dict)
+    # Segment provenance for resumed runs: one row per resume boundary
+    # (``{"segment": n, "prior_spend_usd": x}``). Serialised into
+    # cost-breakdown.json when non-empty so the ledger states which
+    # money belongs to which segment.
+    segments: list[dict[str, Any]] = field(default_factory=list)
     _active_phase: str | None = field(default=None, repr=False)
     _phase_start: float = field(default=0.0, repr=False)
     # Authoritative end-of-run LLM-client ledger (None until injected
@@ -155,8 +163,38 @@ class PhaseCostLedger:
         pc.failed_attempts_cost_usd += cost_usd
 
     def set_total_spend(self, spend_usd: float) -> None:
-        """Inject the authoritative end-of-run LLM-client ledger."""
-        self._total_spend_usd = max(0.0, float(spend_usd))
+        """Inject the authoritative end-of-run LLM-client ledger.
+
+        On a resumed run the client ledger covers THIS segment only —
+        book the prior-segment spend on top so ``total_spend_usd``
+        keeps describing the whole run.
+        """
+        self._total_spend_usd = (
+            max(0.0, float(spend_usd)) + self.prior_segments_spend_usd
+        )
+
+    def book_prior_segments(self, spend_usd: float, *, segment: int) -> None:
+        """Book prior segments' reconciled spend (same-run resume).
+
+        The amount lands in a dedicated ``prior_segments`` phase (no
+        call count — the calls are itemised in the prior segments'
+        telemetry) and a segment row records the boundary, so the
+        rewritten cost-breakdown.json APPENDS to the story instead of
+        silently replacing it with segment-local numbers.
+        """
+        amount = max(0.0, float(spend_usd))
+        pc = self._ensure_phase(PRIOR_SEGMENTS_PHASE)
+        pc.cost_usd += amount
+        self.segments.append({
+            "segment": segment,
+            "prior_spend_usd": round(amount, 4),
+        })
+
+    @property
+    def prior_segments_spend_usd(self) -> float:
+        """Spend booked from prior segments of a resumed run."""
+        pc = self.phases.get(PRIOR_SEGMENTS_PHASE)
+        return pc.cost_usd if pc else 0.0
 
     # Call classes booked at outcome level into phases whose names
     # don't match the class ("review" outcomes land in the review /
@@ -252,14 +290,21 @@ class PhaseCostLedger:
             totals["cache_write_tokens"] = cw
         failed = self.total_failed_attempts_cost_usd
         unattributed = self.unattributed_cost_usd
-        if failed or unattributed or self._total_spend_usd is not None:
+        # ``segments`` forces the authoritative-total block: a resumed
+        # run's ledger must always state the whole-run spend, even
+        # when this segment ran without a budget client.
+        if (failed or unattributed or self._total_spend_usd is not None
+                or self.segments):
             totals["failed_attempts_cost_usd"] = round(failed, 4)
             totals["unattributed_cost_usd"] = round(unattributed, 4)
             totals["total_spend_usd"] = round(self.total_spend_usd, 4)
-        return {
+        out: dict[str, Any] = {
             "phases": {k: v.to_dict() for k, v in sorted(self.phases.items())},
             "totals": totals,
         }
+        if self.segments:
+            out["segments"] = list(self.segments)
+        return out
 
     def write(self, out_dir: Path) -> Path:
         """Write cost-breakdown.json to the run directory."""

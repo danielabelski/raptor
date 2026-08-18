@@ -21,10 +21,25 @@ logger = logging.getLogger(__name__)
 _C_EXTENSIONS = frozenset({".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"})
 _JOERN_STALL_FLOOR_S = 30
 
-_JOERN_EXTENSIONS = frozenset({
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".scala", ".kt",
-    ".go", ".rb", ".php",
-})
+# Recognised source languages Joern has NO curated profile for.
+# lang_config.detect_language() would classify such a target as its
+# DEFAULT (Python) and pin the pythonsrc frontend — an empty or
+# wrong-language CPG — so the gate refuses them with a logged reason
+# instead of booting Joern.
+_UNPROFILED_EXTENSIONS = frozenset({".rb", ".php", ".scala", ".kt"})
+
+
+def _joern_extensions() -> frozenset[str]:
+    """Non-C extensions with a curated Joern language profile.
+
+    Derived from lang_config's extension map so the gate can never
+    admit a language the frontend pinning would mis-route.
+    """
+    try:
+        from packages.joern.lang_config import supported_source_extensions
+    except ImportError:
+        return frozenset()
+    return supported_source_extensions() - _C_EXTENSIONS
 
 
 def target_has_c_sources(target_path: Path | None) -> bool:
@@ -38,12 +53,31 @@ def target_has_c_sources(target_path: Path | None) -> bool:
 
 
 def target_has_joern_sources(target_path: Path | None) -> bool:
-    """Check if target has non-C sources that Joern can parse."""
+    """Check if target has non-C sources Joern has a curated profile for.
+
+    Targets whose only recognised sources are unprofiled languages
+    (Ruby, PHP, Scala, Kotlin) gate to False with a logged reason —
+    the audit then runs on the tree-sitter + LLM fallback.
+    """
     if not target_path or not target_path.is_dir():
         return False
+    supported = _joern_extensions()
+    unprofiled_seen: set[str] = set()
     for p in target_path.rglob("*"):
-        if p.is_file() and p.suffix.lower() in _JOERN_EXTENSIONS:
+        if not p.is_file():
+            continue
+        ext = p.suffix.lower()
+        if ext in supported:
             return True
+        if ext in _UNPROFILED_EXTENSIONS:
+            unprofiled_seen.add(ext)
+    if unprofiled_seen:
+        logger.warning(
+            "Joern disabled for %s: only %s sources found — no curated "
+            "joern-parse profile for these languages; audit falls back "
+            "to tree-sitter + LLM",
+            target_path, ", ".join(sorted(unprofiled_seen)),
+        )
     return False
 
 

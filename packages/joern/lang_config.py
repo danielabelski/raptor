@@ -131,6 +131,26 @@ _PROFILES: dict[str, LangProfile] = {
 
 DEFAULT = PYTHON
 
+# Extension → language, the single authority for which source files
+# have a curated profile. detect_language() counts these; the /audit
+# Joern gate derives its admission set from this map. An extension
+# admitted to Joern but absent here would fall through to DEFAULT and
+# pin the wrong joern-parse frontend (e.g. pythonsrc on a Ruby tree).
+_EXT_LANGUAGE_MAP: dict[str, str] = {
+    ".py": "python",
+    ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp",
+    ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
+    ".java": "java",
+    ".js": "javascript", ".jsx": "javascript",
+    ".ts": "typescript", ".tsx": "typescript",
+    ".go": "go",
+}
+
+
+def supported_source_extensions() -> frozenset[str]:
+    """Extensions detect_language() maps to a curated profile."""
+    return frozenset(_EXT_LANGUAGE_MAP)
+
 # Sink names for the bulk pre-sweep query (standard_sinks.sc). One
 # cross-language list: the sweep runs once at CPG build time before
 # the target language routing kicks in, so it mixes the C/C++ and
@@ -183,15 +203,7 @@ def detect_language(target_path: str) -> str:
     from pathlib import Path
 
     counts: dict[str, int] = {}
-    ext_map = {
-        ".py": "python",
-        ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp",
-        ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
-        ".java": "java",
-        ".js": "javascript", ".jsx": "javascript",
-        ".ts": "typescript", ".tsx": "typescript",
-        ".go": "go",
-    }
+    ext_map = _EXT_LANGUAGE_MAP
 
     _EXCLUDED_DIRS = {
         ".git", "node_modules", "vendor", "__pycache__",

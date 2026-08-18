@@ -978,6 +978,16 @@ def _value_bound_dominates(
         resolved = resolve_finding(finding)
         if not isinstance(resolved, ResolvedFinding):
             return None
+        java_text = None
+        if resolved.language == "java" and file_path:
+            # The constant-definers pre-check folds over the file's
+            # AST; an unreadable file skips that check, never the gate.
+            try:
+                java_text = Path(file_path).read_text(
+                    encoding="utf-8", errors="replace",
+                )
+            except OSError:
+                java_text = None
         result = evaluate_finding(
             resolved.cfg,
             [resolved.source_node],
@@ -992,6 +1002,7 @@ def _value_bound_dominates(
             # the production gate evaluate DIFFERENT bindings than the
             # telemetry used for the strict-promotion decision.
             extra_bindings=resolved.inter_proc_bindings,
+            java_source_text=java_text,
         )
     except Exception:                                       # noqa: BLE001
         return None

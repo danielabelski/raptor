@@ -692,9 +692,19 @@ def _resolve_sink(
             if sink_arg_hint in cs.arg_names:
                 return node, sink_arg_hint
     outermost = node.call_sites[-1]
-    if not outermost.arg_names:
-        return None, ""
-    return node, sorted(outermost.arg_names)[0]
+    if outermost.arg_names:
+        return node, sorted(outermost.arg_names)[0]
+    # Fallback: no bare-name argument, but the argument subtrees
+    # reference exactly ONE variable (``print(bar.toCharArray())``,
+    # ``println("x: " + bar)``) — the sink consumes that variable's
+    # value, so binding sink_arg to it asks the gate exactly the
+    # right exclusivity question. Two or more referenced names stay
+    # a refusal: picking one would under-constrain the others.
+    # Producers that don't populate arg_deep_names (python/c today)
+    # keep the historical refusal.
+    if len(outermost.arg_deep_names) == 1:
+        return node, next(iter(outermost.arg_deep_names))
+    return None, ""
 
 
 def _node_at_lineno(cfg: PythonCFG, lineno: int) -> Optional[PyCFGNode]:
@@ -800,6 +810,15 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
         outermost = sink_node.call_sites[-1]
         if outermost.arg_names:
             sink_arg = sorted(outermost.arg_names)[0]
+        elif len(outermost.arg_deep_names) == 1:
+            # No bare-name argument, but the argument subtrees
+            # reference exactly ONE variable
+            # (``print(bar.toCharArray())``, ``println("x: " + bar)``)
+            # — the sink consumes that variable's value, so binding
+            # sink_arg to it asks the gate exactly the right
+            # exclusivity question. Two or more referenced names stay
+            # a refusal: picking one would under-constrain the others.
+            sink_arg = next(iter(outermost.arg_deep_names))
     if not sink_arg:
         return ResolutionFailure(
             reason=(
@@ -914,9 +933,19 @@ def _resolve_sink_cpp(
             if sink_arg_hint in cs.arg_names:
                 return node, sink_arg_hint
     outermost = node.call_sites[-1]
-    if not outermost.arg_names:
-        return None, ""
-    return node, sorted(outermost.arg_names)[0]
+    if outermost.arg_names:
+        return node, sorted(outermost.arg_names)[0]
+    # Fallback: no bare-name argument, but the argument subtrees
+    # reference exactly ONE variable (``print(bar.toCharArray())``,
+    # ``println("x: " + bar)``) — the sink consumes that variable's
+    # value, so binding sink_arg to it asks the gate exactly the
+    # right exclusivity question. Two or more referenced names stay
+    # a refusal: picking one would under-constrain the others.
+    # Producers that don't populate arg_deep_names (python/c today)
+    # keep the historical refusal.
+    if len(outermost.arg_deep_names) == 1:
+        return node, next(iter(outermost.arg_deep_names))
+    return None, ""
 
 
 def _cpp_node_at_lineno(cfg: CPPCFG, lineno: int) -> Optional[CPPCFGNode]:

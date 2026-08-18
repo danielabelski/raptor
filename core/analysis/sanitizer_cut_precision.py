@@ -401,6 +401,7 @@ def build_corpus() -> List[CutFixture]:
         "    system(cmd);\n"
         "}\n", 1, 2, language="c", suffix=".c"))
     fixtures += _java_fixtures()
+    fixtures += _java_constant_fixtures()
     return fixtures
 
 
@@ -428,6 +429,83 @@ def _toolchain() -> Dict[str, str]:
         "python": platform.python_version(),
         "platform": platform.platform(),
     }
+
+
+def _java_constant_fixtures() -> List[CutFixture]:
+    """Constant-definers battery: the dead-branch ternary trick may
+    suppress; every variation that breaks the constancy proof — a
+    live condition, the fold selecting the tainted branch, a compound
+    writer, an incidental-constant sibling argument (the sink-arg
+    inversion trap), and an array-element rebind — must not.
+    """
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    j = []
+    j.append(_fx(
+        "java_const_dead_branch_ternary", "xss", "CWE-79",
+        "constant_dead_branch", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int num = 106;',
+             'String bar = (7 * 18) + num > 200 ? "safe" : param;',
+             'out.println(bar);'),
+        4, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_const_live_condition", "xss", "CWE-79",
+        "constant_live_condition", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int num = request.getIntHeader("n");',
+             'String bar = (7 * 18) + num > 200 ? "safe" : param;',
+             'out.println(bar);'),
+        4, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_const_fold_selects_tainted", "xss", "CWE-79",
+        "constant_false_ternary", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int num = 106;',
+             'String bar = (7 * 18) + num > 2000 ? "safe" : param;',
+             'out.println(bar);'),
+        4, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_const_compound_writer", "xss", "CWE-79",
+        "constant_compound_writer", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = "safe";',
+             'bar += param;',
+             'out.println(bar);'),
+        4, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_const_sibling_arg_inversion", "xss", "CWE-79",
+        "constant_sibling_inversion", LABEL_MUST_NOT_SUPPRESS,
+        body('String zz = request.getParameter("q");',
+             'String aa = "constant";',
+             'out.printf(aa, zz);'),
+        4, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_const_multiple_agreeing_defs", "xss", "CWE-79",
+        "constant_agreeing_defs", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar;',
+             'if (param.length() > 3) { bar = "safe"; }',
+             'else { bar = "safe"; }',
+             'out.println(bar);'),
+        4, 8, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_const_disagreeing_defs", "xss", "CWE-79",
+        "constant_disagreeing_defs", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar;',
+             'if (param.length() > 3) { bar = "safe"; }',
+             'else { bar = param; }',
+             'out.println(bar);'),
+        4, 8, language="java", suffix=".java"))
+    return j
 
 
 def run_corpus(fixtures: Optional[List[CutFixture]] = None,

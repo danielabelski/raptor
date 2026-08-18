@@ -447,6 +447,60 @@ def _binding_satisfies_value_gate(
     return True
 
 
+def _sink_arg_constant_reason(
+    graph, sources_set, sink, sink_arg: str,
+    source_symbols, java_source_text: str,
+) -> Optional[str]:
+    """Reason string when the Java constant-folder proves every
+    reaching definer of ``sink_arg`` constant AND no other name in
+    the sink call's arguments is tainted; None otherwise.
+
+    The second condition is load-bearing: sink-arg selection is a
+    heuristic pick among the call's argument names, so proving the
+    PICKED one constant says nothing about taint riding a sibling
+    argument (``sink(incidental_const, tainted)``). Constancy may
+    suppress only when every other argument name is clean under the
+    same taint front the value gate uses. Any failure inside the
+    folder reads as not-constant.
+    """
+    try:
+        from core.analysis.const_fold_java import (
+            JavaConstIndex,
+            all_definers_constant,
+        )
+        linenos = [
+            n.lineno for n in graph.nodes()
+            if getattr(n, "lineno", 0) > 0
+        ]
+        if not linenos:
+            return None
+        index = JavaConstIndex(
+            java_source_text, (min(linenos), max(linenos)),
+        )
+        rd = reaching_defs(graph)
+        reason = all_definers_constant(rd, sink, sink_arg, index)
+        if reason is None:
+            return None
+        call_sites = getattr(sink, "call_sites", ()) or ()
+        if not call_sites:
+            return None
+        outermost = call_sites[-1]
+        other_names = (
+            (set(outermost.arg_names) | set(outermost.arg_deep_names))
+            - {sink_arg}
+        )
+        if other_names:
+            tainted_at = _propagate_taint(
+                graph, rd, sources_set,
+                frozenset(source_symbols or ()),
+            )
+            if other_names & set(tainted_at.get(sink, frozenset())):
+                return None
+        return reason
+    except Exception:  # noqa: BLE001 — folding is best-effort, never fatal
+        return None
+
+
 def evaluate_finding(
     graph,
     sources: Iterable,
@@ -457,6 +511,7 @@ def evaluate_finding(
     source_symbols: Optional[Iterable[str]] = None,
     sink_arg: Optional[str] = None,
     extra_bindings: Optional[Iterable[SanitizerBinding]] = None,
+    java_source_text: Optional[str] = None,
 ) -> SanitizerCutResult:
     """Phase 4 suppression decision for one finding.
 
@@ -521,6 +576,32 @@ def evaluate_finding(
             cut_set=frozenset(),
             candidate_callables=frozenset(),
         )
+
+    # Constant-definers pre-check (Java only, needs the file text):
+    # when every reaching definition of the sink argument folds to the
+    # same compile-time constant, the consumed value cannot carry
+    # taint — a suppression that needs no sanitizer at all, so it runs
+    # before the catalog gates. Java locals are unaliasable, so the
+    # reaching-defs argument is airtight for the shapes the folder
+    # accepts (see core/analysis/const_fold_java's refusal list).
+    if (
+        language == "java"
+        and java_source_text
+        and sink_arg
+    ):
+        const_reason = _sink_arg_constant_reason(
+            graph, sources_set, sink, sink_arg,
+            source_symbols, java_source_text,
+        )
+        if const_reason is not None:
+            return SanitizerCutResult(
+                suppress=True,
+                reason=f"constant sink argument: {const_reason}",
+                cut_set=frozenset(),
+                candidate_callables=frozenset(),
+                verdict=VERDICT_SUPPRESS,
+                sink_arg=sink_arg,
+            )
 
     candidate_callables = sanitizer_callables_for_cwe(cwe, language)
     if not candidate_callables:

@@ -362,6 +362,21 @@ def _arg_surface_names(invocation) -> FrozenSet[str]:
     return frozenset(names)
 
 
+def _arg_deep_names(invocation, resolver) -> FrozenSet[str]:
+    """Names referenced anywhere inside the call's argument subtrees —
+    the sink-arg fallback surface (see CallSite.arg_deep_names).
+    Reuses the load-position walker, so callee names are excluded and
+    static-class receivers don't count as value uses."""
+    args = invocation.child_by_field_name("arguments")
+    if args is None:
+        return frozenset()
+    names: Set[str] = set()
+    for child in args.children:
+        if child.is_named:
+            names |= _walk_uses(child, resolver)
+    return frozenset(names)
+
+
 def _walk_uses(n, resolver, *, exclude: Optional[set] = None) -> FrozenSet[str]:
     """Identifiers in load position: callee names are excluded (they
     become call sites), field/array accesses contribute their base."""
@@ -427,6 +442,7 @@ def _walk_call_sites(
                     assigned_names=assigned,
                     lineno=node.start_point[0] + 1,
                     col_offset=node.start_point[1],
+                    arg_deep_names=_arg_deep_names(node, resolver),
                 )))
             obj = node.child_by_field_name("object")
             if obj is not None and _unwrap_value_expr(obj).type == _METHOD_INVOCATION:

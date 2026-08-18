@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from core.analysis.cfg_builder import PyCFGNode, build_python_cfg
 from core.analysis.reach_chokepoint import record_suppression
 from core.analysis.sanitizer_cut import (
@@ -359,3 +361,54 @@ class TestLegacyPath:
         # ``catalog_matches`` and ``witness_lines`` are also empty.
         assert r["catalog_matches"] == []
         assert r["witness_lines"] == []
+
+
+class TestJavaLegRecords:
+    """The b13 Java leg flows through the same record path — a Java
+    suppress verdict serialises with its FQN-resolved binding, so
+    operators can see exactly which encoder the gate credited."""
+
+    def test_java_suppress_record_carries_fqn_binding(
+        self, tmp_path: Path,
+    ):
+        pytest.importorskip("tree_sitter_java")
+        from core.analysis.finding_resolver import (
+            ResolvedFinding,
+            resolve_finding,
+        )
+        src_file = tmp_path / "T.java"
+        src_file.write_text(
+            "import org.owasp.encoder.Encode;\n"
+            "public class T {\n"
+            "    public void handle(String x, java.io.PrintWriter out) {\n"
+            "        String y = Encode.forHtml(x);\n"
+            "        out.println(y);\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        resolved = resolve_finding({
+            "cwe": "CWE-79", "file_path": str(src_file),
+            "source_line": 3, "sink_line": 5, "language": "java",
+        })
+        assert isinstance(resolved, ResolvedFinding)
+        result = evaluate_finding(
+            resolved.cfg, [resolved.source_node], resolved.sink_node,
+            cwe=resolved.cwe, language=resolved.language,
+            source_symbols=resolved.source_symbols,
+            sink_arg=resolved.sink_arg,
+        )
+        assert result.verdict == "suppress"
+        record_sanitizer_cut_suppression(
+            tmp_path, {"file_path": str(src_file), "language": "java"},
+            result,
+        )
+        records = _read_jsonl(tmp_path)
+        assert len(records) == 1
+        r = records[0]
+        assert r["dropped"] is False           # record-only default
+        assert r["file_path"] == str(src_file)
+        # The binding names the import-resolved FQN — operators can
+        # see exactly which encoder the gate credited.
+        assert r["bindings"][0]["callable"] == \
+            "org.owasp.encoder.Encode.forHtml"

@@ -90,13 +90,33 @@ _CORPUS_CASES = [
 ]
 
 
-def _native_finding(fixture: str, cwe: str, source_line: int, sink_line: int):
+# Java leg (b13): same regression discipline. Source line == the
+# method header line → the resolver uses the method params as the
+# taint source. No inter-proc phase for Java, so the interproc
+# expectation equals the intra-proc one.
+_JAVA_CORPUS_CASES = [
+    ("straight_line_safe_java.java", "CWE-79", 11, 13, VERDICT_SUPPRESS,
+     "y", VERDICT_SUPPRESS),
+    # b11's exclusivity shape in Java — the sanitizer is among the
+    # sink arg's reaching definers but not the only one.
+    ("loop_rebind_java.java", "CWE-79", 9, 14, VERDICT_CANDIDATE_ONLY,
+     "y", VERDICT_CANDIDATE_ONLY),
+    # URLEncoder is deliberately not an xss catalog entry (URL/form
+    # encoding, not HTML sanitization) — no catalog match, never
+    # suppress.
+    ("wrong_class_urlencoder_java.java", "CWE-79", 9, 11,
+     VERDICT_NO_SUPPRESS, "y", VERDICT_NO_SUPPRESS),
+]
+
+
+def _native_finding(fixture: str, cwe: str, source_line: int,
+                    sink_line: int, language: str = "python"):
     return {
         "cwe": cwe,
         "file_path": str(_CORPUS_DIR / fixture),
         "source_line": source_line,
         "sink_line": sink_line,
-        "language": "python",
+        "language": language,
     }
 
 
@@ -131,6 +151,41 @@ def test_corpus_fixture_verdict(
         f"{fixture}: sink_arg={resolved.sink_arg!r}, "
         f"expected {expected_sink_arg!r}"
     )
+    result = evaluate_finding(
+        resolved.cfg, [resolved.source_node], resolved.sink_node,
+        cwe=resolved.cwe, language=resolved.language,
+        source_symbols=resolved.source_symbols,
+        sink_arg=resolved.sink_arg,
+    )
+    assert result.verdict == expected_verdict, (
+        f"{fixture}: verdict={result.verdict!r}, "
+        f"expected {expected_verdict!r}. Reason: {result.reason}"
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture,cwe,source_line,sink_line,expected_verdict,expected_sink_arg,"
+    "_interproc",
+    _JAVA_CORPUS_CASES,
+)
+def test_java_corpus_fixture_verdict(
+    fixture, cwe, source_line, sink_line, expected_verdict,
+    expected_sink_arg, _interproc,
+):
+    """Java-leg regression pins — resolver (import-resolved callable
+    names, method-header params source) → intra-procedural gate. The
+    loop-rebind row pins b11's exclusivity condition through the Java
+    CFG's back edges; the URLEncoder row pins the deliberate catalog
+    absence of the wrong-class encoder."""
+    pytest.importorskip("tree_sitter_java")
+    finding = _native_finding(
+        fixture, cwe, source_line, sink_line, language="java",
+    )
+    resolved = resolve_finding(finding)
+    assert isinstance(resolved, ResolvedFinding), (
+        f"resolver failed on {fixture}: {resolved}"
+    )
+    assert resolved.sink_arg == expected_sink_arg
     result = evaluate_finding(
         resolved.cfg, [resolved.source_node], resolved.sink_node,
         cwe=resolved.cwe, language=resolved.language,

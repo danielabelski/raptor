@@ -211,10 +211,155 @@ def _class_fixtures(sink_class, cwe, sanitizer, wrong_sanitizer,
     ]
 
 
+def _java_fixtures() -> List[CutFixture]:
+    """The Java adversarial battery (b13 leg) — b11's shapes
+    re-instantiated in Java plus the Java-specific hazards: the
+    wrong-class URLEncoder case (a URL encoder before an HTML sink
+    must never suppress), reference-aliasing escapes (array store,
+    field store), the chained ESAPI singleton idiom, and the
+    lambda-refusal case (the builder must refuse, not mis-model).
+    """
+    imp = "import org.owasp.encoder.Encode;\n"
+    cls = "public class T {\n"
+    end = "}\n"
+
+    def meth(body: str, params: str = "String x, java.io.PrintWriter out",
+             throws: str = "") -> str:
+        return (f"{cls}    public void handle({params}){throws} {{\n"
+                f"{body}    }}\n{end}")
+
+    j = []
+    j.append(_fx(
+        "java_xss_straight_line", "xss", "CWE-79", "straight_line",
+        LABEL_MAY_SUPPRESS,
+        imp + meth("        String y = Encode.forHtml(x);\n"
+                   "        out.println(y);\n"),
+        3, 5, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_symmetric_branches", "xss", "CWE-79",
+        "symmetric_branches", LABEL_MAY_SUPPRESS,
+        imp + meth("        String y;\n"
+                   "        if (x.length() > 3) { y = Encode.forHtml(x); }\n"
+                   "        else { y = Encode.forHtmlContent(x); }\n"
+                   "        out.println(y);\n",
+                   params="String x, java.io.PrintWriter out"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_partial_path", "xss", "CWE-79",
+        "sanitizer_on_n_minus_1_paths", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String y;\n"
+                   "        if (x.length() > 3) { y = Encode.forHtml(x); }\n"
+                   "        else { y = x; }\n"
+                   "        out.println(y);\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_wrong_class_urlencoder", "xss", "CWE-79",
+        "wrong_class_sanitizer", LABEL_MUST_NOT_SUPPRESS,
+        "import java.net.URLEncoder;\n"
+        + meth("        String y = URLEncoder.encode(x, \"UTF-8\");\n"
+               "        out.println(y);\n",
+               throws=" throws Exception"),
+        3, 5, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_after_sink", "xss", "CWE-79", "sanitizer_after_sink",
+        LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        out.println(x);\n"
+                   "        String y = Encode.forHtml(x);\n"),
+        3, 4, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_straight_rebind", "xss", "CWE-79",
+        "sanitized_then_rebound", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String y = Encode.forHtml(x);\n"
+                   "        y = x;\n"
+                   "        out.println(y);\n"),
+        3, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_loop_rebind", "xss", "CWE-79",
+        "sanitized_then_loop_rebound", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String y = Encode.forHtml(x);\n"
+                   "        for (String i : items) { y = i; }\n"
+                   "        out.println(y);\n",
+                   params="String x, String[] items, "
+                          "java.io.PrintWriter out"),
+        3, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_wrong_variable", "xss", "CWE-79",
+        "wrong_variable_sanitized", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String safe = Encode.forHtml(other);\n"
+                   "        out.println(user);\n",
+                   params="String user, String other, "
+                          "java.io.PrintWriter out"),
+        3, 5, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_constant_only", "xss", "CWE-79",
+        "sanitizes_constant_only", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String y = Encode.forHtml(\"const\");\n"
+                   "        out.println(x);\n"),
+        3, 5, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_no_exit_validator", "xss", "CWE-79",
+        "validator_without_exit", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        if (x.contains(\"<\")) { "
+                   "System.err.println(\"bad\"); }\n"
+                   "        out.println(x);\n"),
+        3, 5, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_array_store_escape", "xss", "CWE-79",
+        "array_element_aliasing", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        a[0] = x;\n"
+                   "        String y = Encode.forHtml(x);\n"
+                   "        out.println(y);\n"),
+        3, 8, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_esapi_chain", "xss", "CWE-79", "esapi_singleton_chain",
+        LABEL_MAY_SUPPRESS,
+        "import org.owasp.esapi.ESAPI;\n"
+        + meth("        String y = ESAPI.encoder().encodeForHTML(x);\n"
+               "        out.println(y);\n"),
+        3, 5, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_instance_encoder_untyped", "xss", "CWE-79",
+        "instance_call_no_type_inference", LABEL_MUST_NOT_SUPPRESS,
+        # ``enc`` is untyped from the gate's perspective — could be
+        # anything with an encodeForHTML method. Must not resolve to
+        # the ESAPI catalog entry.
+        meth("        String y = enc.encodeForHTML(x);\n"
+             "        out.println(y);\n",
+             params="String x, Object enc, java.io.PrintWriter out"),
+        2, 4, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_lambda_refusal", "xss", "CWE-79",
+        "lambda_forces_refusal", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        Runnable r = () -> out.println(x);\n"
+                   "        String y = Encode.forHtml(x);\n"
+                   "        out.println(y);\n"),
+        3, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_xss_try_catch_safe", "xss", "CWE-79", "try_catch_safe",
+        LABEL_MAY_SUPPRESS,
+        imp + meth("        try {\n"
+                   "            String y = Encode.forHtml(x);\n"
+                   "            out.println(y);\n"
+                   "        } catch (Exception e) { "
+                   "out.println(\"err\"); }\n"),
+        3, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_sqli_catalog_empty", "sqli", "CWE-89",
+        "catalog_empty_class", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String y = Encode.forHtml(x);\n"
+                   "        stmt.execute(y);\n",
+                   params="String x, java.sql.Statement stmt",
+                   throws=" throws Exception"),
+        3, 5, language="java", suffix=".java"))
+    return j
+
+
 def build_corpus() -> List[CutFixture]:
     """The labelled corpus: the adversarial battery instantiated per
     covered python sink class, plus interproc, catalog-empty-class,
-    and unsupported-language singletons.
+    unsupported-language singletons, and the Java battery (b13 leg).
 
     Sanitizer names come from the catalog
     (:func:`core.dataflow.sanitizer_catalog.sanitizer_callables_for_cwe`)
@@ -255,6 +400,7 @@ def build_corpus() -> List[CutFixture]:
         "void run(char *cmd) {\n"
         "    system(cmd);\n"
         "}\n", 1, 2, language="c", suffix=".c"))
+    fixtures += _java_fixtures()
     return fixtures
 
 

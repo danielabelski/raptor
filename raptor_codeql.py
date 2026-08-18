@@ -261,6 +261,18 @@ def run_autonomous_workflow(args):
         "exploits_generated": total_exploits_generated,
         "exploits_compiled": total_exploits_compiled,
         "fast_tier_short_circuits": short_circuits,
+        # Refinement/duration provenance: distinguishes "compiled first
+        # try" from "compiled after N LLM repairs" and shows where the
+        # wall-clock went.
+        "findings_needing_refinement": sum(
+            1 for r in autonomous_results if r.refinement_iterations
+        ),
+        "total_refinement_iterations": sum(
+            r.refinement_iterations for r in autonomous_results
+        ),
+        "total_analysis_seconds": round(
+            sum(r.total_duration_seconds for r in autonomous_results), 2
+        ),
         "scan_result": scan_result.to_dict(),
     }
 

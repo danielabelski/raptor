@@ -137,6 +137,38 @@ class AutonomousAnalysisResult:
     skipped_reason: str | None = None
 
 
+def _analysis_artifact_payload(
+    *,
+    finding: CodeQLFinding,
+    analysis: VulnerabilityAnalysis,
+    dataflow_validation,
+    refinement_count: int,
+    elapsed_seconds: float,
+    visualization_paths=None,
+) -> dict:
+    """Payload for the per-finding ``{safe_id}_analysis.json`` artifact.
+
+    Carries refinement/duration provenance alongside the analysis:
+    "compiled first try" and "compiled after N LLM repairs" are
+    different confidence signals, and the duration shows where the
+    wall-clock went. All keys are additive for artifact readers.
+    """
+    data = {
+        "finding": asdict(finding),
+        "analysis": asdict(analysis),
+        "dataflow_validation": (
+            asdict(dataflow_validation) if dataflow_validation else None
+        ),
+        "refinement_iterations": refinement_count,
+        "total_duration_seconds": round(elapsed_seconds, 2),
+    }
+    if visualization_paths:
+        data["visualizations"] = {
+            fmt: str(path) for fmt, path in visualization_paths.items()
+        }
+    return data
+
+
 class AutonomousCodeQLAnalyzer:
     """
     Fully autonomous CodeQL finding analyzer.
@@ -1264,16 +1296,14 @@ class AutonomousCodeQLAnalyzer:
         # Save analysis
         safe_id = f"{finding.rule_id}_{finding.start_line}".replace("/", "_")
         analysis_file = out_dir / f"{safe_id}_analysis.json"
-        analysis_data = {
-            "finding": asdict(finding),
-            "analysis": asdict(analysis),
-            "dataflow_validation": asdict(dataflow_validation) if dataflow_validation else None,
-        }
-        # Add visualization paths if available
-        if visualization_paths:
-            analysis_data["visualizations"] = {
-                fmt: str(path) for fmt, path in visualization_paths.items()
-            }
+        analysis_data = _analysis_artifact_payload(
+            finding=finding,
+            analysis=analysis,
+            dataflow_validation=dataflow_validation,
+            refinement_count=refinement_count,
+            elapsed_seconds=time.time() - start_time,
+            visualization_paths=visualization_paths,
+        )
         save_json(analysis_file, analysis_data)
 
         # Save exploit

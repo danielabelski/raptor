@@ -920,6 +920,12 @@ def _value_bound_dominates(
             language=resolved.language,
             source_symbols=resolved.source_symbols,
             sink_arg=resolved.sink_arg,
+            # Phase 14 resolver contract: inter-procedural synthetic
+            # sanitizer bindings must reach the gate, and the parity
+            # shadow path already passes them — omitting them here made
+            # the production gate evaluate DIFFERENT bindings than the
+            # telemetry used for the strict-promotion decision.
+            extra_bindings=resolved.inter_proc_bindings,
         )
     except Exception:                                       # noqa: BLE001
         return None
@@ -1294,14 +1300,25 @@ class _ProofVerdict:
     reasoning: str
 
 
+# Widest code-point span a single ``X-Y`` range may expand to.  Real
+# sanitizer charsets are ASCII-sized; without a cap, one attacker-shaped
+# range in a fix diff (space to U+10FFFF) materializes a ~1.1M-element
+# set.  Over-cap ranges are treated as three literals — that UNDER-
+# approximates the forbidden set, which can only push the charset_sub
+# verdict toward DECLINED (sound direction; Tier 2 takes the case).
+_RANGE_EXPANSION_CAP = 1024
+
+
 def _expand_charset_body(body: str) -> set:
     """Expand a regex char-class body like ``A-Za-z0-9_.+-`` into the
     finite set of characters it matches.
 
-    Handles ``X-Y`` ranges with ``ord(X) <= ord(Y)`` and literal chars;
+    Handles ``X-Y`` ranges with ``ord(X) <= ord(Y)`` (spanning at most
+    :data:`_RANGE_EXPANSION_CAP` code points) and literal chars;
     everything else (including ``X-Y`` where ``X`` and ``Y`` aren't in
     range-ascending order — would silently drop chars under a naive
-    ``range(ord(X), ord(Y)+1)``) is treated as three separate literals.
+    ``range(ord(X), ord(Y)+1)`` — and over-cap ranges) is treated as
+    three separate literals.
     """
     out: set = set()
     i, n = 0, len(body)
@@ -1311,7 +1328,8 @@ def _expand_charset_body(body: str) -> set:
             i += 2
         elif (i + 2 < n and body[i + 1] == "-"
                 and body[i + 2] != "\\"
-                and ord(body[i]) <= ord(body[i + 2])):
+                and ord(body[i]) <= ord(body[i + 2])
+                and ord(body[i + 2]) - ord(body[i]) <= _RANGE_EXPANSION_CAP):
             for cp in range(ord(body[i]), ord(body[i + 2]) + 1):
                 out.add(chr(cp))
             i += 3

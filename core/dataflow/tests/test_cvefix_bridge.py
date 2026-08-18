@@ -6,6 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from core.dataflow import cvefix_bridge, cvefix_walk
 from core.dataflow.barrier_synth import SynthResult
 from core.dataflow.cvefix_loader import CveFixPair
@@ -15,10 +17,108 @@ def _pair(cwe="CWE-89", lang="Python", fix="f1"):
     return CveFixPair("CVE-X", cwe, "https://github.com/o/a", lang, fix, "p1")
 
 
+def _sarif_for(uri: str, line: int = 1) -> dict:
+    return {
+        "runs": [{
+            "results": [{
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": uri},
+                        "region": {"startLine": line},
+                    },
+                }],
+            }],
+        }],
+    }
+
+
+@pytest.fixture
+def repo(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("name = input()\nopen(name)\n")
+    return root
+
+
 def test_norm_uri_strips_scheme_and_leading_slash():
     assert cvefix_bridge._norm_uri("src/a.py") == "src/a.py"
     assert cvefix_bridge._norm_uri("file:///abs/a.py") == "abs/a.py"
     assert cvefix_bridge._norm_uri("file:src/a.py") == "src/a.py"
+
+
+def test_norm_uri_is_textual_only():
+    # _norm_uri deliberately does not neutralize '..'; containment
+    # is _resolve_in_repo's job.
+    assert cvefix_bridge._norm_uri("file:///a/b.py") == "a/b.py"
+    assert cvefix_bridge._norm_uri("../x") == "../x"
+
+
+# ---------------------------------------------------------------------------
+# SARIF artifact-URI containment — URIs from an untrusted corpus repo
+# must not read host files outside the clone
+# ---------------------------------------------------------------------------
+
+def test_resolve_in_repo_plain_relative_uri(repo):
+    resolved = cvefix_bridge._resolve_in_repo(repo, "app.py")
+    assert resolved == (repo / "app.py").resolve()
+
+
+def test_resolve_in_repo_strips_file_scheme(repo):
+    assert cvefix_bridge._resolve_in_repo(repo, "file:app.py") is not None
+
+
+def test_resolve_in_repo_rejects_dotdot_traversal(repo, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("host-only")
+    assert cvefix_bridge._resolve_in_repo(repo, "../secret.txt") is None
+    assert cvefix_bridge._resolve_in_repo(repo, "a/../../secret.txt") is None
+
+
+def test_resolve_in_repo_absolute_style_uri_stays_in_repo(repo, tmp_path):
+    # Leading slashes are stripped (SARIF file:///abs form), so the
+    # remainder is joined under the repo — the resolved path stays
+    # inside the clone and never names the real host file.
+    secret = tmp_path / "secret.txt"
+    secret.write_text("host-only")
+    resolved = cvefix_bridge._resolve_in_repo(repo, f"file://{secret}")
+    assert resolved is None or (
+        resolved.is_relative_to(repo.resolve()) and not resolved.is_file()
+    )
+
+
+def test_resolve_in_repo_rejects_symlink_escape(repo, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host-only")
+    (repo / "link.txt").symlink_to(outside)
+    assert cvefix_bridge._resolve_in_repo(repo, "link.txt") is None
+
+
+def test_extract_proposal_traversal_uri_yields_none(repo, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("HOSTSECRET")
+    sarif = tmp_path / "res.sarif"
+    sarif.write_text(json.dumps(_sarif_for("../secret.txt")))
+    assert cvefix_bridge._extract_proposal(sarif, repo, _pair(cwe="CWE-22")) is None
+
+
+def test_extract_proposal_in_repo_uri_still_extracts(repo, tmp_path):
+    sarif = tmp_path / "res.sarif"
+    sarif.write_text(json.dumps(_sarif_for("app.py", line=2)))
+    extracted = cvefix_bridge._extract_proposal(sarif, repo, _pair(cwe="CWE-22"))
+    assert extracted is not None
+    proposal, target_uri, target_line = extracted
+    assert target_uri == "app.py"
+    assert target_line == 2
+    assert "open(name)" in proposal.source_context
+
+
+def test_extract_proposal_traversal_content_never_reaches_prompt(repo, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("HOSTSECRET")
+    sarif = tmp_path / "res.sarif"
+    sarif.write_text(json.dumps(_sarif_for("file:../secret.txt")))
+    extracted = cvefix_bridge._extract_proposal(sarif, repo, _pair(cwe="CWE-22"))
+    assert extracted is None
 
 
 def test_extract_proposal_reads_source_and_returns_target_uri(monkeypatch, tmp_path: Path):

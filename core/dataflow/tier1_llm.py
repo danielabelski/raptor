@@ -8,10 +8,12 @@ SOUND verdict still comes from a mechanical path we already trust:
   * ``kind="charset"`` / ``"charset_sub"`` — cross-check via the
     existing Tier 0 mechanical extractor on the LLM-named source line,
     then run the existing Z3 proof.  If the LLM's claimed charset
-    doesn't match what the mechanical extractor finds, DECLINE.
+    doesn't match what the mechanical extractor finds, the claim is
+    rejected with ``NOT_APPLICABLE`` (``DECLINED`` is reserved for a
+    completed-but-unsound Z3 proof).
   * ``kind="known_safe_call"`` — look up the LLM's claimed library
     call in :mod:`known_safe_calls` (curated table, human-verified).
-    Out-of-table → DECLINE.
+    Out-of-table → rejected with ``NOT_APPLICABLE``.
   * ``kind="other"`` — LLM couldn't reduce to a sound shape; pass to
     Tier 2.
 
@@ -161,7 +163,10 @@ def _mechanical_recheck_charset_kind(
     (or forbidden).  Returns the mechanical ValidatorSpec on agreement,
     None on disagreement."""
     # Synthesise a single-line diff to reuse the existing extractor.
-    fake_diff = "+" + spec.validator_source_line + "\n"
+    # Stripped to match _validator_line_in_diff's whitespace-insensitive
+    # comparison — the anti-fabrication check and the re-extract must
+    # see the same rendering of the LLM's claimed line.
+    fake_diff = "+" + spec.validator_source_line.strip() + "\n"
     mech = _mechanical_extract(fake_diff, language=language)
     if mech is None:
         return None
@@ -406,12 +411,11 @@ def try_tier1b(
                 counterexample=verdict.counterexample,
             )
         # Sound on language intersection — now confirm the variable
-        # reaches the sink (skip the AST/dominance complexity here;
-        # the source-order + same-function check stays inside the
-        # existing Tier 0 helpers if a caller wants to add it later).
-        # For first cut: trust the LLM-named line is between the
-        # function entry and the sink (it's on the validator's
-        # source line, which the chain check uses as a bound).
+        # reaches the sink (chain check below), and for Python also
+        # that the validator dominates the sink via the Tier 0
+        # AST helpers (validator_dominates_sink /
+        # substitution_dominates_sink), bailing to NOT_APPLICABLE
+        # when the validator is advisory or the variable reassigned.
         # Locate the validator's line — same find-best-occurrence helper
         # as the known_safe_call path uses (closest occurrence before
         # the sink, same-function for Python).

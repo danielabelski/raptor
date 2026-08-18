@@ -173,13 +173,35 @@ def _default_search_path() -> str | None:
 
 
 def _norm_uri(uri: str) -> str:
-    """Strip a file: scheme + leading slash so `repo_root / uri` stays in-repo."""
+    """Strip a file: scheme + leading slash.  This is textual
+    normalisation only — it does NOT remove ``..`` segments, so in-repo
+    containment must be enforced at the join site via
+    :func:`_resolve_in_repo` before reading any file at the path."""
     stripped = strip_file_uri(uri)
     if stripped == uri and uri.startswith("file:"):
         # Scheme without authority (``file:/abs/path``) — SARIF emits
         # this too; core.paths deliberately handles only ``file://``.
         stripped = uri[len("file:"):]
     return stripped.lstrip("/")
+
+
+def _resolve_in_repo(repo_root: Path, uri: str) -> Path | None:
+    """``repo_root / _norm_uri(uri)``, resolved, but only when the result
+    stays inside the repo clone.
+
+    The SARIF artifact URI comes from running CodeQL over a freshly
+    fetched (untrusted) repository, so a traversal-shaped uri
+    (``../../etc/passwd``) or an in-repo symlink pointing outside the
+    clone must not let the bridge read host files into an LLM prompt.
+    Returns None when the resolved path escapes ``repo_root``."""
+    try:
+        root = repo_root.resolve()
+        candidate = (repo_root / _norm_uri(uri)).resolve()
+    except OSError:
+        return None
+    if not candidate.is_relative_to(root):
+        return None
+    return candidate
 
 
 def _git_diff(repo: Path, parent: str, fix: str, uri: str,
@@ -334,8 +356,8 @@ def _extract_proposal(
                 line = phys.get("region", {}).get("startLine")
                 if not raw_uri or not line:
                     continue
-                src = repo_root / _norm_uri(raw_uri)
-                if not src.is_file():
+                src = _resolve_in_repo(repo_root, raw_uri)
+                if src is None or not src.is_file():
                     continue
                 lines = src.read_text(encoding="utf-8", errors="replace").splitlines()
                 snippet = lines[line - 1].strip() if 0 < line <= len(lines) else raw_uri
@@ -395,7 +417,7 @@ def synthesize_one(
 
     Returns ``(status, finding_id, backend, barrier_query, detail)``.
 
-    Two backends, tried in cost order:
+    Three tiers, tried in cost order:
 
       Tier 0 — SMT (free).  Mechanical extractor pulls a charset/regex
         validator from the fix diff; CodeQL's own codeFlow gives free
@@ -404,9 +426,17 @@ def synthesize_one(
         before-DB build.  When SOUND, ``backend="smt"`` and ``barrier_query``
         holds a structured spec like ``smt:charset:[A-Za-z0-9_.+-]+@uri:line``.
 
+      Tier 1B — cheap-LLM-assisted extraction, mechanically adjudicated.
+        Runs when Tier 0 didn't produce SOUND and the caller supplied a
+        ``tier1b_complete`` completer (otherwise skipped).  When SOUND,
+        ``backend`` reflects the proof mechanism: ``"smt"`` for the
+        Z3-charset path, ``"library"`` for a curated known-safe-call
+        table match.
+
       Tier 2 — CodeQL barrier-guard (LLM-written, CodeQL-adjudicated).
-        Fall-through when Tier 0 declines / can't apply.  When SOUND,
-        ``backend="codeql"`` and ``barrier_query`` holds the compiled QL.
+        Fall-through when the earlier tiers decline / can't apply.  When
+        SOUND, ``backend="codeql"`` and ``barrier_query`` holds the
+        compiled QL.
 
     ``barrier_query`` is also kept for not_sound at Tier 2 (the proposal
     that compiled+ran but missed — diagnostic material for the few-shot).

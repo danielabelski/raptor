@@ -502,3 +502,201 @@ class TestConsumerIntegration:
         assert answers[0]["probe_note"].startswith(
             "compile-probe unavailable/failed:",
         )
+
+
+# ------------------------------------------------------------------
+# Determine-value mode (bisection; config-gated, default off)
+# ------------------------------------------------------------------
+
+
+class TestParseDetermineExpression:
+    def test_value_of_identifier(self) -> None:
+        assert cp.parse_determine_expression(
+            "What is the value of MAX_BUF?",
+        ) == "MAX_BUF"
+
+    def test_evaluate_to(self) -> None:
+        assert cp.parse_determine_expression(
+            "What does STATE_DONE evaluate to?",
+        ) == "STATE_DONE"
+
+    def test_builtin(self) -> None:
+        assert cp.parse_determine_expression(
+            "What is sizeof(struct foo) on this target?",
+        ) == "sizeof(struct foo)"
+
+    def test_claim_shaped_defers_to_claim_probe(self) -> None:
+        assert cp.parse_determine_expression("Is MAX_BUF 4096?") is None
+
+    def test_non_constant_question(self) -> None:
+        assert cp.parse_determine_expression(
+            "What does parse_config do with its input?",
+        ) is None
+
+    def test_injection_rejected(self) -> None:
+        # The identifier capture can only yield \w+ names; the builtin
+        # capture admits wider text, so the allowlist must reject it.
+        assert cp.parse_determine_expression(
+            "What is sizeof(struct foo; system I mean)?",
+        ) is None
+        # Quoted-identifier extraction strips down to the bare (safe)
+        # name — hostile quoting never reaches the TU.
+        assert cp.parse_determine_expression(
+            'What is the value of `X"`?',
+        ) == "X"
+
+
+class EvalFakeCompiler:
+    """Fake compiler that EVALUATES probe assertions against a fixed
+    integer value, so the bisection walks a realistic verdict
+    surface.  ``lie_in_search`` inverts every ``<=`` answer to prove
+    the final equality probe is the only verdict channel."""
+
+    def __init__(self, value: int, *, lie_in_search: bool = False,
+                 sign_probes_ill_formed: bool = False):
+        self.value = value
+        self.lie_in_search = lie_in_search
+        self.sign_probes_ill_formed = sign_probes_ill_formed
+        self.sources: list[str] = []
+
+    @staticmethod
+    def _parse_literal(text: str) -> int | None:
+        text = text.strip().rstrip(";").strip()
+        text = text.rstrip(")").strip().lstrip("(").strip()
+        if text == "-9223372036854775807LL - 1":
+            return -(2 ** 63)
+        try:
+            return int(text.rstrip("UL").rstrip("ul"))
+        except ValueError:
+            return None  # not a literal (tautology rhs)
+
+    def __call__(self, cmd, **kwargs):
+        import re as _re
+
+        tu = Path(cmd[-1]).read_text()
+        self.sources.append(tu)
+        ok = True
+        if "assert" in tu:
+            body = _re.search(r'assert\((.*), "RAPTOR', tu, _re.S)
+            expr = (body.group(1) if body else "").strip()
+            if _re.search(r"\) >= 0\)", expr):
+                ok = (not self.sign_probes_ill_formed
+                      and self.value >= 0)
+            elif _re.search(r"\) < 0\)", expr):
+                ok = (not self.sign_probes_ill_formed
+                      and self.value < 0)
+            elif "<=" in expr:
+                lit = self._parse_literal(expr.split("<=", 1)[1])
+                assert lit is not None, expr
+                ok = self.value <= lit
+                if self.lie_in_search:
+                    ok = not ok
+            elif "==" in expr:
+                lit = self._parse_literal(expr.split("==", 1)[1])
+                # tautology TU rhs is the expression itself
+                ok = True if lit is None else self.value == lit
+        return types.SimpleNamespace(
+            returncode=0 if ok else 1,
+            stderr="" if ok else "static assertion failed", stdout="",
+        )
+
+
+class TestDetermineProbe:
+    def _run(self, monkeypatch, repo, value, question=None, **kw):
+        fake = EvalFakeCompiler(value, **kw)
+        _install(monkeypatch, fake)
+        r = cp.determine_probe_question(
+            question or "What is the value of MAX_BUF?",
+            _items(), repo,
+        )
+        return r, fake
+
+    def test_positive_value_determined(self, monkeypatch, repo) -> None:
+        r, fake = self._run(monkeypatch, repo, 4096)
+        assert r is not None and r.status == "verified"
+        assert r.claimed_value == "4096"
+        assert "determine" in r.answer and "== 4096" in r.answer
+        assert r.probe_sha256
+        # final TU asserts equality with the ULL literal
+        assert "(MAX_BUF) == 4096ULL" in fake.sources[-1]
+
+    def test_zero(self, monkeypatch, repo) -> None:
+        r, _ = self._run(monkeypatch, repo, 0)
+        assert r.status == "verified" and r.claimed_value == "0"
+
+    def test_negative_value_determined(self, monkeypatch, repo) -> None:
+        r, fake = self._run(monkeypatch, repo, -5)
+        assert r.status == "verified" and r.claimed_value == "-5"
+        assert "(-5LL)" in fake.sources[-1]
+
+    def test_large_unsigned_value(self, monkeypatch, repo) -> None:
+        r, _ = self._run(monkeypatch, repo, 2 ** 63 + 17)
+        assert r.status == "verified"
+        assert r.claimed_value == str(2 ** 63 + 17)
+
+    def test_int64_min(self, monkeypatch, repo) -> None:
+        r, _ = self._run(monkeypatch, repo, -(2 ** 63))
+        assert r.status == "verified"
+        assert r.claimed_value == str(-(2 ** 63))
+
+    def test_search_lies_never_produce_a_verdict(
+        self, monkeypatch, repo,
+    ) -> None:
+        # A misled bisection converges on a wrong candidate; the
+        # equality probe fails and the result is unavailable — the
+        # search is never trusted.
+        r, _ = self._run(monkeypatch, repo, 4096, lie_in_search=True)
+        assert r.status == "unavailable"
+        assert "no verdict" in r.reason
+
+    def test_ill_formed_comparisons_bail_before_search(
+        self, monkeypatch, repo,
+    ) -> None:
+        r, fake = self._run(
+            monkeypatch, repo, 7, sign_probes_ill_formed=True,
+        )
+        assert r.status == "unavailable"
+        assert "sign probes" in r.reason
+        # baseline + tautology + two sign probes only — no bisection
+        assert len(fake.sources) == 4
+
+    def test_budget_cap(self, monkeypatch, repo) -> None:
+        fake = EvalFakeCompiler(4096)
+        _install(monkeypatch, fake)
+        budget = ProbeBudget(remaining=0)
+        r = cp.determine_probe_question(
+            "What is the value of MAX_BUF?", _items(), repo,
+            budget=budget,
+        )
+        assert r.status == "unavailable"
+        assert "cap" in r.reason
+        assert fake.sources == []
+
+    def test_claim_shaped_question_returns_none(
+        self, monkeypatch, repo,
+    ) -> None:
+        fake = EvalFakeCompiler(4096)
+        _install(monkeypatch, fake)
+        assert cp.determine_probe_question(
+            "Is MAX_BUF 4096?", _items(), repo,
+        ) is None
+
+    def test_receipt_is_mechanical(self, monkeypatch, repo) -> None:
+        r, _ = self._run(monkeypatch, repo, 4096)
+        receipt = probe_receipt(r)
+        assert receipt.verified is True
+        assert receipt.tier == "mechanical"
+        assert receipt.file == "inc/limits.h"
+
+
+class TestDetermineGateDefaultOff:
+    def test_orchestrator_config_defaults_off(self) -> None:
+        from core.audit.orchestrator import OrchestratorConfig
+
+        cfg = OrchestratorConfig(target_path=Path("."), out_dir=Path("."))
+        assert cfg.probe_determine_value is False
+
+    def test_pipeline_opts_default_off(self) -> None:
+        from core.audit.pipeline import AuditPipelineOpts
+
+        assert AuditPipelineOpts().probe_determine_value is False

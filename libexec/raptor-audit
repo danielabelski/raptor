@@ -1302,6 +1302,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         pre_scan=args.pre_scan,
         schedule=args.schedule,
         on_demand_synthesis=not args.no_on_demand_synthesis,
+        probe_determine_value=args.probe_determine_value,
         deepen_reserve_fraction=args.deepen_reserve,
     )
 
@@ -1739,6 +1740,13 @@ def main() -> int:
                             "suspicious hypotheses whose CWE has no "
                             "tool-chain dispatch entry (synthesis is "
                             "LLM-cost bearing; capped per run)")
+    p_run.add_argument("--probe-determine-value", action="store_true",
+                       help="Resolve claim-less constant study questions "
+                            "('what is the value of X?') by compile-probe "
+                            "bisection over static assertions (the final "
+                            "equality probe is the only verdict). Up to "
+                            "~66 sandboxed compiles per constant, capped "
+                            "per run — off by default")
     p_run.add_argument("--pre-scan", action="store_true",
                        help="When no scan SARIF exists (this run or a "
                             "fresh sibling run), run one bounded semgrep "

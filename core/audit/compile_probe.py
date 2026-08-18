@@ -27,6 +27,23 @@ distinction, not a locale/version-dependent diagnostic-text parse.
 Verdicts carry a MECHANICAL-tier receipt: probe source hash, compiler
 + version, and a diagnostic snippet (recorded for humans only).
 
+**Determine-value mode** (config-gated, default OFF —
+``--probe-determine-value``): resolves "what is the value of X?"
+questions that carry no claimed value. The original ship deliberately
+excluded this — extracting computed constants from compiler
+*diagnostics* has no robust locale/version-independent technique.
+Bisection removes that dependency entirely: after the same baseline +
+tautology steps, two sign probes (``EXPR >= 0`` / ``EXPR < 0``)
+select a branch, a binary search over static assertions
+(``(EXPR) <= K``, ~64 compiles worst case for the 64-bit range)
+converges on a candidate, and a final ``(EXPR) == candidate``
+equality probe — the ordinary claim probe — is the ONLY thing that
+produces a verdict. The search is a heuristic; a converged-but-wrong
+candidate fails the equality probe and the question stays
+*unavailable*. No diagnostic text is parsed at any step. Cost is why
+the mode is gated off by default: ~66 sandboxed compiles per
+constant, capped at :data:`_DEFAULT_DETERMINE_CAP` questions per run.
+
 Untrusted-repo discipline: question text is LLM output and file paths
 come from the scanned repo — the probe expression is allowlist-
 sanitised before entering the TU, paths are embedded via ``#include``
@@ -56,6 +73,14 @@ _PROBE_COMPILE_TIMEOUT_S = 30
 _DEFAULT_PROBE_CAP = 16
 _MAX_EXPR_LEN = 120
 _MAX_DIAG_SNIPPET = 400
+
+# Determine-value mode: per-run question cap (each question costs up
+# to ~66 compiles) and a defensive bound on bisection steps.
+_DEFAULT_DETERMINE_CAP = 8
+_BISECT_MAX_STEPS = 70
+
+_INT64_MIN = -(2 ** 63)
+_UINT64_MAX = 2 ** 64 - 1
 
 _C_SUFFIXES = frozenset((".c", ".h"))
 _CPP_SUFFIXES = frozenset((".cc", ".cpp", ".cxx", ".hpp", ".hxx", ".hh"))
@@ -183,6 +208,45 @@ def parse_probe_claim(question: str) -> tuple[str, str] | None:
     return expr, value
 
 
+# Determine-shaped questions carry no claimed value.  Conservative on
+# purpose: only unmistakable "what is the value of X" phrasings enter
+# the (expensive) bisection path; anything else stays with the
+# textual resolver.
+_DETERMINE_BUILTIN_RE = re.compile(
+    r"what\s+(?:is|does)\s+(?:the\s+)?(?:value\s+of\s+)?[`'\"]?"
+    r"((?:sizeof|_Alignof|alignof|offsetof)\s*\(\s*[^()]{1,80}\))",
+    re.IGNORECASE,
+)
+_DETERMINE_IDENT_RE = re.compile(
+    r"what\s+(?:is\s+(?:the\s+)?(?:numeric\s+|actual\s+|resolved\s+)?"
+    r"value\s+of|value\s+does)\s+[`'\"]?([A-Za-z_]\w*)[`'\"]?",
+    re.IGNORECASE,
+)
+_DETERMINE_EVAL_RE = re.compile(
+    r"what\s+does\s+[`'\"]?([A-Za-z_]\w*)[`'\"]?\s+evaluate\s+to",
+    re.IGNORECASE,
+)
+
+
+def parse_determine_expression(question: str) -> str | None:
+    """Extract the expression from a determine-shaped question.
+
+    Returns None when the question asserts a value (that is the claim
+    probe's turf), is not determine-shaped, or the expression fails
+    the allowlist.
+    """
+    if not question or parse_probe_claim(question) is not None:
+        return None
+    for pattern in (
+        _DETERMINE_BUILTIN_RE, _DETERMINE_IDENT_RE, _DETERMINE_EVAL_RE,
+    ):
+        m = pattern.search(question)
+        if m is not None:
+            expr = m.group(1).strip()
+            return expr if _expr_safe(expr) else None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Probe TU generation
 # ---------------------------------------------------------------------------
@@ -297,6 +361,34 @@ def _compile_tu(
     return (proc.returncode == 0, diag)
 
 
+def _find_probe_item(
+    expr: str, question: str, study_items: list[dict],
+) -> dict | None:
+    """The defining file: the corpus item whose name appears in the
+    expression (identifier claims) or in the question (builtin claims
+    reference a type/member defined somewhere in the corpus)."""
+    expr_tokens = set(re.findall(r"[A-Za-z_]\w*", expr))
+    q_tokens = set(re.findall(r"[A-Za-z_]\w*", question))
+    for it in study_items:
+        if not isinstance(it, dict):
+            continue
+        suffix = Path(it.get("file") or "").suffix.lower()
+        if suffix not in _C_SUFFIXES | _CPP_SUFFIXES:
+            continue
+        name = it.get("name") or ""
+        if name in expr_tokens or name in q_tokens:
+            return it
+    return None
+
+
+def _lang_for(probe_item: dict) -> str:
+    return (
+        "c"
+        if Path(probe_item["file"]).suffix.lower() in _C_SUFFIXES
+        else "c++"
+    )
+
+
 def compile_probe_question(
     question: str,
     study_items: list[dict],
@@ -317,30 +409,11 @@ def compile_probe_question(
         return None
     expr, value = claim
 
-    # The defining file: the corpus item whose name appears in the
-    # expression (identifier claims) or in the question (builtin
-    # claims reference a type/member defined somewhere in the corpus).
-    probe_item = None
-    expr_tokens = set(re.findall(r"[A-Za-z_]\w*", expr))
-    q_tokens = set(re.findall(r"[A-Za-z_]\w*", question))
-    for it in study_items:
-        if not isinstance(it, dict):
-            continue
-        suffix = Path(it.get("file") or "").suffix.lower()
-        if suffix not in _C_SUFFIXES | _CPP_SUFFIXES:
-            continue
-        name = it.get("name") or ""
-        if name in expr_tokens or name in q_tokens:
-            probe_item = it
-            break
+    probe_item = _find_probe_item(expr, question, study_items)
     if probe_item is None:
         return None  # not a C/C++ question — textual resolver's turf
 
-    lang = (
-        "c"
-        if Path(probe_item["file"]).suffix.lower() in _C_SUFFIXES
-        else "c++"
-    )
+    lang = _lang_for(probe_item)
 
     def _unavailable(reason: str) -> CompileProbeResult:
         return CompileProbeResult(
@@ -446,6 +519,199 @@ def compile_probe_question(
         probe_sha256=probe_sha,
         diagnostic_snippet="" if ok else diag[:_MAX_DIAG_SNIPPET],
         include_file=rel,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Determine-value mode (config-gated, default off — see module docstring)
+# ---------------------------------------------------------------------------
+
+def _int_literal(v: int) -> str:
+    """A C integer literal for *v* whose type makes the comparison
+    value-preserving: ULL for the non-negative branch, LL for the
+    negative branch (INT64_MIN spelled without overflowing)."""
+    if v >= 0:
+        return f"{v}ULL"
+    if v == _INT64_MIN:
+        return "(-9223372036854775807LL - 1)"
+    return f"({v}LL)"
+
+
+def determine_probe_question(
+    question: str,
+    study_items: list[dict],
+    source_root: Path,
+    *,
+    budget: ProbeBudget | None = None,
+) -> CompileProbeResult | None:
+    """Determine the value of a constant claim-lessly by bisection.
+
+    Returns None when the question is not determine-shaped (or not
+    C/C++).  Otherwise ``verified`` with the determined value — the
+    verdict comes ONLY from the final equality probe, never from the
+    search — or ``unavailable`` with the reason.
+    """
+    expr = parse_determine_expression(question)
+    if expr is None:
+        return None
+
+    probe_item = _find_probe_item(expr, question, study_items)
+    if probe_item is None:
+        return None  # not a C/C++ question — textual resolver's turf
+
+    lang = _lang_for(probe_item)
+
+    def _unavailable(reason: str) -> CompileProbeResult:
+        return CompileProbeResult(
+            status="unavailable", expression=expr,
+            reason=reason, include_file=probe_item.get("file") or "",
+        )
+
+    if budget is not None and not budget.take():
+        return _unavailable("per-run determine-probe cap reached")
+
+    toolchain = _find_toolchain(lang)
+    if toolchain is None:
+        return _unavailable(f"no working {lang} compiler on PATH")
+    compiler, version = toolchain
+
+    include_path = (Path(source_root) / probe_item["file"]).resolve()
+    try:
+        include_path.relative_to(Path(source_root).resolve())
+    except ValueError:
+        return _unavailable("defining file escapes the source root")
+    if not include_path.is_file():
+        return _unavailable("defining file not found under source root")
+
+    try:
+        from core.audit.compiler_sweep import _derive_include_dirs
+        include_dirs = _derive_include_dirs(
+            Path(source_root), include_path.parent,
+        )
+    except Exception:  # noqa: BLE001 - fall back to the minimal set
+        include_dirs = [str(source_root), str(include_path.parent)]
+
+    with tempfile.TemporaryDirectory(
+        prefix="raptor_study_probe_",
+    ) as td:
+        workdir = Path(td)
+
+        def _assert_holds(assertion_rhs_expr: str) -> bool | None:
+            """Compile the TU asserting ``(expr) <cmp> rhs``; the
+            caller builds the full boolean expression.  None on
+            sandbox/timeout failure."""
+            src = "\n".join([
+                f"/* {_ASSERT_MARKER}: generated probe — never "
+                "persisted */",
+                f'#include "{include_path}"',
+                *(["#include <stddef.h>"] if lang == "c" else []),
+                (f"{'_Static_assert' if lang == 'c' else 'static_assert'}"
+                 f'({assertion_rhs_expr}, "{_ASSERT_MARKER}");'),
+                "",
+            ])
+            out = _compile_tu(
+                src, workdir, compiler, lang, include_dirs,
+                Path(source_root),
+            )
+            return None if out is None else out[0]
+
+        # Steps 1-2: same baseline + tautology gates as the claim probe.
+        baseline = _compile_tu(
+            generate_probe_source(include_path, None, None, lang),
+            workdir, compiler, lang, include_dirs, Path(source_root),
+        )
+        if baseline is None:
+            return _unavailable("sandboxed compile invocation failed")
+        ok, diag = baseline
+        if not ok:
+            detail = diag.splitlines()[0][:160] if diag else ""
+            return _unavailable(
+                "defining file does not compile standalone"
+                + (f": {detail}" if detail else ""),
+            )
+        tautology = _compile_tu(
+            generate_probe_source(include_path, expr, None, lang),
+            workdir, compiler, lang, include_dirs, Path(source_root),
+        )
+        if tautology is None:
+            return _unavailable("sandboxed compile invocation failed")
+        ok, diag = tautology
+        if not ok:
+            return _unavailable(
+                "expression is not a compile-time constant here: "
+                + (diag.splitlines()[0][:160] if diag else expr),
+            )
+
+        # Sign probes: both must be well-formed comparisons and
+        # exactly one must hold — anything else (non-arithmetic
+        # constant, sandbox failure) is unavailable before the
+        # expensive search starts.
+        non_negative = _assert_holds(f"(({expr}) >= 0)")
+        negative = _assert_holds(f"(({expr}) < 0)")
+        if non_negative is None or negative is None:
+            return _unavailable("sandboxed compile invocation failed")
+        if non_negative == negative:
+            return _unavailable(
+                "sign probes disagree — expression does not behave "
+                "as an integer constant under comparison",
+            )
+
+        # Bisection: find the least K with (expr) <= K.  The literal
+        # type keeps the comparison value-preserving per branch.
+        lo, hi = (0, _UINT64_MAX) if non_negative else (_INT64_MIN, -1)
+        steps = 0
+        while lo < hi:
+            steps += 1
+            if steps > _BISECT_MAX_STEPS:
+                return _unavailable("bisection step bound exceeded")
+            mid = (lo + hi) // 2
+            holds = _assert_holds(f"(({expr}) <= {_int_literal(mid)})")
+            if holds is None:
+                return _unavailable("sandboxed compile invocation failed")
+            if holds:
+                hi = mid
+            else:
+                lo = mid + 1
+        candidate = lo
+
+        # Final equality probe — the ONLY verdict-producing compile.
+        claim_src = "\n".join([
+            f"/* {_ASSERT_MARKER}: generated probe — never persisted */",
+            f'#include "{include_path}"',
+            *(["#include <stddef.h>"] if lang == "c" else []),
+            (f"{'_Static_assert' if lang == 'c' else 'static_assert'}"
+             f"((({expr}) == {_int_literal(candidate)}), "
+             f'"{_ASSERT_MARKER}");'),
+            "",
+        ])
+        probe_sha = hashlib.sha256(claim_src.encode()).hexdigest()[:16]
+        equality = _compile_tu(
+            claim_src, workdir, compiler, lang, include_dirs,
+            Path(source_root),
+        )
+        if equality is None:
+            return _unavailable("sandboxed compile invocation failed")
+        ok, diag = equality
+        if not ok:
+            return _unavailable(
+                "bisection converged but the equality probe failed — "
+                "no verdict",
+            )
+
+    return CompileProbeResult(
+        status="verified",
+        expression=expr,
+        claimed_value=str(candidate),
+        answer=(
+            f"compile-probe(determine): ({expr}) == {candidate} "
+            f"[bisection over static assertions, {steps} steps; "
+            f"equality confirmed by {compiler}]"
+        ),
+        compiler=compiler,
+        compiler_version=version,
+        probe_sha256=probe_sha,
+        include_file=probe_item.get("file") or "",
+        notes=[f"determine-value bisection, {steps} steps"],
     )
 
 

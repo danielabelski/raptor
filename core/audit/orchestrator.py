@@ -369,6 +369,12 @@ class OrchestratorConfig:
     # (--no-on-demand-synthesis); capped per run
     # (checker_synthesis.MAX_ONDEMAND_SYNTHESIS_PER_RUN).
     on_demand_synthesis: bool = True
+    # Determine-value compile probes (--probe-determine-value):
+    # bisection over static assertions resolves "what is the value of
+    # X?" study questions. Default OFF — up to ~66 sandboxed compiles
+    # per constant (question cap: compile_probe._DEFAULT_DETERMINE_CAP
+    # per run).
+    probe_determine_value: bool = False
     # Per-model review functions for cross-model panels. Built by the
     # pipeline (one make_review_fn per configured model) when
     # ``len(models) > 1``. The multi-model dispatch in
@@ -9282,6 +9288,7 @@ def _mark_batch_reading_list(
     study_client: Any = None,
     scorecard_model: str = "",
     probe_budget: Any = None,
+    determine_budget: Any = None,
 ) -> set[str]:
     """Post-study reading-list bookkeeping for one batch.
 
@@ -9424,6 +9431,32 @@ def _mark_batch_reading_list(
             if probe is not None and probe.status == "unavailable":
                 probe_note = (
                     f"compile-probe unavailable/failed: {probe.reason}"
+                )
+                logger.info(
+                    "study-consumer: %s (%s)", probe_note, req.question,
+                )
+                probe = None
+        # Determine-value channel (config-gated; determine_budget is
+        # None when the mode is off): claim-less "what is the value
+        # of X?" questions resolve by bisection whose only verdict is
+        # the final equality probe — same mechanical tier + receipt.
+        if (
+            probe is None and determine_budget is not None
+            and spot is None and study_items and source_root is not None
+        ):
+            try:
+                from core.audit.compile_probe import (
+                    determine_probe_question,
+                )
+                probe = determine_probe_question(
+                    req.question, study_items, Path(source_root),
+                    budget=determine_budget,
+                )
+            except Exception:
+                logger.debug("determine probe failed", exc_info=True)
+            if probe is not None and probe.status == "unavailable":
+                probe_note = (
+                    f"determine-probe unavailable/failed: {probe.reason}"
                 )
                 logger.info(
                     "study-consumer: %s (%s)", probe_note, req.question,
@@ -9981,6 +10014,23 @@ def _study_consumer_loop(
             probe_budget = ProbeBudget()
         except Exception:  # noqa: BLE001 - probes degrade to capped-out
             probe_budget = None
+    # Determine-value probes are config-gated (default off) and carry
+    # their own per-run question cap; None disables the mode.
+    determine_budget = st.get("determine_budget")
+    if determine_budget is None and getattr(
+        config, "probe_determine_value", False,
+    ):
+        try:
+            from core.audit.compile_probe import (
+                _DEFAULT_DETERMINE_CAP,
+                ProbeBudget,
+            )
+            determine_budget = ProbeBudget(
+                remaining=_DEFAULT_DETERMINE_CAP,
+            )
+            st["determine_budget"] = determine_budget
+        except Exception:  # noqa: BLE001 - probes degrade to capped-out
+            determine_budget = None
 
     while not study_queue.is_done():
         # Idle at the top of every iteration: the drain path uses the
@@ -10261,6 +10311,7 @@ def _study_consumer_loop(
                     if config.models else "default"
                 ),
                 probe_budget=probe_budget,
+                determine_budget=determine_budget,
             )
         except Exception:
             logger.debug(

@@ -3180,6 +3180,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         dangerous_callee_keys=dangerous_callee_keys,
         priority_scores=priority_scores,
         prefilter_results=gen_prefilters or None,
+        target_path=Path(config.target_path),
     )
     logger.info(format_triage_summary(triage_results))
     try:

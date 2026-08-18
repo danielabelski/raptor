@@ -47,6 +47,58 @@ _GLANCE_MAX_SLOC = 20
 _HIGH_COMPLEXITY_BRANCHES = 15
 
 
+# ── Fixed-size stack-buffer write detection (C-family) ───────────────
+#
+# The sink-unreachable skip rule reasons about CALLEES ("no sink path,
+# no dangerous callees") — a function that writes into its own
+# fixed-size local buffer has an intra-procedural overflow surface
+# with no callee signal at all. A real stack overflow (81-byte local,
+# loop-written, cap applied on only one branch) was triage-skipped
+# exactly this way. Cheap, deterministic veto: a local fixed-size
+# array declaration plus write evidence into that array keeps the
+# function reviewable (INVESTIGATE) instead of SKIP.
+_FIXED_BUF_DECL = re.compile(
+    # Size may be a literal, a macro, or a constant expression
+    # (``buf[OSSL_TRACE_STRING_MAX + 1]`` — the real missed overflow's
+    # shape); anything short of a statement boundary counts. VLAs
+    # match too: a runtime-sized local array with write evidence is
+    # just as review-worthy.
+    r"\b(?:unsigned\s+char|signed\s+char|char|uint8_t|int8_t|u_char|"
+    r"wchar_t|BYTE|WCHAR)\s+(\w+)\s*\[[^\];]*\]",
+)
+_MEM_WRITERS = (
+    "memcpy", "memmove", "memset", "strcpy", "strncpy", "strcat",
+    "strncat", "sprintf", "snprintf", "vsprintf", "vsnprintf",
+    "gets", "fgets", "read", "fread", "recv", "recvfrom",
+)
+
+
+def writes_fixed_stack_buffer(source: str) -> bool:
+    """True when *source* declares a fixed-size local array and shows
+    write evidence into it (indexed store, or the buffer passed as the
+    destination of a mem/str writer). Conservative by construction:
+    no declaration or no write evidence → False."""
+    if not source:
+        return False
+    names = {m.group(1) for m in _FIXED_BUF_DECL.finditer(source)}
+    if not names:
+        return False
+    for name in names:
+        esc = re.escape(name)
+        # buf[i] = …  (indexed store; excludes == comparisons)
+        if re.search(rf"\b{esc}\s*\[[^\]]+\]\s*=[^=]", source):
+            return True
+        # memcpy(buf, …) / snprintf(buf, …) / read(fd, buf, …)-style
+        # first-or-second-arg destination uses.
+        writer_alt = "|".join(_MEM_WRITERS)
+        if re.search(
+            rf"\b(?:{writer_alt})\s*\(\s*(?:[^,()]+,\s*)?&?\s*{esc}\b",
+            source,
+        ):
+            return True
+    return False
+
+
 def classify_function(
     *,
     file: str,
@@ -82,12 +134,15 @@ def classify_function(
             priority_score=priority_score,
         )
 
+    stack_buffer_writer = writes_fixed_stack_buffer(source)
+
     if (
         sink_unreachable
         and not is_entry_point
         and not is_sink
         and not is_trust_boundary
         and not has_dangerous_callees
+        and not stack_buffer_writer
         and sloc <= 30
     ):
         reasons.append("no sink path, no dangerous callees, small")
@@ -152,10 +207,13 @@ def classify_function(
             priority_score=priority_score,
         )
 
-    if on_taint_path or has_dangerous_callees:
-        reasons.append(
-            "on taint path" if on_taint_path else "has dangerous callees"
-        )
+    if on_taint_path or has_dangerous_callees or stack_buffer_writer:
+        if on_taint_path:
+            reasons.append("on taint path")
+        elif has_dangerous_callees:
+            reasons.append("has dangerous callees")
+        else:
+            reasons.append("writes fixed-size stack buffer")
         return TriageResult(
             bucket=TriageBucket.INVESTIGATE,
             reasons=tuple(reasons),
@@ -194,8 +252,15 @@ def classify_all(
     dangerous_callee_keys: frozenset[str] = frozenset(),
     priority_scores: dict[str, float] | None = None,
     prefilter_results: dict[str, PrefilterResult] | None = None,
+    target_path: Path | None = None,
 ) -> dict[str, TriageResult]:
-    """Classify all gap functions. Returns {file:function: TriageResult}."""
+    """Classify all gap functions. Returns {file:function: TriageResult}.
+
+    ``target_path`` enables the lazy source read behind the
+    stack-buffer skip veto: only functions the sink-unreachable skip
+    rule could otherwise drop (small, no exempting signal) get their
+    line range read — a handful per run, never the whole tree.
+    """
     scores = priority_scores or {}
     prefilters = prefilter_results or {}
     results: dict[str, TriageResult] = {}
@@ -207,10 +272,24 @@ def classify_all(
         sloc = gap.get("sloc", (gap.get("line_end", 0) or 0) - (gap.get("line_start", 0) or 0))
         caller_count = len(gap.get("callers", []))
 
+        source = gap.get("source", "") or ""
+        if (
+            not source
+            and target_path is not None
+            and bare_key in sink_unreachable_keys
+            and 0 <= sloc <= 30
+            and bare_key not in entry_points
+            and bare_key not in sinks
+            and bare_key not in trust_boundaries
+            and bare_key not in dangerous_callee_keys
+        ):
+            source = _read_function_source(gap, target_path)
+
         results[key] = classify_function(
             file=gap["file"],
             function=gap["name"],
             sloc=max(sloc, 0),
+            source=source,
             priority_score=scores.get(bare_key, 0.0),
             is_entry_point=bare_key in entry_points,
             is_sink=bare_key in sinks,
@@ -290,6 +369,27 @@ def detect_generated_files(
                 generated.append(file_path)
 
     return generated
+
+
+def _read_function_source(gap: dict[str, Any], target_path: Path) -> str:
+    """Read one function's line range for the stack-buffer skip veto.
+
+    Path-traversal-safe via ``safe_join``; any read failure returns ""
+    (the veto then simply doesn't fire — fail-open toward SKIP keeps
+    the pre-veto behaviour rather than inventing review load)."""
+    resolved = safe_join(target_path, gap.get("file", ""))
+    if resolved is None:
+        return ""
+    start = int(gap.get("line_start") or 0)
+    end = int(gap.get("line_end") or 0)
+    if start <= 0 or end < start:
+        return ""
+    try:
+        with open(resolved, "r", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return ""
+    return "".join(lines[start - 1:end])
 
 
 def _read_file_header(file_path: str, target_path: Path) -> str:

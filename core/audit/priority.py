@@ -11,8 +11,12 @@ Scoring model:
   +6   Trust boundary (crosses privilege domains)
   +5   On a traced flow path (source → sink path passes through)
   +8   Large internal function (≥200 SLOC; parsers, state machines)
+  +6   Parse/decode-shaped (byte-buffer signature + cursor walk /
+       parser-API call — core.audit.parser_shape, structural/learned)
+  +4   Dense length/size arithmetic (bounds-bug substrate)
   +4   Complex function (≥80 SLOC)
   +3   Callee of an entry point (1-hop from attack surface)
+  +2   Dense error paths (validation-ordering substrate)
   +2   Moderate function (≥30 SLOC)
   +2   Has unchecked flows (context-map flagged unchecked)
   +1   In a file with any entry point
@@ -32,6 +36,12 @@ from pathlib import Path
 from typing import Any
 
 from ._util import extract_context_map_set
+from .parser_shape import (
+    ERROR_PATH_DENSITY_FLOOR,
+    ERROR_PATH_SITES_FLOOR,
+    LENGTH_ARITH_DENSITY_FLOOR,
+    LENGTH_ARITH_SITES_FLOOR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +70,14 @@ SCORE_STRATEGY_MAX_BOOST = 5
 SCORE_BINARY_SINK = 6
 SCORE_BINARY_SURFACE = 4
 SCORE_PARSER_BOUNDARY = 3
+# Structural parse/decode-shape components (core.audit.parser_shape,
+# annotated onto gaps by compute_gaps). External-format decoders and
+# their bounds arithmetic are where the review yield is — receipts:
+# scoped-audit runs whose slots went to the thin exported siblings of
+# the actual byte-walking workhorse.
+SCORE_PARSER_SHAPED = 6
+SCORE_LENGTH_ARITH = 4
+SCORE_ERROR_PATHS = 2
 SCORE_VALIDATE_CONFIRMED = 6
 SCORE_VALIDATE_RULED_OUT = -3
 SCORE_BINARY_ABSENT = -10
@@ -259,6 +277,25 @@ def score_functions(
             score += SCORE_BINARY_SURFACE
         if key in binary_boundary_fns or func_name in binary_boundary_fns:
             score += SCORE_PARSER_BOUNDARY
+
+        # Structural parse/decode-shape components. Density floors
+        # live in core.audit.parser_shape so the classifier and the
+        # scorer can't drift apart.
+        shape = gap.get("parser_shape") or {}
+        if shape.get("parser_shaped"):
+            score += SCORE_PARSER_SHAPED
+        if (
+            shape.get("length_arith_sites", 0) >= LENGTH_ARITH_SITES_FLOOR
+            and shape.get("length_arith_density", 0.0)
+            >= LENGTH_ARITH_DENSITY_FLOOR
+        ):
+            score += SCORE_LENGTH_ARITH
+        if (
+            shape.get("error_path_sites", 0) >= ERROR_PATH_SITES_FLOOR
+            and shape.get("error_path_density", 0.0)
+            >= ERROR_PATH_DENSITY_FLOOR
+        ):
+            score += SCORE_ERROR_PATHS
 
         sloc = gap.get("sloc", 0)
         if sloc >= _LARGE_SLOC:

@@ -248,6 +248,31 @@ def compute_gaps(
     reviewable_kinds = _resolve_reviewable_kinds(include_kinds)
     consumed_covered: dict[str, int] = {}
 
+    # Per-file source cache for the parser-shape classifier. Missing
+    # target or unreadable files degrade to signature-only signals.
+    _source_lines_cache: dict[str, list[str] | None] = {}
+    _target_root = Path(target_path_str) if target_path_str else None
+
+    def _function_source(
+        file_path: str, line_start: int, line_end: int | None,
+    ) -> str | None:
+        if _target_root is None or not line_start:
+            return None
+        if file_path not in _source_lines_cache:
+            try:
+                _source_lines_cache[file_path] = (
+                    (_target_root / file_path)
+                    .read_text(encoding="utf-8", errors="replace")
+                    .splitlines()
+                )
+            except OSError:
+                _source_lines_cache[file_path] = None
+        lines = _source_lines_cache[file_path]
+        if lines is None:
+            return None
+        end = line_end if isinstance(line_end, int) and line_end else line_start
+        return "\n".join(lines[line_start - 1:end])
+
     for file_info in checklist.get("files", []):
         file_path = file_info.get("path", "")
 
@@ -329,6 +354,26 @@ def compute_gaps(
 
             fuzz_info = _fuzz_info_for(fuzz_coverage, file_path, name)
 
+            # Parser-shape classification (structural/learned signals
+            # only — see core.audit.parser_shape). Lifts static
+            # parse/decode workhorses into the entry-point tier and
+            # feeds priority.score_functions' shape components.
+            shape = None
+            try:
+                from .parser_shape import parser_shape
+                shape = parser_shape(
+                    _function_source(file_path, line_start, line_end),
+                    name=name,
+                    parameters=metadata.get("parameters"),
+                    sloc=sloc,
+                    domain_vocab=gap_vocab,
+                )
+            except Exception:
+                logger.debug(
+                    "parser-shape classification failed for %s:%s",
+                    file_path, name, exc_info=True,
+                )
+
             priority = _compute_priority(
                 file_coverage=file_coverage,
                 reachable_sinks=reachable_sinks,
@@ -339,6 +384,7 @@ def compute_gaps(
                 binary_absent=binary_absent,
                 fuzz_iterations=fuzz_info[0],
                 fuzz_crashes=fuzz_info[1],
+                parser_shaped=bool(shape and shape.parser_shaped),
             )
 
             gap = {
@@ -352,6 +398,8 @@ def compute_gaps(
                 "sloc": sloc,
                 "metadata": metadata,
             }
+            if shape is not None:
+                gap["parser_shape"] = shape.to_dict()
 
             if item.get("lexical_dead"):
                 gap["lexical_dead"] = True
@@ -1465,6 +1513,7 @@ def _compute_priority(
     binary_absent: bool = False,
     fuzz_iterations: int = 0,
     fuzz_crashes: int = 0,
+    parser_shaped: bool = False,
 ) -> int:
     """Assign priority (lower = higher priority).
 
@@ -1475,6 +1524,12 @@ def _compute_priority(
     iterations and zero crashes has been exercised by a harness already,
     so the LLM should focus elsewhere first. Functions with crashes get
     NO deprioritization — they're interesting.
+
+    ``parser_shaped`` functions share the entry-point tier regardless
+    of visibility: the entry-point heuristic keys on non-static /
+    header-API membership, so the ``static`` decode workhorse that
+    actually walks the untrusted bytes used to compete on SLOC alone
+    while its thin exported siblings claimed the file's review slots.
     """
     if is_entry_point:
         if sloc <= _TRIVIAL_SLOC:
@@ -1484,6 +1539,14 @@ def _compute_priority(
         return PRIORITY_ENTRY_POINT
 
     if sloc >= _LARGE_SLOC:
+        return PRIORITY_ENTRY_POINT
+
+    if (
+        parser_shaped
+        and sloc > _SMALL_ENTRY_SLOC
+        and not binary_absent
+        and item_kind != "interstitial"
+    ):
         return PRIORITY_ENTRY_POINT
 
     if reachable_sinks:

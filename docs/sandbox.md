@@ -242,7 +242,7 @@ All seven are defined in `core/sandbox/profiles.py` as immutable
 
 | Profile | Network | Landlock | Seccomp | Notes |
 |---|---|---|---|---|
-| `full` | blocked | yes | full | Default for `run_untrusted()` and `sandbox()`. Warns and degrades if a host layer is missing. |
+| `full` | blocked | yes | full | Default for `run_untrusted()` and `sandbox()`. Warns and degrades if a host layer is missing — except that on Linux hosts without unprivileged user namespaces, `run_untrusted()` / `run_untrusted_networked()` refuse outright unless `RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1` explicitly accepts Landlock/seccomp-only containment (see [environment.md](environment.md)). |
 | `strict` | blocked | yes | full | Fail-closed version of `full`. For autonomous work where weaker isolation is not acceptable. Also requires mount namespaces when target/output isolation is requested, defaults `restrict_reads=True`, and implies `fake_home=True` when `output=` is set. |
 | `target_run` | **open** | yes | full | For harness-spawned target binaries that need a local listener (loopback TCP, Unix domain sockets). Same Landlock + seccomp as `full` but `block_network=False` so the listener is reachable. Pair with the [netns coordinator](#netns-coordinator) for loopback-only isolation. |
 | `debug` | blocked | yes | debug (permits ptrace) | For [crash analysis](crash-analysis.md) with gdb/rr. Target and debugger run in the same sandbox. Composes with `--audit`. |
@@ -1220,7 +1220,12 @@ Without both, the sandbox falls back to Landlock-only. Landlock alone
 already covers the main threat model (no writes outside `output`, no
 reads of credentials under `restrict_reads`); mount-ns adds per-sandbox
 `/tmp`, invisible host paths outside the bind-mounts, and stronger
-`/dev/shm` isolation.
+`/dev/shm` isolation. Exception: when the user-namespace tier is
+unavailable entirely, the untrusted entry points (`run_untrusted()` /
+`run_untrusted_networked()`) refuse to fall back — set
+`RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1` to explicitly accept
+Landlock/seccomp-only containment for untrusted code
+(see [environment.md](environment.md)).
 
 ### A target binary fails with EACCES reading `/home/<user>/...`
 
@@ -1278,6 +1283,7 @@ core/sandbox/
 +-- _macos_spawn.py            # macOS: sandbox-exec wrapper
 +-- _proxy_bridge.py           # TCP-to-Unix-socket relay for netns proxy enforcement
 +-- _fork_safe_warn.py         # fork-safe degraded-mode warning helper
++-- _daemon.py                 # persistent-sandbox RPC daemon (runs inside the sandbox)
 +-- mount_ns.py                # Linux: ctypes mount() / pivot_root() for _spawn
 +-- mount.py                   # Linux: legacy shell-script mount builder
 +-- landlock.py                # Linux: Landlock ABI + rule construction
@@ -1290,21 +1296,31 @@ core/sandbox/
 +-- observe_profile.py         # observe-mode profile extraction from tracer JSONL
 +-- observe_context_merge.py   # merge ObserveProfile into /understand context-map
 +-- state.py                   # cross-platform: singletons + cached state
++-- evidence.py                # tamper-resistant placement for enforcement evidence
 +-- summary.py                 # per-run denial recording + sandbox-summary.json
 +-- tracer.py                  # Linux: ptrace-based syscall tracer for audit/observe
 +-- audit_budget.py            # cross-platform: token-bucket rate limiter for audit
 +-- calibrate.py               # binary calibration: auto-derive sandbox allowlists
 +-- calibrate_cli.py           # CLI: libexec/raptor-sandbox-calibrate
 +-- fingerprint.py             # host-fingerprint sanitisation overlays
++-- host.py                    # persistent-sandbox host (parent-side handle)
 +-- netns_coordinator.py       # paired-process isolation in shared netns
 +-- ptrace_probe.py            # detect ptrace availability
 +-- python_paths.py            # discover Python runtime paths for tool_paths
 +-- seatbelt.py                # macOS: SBPL profile generator
 +-- seatbelt_audit.py          # macOS: log stream capture + JSONL append
++-- shims/                     # build-on-demand LD_PRELOAD stubs (setgroups)
 +-- helpers/                   # privileged helper binaries
-|   +-- raptor-coord-launcher.c          # netns coordinator launcher (C, setuid)
-|   +-- raptor-coord-launcher.apparmor   # AppArmor policy
+|   +-- raptor-coord-launcher.c          # netns coordinator launcher (C, setcap
+|   |                                    #   file caps or AppArmor/SELinux grant)
+|   +-- raptor-coord-launcher.apparmor.template  # AppArmor policy (render
+|   |                                    #   via `make apparmor-profile` —
+|   |                                    #   attachment is the checkout's
+|   |                                    #   absolute path, never a glob)
 |   +-- raptor-coord-launcher.selinux.te # SELinux policy
+|   +-- raptor-gidmap-allow.c            # gid-map helper (C, setcap cap_setgid)
+|   +-- helpers_validate.h               # shared argument-contract validation
+|   +-- helpers_test.c                   # unprivileged validation test harness
 |   +-- Makefile                         # build instructions
 +-- tests/                     # unit and integration tests
 ```

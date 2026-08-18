@@ -36,7 +36,7 @@ Conventions used below:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RAPTOR_OUT_DIR` | `out/` under the repo | Output-directory root override. Validated fail-closed by `RaptorConfig.get_out_dir()`: refuses paths under `/etc /usr /bin /sbin /boot /dev /proc /sys` (checked on both the literal and symlink-resolved path, component-boundary matched) and refuses paths whose parent does not exist (typo guard). Propagates to children via the safe-env allowlist so `raptor-run-lifecycle` resolves the same directory. |
-| `RAPTOR_CONFIG` | `~/.config/raptor/models.json` | Path to the models config consumed by `core.llm` (`{"models": [...]}` or a bare list; `//` comments allowed). **Known wart:** `packages/exploit_feasibility` reads the same variable as the path to its *analysis-settings* JSON (its chain: explicit arg > `RAPTOR_CONFIG` > `./.raptor.json` > `~/.config/raptor/config.json`) — one name, two schemas, kept for operator compatibility. Each reader validates the schema it expects: `core.llm` logs an error (once per path) and loads zero models when the file is AnalysisConfig-shaped; `exploit_feasibility`'s `load_config`/`from_file` raises `ValueError` when the file is models-config-shaped. Both messages name the other use. |
+| `RAPTOR_CONFIG` | `~/.config/raptor/models.json` | Path to the models config consumed by `core.llm` (`{"models": [...]}` or a bare list; `//` comments allowed). This variable belongs to `core.llm` alone: `packages/exploit_feasibility` historically read the same name for its *analysis-settings* JSON but cut over to `RAPTOR_EF_CONFIG`. Both readers keep schema guards for stale environments: `core.llm` logs an error (once per path) and loads zero models when the file is AnalysisConfig-shaped; `exploit_feasibility`'s `from_file` raises `ValueError` when the file is models-config-shaped. Both messages name the right variable. |
 | `RAPTOR_TARGET_KIND` | auto-detect | Target-classification override: `library`, `hybrid`, or `application` (consumed by `core.inventory.library_detection`; any other value falls through to auto-detection — fail-open to auto). Prefer `/project set target-kind` or the per-run flag; programmatic setting > env > auto. Allowlisted so child inventory rebuilds honour it. |
 | `RAPTOR_LOG_FILE_LEVEL` | `INFO` | Level of the per-process JSONL audit-log file handler (`core.logging`). Any `logging` level name, case-insensitive; unknown names fall back to `INFO` rather than erroring during bootstrap. `DEBUG` opts into the full firehose. |
 | `RAPTOR_TMP_REAP_MAX_AGE_H` | `24` (hours) | Age floor for the best-effort sweep of orphaned RAPTOR temp artifacts in `$TMPDIR` (`core.run.tmp_reaper`; known `raptor-*` prefixes only, same-euid, live-process-safe). `0`/negative disables; non-numeric falls back to 24 h (sweep still runs). |
@@ -46,6 +46,7 @@ Conventions used below:
 | `RAPTOR_REACH_VERDICT_LOG_DISABLED` | unset | Any non-empty value disables reach-verdict telemetry recording (checked per call). The test suite sets it globally in `conftest.py`. Telemetry failures never affect analysis. |
 | `RAPTOR_BINARY_CACHE_DIR` | `<repo>/.cache/binary` | Location of the build-ID binary cache (`core.audit.build_id_cache`). Explicit `cache_dir` argument > env > default. Set to share the cache across hosts/tools. |
 | `RAPTOR_SELFTEST_MODEL` | unset | Default for `raptor-self-test --model` (budget-capped LLM cases). Flag > env > RAPTOR's own model resolution. |
+| `RAPTOR_CI` | auto-detected | CI-posture marker for the rule-of-two interactivity gate (`core.security.rule_of_two`). Normally parent-stamped: `get_safe_env()` writes `RAPTOR_CI=1` into every sanitised child env whenever the parent judged itself in CI, so the gate keeps working in children whose scrubbed env lost the vendor markers (`CI`, `GITHUB_ACTIONS`, ...). It is also the first — authoritative — entry in the recognised-marker list, so an operator may set `RAPTOR_CI=1` to force CI posture on any host. The whole marker set is unioned into `SAFE_ENV_ALLOWLIST`, so the verdict survives further spawns. |
 
 ### `RAPTOR_ALLOW_UNSANDBOXED_TOOLS`
 
@@ -63,6 +64,31 @@ warning, and records an `unsandboxed_tool_fallback` security event in
 the audit trail. Intended only for dev hosts where the sandbox's
 platform prerequisites are genuinely absent *and* the input is
 trusted. Never set it when scanning untrusted repositories.
+
+### `RAPTOR_ALLOW_DEGRADED_UNTRUSTED`
+
+The other isolation waiver, scoped to the untrusted entry points.
+Policy point: `core.sandbox.context._require_userns_or_optin`,
+checked by `run_untrusted()` and `run_untrusted_networked()` on
+Linux (macOS is exempt — the seatbelt tier provides the contract
+there).
+
+The untrusted-execution contract's credential-exfil defence is the
+PID/user namespace: without it the child runs as the caller's uid in
+the **host** namespaces, where `/proc/<pid>/environ` of same-UID
+processes is readable. On hosts that cannot create unprivileged user
+namespaces the entry points **fail closed** with a
+`SandboxSetupError` naming the host fix. Setting
+`RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1` (`1`/`true`/`yes`/`on`,
+case-insensitive) is the explicit operator acceptance of
+Landlock/seccomp-only containment on that host; every waived run
+emits a loud warning that same-UID `/proc` credential reads are not
+blocked in this mode.
+
+Distinct from `RAPTOR_ALLOW_UNSANDBOXED_TOOLS`, which waives a
+*missing sandbox module* at the tool-runner import seam — this one
+waives a missing *namespace tier* inside an otherwise-working
+sandbox. Neither implies the other.
 
 ### Housekeeping asymmetry
 
@@ -115,6 +141,32 @@ AWS credentials alone never select Bedrock.
 | `RAPTOR_SCORECARD_PATH` | `out/llm_scorecard.json` | Per-model reliability scorecard location (feeds `/scorecard` and cross-model merge weights). Set by tests/sandboxed runs for isolation. |
 | `RAPTOR_SCORECARD_TEST_FLUSH` | unset | Test-harness escape hatch. Under pytest the process-exit scorecard flush is suppressed (per-test isolation is torn down before atexit; flushing would corrupt real reliability data with mock usage). Any non-empty value opts the atexit flush back in — for tests exercising that path against an isolated `RAPTOR_SCORECARD_PATH`. No effect outside pytest. |
 
+### Credential-isolation dispatcher knobs
+
+Three integer knobs on the dispatcher server
+(`core/llm/dispatcher/server.py`). All resolve caller argument > env
+> default; non-numeric or below-minimum (1) values fall back to the
+default with a debug log — a typo never breaks dispatcher startup.
+They are read by helper, not by `os.environ.get` at the call site, so
+the machine inventory currently sees only the first one (its test
+monkeypatches it); listed here as prose until the extractor learns
+that seam:
+
+- `RAPTOR_LLM_DISPATCHER_UPSTREAM_TIMEOUT_S` (default `600`) —
+  read/write/pool timeout in seconds on the dispatcher→provider
+  forwarding leg, re-read per request. The connect timeout stays
+  fixed at 10 s: a provider that cannot finish the TCP/TLS handshake
+  in 10 s is down, and a long connect timeout only delays failover.
+- `RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S` (default `28800` = 8 h) —
+  lifetime of a worker's one-shot auth token; bump for kernel-scale
+  runs that outlive the default.
+- `RAPTOR_LLM_DISPATCHER_TOKEN_BUDGET` (default `10000`) — requests
+  allowed per worker token.
+
+Not to be confused with the dispatcher *route pair*
+(`RAPTOR_LLM_SOCKET` / `RAPTOR_LLM_TOKEN_FD`) — that is per-child
+internal plumbing, never operator-set (see below).
+
 ### `OLLAMA_HOST`
 
 Ollama base URL, default `http://localhost:11434`. Re-read from the
@@ -165,6 +217,15 @@ support".
 | `RAPTOR_SCAN_THIN_COVERAGE_THRESHOLD` | `25` | Minimum unique applicable Semgrep rule count below which the thin-coverage hint fires (`packages/static-analysis`). `0` disables the hint; non-integer/negative warns and uses 25. |
 | `RAPTOR_PATCH_GATE_SCOPE_SLACK` | `40` | Hunk slack (lines around the finding span) the patch gate tolerates (`packages/llm_analysis.patch_gate`). Per-call argument > env > default; malformed/negative values warn and use 40. |
 
+One more knob lives in `core/build/build_detector.py` (a directory the
+inventory scanner currently skips, so prose rather than a row):
+`RAPTOR_COMPILE_TIMEOUT_S` (default `120` seconds) caps each
+single-file compile the build prober runs, so a pathological input
+(fork-bomb template instantiation, deliberately slow untrusted
+source) cannot hang a CodeQL DB build — a hung compile is killed and
+counted as a failure and the pass continues. Non-numeric falls back
+to 120. Raise it only for unusually slow toolchains.
+
 
 ## Feature packages
 
@@ -179,7 +240,63 @@ support".
 | `DT_API_KEY` | unset | Dependency-Track API key for `raptor-sca dt-push`. `--api-key` flag > env; neither → exit 2 with a clear message. |
 | `RAPTOR_SCA_AGENT` | in-tree agent | Path override for the sandboxed SCA agent entry point (legacy external checkouts). Must exist, be readable, and carry the SCA marker import — a bad override disables the subprocess launch rather than silently falling back. |
 | `RAPTOR_SCA_STRESS_EPHEMERAL` | off | Any non-empty value (including `0`) makes SCA stress calibration clone into a throwaway temp dir instead of the persistent cache. Diagnostic only. |
+| `RAPTOR_SCA_MAVEN_REGISTRY` | upstream | Maven mirror URL for SCA resolution (`packages/sca/private_registry.py`). Must be http(s) — other schemes warn and are ignored. PyPI and npm mirrors reuse the upstream tool conventions instead: `PIP_INDEX_URL` and `NPM_CONFIG_REGISTRY`. |
+| `RAPTOR_SCA_PYPI_AUTH` | unset | `Authorization` header value sent to the PyPI mirror. Only honoured when the matching mirror URL var (`PIP_INDEX_URL`) is set — auth without a mirror is ignored. |
+| `RAPTOR_SCA_NPM_AUTH` | unset | Same, for the npm mirror (`NPM_CONFIG_REGISTRY`). |
+| `RAPTOR_SCA_MAVEN_AUTH` | unset | Same, for the Maven mirror (`RAPTOR_SCA_MAVEN_REGISTRY`). |
 | `RAPTOR_SAGE_AFL_PRIOR` | `1` | Falsy disables mechanical AFL flag injection from high-confidence SAGE cross-run priors. Shared toggle spellings (`off` now works); unrecognised values warn and leave it enabled. |
+| `RAPTOR_EF_CONFIG` | unset | Path to `packages/exploit_feasibility`'s analysis-settings JSON (chain: explicit arg > `RAPTOR_EF_CONFIG` > `./.raptor.json` > `~/.config/raptor/config.json`). Not to be confused with `RAPTOR_CONFIG` (core.llm models config) — this reader historically shared that name; each side's schema guard names the right variable on mismatch. See "Exploit-feasibility analysis settings" below for the rest of the `RAPTOR_EF_*` family. |
+
+### OCI registry credentials
+
+`core.oci.auth` resolves pull credentials per registry: an anonymous
+bearer token is tried first (free, correct for public images); when
+the registry demands credentials, the env pair
+`RAPTOR_OCI_<HOST>_USER` / `RAPTOR_OCI_<HOST>_PASSWORD` wins over
+`~/.docker/config.json` inline `auths`. The host is uppercased with
+`.` and `-` replaced by `_`: `ghcr.io` → `RAPTOR_OCI_GHCR_IO_USER`,
+`registry-1.docker.io` → `RAPTOR_OCI_REGISTRY_1_DOCKER_IO_USER`. Both
+halves of the pair must be set or it is skipped. `credsStore` /
+`credHelpers` in the Docker config are deliberately ignored (honouring
+them means shelling out to a helper binary); credential-helper users
+use the env pair instead. See `DOCKER_CONFIG` in the external-standard
+table for relocating the Docker config itself.
+
+### Exploit-feasibility analysis settings
+
+`packages/exploit_feasibility` reads its own `RAPTOR_EF_`-prefixed
+family in `AnalysisConfig.from_env()` — env values override
+config-file settings; invalid numeric values are silently ignored,
+booleans use the shared toggle spellings (`1/true/yes/on` vs
+`0/false/no/off`, case-insensitive; anything else warns and keeps
+the default). The family previously used bare `RAPTOR_` names
+(`RAPTOR_TIMEOUT_FAST`, `RAPTOR_CACHE_DIR`, ...), which read as
+framework-wide knobs despite being package-local — those names are
+no longer consulted. The reads go through a name→attribute mapping
+table, which the inventory scanner cannot yet resolve, so the family
+is listed as prose:
+
+- Tool paths (empty = use `PATH`): `RAPTOR_EF_CHECKSEC_PATH`,
+  `RAPTOR_EF_ROPGADGET_PATH`, `RAPTOR_EF_ONE_GADGET_PATH`.
+- Timeout tiers in seconds: `RAPTOR_EF_TIMEOUT_FAST`,
+  `RAPTOR_EF_TIMEOUT_NORMAL`, `RAPTOR_EF_TIMEOUT_MEDIUM`,
+  `RAPTOR_EF_TIMEOUT_SLOW`, `RAPTOR_EF_TIMEOUT_VERY_SLOW`,
+  `RAPTOR_EF_TIMEOUT_MAX`.
+- Caching: `RAPTOR_EF_ENABLE_CACHING` (default on),
+  `RAPTOR_EF_CACHE_DIR` (empty = temp dir; unrelated to
+  `RAPTOR_BINARY_CACHE_DIR` / `RAPTOR_PERLASM_CACHE_DIR`),
+  `RAPTOR_EF_ROP_CACHE_SIZE` (default 32).
+- Analysis: `RAPTOR_EF_MAX_GADGETS` (default 10000),
+  `RAPTOR_EF_VERIFY_FORMAT_N` (default on — empirical `%n` check),
+  `RAPTOR_EF_VERBOSE` (package output verbosity; **not** a framework
+  log level — that is `RAPTOR_LOG_FILE_LEVEL` above).
+
+Config-file path: `RAPTOR_EF_CONFIG` (chain: explicit arg >
+`RAPTOR_EF_CONFIG` > `./.raptor.json` > `~/.config/raptor/config.json`).
+Historically this package read `RAPTOR_CONFIG` for the same purpose —
+that name now belongs exclusively to `core.llm`'s models config (see
+Core runtime); pointing `RAPTOR_CONFIG` at analysis settings is a
+stale configuration and each reader's schema guard says so.
 
 
 ## SAGE
@@ -375,6 +492,17 @@ setting them manually either does nothing or weakens a boundary.
 | `SAGE_ENABLED` | `raptor-sage-setup` | Written as `true` into `.claude/settings.local.json` so sessions enable SAGE; default `false`, truthy `true`/`1`/`yes` (fail-closed). Removed by teardown. |
 | `SAGE_IDENTITY_PATH`, `SAGE_PROJECT`, `SAGE_PROVIDER` | `raptor-sage-setup` → `.mcp.json` | Agent identity/namespace for the SAGE MCP wrapper (container-internal defaults). |
 | `SAGE_EMBED_DIM` | `raptor-sage-setup` | Compose-time embedding dimension (default 768); no Python reads it at runtime — pairs with `SAGE_EMBED_MODEL` before setup. |
+
+Namespace look-alikes that are **not** environment variables: grep
+also surfaces `RAPTOR_GD_*` / `RAPTOR_FLOW_*` (Joern guard-dominance
+and flow-verification stdout sentinels, `core/audit/joern_verify.py`),
+`RAPTOR_BATCH_*` (pip-resolver batch-output markers,
+`packages/sca/resolvers/pip.py`), `RAPTOR_STUDY_PROBE` (compile-probe
+static-assert marker, `core/audit/compile_probe.py`) and the
+`RAPTOR_HELPERS_TEST` / `RAPTOR_GIDMAP_MAX_TRIPLES` C compile-time
+macros (`core/sandbox/helpers/`). These are output-stream sentinel
+strings or preprocessor symbols; none is read from a process
+environment, so none belongs in the tables above.
 
 
 ## Policy tables

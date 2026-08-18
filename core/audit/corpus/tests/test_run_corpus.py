@@ -571,6 +571,186 @@ class TestTriageKnob:
         assert captured["triage"] is False
 
 
+class TestProfileKnob:
+    """--profile cold (corpus default) must turn off every
+    accumulated-knowledge channel in the pipeline opts — the corpus
+    measures raw first-time-user capability; --profile deployed
+    restores today's all-channels-on behaviour for accumulation
+    comparisons. The setting must reach results.json meta and the
+    history hook."""
+
+    GATES = (
+        "iris", "sage_recall", "library_replay", "cross_run_import",
+        "verdict_reuse", "domain_model_import", "annotations_read",
+    )
+
+    def _label_for(self, fid="a.c:f", file="a.c"):
+        return SimpleNamespace(
+            function_id=fid,
+            bug_class="auth",
+            expected_status="clean",
+            expected_mechanism="",
+            expected_mode_results={},
+            source=SimpleNamespace(
+                repo="test", sha="x", file=file, line_start=1, line_end=6,
+            ),
+        )
+
+    def _run_with(self, tmp_path, monkeypatch, *, profile):
+        src = tmp_path / "repo"
+        src.mkdir(exist_ok=True)
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+        audit_dir = tmp_path / "audit"
+        audit_dir.mkdir(exist_ok=True)
+        seen = {}
+
+        def fake_target(*a, **kw):
+            seen.update(kw)
+            return {}, {}, audit_dir
+
+        monkeypatch.setattr(run_corpus, "_run_audit_on_target", fake_target)
+        monkeypatch.setattr(
+            run_corpus, "_start_shared_joern", lambda dirs: None,
+        )
+        run_corpus._run_audit(
+            [self._label_for()], {"test": src}, profile=profile,
+        )
+        return seen
+
+    def test_profile_threads_to_target(self, tmp_path, monkeypatch):
+        seen = self._run_with(tmp_path, monkeypatch, profile="cold")
+        assert seen["profile"] == "cold"
+        seen = self._run_with(tmp_path, monkeypatch, profile="deployed")
+        assert seen["profile"] == "deployed"
+
+    def _target_opts(self, tmp_path, monkeypatch, *, profile):
+        import core.audit.pipeline as pipeline
+
+        captured = []
+        monkeypatch.setattr(
+            pipeline, "run_audit_pipeline", captured.append,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_build_checklist", lambda t, o: True,
+        )
+        src = tmp_path / "repo"
+        src.mkdir(exist_ok=True)
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+        run_corpus._run_audit_on_target(
+            src, [self._label_for()], out_dir=tmp_path / "out",
+            mode="security", profile=profile,
+        )
+        return captured[0]
+
+    def test_cold_turns_every_gate_off(self, tmp_path, monkeypatch):
+        opts = self._target_opts(tmp_path, monkeypatch, profile="cold")
+        assert opts.profile == "cold"
+        for gate in self.GATES:
+            assert getattr(opts, gate) is False, gate
+
+    def test_deployed_leaves_every_gate_on(self, tmp_path, monkeypatch):
+        opts = self._target_opts(tmp_path, monkeypatch, profile="deployed")
+        assert opts.profile == "deployed"
+        for gate in self.GATES:
+            assert getattr(opts, gate) is True, gate
+
+    def test_gate_dict_matches_opts_surface(self):
+        """Every cold gate must be a real AuditPipelineOpts field —
+        a renamed field would silently stop gating."""
+        from dataclasses import fields
+
+        from core.audit.pipeline import AuditPipelineOpts
+
+        opt_fields = {f.name for f in fields(AuditPipelineOpts)}
+        assert set(run_corpus.COLD_PROFILE_GATES) <= opt_fields
+
+    def test_ensemble_threads_profile_to_both_passes(
+        self, tmp_path, monkeypatch,
+    ):
+        calls = []
+
+        def fake_run_audit(labels, dirs, **kw):
+            calls.append(kw)
+            return ([{
+                "function_id": lb.function_id,
+                "bug_class": lb.bug_class,
+                "expected": lb.expected_status,
+                "actual": "suspicious",
+                "match": False,
+                "hypothesis": "",
+                "evidence_tool": "",
+                "cost_usd": 0.0,
+                "duration_s": 0.0,
+            } for lb in labels], [])
+
+        monkeypatch.setattr(run_corpus, "_run_audit", fake_run_audit)
+        monkeypatch.setattr(
+            run_corpus, "_start_shared_joern", lambda dirs: None,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_run_phase2_classify", lambda *a, **kw: 0.0,
+        )
+        src = tmp_path / "repo"
+        src.mkdir()
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+        run_corpus._run_ensemble_audit(
+            [self._label_for()], {"test": src},
+            out_dir=tmp_path / "out", profile="cold",
+        )
+        assert len(calls) == 2
+        assert all(kw["profile"] == "cold" for kw in calls)
+
+    def test_meta_and_history_record_profile(self, tmp_path, monkeypatch):
+        from contextlib import contextmanager
+
+        import core.audit.corpus.label as label_mod
+
+        @contextmanager
+        def fake_project(run_tag):
+            yield f"corpus-{run_tag}"
+
+        src = tmp_path / "repo"
+        src.mkdir()
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+
+        monkeypatch.setattr(
+            label_mod, "load_all_labels",
+            lambda bug_class=None: [self._label_for()],
+        )
+        monkeypatch.setattr(
+            run_corpus, "_resolve_source_dirs",
+            lambda labels, do_fetch=False: {"test": src},
+        )
+        monkeypatch.setattr(
+            run_corpus, "_corpus_project_context", fake_project,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_run_ensemble_audit",
+            lambda labels, dirs, **kw: (
+                [dict(_result_row("a.c:f", "clean", "clean"), model="")],
+                [],
+            ),
+        )
+        recorded = {}
+
+        import core.audit.corpus.history as history_mod
+
+        monkeypatch.setattr(
+            history_mod, "record_run",
+            lambda *a, **kw: recorded.update(kw) or True,
+        )
+        out = tmp_path / "results.json"
+        run_corpus.main(["--output", str(out)])
+        meta = json.loads(out.read_text())["meta"]
+        assert meta["profile"] == "cold"
+        assert recorded["profile"] == "cold"
+
+        run_corpus.main(["--output", str(out), "--profile", "deployed"])
+        meta = json.loads(out.read_text())["meta"]
+        assert meta["profile"] == "deployed"
+        assert recorded["profile"] == "deployed"
+
+
 class TestPrefilterKnob:
     """--prefilter off (corpus default) must stop the mechanical
     prefilter's skip_llm shortcut from resolving labeled functions:

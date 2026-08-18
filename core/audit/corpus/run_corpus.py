@@ -52,6 +52,32 @@ EXIT_GATE_FAIL = 2
 CORPUS_DIR = Path(__file__).parent
 LABELS_DIR = CORPUS_DIR / "labels"
 
+# Pipeline gates the cold profile turns OFF (--profile cold, the
+# default). Membership test: "would a first-time user, default flags,
+# cold caches, get this input?" — anything accumulated across runs or
+# recalled from persistent stores fails it. The in-run study pass,
+# in-run on-demand synthesis, and every store WRITE stay on. Deployed
+# (--profile deployed) passes nothing, i.e. today's production
+# behaviour with every channel on.
+COLD_PROFILE_GATES: dict[str, bool] = {
+    # IRIS spec synthesis, sink-store reads, refinement (incl.
+    # prior_specs store reads), heuristic assumption passes.
+    "iris": False,
+    # SAGE recall reads (hypothesis verdicts, prior-run observations,
+    # proven-rule replay). SAGE writes unaffected.
+    "sage_recall": False,
+    # Graduated-rule library replay (find_replayable).
+    "library_replay": False,
+    # Cross-run verdict/journal import: reuse eligibility + sibling/
+    # project journal seed sources.
+    "cross_run_import": False,
+    "verdict_reuse": False,
+    # Prior domain-model import (fresh in-run study output still read).
+    "domain_model_import": False,
+    # Operator annotation reads.
+    "annotations_read": False,
+}
+
 
 def _corpus_project_context(run_tag: str):
     """Context manager: create a temporary project, restore the previous one on exit."""
@@ -462,6 +488,7 @@ def _run_audit(
     max_workers: int = 0,
     triage: bool = True,
     prefilter: bool = True,
+    profile: str = "deployed",
 ) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run /audit's orchestrator against labeled functions.
 
@@ -483,6 +510,11 @@ def _run_audit(
     labeled functions ``clean``/``prefilter:skip`` without a deep
     review even with triage off (corpus runs default it off — see
     ``--prefilter``). Prefilter hits still feed review context.
+
+    *profile* "cold" (corpus CLI default — see ``--profile``) turns
+    off every accumulated-knowledge channel in the pipeline
+    (``COLD_PROFILE_GATES``) so the run measures raw first-time-user
+    capability; "deployed" leaves them all on.
     """
     try:
         from .label import FunctionLabel  # noqa: F401
@@ -540,7 +572,7 @@ def _run_audit(
                 src_dir, repo_labels, model=model, out_dir=repo_out,
                 joern_server=joern_srv, study_root=study_root,
                 mode=mode, max_workers=max_workers, triage=triage,
-                prefilter=prefilter,
+                prefilter=prefilter, profile=profile,
             )
             if audit_dir:
                 run_dirs.append(audit_dir)
@@ -825,6 +857,7 @@ def _run_audit_on_target(
     max_workers: int = 0,
     triage: bool = True,
     prefilter: bool = True,
+    profile: str = "deployed",
 ) -> tuple[dict[str, Any], dict[str, Any], Path | None]:
     """Run /audit orchestrator on a target (in-process).
 
@@ -902,6 +935,13 @@ def _run_audit_on_target(
             # function resolved ``prefilter:skip`` was never deeply
             # examined, so its expected mechanism cannot attribute.
             prefilter_skip=prefilter,
+            # --profile cold (corpus default): every accumulated-
+            # knowledge channel off — the run measures what a
+            # first-time user with default flags and cold caches
+            # would get. Recorded in results.json meta and the run-
+            # history header. Deployed = all channels on.
+            profile=profile,
+            **(COLD_PROFILE_GATES if profile == "cold" else {}),
             models=[model] if model else None,
             max_cost_usd=150.0,
             no_binary_oracle=True,
@@ -1699,6 +1739,7 @@ def _run_ensemble_audit(
     full_source_dirs: dict[str, Path] | None = None,
     triage: bool = True,
     prefilter: bool = True,
+    profile: str = "deployed",
 ) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run dual-mode ensemble: security + bug_first, merge, Phase 2 + 2b.
 
@@ -1757,6 +1798,7 @@ def _run_ensemble_audit(
                     max_workers=full_workers,
                     triage=triage,
                     prefilter=prefilter,
+                    profile=profile,
                 )
                 _checkpoint_write(sec_ckpt, sec_results)
                 print(f"  Security pass complete "
@@ -1812,6 +1854,7 @@ def _run_ensemble_audit(
                         max_workers=full_workers,
                         triage=triage,
                         prefilter=prefilter,
+                        profile=profile,
                     )
                 else:
                     print("  All functions confident clean — skipping pass 2",
@@ -2284,6 +2327,22 @@ def main(argv: list[str] | None = None) -> int:
              "feed review context either way. 'on' restores production "
              "prefilter behaviour. Recorded in results.json meta",
     )
+    parser.add_argument(
+        "--profile",
+        choices=("cold", "deployed"),
+        default="cold",
+        help="Knowledge profile. Corpus default: cold — every "
+             "accumulated-knowledge channel is off (IRIS, SAGE "
+             "recall, graduated-rule replay, cross-run verdict/"
+             "journal import, prior domain-model import, annotation "
+             "reads) so the run measures raw first-time-user "
+             "capability; the in-run study pass and on-demand "
+             "synthesis stay on. 'deployed' leaves every channel on "
+             "for accumulation comparisons. --probe skips the "
+             "orchestrator, so the profile only labels probe rows. "
+             "Recorded in results.json meta and the run-history "
+             "header",
+    )
     args = parser.parse_args(argv)
 
     # Fail fast: a mistyped --splice path silently produced a partial
@@ -2461,6 +2520,7 @@ def main(argv: list[str] | None = None) -> int:
                         full_source_dirs=source_dirs if excerpt_dirs else None,
                         triage=args.triage == "on",
                         prefilter=args.prefilter == "on",
+                        profile=args.profile,
                     )
                 else:
                     results, run_dirs = _run_audit(
@@ -2470,6 +2530,7 @@ def main(argv: list[str] | None = None) -> int:
                         mode=mode,
                         triage=args.triage == "on",
                         prefilter=args.prefilter == "on",
+                        profile=args.profile,
                     )
             finally:
                 if excerpt_dirs:
@@ -2515,6 +2576,9 @@ def main(argv: list[str] | None = None) -> int:
         "cost_usd": round(sum(r.get("cost_usd", 0.0) for r in results), 4),
         "model": ", ".join(m or "default" for m in models),
         "count": len(results),
+        # The knowledge profile the run was invoked with (probe mode
+        # skips the orchestrator, so there it only labels the rows).
+        "profile": args.profile,
     }
     if not args.probe:
         # Audit modes only — probe never consults the triage pipeline
@@ -2548,6 +2612,7 @@ def main(argv: list[str] | None = None) -> int:
                 "scope": args.scope,
                 "splice": str(args.splice) if args.splice else None,
             },
+            profile=args.profile,
         )
 
     _print_accounting(

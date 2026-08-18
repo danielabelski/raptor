@@ -173,11 +173,12 @@ def test_pypi_does_not_re_emit_direct_deps_as_transitive():
     assert all(d.name != "b" for d in result.deps_added)
 
 
-def test_pypi_strips_extras_only_entries():
-    """``foo ; extra == 'test'`` — only pulled in when the extra is
-    requested. Skipping is conservative: we don't see the dep, but
-    the operator's resolver wouldn't either unless they asked for the
-    extra."""
+def test_pypi_includes_extras_only_entries():
+    """``foo ; extra == 'test'`` — included, per the module's
+    always-true marker semantics: the walk cannot know which extras
+    the target environment installed, and skipping meant an installed
+    extras-gated transitive with a CVE was invisible. Over-inclusion
+    is the scanner-safe direction."""
     meta = {"info": {"requires_dist": [
         "real-dep>=1.0.0",
         "extras-only-dep>=1.0.0 ; extra == 'test'",
@@ -185,9 +186,12 @@ def test_pypi_strips_extras_only_entries():
     http = _StubHttp({
         "/pypi/x/1.0/json": meta,
         "/pypi/real-dep/1.0.0/json": {"info": {"requires_dist": []}},
+        "/pypi/extras-only-dep/1.0.0/json": {"info": {"requires_dist": []}},
     })
     result = walk_transitive([_direct("PyPI", "x", "1.0")], http=http)
-    assert {d.name for d in result.deps_added} == {"real-dep"}
+    assert {d.name for d in result.deps_added} == {
+        "real-dep", "extras-only-dep",
+    }
 
 
 def test_pypi_two_levels_deep():

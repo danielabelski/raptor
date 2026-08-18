@@ -169,10 +169,10 @@ def walk_transitive(
 # Per-ecosystem fetcher protocol
 # ---------------------------------------------------------------------------
 #
-# A fetcher returns ``[(name, declared_version_or_None, version_spec), ...]``
-# — the declared deps of one (name, version) tuple. Version-spec is the
-# raw spec string from the registry; the orchestrator picks a
-# "guess version" via ``_lower_bound``.
+# A fetcher returns ``[(name, version_spec), ...]`` — the declared
+# deps of one (name, version) tuple. Version-spec is the raw spec
+# string from the registry; the orchestrator picks a "guess version"
+# via ``_lower_bound``.
 
 # A fetcher: (http, cache, name, version) -> List[(name, version_spec)] | None
 _Fetcher = Callable[
@@ -447,10 +447,14 @@ def _fetch_pypi(
 ) -> list[tuple[str, str]] | None:
     """``https://pypi.org/pypi/<name>/<version>/json``.
 
-    ``info.requires_dist`` is a list of PEP 508 strings. Filter out
-    extras-only entries (``foo ; extra == "test"``) — they pull in the
-    extras dep only when an extra is requested, which we don't track
-    at this layer.
+    ``info.requires_dist`` is a list of PEP 508 strings. Extras-gated
+    entries (``foo ; extra == "test"``) are INCLUDED, matching the
+    module header's stated marker semantics (always-true =>
+    over-include): this walk cannot know which extras the target's
+    environment installed, and dropping the entries meant an
+    installed extras-gated transitive with a CVE was never seen.
+    Over-inclusion costs candidate noise; under-inclusion costs a
+    missed vulnerable dependency — the wrong trade for a scanner.
     """
     url = f"https://pypi.org/pypi/{name}/{version}/json"
     try:
@@ -464,13 +468,9 @@ def _fetch_pypi(
     for entry in raw:
         if not isinstance(entry, str):
             continue
-        # Drop env-marker-gated entries that are extras-only. Real
-        # platform markers (``python_version`` etc.) we keep — over-
-        # inclusive on minor-version mismatches, fine for CVE coverage.
-        if "; extra ==" in entry or "; extra==" in entry:
-            continue
         # PEP 508: ``name [extras] specifier ; marker``. Strip extras
-        # and marker; keep name + specifier.
+        # and marker; keep name + specifier. Extras-gated entries
+        # deliberately ride along (see docstring).
         spec = entry.split(";", 1)[0].strip()
         spec = re.sub(r"\[[^\]]+\]", "", spec)        # drop extras
         m = re.match(r"^\s*([A-Za-z0-9._-]+)\s*(.*?)\s*$", spec)
@@ -520,8 +520,10 @@ def _fetch_crates(
     """``https://crates.io/api/v1/crates/<name>/<version>/dependencies``.
 
     Cargo's registry returns a structured list. ``kind`` distinguishes
-    "normal" / "dev" / "build"; we walk only "normal" so the transitive
-    set matches what `cargo build` actually pulls into the binary.
+    "normal" / "dev" / "build"; we drop "dev" / "build" (keeping
+    "normal" and, defensively, entries with a missing ``kind`` field)
+    so the transitive set matches what `cargo build` actually pulls
+    into the binary.
     """
     url = (
         f"https://crates.io/api/v1/crates/{name}/{version}/dependencies"

@@ -391,6 +391,13 @@ class OrchestratorConfig:
     threat_model: dict[str, Any] | None = None
     validate: bool = True
     prefilter: bool = True
+    # Prefilter skip_llm shortcut. False keeps the prefilter running
+    # (hits still feed review context and the post-review structural
+    # override) but a skip_llm verdict no longer resolves the function
+    # clean without review (corpus calibration sets this off so labeled
+    # deep mechanisms are actually exercised). Production default
+    # unchanged (on).
+    prefilter_skip: bool = True
     # Triage-classifier SKIP shortcut. False disables the skip — every
     # workqueue function gets a real review instead of a classifier
     # "clean" (corpus calibration sets this off so labeled deep
@@ -1735,6 +1742,11 @@ def review_one_function(
     pf_result = None
     if config.prefilter:
         pf_result = _run_prefilter_for_gap(config, gap, ctx, domain_model)
+        if pf_result.skip_llm and not getattr(config, "prefilter_skip", True):
+            # Prefilter skips disabled for this run: fall through to a
+            # real review instead of recording a mechanical clean. The
+            # prefilter's hits (below) still feed review context.
+            pf_result.skip_llm = False
         if pf_result.skip_llm:
             if ctx.get("sink_unreachable"):
                 _increment_tier(result, "sink_unreach", "confirmed")

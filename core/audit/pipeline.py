@@ -106,6 +106,13 @@ class AuditPipelineOpts:
     # sets this: a label pin must never be suppressed by state left
     # behind by an earlier run. Production default unchanged (off).
     force: bool = False
+    # Prefilter skip_llm shortcut. False keeps the prefilter running
+    # (hits still feed review context) but its skip verdict no longer
+    # resolves a scheduled function clean without review. The corpus
+    # runner defaults this off for the same reason as ``triage``:
+    # labels encode deep-mechanism expectations that a mechanical skip
+    # can never exercise. Production default unchanged (on).
+    prefilter_skip: bool = True
     # Triage-classifier SKIP shortcut. False disables the skip so every
     # scheduled function receives a real review. The corpus runner
     # defaults this off: labels encode deep-mechanism expectations
@@ -268,6 +275,7 @@ def _build_orchestrator_config(
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
         force=opts.force,
+        prefilter_skip=opts.prefilter_skip,
         triage=opts.triage,
         pre_scan=opts.pre_scan,
         schedule=opts.schedule,

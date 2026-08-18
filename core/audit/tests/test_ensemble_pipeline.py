@@ -1516,6 +1516,37 @@ class TestBuildOrchestratorConfig:
         )
         assert cfg.triage is True
 
+    def test_threads_prefilter_skip(self, tmp_path):
+        from core.audit.pipeline import (
+            AuditPipelineOpts,
+            ReviewMode,
+            _build_orchestrator_config,
+        )
+
+        opts = AuditPipelineOpts(
+            target_path=tmp_path, out_dir=tmp_path, prefilter_skip=False,
+        )
+        cfg = _build_orchestrator_config(
+            opts, object(), ["default"], ReviewMode.SECURITY,
+        )
+        assert cfg.prefilter_skip is False
+        # The prefilter itself stays enabled — only its skip verdict
+        # is neutered (hits still feed review context).
+        assert cfg.prefilter is True
+
+    def test_prefilter_skip_default_on(self, tmp_path):
+        from core.audit.pipeline import (
+            AuditPipelineOpts,
+            ReviewMode,
+            _build_orchestrator_config,
+        )
+
+        opts = AuditPipelineOpts(target_path=tmp_path, out_dir=tmp_path)
+        cfg = _build_orchestrator_config(
+            opts, object(), ["default"], ReviewMode.SECURITY,
+        )
+        assert cfg.prefilter_skip is True
+
     def test_batch_sloc_default_preserved(self, tmp_path):
         from core.audit.orchestrator import OrchestratorConfig
         from core.audit.pipeline import (

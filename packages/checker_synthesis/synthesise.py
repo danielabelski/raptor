@@ -81,9 +81,9 @@ def _validate_seed_path(file_path: str) -> str | None:
 
 
 def _validate_rule_body(body: str) -> str | None:
-    """Reject rule bodies with control chars, oversized lines, or
-    known-invalid syntax.  Returns an error string on rejection, or
-    None if OK."""
+    """Reject rule bodies containing null bytes or oversized lines.
+    Syntax problems are handled by ``_fixup_cocci_body``, not here.
+    Returns an error string on rejection, or None if OK."""
     if "\x00" in body:
         return "rule body contains null byte"
     for i, line in enumerate(body.split("\n"), 1):
@@ -95,8 +95,13 @@ def _validate_rule_body(body: str) -> str | None:
     return None
 
 
+# Matches both layouts LLMs emit: the clause on its own line, and the
+# same-line ``... when != if (E)`` form. The optional dots group is
+# preserved on substitution so the ellipsis (valid SmPL on its own)
+# survives the strip.
 _INVALID_WHEN_RE = re.compile(
-    r"^\s*when\s*!=\s*(?:if|assert|while|for|switch)\s*\(.*$",
+    r"^(?P<dots>\s*\.\.\.)?[ \t]*when\s*!=\s*(?:if|assert|while|for|switch)"
+    r"\s*\(.*$",
     re.MULTILINE,
 )
 
@@ -107,22 +112,12 @@ def _fixup_cocci_body(body: str) -> str:
     ``when != if (...)`` and similar compound-statement negations are
     invalid SmPL — Coccinelle ``when`` can only negate expressions.
     Rather than rejecting the whole rule (which the LLM regenerates
-    identically on retry), strip the offending lines so the remaining
-    rule gets a chance at dual control.
+    identically on retry), strip the offending clauses (keeping a
+    same-line leading ``...``) so the remaining rule gets a chance at
+    dual control.
     """
-    return _INVALID_WHEN_RE.sub("", body)
-
-
-def _validate_cocci_body(body: str) -> str | None:
-    """Catch known-invalid Coccinelle syntax before invoking spatch.
-    Returns an error string on rejection, or None if OK."""
-    if re.search(r"when\s*!=\s*if\s*\(", body):
-        return (
-            "invalid SmPL: 'when != if (...)' — when clauses cannot "
-            "negate compound statements; use 'when != E == NULL' or "
-            "'when != !E' instead"
-        )
-    return None
+    return _INVALID_WHEN_RE.sub(
+        lambda m: m.group("dots") or "", body)
 
 
 def _reject_cocci_scripting(body: str) -> str | None:

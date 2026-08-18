@@ -796,3 +796,49 @@ class TestSerialisation:
         result = synthesise_and_run(seed, tmp_path, tmp_path / "out", llm)
         d = result.to_dict()
         assert d["dual_control"] is True
+
+
+# ---------------------------------------------------------------------------
+# Cocci body fixup
+# ---------------------------------------------------------------------------
+
+
+class TestFixupCocciBody:
+    def test_strips_own_line_when_clause(self):
+        body = (
+            "@r@ expression E; @@\n"
+            "foo(E)\n"
+            "when != if (E)\n"
+            "bar(E)\n"
+        )
+        fixed = synth_mod._fixup_cocci_body(body)
+        assert "when" not in fixed
+        assert "foo(E)" in fixed and "bar(E)" in fixed
+
+    def test_strips_same_line_when_clause_keeps_dots(self):
+        body = (
+            "@r@ expression E; @@\n"
+            "foo(E)\n"
+            "... when != if (E == NULL)\n"
+            "bar(E)\n"
+        )
+        fixed = synth_mod._fixup_cocci_body(body)
+        assert "when" not in fixed
+        # The ellipsis is valid SmPL on its own and must survive.
+        assert "\n...\n" in fixed or "\n... \n" in fixed.replace("\t", " ")
+
+    def test_strips_indented_same_line_variants(self):
+        for kw in ("if", "assert", "while", "for", "switch"):
+            body = f"  ...  when != {kw} (E)\n"
+            fixed = synth_mod._fixup_cocci_body(body)
+            assert "when" not in fixed
+            assert "..." in fixed
+
+    def test_leaves_expression_when_clauses_alone(self):
+        body = (
+            "foo(E)\n"
+            "... when != E == NULL\n"
+            "when != !E\n"
+            "bar(E)\n"
+        )
+        assert synth_mod._fixup_cocci_body(body) == body

@@ -20,7 +20,9 @@ from unittest.mock import patch
 
 import pytest
 
+from core.sandbox import state
 from core.sandbox.observe_cli import (
+    _build_parser,
     _cli_main,
     _format_summary,
     _profile_to_json,
@@ -375,6 +377,96 @@ class TestCliDispatch:
         assert seen.get("capture_output") is False
 
 
+class TestAuditBudgetFlag:
+    """The budget-truncation summary tells the operator to re-run with
+    ``--audit-budget``; the CLI's parser must actually define that
+    flag, validate it like the main sandbox CLI, and plumb it into the
+    budget state slot the tracer reads.
+
+    The conftest state guard snapshots and restores
+    ``state._cli_sandbox_audit_budget`` around every test.
+    """
+
+    def test_parser_accepts_flag(self):
+        args = _build_parser().parse_args(
+            ["--audit-budget", "5000", "--", "/usr/bin/true"],
+        )
+        assert args.audit_budget == 5000
+
+    def test_hint_flag_matches_parser(self):
+        # The truncation summary suggests `--audit-budget`; keep the
+        # suggestion and the parser surface in lock-step.
+        assert any(
+            "--audit-budget" in a.option_strings
+            for a in _build_parser()._actions
+            if a.option_strings
+        )
+
+    def test_zero_rejected(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _cli_main(["--audit-budget", "0", "--", "/usr/bin/true"])
+        assert exc.value.code == 2
+        assert "positive integer" in capsys.readouterr().err
+
+    def test_typo_scale_rejected(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _cli_main(
+                ["--audit-budget", "100000000", "--", "/usr/bin/true"],
+            )
+        assert exc.value.code == 2
+        assert "upper clamp" in capsys.readouterr().err
+
+    def test_flag_propagates_to_state_slot(self):
+        state._cli_sandbox_audit_budget = None
+
+        class _Result:
+            returncode = 0
+            sandbox_info: dict = {}
+
+        seen_at_spawn = []
+
+        def fake_run(cmd, **kwargs):
+            # The slot must be populated BEFORE the sandbox spawn —
+            # the spawn serialises it into the tracer filter config.
+            seen_at_spawn.append(state._cli_sandbox_audit_budget)
+            Path(kwargs["output"], ".sandbox-observe.jsonl").write_text(
+                "{}\n",
+            )
+            return _Result()
+
+        with patch("core.sandbox.run", side_effect=fake_run), \
+             patch("core.sandbox.parse_observe_log",
+                   return_value=ObserveProfile()), \
+             patch("sys.stdout", io.StringIO()), \
+             patch("sys.stderr", io.StringIO()):
+            rc = _cli_main(
+                ["--audit-budget", "42", "--", "/usr/bin/true"],
+            )
+        assert rc == 0
+        assert seen_at_spawn == [42]
+
+    def test_no_flag_leaves_state_untouched(self):
+        state._cli_sandbox_audit_budget = None
+
+        class _Result:
+            returncode = 0
+            sandbox_info: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            Path(kwargs["output"], ".sandbox-observe.jsonl").write_text(
+                "{}\n",
+            )
+            return _Result()
+
+        with patch("core.sandbox.run", side_effect=fake_run), \
+             patch("core.sandbox.parse_observe_log",
+                   return_value=ObserveProfile()), \
+             patch("sys.stdout", io.StringIO()), \
+             patch("sys.stderr", io.StringIO()):
+            _cli_main(["--", "/usr/bin/true"])
+        assert state._cli_sandbox_audit_budget is None
+
+
 # ---------------------------------------------------------------------------
 # End-to-end via shim — Linux only
 # ---------------------------------------------------------------------------
@@ -399,8 +491,7 @@ class TestE2EShim:
         #   * mount-ns spawn (when available)
         #   * Landlock-only audit fallback (Ubuntu 24.04+ default
         #     where unprivileged user-ns is blocked by AppArmor)
-        # The Landlock-only path was added in PR-θ; mount-ns is no
-        # longer a hard prereq for observe.
+        # mount-ns is not a hard prereq for observe.
         from core.sandbox.ptrace_probe import check_ptrace_available
         from core.sandbox.seccomp import check_seccomp_available
         if not check_seccomp_available():

@@ -281,9 +281,11 @@ Threat model — what the sandbox DOES protect against:
   CURL_CA_BUNDLE, SSL_CERT_FILE, SSL_CERT_DIR, plus the base LD_*
   / PYTHON* / JAVA_TOOL_OPTIONS / GIT_SSH_COMMAND / KUBECONFIG /
   etc. set). Caller-supplied `env=` is NOT filtered against the
-  blocklist — callers legitimately use names from it as defensive
-  neutralisers (e.g. `GIT_CONFIG_GLOBAL=/dev/null` to isolate git
-  from user config). `env=None` is treated as "no env kwarg" (not
+  blocklist by default — callers legitimately use names from it as
+  defensive neutralisers (e.g. `GIT_CONFIG_GLOBAL=/dev/null` to
+  isolate git from user config) — except under `strict_env=True`
+  (default ON for `run_untrusted()`; see W36.B below), which strips
+  the blocklist names. `env=None` is treated as "no env kwarg" (not
   "inherit os.environ wholesale" which is subprocess's default).
 - Socket FDs via `pass_fds=[...]` — `sandbox().run()` stats each
   pass_fds entry and rejects S_ISSOCK. Pipes (S_ISFIFO) still pass.
@@ -402,9 +404,10 @@ What the sandbox does NOT protect against:
 - `pass_fds` non-socket FD abuse — pipes and regular-file FDs are
   allowed through. Sockets are rejected (see above). Callers passing
   `close_fds=False` are rejected with TypeError.
-- Caller `env=` override bypasses `get_safe_env()` entirely —
-  neither the allowlist nor the DANGEROUS_ENV_VARS blocklist is
-  applied. Explicit `env=` is a "you know what you're doing"
+- Caller `env=` override bypasses `get_safe_env()` — the allowlist
+  is never applied to it, and the DANGEROUS_ENV_VARS blocklist only
+  under `strict_env=True` (default ON for `run_untrusted()`; see
+  W36.B below). Explicit `env=` is a "you know what you're doing"
   signal. Logged at INFO so the override is auditable.
 - Tools that hardcode `/home/<user>/...` paths (not via `$HOME`)
   bypass `fake_home` and hit the real path → EACCES under
@@ -661,6 +664,7 @@ __all__ = [
     # Engagement-failure signal (fail-loud, never silently degrade)
     "SandboxSetupError",
     "_build_mount_script",
+    "_cache_lock",
     "_check_blocked",
     # Private re-exports kept for backward compatibility — see the
     # block comment above; tests + a few internal callers reach into

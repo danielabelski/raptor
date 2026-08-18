@@ -297,6 +297,34 @@ def test_global_cap_fires_when_categories_collectively_exhaust():
     assert sum(1 for d in decisions if d == audit_budget.DROP) == 3
 
 
+def test_global_cap_honours_post_cap_sampling():
+    """Once the global cap is hit, records in a sampling-configured
+    category keep flowing at 1-in-N — the documented "evaluated
+    through sampling" contract, matching the category-cap path.
+    Un-sampled categories still drop outright."""
+    clock = _FakeClock()
+    budget = audit_budget.AuditBudget(
+        global_cap=2,
+        pid_cap=1000,
+        category_caps={"network": 100, "process-exec": 100},
+        refill_rates={"network": 0.0, "process-exec": 0.0},
+        sampling_rates={"network": 3},
+        clock=clock,
+    )
+    # Exhaust the global pool on the un-sampled category.
+    for _ in range(2):
+        d, _ = budget.evaluate("execve", pid=1)
+        assert d == audit_budget.KEEP
+    # Un-sampled category: dropped outright past the global cap.
+    d, _ = budget.evaluate("execve", pid=1)
+    assert d == audit_budget.DROP
+    # Sampled category: exactly 1-in-3 kept above the cap.
+    decisions = [budget.evaluate("network-outbound", pid=1)[0]
+                 for _ in range(9)]
+    assert sum(1 for d in decisions if d == audit_budget.KEEP) == 3
+    assert decisions[2] == audit_budget.KEEP
+
+
 # ---------------------------------------------------------------------
 # CLI scaling
 # ---------------------------------------------------------------------

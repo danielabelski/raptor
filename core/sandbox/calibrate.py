@@ -25,10 +25,12 @@ Threat model:
     permissive policy — by the time we observe its behaviour, the
     binary has already executed. Defense against malicious binary
     updates lives upstream (signed installers, package-hash
-    verification). The cache itself is mode-0600 with sha256 self-
-    integrity check; tampering by an attacker who can write
-    ``~/.cache/raptor/`` is bounded by the attacker's existing
-    same-UID access.
+    verification). The cache itself is mode-0600; on load the cached
+    ``binary_sha256`` is re-checked against the on-disk binary (a
+    staleness / corruption guard, not an integrity seal — the
+    observational fields carry no digest of their own). Tampering by
+    an attacker who can write ``~/.cache/raptor/`` is bounded by the
+    attacker's existing same-UID access.
 
 API:
     calibrate_binary(bin_path, probe_args, *, env_keys=()) → SandboxProfile
@@ -285,11 +287,18 @@ def _spawn_probe(
             if isinstance(ev, dict) and ev.get("host")
         })
 
-        # Map observe ConnectTarget → our local dataclass.
-        connects = [
-            ConnectTarget(ip=t.ip, port=t.port, family=t.family)
-            for t in observed.connect_targets
-        ]
+        # Map observe ConnectTarget → our local dataclass. De-dup +
+        # sort like every other observational list so to_json's
+        # "identical JSON modulo timestamp" promise holds for repeat
+        # probes (frozen dataclass is hashable; sort by field tuple
+        # since order=True isn't set).
+        connects = sorted(
+            {
+                ConnectTarget(ip=t.ip, port=t.port, family=t.family)
+                for t in observed.connect_targets
+            },
+            key=lambda t: (t.family, t.ip, t.port),
+        )
 
         # Build the partial profile. Identity fields filled by
         # caller; we don't have them here.

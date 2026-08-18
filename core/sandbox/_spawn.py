@@ -286,6 +286,9 @@ def _set_rlimits(limits: dict) -> None:
     Each rlimit applies independently — a single failure no longer
     aborts the rest. Failures surface via fork-safe stderr warning so
     operators can spot when a documented cap silently became a no-op.
+    One deliberate exception: RLIMIT_CORE is fail-closed — if
+    suppressing coredumps fails, the child warns and os._exit(99)s
+    rather than continuing (see the inline rationale).
     """
     import resource
 
@@ -481,10 +484,14 @@ def _cleanup_stub(root_dir: str) -> None:
 
     lstat-check defeats TOCTOU: if a same-UID attacker raced to replace
     the random-name stub with a symlink between tmpdir creation and our
-    cleanup, rmdir on the symlink would fail (ENOTDIR), and we
-    deliberately do not fall back to a recursive remove — stale stubs
-    are an acceptable leak, removing the wrong thing via symlink-follow
-    is not.
+    cleanup, the lstat + S_ISDIR guard returns without touching it.
+    A plain rmdir is tried first; when partial setup left sub-dirs
+    (pre-pivot makedirs) we fall back to a symlink-hardened manual walk
+    (os.walk followlinks=False; unlink never follows, rmdir on a
+    symlink fails ENOTDIR) — never a follow-happy shutil.rmtree.
+    Whatever the hardened walk cannot remove is left behind: stale
+    stubs are an acceptable leak, removing the wrong thing via
+    symlink-follow is not.
     """
     try:
         st = os.lstat(root_dir)
@@ -966,10 +973,34 @@ def run_sandboxed(
         # write mask is there to enforce read-only anyway. Probe in
         # the parent (fork-safe: the child only closes over a bool).
         from .landlock import check_landlock_available as _ll_avail
+        # ONLY the conditions that actually build landlock_fn below
+        # count: readable_paths alone builds no write mask, so a
+        # readable-only spawn claiming "Landlock enforces read-only
+        # anyway" would leave the locked-submount rescue bind
+        # writable with nothing masking it. Kernel availability is
+        # necessary but not sufficient — the predicate must mirror
+        # THIS spawn's actual Landlock engagement.
         _rw_submounts_ok = bool(
-            (writable_paths or allowed_tcp_ports or readable_paths)
+            (writable_paths or allowed_tcp_ports)
             and _ll_avail()
         )
+
+        # All-or-nothing persona: without the mount-ns overlay step the
+        # file half (/proc/cpuinfo, /etc/os-release, ...) never applies
+        # while UTS + affinity still would — an inconsistent
+        # half-persona is a fingerprint TELL, worse than none. The
+        # construction-time gate in context.py rejects that
+        # combination; the per-call skip_mount_ns path must not
+        # sidestep it. Drop the persona for this spawn and say so.
+        if persona is not None and (skip_mount_ns or not (target or output)):
+            logger.warning(
+                "sandbox: persona dropped for this spawn — mount-ns "
+                "overlay unavailable (skip_mount_ns=%s, "
+                "target/output present=%s); a UTS/affinity-only "
+                "half-persona would be a fingerprint tell",
+                skip_mount_ns, bool(target or output),
+            )
+            persona = None
         landlock_fn = None
         if writable_paths or allowed_tcp_ports:
             effective_paths = list(writable_paths) if writable_paths else []
@@ -1511,14 +1542,15 @@ def run_sandboxed(
                             if k not in _dangerous
                         }
                 else:
-                    exec_env = os.environ.copy()
-                    if strict_env:
-                        from core.config import RaptorConfig
-                        _dangerous = set(RaptorConfig.DANGEROUS_ENV_VARS)
-                        exec_env = {
-                            k: v for k, v in exec_env.items()
-                            if k not in _dangerous
-                        }
+                    # env=None → scrubbed allowlist env, NOT the full
+                    # host environment. The public context.run() path
+                    # always supplies an env; this default only serves
+                    # direct callers of run_sandboxed, and a sandboxed
+                    # child must not inherit ambient secrets because a
+                    # caller skipped the wrapper. Allowlist filtering
+                    # subsumes the DANGEROUS_ENV_VARS strip.
+                    from core.config import RaptorConfig
+                    exec_env = RaptorConfig.get_safe_env()
                 # bounded fork count via RLIMIT_NPROC (prlimit).
                 if nproc_limit and nproc_limit > 0:
                     import resource
@@ -1819,9 +1851,11 @@ def run_sandboxed(
                 # and the write end of t_ready as the sync_fd argument.
                 #
                 # Use the current Python interpreter for module loading
-                # consistency. -I is isolated mode (ignore env vars,
-                # don't add cwd to sys.path) — same hardening pattern
-                # as raptor-pid1-shim.
+                # consistency. Interpreter lockdown comes from the
+                # hand-crafted 2-key env below, not from `-I` — see
+                # the note ahead of tracer_env for why isolated mode
+                # is deliberately not used here (unlike
+                # raptor-pid1-shim, which can afford it).
                 try:
                     raptor_dir = os.environ.get("RAPTOR_DIR")
                     if raptor_dir is None:

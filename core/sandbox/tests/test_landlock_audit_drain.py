@@ -132,3 +132,25 @@ def test_drain_respects_deadline(monkeypatch):
         os.close(out_r)
         os.kill(pid, 9)
         os.waitpid(pid, 0)
+
+
+def test_drain_caps_per_fd_accumulation(monkeypatch):
+    """A runaway writer must not balloon the parent: bytes past the
+    per-fd cap are read (child stays unblocked) but discarded."""
+    monkeypatch.setattr(mod, "_DRAIN_MAX_BYTES_PER_FD", 1024)
+    out_r, out_w = os.pipe()
+
+    def child():
+        payload = b"x" * 256
+        for _ in range(32):  # 8 KiB total, cap is 1 KiB
+            os.write(out_w, payload)
+
+    pid = _fork_child(child, out_r)
+    os.close(out_w)
+    try:
+        drained = mod._drain_pipes_until_eof((out_r,), pid)
+        assert len(drained[out_r]) == 1024
+        assert drained[out_r] == b"x" * 1024
+    finally:
+        os.close(out_r)
+        os.waitpid(pid, 0)

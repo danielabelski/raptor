@@ -17,16 +17,22 @@ Architecture summary — see `core/sandbox/_spawn.py` for the full flow:
                      8. os.unshare(NEWPID) + fork-into-new-pid-ns
                      9. execvp(cmd)
 
-The module exposes `setup_mount_ns(target, output)` which:
+The module exposes `setup_mount_ns(target, output)` which (numbering
+matches the inline step comments in the function body):
     1. Makes / rprivate so our mounts don't leak back.
     2. Creates a fresh tmpfs at /tmp/.raptor-sbx-<pid> to become the new root.
-    3. Bind-mounts system dirs (/usr, /lib, /lib64, /etc, /bin, /sbin)
+    3. Creates the standard-dir mount points inside the new root.
+    4. Bind-mounts system dirs (/usr, /lib, /lib64, /etc, /bin, /sbin)
        read-only into the new root.
-    4. rbind-mounts /dev and /sys from the host.
-    5. Mounts fresh tmpfs at /run and /tmp for per-sandbox isolation.
-    6. Bind-mounts target (read-only) and output (writable) at their
-       ORIGINAL absolute paths (no caller argv rewriting needed).
-    7. pivot_root onto the new tmpfs.
+    5. rbind-mounts /dev and /sys from the host.
+    6. Bind-mounts host /proc (a fresh procfs would need a pid-ns first).
+    7. Mounts fresh tmpfs at /run and /tmp for per-sandbox isolation
+       (7b: re-creates inherited temp-dir env paths inside it).
+    8. Bind-mounts target (read-only) and output (writable) at their
+       ORIGINAL absolute paths (no caller argv rewriting needed);
+       sub-steps 8a-8d: evidence-dir shadow, caller extra read-only
+       binds, host-fingerprint overlay, etc_overlay.
+    9. pivot_root onto the new tmpfs.
 
 Shadow-paths that collide with per-ns mounts (/tmp, /dev, etc.) are
 skipped — the per-ns mount already serves them.
@@ -502,7 +508,15 @@ def setup_mount_ns(target: str | None, output: str | None,
     }
     if extra_ro_paths:
         for path in extra_ro_paths:
-            if not path or _shadows_per_ns(path):
+            if not path:
+                continue
+            # Normalize like target/output above — a relative or
+            # non-normalized entry ("etc", "/tmp/../etc") would evade
+            # the exact-string shadow check and produce a malformed
+            # bind target ("{root}etc") that diverges from the path
+            # the caller's Landlock read rule references.
+            path = os.path.abspath(path)
+            if _shadows_per_ns(path):
                 continue
             # Paths already served by the step-8 target/output binds
             # keep their step-8 rw/ro semantics. Without this skip, a
@@ -511,7 +525,7 @@ def setup_mount_ns(target: str | None, output: str | None,
             # read allowlist, which forwards here) gets an ro bind
             # stacked ON TOP of its rw bind and every child write
             # fails with EROFS.
-            if os.path.abspath(path) in (target, output):
+            if path in (target, output):
                 continue
             if not os.path.isdir(path) and not os.path.isfile(path):
                 continue

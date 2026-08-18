@@ -649,6 +649,63 @@ class TestLandlockEnforcement(unittest.TestCase):
         self.assertIn("Permission denied", result.stdout + result.stderr)
 
 
+class TestPreexecLandlockGate(unittest.TestCase):
+    """The Landlock preexec gate must engage for restrict_reads-only
+    callers (readable_paths set, nothing else) — pre-fix they silently
+    got no Landlock at all."""
+
+    def _recorder(self):
+        """Patch the Landlock availability check + preexec factory and
+        return the list that records factory invocations."""
+        from core.sandbox import preexec
+        calls = []
+
+        def fake_make(writable_paths, allowed_tcp_ports,
+                      readable_paths=None, deny_all_tcp_connect=False):
+            calls.append({
+                "writable_paths": writable_paths,
+                "readable_paths": readable_paths,
+            })
+            return lambda: None
+
+        p1 = patch.object(preexec, "check_landlock_available",
+                          lambda: True)
+        p2 = patch.object(preexec, "_make_landlock_preexec", fake_make)
+        p1.start()
+        p2.start()
+        self.addCleanup(p1.stop)
+        self.addCleanup(p2.stop)
+        return calls
+
+    def test_readable_paths_only_engages_landlock(self):
+        from core.sandbox import preexec
+        calls = self._recorder()
+        preexec._make_preexec_fn({}, readable_paths=["/usr", "/lib"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["readable_paths"], ["/usr", "/lib"])
+
+    def test_empty_readable_list_engages_landlock(self):
+        # [] means "reads restricted to writable_paths only" — the
+        # MOST restrictive setting; truthiness would skip it.
+        from core.sandbox import preexec
+        calls = self._recorder()
+        preexec._make_preexec_fn({}, readable_paths=[])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["readable_paths"], [])
+
+    def test_no_restrictions_no_landlock(self):
+        from core.sandbox import preexec
+        calls = self._recorder()
+        preexec._make_preexec_fn({})
+        self.assertEqual(calls, [])
+
+    def test_writable_paths_still_engage(self):
+        from core.sandbox import preexec
+        calls = self._recorder()
+        preexec._make_preexec_fn({}, writable_paths=["/tmp/out"])
+        self.assertEqual(len(calls), 1)
+
+
 class TestSeccompBlocklist(unittest.TestCase):
     """Seccomp filter blocks escape-vector syscalls under full/debug."""
 
@@ -706,6 +763,127 @@ class TestSeccompBlocklist(unittest.TestCase):
         ))
         # PTRACE_TRACEME (op 0) returns 0 on success
         self.assertEqual(r.returncode, 0, f"ptrace should be allowed: {r.stderr}")
+
+
+class TestSeccompTruncationBypassClosed(unittest.TestCase):
+    """The 64-bit-argument truncation bypass is closed.
+
+    The kernel truncates socket()'s family and ioctl()'s cmd to 32
+    bits, but seccomp compares the raw 64-bit register. Exact-equality
+    deny rules therefore missed ``AF_UNIX | 1<<32`` — which the kernel
+    treats as plain AF_UNIX — silently default-allowing the exact
+    escapes the blocklist exists for (AF_UNIX → docker.sock, TIOCSTI
+    injection). The rules now use MASKED_EQ on the low 32 bits.
+
+    These tests fork a child, apply the real filter via the production
+    preexec, and issue raw syscalls through libc's syscall(2) so the
+    high bits survive all the way to the kernel (Python's socket
+    module would reject the oversized constant long before the
+    syscall).
+    """
+
+    _SYS_SOCKET = 41   # x86_64
+    _SYS_IOCTL = 16    # x86_64
+
+    _AF_UNIX = 1
+    _SOCK_STREAM = 1
+    _HIGH_BIT = 1 << 32
+
+    def setUp(self):
+        import struct
+
+        from core.sandbox import check_seccomp_available
+        if sys.platform != "linux":
+            self.skipTest("seccomp is Linux-only")
+        if not check_seccomp_available():
+            self.skipTest("libseccomp not available")
+        if struct.calcsize("P") != 8 or os.uname().machine != "x86_64":
+            self.skipTest("raw syscall numbers are x86_64-specific")
+
+    def _run_in_filtered_child(self, fn) -> int:
+        """Fork; apply the 'full' profile filter; run fn(); exit with
+        its return value. Returns the child's exit status code."""
+        from core.sandbox import seccomp as seccomp_mod
+        preexec = seccomp_mod._make_seccomp_preexec("full")
+        pid = os.fork()
+        if pid == 0:
+            try:
+                preexec()
+                os._exit(fn() & 0xFF)
+            except BaseException:
+                os._exit(120)
+        _, status = os.waitpid(pid, 0)
+        return os.waitstatus_to_exitcode(status)
+
+    @staticmethod
+    def _errno_of_syscall(num, *args) -> int:
+        import ctypes
+        import ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        res = libc.syscall(
+            ctypes.c_long(num),
+            *[ctypes.c_ulong(a) for a in args],
+        )
+        return ctypes.get_errno() if res == -1 else 0
+
+    def test_plain_af_unix_still_blocked(self):
+        import errno
+        code = self._run_in_filtered_child(
+            lambda: self._errno_of_syscall(
+                self._SYS_SOCKET, self._AF_UNIX, self._SOCK_STREAM, 0,
+            ),
+        )
+        self.assertEqual(code, errno.EPERM)
+
+    def test_high_bit_af_unix_now_blocked(self):
+        """The bypass: family AF_UNIX | 1<<32 truncates to AF_UNIX in
+        the kernel; the old EQ rule missed it."""
+        import errno
+        code = self._run_in_filtered_child(
+            lambda: self._errno_of_syscall(
+                self._SYS_SOCKET, self._AF_UNIX | self._HIGH_BIT,
+                self._SOCK_STREAM, 0,
+            ),
+        )
+        self.assertEqual(code, errno.EPERM)
+
+    def test_high_bit_tiocsti_now_blocked(self):
+        """ioctl cmd TIOCSTI | 1<<32 truncates to TIOCSTI; must hit
+        the deny rule (EPERM), not fall through to the tty layer."""
+        import errno
+
+        from core.sandbox import seccomp as seccomp_mod
+        tiocsti = seccomp_mod._TIOCSTI
+        code = self._run_in_filtered_child(
+            lambda: self._errno_of_syscall(
+                self._SYS_IOCTL, 0, tiocsti | self._HIGH_BIT, 0,
+            ),
+        )
+        self.assertEqual(code, errno.EPERM)
+
+    def test_tioclinux_blocked(self):
+        """TIOCLINUX (console selection/paste injection) is on the
+        blocklist."""
+        import errno
+
+        from core.sandbox import seccomp as seccomp_mod
+        code = self._run_in_filtered_child(
+            lambda: self._errno_of_syscall(
+                self._SYS_IOCTL, 0, seccomp_mod._TIOCLINUX, 0,
+            ),
+        )
+        self.assertEqual(code, errno.EPERM)
+
+    def test_benign_ioctl_not_blocked(self):
+        """A legitimate ioctl (TIOCGWINSZ on stdin) must NOT get EPERM
+        from the filter — blocklist stays narrow."""
+        import errno
+        tiocgwinsz = 0x5413
+        code = self._run_in_filtered_child(
+            lambda: self._errno_of_syscall(
+                self._SYS_IOCTL, 0, tiocgwinsz, 0),
+        )
+        self.assertNotEqual(code, errno.EPERM)
 
 
 class TestForkBombBounded(unittest.TestCase):
@@ -981,6 +1159,36 @@ class TestProfilesImmutable(unittest.TestCase):
             PROFILES["custom"] = {"block_network": True, "use_landlock": True}  # type: ignore[index]
 
 
+class TestPackageAllExports(unittest.TestCase):
+    """The package-level __all__ must stay consistent: every listed
+    name resolves, no duplicates, and the private re-exports (like
+    ``_cache_lock``) are declared alongside their siblings."""
+
+    def test_cache_lock_in_all(self):
+        import core.sandbox as sandbox_pkg
+        self.assertIn("_cache_lock", sandbox_pkg.__all__)
+
+    def test_cache_lock_is_state_lock(self):
+        import core.sandbox as sandbox_pkg
+        from core.sandbox import state
+        self.assertIs(sandbox_pkg._cache_lock, state._cache_lock)
+
+    def test_every_all_name_resolves(self):
+        # __all__ drift guard: every listed name must be a real
+        # attribute of the package (import-star would fail otherwise).
+        import core.sandbox as sandbox_pkg
+        for name in sandbox_pkg.__all__:
+            self.assertTrue(hasattr(sandbox_pkg, name), (
+                f"__all__ lists {name!r} but the package has no such "
+                f"attribute"
+            ))
+
+    def test_no_duplicates_in_all(self):
+        import core.sandbox as sandbox_pkg
+        self.assertEqual(len(sandbox_pkg.__all__),
+                         len(set(sandbox_pkg.__all__)))
+
+
 class TestRunTrustedGuard(unittest.TestCase):
     """run_trusted() must reject sandbox kwargs — they'd be silently misleading."""
 
@@ -1238,6 +1446,89 @@ class TestUserLimitsValidation(unittest.TestCase):
             Path(tmp_path).unlink(missing_ok=True)
 
 
+class TestUserLimitsCacheSentinel(unittest.TestCase):
+    """A successfully-parsed config that yields no recognised keys must
+    be session-cached as a SUCCESS (decided_at stamped +inf), not
+    reclassified as the empty-dict failure sentinel and re-parsed
+    every _FAIL_TTL_S."""
+
+    def setUp(self):
+        import tempfile
+
+        from core.sandbox import preexec
+        from core.sandbox import state as mod_state
+        self._preexec = preexec
+        self._state = mod_state
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        self._config = Path(tmpdir.name) / "sandbox.json"
+        self._saved_path = preexec._CONFIG_PATH
+        preexec._CONFIG_PATH = self._config
+        self._saved_cache = (mod_state._user_limits_cache,
+                             mod_state._user_limits_cache_decided_at)
+        mod_state._user_limits_cache = None
+        mod_state._user_limits_cache_decided_at = 0.0
+
+    def tearDown(self):
+        self._preexec._CONFIG_PATH = self._saved_path
+        (self._state._user_limits_cache,
+         self._state._user_limits_cache_decided_at) = self._saved_cache
+
+    def test_empty_valid_config_cached_as_success(self):
+        import json
+        import math
+        # Valid JSON, no recognised keys → cleaned == {} but it is a
+        # SUCCESSFUL parse: decided_at stamps +inf (never expires).
+        self._config.write_text(json.dumps({"unknown_key": 7}))
+        self.assertEqual(self._preexec._load_user_limits(), {})
+        self.assertTrue(
+            math.isinf(self._state._user_limits_cache_decided_at))
+
+        # Session cache: a later, different config is NOT re-parsed
+        # (pre-fix the {} success collided with the failure sentinel
+        # and was re-read after _FAIL_TTL_S).
+        self._config.write_text(json.dumps({"cpu_seconds": 5}))
+        self.assertEqual(self._preexec._load_user_limits(), {})
+
+    def test_failure_still_reprobed_after_ttl(self):
+        import json
+        import math
+        self._config.write_text("{not valid json")
+        self.assertEqual(self._preexec._load_user_limits(), {})
+        self.assertFalse(
+            math.isinf(self._state._user_limits_cache_decided_at))
+
+        # Operator fixes the file; expire the negative-cache TTL.
+        self._config.write_text(json.dumps({"cpu_seconds": 5}))
+        self._state._user_limits_cache_decided_at = 0.0
+        self.assertEqual(self._preexec._load_user_limits(),
+                         {"cpu_seconds": 5})
+
+    def test_missing_file_is_failure_semantics(self):
+        import json
+        import math
+        self.assertFalse(Path(self._config).exists())
+        self.assertEqual(self._preexec._load_user_limits(), {})
+        self.assertFalse(
+            math.isinf(self._state._user_limits_cache_decided_at))
+
+        # File appears; TTL expiry picks it up (missing-file stays on
+        # the re-probing negative-cache path).
+        self._config.write_text(json.dumps({"nproc": 8}))
+        self._state._user_limits_cache_decided_at = 0.0
+        self.assertEqual(self._preexec._load_user_limits(), {"nproc": 8})
+
+    def test_nonempty_success_cached_for_session(self):
+        import json
+        self._config.write_text(json.dumps({"cpu_seconds": 9}))
+        self.assertEqual(self._preexec._load_user_limits(),
+                         {"cpu_seconds": 9})
+        self._config.unlink()
+        self._state._user_limits_cache_decided_at = 0.0
+        self.assertEqual(self._preexec._load_user_limits(),
+                         {"cpu_seconds": 9})
+
+
 class TestProfileDiscardWarning(unittest.TestCase):
     """profile='none' with Landlock-engaging args must warn, not silently drop."""
 
@@ -1296,6 +1587,117 @@ class TestSanitizerCrashSemantics(unittest.TestCase):
         _interpret_result(r, "asan-test")
         self.assertEqual(r.sandbox_info.get("sanitizer"), "asan")
         self.assertTrue(r.sandbox_info.get("crashed"))
+
+    def test_ubsan_no_death_no_crash(self):
+        from core.sandbox import _interpret_result
+        class FakeResult:
+            returncode = 0
+            stderr = "UndefinedBehaviorSanitizer: signed integer overflow\n"
+        r = FakeResult()
+        _interpret_result(r, "ubsan-test")
+        self.assertEqual(r.sandbox_info.get("sanitizer"), "ubsan")
+        self.assertFalse(r.sandbox_info.get("crashed"))
+
+    def test_ubsan_with_death_crashed(self):
+        # Abnormal exit while UBSAN fired sets crashed — same
+        # semantics as the ASAN/MSAN branches.
+        from core.sandbox import _interpret_result
+        class FakeResult:
+            returncode = 1
+            stderr = "UndefinedBehaviorSanitizer: undefined-behavior\n"
+        r = FakeResult()
+        _interpret_result(r, "ubsan-test")
+        self.assertEqual(r.sandbox_info.get("sanitizer"), "ubsan")
+        self.assertTrue(r.sandbox_info.get("crashed"))
+
+    def test_tsan_no_death_no_crash(self):
+        from core.sandbox import _interpret_result
+        class FakeResult:
+            returncode = 0
+            stderr = "WARNING: ThreadSanitizer: data race\n"
+        r = FakeResult()
+        _interpret_result(r, "tsan-test")
+        self.assertEqual(r.sandbox_info.get("sanitizer"), "tsan")
+        self.assertFalse(r.sandbox_info.get("crashed"))
+
+    def test_tsan_with_death_crashed(self):
+        # Abnormal exit while TSAN fired sets crashed — same
+        # semantics as the ASAN/MSAN branches.
+        from core.sandbox import _interpret_result
+        class FakeResult:
+            returncode = 66  # TSAN's default exitcode on report
+            stderr = "WARNING: ThreadSanitizer: data race\n"
+        r = FakeResult()
+        _interpret_result(r, "tsan-test")
+        self.assertEqual(r.sandbox_info.get("sanitizer"), "tsan")
+        self.assertTrue(r.sandbox_info.get("crashed"))
+
+
+class TestNetProbeLockDiscipline(unittest.TestCase):
+    """check_net_available: brief-lock cache ops, probe outside the
+    lock, first published verdict wins on a double-probe race."""
+
+    def setUp(self):
+        from core.sandbox import state as mod_state
+        self._state = mod_state
+        self._saved = mod_state._net_available_cache
+        mod_state._net_available_cache = None
+
+    def tearDown(self):
+        self._state._net_available_cache = self._saved
+
+    def test_probe_subprocess_runs_outside_cache_lock(self):
+        from unittest import mock
+
+        from core.sandbox import probes
+
+        lock_held_during_probe = []
+
+        def fake_run(*args, **kwargs):
+            lock_held_during_probe.append(
+                self._state._cache_lock._is_owned()
+            )
+            return mock.Mock(returncode=0, stderr=b"")
+
+        with mock.patch.object(probes.subprocess, "run", fake_run):
+            result = probes.check_net_available()
+
+        # The probe may exit before the subprocess stage (missing
+        # unshare, sysctl off) — only assert when it actually ran.
+        if lock_held_during_probe:
+            self.assertEqual(lock_held_during_probe, [False])
+            self.assertTrue(result)
+
+    def test_second_call_uses_cache_without_reprobe(self):
+        from unittest import mock
+
+        from core.sandbox import probes
+
+        self._state._net_available_cache = True
+        with mock.patch.object(
+            probes, "_probe_net_available",
+        ) as probe:
+            self.assertTrue(probes.check_net_available())
+            probe.assert_not_called()
+
+    def test_racing_publication_first_writer_wins(self):
+        from unittest import mock
+
+        from core.sandbox import probes
+
+        def racer_probe():
+            # Simulate a concurrent thread publishing its verdict
+            # while our probe is still in flight.
+            self._state._net_available_cache = False
+            return True
+
+        with mock.patch.object(
+            probes, "_probe_net_available", racer_probe,
+        ):
+            # Re-check under the second lock hold: the racer's
+            # published verdict wins over our probe result.
+            self.assertFalse(probes.check_net_available())
+        self.assertFalse(self._state._net_available_cache)
 
 
 class TestCacheLockReentrant(unittest.TestCase):
@@ -1963,3 +2365,26 @@ class TestMountNsToolPathFallbackContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSeccompProbeCompleteness:
+    def test_probe_rejects_lib_missing_attr_set(self, monkeypatch):
+        """The availability probe must require every entry point the
+        preexec uses unconditionally — a libseccomp build without
+        seccomp_attr_set would otherwise pass the probe and then die
+        with AttributeError inside the spawn child."""
+        from core.sandbox import seccomp as sc
+        from core.sandbox import state
+
+        class _LibWithoutAttrSet:
+            def __getattr__(self, name):
+                if name == "seccomp_attr_set":
+                    raise AttributeError(name)
+                return lambda *a, **k: 0
+
+        monkeypatch.setattr(
+            "ctypes.util.find_library", lambda _n: "libseccomp.so.2")
+        monkeypatch.setattr(
+            "ctypes.CDLL", lambda *a, **k: _LibWithoutAttrSet())
+        monkeypatch.setattr(state, "_libseccomp_cache", None)
+        assert sc.check_seccomp_available() is False

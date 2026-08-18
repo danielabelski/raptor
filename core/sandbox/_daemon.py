@@ -37,6 +37,12 @@ Protocol — length-prefixed JSON, big-endian u32 length header:
      "per_recv_timeout": 3.0,
      "total_wait_seconds": 5.0,
      "flag_string": "WIN_NO_FLAG_FILE"}
+    {"cmd": "conversation",
+     "target_argv": [...],
+     "sends": [...],
+     "per_recv_timeout": 2.0,
+     "total_wait_seconds": 3.0,
+     "close_after": true}
     {"cmd": "close"}
 
   daemon → parent:
@@ -400,6 +406,11 @@ def _handle_probe(payload: dict) -> dict:
                         "unicode_escape").encode("latin-1")
                 except Exception:  # noqa: BLE001
                     send_bytes = raw.encode("utf-8")
+                if len(send_bytes) > _MAX_SEND_BYTES:
+                    return {"ok": False,
+                            "error": (f"step {i} send_template "
+                                      f"{len(send_bytes)} > {_MAX_SEND_BYTES}"),
+                            "steps_completed": steps_completed}
             elif "send_p64" in step:
                 try:
                     v = _safe_eval(step["send_p64"], bindings)
@@ -417,6 +428,11 @@ def _handle_probe(payload: dict) -> dict:
                     return {"ok": False,
                             "error": (f"step {i} build_fmtstr_write: "
                                       f"{type(e).__name__}: {e}"),
+                            "steps_completed": steps_completed}
+                if len(send_bytes) > _MAX_SEND_BYTES:
+                    return {"ok": False,
+                            "error": (f"step {i} build_fmtstr_write "
+                                      f"{len(send_bytes)} > {_MAX_SEND_BYTES}"),
                             "steps_completed": steps_completed}
 
             if send_bytes is not None:
@@ -698,7 +714,11 @@ def _run_one_shot() -> int:
 
     Used as the fallback substrate when the persistent SandboxHost
     can't start (missing landlock/seccomp, cc unavailable, etc.),
-    so the per-call and persistent paths share ONE implementation.
+    so the per-call and persistent paths share the same DISPATCH
+    handlers. One divergence: the persistent loop special-cases
+    "close" before dispatch (graceful ok:true exit); "close" is
+    meaningless in one-shot mode and falls through to the
+    unknown-cmd error (exit 1) here.
     """
     in_fd = sys.stdin.fileno()
     out_fd = sys.stdout.fileno()

@@ -99,6 +99,7 @@
 #include <unistd.h>
 
 #include <pwd.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 
 #include "helpers_validate.h"
@@ -405,7 +406,8 @@ int main(int argc, char **argv) {
         return log_errno(
             "unshare(NEWUSER|NEWNET) — host's LSM is blocking userns "
             "creation by this binary. On Ubuntu install the apparmor "
-            "profile (raptor-coord-launcher.apparmor); on other distros "
+            "profile (make apparmor-profile, then install the rendered "
+            "file); on other distros "
             "ensure setcap cap_net_admin,cap_sys_admin+ep is applied "
             "OR install the appropriate LSM grant from "
             "core/sandbox/helpers/");
@@ -416,6 +418,21 @@ int main(int argc, char **argv) {
             "(unprivileged_userns apparmor profile, SELinux confinement). "
             "Install the LSM grant from core/sandbox/helpers/");
     }
+    /* Close the ptrace window for the rest of the privileged stretch
+     * (lo-up through capset): on the AppArmor-only grant path this
+     * process runs with capabilities but stays dumpable, so a
+     * same-UID tracer could attach mid-window. This CANNOT cover the
+     * unshare->idmap stretch: a non-dumpable process's /proc/self/
+     * ownership flips to global root, and writing our own uid_map
+     * would then fail EACCES — the map writes above are the last
+     * thing that needs dumpable. execve of the (post-capset,
+     * unprivileged) coordinator resets dumpable to 1, so no restore
+     * is needed. */
+    if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) {
+        return log_errno("prctl(PR_SET_DUMPABLE, 0) — refusing to keep "
+                         "the privileged window traceable");
+    }
+
     if (bring_lo_up() != 0) {
         return log_errno("bring_lo_up — loopback ifup failed in new netns");
     }

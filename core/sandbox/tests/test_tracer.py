@@ -19,19 +19,19 @@ pytestmark = _pytest.mark.skipif(
 )
 
 
-import ctypes
-import json
-import os
-import platform
-import struct
-import subprocess
-import sys
-import time
+import ctypes  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import platform  # noqa: E402
+import struct  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
-from core.sandbox import evidence as evidence_mod
-from core.sandbox import tracer
+from core.sandbox import evidence as evidence_mod  # noqa: E402
+from core.sandbox import tracer  # noqa: E402
 
 
 def _denials_jsonl(run_dir):
@@ -270,6 +270,27 @@ class TestDenialTypeMapping:
 
     def test_unknown_syscall_defaults_to_seccomp(self):
         assert tracer._denial_type("unknown_99999") == "seccomp"
+
+    @pytest.mark.parametrize("name", [
+        "stat", "lstat", "newfstatat", "access",
+        "faccessat", "faccessat2",
+    ])
+    def test_stat_family_typed_as_path_syscall(self, name):
+        # Observe-mode stat-family syscalls map to the file-path
+        # "write" bucket (same convention as read-only opens — "write"
+        # here means "file-path syscall"), not the "seccomp" fallback
+        # reserved for blocklist hits.
+        assert tracer._denial_type(name) == "write"
+
+    def test_every_tabled_stat_syscall_is_mapped(self):
+        # The mechanism: no syscall the tables register as
+        # stat-family may hit the seccomp fallback.
+        stat_family = {"stat", "lstat", "newfstatat", "access",
+                       "faccessat", "faccessat2"}
+        for info in tracer._ARCH_INFO.values():
+            for name in info["syscall_table"].values():
+                if name in stat_family:
+                    assert name in tracer._NAME_TO_TYPE
 
 
 class TestRegisterDecode:

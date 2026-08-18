@@ -26,29 +26,25 @@ import sys as _sys
 
 import pytest as _pytest
 
-pytestmark = [
-    _pytest.mark.skipif(
-        _sys.platform != "linux",
-        reason="Linux-only sandbox internals — the SandboxHost daemon "
-               "spawn exercises the Linux subprocess+preexec path",
-    ),
-    # Every test spawns a real sandboxed daemon process. Opt-in via
-    # ``pytest -m integration``.
-    _pytest.mark.integration,
-]
+pytestmark = _pytest.mark.skipif(
+    _sys.platform != "linux",
+    reason="Linux-only sandbox internals — the SandboxHost daemon "
+           "spawn exercises the Linux subprocess+preexec path",
+)
 
 
-import errno
-import json
-import os
-import stat
-import textwrap
-import time
-import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
+import errno  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import stat  # noqa: E402
+import textwrap  # noqa: E402
+import time  # noqa: E402
+import unittest  # noqa: E402
+from pathlib import Path  # noqa: E402
+from tempfile import TemporaryDirectory  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
-from core.sandbox.host import HostRPCError, SandboxHost
+from core.sandbox.host import HostRPCError, SandboxHost  # noqa: E402
 
 # Generous ceiling for CI boxes where the first sandbox spawn pays
 # for probe/cache warm-up.
@@ -70,6 +66,9 @@ def _scan_special_inodes(root: Path) -> list[str]:
     return special
 
 
+# Every test in this class spawns a real sandboxed daemon process.
+# Opt-in via ``pytest -m integration``.
+@_pytest.mark.integration
 class TestHostRPCTransport(unittest.TestCase):
     """Inherited-pipe-fd transport: hostile-peer matrix + round-trips."""
 
@@ -267,6 +266,39 @@ class TestHostRPCTransport(unittest.TestCase):
             leaked = fds_after - fds_before
             self.assertEqual(leaked, set(),
                              f"fds leaked across start/close: {leaked}")
+
+
+class _DeadDaemonResult:
+    returncode = 97
+    stderr = b"daemon exploded"
+
+
+def _fake_run(*args, **kwargs):
+    # Simulate the daemon dying instantly: sandbox_run returns without
+    # the daemon ever answering the startup ping.
+    return _DeadDaemonResult()
+
+
+class TestDaemonDiedDiagnostic(unittest.TestCase):
+    """The daemon-died startup diagnostic must surface the captured
+    returncode alongside its sibling keys ``error`` and ``stderr``.
+    Mocked spawn — runs in the default (non-integration) suite."""
+
+    def test_returncode_in_startup_failure(self):
+        with TemporaryDirectory() as tmp:
+            with patch("core.sandbox.run", side_effect=_fake_run):
+                with self.assertRaises(HostRPCError) as ctx:
+                    SandboxHost.start(
+                        target=Path(tmp),
+                        startup_timeout=0.5,
+                    )
+        msg = str(ctx.exception)
+        self.assertIn("daemon died during startup", msg)
+        # rc= appears alongside err= and stderr= (a diagnostic that
+        # captured the returncode but never reported it was a dead
+        # store).
+        self.assertIn("rc=97", msg)
+        self.assertIn("daemon exploded", msg)
 
 
 if __name__ == "__main__":

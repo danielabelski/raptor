@@ -428,17 +428,60 @@ def _count_self_children() -> int:
     return total
 
 
+def _warn_once_flags():
+    from core.sandbox import state
+    return [
+        name for name in vars(state)
+        if name.startswith("_") and "warned" in name
+    ]
+
+
 class TestWarnOnceTypoDefense:
-    """Finding NN: state.warn_once used getattr() with no fallback,
-    so a typo'd flag name would raise an opaque AttributeError from
-    inside state.py — call site has to dig through stack frames to
-    find the typo. Defensive: emit a clear, named error pointing to
-    the offending flag."""
+    """state.warn_once used getattr() with no fallback, so a typo'd
+    flag name would raise an opaque AttributeError from inside
+    state.py — call site has to dig through stack frames to find the
+    typo. Defensive: emit a clear, named error pointing to the
+    offending flag, with a naming hint whose majority claim must
+    match the actual flag census."""
+
+    def _hint(self) -> str:
+        from core.sandbox import state
+        with pytest.raises(AttributeError) as exc:
+            state.warn_once("_definitely_not_a_flag_warned")
+        return str(exc.value)
 
     def test_typo_in_flag_name_raises_clear_error(self):
         from core.sandbox import state
         with pytest.raises(AttributeError, match="warn_once"):
             state.warn_once("_definitely_not_a_real_flag_xyz")
+
+    def test_unknown_flag_error_names_flag_and_module(self):
+        msg = self._hint()
+        assert "_definitely_not_a_flag_warned" in msg
+        assert "core/sandbox/state.py" in msg
+
+    def test_hint_mentions_both_orderings(self):
+        msg = self._hint()
+        assert "_<feature>_<reason>_warned" in msg
+        assert "_<feature>_warned_<reason>" in msg
+
+    def test_hint_majority_claim_matches_reality(self):
+        # If the hint singles out one pattern as the majority ("most
+        # as ..."), the flag census must agree with it.
+        import re
+        msg = self._hint()
+        m = re.search(r"most as `([^`]+)`", msg)
+        assert m is not None, "hint should name the majority ordering"
+        majority_pattern = m.group(1)
+
+        flags = _warn_once_flags()
+        warned_last = [f for f in flags if f.endswith("_warned")]
+        warned_middle = [f for f in flags
+                         if "_warned_" in f and not f.endswith("_warned")]
+        if len(warned_last) >= len(warned_middle):
+            assert majority_pattern == "_<feature>_<reason>_warned"
+        else:
+            assert majority_pattern == "_<feature>_warned_<reason>"
 
     def test_real_flag_still_works(self):
         from core.sandbox import state
@@ -449,9 +492,19 @@ class TestWarnOnceTypoDefense:
         # Second call returns False.
         assert state.warn_once("_audit_warned_no_spawn") is False
 
+    def test_known_flag_still_test_and_sets(self):
+        from core.sandbox import state
+        saved = state._audit_warned_no_spawn
+        try:
+            state._audit_warned_no_spawn = False
+            assert state.warn_once("_audit_warned_no_spawn") is True
+            assert state.warn_once("_audit_warned_no_spawn") is False
+        finally:
+            state._audit_warned_no_spawn = saved
+
 
 class TestStaleAuditConfigSweep:
-    """Finding MM: audit-config tempfiles in /tmp/raptor-audit-cfg-*
+    """Audit-config tempfiles in /tmp/raptor-audit-cfg-*
     leak when the parent process gets SIGKILL'd mid-audit (OOM, etc.).
     The normal lifecycle paths unlink them, but SIGKILL bypasses
     finally blocks. Sweep runs on every engaged-audit spawn, gated by
@@ -556,8 +609,7 @@ class TestStaleAuditConfigSweep:
 
 
 class TestAuditConfigWriteFailureHandling:
-    """Finding LL (updated for the anonymous-fd config channel): the
-    audit config is serialised into an anonymous fd (memfd) and handed
+    """The audit config is serialised into an anonymous fd (memfd) and handed
     to the tracer subprocess as /proc/self/fd/N. If the write fails
     (EIO, memfd limits, partial write), the tracer would later read an
     empty/partial JSON → decode error → exit 1 → parent times out
@@ -623,17 +675,16 @@ class TestAuditConfigWriteFailureHandling:
 
 
 class TestAuditMissingOutputBehaviour:
-    """Finding KK + agentic-pass discovery: handling depends on origin
-    of the audit signal:
+    """Handling depends on origin of the audit signal:
       - Per-call kwarg `audit=True` + no output= → ValueError (caller
         explicitly asked for audit on a call with no output dir; that's
         an operator-level mistake worth surfacing).
       - CLI flag `--audit` + no output= → silently demote audit for
         this call only (operator's intent is process-wide; internal
         helper sandboxes without output should NOT block the workflow).
-        Discovered by the real agentic-pass against /tmp/vulns where
-        scanner's git-init helper sandbox has no output dir but
-        CLI-flag audit got applied to it, killing the workflow."""
+        Real-world shape: a scanner's git-init helper sandbox has no
+        output dir; blanket CLI-flag audit applied to it would kill
+        the workflow."""
 
     def test_explicit_kwarg_audit_no_output_raises(self):
         from core.sandbox.context import sandbox
@@ -661,7 +712,7 @@ class TestAuditMissingOutputBehaviour:
                         "CLI --audit + no output= should silently "
                         "demote audit for THIS call, not raise — "
                         "internal helper sandboxes break under audit "
-                        "otherwise (real agentic-pass discovery)"
+                        "otherwise"
                     )
                 # Other ValueError unrelated to audit: re-raise
                 raise
@@ -687,7 +738,7 @@ class TestAuditMissingOutputBehaviour:
 
 
 class TestAuditDegradationWarning:
-    """Real agentic-pass discovery: the degradation warning at line ~935
+    """The degradation warning at line ~935
     of context.py was checking the original `audit_mode` instead of
     `nonlocal_audit_mode` (the per-call effective state). For internal
     helper sandboxes that we ALREADY silently demote at line ~620,
@@ -900,7 +951,7 @@ class TestAuditRunDirKwarg:
 
 
 class TestAuditAcquireOrdering:
-    """Finding I: the proxy audit ref-count must be acquired AT THE
+    """The proxy audit ref-count must be acquired AT THE
     YIELD, not earlier in setup. If acquire happened in the middle
     of setup, an exception in subsequent setup code would leave the
     count incremented forever (the contextmanager's try/finally only
@@ -1075,7 +1126,7 @@ class TestAuditWithExistingSandboxFlows:
         )
 
     def test_audit_kwarg_with_disabled_kwarg_does_not_acquire_proxy(self):
-        # Finding D: per-call audit=True + disabled=True must NOT
+        # Per-call audit=True + disabled=True must NOT
         # acquire the proxy audit ref-count (sandbox is effectively
         # disabled, so audit-mode is incoherent and silently no-ops).
         from core.sandbox.context import sandbox

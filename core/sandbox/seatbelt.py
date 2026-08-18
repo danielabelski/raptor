@@ -150,6 +150,7 @@ def build_profile(*,
                   readable_paths: Iterable[str] | None = None,
                   writable_paths: Iterable[str] | None = None,
                   fake_home: bool = False,
+                  exclude_tmp_baseline: bool = False,
                   audit_mode: bool = False,
                   audit_verbose: bool = False,
                   seccomp_profile: str | None = None,
@@ -239,10 +240,19 @@ def build_profile(*,
 
     # --- Filesystem write restriction ---
     # Build the exception clause (paths the sandbox CAN write to).
-    # Always include /private/tmp (the realpath of /tmp) so tools that
-    # write temp files keep working — matches the Linux Landlock
-    # default of /tmp in writable_paths.
-    write_exceptions: list = ["/private/tmp"]
+    # Include /private/tmp (the realpath of /tmp) so tools that write
+    # temp files keep working — matches the Linux Landlock default of
+    # /tmp in writable_paths. ``exclude_tmp_baseline=True`` drops the
+    # seed (mirroring Linux's writable_paths=[] semantics for the
+    # exploit-engine wrapper-script defence); the spawn layer then
+    # redirects the child's TMPDIR into {output}/.tmp — a writable
+    # exception — because tempfile/compilers otherwise fail or fall
+    # through to other tmp spellings (validated live on an arm64
+    # macOS host: enforcement holds across /tmp spellings, and
+    # compilers work again once TMPDIR points at writable scratch).
+    write_exceptions: list = (
+        [] if exclude_tmp_baseline else ["/private/tmp"]
+    )
     # Device nodes that must always be writable — sh, python, and
     # most Unix tools redirect to /dev/null; /dev/tty is needed for
     # interactive prompts. Use (literal ...) not (subpath ...) so
@@ -513,13 +523,14 @@ def build_profile(*,
     # for additional SBPL action categories so seatbelt_audit's
     # LogStreamer captures activity beyond just file writes.
     #
-    # Category set is conservative — file-read-data captures
-    # interesting reads (file content) without the firehose of
-    # file-read-metadata (every stat/readdir). process-info-* is
-    # deliberately omitted for the same reason — too noisy under any
-    # real workload, no skip-budget on the macOS side yet. Operators
-    # who want everything can extend this list in seatbelt.py and
-    # accept the volume.
+    # Category set has two tiers: a low-volume base (file-read-data
+    # captures interesting reads — file content — plus mach-lookup,
+    # process-exec*, process-fork, signal), and the high-volume
+    # categories (file-read-metadata, process-info*, iokit-open,
+    # sysctl-read) which are included now that AuditBudget enforces
+    # per-category caps on the macOS side — see the comment on the
+    # second emission block below. Operators who want more can
+    # extend this list in seatbelt.py and accept the volume.
     #
     # Only emitted when audit_mode is also set — verbose without
     # audit_mode is operator confusion (the Linux kwarg surface
@@ -594,6 +605,20 @@ def build_profile(*,
                 f"(remote tcp6 \"localhost:{int(proxy_port)}\"))"
             )
         for port in (allowed_tcp_ports or ()):
+            parts.append(
+                f"(allow network-outbound (remote tcp \"*:{int(port)}\"))"
+            )
+    elif allowed_tcp_ports:
+        # Standalone port allowlist (no block_network, no proxy): the
+        # old `block_network or use_egress_proxy` gate emitted NO
+        # network section here, silently allow-defaulting the whole
+        # network on macOS while Linux Landlock enforced the same
+        # kwargs — a parity gap the caller had no signal for. Scope
+        # the deny to outbound TCP only: Landlock's port pin also
+        # covers TCP connect only, leaving UDP/DNS and bind/listen
+        # untouched (listening is unrestricted by design).
+        parts.append("(deny network-outbound (remote tcp \"*:*\"))")
+        for port in allowed_tcp_ports:
             parts.append(
                 f"(allow network-outbound (remote tcp \"*:{int(port)}\"))"
             )

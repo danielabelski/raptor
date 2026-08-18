@@ -8,7 +8,7 @@ A single source of truth for the budget mechanics keeps the two
 backends from drifting and means a future tweak (new category, new
 sampling rate, new CLI knob) lands in one place.
 
-Four mechanisms compose:
+Five mechanisms compose:
 
   1. Global cap (`global_cap`). Hard ceiling on total records per
      run. Once hit, EVERY record is evaluated through sampling
@@ -44,6 +44,11 @@ Decision return shape:
            the record or drops it). None when no marker is needed.
            Markers fire ONCE per category-cap-exhaust and ONCE per
            pid-cap-exhaust so operators see the suppression in-line.
+           One carve-out: when a PID's tracking entry is LRU-evicted
+           from the bounded per-PID dict and that PID is seen again,
+           its marker-emitted memory is deliberately dropped with it,
+           so the same PID can re-emit its cap-exceeded marker
+           (duplicate markers beat unbounded memory).
 
 Thread-safety: each backend's writer is single-threaded (Linux
 tracer is a separate process, macOS LogStreamer has one daemon
@@ -489,6 +494,21 @@ class AuditBudget:
         # (e.g., if an operator-side process raises the global cap
         # mid-run, or sampling kicks in for this category later).
         if self._record_count >= self.global_cap:
+            # Post-cap sampling applies here too — the module
+            # contract is that once the global cap is hit, EVERY
+            # record is evaluated through sampling (un-sampled
+            # categories default to drop). A sampled keep does not
+            # bump the global counter: the cap was promised; the
+            # 1-in-N trickle rides above it by design, exactly as
+            # on the category-cap path.
+            sample_n = self.sampling_rates.get(cat, 0)
+            if sample_n > 0:
+                self._sampling_counters[cat] = (
+                    self._sampling_counters.get(cat, 0) + 1
+                )
+                if self._sampling_counters[cat] % sample_n == 0:
+                    self._global_cap_notified = True
+                    return KEEP, marker
             self._dropped[cat] = self._dropped.get(cat, 0) + 1
             # Refund the token we just consumed in _take_token —
             # this drop is global-cap, not category-cap. Without

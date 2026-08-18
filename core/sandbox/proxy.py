@@ -46,8 +46,9 @@ Safety hooks baked in:
   No mid-tunnel re-resolution — removes the DNS-rebinding window.
 - Idle timeout: 300s. Total tunnel duration cap: 3600s. Either bound
   limits how long one compromised child can hold resources open.
-- Concurrent tunnels: capped at 64 (configurable). Hard limit on
-  resource consumption by a runaway child.
+- Concurrent tunnels: capped at 4096 (configurable; sized for npm
+  install's CONNECT bursts — see _DEFAULT_MAX_TUNNELS history). Hard
+  limit on resource consumption by a runaway child.
 - Buffer size: 64 KiB per direction. Bounds memory per tunnel.
 - Audit log: every CONNECT logs {host, port, result, bytes}, INFO level.
 - No Proxy-Authorization: localhost-only bind + same-UID trust model.
@@ -113,6 +114,13 @@ class _Lane:
 
     label: str
     audit_log_only: bool = False
+    # Per-lane hostname allowlist (lowercased). None = no lane
+    # restriction: the connection is governed by the process-global
+    # allowlist alone. A set scopes this lane's CONNECTs to ITS
+    # sandbox's registered hosts — the global set is a union across
+    # concurrent runs, and without lane scoping any sandbox could
+    # egress to hosts a sibling run allowlisted.
+    allowed_hosts: "frozenset[str] | None" = None
     lane_id: int = field(default_factory=lambda: next(_LANE_IDS))
 
 
@@ -157,8 +165,9 @@ _DEFAULT_TOTAL_TIMEOUT = 3600.0      # absolute cap on a single tunnel
 _DEFAULT_MAX_TUNNELS = 4096
 _DEFAULT_BUFFER_SIZE = 64 * 1024     # relay buffer per direction
 
-# DNS cache TTL. Holds (expires_at, addrinfo_list) per (host, port,
-# socktype) key. 60s is a balance: short enough that a legit DNS
+# DNS cache TTL. Holds (expires_at, addrinfo_list) per (host, port)
+# key (lookups are pinned to SOCK_STREAM, so socktype adds no
+# discrimination). 60s is a balance: short enough that a legit DNS
 # rotation propagates within a normal scan run, long enough that the
 # typical npm/pip-style burst (dozens of CONNECTs to one registry host
 # in seconds) only pays the resolver cost once. Gate 2 (resolved-IP
@@ -300,6 +309,18 @@ def _record_proxy_denial(host: str, port: int, resolved_ip: str | None,
                        exc_info=True)
 
 
+# RFC 6052 NAT64 well-known prefix — see _ip_is_blocked.
+_NAT64_NET = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _normalise_lane_hosts(hosts) -> "frozenset[str] | None":
+    """Lowercased frozenset for a lane allowlist; None/empty -> None
+    (no lane restriction — global allowlist alone governs)."""
+    if not hosts:
+        return None
+    return frozenset(h.lower() for h in hosts if h)
+
+
 def _ip_is_blocked(ip_str: str) -> bool:
     """Reject any address that isn't routable on the public Internet.
 
@@ -320,7 +341,31 @@ def _ip_is_blocked(ip_str: str) -> bool:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return True  # unparseable → reject, fail-closed
-    return not ip.is_global
+    if not ip.is_global:
+        return True
+    # IPv6 forms that EMBED an IPv4 address evade the is_global check
+    # for the embedded target: NAT64 well-known prefix
+    # (64:ff9b::/96, RFC 6052 — a NAT64 gateway forwards to the
+    # embedded IPv4) and the deprecated IPv4-compatible ::a.b.c.d
+    # form both classify as global while smuggling
+    # 169.254.169.254/RFC 1918 targets past gate 2 (verified live:
+    # 64:ff9b::169.254.169.254 has is_global=True). ipv4_mapped
+    # (::ffff:) is already handled by is_global itself; sixtofour
+    # (2002::/16) is classified non-global wholesale. Extract every
+    # embedded IPv4 and re-check it.
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = []
+        if ip in _NAT64_NET:
+            embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+        # IPv4-compatible ::a.b.c.d (deprecated, ::/96 minus ::/112).
+        if (int(ip) >> 32) == 0 and int(ip) > 1:
+            embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+        if ip.ipv4_mapped is not None:
+            embedded.append(ip.ipv4_mapped)
+        for v4 in embedded:
+            if not v4.is_global:
+                return True
+    return False
 
 
 def _parse_proxy_url(url: str | None) -> tuple | None:
@@ -584,7 +629,7 @@ class EgressProxy:
         # matching a pattern bypasses the upstream and connects directly
         # (so internal services like git-server.corp remain reachable).
         self._no_proxy_patterns: list = _parse_no_proxy(no_proxy)
-        # Per-(host, port, socktype) DNS cache. Map key → (expires_at,
+        # Per-(host, port) DNS cache. Map key → (expires_at,
         # addrinfo_list). Bursty resolvers (npm install, pip-compile)
         # hit the same registry host dozens of times in seconds; without
         # caching, each CONNECT pays a fresh getaddrinfo. The cache lives
@@ -789,7 +834,8 @@ class EgressProxy:
                     "ENFORCING mode (no audit-mode sandbox active)"
                 )
 
-    def bind_unix(self, path: str, *, label: str = "sandbox") -> None:
+    def bind_unix(self, path: str, *, label: str = "sandbox",
+                  allowed_hosts: "Iterable[str] | None" = None) -> None:
         """Start an additional asyncio Unix socket server at *path*.
 
         Reuses ``_handle_client`` — the CONNECT protocol is transport-
@@ -805,7 +851,8 @@ class EgressProxy:
 
         import os as _os
 
-        lane = _Lane(label=label)
+        lane = _Lane(label=label,
+                     allowed_hosts=_normalise_lane_hosts(allowed_hosts))
         with self._lanes_lock:
             self._unix_lanes[path] = lane
 
@@ -826,7 +873,8 @@ class EgressProxy:
         future.result(timeout=_PROXY_CONNECT_TIMEOUT_S)
         logger.info("egress proxy: unix socket bound at %s", path)
 
-    def bind_tcp_lane(self, *, label: str = "sandbox") -> int:
+    def bind_tcp_lane(self, *, label: str = "sandbox",
+                      allowed_hosts: "Iterable[str] | None" = None) -> int:
         """Start a dedicated loopback listener with its own lane.
 
         For sandbox tiers that cannot use a unix socket (Landlock-TCP
@@ -844,7 +892,8 @@ class EgressProxy:
         if self._loop is None or not self._loop.is_running():
             raise RuntimeError("proxy event loop not running")
 
-        lane = _Lane(label=label)
+        lane = _Lane(label=label,
+                     allowed_hosts=_normalise_lane_hosts(allowed_hosts))
 
         async def _bind():
             srv = await asyncio.start_server(
@@ -1645,8 +1694,20 @@ class EgressProxy:
             if hdr is None or hdr == "":
                 break
 
-        # Policy gate 1: hostname allowlist.
-        if not self.is_host_allowed(host):
+        # Policy gate 1: hostname allowlist. A lane carrying its own
+        # allowlist additionally scopes the connection to the hosts
+        # ITS sandbox registered: the process-global set is a UNION
+        # across concurrent runs (get_proxy semantics), so without
+        # the lane check any sandbox could ride hosts a sibling run
+        # allowlisted (cross-run confused-deputy egress).
+        _lane_blocked = (
+            lane is not None
+            and lane.allowed_hosts is not None
+            and host.lower() not in lane.allowed_hosts
+        )
+        if not self.is_host_allowed(host) or _lane_blocked:
+            _reason = ("host not in lane allowlist" if _lane_blocked
+                       else "host not in allowlist")
             # Snapshot the audit-log flag under the audit lock at the
             # decision point. The flag is mutated by acquire/release
             # ref-counting from other threads; an unlocked read here
@@ -1674,10 +1735,10 @@ class EgressProxy:
                 _action = "denying" if _enforce_now else "allowing"
                 logger.warning(
                     f"egress proxy: AUDIT would-deny {host}:{port} — "
-                    f"not in allowlist (audit mode: {_action})"
+                    f"{_reason} (audit mode: {_action})"
                 )
                 audit_event = {**event, "result": "would_deny_host",
-                               "reason": "host not in allowlist (audit mode)",
+                               "reason": f"{_reason} (audit mode)",
                                "duration": time.monotonic() - t_start,
                                "audit_enforce": _enforce_now}
                 self._record(audit_event)
@@ -1689,9 +1750,9 @@ class EgressProxy:
                 # Fall through to the connect path (audit_enforce=False).
             else:
                 logger.warning(
-                    f"egress proxy: DENY {host}:{port} — not in allowlist"
+                    f"egress proxy: DENY {host}:{port} — {_reason}"
                 )
-                event.update(result="denied_host", reason="host not in allowlist",
+                event.update(result="denied_host", reason=_reason,
                              duration=time.monotonic() - t_start)
                 self._record(event)
                 await self._write_error(writer, 403, "Forbidden")

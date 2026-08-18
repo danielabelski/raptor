@@ -249,6 +249,34 @@ def test_allowed_tcp_ports_emitted():
     assert '"*:8443"' in p
 
 
+def test_ports_alone_emit_scoped_tcp_deny():
+    """A standalone allowed_tcp_ports config must emit a network
+    section (was: silently allow-default on macOS while Linux Landlock
+    enforced the same kwargs). The deny is scoped to outbound TCP so
+    UDP/DNS and bind/listen stay untouched (listening is unrestricted
+    by design)."""
+    p = seatbelt.build_profile(block_network=False, use_egress_proxy=False,
+                               allowed_tcp_ports=[443, 8443])
+    assert '(deny network-outbound (remote tcp "*:*"))' in p
+    assert '(allow network-outbound (remote tcp "*:443"))' in p
+    assert '(allow network-outbound (remote tcp "*:8443"))' in p
+    # Scoped deny only — bind/listen and UDP stay untouched.
+    assert "(deny network*)" not in p
+
+
+def test_block_network_with_ports_branch_unchanged():
+    p = seatbelt.build_profile(block_network=True,
+                               allowed_tcp_ports=[443])
+    assert "(deny network*)" in p
+    assert '(allow network-outbound (remote tcp "*:443"))' in p
+
+
+def test_no_network_kwargs_no_network_section():
+    p = seatbelt.build_profile(block_network=False,
+                               use_egress_proxy=False)
+    assert "deny network" not in p
+
+
 def test_restrict_reads_emits_deny_read_with_exceptions(tmp_path):
     """restrict_reads=True mirrors the Linux read-allowlist behaviour
     (Landlock's path_beneath denies reads outside the listed dirs).
@@ -618,3 +646,22 @@ def test_audit_verbose_compatible_with_restrict_reads():
                                 restrict_reads=True, output="/tmp/x")
     assert "(allow file-read* (with report))" in p
     assert "(allow file-read-data (with report))" in p
+
+
+class TestExcludeTmpBaseline:
+    """exclude_tmp_baseline strips the /private/tmp writable seed
+    (Linux writable_paths=[] parity); the spawn layer pairs it with a
+    TMPDIR redirect into {output}/.tmp. Enforcement semantics were
+    validated live on an arm64 macOS host."""
+
+    def test_seed_present_by_default(self):
+        from core.sandbox.seatbelt import build_profile
+        prof = build_profile(output="/x/out")
+        assert '(subpath "/private/tmp")' in prof
+
+    def test_seed_stripped_when_excluded(self):
+        from core.sandbox.seatbelt import build_profile
+        prof = build_profile(output="/x/out", exclude_tmp_baseline=True)
+        assert '"/private/tmp"' not in prof
+        # Output stays writable — that's where TMPDIR redirects.
+        assert '(subpath "/x/out")' in prof

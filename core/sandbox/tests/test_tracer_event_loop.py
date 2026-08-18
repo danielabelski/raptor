@@ -176,7 +176,7 @@ class TestExitedTracees:
 
     def test_unknown_pid_in_status_is_silent_noop(
             self, arch_info, fake_helpers):
-        # M1 / N3 robustness: a wpid not in `traced` (could happen if
+        # Robustness: a wpid not in `traced` (could happen if
         # FORK_EVENT-add was missed) just gets silently discarded.
         # No exception, no resume call.
         traced = {1000}
@@ -272,6 +272,62 @@ class TestSeccompTraceEvent:
         )
         assert budget.total_records == 0  # no record written
         assert calls == [(1000, 0)]  # but tracee resumed
+
+
+class TestBudgetMarkerNonce:
+    """Budget marker records carry the per-run nonce like sibling
+    data records and the end-of-run summary, so a nonce-validating
+    parser attributes them to the run."""
+
+    def _dispatch_over_cap(self, tmp_path, nonce):
+        """Drive two seccomp-trace events through a cap-1 budget so
+        the second emits a category-exhaust marker."""
+        from unittest import mock
+
+        from core.sandbox import audit_budget
+        arch_info = tracer._ARCH_INFO[tracer._ARCH]
+        markers = []
+
+        def fake_write_record_dict(run_dir, record, *, filename=None):
+            markers.append(dict(record))
+
+        openat_nr = 257 if tracer._ARCH == "x86_64" else 56
+        status = _ptrace_event_status(tracer._PTRACE_EVENT_SECCOMP)
+        budget = audit_budget.AuditBudget(
+            category_caps={"file-open": 1},
+            refill_rates={"file-open": 0.0},
+            sampling_rates={},
+        )
+        with mock.patch.object(
+                tracer, "_write_record_dict", fake_write_record_dict):
+            for _ in range(2):
+                tracer._handle_waitpid_event(
+                    1000, status, {1000}, 1000, arch_info,
+                    Path(tmp_path), budget,
+                    observe_nonce=nonce,
+                    ptrace_cont=lambda pid, sig=0: True,
+                    read_regs=lambda pid, ai: b"\x00" * ai["user_regs_size"],
+                    decode_syscall=lambda regs, ai: (
+                        openat_nr, [0, 0, 0, 0, 0, 0]),
+                    read_tracee_string=lambda pid, addr, max_bytes=4096: (
+                        "/etc/test"),
+                    get_event_msg=lambda pid: 0,
+                    write_record=lambda *a, **k: True,
+                )
+        return markers
+
+    def test_marker_carries_nonce(self, tmp_path):
+        markers = self._dispatch_over_cap(tmp_path, nonce="run-nonce-1")
+        assert markers, "cap-1 budget should have emitted a marker"
+        for marker in markers:
+            assert marker.get("nonce") == "run-nonce-1"
+
+    def test_no_nonce_leaves_marker_unstamped(self, tmp_path):
+        # Audit mode (no nonce): markers must not gain a None field.
+        markers = self._dispatch_over_cap(tmp_path, nonce=None)
+        assert markers
+        for marker in markers:
+            assert "nonce" not in marker
 
 
 class TestNewTraceeEvents:
@@ -422,3 +478,77 @@ class TestNonStoppedStatus:
         assert traced == {1000}
         assert budget.total_records == 0
         assert fake_helpers["calls"]["ptrace_cont"] == []
+
+
+class TestOpenat2StructReadInjectable:
+    """The openat2 ``struct open_how`` deref goes through the injected
+    ``read_tracee_bytes`` helper — like every other ptrace side-effect
+    in the dispatch, tests can exercise the branch without a real
+    tracee."""
+
+    _OPENAT2_NR = 437  # same number on x86_64 and aarch64
+
+    def _dispatch_openat2(self, arch_info, fake_helpers, how_flags,
+                          audit_filter=None):
+        import struct as _struct
+
+        from core.sandbox import audit_budget
+
+        bytes_calls = []
+
+        def fake_read_tracee_bytes(pid, addr, n_bytes):
+            bytes_calls.append((pid, addr, n_bytes))
+            return _struct.pack("<Q", how_flags)
+
+        budget = audit_budget.AuditBudget()
+        tracer._handle_waitpid_event(
+            1000, _ptrace_event_status(tracer._PTRACE_EVENT_SECCOMP),
+            {1000}, 1000, arch_info,
+            Path("/tmp"), budget,
+            audit_filter=audit_filter,
+            ptrace_cont=fake_helpers["ptrace_cont"],
+            read_regs=fake_helpers["read_regs"],
+            decode_syscall=lambda regs, ai: (
+                self._OPENAT2_NR, [0, 0xcafef00d, 0xfeed0000, 24, 0, 0]
+            ),
+            read_tracee_string=fake_helpers["read_tracee_string"],
+            read_tracee_bytes=fake_read_tracee_bytes,
+            get_event_msg=fake_helpers["get_event_msg"],
+            write_record=fake_helpers["write_record"],
+            resolve_path=lambda pid, path, dirfd: "/etc/test",
+        )
+        return bytes_calls, budget
+
+    def test_injected_helper_reads_open_how_struct(
+            self, arch_info, fake_helpers):
+        bytes_calls, _ = self._dispatch_openat2(
+            arch_info, fake_helpers, how_flags=0,  # O_RDONLY
+        )
+        # First 8 bytes of *args[2] = struct open_how.flags.
+        assert bytes_calls == [(1000, 0xfeed0000, 8)]
+        records = fake_helpers["calls"]["write_record"]
+        assert len(records) == 1
+        assert records[0]["name"] == "openat2"
+
+    def test_injected_flags_drive_write_intent_filtering(
+            self, arch_info, fake_helpers):
+        # Filtered mode with reads unrestricted: an O_RDONLY openat2
+        # (flags decoded through the injected helper) is dropped; an
+        # O_WRONLY one outside writable_paths is kept.
+        audit_filter = {
+            "verbose": False,
+            "read_allowlist": None,
+            "writable_paths": ["/nowhere"],
+        }
+        self._dispatch_openat2(
+            arch_info, fake_helpers, how_flags=0,  # O_RDONLY → dropped
+            audit_filter=audit_filter,
+        )
+        assert fake_helpers["calls"]["write_record"] == []
+        self._dispatch_openat2(
+            arch_info, fake_helpers, how_flags=1,  # O_WRONLY → kept
+            audit_filter=audit_filter,
+        )
+        records = fake_helpers["calls"]["write_record"]
+        assert len(records) == 1
+        assert records[0]["name"] == "openat2"

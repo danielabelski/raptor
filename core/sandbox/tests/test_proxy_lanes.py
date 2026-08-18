@@ -109,7 +109,7 @@ class TestUnixLaneIsolation:
 
     def test_in_flight_connection_keeps_its_lane(self, reset_proxy,
                                                  tmp_path):
-        # W5: a connection ACCEPTED before unbind is decided by the
+        # A connection ACCEPTED before unbind is decided by the
         # lane object captured at accept time — deterministic, no
         # enforce/lenient flapping during teardown.
         proxy = proxy_mod.EgressProxy(allowed_hosts=set())
@@ -183,14 +183,18 @@ class TestContextWiring:
             def __init__(self):
                 self.calls = []
 
-            def bind_unix(self, path, *, label="sandbox"):
+            def bind_unix(self, path, *, label="sandbox",
+                          allowed_hosts=None):
                 self.calls.append(("bind_unix", path, label))
+                self.lane_hosts = allowed_hosts
 
             def unbind_unix(self, path):
                 self.calls.append(("unbind_unix", path))
 
-            def bind_tcp_lane(self, *, label="sandbox"):
+            def bind_tcp_lane(self, *, label="sandbox",
+                              allowed_hosts=None):
                 self.calls.append(("bind_tcp_lane", label))
+                self.lane_hosts = allowed_hosts
                 return 18081
 
             def close_tcp_lane(self, port):
@@ -246,8 +250,8 @@ class TestContextWiring:
 
 
 class TestLaneScopedEventBuffers:
-    """D3: buffers subscribe by lane. Pre-fix every event fanned into
-    EVERY registered buffer, so concurrent runs saw each other's
+    """Event buffers subscribe by lane. Pre-fix every event fanned
+    into EVERY registered buffer, so concurrent runs saw each other's
     would-deny records."""
 
     def test_live_events_segregate_across_lanes(self, reset_proxy,
@@ -369,3 +373,63 @@ class TestLaneScopedEventBuffers:
         # Tier-2: the tcp lane port (18081 in the fake) is the key.
         for _name, _label, lane_key in registers:
             assert lane_key == 18081
+
+
+class TestLaneHostAllowlists:
+    """Per-lane hostname allowlists (cross-run confused-deputy
+    defence). The proxy's global allowlist is a UNION across
+    concurrent runs (get_proxy semantics). Before lane scoping, any
+    sandbox could CONNECT to hosts a sibling run had allowlisted. A
+    lane bound with allowed_hosts is now additionally scoped to its
+    own set; gate 1 denies the rest with a lane-specific reason."""
+
+    def test_lane_scoped_to_its_own_hosts(self, reset_proxy, tmp_path):
+        """Host in the GLOBAL union but not in THIS lane's set -> 403;
+        the lane's own host passes gate 1 (then fails at DNS -> 502,
+        which proves gate-1 passage, not a policy deny)."""
+        proxy = proxy_mod.EgressProxy(
+            allowed_hosts={"run-a.invalid", "run-b.invalid"},
+        )
+        try:
+            sock_a = str(tmp_path / "lane-a.sock")
+            proxy.bind_unix(sock_a, label="run-a",
+                            allowed_hosts=["run-a.invalid"])
+            token = proxy.register_sandbox(caller_label="run-a",
+                                           lane_key=sock_a)
+            try:
+                # Sibling run's host: globally allowlisted, lane-denied.
+                assert _connect_unix(sock_a, "run-b.invalid:443") == 403
+                # Own host: gate 1 passes; .invalid never resolves -> 502.
+                assert _connect_unix(sock_a, "run-a.invalid:443") == 502
+            finally:
+                events = proxy.unregister_sandbox(token)
+        finally:
+            proxy.stop()
+
+        denied = [e for e in events if e.get("result") == "denied_host"]
+        assert len(denied) == 1
+        assert denied[0]["reason"] == "host not in lane allowlist"
+        assert denied[0]["host"] == "run-b.invalid"
+
+    def test_lane_without_allowlist_keeps_global_semantics(
+            self, reset_proxy, tmp_path):
+        proxy = proxy_mod.EgressProxy(allowed_hosts={"run-a.invalid"})
+        try:
+            sock = str(tmp_path / "lane.sock")
+            proxy.bind_unix(sock, label="legacy")
+            # Global-allowed host passes gate 1 (DNS 502); unknown -> 403.
+            assert _connect_unix(sock, "run-a.invalid:443") == 502
+            assert _connect_unix(sock, "other.invalid:443") == 403
+        finally:
+            proxy.stop()
+
+    def test_lane_allowlist_case_insensitive(self, reset_proxy,
+                                             tmp_path):
+        proxy = proxy_mod.EgressProxy(allowed_hosts={"run-a.invalid"})
+        try:
+            sock = str(tmp_path / "lane.sock")
+            proxy.bind_unix(sock, label="run-a",
+                            allowed_hosts=["RUN-A.invalid"])
+            assert _connect_unix(sock, "Run-A.Invalid:443") == 502
+        finally:
+            proxy.stop()

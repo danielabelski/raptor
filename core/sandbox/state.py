@@ -59,14 +59,16 @@ _seatbelt_available_cache = None
 _gidmap_allow_cache = None
 # User-supplied rlimit overrides from ~/.config/raptor/sandbox.json.
 # `_user_limits_cache_decided_at` carries the wall-clock when the
-# cache was last populated FROM THE FAILURE PATH (parse error,
-# missing file, non-regular file). Pre-fix that path stored `{}` and
+# cache decision was made. FAILURE paths (parse error, missing file,
+# non-regular file) stamp time.time(): pre-fix they stored `{}` and
 # never re-read — operators correcting a malformed sandbox.json had
 # to restart every RAPTOR process to pick up the fix. `_FAIL_TTL_S`
-# bounds the negative cache so a corrected file is honoured within a
-# reasonable window. Successful loads keep no TTL; the assumption is
-# that the operator who edits the config will accept restarting (or
-# clearing the cache via tests / `state._user_limits_cache = None`).
+# bounds that negative cache so a corrected file is honoured within a
+# reasonable window. SUCCESSFUL parses stamp +inf — no TTL (session
+# cache; the operator who edits the config accepts restarting, or
+# clearing the cache via tests / `state._user_limits_cache = None`) —
+# which also keeps a valid config that yields no recognised keys
+# (empty dict) distinguishable from the empty-dict failure sentinel.
 _user_limits_cache = None
 _user_limits_cache_decided_at = 0.0
 # Resolved absolute paths to sandbox-setup binaries. We use absolute paths
@@ -181,8 +183,9 @@ def warn_once(flag_name: str) -> bool:
             raise AttributeError(
                 f"warn_once: unknown flag {flag_name!r}. Add to "
                 f"core/sandbox/state.py module-level globals before "
-                f"using. (Likely a typo — most flag names follow "
-                f"the `_<feature>_warned_<reason>` pattern.)"
+                f"using. (Likely a typo — flag names embed 'warned', "
+                f"most as `_<feature>_<reason>_warned`, some as "
+                f"`_<feature>_warned_<reason>`.)"
             )
         if getattr(mod, flag_name):
             return False

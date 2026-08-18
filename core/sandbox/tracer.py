@@ -368,6 +368,15 @@ def _arch_info() -> dict | None:
 # path syscalls are "write" (paths the child tried to open/write).
 _NAME_TO_TYPE = {
     "open": "write", "openat": "write", "openat2": "write",
+    # Stat-family (observe-mode only): path syscalls, same "write"
+    # bucket as open/openat (which are stamped "write" even for
+    # read-only opens — the type means "file-path syscall" here).
+    # Without these entries they fell into the "seccomp" fallback
+    # that is reserved for blocklist hits, mislabeling the by_type
+    # rollup. "write" keeps the canonical type set closed (see
+    # summary._suggested_fix and the cross-module drift test).
+    "stat": "write", "lstat": "write", "newfstatat": "write",
+    "access": "write", "faccessat": "write", "faccessat2": "write",
     "connect": "network",
     "socket": "seccomp",   # AF_UNIX/PACKET/NETLINK family check still seccomp-style
     "ioctl": "seccomp",
@@ -1446,6 +1455,7 @@ def _handle_waitpid_event(
     read_regs=None,
     decode_syscall=None,
     read_tracee_string=None,
+    read_tracee_bytes=None,
     get_event_msg=None,
     write_record=None,
     resolve_path=None,
@@ -1475,6 +1485,8 @@ def _handle_waitpid_event(
         decode_syscall = _decode_syscall
     if read_tracee_string is None:
         read_tracee_string = _read_tracee_string
+    if read_tracee_bytes is None:
+        read_tracee_bytes = _read_tracee_bytes
     if get_event_msg is None:
         get_event_msg = _ptrace_get_event_msg
     if write_record is None:
@@ -1560,7 +1572,7 @@ def _handle_waitpid_event(
                     # write_intent=True so we don't silently miss
                     # writes — over-reporting reads is acceptable,
                     # missing writes is not.
-                    how_bytes = _read_tracee_bytes(wpid, args[2], 8)
+                    how_bytes = read_tracee_bytes(wpid, args[2], 8)
                     if how_bytes is not None and len(how_bytes) == 8:
                         import struct as _struct
                         flags = _struct.unpack("<Q", how_bytes)[0]
@@ -1633,6 +1645,12 @@ def _handle_waitpid_event(
             if should_log:
                 decision, marker = budget.evaluate(name, wpid)
                 if marker is not None:
+                    # Stamp the per-run nonce like the data records
+                    # and end-of-run summary — a nonce-validating
+                    # parser must be able to attribute the in-band
+                    # markers to this run rather than drop them.
+                    if observe_nonce is not None:
+                        marker["nonce"] = observe_nonce
                     _write_record_dict(run_dir, marker,
                                        filename=output_filename)
                 if decision == audit_budget.KEEP:
@@ -1720,7 +1738,13 @@ def _cli_main(argv: list | None = None) -> int:
         "writable_paths": [str, ...],   # write-intent allowlist
         "read_allowlist": [str, ...],   # read-intent allowlist
         "allowed_tcp_ports": [int, ...],
+        "audit_budget": int | None,     # parent's --audit-budget override
+        "observe_mode": bool,           # flips output filename + mode stamp
+        "observe_nonce": str | None,    # per-run provenance secret
+        "evidence_fd": int,             # inherited evidence-file fd (F11)
     }
+    The dict is passed unmerged to trace(), which reads the last four
+    keys directly (see the writer in _spawn.py for per-key rationale).
 
     Exit codes:
       0  clean (target exited)

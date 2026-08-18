@@ -90,6 +90,10 @@ def _load_user_limits() -> dict:
         if state._user_limits_cache:
             return state._user_limits_cache
         # Cached FAILURE (empty dict): re-probe after _FAIL_TTL_S.
+        # A successfully-parsed config with no recognised keys is
+        # also an empty dict, but its decided_at is stamped +inf on
+        # the success path below, so this window never expires for
+        # it — session-cached, not re-parsed as if it had failed.
         if (state._user_limits_cache is not None
             and (time.time() - state._user_limits_cache_decided_at)
                 <= _FAIL_TTL_S):
@@ -154,7 +158,11 @@ def _load_user_limits() -> dict:
                         continue
                     cleaned[k] = v
                 state._user_limits_cache = cleaned
-                state._user_limits_cache_decided_at = time.time()
+                # +inf: successful parses never expire (session
+                # cache), including a valid config that yields no
+                # recognised keys — cleaned == {} must not be
+                # mistaken for the failure sentinel above.
+                state._user_limits_cache_decided_at = float("inf")
                 return state._user_limits_cache
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             logger.warning(
@@ -196,7 +204,13 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
     net-only ruleset that leaves filesystem semantics untouched.
     """
     landlock_fn = None
-    if ((writable_paths or allowed_tcp_ports or deny_all_tcp_connect)
+    # `readable_paths is not None` (not truthiness): an empty list means
+    # "reads restricted to writable_paths only" — the MOST restrictive
+    # setting — and must engage Landlock. Without readable_paths in this
+    # gate, a restrict_reads-only caller (no writable paths, no ports,
+    # no connect-deny) silently got no Landlock at all.
+    if ((writable_paths or allowed_tcp_ports or deny_all_tcp_connect
+         or readable_paths is not None)
             and check_landlock_available()):
         effective_paths = list(writable_paths) if writable_paths else []
         landlock_fn = _make_landlock_preexec(effective_paths, allowed_tcp_ports,

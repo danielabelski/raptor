@@ -75,6 +75,12 @@ _TRACER_REAP_TIMEOUT_S = 5.0
 # treated as EOF — see _drain_pipes_until_eof.
 _DRAIN_IDLE_POLL_S = 30.0
 
+# Per-fd accumulation bound for _drain_pipes_until_eof. Audit pipes
+# carry JSONL event records — 32 MiB is orders of magnitude above any
+# legitimate run while keeping a hostile writer from ballooning the
+# parent's memory.
+_DRAIN_MAX_BYTES_PER_FD = 32 * 1024 * 1024
+
 # Linux prctl(2) constants for PR_SET_PTRACER. Not in stdlib;
 # duplicated here from the kernel headers.
 _PR_SET_PTRACER = 0x59616d61
@@ -255,9 +261,17 @@ def _drain_pipes_until_eof(
         stray grandchild inherited the write end; don't wait for
         its EOF forever.
 
+    Accumulation is byte-bounded per fd (``_DRAIN_MAX_BYTES_PER_FD``):
+    a hostile or runaway child writing without limit must not OOM the
+    parent. Past the cap the pipe is still READ — draining is what
+    keeps the child from blocking on a full pipe buffer — but the
+    bytes are discarded, with one warning per fd.
+
     Returns ``{fd: collected_bytes}``.
     """
     bufs: dict[int, list[bytes]] = {fd: [] for fd in fds}
+    kept: dict[int, int] = dict.fromkeys(bufs, 0)
+    truncated: set[int] = set()
     fds_open = set(bufs)
     target_exited = False
     while fds_open:
@@ -292,7 +306,19 @@ def _drain_pipes_until_eof(
                 fds_open.discard(fd)
                 continue
             if chunk:
-                bufs[fd].append(chunk)
+                room = _DRAIN_MAX_BYTES_PER_FD - kept[fd]
+                if room > 0:
+                    piece = chunk[:room]
+                    bufs[fd].append(piece)
+                    kept[fd] += len(piece)
+                if len(chunk) > max(room, 0) and fd not in truncated:
+                    truncated.add(fd)
+                    logger.warning(
+                        "audit pipe fd %d exceeded %d bytes; "
+                        "further output discarded (still draining "
+                        "to keep the child unblocked)",
+                        fd, _DRAIN_MAX_BYTES_PER_FD,
+                    )
             else:
                 fds_open.discard(fd)
     return {fd: b"".join(chunks) for fd, chunks in bufs.items()}
@@ -375,18 +401,28 @@ def run_landlock_audit(
     # Sync pipes:
     #   p_go: parent → target ("tracer attached, proceed")
     #   t_ready: tracer → parent ("I'm attached")
-    p_go_r, p_go_w = os.pipe()
-    t_ready_r, t_ready_w = os.pipe()
-    # The tracer subprocess inherits t_ready_w via execvpe →
-    # mark inheritable (PEP 446 sets O_CLOEXEC by default).
-    os.set_inheritable(t_ready_w, True)
-
-    # Capture pipes (only when capture_output=True).
-    if capture_output:
-        out_r, out_w = os.pipe()
-        err_r, err_w = os.pipe()
-    else:
-        out_r = out_w = err_r = err_w = -1
+    # Created under a guard: a mid-sequence failure (EMFILE) must not
+    # leak the pipes already created, nor the evidence/config fds
+    # opened above — the covering try below has not been entered yet.
+    p_go_r = p_go_w = t_ready_r = t_ready_w = -1
+    out_r = out_w = err_r = err_w = -1
+    try:
+        p_go_r, p_go_w = os.pipe()
+        t_ready_r, t_ready_w = os.pipe()
+        # The tracer subprocess inherits t_ready_w via execvpe →
+        # mark inheritable (PEP 446 sets O_CLOEXEC by default).
+        os.set_inheritable(t_ready_w, True)
+        # Capture pipes (only when capture_output=True).
+        if capture_output:
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+    except BaseException:
+        for fd in (p_go_r, p_go_w, t_ready_r, t_ready_w,
+                   out_r, out_w, err_r, err_w):
+            _close_safely(fd)
+        _close_safely(config_fd)
+        evidence_file.close(verify=False)
+        raise
 
     target_pid = -1
     tracer_pid = -1
@@ -479,6 +515,18 @@ def run_landlock_audit(
                 _close_safely(p_go_r)
                 if byte != b"G":
                     os._exit(125)
+
+                # Full fd-range sweep before handing control to the
+                # UNTRUSTED target — parity with the tracer child's
+                # sweep above. PEP 446 makes Python-opened fds CLOEXEC
+                # by default, but fds inherited from C extensions or
+                # opened with closefd tricks are not guaranteed;
+                # relying on CLOEXEC alone leaves the target a window
+                # onto whatever the parent had open. Nothing needs to
+                # survive this exec except stdio.
+                import resource as _resource
+                _soft, _ = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+                os.closerange(3, min(_soft, 65536))
 
                 # Apply Landlock then seccomp(audit). Ordering:
                 # Landlock first (filesystem isolation in place),

@@ -212,6 +212,7 @@ class SandboxHost:
             if not thread.is_alive():
                 raise HostRPCError(
                     f"daemon died during startup: "
+                    f"rc={result_holder.get('returncode')} "
                     f"err={result_holder.get('error')} "
                     f"stderr={result_holder.get('stderr', '')[-800:]!r}"
                 ) from e

@@ -56,8 +56,10 @@ def check_landlock_available() -> bool:
          Returns a positive integer on success (the ABI version), negative
          on failure.
       2. Functional self-test: fork a child, install a minimal Landlock
-         ruleset that blocks writes to /proc, and verify the write IS
-         blocked. Catches silent breakage like wrong UAPI bit values or
+         ruleset handling WRITE_FILE and READ_FILE with NO allowed
+         paths, and verify that reopening a fresh /tmp probe file for
+         write AND for read are both blocked (EACCES). Catches silent
+         breakage like wrong UAPI bit values or
          kernel quirks where restrict_self returns 0 but no restrictions
          actually apply. A "looks green but isn't enforcing" bug is
          strictly worse than "explicitly unavailable".
@@ -112,18 +114,21 @@ def _landlock_functional_self_test() -> bool:
     """Verify Landlock actually enforces restrictions on this kernel.
 
     Runs in a forked child: installs a Landlock ruleset that restricts
-    WRITE_FILE with NO allowed paths, then attempts to open a known
-    writable path (/tmp/landlock_selftest_<pid>) for write. If Landlock
-    is functional, the open must fail with EACCES. Returns True when
-    enforcement is confirmed.
+    WRITE_FILE and READ_FILE with NO allowed paths, then attempts to
+    reopen a known writable path (a fresh mkstemp file under /tmp,
+    prefix ``.raptor_landlock_selftest_``, random suffix) for write and
+    for read. If Landlock is functional, both opens must fail with
+    EACCES. Returns True when enforcement is confirmed.
 
     Why this design:
       - Fork so the parent (RAPTOR) stays unrestricted.
       - Use WRITE_FILE (bit 1) — the kernel's most stable Landlock
         semantic, present since ABI v1. If WRITE_FILE is broken,
-        everything else is broken too.
-      - Test open(O_WRONLY|O_CREAT) on a fresh path — we create the
-        file, set Landlock, then try to reopen. Open should return -1
+        everything else is broken too. READ_FILE is probed as well
+        (see _run_selftest_in_child).
+      - Test open(O_WRONLY) on a fresh path — we create the file
+        (mkstemp, pre-Landlock), set Landlock, then try to reopen.
+        Open should return -1
         with EACCES when enforced; any other outcome signals breakage.
       - Parent reaps the child via waitpid, not via subprocess module —
         we want minimal dependencies during startup.
@@ -157,11 +162,20 @@ def _landlock_functional_self_test() -> bool:
                 pass
         return False
     if pid == 0:
-        # Child — apply Landlock and test
-        os.close(r)
-        result_code = _run_selftest_in_child(w)
-        os.write(w, bytes([result_code]))
-        os.close(w)
+        # Child — apply Landlock and test. The whole body is guarded:
+        # an uncaught exception (ctypes.ArgumentError from the CDLL
+        # syscall, Structure construction TypeError, ...) would
+        # otherwise unwind into the duplicated interpreter state and
+        # run the parent's atexit handlers / buffered-IO flushes a
+        # second time. Swallow and _exit — the parent then reads EOF
+        # and correctly reports Landlock unavailable (fail-safe).
+        try:
+            os.close(r)
+            result_code = _run_selftest_in_child()
+            os.write(w, bytes([result_code]))
+            os.close(w)
+        except BaseException:  # noqa: BLE001 — post-fork child must never unwind
+            pass
         os._exit(0)
     os.close(w)
     try:
@@ -177,7 +191,7 @@ def _landlock_functional_self_test() -> bool:
             pass
 
 
-def _run_selftest_in_child(write_fd: int) -> int:
+def _run_selftest_in_child() -> int:
     """Run the Landlock enforcement test in the forked child.
 
     Returns 1 on confirmed enforcement, 0 on failure/breakage.
@@ -289,6 +303,25 @@ def _get_landlock_abi() -> int:
     """Get the Landlock ABI version. Returns 0 if unavailable."""
     check_landlock_available()  # Ensures cache is populated
     return max(state._landlock_cache or 0, 0)
+
+
+_scoping_warned = False
+
+
+def _warn_scoping_unavailable_once(abi: int) -> None:
+    """One process-wide notice that Landlock scoping (ABI v6) is
+    unavailable, matching the throttled-warning convention of the
+    other ABI-gated degradations."""
+    global _scoping_warned
+    if _scoping_warned:
+        return
+    _scoping_warned = True
+    logger.warning(
+        "Landlock scoping unavailable (kernel ABI %d < 6): "
+        "abstract-unix-socket and signal isolation are NOT enforced "
+        "for sandboxed children on this kernel; filesystem/network "
+        "Landlock rules are unaffected.", abi,
+    )
 
 
 def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None = None,
@@ -460,6 +493,13 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
     _scoped = 0
     if _abi >= 6:
         _scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL
+    elif _abi >= 1:
+        # Every other ABI-gated feature announces itself when it
+        # degrades; scoping silently no-oping left operators on
+        # ABI 4-5 kernels believing abstract-unix-socket + signal
+        # isolation was active. Once per process — the gap is a host
+        # property, not per-call news.
+        _warn_scoping_unavailable_once(_abi)
 
     # Capture references to os syscalls up-front — the closure runs
     # POST-fork in the child. Doing `import os` inside the child risks

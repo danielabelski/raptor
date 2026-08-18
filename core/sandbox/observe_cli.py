@@ -26,7 +26,8 @@ Two modes:
 
 Exit codes:
   - the spawned command's exit code on success
-  - 64 (EX_USAGE) for arg-parse failures
+  - 2 for arg-parse failures (argparse's parser.error default)
+  - 64 (EX_USAGE) when the command to spawn cannot be found
   - 70 (EX_SOFTWARE) when observe-mode fails to engage (e.g. ptrace
     blocked) — operator can re-run on a host where it works.
   - 124 when the command exceeded ``--timeout`` and was killed
@@ -92,6 +93,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timeout", type=float, default=30.0, metavar="SECONDS",
         help=(
             "Wall-clock timeout for the spawned command. Default: 30s."
+        ),
+    )
+    p.add_argument(
+        "--audit-budget", type=int, default=None, metavar="N",
+        dest="audit_budget",
+        help=(
+            "Override the global audit-record cap (default 10000) for "
+            "this run. Per-category and per-PID sub-caps scale "
+            "proportionally. Raise it when the budget-truncation "
+            "warning fires and the profile must capture every event."
         ),
     )
     p.add_argument(
@@ -227,6 +238,23 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
         parser.error("no command supplied — use ``-- <cmd> [args...]``")
         return _USAGE_EX  # parser.error exits, but for clarity
 
+    # Same bounds the main sandbox CLI applies (core/sandbox/cli.py).
+    # No "--audit-budget requires --audit" check here — observe mode
+    # forces audit mode, so the precondition holds by construction.
+    if args.audit_budget is not None:
+        if args.audit_budget <= 0:
+            parser.error(
+                f"--audit-budget must be a positive integer; got "
+                f"{args.audit_budget!r}"
+            )
+        _AUDIT_BUDGET_MAX = 10_000_000
+        if args.audit_budget > _AUDIT_BUDGET_MAX:
+            parser.error(
+                f"--audit-budget={args.audit_budget} exceeds the upper "
+                f"clamp ({_AUDIT_BUDGET_MAX}). At ~200 bytes per record "
+                f"that's ~2GB of JSONL — almost certainly a typo."
+            )
+
     # Lazy-import the sandbox layer — argparse setup + --help should
     # not require libseccomp / ctypes probing.
     import contextlib
@@ -237,6 +265,13 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
     from core.sandbox import (
         run as sandbox_run,
     )
+
+    if args.audit_budget is not None:
+        # Same propagation path the main CLI's apply_cli_args uses:
+        # the tracer builds its AuditBudget from this state slot.
+        from core.sandbox import state as _sbx_state
+        _sbx_state._cli_sandbox_audit_budget = int(args.audit_budget)
+
     with contextlib.ExitStack() as stack:
         run_dir, kept = _resolve_run_dir(args, stack)
         target_dir = Path(args.target).resolve() if args.target else run_dir

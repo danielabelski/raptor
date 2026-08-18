@@ -22,15 +22,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 try:
+    import httpx
     from sage_sdk.async_client import AsyncSageClient
     from sage_sdk.auth import AgentIdentity
+    from sage_sdk.exceptions import SageError
     from sage_sdk.models import MemoryType
 except ImportError:
     print("ERROR: sage-agent-sdk not installed.")
     print("  pip install sage-agent-sdk")
     sys.exit(1)
 
-from core.sage.scripts._common import async_memory_exists  # noqa: E402
+from core.sage.scripts._common import async_memory_exists
 
 # Parallelism cap — see register_agents.py for rationale.
 _PROPOSE_CONCURRENCY = 8
@@ -45,12 +47,12 @@ def extract_primitives() -> list[dict]:
     memories = []
 
     from packages.exploit_feasibility.primitives import (
-        get_primitive_definitions,
         MitigationID,
+        get_primitive_definitions,
     )
 
     primitives = get_primitive_definitions()
-    for pid, prim in primitives.items():
+    for prim in primitives.values():
         blocked = ", ".join(prim.blocked_by) if prim.blocked_by else "none"
         complicated = ", ".join(prim.complicated_by) if prim.complicated_by else "none"
         provides = ", ".join(prim.provides) if prim.provides else "none"
@@ -310,8 +312,7 @@ def _chunk_text(text: str, max_chars: int = 1500) -> list[str]:
             if current.strip():
                 chunks.append(current.strip())
                 current = ""
-            for piece in _hard_split(line):
-                chunks.append(piece)
+            chunks.extend(_hard_split(line))
             continue
         if len(current) + len(line) + 1 > max_chars and current:
             chunks.append(current.strip())
@@ -357,7 +358,7 @@ async def _seed_one(
                 tags=[label],
             )
             return (label, "stored")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — per-memory worker: any failure becomes a classified result in the summary; the batch must finish
             return (label, f"failed: {e}")
 
 
@@ -375,25 +376,25 @@ async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
     print("Extracting exploitation primitives...")
     try:
         all_memories.extend(extract_primitives())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort per-source seeding: failure is printed, remaining sources still seed
         print(f"  WARNING: Failed to extract primitives: {e}")
 
     print("Extracting LLM system prompts...")
     try:
         all_memories.extend(extract_llm_prompts())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort per-source seeding: failure is printed, remaining sources still seed
         print(f"  WARNING: Failed to extract prompts: {e}")
 
     print("Extracting expert personas...")
     try:
         all_memories.extend(extract_personas())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort per-source seeding: failure is printed, remaining sources still seed
         print(f"  WARNING: Failed to extract personas: {e}")
 
     print("Extracting methodology docs...")
     try:
         all_memories.extend(extract_methodology())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort per-source seeding: failure is printed, remaining sources still seed
         print(f"  WARNING: Failed to extract methodology: {e}")
 
     print("Extracting signal heuristics...")
@@ -402,7 +403,7 @@ async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
     print("Extracting Semgrep configuration...")
     try:
         all_memories.extend(extract_semgrep_config())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort per-source seeding: failure is printed, remaining sources still seed
         print(f"  WARNING: Failed to extract Semgrep config: {e}")
 
     print(f"\nTotal knowledge entries: {len(all_memories)}")
@@ -438,7 +439,8 @@ async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
         reg = await client.register_agent("raptor-seed")
         height = getattr(reg, "on_chain_height", None)
         print(f"Registered as raptor-seed (on-chain height {height})")
-    except Exception as e:
+    except (OSError, ValueError, KeyError, httpx.HTTPError, SageError) as e:
+        # Already-registered / transport errors are informational only.
         print(f"Registration note: {e}")
 
     # Warm the ollama embedding sidecar so the first real embed below
@@ -446,8 +448,10 @@ async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
     # CometBFT consensus — /v1/embed is a local ollama roundtrip.
     try:
         await client.embed("wake")
-    except Exception:
-        pass
+    except (OSError, ValueError, KeyError, httpx.HTTPError, SageError) as e:
+        # Transport / sidecar-response failures only; a TypeError from
+        # a drifted SDK call signature must propagate.
+        print(f"Embedding warm-up skipped ({type(e).__name__}): first embed will cold-start.")
 
     sem = asyncio.Semaphore(_PROPOSE_CONCURRENCY)
     # `return_exceptions=True` so a single _seed_one failure doesn't

@@ -20,8 +20,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 try:
+    import httpx
     from sage_sdk.async_client import AsyncSageClient
     from sage_sdk.auth import AgentIdentity
+    from sage_sdk.exceptions import SageError
     from sage_sdk.models import MemoryType
 except ImportError:
     print("ERROR: sage-agent-sdk not installed.")
@@ -351,7 +353,7 @@ async def _register_one(
             if role_exists or xref_exists:
                 return (name, "partial")  # one half was already present
             return (name, "stored")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — per-agent worker: any failure becomes a classified result in the summary; the batch must finish
             return (name, f"failed: {e}")
 
 
@@ -403,7 +405,8 @@ async def register_agents(sage_url: str, dry_run: bool = False, force: bool = Fa
         reg = await client.register_agent("raptor-registrar")
         height = getattr(reg, "on_chain_height", None)
         print(f"Registered as raptor-registrar (on-chain height {height})\n")
-    except Exception as e:
+    except (OSError, ValueError, KeyError, httpx.HTTPError, SageError) as e:
+        # Already-registered / transport errors are informational only.
         print(f"Registration note: {e}\n")
 
     # Warm the ollama embedding sidecar so the first real embed below
@@ -413,8 +416,10 @@ async def register_agents(sage_url: str, dry_run: bool = False, force: bool = Fa
     # /v1/embed is a local ollama roundtrip, nothing on-chain.)
     try:
         await client.embed("wake")
-    except Exception:
-        pass
+    except (OSError, ValueError, KeyError, httpx.HTTPError, SageError) as e:
+        # Transport / sidecar-response failures only; a TypeError from
+        # a drifted SDK call signature must propagate.
+        print(f"Embedding warm-up skipped ({type(e).__name__}): first embed will cold-start.")
 
     sem = asyncio.Semaphore(_PROPOSE_CONCURRENCY)
     # `return_exceptions=True` for batch robustness — see seed_sage's

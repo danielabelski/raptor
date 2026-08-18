@@ -395,9 +395,6 @@
   "dead:dead_class:packages/exploit_feasibility/constants.py:TargetPriority": {
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
   },
-  "dead:dead_class:packages/sca/models.py:RiskMetadata": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_function:core/analysis/lifecycle_collector.py:collect_read_site": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
@@ -774,18 +771,6 @@
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },
   "plumbing:orphan_config_field:packages/sca/harden.py:HardenCandidate.cve_cleared": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.call_site_count": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.max_tree_depth": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.transitive_count": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
-  "plumbing:orphan_config_field:packages/sca/models.py:RiskMetadata.unique_maintainers_in_tree": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },
   "plumbing:orphan_config_field:packages/strategy_eval/models.py:ABResult.sample_id": {

@@ -470,26 +470,6 @@ class SupplyChainFinding:
 
 
 # ---------------------------------------------------------------------------
-# Risk metadata — NOT findings; inputs to risk and triage context
-# ---------------------------------------------------------------------------
-
-@dataclass
-class RiskMetadata:
-    """Risk-context signals — NOT findings.
-
-    Operators don't 'fix' a heavy dep tree or large maintainer count — those
-    are facts about the project's supply-chain shape. They flow into risk
-    score components and triage prompt context, but never appear as findings.
-    """
-
-    dependency: Dependency
-    transitive_count: int        # > N triggers triage-context note
-    call_site_count: int         # blast radius if compromised
-    unique_maintainers_in_tree: int
-    max_tree_depth: int
-
-
-# ---------------------------------------------------------------------------
 # Triage — LLM ranking output
 # ---------------------------------------------------------------------------
 

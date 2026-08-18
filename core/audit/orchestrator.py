@@ -7235,15 +7235,12 @@ def _run_mechanical_detectors(
         from .type_confusion import detect_type_confusion
 
         for tcf in detect_type_confusion(source_texts, call_graphs, joern_server):
-            subtypes_str = ", ".join(getattr(tcf, "overriding_subtypes", [])[:3])
             _add(
                 tcf.file,
                 tcf.function,
                 "type_confusion",
                 tcf.line,
-                f"deserialised object reaches virtual dispatch "
-                f"of {getattr(tcf, 'overridden_method', '?')}() — "
-                f"subtypes [{subtypes_str}] override this method",
+                tcf.describe(),
             )
     except Exception:
         logger.debug("mechanical: type_confusion failed", exc_info=True)

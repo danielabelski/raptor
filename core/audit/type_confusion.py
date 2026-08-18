@@ -84,6 +84,22 @@ class TypeConfusionFinding:
     overridden_method: str
     confidence: str = "medium"
 
+    def describe(self) -> str:
+        """Operator/LLM-facing one-liner for the mechanical finding.
+
+        Names the deserialisation origin explicitly: in the transitive
+        case the virtual-dispatch site (``function``) is a different
+        function from the deserialising one (``deser_function``), so
+        without it the taint origin cannot be located from the record.
+        """
+        subtypes_str = ", ".join(self.overriding_subtypes[:3])
+        return (
+            f"object deserialised in {self.deser_function}() via "
+            f"{self.deser_source} reaches virtual dispatch of "
+            f"{self.overridden_method}() — subtypes [{subtypes_str}] "
+            f"override this method"
+        )
+
 
 def _build_type_index(
     call_graphs: dict[str, Any],

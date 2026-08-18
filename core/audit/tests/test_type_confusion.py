@@ -305,6 +305,35 @@ class TestDetectTypeConfusion:
         methods = {f.overridden_method for f in findings}
         assert "validate" in methods
 
+    def test_describe_names_deser_origin(self):
+        """In the transitive case the dispatch site is a different
+        function from the deser site — describe() must name both so
+        the taint origin can be located from the finding record."""
+        graphs = {
+            "app.py": _cg(
+                calls=[
+                    ("load_data", ["yaml", "load"], 10),
+                    ("load_data", ["process"], 15),
+                    ("process", ["self", "validate"], 20),
+                ],
+                classes=[
+                    ClassDef(name="App", line=1, bases=[],
+                             methods=[("load_data", 3), ("process", 8),
+                                      ("validate", 12)]),
+                    ClassDef(name="WeakApp", line=40, bases=["App"],
+                             methods=[("validate", 45)]),
+                ],
+            ),
+        }
+        findings = detect_type_confusion({}, graphs)
+        transitive = [f for f in findings if f.function != f.deser_function]
+        assert transitive, f"expected a transitive finding: {findings}"
+        desc = transitive[0].describe()
+        assert "deserialised in load_data()" in desc
+        assert "yaml.load" in desc
+        assert "virtual dispatch of validate()" in desc
+        assert "WeakApp" in desc
+
     def test_no_deser_no_finding(self):
         graphs = {
             "auth.py": _cg(

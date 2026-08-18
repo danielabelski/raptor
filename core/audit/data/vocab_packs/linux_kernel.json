@@ -217,5 +217,22 @@
     "xa_erase",
     "idr_remove",
     "kfifo_out"
+  ],
+  "cleanup_calls": [
+    "kfree_skb",
+    "consume_skb",
+    "dev_kfree_skb",
+    "kobject_put",
+    "fput",
+    "put_page",
+    "unlock_page",
+    "rcu_read_unlock",
+    "read_unlock",
+    "write_unlock",
+    "up_read",
+    "up_write",
+    "kvfree",
+    "vfree",
+    "kfree_sensitive"
   ]
 }

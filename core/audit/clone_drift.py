@@ -52,6 +52,29 @@ logger = logging.getLogger(__name__)
 
 DIMENSION_CLONE_DRIFT = "clone-drift"
 
+
+def _grammar_ready() -> bool:
+    """Shared tree-sitter availability flag (patchable in tests via
+    ``core.testing.treesitter``)."""
+    from . import consistency_dimensions as _cd
+    return bool(getattr(_cd, "_TS_AVAILABLE", False))
+
+
+def _signal_degraded(
+    telemetry: dict[str, Any] | None, leg: str, detail: str,
+) -> None:
+    """Loud degradation signal — grammar-absent must never read as a
+    clean zero-deviation result. Warned always; recorded into the
+    prepass dimension telemetry when the caller passed it."""
+    logger.warning("clone_drift: %s leg degraded — %s", leg, detail)
+    if telemetry is not None:
+        telemetry["degraded"] = telemetry.get("degraded", 0) + 1
+        reasons = telemetry.setdefault("degraded_reasons", [])
+        entry = f"{leg}: {detail}"
+        if entry not in reasons:
+            reasons.append(entry)
+
+
 K_GRAM = 5
 WINNOW_WINDOW = 4
 CLONE_SIMILARITY = 0.85
@@ -285,9 +308,16 @@ def detect_clone_drift(
     *,
     similarity: float = CLONE_SIMILARITY,
     max_pairs: int = MAX_CLONE_PAIRS,
+    telemetry: dict[str, Any] | None = None,
 ) -> list[CloneDriftDeviation]:
     """Generic winnowing leg (detection-grade). See module docstring
     for bounds and the divergence classes."""
+    if source_texts and not _grammar_ready():
+        _signal_degraded(
+            telemetry, "winnowing",
+            "tree-sitter unavailable — clone winnowing skipped",
+        )
+        return []
     bodies = _function_bodies(source_texts)
     if len(bodies) < 2:
         return []
@@ -382,16 +412,34 @@ def fix_anchored_drift(
     source_texts: dict[str, str],
     *,
     similarity: float = FIX_ANCHOR_SIMILARITY,
+    telemetry: dict[str, Any] | None = None,
 ) -> list[CloneDriftDeviation]:
     """Fix-anchored leg: a variant site becomes promote-capable when
     its function body reproduces the fixed region (fingerprint
     containment ≥ *similarity*) and the fix's guard is absent."""
     if not anchors or not source_texts:
         return []
+    if not _grammar_ready():
+        # Promote-capable leg: silently dropping every fix anchor on
+        # a grammar-less host looked identical to "no drifted
+        # clones". Degrade loudly instead.
+        _signal_degraded(
+            telemetry, "fix-anchored",
+            f"tree-sitter unavailable — {len(anchors)} fix "
+            "anchor(s) dropped unchecked",
+        )
+        return []
     spans = {
         (f, name): (start, "\n".join(lines))
         for f, name, start, lines in _function_spans(source_texts)
     }
+    if not spans:
+        _signal_degraded(
+            telemetry, "fix-anchored",
+            "no function spans parsed from the supplied sources — "
+            f"{len(anchors)} fix anchor(s) dropped unchecked",
+        )
+        return []
     deviations: list[CloneDriftDeviation] = []
     for anchor in anchors:
         file_path = str(anchor.get("file") or "")

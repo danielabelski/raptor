@@ -448,6 +448,23 @@ class TestNamingStemBinding:
         assert res.outcome == "inconclusive"
         assert res.reason.startswith(REASON_HYPOTHESIS_UNBINDABLE)
 
+    def test_stem_collection_token_requires_word_boundary(self):
+        """The collection noun must be a whole snake_case segment —
+        substring hits (string_append via "ring", task_add/mask_add
+        via "sk", offset_add via "set") are the BN_add-class
+        arithmetic the weak-verb tier exists to exclude."""
+        from core.audit.resource_bounds import _STEM_INSERT_RE
+
+        for bad in ("string_append(s, c);", "task_add(t);",
+                    "mask_add(m, bit);", "offset_add(o, 4);",
+                    "strbuf_append(sb, c);"):
+            assert _STEM_INSERT_RE.search(bad) is None, bad
+        for good in ("my_list_add(l, e);", "queue_push(q, e);",
+                     "hash_table_add(h, k);", "conn_set_add(s, c);",
+                     "ring_buffer_append(rb, e);",
+                     "pkt_queue_push_tail(q, p);"):
+            assert _STEM_INSERT_RE.search(good) is not None, good
+
     def test_exact_vocabulary_still_wins_over_stem(self, tmp_path):
         # A seed-vocabulary verb keeps its seed provenance — the stem
         # tier only picks up what exact matching cannot see.

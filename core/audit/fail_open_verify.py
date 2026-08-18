@@ -120,6 +120,7 @@ REASON_LANGUAGE_UNSUPPORTED = "language-unsupported"
 REASON_TYPES_UNRESOLVED = "types-unresolved"
 REASON_ASYNC_UNPROVABLE = "async-unprovable"
 REASON_HYPOTHESIS_UNBINDABLE = "hypothesis-unbindable"
+REASON_SPAN_UNRESOLVED = "span-unresolved"
 
 INCONCLUSIVE_REASONS = frozenset({
     REASON_ROLE_UNBOUND,
@@ -129,6 +130,7 @@ INCONCLUSIVE_REASONS = frozenset({
     REASON_TYPES_UNRESOLVED,
     REASON_ASYNC_UNPROVABLE,
     REASON_HYPOTHESIS_UNBINDABLE,
+    REASON_SPAN_UNRESOLVED,
 })
 
 # CWE families the channel joins via the fallback chain. CWE-248
@@ -815,7 +817,18 @@ def _run_c_check(
     if span:
         segment = "\n".join(lines[span[0] - 1:span[1]])
     else:
-        segment = source
+        # Whole-file fallback removed: with function_span=None the
+        # site classifiers ran over the entire file, so a "confirmed"
+        # could cite a site in a DIFFERENT function than the
+        # hypothesis names. Span-resolution failure is a mechanical
+        # limitation, not evidence — inconclusive.
+        return _inconclusive(
+            REASON_SPAN_UNRESOLVED,
+            f"cannot resolve the span of {function_name} — refusing "
+            "the whole-file scan (a match elsewhere in the file is "
+            "not evidence about this function)",
+            language=language, rule_id=RULE_IGNORED_RETURN,
+        )
 
     candidates = _candidate_callees(hypothesis, segment)
     if not candidates:
@@ -1141,8 +1154,28 @@ def _run_go_check(
             source, file_path, function_name, role_context, inventory,
         )
 
+    # Parser-absent is the documented degradation contract — report
+    # it as such rather than as a span failure.
+    from .fail_open_lang import _ts_parser
+    if _ts_parser("go") is None:
+        return _inconclusive(
+            REASON_LANGUAGE_UNSUPPORTED,
+            "go grammar unavailable — cannot resolve function spans",
+            language="go", rule_id=RULE_IGNORED_RETURN,
+        )
     span = go_function_span(source, function_name)
-    segment = _go_segment(source, function_name) or source
+    segment = _go_segment(source, function_name)
+    if not segment:
+        # Whole-file fallback removed: same policy as the C leg — a
+        # match elsewhere in the file is not evidence about this
+        # function.
+        return _inconclusive(
+            REASON_SPAN_UNRESOLVED,
+            f"cannot resolve the span of {function_name} — refusing "
+            "the whole-file scan (a match elsewhere in the file is "
+            "not evidence about this function)",
+            language="go", rule_id=RULE_IGNORED_RETURN,
+        )
 
     candidates = _candidate_callees(hypothesis, segment)
     if not candidates:

@@ -16,10 +16,15 @@ review context alongside the existing block-level taint state.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import List, Optional
+from pathlib import Path
+from typing import Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,17 +36,84 @@ class IntraFunctionAsymmetry:
     line: int = 0
 
 
-_CLEANUP_CALLS = re.compile(
-    r"\b(k?free|kfree_sensitive|kvfree|vfree"
-    r"|fclose|close|closedir"
-    r"|mutex_unlock|spin_unlock|rw_unlock|up_read|up_write"
-    r"|read_unlock|write_unlock|rcu_read_unlock"
-    r"|release|put|unref|deref|kobject_put|fput"
-    r"|kfree_skb|consume_skb|dev_kfree_skb"
-    r"|unlock_page|put_page"
-    r")\s*\(",
-    re.I,
+# SEED SET — canonical exemplars only (SEED_SET_CAP discipline, the
+# callback_lifetime rule verbatim). The kernel bulk (kfree_skb,
+# kobject_put, put_page, rcu_read_unlock, ...) lives in the
+# linux_kernel vocab pack's ``cleanup_calls`` / ``deallocators`` /
+# ``lock_pairs`` keys; project cleanup verbs arrive via study-learned
+# ``paired_operations`` release verbs. Do not grow this tuple — teach
+# the study loop / pack instead.
+_SEED_CLEANUP_NAMES = (
+    "free", "kfree", "fclose", "close",
+    "mutex_unlock", "spin_unlock",
+    "release", "put", "unref",
 )
+
+
+def _pack_cleanup_names(target_path: Path | None) -> frozenset[str]:
+    """Channel-local read of the vocab pack's cleanup vocabulary
+    (data-file-only extension — the resource_bounds
+    ``collection_inserts`` precedent): ``cleanup_calls`` plus
+    ``deallocators`` plus the release side of ``lock_pairs``."""
+    if target_path is None:
+        return frozenset()
+    try:
+        from .vocab_packs import _PACK_DIR, is_kernel_tree
+        if not is_kernel_tree(target_path):
+            return frozenset()
+        raw = json.loads(
+            (_PACK_DIR / "linux_kernel.json").read_text(encoding="utf-8"),
+        )
+    except Exception:
+        return frozenset()
+    names: set[str] = set()
+    for key in ("cleanup_calls", "deallocators"):
+        names.update(
+            n for n in (raw.get(key) or [])
+            if isinstance(n, str) and n
+        )
+    for pair in raw.get("lock_pairs") or []:
+        if isinstance(pair, (list, tuple)) and len(pair) == 2 \
+                and isinstance(pair[1], str) and pair[1]:
+            names.add(pair[1])
+    return frozenset(names)
+
+
+def _learned_cleanup_names(
+    domain_model: dict[str, Any] | None,
+) -> frozenset[str]:
+    """Release verbs from study-learned ``paired_operations`` (the
+    ``consistency_dimensions.learned_cleanup_pairs`` precedent).
+    ``llm_prior`` provenance excluded (anti-laundering rule)."""
+    names: set[str] = set()
+    for entry in (domain_model or {}).get("paired_operations") or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("provenance") or "") == "llm_prior":
+            continue
+        release = str(entry.get("release") or "").split("(")[0].strip()
+        if release:
+            names.add(release)
+    return frozenset(names)
+
+
+def _cleanup_call_re(
+    domain_model: dict[str, Any] | None = None,
+    target_path: Path | None = None,
+) -> re.Pattern[str]:
+    """Cleanup-call matcher over the merged vocabulary
+    (seeds + pack + learned)."""
+    names = set(_SEED_CLEANUP_NAMES)
+    names |= _pack_cleanup_names(target_path)
+    names |= _learned_cleanup_names(domain_model)
+    alt = "|".join(
+        re.escape(n) for n in sorted(names, key=len, reverse=True)
+    )
+    return re.compile(rf"\b({alt})\s*\(", re.I)
+
+
+# Seed-only matcher for vocabulary-less callers.
+_CLEANUP_CALLS = _cleanup_call_re()
 
 _RETURN_RE = re.compile(r"\breturn\b")
 
@@ -63,12 +135,18 @@ def analyse_intra_function(
     source: str,
     *,
     min_branches: int = 3,
+    domain_model: dict[str, Any] | None = None,
+    target_path: Path | None = None,
 ) -> List[IntraFunctionAsymmetry]:
     """Run all intra-function comparisons on a function's source.
 
     Args:
         source: The function's source code.
         min_branches: Minimum branch/return paths to analyse.
+        domain_model: Study-learned vocabulary source (paired_operations
+            release verbs extend the cleanup matcher).
+        target_path: Enables the kernel vocab pack when the target is a
+            kernel tree.
 
     Returns:
         List of asymmetries found. Empty if the function is too simple
@@ -79,7 +157,10 @@ def analyse_intra_function(
 
     results: list[IntraFunctionAsymmetry] = []
 
-    cleanup = check_cleanup_consistency(source, min_paths=max(2, min_branches - 1))
+    cleanup = check_cleanup_consistency(
+        source, min_paths=max(2, min_branches - 1),
+        domain_model=domain_model, target_path=target_path,
+    )
     if cleanup:
         results.extend(cleanup)
 
@@ -94,6 +175,8 @@ def check_cleanup_consistency(
     source: str,
     *,
     min_paths: int = 2,
+    domain_model: dict[str, Any] | None = None,
+    target_path: Path | None = None,
 ) -> List[IntraFunctionAsymmetry]:
     """Compare cleanup calls across return paths.
 
@@ -106,12 +189,17 @@ def check_cleanup_consistency(
     if len(lines) < 4:
         return []
 
+    cleanup_re = (
+        _cleanup_call_re(domain_model, target_path)
+        if (domain_model or target_path) else _CLEANUP_CALLS
+    )
+
     segments: list[tuple[int, set[str]]] = []
     current_cleanups: set[str] = set()
     segment_start = 1
 
     for i, line in enumerate(lines, 1):
-        for m in _CLEANUP_CALLS.finditer(line):
+        for m in cleanup_re.finditer(line):
             current_cleanups.add(m.group(1).lower())
         if _RETURN_RE.search(line):
             segments.append((segment_start, frozenset(current_cleanups)))

@@ -241,3 +241,57 @@ class TestPrepassWiring:
             and ld["rule_id"] == "consistency:clone-drift-majority"
         ]
         assert generic_leads
+
+
+class TestGrammarAbsentDegradation:
+    """Grammar-absent must be a LOUD degraded signal, not a silent
+    zero-deviation result — the fix-anchored leg is promote-capable
+    and used to drop every fix anchor unchecked."""
+
+    @staticmethod
+    def _block_grammar(monkeypatch):
+        import core.audit.consistency_dimensions as cd
+        monkeypatch.setattr(cd, "_TS_AVAILABLE", False)
+
+    def test_fix_anchored_leg_signals_degraded(
+        self, monkeypatch, caplog,
+    ):
+        from core.audit.clone_drift import fix_anchored_drift
+
+        self._block_grammar(monkeypatch)
+        telemetry: dict = {}
+        with caplog.at_level("WARNING", logger="core.audit.clone_drift"):
+            out = fix_anchored_drift(
+                [_anchor()], {"src/frm.c": _DRIFTED},
+                telemetry=telemetry,
+            )
+        assert out == []
+        assert telemetry.get("degraded", 0) == 1
+        assert any("fix-anchored" in r
+                   for r in telemetry.get("degraded_reasons", []))
+        assert any("dropped unchecked" in rec.getMessage()
+                   for rec in caplog.records)
+
+    def test_winnowing_leg_signals_degraded(self, monkeypatch, caplog):
+        from core.audit.clone_drift import detect_clone_drift
+
+        self._block_grammar(monkeypatch)
+        telemetry: dict = {}
+        with caplog.at_level("WARNING", logger="core.audit.clone_drift"):
+            out = detect_clone_drift(
+                {"src/frm.c": _DRIFTED}, telemetry=telemetry,
+            )
+        assert out == []
+        assert telemetry.get("degraded", 0) == 1
+
+    def test_no_signal_when_nothing_to_check(self, monkeypatch, caplog):
+        from core.audit.clone_drift import (
+            detect_clone_drift,
+            fix_anchored_drift,
+        )
+
+        self._block_grammar(monkeypatch)
+        telemetry: dict = {}
+        assert fix_anchored_drift([], {}, telemetry=telemetry) == []
+        assert detect_clone_drift({}, telemetry=telemetry) == []
+        assert "degraded" not in telemetry

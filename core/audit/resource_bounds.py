@@ -396,11 +396,18 @@ def _call_re(names: tuple[str, ...] | frozenset[str]) -> re.Pattern:
 # Two tiers: strong verbs (insert/enqueue) bind on the verb alone;
 # weak verbs (add/push/append) bind only when the identifier also
 # names a collection — ``BN_add``-style arithmetic must not bind.
+# The collection noun must be a whole snake_case segment: pre-fix the
+# ``\w*`` wrappers matched SUBSTRINGS, so ``string_append`` bound via
+# "ring", ``task_add``/``mask_add`` via "sk" and ``offset_add`` via
+# "set" — exactly the arithmetic/bookkeeping class the weak-verb tier
+# exists to exclude. Segment atoms are ``[A-Za-z0-9]+`` (no ``_``), so
+# the quantifiers cannot backtrack across segment boundaries.
 _STEM_INSERT_RE = re.compile(
     r"\b("
     r"\w+_(?:insert|enqueue)(?:_\w+)?"
-    r"|\w*(?:list|queue|stack|ring|table|hash|set|vec|array|buf|heap|sk)"
-    r"\w*_(?:add|push|append)(?:_\w+)?"
+    r"|(?:[A-Za-z0-9]+_)*"
+    r"(?:list|queue|stack|ring|table|hash|set|vec|array|buf|heap|sk)"
+    r"(?:_[A-Za-z0-9]+)*?_(?:add|push|append)(?:_\w+)?"
     r")\s*\(",
 )
 
@@ -1216,9 +1223,17 @@ def run_resource_bounds_prepass(
         sites = _enumerate_sites(
             segment_lines, start, insert_vocab, alloc_vocab,
         )
+        # Language from the file's extension, not a hardcoded "c":
+        # _SOURCE_SUFFIXES admits C++ files, and the C guard walk on
+        # a .cpp file used to fail into census-degraded inconclusive.
+        try:
+            from .fail_open_lang import language_for_path
+            lang = language_for_path(fp) or "c"
+        except Exception:
+            lang = "c"
         for site in sites[:2]:
             res = _adjudicate_site(
-                site, source, fp, name, "c",
+                site, source, fp, name, lang,
                 segment_lines=segment_lines,
                 span_start=start,
                 source_texts=source_texts,

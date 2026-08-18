@@ -1770,7 +1770,12 @@ def review_one_function(
             analyse_intra_function,
             format_intra_function_context,
         )
-        _ifsa = analyse_intra_function(ctx.get("source", ""))
+        _ifsa = analyse_intra_function(
+            ctx.get("source", ""),
+            domain_model=domain_model,
+            target_path=Path(config.target_path)
+            if getattr(config, "target_path", None) else None,
+        )
         _ifsa_ctx = format_intra_function_context(_ifsa)
         if _ifsa_ctx:
             ctx["intra_function_analysis"] = _ifsa_ctx

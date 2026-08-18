@@ -741,6 +741,18 @@ class TestVerdictsC:
         assert res.fallible is not None
         assert res.sites and res.sites[0].verdict == "unguarded"
 
+    def test_span_failure_refuses_whole_file_scan_c(self, tmp_path):
+        """Pre-fix the C leg fell back to scanning the whole file when
+        the function span could not be resolved — an unguarded setuid
+        in handler_main would "confirm" a hypothesis naming a function
+        that is not even in the file."""
+        _write(tmp_path, "src/priv.c", self.SETUID_VULN)
+        res = run_fail_open_check(
+            tmp_path, "src/priv.c", "ghost_function", self.HYP_SETUID,
+        )
+        assert res.outcome == "inconclusive"
+        assert "span-unresolved" in res.reason
+
     def test_checked_privilege_drop_refutes(self, tmp_path):
         _write(tmp_path, "src/priv.c", self.SETUID_SAFE)
         res = run_fail_open_check(
@@ -1467,6 +1479,18 @@ class TestVerdictsGo:
         )
         assert res.outcome == "inconclusive"
         assert REASON_LANGUAGE_UNSUPPORTED in res.reason
+
+    def test_span_failure_refuses_whole_file_scan_go(self, tmp_path):
+        """A function whose span cannot be resolved must yield
+        span-unresolved — pre-fix the segment fell back to the WHOLE
+        file, so a discarded error in a different function could
+        confirm a hypothesis about this one."""
+        _write(tmp_path, "src/mw.go", self.MW_VULN)
+        res = run_fail_open_check(
+            tmp_path, "src/mw.go", "ghostFunction", self.HYP_MW,
+        )
+        assert res.outcome == "inconclusive"
+        assert "span-unresolved" in res.reason
 
     def test_recover_hypothesis_routes_cwe_703(self):
         from core.audit.cwe_dispatch import infer_cwe_from_hypothesis

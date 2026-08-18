@@ -832,6 +832,7 @@ def run_consistency_prepass(
             from .clone_drift import fix_anchored_drift, load_fix_anchors
             anchored = fix_anchored_drift(
                 load_fix_anchors(out_dir), source_texts,
+                telemetry=counts,
             )
         except Exception:
             logger.debug("consistency prepass: fix-anchored clone "
@@ -900,7 +901,7 @@ def run_consistency_prepass(
         # Generic winnowing leg (detection-grade).
         try:
             from .clone_drift import detect_clone_drift
-            generic = detect_clone_drift(source_texts)
+            generic = detect_clone_drift(source_texts, telemetry=counts)
         except Exception:
             logger.debug("consistency prepass: clone winnowing "
                          "failed", exc_info=True)

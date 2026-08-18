@@ -247,3 +247,55 @@ class TestFormatContext:
         assert result is not None
         assert "[cleanup]" in result
         assert "kfree" in result
+
+
+class TestCleanupVocabulary:
+    """Seed-capped cleanup vocabulary with pack + study hooks (the
+    resource_bounds channel-local pattern): the kernel bulk lives in
+    the linux_kernel vocab pack, project verbs arrive via
+    study-learned paired_operations release verbs."""
+
+    def test_seed_set_capped(self):
+        from core.audit.intra_function import _SEED_CLEANUP_NAMES
+        assert len(_SEED_CLEANUP_NAMES) <= 9
+
+    def test_learned_release_verb_extends_matcher(self):
+        from core.audit.intra_function import check_cleanup_consistency
+
+        src = (
+            "int handle(struct conn *c) {\n"
+            "    if (setup(c) < 0) { conn_teardown(c); return -1; }\n"
+            "    if (bind(c) < 0) { conn_teardown(c); return -1; }\n"
+            "    if (send(c) < 0) { return -1; }\n"
+            "    conn_teardown(c);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        dm = {"paired_operations": [{
+            "acquire": "conn_setup", "release": "conn_teardown",
+            "provenance": "verbatim",
+        }]}
+        # Without vocabulary: conn_teardown is unknown, no asymmetry.
+        assert check_cleanup_consistency(src) == []
+        # With the learned release verb the missing-cleanup path fires.
+        res = check_cleanup_consistency(src, domain_model=dm)
+        assert res and res[0].kind == "cleanup"
+        assert "conn_teardown" in res[0].description
+
+    def test_llm_prior_provenance_excluded(self):
+        from core.audit.intra_function import _learned_cleanup_names
+        dm = {"paired_operations": [
+            {"acquire": "a", "release": "hallucinated_free",
+             "provenance": "llm_prior"},
+            {"acquire": "b", "release": "real_free",
+             "provenance": "verbatim"},
+        ]}
+        names = _learned_cleanup_names(dm)
+        assert "real_free" in names
+        assert "hallucinated_free" not in names
+
+    def test_pack_names_gated_on_kernel_tree(self, tmp_path):
+        from core.audit.intra_function import _pack_cleanup_names
+        # A plain tmp dir is not a kernel tree — pack stays off.
+        assert _pack_cleanup_names(tmp_path) == frozenset()
+        assert _pack_cleanup_names(None) == frozenset()

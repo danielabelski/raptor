@@ -4,6 +4,7 @@ import json
 import logging
 
 from core.evidence import EvidenceTier
+from core.llm.client import LLMBudgetExceededError
 from core.iris.assumptions import (
     AssumptionCategory,
     BypassFinding,
@@ -503,3 +504,132 @@ class TestSynthesiseAssumptions:
         result = synthesise_assumptions(specs, mock_llm, bypass_findings=[bf])
         assert len(result) == 1
         assert "bypass" in prompts[0].lower()
+
+
+def _budget_warnings(caplog):
+    return [
+        r for r in caplog.records
+        if "budget exhausted, dropping remaining" in r.getMessage()
+    ]
+
+
+class TestBudgetTerminal:
+    """Budget exhaustion is terminal for the batch loop.
+
+    ``LLMBudgetExceededError`` on any batch must stop the loop from
+    submitting the remaining batches (one warning, not one per batch).
+    Other LLM errors keep per-batch drop semantics.
+    """
+
+    def test_budget_error_stops_spec_batches(self, caplog):
+        calls = []
+
+        def budget_llm(system, user):
+            calls.append(user)
+            if len(calls) >= 2:
+                raise LLMBudgetExceededError(
+                    "LLM budget exceeded: $10.0000 spent"
+                )
+            return "[]"
+
+        cands = [_cand(fn=f"fn_{i}") for i in range(5)]
+        with caplog.at_level(
+            logging.WARNING, logger="core.iris.synthesise",
+        ):
+            specs = synthesise_specs(cands, budget_llm, max_batch=1)
+
+        # Batch 2 discovered exhaustion; batches 3-5 never called the LLM.
+        assert len(calls) == 2
+        # Dropped batches degrade to the heuristic fallback, same as
+        # any other failed batch (fn_1 from the discovering batch +
+        # fn_2..fn_4 from the skipped ones).
+        assert len(specs) == 4
+        assert all(s.source == "heuristic" for s in specs)
+        warnings = _budget_warnings(caplog)
+        assert len(warnings) == 1
+        assert "3 batch(es)" in warnings[0].getMessage()
+
+    def test_budget_error_stops_assumption_batches(self, caplog):
+        calls = []
+
+        def budget_llm(system, user):
+            calls.append(user)
+            raise LLMBudgetExceededError("LLM budget exceeded: cap hit")
+
+        # 21 sink specs -> two batches (_MAX_BATCH = 20).
+        specs = [_spec(fn=f"sink_{i:02d}") for i in range(21)]
+        with caplog.at_level(
+            logging.WARNING, logger="core.iris.synthesise",
+        ):
+            result = synthesise_assumptions(specs, budget_llm)
+
+        assert len(calls) == 1
+        assert result == []
+        warnings = _budget_warnings(caplog)
+        assert len(warnings) == 1
+        assert "1 batch(es)" in warnings[0].getMessage()
+
+    def test_transient_spec_errors_stay_per_batch(self, caplog):
+        calls = []
+
+        def flaky_llm(system, user):
+            calls.append(user)
+            raise RuntimeError("API error")
+
+        cands = [_cand(fn=f"fn_{i}") for i in range(3)]
+        with caplog.at_level(
+            logging.WARNING, logger="core.iris.synthesise",
+        ):
+            specs = synthesise_specs(cands, flaky_llm, max_batch=1)
+
+        # Every batch was attempted — transient errors don't stop the loop.
+        assert len(calls) == 3
+        assert len(specs) == 3
+        assert all(s.source == "heuristic" for s in specs)
+        assert not _budget_warnings(caplog)
+
+    def test_transient_assumption_errors_stay_per_batch(self, caplog):
+        calls = []
+
+        def flaky_llm(system, user):
+            calls.append(user)
+            raise RuntimeError("API error")
+
+        specs = [_spec(fn=f"sink_{i:02d}") for i in range(21)]
+        with caplog.at_level(
+            logging.WARNING, logger="core.iris.synthesise",
+        ):
+            result = synthesise_assumptions(specs, flaky_llm)
+
+        assert len(calls) == 2
+        assert result == []
+        assert not _budget_warnings(caplog)
+
+    def test_pre_exhausted_client_probe_skips_all_batches(self, caplog):
+        class ExhaustedClient:
+            calls = 0
+
+            def is_budget_exhausted(self, estimated_cost: float = 0.1):
+                return True
+
+            def chat(self, system, user):
+                ExhaustedClient.calls += 1
+                return "[]"
+
+        cands = [_cand(fn=f"fn_{i}") for i in range(3)]
+        with caplog.at_level(
+            logging.WARNING, logger="core.iris.synthesise",
+        ):
+            specs = synthesise_specs(
+                cands, ExhaustedClient(), max_batch=1,
+            )
+
+        # The quiet probe stops the loop before the first LLM call —
+        # a budget spent by earlier pipeline stages never gets
+        # re-discovered batch by batch.
+        assert ExhaustedClient.calls == 0
+        assert len(specs) == 3
+        assert all(s.source == "heuristic" for s in specs)
+        warnings = _budget_warnings(caplog)
+        assert len(warnings) == 1
+        assert "3 batch(es)" in warnings[0].getMessage()

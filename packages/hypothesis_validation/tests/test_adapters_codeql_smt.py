@@ -7,6 +7,7 @@ the real path catches integration issues mocks would mask.
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -198,6 +199,81 @@ class TestCodeQLAdapterRun:
         )):
             ev = a.run("import cpp\nselect 1\n", tmp_path)
         assert not ev.success
+
+
+class TestCodeQLBatchPreconditionMessages:
+    """run_prebuilt_queries_batch emits the same three distinct
+    precondition messages as run() / run_prebuilt_query instead of one
+    generic "codeql/database unavailable" string."""
+
+    def test_no_cli_message_matches_siblings(self, tmp_path):
+        db = tmp_path / "db"
+        db.mkdir()
+        with patch("shutil.which", return_value=None):
+            a = CodeQLAdapter(database_path=db)
+        results = a.run_prebuilt_queries_batch([Path("/pack/q.ql")])
+        assert set(results) == {"/pack/q.ql"}
+        ev = results["/pack/q.ql"]
+        assert not ev.success
+        assert ev.error == "codeql CLI is not installed"
+
+    def test_no_database_configured_message_matches_siblings(self):
+        a = CodeQLAdapter(codeql_bin="/usr/bin/codeql")
+        results = a.run_prebuilt_queries_batch([Path("/pack/q.ql")])
+        ev = results["/pack/q.ql"]
+        assert not ev.success
+        assert ev.error == "no CodeQL database configured (set_database() first)"
+
+    def test_database_missing_message_matches_siblings(self, tmp_path):
+        missing = tmp_path / "nonexistent-db"
+        a = CodeQLAdapter(database_path=missing, codeql_bin="/usr/bin/codeql")
+        results = a.run_prebuilt_queries_batch([Path("/pack/q.ql")])
+        ev = results["/pack/q.ql"]
+        assert not ev.success
+        assert ev.error == f"CodeQL database not found: {missing}"
+
+    def test_generic_message_no_longer_used(self, tmp_path):
+        a = CodeQLAdapter(
+            database_path=tmp_path / "nope", codeql_bin="/usr/bin/codeql",
+        )
+        results = a.run_prebuilt_queries_batch([Path("/pack/q.ql")])
+        assert "codeql/database unavailable" not in results["/pack/q.ql"].error
+
+    def test_empty_batch_returns_empty_dict(self, tmp_path):
+        a = CodeQLAdapter(
+            database_path=tmp_path / "nope", codeql_bin="/usr/bin/codeql",
+        )
+        assert a.run_prebuilt_queries_batch([]) == {}
+
+
+class TestRunInlinePackInstallLogging:
+    def test_pack_install_failure_logs_warning(self, tmp_path, caplog):
+        """A failing inline `codeql pack install` in run() must emit a
+        warning (matching the _ensure_pack_installed contract) instead
+        of silently swallowing the exception."""
+        db = tmp_path / "db"
+        db.mkdir()
+        a = CodeQLAdapter(
+            database_path=db,
+            codeql_bin=str(tmp_path / "no-such-codeql"),
+            sandbox=False,
+        )
+        with caplog.at_level(
+            logging.WARNING,
+            logger="packages.hypothesis_validation.adapters.codeql",
+        ):
+            ev = a.run(
+                "import cpp\nfrom Function f select f",
+                target=db,
+                env={"PATH": "/usr/bin"},
+            )
+        # The analyze step still fails loudly on its own.
+        assert not ev.success
+        assert "failed to invoke codeql" in ev.error
+        # And the install failure is now observable in the log.
+        assert any(
+            "codeql pack install" in rec.getMessage() for rec in caplog.records
+        )
 
 
 class TestQlPackYaml:

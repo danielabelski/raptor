@@ -17,7 +17,6 @@ the hypothesis. IRIS achieved 2x CodeQL's recall (55 vs 27 CVEs) using
 this pattern.
 """
 
-import contextlib
 import json
 import logging
 import shutil
@@ -338,8 +337,17 @@ class CodeQLAdapter(ToolAdapter):
 
         unique_paths = list(dict.fromkeys(str(p) for p in query_paths))
 
-        if not self._codeql_bin or not self._database_path or not self._database_path.exists():
-            err = "codeql/database unavailable"
+        # Same three precondition diagnostics as run() / run_prebuilt_query
+        # so batch failures are equally actionable.
+        if not self._codeql_bin:
+            err = "codeql CLI is not installed"
+        elif not self._database_path:
+            err = "no CodeQL database configured (set_database() first)"
+        elif not self._database_path.exists():
+            err = f"CodeQL database not found: {self._database_path}"
+        else:
+            err = ""
+        if err:
             return {
                 qp: ToolEvidence(tool=self.name, rule=qp, success=False, error=err)
                 for qp in unique_paths
@@ -548,15 +556,21 @@ class CodeQLAdapter(ToolAdapter):
                 # Cached after first run so subsequent invocations are
                 # fast. Failure here doesn't abort — the query may not
                 # need any external imports: exec/timeout failures are
-                # tolerated (the analyze step below fails loudly with
-                # the same runner if the environment is truly broken).
+                # tolerated but logged, matching _ensure_pack_installed
+                # (the analyze step below fails loudly with the same
+                # runner if the environment is truly broken).
                 # SandboxSetupError is a BaseException and passes
                 # through regardless.
-                with contextlib.suppress(OSError, subprocess.SubprocessError):
+                try:
                     runner(
                         [self._codeql_bin, "pack", "install", str(pack_dir)],
                         capture_output=True, text=True,
                         timeout=120, env=env,
+                    )
+                except (OSError, subprocess.SubprocessError) as e:
+                    logger.warning(
+                        "codeql pack install on %s failed: %s — analyze may fail with a clearer error",
+                        pack_dir, e,
                     )
 
                 sarif_path = Path(tmp) / "result.sarif"
@@ -638,7 +652,7 @@ def _qlpack_yaml(rule: str) -> str:
     return (
         "name: raptor/hv-pack\n"
         "version: 0.0.0\n"
-        f"library: false\n"
+        "library: false\n"
         "dependencies:\n"
         f"  codeql/{lang}-all: \"*\"\n"
     )

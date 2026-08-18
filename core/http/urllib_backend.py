@@ -414,20 +414,25 @@ class UrllibClient:
         # no_proxy can never bypass the chokepoint.
         if _http is not None:
             self._http = _http
-            self._proxy_pools: dict[str, urllib3.ProxyManager] = {}
+            self._proxy_map: dict[str, str] = {}
             self._no_proxy: tuple[str, ...] = ()
         else:
             self._http = _new_pool_manager()
-            proxy_map, no_proxy = _env_proxy_settings()
-            # One ProxyManager per distinct proxy URL (http and https
-            # usually share one) — schemes map onto the shared pool.
-            by_url: dict[str, urllib3.ProxyManager] = {}
-            self._proxy_pools = {}
-            for scheme, purl in proxy_map.items():
-                if purl not in by_url:
-                    by_url[purl] = _new_proxy_manager(purl)
-                self._proxy_pools[scheme] = by_url[purl]
-            self._no_proxy = no_proxy
+            # Proxy env is SNAPSHOTTED here but the ProxyManagers are
+            # built lazily on first proxied request. Eager
+            # construction meant a malformed proxy env (schemeless
+            # ``proxy:3128``, unsupported ``socks5://``) raised
+            # ProxySchemeUnknown out of EVERY UrllibClient(),
+            # including loopback/no_proxy-only uses that never touch
+            # the proxy.
+            self._proxy_map, self._no_proxy = _env_proxy_settings()
+        # One ProxyManager per distinct proxy URL (http and https
+        # usually share one) — schemes map onto the shared pool.
+        # Built on demand by _pool_for; a construction failure is
+        # cached so every proxied request gets the same clear error
+        # without re-raising from an unrelated code path.
+        self._proxy_pools: dict[str, urllib3.ProxyManager] = {}
+        self._proxy_pool_errors: dict[str, str] = {}
         # Per-host rate-limit circuit breaker. Defaults to a module-
         # level singleton so state persists ACROSS HttpClient
         # instances within one process — important for sweep-style
@@ -462,16 +467,48 @@ class UrllibClient:
         """Pick the pool for ``url``: the operator-proxy pool when one
         was detected at construction and the host isn't no_proxy'd,
         else the direct pool (which is also the injected pool for
-        EgressClient — see ``__init__``)."""
-        if not self._proxy_pools:
+        EgressClient — see ``__init__``).
+
+        Proxy pools are constructed lazily HERE, so a malformed proxy
+        env only fails the requests that would actually use the proxy
+        — with a clear :class:`HttpError` naming the bad value —
+        while direct/no_proxy traffic is unaffected.
+        """
+        if not self._proxy_map:
             return self._http
         parsed = _urlparse.urlsplit(url)
-        pool = self._proxy_pools.get(parsed.scheme)
-        if pool is None:
+        purl = self._proxy_map.get(parsed.scheme)
+        if purl is None:
             return self._http
         host = (parsed.hostname or "").lower()
         if host and _host_in_no_proxy(host, self._no_proxy):
             return self._http
+        pool = self._proxy_pools.get(parsed.scheme)
+        if pool is not None:
+            return pool
+        prior_error = self._proxy_pool_errors.get(purl)
+        if prior_error is not None:
+            raise HttpError(prior_error)
+        try:
+            # Share one manager across schemes pointing at the same
+            # proxy URL.
+            shared = next(
+                (p for s, p in self._proxy_pools.items()
+                 if self._proxy_map.get(s) == purl),
+                None,
+            )
+            pool = shared if shared is not None else _new_proxy_manager(purl)
+        except Exception as exc:  # noqa: BLE001 — urllib3 raises several types
+            from core.security.redaction import redact_secrets
+            msg = (
+                f"invalid proxy configuration for scheme "
+                f"{parsed.scheme!r}: {redact_secrets(str(exc))} — fix "
+                f"the https_proxy/http_proxy/all_proxy value (must be "
+                f"an http(s):// URL) or add the host to no_proxy"
+            )
+            self._proxy_pool_errors[purl] = msg
+            raise HttpError(msg) from exc
+        self._proxy_pools[parsed.scheme] = pool
         return pool
 
     def _validate_url(self, url: str) -> _urlparse.SplitResult:

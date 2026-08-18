@@ -1365,6 +1365,61 @@ class TestOperatorProxyEnv:
         client = UrllibClient(_http=injected)
         assert client._pool_for("https://api.osv.dev/v1") is injected
 
+    def test_malformed_proxy_env_does_not_break_construction(
+        self, monkeypatch,
+    ):
+        """A schemeless or socks proxy value must not raise from
+        UrllibClient() — loopback/no_proxy-only uses never touch the
+        proxy and must keep working (regression: eager ProxyManager
+        construction raised ProxySchemeUnknown from every client)."""
+        from core.http.urllib_backend import UrllibClient
+        monkeypatch.setenv("https_proxy", "proxy.corp:3128")  # schemeless
+        monkeypatch.setenv("http_proxy", "socks5://proxy.corp:1080")
+        monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+        client = UrllibClient()  # must not raise
+        # no_proxy'd hosts route direct, untouched by the bad value.
+        assert client._pool_for("http://127.0.0.1:8080/x") is client._http
+        assert client._pool_for("https://localhost/x") is client._http
+
+    def test_malformed_proxy_env_fails_proxied_request_clearly(
+        self, monkeypatch,
+    ):
+        from core.http import HttpError
+        from core.http.urllib_backend import UrllibClient
+        monkeypatch.setenv("https_proxy", "socks5://proxy.corp:1080")
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        client = UrllibClient()
+        with pytest.raises(HttpError, match="invalid proxy configuration"):
+            client._pool_for("https://api.osv.dev/v1")
+        # Cached: the second attempt fails identically, not from a
+        # fresh construction path.
+        with pytest.raises(HttpError, match="invalid proxy configuration"):
+            client._pool_for("https://api.osv.dev/v1")
+
+    def test_proxy_error_message_redacts_credentials(self, monkeypatch):
+        from core.http import HttpError
+        from core.http.urllib_backend import UrllibClient
+        monkeypatch.setenv(
+            "https_proxy", "socks5://user:hunter2secret@proxy.corp:1080")
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        client = UrllibClient()
+        with pytest.raises(HttpError) as exc_info:
+            client._pool_for("https://api.osv.dev/v1")
+        assert "hunter2secret" not in str(exc_info.value)
+
+    def test_proxy_manager_construction_is_lazy(self, monkeypatch):
+        """No ProxyManager exists until a proxied request needs one."""
+        from core.http.urllib_backend import UrllibClient
+        monkeypatch.setenv("https_proxy", "http://proxy.corp:3128")
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        client = UrllibClient()
+        assert client._proxy_pools == {}
+        client._pool_for("https://api.osv.dev/v1")
+        assert "https" in client._proxy_pools
+
     def test_proxy_url_basic_auth_extracted(self, monkeypatch):
         from core.http.urllib_backend import _new_proxy_manager
         pm = _new_proxy_manager("http://user:secret@proxy.corp:3128")

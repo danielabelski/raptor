@@ -526,6 +526,18 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # Incomplete internal state distinction — the protocol_state
+    # channel (census-driven invariant harness + lead legs,
+    # protocol_state.PROTOCOL_STATE_CWES) is the verifier. The
+    # dead-state lead carries CWE-563 in its lead dict only (leads
+    # are not hypotheses — no dispatch key).
+    "CWE-372": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
 }
 
 

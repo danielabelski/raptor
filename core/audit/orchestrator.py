@@ -500,6 +500,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "consistency": TierCounters(),
         "resource_bounds": TierCounters(),
         "release_order": TierCounters(),
+        "protocol_state": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "adversarial_refute": TierCounters(),
@@ -3698,6 +3699,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     _channel_prepasses: list[tuple[str, str]] = [
         ("resource_bounds", "run_resource_bounds_prepass"),
         ("release_order", "run_release_order_prepass"),
+        ("protocol_state", "run_protocol_state_prepass"),
     ]
     for _ch_name, _ch_fn in _channel_prepasses:
         try:
@@ -12014,6 +12016,37 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "release_order", "config": {}})
                 seen_types.add("release_order")
 
+    # Protocol-state hypotheses ("the peer can acknowledge packets
+    # never sent"; state-field invariants): the protocol_state channel
+    # runs legs 1+2 receipts and the census-driven multi-site
+    # invariant harness. Ordered BEFORE smt_invariant deliberately —
+    # a state-field invariant routes to the multi-site harness, not
+    # the single-function one (the §4.5 precedence rule, encoded by
+    # claiming the smt_invariant slot); plain local invariants
+    # (obuf_len <= obuf_size) do not classify here and keep routing
+    # to smt_invariant below.
+    if "protocol_state" not in seen_types:
+        try:
+            from .protocol_state import (
+                classify_protocol_state_hypothesis,
+            )
+        except ImportError:
+            pass
+        else:
+            _ps_fires, _ps_inv = classify_protocol_state_hypothesis(
+                hypothesis,
+            )
+            if _ps_fires:
+                _ps_cfg: dict[str, Any] = {}
+                if _ps_inv:
+                    _ps_cfg["invariant"] = _ps_inv
+                chain.append({
+                    "type": "protocol_state", "config": _ps_cfg,
+                })
+                seen_types.add("protocol_state")
+                if _ps_inv:
+                    seen_types.add("smt_invariant")
+
     # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
     # the preservation harness checks the stated invariant against the
     # function's mutation sites — the channel gap that left every
@@ -12322,6 +12355,17 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         # additively): the dominance comparator is the verifier.
         if release_order_applicable(cwe):
             chain.append({"type": "release_order", "config": {}})
+
+    try:
+        from .protocol_state import protocol_state_applicable
+    except ImportError:
+        pass
+    else:
+        # Incomplete-internal-state family (PROTOCOL_STATE_CWES —
+        # CWE-372): the census-driven invariant harness plus the
+        # legs-1+2 receipts are the verifier.
+        if protocol_state_applicable(cwe):
+            chain.append({"type": "protocol_state", "config": {}})
 
     smt_verb = smt_verb_for_cwe(cwe)
     if smt_verb:
@@ -13112,6 +13156,73 @@ def _run_tool_chain(
                     if tier_counters:
                         _increment_tier_dict(
                             tier_counters, "release_order",
+                            "inconclusive",
+                        )
+
+            elif tool_type == "protocol_state":
+                from .fail_open_roles import RoleContext as _PsRoleCtx
+                from .protocol_state import run_protocol_state_check
+
+                ps_dm = None
+                with contextlib.suppress(Exception):
+                    from .journal import load_domain_model as _ps_ldm
+                    ps_dm = _ps_ldm(config.out_dir) \
+                        if config.out_dir else None
+                ps_ctx = _PsRoleCtx(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                    context_map=getattr(config, "context_map", None),
+                )
+                ps_res = run_protocol_state_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    context=ps_ctx,
+                    domain_model=ps_dm,
+                    invariant=tool_cfg.get("invariant") or None,
+                )
+                ps_res.corroboration.extend(
+                    c for c in confirmed
+                    if not c.startswith("protocol_state")
+                )
+                _record_channel_receipt(
+                    config, "protocol_state_check", file_path,
+                    function_name, ps_res,
+                )
+                if ps_res.outcome == "confirmed":
+                    confirmed.append(ps_res.rule_id)
+                    logger.info(
+                        "protocol-state confirmed %s:%s — %s",
+                        file_path, function_name, ps_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "protocol_state",
+                            "confirmed",
+                        )
+                elif ps_res.outcome == "refuted":
+                    logger.info(
+                        "protocol-state refuted %s:%s — %s",
+                        file_path, function_name, ps_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "protocol_state",
+                            "refuted",
+                        )
+                else:
+                    logger.info(
+                        "protocol-state inconclusive %s:%s — %s",
+                        file_path, function_name, ps_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "protocol_state",
                             "inconclusive",
                         )
 
@@ -16430,6 +16541,15 @@ def _is_detection_only(tool_id: str) -> bool:
         from core.audit.release_order import is_detection_rule_id
         return is_detection_rule_id(tool_id)
 
+    if tool_id.startswith("protocol_state:"):
+        # The two lead rule-ids (dead-state-field /
+        # unvalidated-peer-write) are PERMANENTLY detection-grade, and
+        # -unreceipted invariant confirmations carry an uncorroborated
+        # premise — none may promote alone. Only the study-receipted
+        # invariant-violated rule promotes directly.
+        from core.audit.protocol_state import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
+
     return False
 
 
@@ -16461,7 +16581,7 @@ def _source_has_arithmetic(source: str) -> bool:
 _REFUTED_CHEAP_CHANNELS = frozenset({
     "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
     "fail_open", "consistency", "ptr_lifecycle", "lock_region",
-    "resource_bounds", "release_order",
+    "resource_bounds", "release_order", "protocol_state",
 })
 
 # Bound the extra tool work per function: at most this many hypotheses

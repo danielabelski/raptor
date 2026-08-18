@@ -136,7 +136,9 @@ Semgrep, Coccinelle, CodeQL, SMT, and compilation invocations run through
 automatically.  Joern, the compiler analyzers, the expanded-view Semgrep
 pass, the fail-open channel, the consistency channel, the API-boundary
 channel, the SMT invariant channel, the ptr-lifecycle and lock-region
-channels, and the git-history oracle run as orchestrator channels.
+channels, the resource-bounds channel, the release-order channel, the
+protocol-state channel, and the git-history oracle run as orchestrator
+channels.
 
 | Tool | What it validates | Example use |
 |------|-------------------|-------------|
@@ -156,6 +158,7 @@ channels, and the git-history oracle run as orchestrator channels.
 | **Lock-region channel** | Callback invoked while a lock is held (CWE-833/667): learned/pack/seed lock pairs x indirect-call or registered-name invocation, with the exported-setter registrability witness (`lock_region:callback-under-lock`; naming-stem pair or internal-only setter = `-naming`).  Confirmations cap at `suspicious` unless entry-reachable AND setter-exported (both escalators); a parametric Coccinelle rule (`callback_under_lock.cocci`, `-D lock -D unlock`) corroborates as an independent namespace | "`ctx->remove_cb(...)` fires inside the `CRYPTO_THREAD_write_lock` region and the setter is exported API" |
 | **Resource-bounds channel** | Unbounded-accumulation hypotheses (CWE-770/400/772): insert/alloc-in-loop site with no dominating bound witness (guard comparing a count against a constant/named limit/min-clamp), locally or in a depth-3 caller walk -- the receipt names how far the search went.  Registry vocabulary (learned `collection` pair / pack) AND entry-reachability = promote-capable `resource_bounds:unbounded-accumulation`; seed-only or unknown reachability = `-naming` detection variant | "Each accepted connection is appended to `incoming_channel_list`; no cap in the function or its callers" |
 | **Release-order channel** | Release-before-verify hypotheses (CWE-354/347, joining the CWE-345 chain; the EFAIL class): every release site handing data to an escaping destination (out-param/stream/callback) must be dominated by a condition consuming the integrity finalizer's status.  Fresh-call destinations refute as buffered-then-flush; unresolved aliases are `sink-alias-unresolved`; no finalizer vocabulary is `finalizer-unresolved` (unauthenticated pipelines are not claimed).  Optional Joern cross-check: agreement = `engine: cfg+joern`, disagreement = `engines-disagree`.  Learned `verify_release` pair = registry grade; seed-only = `-naming` | "The loop `BIO_write`s each decrypted chunk to `out`; `BIO_get_cipher_status` is consulted only at end-of-stream" |
+| **Protocol-state channel** | Protocol-invariant hypotheses (CWE-372; state-field invariants take precedence over the single-function SMT invariant channel and run census-driven multi-site with dominating guards encoded).  Promote-capable `protocol_state:invariant-violated` ONLY when the invariant premise is study-receipted (provenance != `llm_prior` + receipt) AND SMT finds a model at a peer-writable site -- the machine checks consequences, never the premise.  LLM-stated premises confirm under `-unreceipted`; the two lead legs (`dead-state-field`, `unvalidated-peer-write`) are permanently detection-grade and share the channel's single namespace (two of them never self-corroborate to promotion) | "`largest_acked_pkt` is set from the decoded ACK with no guard referencing `highest_sent` -- which is written twice and read never" |
 
 ### SMT verbs
 

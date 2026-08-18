@@ -782,3 +782,148 @@ class TestReleaseOrderWiring:
         assert confirmed == ["release_order:release-before-verify"]
         assert seen["joern_server"] is server
         assert counters["release_order"].confirmed == 1
+
+
+class TestProtocolStateWiring:
+    """Five-channel programme: protocol_state chain wiring, including
+    the smt_invariant precedence pair (§4.5/§9)."""
+
+    HYP_INV = (
+        "the protocol invariant largest_acked_pkt <= highest_sent can "
+        "be violated: the peer can acknowledge packets never sent"
+    )
+    HYP_PROSE = "the peer controls the congestion state counter"
+
+    def test_cwe_fallback_emits_channel(self):
+        assert "protocol_state" in _types(_cwe_fallback_chain("CWE-372"))
+
+    def test_state_invariant_precedence_over_smt_invariant(self):
+        chain = _hypothesis_to_tool_chain(self.HYP_INV, "src/a.c")
+        types = _types(chain)
+        assert "protocol_state" in types
+        # The census-driven harness claims the invariant slot — the
+        # single-function harness must NOT double-run.
+        assert "smt_invariant" not in types
+        entry = next(e for e in chain if e["type"] == "protocol_state")
+        assert entry["config"]["invariant"] == (
+            "largest_acked_pkt <= highest_sent"
+        )
+
+    def test_local_invariant_still_routes_to_smt_invariant(self):
+        # Regression guard for the landed channel: a plain local
+        # buffer invariant keeps the single-function harness.
+        chain = _hypothesis_to_tool_chain(
+            "the buffer maintains obuf_len <= obuf_size at all times",
+            "src/a.c",
+        )
+        types = _types(chain)
+        assert "smt_invariant" in types
+        assert "protocol_state" not in types
+
+    def test_prose_shape_emits_without_invariant_config(self):
+        chain = _hypothesis_to_tool_chain(self.HYP_PROSE, "src/a.c")
+        entry = next(e for e in chain if e["type"] == "protocol_state")
+        assert "invariant" not in entry["config"]
+
+    def test_cross_channel_negatives(self):
+        for hyp in (
+            "decrypted chunks are written before the MAC is verified",
+            "the session list grows without limit",
+        ):
+            chain = _hypothesis_to_tool_chain(hyp, "src/a.c")
+            assert "protocol_state" not in _types(chain), hyp
+
+    def test_tier_counter_and_cheap_lane(self):
+        assert "protocol_state" in orch._make_tier_counters()
+        assert "protocol_state" in orch._REFUTED_CHEAP_CHANNELS
+
+    def test_namespace_receipts_and_detection_grades(self):
+        from core.audit.evidence_grade import (
+            _RECEIPT_MAP,
+            is_tool_evidence,
+        )
+        from core.audit.orchestrator import _is_detection_only
+        assert is_tool_evidence("protocol_state:invariant-violated")
+        assert "protocol_state:invariant-violated" in _RECEIPT_MAP
+        assert "protocol_state" in _RECEIPT_MAP
+        for detection in (
+            "protocol_state:invariant-violated-unreceipted",
+            "protocol_state:dead-state-field",
+            "protocol_state:unvalidated-peer-write",
+        ):
+            assert not is_tool_evidence(detection), detection
+            assert _is_detection_only(detection), detection
+        assert not _is_detection_only(
+            "protocol_state:invariant-violated",
+        )
+
+    def test_lead_plus_lead_never_promotes(self):
+        # The §9 aggregation firewall: two protocol_state leads share
+        # ONE namespace.
+        channels, _mean = orch._aggregate_channel_confirmations([
+            "protocol_state:dead-state-field",
+            "protocol_state:unvalidated-peer-write",
+        ])
+        assert channels == []
+        # An independent namespace joining does aggregate.
+        channels, _mean = orch._aggregate_channel_confirmations([
+            "protocol_state:unvalidated-peer-write",
+            "joern:flow",
+        ])
+        assert channels == ["joern", "protocol_state"]
+
+    def test_detection_variant_solo_promotion_trips_alarm(self, tmp_path):
+        from types import SimpleNamespace
+
+        from core.audit.promotion_alarm import check_and_emit
+        for stamp in (
+            "protocol_state:invariant-violated-unreceipted",
+            "protocol_state:dead-state-field",
+            "protocol_state:unvalidated-peer-write",
+        ):
+            record = check_and_emit(
+                tmp_path,
+                SimpleNamespace(
+                    file="src/a.c", function="f", status="finding",
+                    evidence_tool=stamp,
+                    review_result=None, hypothesis=self.HYP_PROSE,
+                ),
+                stage="test",
+            )
+            assert record is not None, stamp
+
+    def test_run_tool_chain_dispatch_passes_invariant(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.protocol_state as ps
+
+        seen = {}
+
+        class _Res:
+            outcome = "confirmed"
+            reason = "r"
+            rule_id = "protocol_state:invariant-violated"
+            corroboration = []
+
+            def to_dict(self):
+                return {"outcome": self.outcome}
+
+        def _fake(*a, **kw):
+            seen.update(kw)
+            return _Res()
+
+        monkeypatch.setattr(ps, "run_protocol_state_check", _fake)
+        counters = {"protocol_state": TierCounters()}
+        confirmed = _run_tool_chain(
+            [{"type": "protocol_state",
+              "config": {"invariant": "a_acked <= b_sent"}}],
+            config=_Cfg(tmp_path),
+            file_path="src/a.c",
+            function_name="f",
+            source="",
+            hypothesis=self.HYP_INV,
+            tier_counters=counters,
+        )
+        assert confirmed == ["protocol_state:invariant-violated"]
+        assert seen["invariant"] == "a_acked <= b_sent"
+        assert counters["protocol_state"].confirmed == 1

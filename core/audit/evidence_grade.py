@@ -101,7 +101,7 @@ _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "prefilter", "critique", "sweep", "sarif_cache",
     "dynamic", "frida", "dark_verify", "precondition",
     "fail_open", "consistency", "ptr_lifecycle", "lock_region",
-    "resource_bounds", "release_order",
+    "resource_bounds", "release_order", "protocol_state",
 })
 
 
@@ -120,8 +120,17 @@ def _is_detection_variant(part: str) -> bool:
         return True
     if part.startswith("resource_bounds:") and part.endswith("-naming"):
         return True
-    return part.startswith("release_order:") and \
-        part.endswith("-naming")
+    if part.startswith("release_order:") and part.endswith("-naming"):
+        return True
+    # protocol_state: the -unreceipted invariant variant plus the two
+    # PERMANENTLY detection-grade lead rule-ids (CWE-563-adjacent /
+    # proxy-quality — design §4.3).
+    if part.startswith("protocol_state:"):
+        return part.endswith("-unreceipted") or part in (
+            "protocol_state:dead-state-field",
+            "protocol_state:unvalidated-peer-write",
+        )
+    return False
 
 
 def _is_single_tool_evidence(part: str) -> bool:
@@ -283,6 +292,24 @@ _RECEIPT_MAP: dict[str, tuple] = {
         (
             "release-before-verify ordering confirmed by the "
             "dominance comparator"
+        ),
+    ),
+    # Protocol-state channel receipts (the bare namespace covers the
+    # -unreceipted variant and the detection-grade lead rule-ids
+    # riding in aggregation composites).
+    "protocol_state:invariant-violated": (
+        EvidenceSource.SMT,
+        (
+            "a study-receipted protocol invariant is violable at a "
+            "peer-writable census write site (per-site inductive SMT "
+            "receipts with dominating guards encoded)"
+        ),
+    ),
+    "protocol_state": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "protocol-state shape receipted by the field census "
+            "(dead-state / unvalidated-peer-write legs)"
         ),
     ),
     # Consistency channel receipts (per dimension; the bare namespace

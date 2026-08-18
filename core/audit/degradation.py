@@ -149,9 +149,25 @@ _DEGRADATION_MATRIX: list[Fallback] = [
                "inconclusive('census-degraded') rather than confirming "
                "a no-bound claim without the guard walk. release_order "
                "channel: dominance needs the CFG and reports "
-               "inconclusive('cfg-unavailable').",
+               "inconclusive('cfg-unavailable'). protocol_state "
+               "channel: a violable site without the CFG guard leg "
+               "reports inconclusive('census-degraded') — never a "
+               "confirmation on a partial census.",
         fallback_description="ast for Python handlers, line-regex for "
                              "C call-site shapes and the coarse census",
+    ),
+    Fallback(
+        tool="z3",
+        fallback_tool="none (verdict-honest degradation)",
+        impact="smt_invariant channel: invariant preservation reports "
+               "inconclusive('z3 unavailable'). protocol_state "
+               "channel: leg 3 (census-driven multi-site invariant "
+               "harness) reports inconclusive('z3-unavailable'); the "
+               "legs-1+2 lead receipts (dead-state, unvalidated "
+               "peer-write) still emit — they are census facts, not "
+               "SMT verdicts.",
+        fallback_description="pip install z3-solver restores the "
+                             "invariant channels",
     ),
 ]
 

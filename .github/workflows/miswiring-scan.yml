@@ -102,3 +102,29 @@ jobs:
       - name: Run vocabulary-list guardrail against baseline
         run: |
           python3 .github/scripts/check_vocab_lists.py
+
+  # Optional-dependency import lint: test files importing modules that
+  # ship commented out in requirements.txt (anthropic SDK, botocore,
+  # tree-sitter grammar wheels, ...) must guard them — importorskip,
+  # try/except ImportError, a sys.modules stub, or a skipif naming the
+  # module. Unguarded imports pass on provisioned developer hosts and
+  # fail on bare CI (the 2026-08 environment-parity failure class).
+  # Same baseline semantics as the miswiring job; the baseline target
+  # is EMPTY — guard, don't baseline.
+  optional-dep-imports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run optional-dep import lint against baseline
+        run: |
+          python3 .github/scripts/check_optional_dep_imports.py

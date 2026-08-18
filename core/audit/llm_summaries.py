@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,22 +21,27 @@ from core.security.prompt_framing import with_audit_framing
 
 logger = logging.getLogger(__name__)
 
-# Audit-purpose framing: this class was AUP-refused 18/18 in the final
-# comparison audit (bare code + security-extraction ask with no stated
-# purpose); the review class, which frames the audit context, went
-# 36/36. See core.security.prompt_framing.
+# Audit-purpose framing: this class was AUP-refused 18/18 in one
+# comparison audit and again 15/15 with the v1 one-paragraph framing;
+# the review class, which carries the full audit context, went 36/36
+# and 35/35 in the same runs. v2 framing + program-analysis task
+# vocabulary below. See core.security.prompt_framing for the history.
 _SUMMARY_SYSTEM_PROMPT = with_audit_framing(
-    "You are a security-focused code analyst.  Given a function's source, "
-    "extract its security-relevant summary as JSON.  Be precise and terse.\n\n"
+    "You are extracting a function's behavioural summary — the same "
+    "intermediate facts a static-analysis engine (Joern, CodeQL) "
+    "derives mechanically. The summary feeds the audit's verification "
+    "tools as inter-procedural context. Be precise and terse.\n\n"
     "Analyse the function provided in the untrusted source-code block "
     "(its file and function name are given in the slots) and return a "
     "JSON object with these fields:\n\n"
     '- "preconditions": list of {"parameter": str, "assumption": str} — '
-    "what each parameter must satisfy for safe execution (null checks, bounds, "
-    "valid state).\n"
+    "what each parameter must satisfy for correct execution (null "
+    "checks, bounds, valid state).\n"
     '- "taint_flows": list of {"source_param": str, "source_index": int, '
-    '"sink_call": str, "sink_arg_index": int} — parameters that flow to '
-    "security-sensitive callees (memcpy, strcpy, system, exec, SQL, etc.).\n"
+    '"sink_call": str, "sink_arg_index": int} — standard dataflow '
+    "summaries: parameters whose data reaches memory-, process-, or "
+    "query-affecting callees (memcpy, strcpy, system, exec, SQL, "
+    "etc.), so the verification tools can check the call sites.\n"
     '- "callees": list of "file:function" strings for functions this function calls.\n'
     '- "callers": list of "file:function" strings if visible from the source.\n'
     '- "error_paths": list of return-statement strings for error/failure returns.\n'
@@ -68,8 +74,16 @@ def build_summary_prompt(
         "file": TaintedString(value=file_path, trust="untrusted"),
         "function": TaintedString(value=function_name, trust="untrusted"),
     }
+    # transparent_payload: the taint-extraction ask over an ENCODED
+    # payload is hard-refused 100% by Claude models while the same ask
+    # over plaintext succeeds (measured; see envelope_prompt's
+    # docstring). Compensating injection defences for the plaintext
+    # rendering: pre-call preflight over the source, post-parse
+    # source-grounding of every extracted claim, envelope-echo
+    # discard — see _ground_summary / summarize_functions.
     return envelope_prompt(
         _SUMMARY_SYSTEM_PROMPT, (block,), slots, model_id=model_id,
+        transparent_payload=True,
     )
 
 # Cap source length to keep LLM cost reasonable per function.
@@ -210,6 +224,23 @@ def run_llm_summary_pass(
 
     def _do_one(item: tuple) -> tuple | None:
         file_path, function_name, source = item
+        # Injection preflight over the source BEFORE spending the
+        # call: the summary class renders its payload plaintext (see
+        # build_summary_prompt), so a source file carrying known
+        # injection phrasing gets no LLM pass at all — the mechanical
+        # (Joern/AST) summary path covers it instead. Real code
+        # essentially never trips the corpus; a hit is a loud signal.
+        from core.security.prompt_input_preflight import preflight
+
+        pf = preflight(source)
+        if pf.has_injection_indicators:
+            logger.warning(
+                "llm_summary: injection indicators (%s) in %s:%s "
+                "source — skipping LLM summary for this function "
+                "(mechanical summaries only)",
+                ",".join(pf.indicators), file_path, function_name,
+            )
+            return None
         prompt, system_prompt = build_summary_prompt(
             file_path, function_name, source,
             model_id=getattr(client, "model_name", "") or "",
@@ -235,6 +266,11 @@ def run_llm_summary_pass(
         from core.audit.batch_glance import _response_text
         text = _response_text(response)
         summary = _parse_summary_response(text, function_name, file_path)
+        if summary is not None:
+            # Source-grounding: drop any extracted claim that does not
+            # correspond to the code it was extracted from (injection
+            # defence for the plaintext payload — see _ground_summary).
+            summary = _ground_summary(summary, source)
         if summary and not summary.is_empty():
             return (f"{file_path}:{function_name}", summary)
         return None
@@ -305,6 +341,54 @@ _SUMMARY_RESPONSE_KEYS = frozenset({
 })
 
 
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _ground_summary(
+    summary: FunctionSummary, source: str,
+) -> FunctionSummary:
+    """Drop extracted claims that do not correspond to the source.
+
+    Injection defence for the plaintext-payload summary class: every
+    field the model extracts is checkable against the function source
+    it was extracted FROM. Parameters and sink calls must be
+    identifiers present in the source; callees/callers must name
+    identifiers in it (the prompt asks for callers only "if visible
+    from the source", so this drops hallucinations too); error paths
+    must literally occur in it. A prompt-injected response can then
+    at worst SUPPRESS true facts (the same failure mode as a refusal,
+    handled by the mechanical fallback) — it cannot insert a
+    fabricated flow, precondition, or callee that survives into the
+    audit context.
+
+    State transitions are free prose consumed as descriptive context
+    only; they carry no identifiers to check and ground no decisions,
+    so they pass through.
+    """
+    idents = set(_IDENT_RE.findall(source))
+
+    def _known_name(raw: str) -> bool:
+        # Accept "file.c:function", "function", "function(...)" forms.
+        base = str(raw).rsplit(":", 1)[-1].split("(")[0].strip()
+        return bool(base) and base in idents
+
+    norm_source = " ".join(source.split())
+    summary.taint_rules = [
+        t for t in summary.taint_rules
+        if t.source_param in idents and _known_name(t.sink_call)
+    ]
+    summary.preconditions = [
+        p for p in summary.preconditions if p.param in idents
+    ]
+    summary.callees = [c for c in summary.callees if _known_name(c)]
+    summary.callers = [c for c in summary.callers if _known_name(c)]
+    summary.error_paths = [
+        e for e in summary.error_paths
+        if " ".join(str(e).split()) in norm_source
+    ]
+    return summary
+
+
 def _parse_summary_response(
     text: str,
     function: str,
@@ -314,9 +398,19 @@ def _parse_summary_response(
 
     Returns None for malformed responses — including responses that
     carry top-level fields outside :data:`_SUMMARY_RESPONSE_KEYS`
-    (strict unknown-field floor).
+    (strict unknown-field floor), and responses that echo envelope
+    structure (``<untrusted-`` — parroted envelope tags are evidence
+    the model is replaying attacker-adjacent structure rather than
+    answering; discard as contaminated).
     """
     text = text.strip()
+    if "<untrusted-" in text:
+        logger.warning(
+            "summary response for %s:%s discarded — envelope structure "
+            "echoed in output (possible injection contamination)",
+            file, function,
+        )
+        return None
     if text.startswith("```"):
         lines = text.splitlines()
         lines = [ln for ln in lines if not ln.startswith("```")]

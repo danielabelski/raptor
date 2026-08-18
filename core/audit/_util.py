@@ -295,6 +295,7 @@ def envelope_prompt(
     slots: dict[str, Any] | None = None,
     *,
     model_id: str = "",
+    transparent_payload: bool = False,
 ) -> tuple[str, str]:
     """Build a ``(user, system)`` message pair via the prompt envelope.
 
@@ -306,10 +307,27 @@ def envelope_prompt(
     resolved the same way sibling callsites do — ``get_profile_for``
     when the model is known, CONSERVATIVE otherwise.
 
+    ``transparent_payload=True`` renders the untrusted blocks in the
+    clear (no base64, no datamark sentinels) while keeping every
+    structural defence: nonce envelope, tag-forgery neutralization
+    (which the base64 path skips), autofetch stripping, slot
+    discipline, priming. Reserved for the SECURITY-EXTRACTION call
+    classes (taint summaries, spec inference): measured live, those
+    two asks over an encoded payload are hard-refused 100% by Claude
+    models (stop_reason=refusal, ~3s) — "decode this opaque blob and
+    extract what reaches memcpy/system/exec" reads as attack mapping
+    over deliberately hidden content — while the identical ask over a
+    plaintext payload succeeds, and the encoded envelope keeps months
+    of clean service on every OTHER call class. The trigger is the
+    conjunction, so only the two known-bad classes opt out; general
+    classes keep the proven base64 configuration.
+
     ``blocks`` is an iterable of ``UntrustedBlock``; ``slots`` maps
     slot names to ``TaintedString`` values.  The returned pair plugs
     straight into ``LLMClient.generate(user, system_prompt=system)``.
     """
+    import dataclasses
+
     from core.security.prompt_defense_profiles import (
         CONSERVATIVE,
         get_profile_for,
@@ -317,6 +335,10 @@ def envelope_prompt(
     from core.security.prompt_envelope import build_prompt
 
     profile = get_profile_for(model_id) if model_id else CONSERVATIVE
+    if transparent_payload and (profile.base64_code or profile.datamarking):
+        profile = dataclasses.replace(
+            profile, base64_code=False, datamarking=False,
+        )
     bundle = build_prompt(
         system=system,
         profile=profile,

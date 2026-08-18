@@ -664,12 +664,16 @@ def _checks_return_value(source: str, function_name: str) -> bool:
 
 
 # Audit-purpose framing: this class (the IRIS spec/refine leg) was
-# AUP-refused 19/19 in the final comparison audit — same gap as the
-# summary class. See core.security.prompt_framing.
+# AUP-refused 19/19 in one comparison audit and again 19/19 with the
+# v1 one-paragraph framing — same gap as the summary class. v2
+# framing + contract-inference vocabulary below. See
+# core.security.prompt_framing for the measured history.
 _LLM_SPEC_SYSTEM = with_audit_framing("""\
-You are inferring a security specification for a function. Given the source \
-code in the untrusted block (its file and function name are in the slots), \
-determine what this function SHOULD do — its contract with callers.
+You are inferring a function's behavioural contract (its specification) \
+so the audit's verification tools can check the implementation against \
+it. Given the source code in the untrusted block (its file and function \
+name are in the slots), determine what this function SHOULD do — its \
+contract with callers.
 
 Respond with JSON only:
 {
@@ -680,9 +684,10 @@ Respond with JSON only:
   "negative_specs": ["what this function must NOT do"]
 }
 
-Focus on security-relevant specifications: bounds on sizes, null-safety, \
-authentication requirements, sanitization guarantees, resource lifecycle, \
-crypto properties. Omit trivial specs (e.g. "returns a value").
+Focus on the safety-relevant parts of the contract: bounds on sizes, \
+null-safety, authentication requirements, sanitization guarantees, \
+resource lifecycle, crypto properties. Omit trivial specs (e.g. \
+"returns a value").
 """)
 
 # Cap on source going into the spec prompt.
@@ -712,7 +717,18 @@ def build_spec_prompt(
         "file": TaintedString(value=file_path, trust="untrusted"),
         "function": TaintedString(value=function_name, trust="untrusted"),
     }
-    return envelope_prompt(_LLM_SPEC_SYSTEM, (block,), slots, model_id=model_id)
+    # transparent_payload: the spec-extraction ask over an ENCODED
+    # payload is hard-refused 100% by Claude models while the same ask
+    # over plaintext succeeds (measured; see envelope_prompt's
+    # docstring). Compensating defences for the plaintext rendering:
+    # pre-call injection preflight and envelope-echo discard in
+    # infer_spec_with_llm_sync; prose spec fields only ever ADD to a
+    # mechanically-derived spec whose consumers treat llm_inference
+    # sources as medium-confidence hints.
+    return envelope_prompt(
+        _LLM_SPEC_SYSTEM, (block,), slots, model_id=model_id,
+        transparent_payload=True,
+    )
 
 
 # Strict top-level schema for the spec response — the keys the prompt
@@ -795,6 +811,21 @@ def infer_spec_with_llm_sync(
     if not source:
         return mechanical_spec
 
+    # Injection preflight over the source BEFORE spending the call —
+    # the spec class renders its payload plaintext (build_spec_prompt),
+    # so a source carrying known injection phrasing keeps the
+    # mechanical spec only.
+    from core.security.prompt_input_preflight import preflight
+
+    pf = preflight(source)
+    if pf.has_injection_indicators:
+        logger.warning(
+            "spec_inference: injection indicators (%s) in %s:%s source "
+            "— skipping LLM spec inference (mechanical spec only)",
+            ",".join(pf.indicators), file_path, function_name,
+        )
+        return mechanical_spec
+
     try:
         if client is None:
             from core.llm.client import LLMClient
@@ -813,6 +844,17 @@ def infer_spec_with_llm_sync(
         return mechanical_spec
 
     spec = mechanical_spec or InferredSpec(function=function_name, file=file_path)
+
+    # Envelope-echo discard: a response replaying envelope structure is
+    # contamination evidence, not an answer.
+    if "<untrusted-" in text:
+        logger.warning(
+            "spec_inference: response for %s:%s discarded — envelope "
+            "structure echoed in output (possible injection "
+            "contamination)",
+            file_path, function_name,
+        )
+        return spec
 
     data = _parse_llm_spec_response(text)
     if not data:

@@ -587,9 +587,6 @@
   "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
-  "plumbing:orphan_config_field:core/audit/expanded_semgrep.py:ExpandedTu.scratch_rel": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
   "plumbing:orphan_config_field:core/audit/fail_open_roles.py:SecurityFlag.safe_when": {
    "note": "pending wiring: safe_when is the fail-open channel's planned per-flag suppression predicate"
   },

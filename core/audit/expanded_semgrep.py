@@ -299,10 +299,14 @@ def run_expanded_semgrep_rule(
 
 @dataclass
 class ExpandedTu:
-    """One TU's expanded copy in the scan corpus."""
+    """One TU's expanded copy in the scan corpus.
+
+    Expanded copies deliberately preserve the original relative layout
+    inside the scratch root, so ``original_rel`` doubles as the
+    corpus-relative path.
+    """
 
     original_rel: str
-    scratch_rel: str
     view: ExpandedView
 
 
@@ -311,7 +315,7 @@ class ExpandedCorpus:
     """Scratch directory of expanded views for the /scan stage."""
 
     root: Path
-    tus: dict[str, ExpandedTu] = field(default_factory=dict)  # scratch_rel →
+    tus: dict[str, ExpandedTu] = field(default_factory=dict)  # original_rel →
     candidates_total: int = 0   # macro-heavy TUs discovered
     expanded: int = 0
     skipped_budget: int = 0
@@ -412,9 +416,7 @@ def build_expanded_corpus(
             logger.debug("expanded corpus: could not write %s: %s", dest, exc)
             continue
         corpus.expanded += 1
-        corpus.tus[rel] = ExpandedTu(
-            original_rel=rel, scratch_rel=rel, view=view,
-        )
+        corpus.tus[rel] = ExpandedTu(original_rel=rel, view=view)
 
     if corpus.skipped_budget:
         logger.warning(

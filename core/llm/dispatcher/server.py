@@ -486,10 +486,11 @@ class LLMDispatcher:
         env = tuple(os.environ.get(v) for v in _PROXY_ENV_VARS)
         with self._upstream_http_lock:
             if self._upstream_http is None or self._upstream_http_env != env:
-                from core.llm.http_pool import pool_limits
+                from core.llm.http_pool import http2_enabled, pool_limits
                 old = self._upstream_http
                 self._upstream_http = httpx.Client(
                     timeout=_upstream_timeout(), limits=pool_limits(),
+                    http2=http2_enabled(),
                 )
                 self._upstream_http_env = env
                 if old is not None:

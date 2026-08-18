@@ -509,6 +509,15 @@ per hop plus the TLS handshake. Defaults: 60 s keepalive, 20 pooled
 idle connections, 100 total. Tune with `RAPTOR_HTTP_KEEPALIVE_S`,
 `RAPTOR_HTTP_MAX_KEEPALIVE`, `RAPTOR_HTTP_MAX_CONNECTIONS`.
 
+`RAPTOR_HTTP2=1` opts the pooled transports into HTTP/2 (requires
+`pip install h2`; warns once and stays on HTTP/1.1 when missing).
+All concurrent calls then multiplex over a single connection — one
+CONNECT chain and one TLS handshake total, which is the biggest
+wall-clock win for high-concurrency runs behind chained proxies.
+Off by default: TCP head-of-line blocking stalls every multiplexed
+stream on one lost packet, and some middleboxes misbehave on
+long-lived multiplexed tunnels — enable per-deployment and verify.
+
 ## Environment Variables Summary
 
 | Variable | Purpose |
@@ -534,3 +543,4 @@ idle connections, 100 total. Tune with `RAPTOR_HTTP_KEEPALIVE_S`,
 | `RAPTOR_HTTP_KEEPALIVE_S` | SDK transport idle keepalive expiry (default 60) |
 | `RAPTOR_HTTP_MAX_KEEPALIVE` | SDK transport pooled idle connections (default 20) |
 | `RAPTOR_HTTP_MAX_CONNECTIONS` | SDK transport total connections (default 100) |
+| `RAPTOR_HTTP2` | `1` opts SDK transports into HTTP/2 (needs `h2`) |

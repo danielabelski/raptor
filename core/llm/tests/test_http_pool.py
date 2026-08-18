@@ -21,6 +21,7 @@ _KNOB_VARS = (
     "RAPTOR_HTTP_KEEPALIVE_S",
     "RAPTOR_HTTP_MAX_KEEPALIVE",
     "RAPTOR_HTTP_MAX_CONNECTIONS",
+    "RAPTOR_HTTP2",
 )
 
 
@@ -76,6 +77,54 @@ class TestSdkHttpClient:
         finally:
             trusted.close()
             pinned.close()
+
+
+class TestHttp2Gate:
+    """HTTP/2 is opt-in AND conditional on the h2 stack being
+    installed — httpx raises at client construction otherwise."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warn_flag(self, monkeypatch):
+        monkeypatch.setattr(http_pool, "_http2_missing_warned", False)
+
+    def test_off_by_default(self):
+        assert http_pool.http2_enabled() is False
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+    def test_non_truthy_values_stay_off(self, monkeypatch, value):
+        monkeypatch.setenv("RAPTOR_HTTP2", value)
+        assert http_pool.http2_enabled() is False
+
+    def test_opted_in_with_h2_installed(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_HTTP2", "1")
+        monkeypatch.setattr(
+            http_pool.importlib.util, "find_spec",
+            lambda name: object() if name == "h2" else None,
+        )
+        assert http_pool.http2_enabled() is True
+
+    def test_opted_in_without_h2_warns_once_and_stays_http1(
+        self, monkeypatch, caplog,
+    ):
+        monkeypatch.setenv("RAPTOR_HTTP2", "1")
+        monkeypatch.setattr(
+            http_pool.importlib.util, "find_spec", lambda name: None,
+        )
+        with caplog.at_level("WARNING", logger="core.llm.http_pool"):
+            assert http_pool.http2_enabled() is False
+            assert http_pool.http2_enabled() is False
+        warnings = [r for r in caplog.records if "h2" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_client_construction_honours_gate(self, monkeypatch):
+        """With the gate closed the client must be constructible even
+        when h2 is absent — the whole point of gating."""
+        monkeypatch.setenv("RAPTOR_HTTP2", "1")
+        monkeypatch.setattr(
+            http_pool.importlib.util, "find_spec", lambda name: None,
+        )
+        client = http_pool.sdk_http_client(10)
+        client.close()
 
 
 class TestProviderWiring:

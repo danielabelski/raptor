@@ -34,10 +34,19 @@ Knobs (all optional; invalid values fall back to the default):
     Idle connections kept in the pool (default 20).
 ``RAPTOR_HTTP_MAX_CONNECTIONS``
     Total concurrent connections per client (default 100).
+``RAPTOR_HTTP2``
+    Opt-in HTTP/2 (default off; needs the ``h2`` package). All
+    concurrent calls multiplex over one connection — one CONNECT
+    chain and one TLS handshake total instead of one per pooled
+    connection. Off by default because the failure modes are real:
+    TCP head-of-line blocking stalls every multiplexed stream on one
+    lost packet, and some middleboxes misbehave on long-lived
+    multiplexed tunnels. Enable per-deployment and verify.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 
@@ -48,6 +57,12 @@ logger = logging.getLogger(__name__)
 _KEEPALIVE_ENV = "RAPTOR_HTTP_KEEPALIVE_S"
 _MAX_KEEPALIVE_ENV = "RAPTOR_HTTP_MAX_KEEPALIVE"
 _MAX_CONNECTIONS_ENV = "RAPTOR_HTTP_MAX_CONNECTIONS"
+_HTTP2_ENV = "RAPTOR_HTTP2"
+
+# Warn-once flag for "opted in but h2 not installed" — the fallback
+# is silent-safe (HTTP/1.1 keeps working) but the operator asked for
+# something they are not getting, so say so exactly once.
+_http2_missing_warned = False
 
 _DEFAULT_KEEPALIVE_S = 60.0
 _DEFAULT_MAX_KEEPALIVE = 20
@@ -73,6 +88,32 @@ def _env_number(name: str, default: float) -> float:
         )
         return default
     return value
+
+
+def http2_enabled() -> bool:
+    """True when the operator opted in via ``RAPTOR_HTTP2`` AND the
+    ``h2`` stack is installed.
+
+    ALPN happens end-to-end inside the CONNECT tunnel, so HTTP/2
+    works through the egress chokepoint and a chained corporate
+    proxy. Opted-in-but-missing-h2 warns once and stays on HTTP/1.1
+    — httpx would otherwise raise at client construction.
+    """
+    if os.environ.get(_HTTP2_ENV, "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return False
+    if importlib.util.find_spec("h2") is None:
+        global _http2_missing_warned
+        if not _http2_missing_warned:
+            _http2_missing_warned = True
+            logger.warning(
+                "%s is set but the 'h2' package is not installed — "
+                "staying on HTTP/1.1. Install with: pip install h2",
+                _HTTP2_ENV,
+            )
+        return False
+    return True
 
 
 def pool_limits() -> httpx.Limits:
@@ -112,10 +153,12 @@ def sdk_http_client(
         timeout=timeout,
         trust_env=trust_env,
         limits=pool_limits(),
+        http2=http2_enabled(),
     )
 
 
 __all__ = [
+    "http2_enabled",
     "pool_limits",
     "sdk_http_client",
 ]

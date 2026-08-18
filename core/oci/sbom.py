@@ -60,7 +60,6 @@ class InstalledPackage:
     ecosystem: str
     name: str
     version: str
-    source_layer_digest: str | None = None
 
 
 # ---------------------------------------------------------------------------

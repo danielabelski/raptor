@@ -452,6 +452,27 @@ class RaptorConfig:
         "LC_",          # locale sub-variables (LC_CTYPE, LC_COLLATE, etc.)
     )
 
+    # Exploit-feasibility knobs that may cross the scrub boundary:
+    # numeric budgets and shared-toggle booleans only — no injection
+    # surface, and the loader runs inside scrub-spawned children where
+    # dropping them silently discarded the operator's settings.
+    #
+    # Deliberately NOT a RAPTOR_EF_ prefix family: the rest of the
+    # namespace is exec-path class. RAPTOR_EF_{CHECKSEC,ROPGADGET,
+    # ONE_GADGET}_PATH name binaries the analysis EXECUTES,
+    # RAPTOR_EF_CONFIG names a JSON that can set those same paths, and
+    # RAPTOR_EF_CACHE_DIR redirects writes — the EDITOR/PAGER threat
+    # class this scrub exists to strip. Those work only in the
+    # operator's direct (unscrubbed) session environment.
+    SAFE_ENV_ALLOWLIST = SAFE_ENV_ALLOWLIST | frozenset({
+        "RAPTOR_EF_TIMEOUT_FAST", "RAPTOR_EF_TIMEOUT_NORMAL",
+        "RAPTOR_EF_TIMEOUT_MEDIUM", "RAPTOR_EF_TIMEOUT_SLOW",
+        "RAPTOR_EF_TIMEOUT_VERY_SLOW", "RAPTOR_EF_TIMEOUT_MAX",
+        "RAPTOR_EF_ENABLE_CACHING", "RAPTOR_EF_ROP_CACHE_SIZE",
+        "RAPTOR_EF_MAX_GADGETS", "RAPTOR_EF_VERIFY_FORMAT_N",
+        "RAPTOR_EF_VERBOSE",
+    })
+
     # Environment variables that can be exploited for command injection or
     # runtime code injection when consumed by tools that auto-load config /
     # shell-evaluate / import from them.

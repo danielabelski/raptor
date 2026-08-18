@@ -92,6 +92,28 @@ class TestGetSafeEnv:
         env = RaptorConfig.get_safe_env()
         assert env.get("PYTHONUNBUFFERED") == "1"
 
+    def test_ef_benign_knobs_survive_scrub(self):
+        """Numeric/boolean feasibility knobs must reach scrub-spawned
+        children (the loader runs inside them); the exec-path class
+        (tool paths, config path, cache dir) must NOT — env-supplied
+        executable paths are the EDITOR/PAGER threat this scrub
+        strips."""
+        with patch.dict(os.environ, {
+            "RAPTOR_EF_TIMEOUT_FAST": "7",
+            "RAPTOR_EF_VERBOSE": "yes",
+            "RAPTOR_EF_CHECKSEC_PATH": "/tmp/evil-checksec",
+            "RAPTOR_EF_ONE_GADGET_PATH": "/tmp/evil-og",
+            "RAPTOR_EF_CONFIG": "/tmp/evil.json",
+            "RAPTOR_EF_CACHE_DIR": "/tmp/ef",
+        }):
+            env = RaptorConfig.get_safe_env()
+            assert env.get("RAPTOR_EF_TIMEOUT_FAST") == "7"
+            assert env.get("RAPTOR_EF_VERBOSE") == "yes"
+            for blocked in ("RAPTOR_EF_CHECKSEC_PATH",
+                            "RAPTOR_EF_ONE_GADGET_PATH",
+                            "RAPTOR_EF_CONFIG", "RAPTOR_EF_CACHE_DIR"):
+                assert blocked not in env, blocked
+
     def test_does_not_strip_term(self):
         """TERM is read as a string (terminfo lookup), not shell-evaluated — must not be stripped."""
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):

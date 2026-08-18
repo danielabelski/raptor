@@ -228,8 +228,7 @@ def main() -> int:
         )
         env_path = out_dir / "child-env.txt"
         with open(env_path, "w", encoding="utf-8") as fh:
-            for k in sorted(env):
-                fh.write(f"{k}={env[k]}\n")
+            fh.writelines(f"{k}={env[k]}\n" for k in sorted(env))
         os.chmod(env_path, 0o600)  # carries the (scoped) minted token
         offenders = sorted(k for k in env if _CRED_SHAPED.search(k))
         token_vars = sorted(

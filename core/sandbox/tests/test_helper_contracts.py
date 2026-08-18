@@ -417,7 +417,8 @@ class TestApparmorProfileTemplate:
         for name in ("Makefile", "raptor-coord-launcher.apparmor.template"):
             _shutil.copy(self.HELPERS / name, work / name)
         r = subprocess.run(["make", "-C", str(work), "apparmor-profile"],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60,
+                           check=False)
         assert r.returncode == 0, r.stderr
         rendered = (work / "raptor-coord-launcher.apparmor").read_text()
         assert "@@RAPTOR_DIR@@" not in rendered

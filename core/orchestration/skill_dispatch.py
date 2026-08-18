@@ -744,7 +744,7 @@ def run_skill_dispatch(
                 _settle_cc_proxy_credentials(
                     cc_proxy_creds, run_dir, log_label,
                 )
-            except Exception:  # noqa: BLE001 — settlement is best-effort
+            except Exception:  # settlement is best-effort
                 logger.warning(
                     "%s: credential-proxy settlement failed", log_label,
                     exc_info=True,

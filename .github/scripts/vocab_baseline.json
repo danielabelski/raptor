@@ -1288,8 +1288,13 @@
   "count": 15,
   "kind": "literal"
  },
+ "libexec/raptor-audit::_run_config_from_args": {
+  "count": 29,
+  "kind": "literal",
+  "note": "serialised run-option field names for audit-run-config.json (same-run resume contract) - CLI flag surface, not a name vocabulary"
+ },
  "libexec/raptor-audit::dispatch": {
-  "count": 11,
+  "count": 12,
   "kind": "literal"
  },
  "libexec/raptor-review::dispatch": {

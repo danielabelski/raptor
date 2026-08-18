@@ -206,9 +206,6 @@
   "artifacts:write_only_artifact::correlation.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::cost-breakdown.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
   "artifacts:write_only_artifact::crashes_for_validation.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -432,9 +429,6 @@
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
   "dead:dead_function:core/audit/frida_observe.py:collect_observed_functions": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
-  "dead:dead_function:core/audit/orchestrator.py:request_shutdown": {
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
   "dead:dead_function:core/audit/struct_accessor_index.py:build_index_from_joern": {

@@ -765,6 +765,7 @@ def _warn_expired_bearer_fallback() -> None:
 
 def _build_bearer_mantle_request(
     bearer_token: str, endpoint: str, path: str, body: bytes,
+    extra_headers: dict[str, str] | None = None,
 ) -> PreparedRequest:
     """Attach a static ``Authorization: Bearer <token>`` header for the
     Bedrock Mantle Anthropic-Messages endpoint.  No body transformation:
@@ -772,11 +773,16 @@ def _build_bearer_mantle_request(
     the Bedrock docs, ``bedrock-mantle.<region>.api.aws`` exposes
     ``/anthropic/v1/messages`` as the native Anthropic Messages surface
     for all Claude models on Bedrock, with bare model IDs (no date
-    suffix, no ``-v1:0`` version)."""
+    suffix, no ``-v1:0`` version).
+
+    ``extra_headers`` carries the caller's Anthropic feature headers
+    (``anthropic-beta`` / ``anthropic-version``) — Claude Code clients
+    negotiate betas per request and Mantle honours them."""
     url = endpoint.rstrip("/") + path
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
+        **(extra_headers or {}),
         "Authorization": f"Bearer {bearer_token}",
     }
     return PreparedRequest(method="POST", url=url, headers=headers, body=body)
@@ -784,10 +790,13 @@ def _build_bearer_mantle_request(
 
 def _build_signed_mantle_request(
     credentials, region: str, endpoint: str, path: str, body: bytes,
+    extra_headers: dict[str, str] | None = None,
 ) -> PreparedRequest:
     """SigV4-sign a Mantle request.  The signing service name for the
     Mantle endpoint is ``bedrock`` (same as bedrock-runtime); only the
-    target URL differs."""
+    target URL differs.  ``extra_headers`` (``anthropic-beta`` /
+    ``anthropic-version``) are added BEFORE signing so they ride the
+    signed header set."""
     from botocore.auth import SigV4Auth
     from botocore.awsrequest import AWSRequest
 
@@ -797,6 +806,7 @@ def _build_signed_mantle_request(
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
+            **(extra_headers or {}),
         },
     )
     SigV4Auth(credentials, "bedrock", region).add_auth(aws_req)
@@ -1008,6 +1018,14 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
         #
         # Auth is the same for both APIs (bearer or SigV4) — only the
         # request transformation and endpoint host differ.
+        # Split the query string off before any path checks — Claude
+        # Code's Mantle client requests ``/v1/messages?beta=true`` and
+        # a query-bearing path must neither defeat the endpoint
+        # allowlist below nor be dropped from the upstream URL (Mantle
+        # honours it; SigV4 signs it as part of the canonical query).
+        path, _, query = path.partition("?")
+        query_suffix = f"?{query}" if query else ""
+
         api = "mantle"
         bedrock_path = path
         if path.startswith("/mantle/") or path == "/mantle":
@@ -1016,6 +1034,15 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
         elif path.startswith("/runtime/") or path == "/runtime":
             api = "runtime"
             bedrock_path = path[len("/runtime"):] or "/"
+
+        # Anthropic feature-negotiation headers from the caller
+        # (Claude Code negotiates betas per request). Forwarded on the
+        # Mantle leg only — InvokeModel carries the version in-body.
+        extra_headers: dict[str, str] = {}
+        for name in ("anthropic-beta", "anthropic-version"):
+            value = headers.get(name)
+            if value:
+                extra_headers[name] = value
 
         # Security gate: reject any path with a ``..`` segment before
         # forwarding.  Without this, a worker could craft
@@ -1051,7 +1078,7 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
             # (Mantle inherits the requirement from InvokeModel; the
             # SDK doesn't add it because the public Anthropic API
             # doesn't need it).
-            upstream_path = "/anthropic" + bedrock_path
+            upstream_path = "/anthropic" + bedrock_path + query_suffix
             upstream_body = _ensure_anthropic_version(body)
             # Per-model signing override (models.json aws_profile /
             # region).  An explicit per-model profile FORCES SigV4 for
@@ -1089,7 +1116,7 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
                     )
                 return _build_bearer_mantle_request(
                     bearer, endpoint.rstrip("/"), upstream_path,
-                    upstream_body,
+                    upstream_body, extra_headers,
                 )
             signer = creds.aws_signer(
                 "mantle", profile=o_profile, region=o_region,
@@ -1101,7 +1128,7 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
             credentials, region, endpoint = signer
             return _build_signed_mantle_request(
                 credentials, region, endpoint.rstrip("/"),
-                upstream_path, upstream_body,
+                upstream_path, upstream_body, extra_headers,
             )
 
         # Runtime path — InvokeModel.  The request body's ``model``

@@ -1423,3 +1423,45 @@ def test_expired_bearer_without_chain_still_401s(tmp_path, monkeypatch):
         assert "expired" in resp.text
     finally:
         d.shutdown()
+
+
+def test_mantle_accepts_query_string_and_forwards_feature_headers():
+    """Claude Code's Mantle client POSTs ``/v1/messages?beta=true``
+    with per-request ``anthropic-beta`` negotiation. The query must
+    neither defeat the endpoint allowlist nor be dropped from the
+    upstream URL, and the feature headers must ride the prepared
+    request (pre-signing, so SigV4 covers them too)."""
+    store = CredentialStore()
+    store.set_aws(
+        bearer_token="ABSK", region=_REGION,
+        endpoint="https://example.invalid",
+    )
+    rule = build_rules(store)["bedrock"]
+    prepared = rule.prepare_request(
+        "POST", "/mantle/v1/messages?beta=true",
+        {"anthropic-beta": "context-1m-2025-08-07",
+         "anthropic-version": "2023-06-01"},
+        json.dumps({"model": _MODEL, "messages": []}).encode(),
+    )
+    assert prepared.url == (
+        "https://example.invalid/anthropic/v1/messages?beta=true"
+    )
+    assert prepared.headers["anthropic-beta"] == "context-1m-2025-08-07"
+    assert prepared.headers["anthropic-version"] == "2023-06-01"
+    assert prepared.headers["Authorization"] == "Bearer ABSK"
+
+
+def test_mantle_query_string_does_not_bypass_path_allowlist():
+    """``/v1/other?x=/v1/messages`` must still be rejected — the
+    allowlist compares the query-stripped path."""
+    store = CredentialStore()
+    store.set_aws(
+        bearer_token="ABSK", region=_REGION,
+        endpoint="https://example.invalid",
+    )
+    rule = build_rules(store)["bedrock"]
+    with pytest.raises(BedrockTransformError) as ei:
+        rule.prepare_request(
+            "POST", "/mantle/v1/other?x=/v1/messages", {}, b"{}",
+        )
+    assert ei.value.status == 400

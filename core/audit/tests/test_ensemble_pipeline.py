@@ -372,6 +372,31 @@ class TestCounterHypothesisVeto:
         # counter < 0.6 * hypothesis → no veto
         assert _counter_hypothesis_vetoes(o) is False
 
+    def test_refuting_counter_vetoes(self):
+        """A counter asserting the hypothesis was refuted argues in the
+        clean direction exactly like a named protection mechanism —
+        the veto must fire even without a protection keyword (live
+        corpus case: llm-claimed SMT signal evaluated and refuted,
+        verdict stayed suspicious)."""
+        o = self._make_finding_with_counter(
+            "The use-after-free claim was refuted with specific "
+            "lock/refcount evidence: the claimed free site has no "
+            "deallocation semantics and the pin/put lifecycle "
+            "surrounds every use. Not a vulnerability.",
+            evidence="llm-claimed:smt:check-early-release signal "
+                     "evaluated and refuted",
+        )
+        assert _counter_hypothesis_vetoes(o) is True
+
+    def test_refuting_counter_no_veto_with_mechanical_evidence(self):
+        o = self._make_finding_with_counter(
+            "The use-after-free claim was refuted with specific "
+            "lock/refcount evidence: the pin/put lifecycle surrounds "
+            "every use of the object. Not a vulnerability.",
+            evidence="smt:check-early-release",
+        )
+        assert _counter_hypothesis_vetoes(o) is False
+
     def test_prefilter_evidence_still_vetoes(self):
         o = self._make_finding_with_counter(
             "This overflow is prevented by the bounds check on line 42 "

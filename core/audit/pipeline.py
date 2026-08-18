@@ -826,6 +826,35 @@ COUNTER_VETO_EXEMPT_KW = (
 )
 
 
+# Refutation-direction markers: the counter-hypothesis argues AGAINST
+# the vulnerability (supports clean), not for it. Direction matters —
+# a refuting counter is stuffed with vulnerability vocabulary
+# ("refcount", "use-after-free", "TOCTOU") because it names the
+# mechanisms it defeats, which fooled the vocabulary-only heuristics
+# on both sides of this gate (live corpus case: a review that refuted
+# an SMT check-early-release signal and every fresh mechanism was
+# re-escalated to suspicious off its own refuting counter).
+COUNTER_REFUTATION_KW = (
+    "was refuted", "were refuted", "is refuted", "are refuted",
+    "has been refuted", "have been refuted",
+    "refuted with", "refuted by",
+    "not a vulnerability", "not a security concern",
+    "not a security issue", "not a security bug",
+    "no security impact", "not security-relevant",
+    "not security relevant", "not exploitable",
+    "cannot be exploited", "defeating it as a security",
+    "quality wart",
+)
+
+
+def counter_refutes_vulnerability(counter: str) -> bool:
+    """True when the counter-hypothesis argues the vulnerability is NOT
+    real (refutation direction), rather than arguing the verdict
+    under-calls a real one."""
+    lower = (counter or "").lower()
+    return any(kw in lower for kw in COUNTER_REFUTATION_KW)
+
+
 def counter_hypothesis_vetoes(item) -> bool:
     """True when a strong counter-hypothesis should veto a speculative finding.
 
@@ -852,7 +881,12 @@ def counter_hypothesis_vetoes(item) -> bool:
         return False
 
     lower = counter.lower()
-    return any(kw in lower for kw in COUNTER_PROTECTION_KW)
+    # A counter that asserts the hypothesis was refuted / is not a
+    # security issue vetoes just like one naming a concrete protection
+    # mechanism — both argue the speculative verdict is wrong in the
+    # clean direction.
+    return any(kw in lower for kw in COUNTER_PROTECTION_KW) or \
+        counter_refutes_vulnerability(lower)
 
 _counter_hypothesis_vetoes = counter_hypothesis_vetoes
 

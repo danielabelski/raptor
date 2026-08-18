@@ -339,6 +339,57 @@ class TestCounterHypothesis:
         outcome = review_fn(ctx, config)
         assert outcome.status == "suspicious"
 
+    def test_refuting_counter_not_compelling(self):
+        """A counter that argues AGAINST the vulnerability (refutation
+        direction) is an argument for clean — it must not escalate,
+        despite being full of mechanism vocabulary. Live corpus shape:
+        a review refuted an SMT check-early-release signal plus three
+        fresh mechanisms (refcount, TOCTOU, aliasing) and was
+        re-escalated to suspicious off its own refuting counter."""
+        text = (
+            "Contesting my own prior escalation counter: the state is "
+            "read only to skip fairness rotation — no pointer, size, or "
+            "privilege derives from it; the trigger is an internal "
+            "allocation failure, not attacker-supplied data. A "
+            "self-inflicted degradation is a quality wart, not a "
+            "vulnerability. Every other hypothesis, including the "
+            "tool's use-after-free claim and three fresh mechanisms "
+            "(refcount ownership, generation TOCTOU, ctx aliasing), "
+            "was refuted with specific lock/refcount evidence from "
+            "this function's own code."
+        )
+        assert not _counter_hypothesis_is_compelling(text)
+
+    def test_no_re_escalation_on_refuting_counter(self):
+        client = FakeLLMClient({
+            "status": "clean",
+            "body": "All hypotheses refuted with code evidence.",
+            "counter_hypothesis": (
+                "The prior pass kept suspicious, but the use-after-free "
+                "claim was refuted with specific lock/refcount evidence: "
+                "the pin/put lifecycle brackets all uses. Not a "
+                "vulnerability."
+            ),
+        })
+        config = OrchestratorConfig(
+            target_path=Path("/fake"),
+            out_dir=Path("/fake/out"),
+        )
+        review_fn = make_review_fn(client)
+        ctx = {
+            "file": "a.c",
+            "function": "init_ctx",
+            "line_start": 1,
+            "source": "int init_ctx() { return 0; }",
+            "metadata": {},
+            "callers": [],
+            "callees": [],
+            "sinks": [],
+            "trust_surface": {},
+        }
+        outcome = review_fn(ctx, config)
+        assert outcome.status == "clean"
+
     def test_no_escalation_on_dismissive_counter(self):
         client = FakeLLMClient({
             "status": "clean",

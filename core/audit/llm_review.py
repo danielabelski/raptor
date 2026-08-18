@@ -979,6 +979,16 @@ def _counter_hypothesis_is_compelling(counter: str) -> bool:
     lower = counter.lower().strip()
     if any(d in lower for d in _DISMISSIVE_COUNTER):
         return False
+    # Direction check: a counter that REFUTES the vulnerability is an
+    # argument FOR the clean verdict, not against it. It is full of
+    # specificity markers (it names every mechanism it defeats), so
+    # without this check a review that refuted its own escalation was
+    # re-escalated to suspicious off its own refutation — permanently,
+    # once per pass (live corpus case: refuted SMT check-early-release
+    # signal, verdict stuck at suspicious).
+    from .pipeline import counter_refutes_vulnerability
+    if counter_refutes_vulnerability(lower):
+        return False
     if _is_contract_delegation(lower):
         return False
     specificity_markers = (

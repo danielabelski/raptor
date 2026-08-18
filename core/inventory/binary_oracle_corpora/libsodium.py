@@ -116,10 +116,13 @@ def _build_fresh(tag_dir: Path, build_o0: Path, build_o2: Path) -> None:
         shutil.rmtree(build_dir, ignore_errors=True)
         build_dir.mkdir(parents=True)
         flags = {"CFLAGS": cflags, "LDFLAGS": ldflags}
+        # scope=tag_dir: out-of-tree autotools build — under mount-ns
+        # isolation the sibling src/ tree is invisible unless the
+        # sandbox root spans both src/ and the build dir.
         run_build_step(
             [str((src / "configure").resolve()),
              "--enable-static", "--disable-shared"],
-            cwd=build_dir, extra_env=flags, timeout=180,
+            cwd=build_dir, scope=tag_dir, extra_env=flags, timeout=180,
         )
         # libsodium's test binaries (the only artifacts with realistic
         # --gc-sections DCE on a libsodium-linked executable) are only
@@ -127,10 +130,10 @@ def _build_fresh(tag_dir: Path, build_o0: Path, build_o2: Path) -> None:
         # static archive. ``TESTS=`` builds the check_PROGRAMS targets
         # without executing them; only the O0 coverage path needs to
         # actually run the target binary (below).
-        run_build_step(["make", "-j4"], cwd=build_dir,
+        run_build_step(["make", "-j4"], cwd=build_dir, scope=tag_dir,
                        extra_env=flags, timeout=600)
         run_build_step(["make", "check", "TESTS="], cwd=build_dir,
-                       extra_env=flags, timeout=900)
+                       scope=tag_dir, extra_env=flags, timeout=900)
         if target_only:
             # Reset gcov counters and run ONLY the classifier target
             # binary. This aligns ground truth (what gcov saw executed)
@@ -153,13 +156,16 @@ def _build_fresh(tag_dir: Path, build_o0: Path, build_o2: Path) -> None:
             # tag is trusted but supply-chain compromise on a pinned
             # ref is the residual risk; running an executable should
             # be contained (Landlock + namespace; no network needed).
-            # writable_paths includes build_dir because gcov writes
-            # .gcda files alongside .o files — without the allow,
-            # the live_set would be silently empty.
+            # scope=tag_dir: the binary reads its expected-output
+            # fixture from the SRC tree (out-of-tree autotools srcdir
+            # — src/test/default/aead_aegis128l.exp) and gcov writes
+            # .gcda files across the whole build tree; both live
+            # under tag_dir, and writable_paths don't survive into
+            # the mount-ns view.
             target = build_dir / "test" / "default" / "aead_aegis128l"
             run_build_step(
-                [str(target)], cwd=target.parent,
-                writable_paths=[build_dir], timeout=60,
+                [str(target)], cwd=target.parent, scope=tag_dir,
+                timeout=60,
             )
 
     shutil.rmtree(src, ignore_errors=True)

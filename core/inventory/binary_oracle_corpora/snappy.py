@@ -173,7 +173,9 @@ def _build_and_run(sha_dir: Path, build_dir: Path, profdata: Path) -> None:
                 "-Wno-error=uninitialized-const-pointer")
     ldflags = "-Wl,--gc-sections -fprofile-instr-generate"
     # Fetched build system — sandboxed with sanitised env (see
-    # _sandbox_exec).
+    # _sandbox_exec). scope=sha_dir: out-of-tree build — under
+    # mount-ns isolation the sibling src/ tree is invisible unless the
+    # sandbox root spans both.
     run_build_step([
         "cmake", str(src),
         "-DCMAKE_BUILD_TYPE=Release",
@@ -185,19 +187,20 @@ def _build_and_run(sha_dir: Path, build_dir: Path, profdata: Path) -> None:
         "-DSNAPPY_BUILD_BENCHMARKS=OFF",
         # snappy's CMake declares min 3.1; newer CMake refuses without this.
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
-    ], cwd=build_dir, timeout=300)
+    ], cwd=build_dir, scope=sha_dir, timeout=300)
     run_build_step(["cmake", "--build", ".", "-j4"],
-                   cwd=build_dir, timeout=600)
+                   cwd=build_dir, scope=sha_dir, timeout=600)
 
     # Run tests with profile output. ``%m`` expands to a unique-per-image
     # ID at runtime so concurrent processes don't trample one file.
     profraw_pattern = str(sha_dir / "snappy_%m.profraw")
     # ctest executes the just-built (untrusted-origin) test binaries;
-    # they write profraw into sha_dir, hence the extra write scope.
+    # they write profraw into sha_dir — covered by scope=sha_dir
+    # (writable_paths don't survive into the mount-ns view).
     run_build_step(["ctest", "--output-on-failure"],
-                   cwd=build_dir,
+                   cwd=build_dir, scope=sha_dir,
                    extra_env={"LLVM_PROFILE_FILE": profraw_pattern},
-                   writable_paths=[sha_dir], timeout=300)
+                   timeout=300)
 
     profraw = list(sha_dir.glob("snappy_*.profraw"))
     if not profraw:

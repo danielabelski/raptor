@@ -90,6 +90,23 @@ class TestRunBuildStep:
         )
         assert rec.calls[0][1]["writable_paths"] == [str(extra)]
 
+    def test_scope_widens_sandbox_root_but_not_cwd(
+            self, tmp_path, monkeypatch):
+        """Out-of-tree builds pass the scratch parent as ``scope`` so
+        the sibling src/ tree is visible under mount-ns isolation; the
+        step still executes in its build dir."""
+        rec = _Recorder()
+        monkeypatch.setattr(sandbox_mod, "run", rec)
+        build = tmp_path / "build"
+        build.mkdir()
+        _sandbox_exec.run_build_step(
+            ["cmake", "../src"], cwd=build, scope=tmp_path, timeout=10,
+        )
+        kwargs = rec.calls[0][1]
+        assert kwargs["cwd"] == str(build)
+        assert kwargs["target"] == str(tmp_path)
+        assert kwargs["output"] == str(tmp_path)
+
 
 class TestRunTool:
     def test_routes_through_run_trusted(self, tmp_path, monkeypatch):

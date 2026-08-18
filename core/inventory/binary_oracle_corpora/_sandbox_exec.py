@@ -58,26 +58,42 @@ def run_build_step(
     network: bool = False,
     writable_paths: list | None = None,
     check: bool = True,
+    scope: Path | None = None,
 ):
     """Run a fetched build-system step (or a binary it produced) sandboxed.
 
-    ``cwd`` doubles as the Landlock read target and write scope.
+    ``cwd`` doubles as the Landlock read target and write scope unless
+    ``scope`` names a wider root. ``scope`` exists for out-of-tree
+    builds: under mount-namespace isolation only target/output survive
+    into the child's view, so a cmake/configure step running in
+    ``<scratch>/build`` cannot even SEE its sibling ``<scratch>/src``
+    (reads elsewhere aren't merely denied — the paths don't exist).
+    Drivers with a src/build split pass the per-corpus scratch dir
+    (which contains both) as ``scope``; everything in it is
+    RAPTOR-created corpus scratch, so the untrusted build system stays
+    confined to its own working area either way.
+
     ``extra_env`` entries (CFLAGS, RUSTFLAGS, LLVM_PROFILE_FILE, ...)
     are layered on top of the sanitised base env. ``network=True`` is
     ONLY for declared package-manager fetch steps (cargo pulling
     crates); everything else builds with the network namespace removed.
+    Fetch steps keep the operator's proxy vars (same opt-in contract
+    as ``get_safe_git_env(preserve_proxy=True)``): they dial a remote
+    outside the sandbox egress proxy, and on mandatory-egress-proxy
+    hosts the fetch has no route without them.
     """
     from core.config import RaptorConfig
     from core.sandbox import run as sandbox_run
 
-    env = RaptorConfig.get_safe_env()
+    env = RaptorConfig.get_safe_env(preserve_proxy=network)
     if extra_env:
         env.update({k: str(v) for k, v in extra_env.items()})
 
+    scope_dir = str(scope) if scope is not None else str(cwd)
     kwargs: dict = {
         "block_network": not network,
-        "target": str(cwd),
-        "output": str(cwd),
+        "target": scope_dir,
+        "output": scope_dir,
         "cwd": str(cwd),
         "env": env,
         "env_caller_filtered": True,

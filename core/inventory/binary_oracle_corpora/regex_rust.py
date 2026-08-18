@@ -138,19 +138,19 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
     # cargo executes the fetched crate's build machinery (build.rs,
     # proc-macros) — sandboxed like every other fetched build system.
     # network=True: this is the declared package-manager fetch step
-    # (crates.io); CARGO_HOME rides along when the operator has one so
-    # the registry cache/toolchain shims keep working, and its dirs
-    # need write scope for the registry download.
-    import os as _os
-    cargo_writables = [target_dir]
-    cargo_home = _os.environ.get("CARGO_HOME",
-                                 str(Path.home() / ".cargo"))
-    build_env["CARGO_HOME"] = cargo_home
-    cargo_writables.append(Path(cargo_home))
+    # (crates.io); run_build_step keeps the operator proxy vars for it
+    # (mandatory-egress-proxy hosts have no other route).
+    # scope=tag_dir: CARGO_TARGET_DIR is a SIBLING of src/ — under
+    # mount-ns isolation it is invisible unless the sandbox root spans
+    # both. CARGO_HOME lives under tag_dir for the same reason (the
+    # operator's ~/.cargo would be invisible in the mount-ns view);
+    # the registry download re-runs per cold corpus build and the
+    # sentinel cache absorbs it afterwards.
+    build_env["CARGO_HOME"] = str(tag_dir / "cargo-home")
     run_build_step(
         ["cargo", "build", "--release", "--tests"],
-        cwd=src, extra_env=build_env, network=True,
-        writable_paths=cargo_writables, timeout=1800,
+        cwd=src, scope=tag_dir, extra_env=build_env, network=True,
+        timeout=1800,
     )
 
     candidates = sorted((target_dir / "release" / "deps").glob("regex-*"))

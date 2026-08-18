@@ -160,6 +160,8 @@ support".
 | `RAPTOR_SANITIZER_CUT` | off | Legacy env interface for the sanitizer vertex-cut gate; truthy `1`/`true`/`on`/`yes`. **Prefer the `--sanitizer-cut off\|on\|strict\|shadow` flag** on `/agentic`, `/validate`, `/codeql`; the flag always wins. The pipeline also re-exports the resolved value to its own workers (internal transport). |
 | `RAPTOR_SANITIZER_CUT_NO_LEXICAL` | off | Disables the lexical fallback (strict mode). Footgun-guarded: set without `RAPTOR_SANITIZER_CUT` it warns on stderr and is ignored — suppression never silently turns off. |
 | `RAPTOR_SANITIZER_CUT_PARITY_LOG` | off | Parity-telemetry log path; boolean-style values resolve to the default filename `sanitizer_cut_parity.jsonl` rather than creating a file named `1`. |
+| `RAPTOR_NO_PERLASM` | unset | Any non-empty value (including `0`) disables the perlasm generated-asm inventory enrichment pass (`core.inventory.perlasm`); the `PERLASM_INVENTORY` config gate disables it too. Enrichment is best-effort — failures never break the inventory build. |
+| `RAPTOR_PERLASM_CACHE_DIR` | `<repo>/.cache/perlasm` | Generated-asm cache root for the perlasm pass (build-ID-cache resolution precedent: env > default). Set to share or relocate the cache. |
 | `RAPTOR_SCAN_THIN_COVERAGE_THRESHOLD` | `25` | Minimum unique applicable Semgrep rule count below which the thin-coverage hint fires (`packages/static-analysis`). `0` disables the hint; non-integer/negative warns and uses 25. |
 | `RAPTOR_PATCH_GATE_SCOPE_SLACK` | `40` | Hunk slack (lines around the finding span) the patch gate tolerates (`packages/llm_analysis.patch_gate`). Per-call argument > env > default; malformed/negative values warn and use 40. |
 

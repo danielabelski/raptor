@@ -509,6 +509,11 @@
   "kind": "literal",
   "note": "prep-result dict keys (channel artifacts join here as they land; not a function-name vocabulary)"
  },
+ "core/audit/orchestrator.py::_demotion_log_entry": {
+  "count": 10,
+  "kind": "literal",
+  "note": "audit-log demotion record field names (framework record keys, not target API names)"
+ },
  "core/audit/orchestrator.py::_make_tier_counters": {
   "count": 32,
   "kind": "literal"

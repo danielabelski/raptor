@@ -1,5 +1,7 @@
 """Tests for core.iris.store — persistent spec storage."""
 
+import logging
+
 from core.evidence import EvidenceTier
 from core.iris.assumptions import AssumptionCategory, SafetyAssumption
 from core.iris.specs import TaintSpec
@@ -235,6 +237,70 @@ class TestAssumptionStorage:
         meta = load_store_metadata(run_dir)
         assert len(meta["assumptions"]) == 1
         assert meta["assumptions"][0]["target"] == "modify_state"
+
+
+class TestTargetMismatchLogging:
+    """``load_assumptions`` logs a debug skip line when the stored
+    target differs from the requested one — parity with the
+    ``load_specs`` sibling."""
+
+    def _save_for_target_a(self, run_dir):
+        from pathlib import Path
+        save_specs(
+            run_dir, [_make_spec()],
+            assumptions=[SafetyAssumption(
+                target="modify_state",
+                file="src/state.py",
+                assumption="lock must be held",
+                category=AssumptionCategory.ORDERING,
+                enforced_by=["acquire_lock"],
+            )],
+            target_path=Path("/repo/a"),
+        )
+
+    def test_load_assumptions_logs_skip_on_mismatch(self, tmp_path, caplog):
+        from pathlib import Path
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        self._save_for_target_a(run_dir)
+
+        with caplog.at_level(logging.DEBUG, logger="core.iris.store"):
+            result = load_assumptions(run_dir, target_path=Path("/repo/b"))
+
+        assert result == []
+        assert any(
+            "skipping assumptions for different target" in r.message
+            for r in caplog.records
+        )
+
+    def test_load_assumptions_no_skip_log_on_match(self, tmp_path, caplog):
+        from pathlib import Path
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        self._save_for_target_a(run_dir)
+
+        with caplog.at_level(logging.DEBUG, logger="core.iris.store"):
+            result = load_assumptions(run_dir, target_path=Path("/repo/a"))
+
+        assert len(result) == 1
+        assert not any(
+            "skipping assumptions" in r.message for r in caplog.records
+        )
+
+    def test_load_specs_sibling_still_logs(self, tmp_path, caplog):
+        from pathlib import Path
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        self._save_for_target_a(run_dir)
+
+        with caplog.at_level(logging.DEBUG, logger="core.iris.store"):
+            result = load_specs(run_dir, target_path=Path("/repo/b"))
+
+        assert result == []
+        assert any(
+            "skipping specs for different target" in r.message
+            for r in caplog.records
+        )
 
 
 class TestRoundRecord:

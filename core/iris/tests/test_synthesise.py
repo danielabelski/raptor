@@ -1,6 +1,7 @@
 """Tests for core.iris.synthesise — LLM-driven spec synthesis."""
 
 import json
+import logging
 
 from core.evidence import EvidenceTier
 from core.iris.assumptions import (
@@ -284,6 +285,16 @@ def _spec(fn="exec_cmd", file="src/db.py", role="sink", **kw):
     return TaintSpec(function=fn, file=file, role=role, **kw)
 
 
+def _assumption_json(target):
+    return json.dumps([{
+        "target": target,
+        "file": "src/db.py",
+        "assumption": "input must be validated first",
+        "category": "validation",
+        "enforced_by": ["validate_input"],
+    }])
+
+
 def _bypass(target="exec_cmd", via="do_work"):
     return BypassFinding(
         assumption=SafetyAssumption(
@@ -424,6 +435,55 @@ class TestSynthesiseAssumptions:
         specs = [_spec(fn="exec_cmd", role="sink")]
         result = synthesise_assumptions(specs, failing_llm)
         assert result == []
+
+    def test_llm_failure_warns_about_dropped_batch(self, caplog):
+        def failing_llm(system, user):
+            raise RuntimeError("API error")
+
+        with caplog.at_level(logging.WARNING, logger="core.iris.synthesise"):
+            result = synthesise_assumptions([_spec()], failing_llm)
+
+        assert result == []
+        dropped = [
+            r for r in caplog.records
+            if "dropped after LLM error" in r.message
+        ]
+        assert len(dropped) == 1
+        assert dropped[0].levelno == logging.WARNING
+
+    def test_partial_failure_keeps_surviving_batches(self, caplog):
+        # 21 sink specs -> two batches (_MAX_BATCH = 20). The second
+        # batch (containing only sink_20) fails; the first succeeds.
+        specs = [_spec(fn=f"sink_{i:02d}") for i in range(21)]
+
+        def flaky_llm(system, user):
+            if "sink_20" in user:
+                raise RuntimeError("API error")
+            return _assumption_json("sink_00")
+
+        with caplog.at_level(logging.WARNING, logger="core.iris.synthesise"):
+            result = synthesise_assumptions(specs, flaky_llm)
+
+        assert len(result) == 1
+        assert result[0].target == "sink_00"
+        dropped = [
+            r for r in caplog.records
+            if "dropped after LLM error" in r.message
+        ]
+        assert len(dropped) == 1
+        assert "1 function(s)" in dropped[0].message
+
+    def test_success_path_emits_no_drop_warning(self, caplog):
+        def ok_llm(system, user):
+            return _assumption_json("exec_cmd")
+
+        with caplog.at_level(logging.WARNING, logger="core.iris.synthesise"):
+            result = synthesise_assumptions([_spec()], ok_llm)
+
+        assert len(result) == 1
+        assert not any(
+            "dropped after LLM error" in r.message for r in caplog.records
+        )
 
     def test_with_bypass_findings(self):
         prompts = []

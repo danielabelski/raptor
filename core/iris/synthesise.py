@@ -447,12 +447,26 @@ def synthesise_assumptions(
         )
         return _parse_assumption_response(response)
 
+    def _on_error(
+        batch: _Batch, exc: Exception,
+    ) -> list[SafetyAssumption]:
+        # Unlike spec synthesis there is no heuristic fallback here —
+        # the name heuristics produce TaintSpecs, not SafetyAssumptions
+        # — so a failed batch degrades to no assumptions.  Log loudly:
+        # run_parallel's default only records the failure at DEBUG.
+        logger.warning(
+            "iris.synthesise: assumption batch of %d function(s) "
+            "dropped after LLM error: %s", len(batch.candidates), exc,
+        )
+        return []
+
     from core.llm.concurrency import run_parallel
     mw = getattr(llm_client, "recommended_max_workers", 1)
     results = run_parallel(
         batches, _do_batch,
         max_workers=mw,
         label="iris-assumptions",
+        on_error=_on_error,
     )
 
     all_assumptions: list[SafetyAssumption] = []

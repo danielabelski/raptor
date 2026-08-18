@@ -346,6 +346,19 @@ def _sink_predicate(specs: list[TaintSpec]) -> str:
     return " or\n".join(parts)
 
 
+def _propagator_predicate(specs: list[TaintSpec]) -> str:
+    """Build a disjunction of additional taint steps through propagator calls."""
+    parts = []
+    for s in specs:
+        safe = _escape_codeql(s.function)
+        parts.append(
+            f'    exists(DataFlow::CallNode c | '
+            f'c.getTarget().hasName("{safe}") '
+            f"and pred = c.getAnArgument() and succ = c)"
+        )
+    return " or\n".join(parts)
+
+
 def compile_codeql_config(specs: list[TaintSpec], *, language: str = "cpp") -> str:
     """Generate a runnable CodeQL taint-tracking query from specs.
 
@@ -401,15 +414,7 @@ def compile_codeql_config(specs: list[TaintSpec], *, language: str = "cpp") -> s
             lines.append("")
             lines.append("  predicate isAdditionalTaintStep"
                          "(DataFlow::Node pred, DataFlow::Node succ) {")
-            prop_parts = []
-            for s in propagators:
-                safe = _escape_codeql(s.function)
-                prop_parts.append(
-                    f'    exists(DataFlow::CallNode c | '
-                    f'c.getTarget().hasName("{safe}") '
-                    f"and pred = c.getAnArgument() and succ = c)"
-                )
-            lines.append(" or\n".join(prop_parts))
+            lines.append(_propagator_predicate(propagators))
             lines.append("  }")
         lines.append("}")
         lines.append("")

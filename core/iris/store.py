@@ -134,6 +134,10 @@ def load_assumptions(
     if target_path is not None:
         stored_target = data.get("target_path", "")
         if stored_target and str(Path(stored_target).resolve()) != str(target_path.resolve()):
+            logger.debug(
+                "iris.store: skipping assumptions for different target (%s vs %s)",
+                stored_target, target_path,
+            )
             return []
     return assumptions_from_list(data.get("assumptions", []))
 
@@ -320,7 +324,9 @@ def merge_specs(
     """Merge new specs into existing, deduplicating by (function, file, role).
 
     On conflict, the spec with the higher evidence tier wins.  If tiers
-    are equal, the new spec wins (fresher data).
+    are equal, the new spec wins (fresher data) — unless the existing
+    spec is operator-confirmed (``source == "operator_confirmed"``),
+    which stays sticky on equal-tier merges.
     """
     by_key: dict[str, TaintSpec] = {}
     for spec in existing:

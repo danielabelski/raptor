@@ -1,11 +1,11 @@
-"""RAPTOR_CONFIG dual-schema guard.
+"""RAPTOR_CONFIG / RAPTOR_EF_CONFIG schema guards.
 
-``RAPTOR_CONFIG`` is overloaded (documented known wart): ``core.llm``
-reads it as the models.json path, ``packages/exploit_feasibility``
-reads it as its analysis-settings JSON path. Each reader validates the
-schema it expects and errors actionably naming the other use on
-mismatch — pre-fix both sides degraded silently (zero models loaded /
-an all-defaults AnalysisConfig).
+``RAPTOR_CONFIG`` is ``core.llm``'s models.json path;
+``packages/exploit_feasibility`` reads its analysis-settings JSON
+from ``RAPTOR_EF_CONFIG`` (it historically shared ``RAPTOR_CONFIG``).
+Each reader validates the schema it expects and errors actionably
+naming the right variable on mismatch — stale environments may still
+point one variable at the other reader's file.
 """
 
 from __future__ import annotations
@@ -123,16 +123,50 @@ class TestExploitFeasibilityReader:
         with pytest.raises(ValueError, match=r"core\.llm"):
             AnalysisConfig.from_file(str(path))
 
-    def test_load_config_via_raptor_config_raises(self, tmp_path, monkeypatch):
+    def test_load_config_ignores_raptor_config(self, tmp_path, monkeypatch):
+        """The feasibility reader cut over to RAPTOR_EF_CONFIG;
+        RAPTOR_CONFIG belongs to core.llm and must not be consulted."""
         from packages.exploit_feasibility.config import reset_config
 
         path = tmp_path / "models.json"
         path.write_text(json.dumps(_MODELS_CONFIG))
         monkeypatch.setenv("RAPTOR_CONFIG", str(path))
+        monkeypatch.delenv("RAPTOR_EF_CONFIG", raising=False)
         monkeypatch.chdir(tmp_path)  # no ./.raptor.json interference
         reset_config()
         try:
-            with pytest.raises(ValueError, match="RAPTOR_CONFIG"):
+            config = load_config()  # models file NOT read: defaults
+            assert config.checksec_path == AnalysisConfig().checksec_path
+        finally:
+            reset_config()
+
+    def test_load_config_via_ef_config(self, tmp_path, monkeypatch):
+        from packages.exploit_feasibility.config import reset_config
+
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(_ANALYSIS_SETTINGS))
+        monkeypatch.delenv("RAPTOR_CONFIG", raising=False)
+        monkeypatch.setenv("RAPTOR_EF_CONFIG", str(path))
+        monkeypatch.chdir(tmp_path)
+        reset_config()
+        try:
+            config = load_config()
+            assert config.checksec_path == "/usr/bin/checksec"
+        finally:
+            reset_config()
+
+    def test_ef_config_models_shape_raises_naming_ef_var(
+        self, tmp_path, monkeypatch,
+    ):
+        from packages.exploit_feasibility.config import reset_config
+
+        path = tmp_path / "models.json"
+        path.write_text(json.dumps(_MODELS_CONFIG))
+        monkeypatch.setenv("RAPTOR_EF_CONFIG", str(path))
+        monkeypatch.chdir(tmp_path)
+        reset_config()
+        try:
+            with pytest.raises(ValueError, match="RAPTOR_EF_CONFIG"):
                 load_config()
         finally:
             reset_config()
@@ -144,3 +178,41 @@ class TestExploitFeasibilityReader:
         assert config.checksec_path == "/usr/bin/checksec"
         assert config.timeout_fast == 5
         assert config.enable_caching is False
+
+
+class TestExploitFeasibilityEnvFamily:
+    """The feasibility env family is RAPTOR_EF_*-prefixed; the bare
+    RAPTOR_ spellings it once used read as framework-wide knobs and
+    are no longer consulted."""
+
+    def test_ef_prefixed_names_honoured(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_EF_TIMEOUT_FAST", "42")
+        monkeypatch.setenv("RAPTOR_EF_CACHE_DIR", "/tmp/ef-cache")
+        config = AnalysisConfig.from_env()
+        assert config.timeout_fast == 42
+        assert config.cache_dir == "/tmp/ef-cache"
+
+    def test_bare_legacy_names_ignored(self, monkeypatch):
+        defaults = AnalysisConfig()
+        monkeypatch.setenv("RAPTOR_TIMEOUT_FAST", "42")
+        monkeypatch.setenv("RAPTOR_CACHE_DIR", "/tmp/ef-cache")
+        monkeypatch.setenv("RAPTOR_VERBOSE", "true")
+        config = AnalysisConfig.from_env()
+        assert config.timeout_fast == defaults.timeout_fast
+        assert config.cache_dir == defaults.cache_dir
+        assert config.verbose == defaults.verbose
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("true", True), ("YES", True), ("on", True), ("1", True),
+        ("false", False), ("no", False), ("OFF", False), ("0", False),
+    ])
+    def test_booleans_use_shared_toggle_spellings(
+        self, monkeypatch, raw, expected,
+    ):
+        monkeypatch.setenv("RAPTOR_EF_VERBOSE", raw)
+        assert AnalysisConfig.from_env().verbose is expected
+
+    def test_invalid_boolean_keeps_default(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_EF_ENABLE_CACHING", "ture")
+        config = AnalysisConfig.from_env()
+        assert config.enable_caching is AnalysisConfig().enable_caching

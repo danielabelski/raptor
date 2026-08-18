@@ -105,7 +105,7 @@ def main():
     # rather than hardcoding `REPO_ROOT / "out"`. Pre-fix the
     # hardcoded path missed runs that landed under the
     # operator-configured base (e.g. the project run dir from a
-    # `/project use` invocation, or RAPTOR_OUTPUT_BASE override
+    # `/project use` invocation, or RAPTOR_OUT_DIR override
     # for shared CI workspaces). The hook's "find the active
     # run" logic then said "no run found" for runs that
     # genuinely existed elsewhere; lifecycle events fired

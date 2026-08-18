@@ -1293,8 +1293,9 @@ def seed_from_config(store: CredentialStore) -> None:
     the same as no file at all and surfaces later as the dispatcher's
     own ``503 provider not configured``. One deliberate exception: a
     file shaped like ``packages/exploit_feasibility``'s AnalysisConfig
-    JSON (the other reader of the overloaded ``RAPTOR_CONFIG``) warns
-    actionably — that mismatch has a specific cause worth naming.
+    JSON (which historically shared ``RAPTOR_CONFIG`` before moving to
+    ``RAPTOR_EF_CONFIG``) warns actionably — that mismatch has a
+    specific cause worth naming.
     """
     try:
         from core.json import load_json_with_comments
@@ -1335,19 +1336,20 @@ def seed_from_config(store: CredentialStore) -> None:
     if data is None:
         return
 
-    # Schema guard: RAPTOR_CONFIG is overloaded — it is also
-    # packages/exploit_feasibility's analysis-settings path (see
-    # docs/environment.md). An AnalysisConfig-shaped file means the
-    # operator pointed the variable at the OTHER reader's file; say
-    # so once instead of silently seeding zero credentials.
+    # Schema guard: packages/exploit_feasibility historically shared
+    # RAPTOR_CONFIG for its analysis-settings path before cutting over
+    # to RAPTOR_EF_CONFIG (docs/environment.md). An AnalysisConfig-
+    # shaped file means a stale environment points this variable at
+    # the other reader's file; say so once instead of silently
+    # seeding zero credentials.
     from core.llm.detection import looks_like_analysis_settings
     if looks_like_analysis_settings(data):
         logging.getLogger(__name__).warning(
             "credential seeding skipped: %s looks like a "
             "packages/exploit_feasibility analysis-settings file "
-            "(AnalysisConfig JSON), not a models config. RAPTOR_CONFIG "
-            'is overloaded between the two readers — point it at '
-            'models.json ({"models": [...]}) for core.llm.',
+            "(AnalysisConfig JSON), not a models config. Point "
+            'RAPTOR_CONFIG at models.json ({"models": [...]}); '
+            "exploit-feasibility settings moved to RAPTOR_EF_CONFIG.",
             config_path,
         )
         return

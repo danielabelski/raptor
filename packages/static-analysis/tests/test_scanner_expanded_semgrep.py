@@ -27,7 +27,7 @@ _spec = importlib.util.spec_from_file_location(
 _scanner = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_scanner)
 
-from core.audit import expanded_semgrep as es
+from core.audit import expanded_semgrep as es  # noqa: E402 — after the sys.path/importlib bootstrap above
 
 
 @dataclass
@@ -165,6 +165,10 @@ def test_stage_reports_budget_skips_on_stderr(tmp_path, monkeypatch, capsys):
     repo = _c_repo(tmp_path)
     out = tmp_path / "out"
     out.mkdir()
+    # Hermetic availability (same stub the sibling tests use): without
+    # it, a semgrep-less host early-returns with the 'not installed'
+    # message before the budget-skip branch this test pins.
+    monkeypatch.setattr("packages.semgrep.runner.is_available", lambda: True)
     monkeypatch.setattr(
         es, "build_expanded_corpus",
         lambda target, scratch, **kw: FakeCorpus(

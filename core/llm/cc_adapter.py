@@ -185,7 +185,7 @@ def cc_subprocess_env(
     import os
 
     from core.config import RaptorConfig
-    from core.llm.egress import operator_proxy_env
+    from core.llm.egress import augment_child_no_proxy, operator_proxy_env
 
     if credential_mode not in ("env", "proxy"):
         raise ValueError(
@@ -233,6 +233,21 @@ def cc_subprocess_env(
                 if key in os.environ:
                     env[key] = os.environ[key]
     env.update(operator_proxy_env())
+    # Children that resolve their own credential chain (unsandboxed
+    # substrate children) probe IMDS during resolution; on proxied
+    # hosts those link-local probes must never travel to the operator
+    # proxy, which denies them (observed as constant denied
+    # token/credential request pairs in the proxy's logs). Append the
+    # operational-only NO_PROXY entries — loopback semantics and the
+    # egress chokepoint bypass are untouched. Unproxied hosts stay
+    # mutation-free: no proxy pointer means nothing to exempt from.
+    if any(env.get(v) for v in ("HTTPS_PROXY", "https_proxy",
+                                "HTTP_PROXY", "http_proxy",
+                                "ALL_PROXY", "all_proxy")):
+        merged = augment_child_no_proxy(
+            env.get("NO_PROXY") or env.get("no_proxy") or "")
+        env["NO_PROXY"] = merged
+        env["no_proxy"] = merged
     return env
 
 

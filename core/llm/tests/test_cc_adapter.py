@@ -622,6 +622,36 @@ class TestCcSubprocessEnv:
         assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
         assert env["NO_PROXY"] == "169.254.169.254"
 
+    def test_proxied_child_no_proxy_gains_imds(self, monkeypatch):
+        """Children that resolve their own credential chain probe IMDS;
+        on proxied hosts those link-local probes must never travel to
+        the operator proxy (which denies them). The child's NO_PROXY
+        gains the IMDS entry, operator entries preserved first."""
+        from core.llm import egress
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setattr(egress, "_original_proxy_env", None)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+        monkeypatch.setenv("NO_PROXY", "internal.corp")
+        env = cc_subprocess_env()
+        entries = [p.strip() for p in env["NO_PROXY"].split(",")]
+        assert entries[0] == "internal.corp"
+        assert "169.254.169.254" in entries
+        assert env["no_proxy"] == env["NO_PROXY"]
+
+    def test_unproxied_child_env_stays_mutation_free(self, monkeypatch):
+        """No operator proxy → nothing to exempt from; the child env
+        must not have a NO_PROXY invented for it."""
+        from core.llm import egress
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setattr(egress, "_original_proxy_env", None)
+        for v in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY",
+                  "https_proxy", "ALL_PROXY", "all_proxy",
+                  "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(v, raising=False)
+        env = cc_subprocess_env()
+        assert "NO_PROXY" not in env
+        assert "no_proxy" not in env
+
     def test_proxy_snapshot_wins_over_egress_rewrite(self, monkeypatch):
         """After enable_llm_egress points HTTPS_PROXY at the in-process
         loopback proxy, children must still get the operator's original

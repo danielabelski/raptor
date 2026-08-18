@@ -180,7 +180,53 @@ def test_stage_reports_budget_skips_on_stderr(tmp_path, monkeypatch, capsys):
     assert "SKIPPED" in capsys.readouterr().err
 
 
-def test_stage_pack_failure_is_not_fatal(tmp_path, monkeypatch):
+def test_stage_one_pack_failure_is_not_fatal(tmp_path, monkeypatch, capsys):
+    """One failing pack degrades that pack only; the stage still emits
+    SARIF and tallies the failure on stderr."""
+    repo = _c_repo(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(
+        es, "build_expanded_corpus",
+        lambda target, scratch, **kw: FakeCorpus(
+            root=Path(scratch), candidates_total=1, expanded=1,
+            tus={"main.c": object()},
+        ),
+    )
+    monkeypatch.setattr(
+        es, "translate_corpus_findings",
+        lambda corpus, findings: (list(findings), 0),
+    )
+
+    calls = []
+
+    def run_rule(target, config, **kw):
+        calls.append(config)
+        if len(calls) == 1:
+            raise RuntimeError("pack exploded")
+        return FakeSemgrepResult()
+
+    monkeypatch.setattr("packages.semgrep.runner.run_rule", run_rule)
+    monkeypatch.setattr("packages.semgrep.runner.is_available", lambda: True)
+
+    rules_a = tmp_path / "rules_a"
+    rules_a.mkdir()
+    rules_b = tmp_path / "rules_b"
+    rules_b.mkdir()
+    paths = _scanner.run_expanded_semgrep_stage(
+        repo, out, [str(rules_a), str(rules_b)], [],
+    )
+    assert len(paths) == 1
+    sarif = json.loads(Path(paths[0]).read_text(encoding="utf-8"))
+    assert sarif["runs"][0]["results"] == []
+    assert "1/2 pack(s) failed" in capsys.readouterr().err
+
+
+def test_stage_all_packs_failed_surfaces_error_no_sarif(
+    tmp_path, monkeypatch, capsys,
+):
+    """All packs failing must not silently write a zero-finding SARIF —
+    that reads downstream as a clean scan."""
     repo = _c_repo(tmp_path)
     out = tmp_path / "out"
     out.mkdir()
@@ -201,10 +247,11 @@ def test_stage_pack_failure_is_not_fatal(tmp_path, monkeypatch):
     rules = tmp_path / "rules"
     rules.mkdir()
     paths = _scanner.run_expanded_semgrep_stage(repo, out, [str(rules)], [])
-    # Stage survives; SARIF written with zero results.
-    assert len(paths) == 1
-    sarif = json.loads(Path(paths[0]).read_text(encoding="utf-8"))
-    assert sarif["runs"][0]["results"] == []
+    assert paths == []
+    assert not (out / "expanded_semgrep.sarif").exists()
+    err = capsys.readouterr().err
+    assert "FAILED" in err
+    assert "no SARIF emitted" in err
 
 
 def test_stage_requires_semgrep(tmp_path, monkeypatch, capsys):

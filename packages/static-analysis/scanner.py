@@ -1884,6 +1884,7 @@ def run_expanded_semgrep_stage(
         all_findings: list[dict] = []
         seen: set = set()
         total_dropped = 0
+        failed_packs = 0
         for name, config in configs:
             try:
                 res = semgrep_run_rule(
@@ -1893,11 +1894,13 @@ def run_expanded_semgrep_stage(
                 )
             except Exception as exc:  # noqa: BLE001 — one pack must not kill the stage
                 logger.warning("expanded-semgrep: pack %s failed: %s", name, exc)
+                failed_packs += 1
                 continue
             if res.errors and not res.findings:
                 logger.debug(
                     "expanded-semgrep: pack %s errors: %s", name, res.errors[:3],
                 )
+                failed_packs += 1
                 continue
             translated, dropped = es.translate_corpus_findings(
                 corpus, res.findings,
@@ -1909,6 +1912,30 @@ def run_expanded_semgrep_stage(
                     continue
                 seen.add(key)
                 all_findings.append(f)
+
+        if configs and failed_packs == len(configs):
+            # Every pack failed: writing a zero-finding SARIF here
+            # would read downstream as a clean expanded-semgrep run.
+            # Surface the failure and emit nothing (mirrors the
+            # graduated-rules stage's stderr failure tally).
+            print(
+                f"⚠️  expanded-semgrep stage FAILED: all "
+                f"{len(configs)} pack(s) failed to run — no SARIF "
+                f"emitted (a zero-finding result would be "
+                f"indistinguishable from a clean scan)",
+                file=sys.stderr,
+            )
+            logger.error(
+                "expanded-semgrep: all %d packs failed; no SARIF emitted",
+                len(configs),
+            )
+            return []
+        if failed_packs:
+            print(
+                f"⚠️  expanded-semgrep: {failed_packs}/{len(configs)} "
+                f"pack(s) failed to run",
+                file=sys.stderr,
+            )
 
         sarif_path = out_dir / "expanded_semgrep.sarif"
         save_json(sarif_path, es.findings_to_sarif(all_findings))

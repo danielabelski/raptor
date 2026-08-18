@@ -96,6 +96,7 @@ from .findings import write_findings
 from .gaps import (
     compute_gaps,
     gap_for_site,
+    hoist_pins,
     hydrate_live_gaps_for_detectors,
     load_checklist,
     load_context_map,
@@ -246,6 +247,10 @@ class OrchestratorConfig:
     # rest (see gaps.truncate_gaps_to_budget). Only consulted when
     # scope is set.
     scope_floor: bool = True
+    # Operator pins (``--pin file:function``, repeatable): guaranteed
+    # review slots, hoisted to the head of the schedule before the
+    # budget cut. Guidance only — never excludes the rest of the queue.
+    pins: list[str] | None = None
     strategy_filter: str | None = None
     models: list[str] = field(default_factory=lambda: ["default"])
     multi_model: bool = False
@@ -3068,6 +3073,10 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             )
     except Exception:
         logger.debug("SCA advisory enrichment failed", exc_info=True)
+
+    # Operator pins (``--pin file:function``): guaranteed review slots,
+    # hoisted ahead of the budget cut. See gaps.hoist_pins.
+    gaps = hoist_pins(gaps, getattr(config, "pins", None))
 
     if config.budget and config.budget > 0:
         # Records the dropped tail in not-attempted.json so the run

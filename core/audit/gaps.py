@@ -403,6 +403,50 @@ def compute_gaps(
     return gaps
 
 
+def hoist_pins(
+    gaps: list[dict[str, Any]],
+    pins: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Hoist operator-pinned gaps to the head of the ordered list.
+
+    ``pins`` are ``file:function`` keys (``--pin``, repeatable). Pinned
+    gaps move to the front — the budget cut and the scope floor then
+    cannot drop them, and the review loop reaches them first. Guidance
+    only: unlike the ``--functions`` filter nothing is excluded, and
+    unmatched pins warn loudly instead of failing the run (an
+    already-reviewed function is not a gap — re-review needs --force).
+
+    Motivating run: a scoped head-to-head where every per-file floor
+    slot went to a finding-free sibling while the functions under
+    investigation sat unscheduled.
+    """
+    wanted = [p for p in (pins or []) if p]
+    if not wanted or not gaps:
+        return gaps
+    pin_set = set(wanted)
+    pinned = [
+        g for g in gaps
+        if f"{g.get('file', '')}:{g.get('name', '')}" in pin_set
+    ]
+    matched = {f"{g.get('file', '')}:{g.get('name', '')}" for g in pinned}
+    unmatched = sorted(pin_set - matched)
+    if unmatched:
+        logger.warning(
+            "--pin: %d pin(s) matched no gap and will not be reviewed: "
+            "%s (already-reviewed functions are not gaps — use --force "
+            "to re-review)",
+            len(unmatched), ", ".join(unmatched),
+        )
+    if not pinned:
+        return gaps
+    logger.info(
+        "--pin: %d function(s) hoisted to the front of the schedule: %s",
+        len(matched), ", ".join(sorted(matched)),
+    )
+    pinned_ids = {id(g) for g in pinned}
+    return pinned + [g for g in gaps if id(g) not in pinned_ids]
+
+
 def truncate_gaps_to_budget(
     gaps: list[dict[str, Any]],
     budget: int | None,

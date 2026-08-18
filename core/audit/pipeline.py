@@ -63,6 +63,9 @@ class AuditPipelineOpts:
     out_dir: Path = field(default_factory=lambda: Path("out"))
     scope: list[str] | None = None
     scope_floor: bool = True
+    # ``--pin file:function`` (repeatable): guaranteed review slots
+    # hoisted ahead of the budget cut; never excludes other gaps.
+    pins: list[str] | None = None
     functions: list[str] | None = None
     models: list[str] | None = None
     max_cost_usd: float | None = None
@@ -174,14 +177,14 @@ def _ensure_dispatcher_route(client, models: list[str]) -> None:
             continue
         try:
             candidates.append(client.config.config_for_model(name))
-        except Exception:  # noqa: BLE001 — unresolvable name surfaces later
+        except Exception:
             logger.debug("config_for_model(%r) failed", name, exc_info=True)
     try:
         from core.llm.dispatcher.lifecycle import (
             ensure_route_for_model_configs,
         )
         ensure_route_for_model_configs(candidates, label="raptor-audit")
-    except Exception:  # noqa: BLE001 — provider errors surface downstream
+    except Exception:
         logger.warning(
             "could not start in-process LLM dispatcher for "
             "Bedrock-routed models", exc_info=True,
@@ -208,6 +211,7 @@ def _build_orchestrator_config(
         budget=opts.budget,
         scope=opts.scope,
         scope_floor=opts.scope_floor,
+        pins=opts.pins,
         strategy_filter=opts.strategy_filter,
         models=models,
         multi_model=len(models) > 1,

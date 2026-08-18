@@ -133,3 +133,49 @@ class TestTierDiagnosticsMerge:
         write_tier_diagnostics({}, tmp_path)
         diag = json.loads((tmp_path / "tier-diagnostics.json").read_text())
         assert diag["scope_coverage"]["zero_slot_files"] == ["c.c"]
+
+
+class TestHoistPins:
+    """--pin: guaranteed slots, hoisted ahead of the budget cut."""
+
+    def _gaps(self):
+        return [
+            {"file": "a.c", "name": "high", "priority": 1},
+            {"file": "a.c", "name": "mid", "priority": 2},
+            {"file": "b.c", "name": "low", "priority": 3},
+            {"file": "b.c", "name": "target", "priority": 4},
+        ]
+
+    def test_pin_moves_to_front(self):
+        from core.audit.gaps import hoist_pins
+        out = hoist_pins(self._gaps(), ["b.c:target"])
+        assert out[0]["name"] == "target"
+        assert [g["name"] for g in out[1:]] == ["high", "mid", "low"]
+
+    def test_pin_survives_budget_cut(self, tmp_path):
+        from core.audit.gaps import hoist_pins, truncate_gaps_to_budget
+        out = hoist_pins(self._gaps(), ["b.c:target"])
+        kept = truncate_gaps_to_budget(out, 2, tmp_path)
+        assert {g["name"] for g in kept} == {"target", "high"}
+
+    def test_pin_becomes_file_floor_slot(self, tmp_path):
+        from core.audit.gaps import hoist_pins, truncate_gaps_to_budget
+        out = hoist_pins(self._gaps(), ["b.c:target"])
+        kept = truncate_gaps_to_budget(
+            out, 2, tmp_path, scope=["a.c", "b.c"], scope_floor=True,
+        )
+        # Floor picks the first gap per file; the pin IS b.c's slot.
+        assert {g["name"] for g in kept} == {"target", "high"}
+
+    def test_unmatched_pin_warns_but_never_fails(self, caplog):
+        from core.audit.gaps import hoist_pins
+        with caplog.at_level("WARNING"):
+            out = hoist_pins(self._gaps(), ["z.c:ghost"])
+        assert [g["name"] for g in out] == ["high", "mid", "low", "target"]
+        assert any("matched no gap" in r.message for r in caplog.records)
+
+    def test_no_pins_is_identity(self):
+        from core.audit.gaps import hoist_pins
+        gaps = self._gaps()
+        assert hoist_pins(gaps, None) is gaps
+        assert hoist_pins(gaps, []) is gaps

@@ -1266,6 +1266,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         out_dir=out_dir,
         scope=args.scope,
         scope_floor=args.scope_floor,
+        pins=args.pin,
         models=models if models else None,
         max_cost_usd=args.max_cost,
         max_seconds=args.max_time,
@@ -1664,6 +1665,14 @@ def main() -> int:
                        help="Max functions to review")
     p_run.add_argument("--scope", action="append", default=None,
                        help="Restrict to a subdirectory (repeatable)")
+    p_run.add_argument("--pin", action="append", default=None,
+                       help="Pin a function into the review schedule: "
+                            "file:function relative to the target, "
+                            "repeatable. Pinned functions are hoisted "
+                            "to the head of the schedule (guaranteed a "
+                            "slot under --budget); the rest of the "
+                            "queue fills normally — unlike a functions "
+                            "filter, nothing is excluded")
     p_run.add_argument("--scope-floor", dest="scope_floor",
                        action="store_true", default=True,
                        help="Guarantee every in-scope file at least one "

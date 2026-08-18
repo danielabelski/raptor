@@ -45,7 +45,12 @@ Feature parity table (Linux ⇄ macOS):
                                         extended category set
                                         (file-read-data, mach-lookup,
                                         process-exec*, process-fork,
-                                        signal). Coarser than Linux's
+                                        signal, plus budget-tracked
+                                        file-read-metadata,
+                                        process-info*, iokit-open,
+                                        sysctl-read — full list in
+                                        run_sandboxed's docstring).
+                                        Coarser than Linux's
                                         per-syscall trace and no argv,
                                         but operationally similar
                                         signal-volume control. See
@@ -176,6 +181,15 @@ def run_sandboxed(cmd: list[str], *,
                   capture_output: bool = True,
                   text: bool = True,
                   stdin=None,
+                  # Unlike Linux _spawn's os.fork() chain, this backend
+                  # wraps subprocess.run, which plumbs both of these
+                  # natively — the shim chain preserves inherited
+                  # non-CLOEXEC fds across its execs, and input= is
+                  # handled by subprocess's own communicate machinery.
+                  # Caller fds are unioned with the shim's status/death
+                  # pipe fds at the run call.
+                  pass_fds: "Iterable[int] | None" = None,
+                  input: "bytes | str | None" = None,  # noqa: A002 — subprocess parity
                   audit_mode: bool = False,
                   audit_run_dir: str | None = None,
                   audit_verbose: bool = False,
@@ -186,6 +200,7 @@ def run_sandboxed(cmd: list[str], *,
                   use_egress_proxy: bool = False,
                   proxy_port: int | None = None,
                   fake_home: bool = False,
+                  exclude_tmp_baseline: bool = False,
                   strict_env: bool = False,
                   # persona: host-fingerprint sanitisation is Linux-only
                   # (bind-mount + UTS-ns + sched_setaffinity primitives).
@@ -316,6 +331,7 @@ def run_sandboxed(cmd: list[str], *,
         readable_paths=list(readable_paths) if readable_paths else None,
         writable_paths=list(writable_paths) if writable_paths else None,
         fake_home=fake_home,
+        exclude_tmp_baseline=exclude_tmp_baseline,
         audit_mode=audit_mode,
         audit_verbose=audit_verbose,
         seccomp_profile=seccomp_profile,
@@ -365,6 +381,30 @@ def run_sandboxed(cmd: list[str], *,
                 # the env var still points to the right location and
                 # the child's first write will create it.
                 pass
+
+    # 2b. exclude_tmp_baseline: with /private/tmp stripped from the
+    #     profile's writable exceptions, the child's default TMPDIR
+    #     (/var/folders/...) is ALSO unwritable under write isolation
+    #     — tempfile falls through candidate dirs and compilers fail
+    #     on intermediates. Redirect TMPDIR into {output}/.tmp, which
+    #     rides the output writable exception. Without an output dir
+    #     there is nowhere writable to point it — warn, because
+    #     tmp-dependent tools will fail (that is the flag's contract:
+    #     only use it when the workload doesn't need tmp).
+    if exclude_tmp_baseline:
+        if output:
+            _scratch_tmp = os.path.join(output, ".tmp")
+            try:
+                os.makedirs(_scratch_tmp, mode=0o700, exist_ok=True)
+            except OSError:
+                pass
+            child_env["TMPDIR"] = _scratch_tmp
+        else:
+            logger.warning(
+                "exclude_tmp_baseline without output=: tmp writes are "
+                "denied and TMPDIR has no writable redirect target — "
+                "tmp-dependent tools in this sandbox will fail"
+            )
 
     # 3. rlimits via preexec_fn.
     #
@@ -505,10 +545,14 @@ def run_sandboxed(cmd: list[str], *,
             timeout=timeout,
             capture_output=capture_output,
             text=text,
+            # stdin/input mutual exclusion is subprocess.run's own
+            # contract; forward both verbatim so a caller error
+            # raises the same ValueError it would unsandboxed.
             stdin=stdin,
+            input=input,
             preexec_fn=preexec,
             start_new_session=start_new_session,
-            pass_fds=(status_w, death_r),
+            pass_fds=(status_w, death_r, *tuple(pass_fds or ())),
         )
     finally:
         # Close our copies. status_w MUST be closed before reading status_r,

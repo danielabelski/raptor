@@ -26,8 +26,9 @@ JSONL append is atomic on POSIX up to PIPE_BUF (~4KB) so concurrent writers
 within the same run (multi-threaded callers) don't corrupt each other. Each
 record is well under PIPE_BUF in practice — `cmd_display` is bounded by
 ``_CMD_DISPLAY_MAX_ARGS`` (3 args) and escape_nonprintable'd before reaching
-us. Pathologically long cmd args could exceed PIPE_BUF; defer that defense
-until it surfaces.
+us. Pathologically long single args are defended against too:
+``record_denial`` truncates ``cmd_display`` to ``MAX_CMD_LEN`` (2 KiB)
+before persisting.
 
 Concurrency assumption: the design assumes a single-process, single-active-run
 model. Concurrent threads within a process can record_denial safely (POSIX
@@ -410,8 +411,11 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     ``<run_dir>/sandbox-summary.json`` aggregating all denials.
 
     Returns the summary dict (also written to disk), or None if no denials
-    were recorded for this run. The intermediate JSONL is removed after
-    successful summary write — operators read the summary, not the JSONL.
+    were recorded for this run. The intermediate JSONL is renamed away
+    up-front and unlinked as soon as its contents are in memory —
+    BEFORE the summary write, and even when the write fails or there
+    are no denials (rename-then-read race hardening; see the inline
+    comments). Operators read the summary, not the JSONL.
 
     Idempotent: if called again with the same run_dir and no JSONL is
     present, returns None without writing.

@@ -5,8 +5,10 @@ before Landlock/seccomp are applied. Listens on 127.0.0.1:<port> (TCP)
 inside the netns and relays every inbound connection to the egress
 proxy's Unix socket in the parent namespace (visible via bind-mount).
 
-Fork-safe: uses only os-level I/O, socket, struct, select. No Python
-logging, no threading, no imports that trigger C-extension init.
+Fork-safe: uses only errno, fcntl, os-level I/O, socket, struct,
+select (all imported pre-fork at module load) plus a post-fork
+``import time`` of the compiled-in builtin. No Python logging, no
+threading, no post-fork imports that trigger C-extension init.
 """
 
 import errno
@@ -38,8 +40,10 @@ def _run_forwarder(listen_port, unix_socket_path, death_r):
     """Relay TCP connections on 127.0.0.1:<listen_port> to *unix_socket_path*.
 
     Exits when *death_r* becomes readable (parent closed write end) or
-    when all active relays have drained. Designed to run post-fork
-    before Landlock/seccomp — the forwarder itself is unrestricted.
+    if select() itself fails; individual relays that drain are torn
+    down but the loop keeps serving new connections until death_r
+    fires. Designed to run post-fork before Landlock/seccomp — the
+    forwarder itself is unrestricted.
 
     Uses only fork-safe primitives.
     """

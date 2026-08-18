@@ -20,8 +20,9 @@ FRIDA_PROFILE = "frida"
 # -------------------
 # Profiles set ENFORCEMENT strictness. Audit mode is an ORTHOGONAL
 # concern engaged by the `--audit` CLI flag (or `audit=True` kwarg)
-# and works with any profile that has a seccomp filter (i.e. full or
-# debug); on `network-only` it engages only the egress-proxy log-mode
+# and works with any profile that has a seccomp filter (full, strict,
+# target_run, debug, frida); on `network-only` it engages only the
+# egress-proxy log-mode
 # gate (the other audit layers are no-ops because there's no Landlock
 # / seccomp to compare against), and on `none` it errors as
 # incoherent.
@@ -54,6 +55,13 @@ FRIDA_PROFILE = "frida"
 # frida:        debug + AF_UNIX sockets allowed (frida-helper uses Unix
 #               domain sockets for its internal IPC with the target
 #               process). AF_NETLINK/AF_PACKET/SOCK_RAW stay blocked.
+#               ALSO ``block_network: False`` — the attach modes (USB /
+#               remote frida-server) speak TCP to the server, so the
+#               profile default leaves the network open for them. The
+#               sandboxed runner (packages/frida/sandboxed.py) passes
+#               ``block_network=spawn_mode`` per call, so SPAWNED
+#               targets still run network-blocked; the per-call kwarg
+#               is authoritative over this default, as everywhere.
 # network-only: network blocked + rlimits only (no Landlock, no seccomp).
 #               For tools whose correctness requires unrestricted fs or
 #               syscalls within a build — user's last-resort-short-of-none.

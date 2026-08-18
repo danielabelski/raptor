@@ -396,16 +396,16 @@
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
   },
   "dead:dead_function:core/analysis/lifecycle_collector.py:collect_read_site": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+   "note": "kept: feature seed \u2014 lifecycle/UAF audit pass (guard-annotated read-site collector, pair of collect_write_site; roadmap decision 2026-08-17)"
   },
   "dead:dead_function:core/analysis/lifecycle_collector.py:collect_write_site": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+   "note": "kept: feature seed \u2014 lifecycle/UAF audit pass (guard-annotated write-site collector; roadmap decision 2026-08-17)"
   },
   "dead:dead_function:core/analysis/taint_approx.py:format_transitive_taint": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+   "note": "kept: feature seed \u2014 transitive-taint LLM prompt wiring (prose renderer awaiting a prompt consumer; roadmap decision 2026-08-17)"
   },
   "dead:dead_function:core/audit/_util.py:extract_sink_sets": {
-   "note": "kept: its paired artifact discovered-sinks.json gained a reader (core/orchestration/context_map_sinks imports audit discovered sinks into the /understand map) without consuming this helper; still zero-reference \u2014 wire into the sink-catalog flow or drop, owner decision pending"
+   "note": "kept: feature seed \u2014 sink catalog (splitter for the pending discovered-sinks.json reader flow; the /understand map import consumes the artifact without this helper; wire both or drop both; roadmap decision 2026-08-17)"
   },
   "dead:dead_function:core/audit/_util.py:safe_joern_name": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
@@ -465,31 +465,31 @@
    "note": "test scaffolding kept for the planned CPG-backed census cases; harmless"
   },
   "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.generate_mutated_seed": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.learn_from_crash": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.optimize_corpus": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/exploit_validator.py:ExploitValidator.quick_syntax_check": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.adapt_fuzzing_strategy": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.should_continue_towards_goal": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.update_goal_progress": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/planner.py:FuzzingPlanner.should_continue_fuzzing": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/autonomous/planner.py:FuzzingState.is_finding_crashes": {
-   "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
+   "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
   "dead:dead_method:packages/checker_synthesis/library.py:RuleLibrary.active_entries": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"

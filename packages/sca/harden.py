@@ -731,6 +731,24 @@ def _plan_one(
     cand.to_version = target_version
     cand.cve_remaining = list(residual_advs)
 
+    # Advisories the move actually CLEARS — what turns "promoted X→Y"
+    # into an auditable security claim. Assessed on the concrete
+    # current version (cache-backed OSV batch); a range spec string
+    # can't be assessed.
+    if dep.version and not any(c in dep.version for c in "<>=!~ ,*"):
+        try:
+            current = _rank_candidates_by_safety(
+                ecosystem=dep.ecosystem, name=dep.name,
+                candidates=[dep.version], osv=osv, kev=kev, epss=epss,
+            )
+        except Exception:                                # noqa: BLE001
+            current = []
+        if current:
+            cand.cve_cleared = [
+                a for a in current[0].advisory_ids
+                if a not in residual_advs
+            ]
+
     # Determine major crossing — applies to both promoted and
     # degraded_safety (a degraded promotion that crosses a major needs
     # review *and* impact analysis).
@@ -1614,10 +1632,14 @@ def _write_report(
         lines.append("## Promoted (applied)")
         lines.append("")
         for c in by_status["promoted"]:
+            cleared = (
+                f" — clears {', '.join(c.cve_cleared)}"
+                if c.cve_cleared else ""
+            )
             lines.append(
                 f"- **{c.ecosystem}:{c.name}** "
                 f"`{c.from_version or '*'}` → `{c.to_version}` "
-                f"in `{c.manifest}`"
+                f"in `{c.manifest}`{cleared}"
             )
         lines.append("")
 

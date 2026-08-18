@@ -195,6 +195,19 @@ def test_prepare_builtin_seed_corpus_materialises_flat_manifest(tmp_path):
     assert manifest["seeds"][0]["sha256"]
 
 
+def test_manifest_paths_inside_repo_are_relative(tmp_path):
+    """A committed manifest (seeds/) must not embed the local checkout
+    path; only out-of-repo run dirs keep their absolute form."""
+    from packages.fuzzing.seed_corpus import _REPO_ROOT, _portable_path
+
+    assert _portable_path(_REPO_ROOT / "seeds") == "seeds"
+    assert _portable_path(
+        _REPO_ROOT / "packages" / "fuzzing" / "data" / "seed_corpus" / "manifest.json"
+    ) == "packages/fuzzing/data/seed_corpus/manifest.json"
+    outside = tmp_path / "run-out"
+    assert _portable_path(outside) == str(outside)
+
+
 def test_prepare_builtin_seed_corpus_resets_only_raptor_generated_files(tmp_path):
     out = tmp_path / "builtin"
     out.mkdir()

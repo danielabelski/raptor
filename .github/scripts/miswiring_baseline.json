@@ -599,9 +599,6 @@
   "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },
-  "plumbing:orphan_config_field:packages/strategy_eval/models.py:ABResult.sample_id": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
   "artifacts:orphan_reader::diagram-stdout.log": {
    "note": "self-test harness log: ctx.run() writes per-case logs dynamically as f\"{name}.log\"; case_diagram_stdout reads its own log back to assert diagram output \u2014 write side invisible to the static pass"
   },

@@ -3,6 +3,13 @@
 Hermetic — no LLM, no subprocesses. Every classification case is a
 pair: the deviant form must land in a deviant-eligible class, the
 conforming/acknowledged twin must not.
+
+Two extraction tiers, BOTH pinned (§2.1: "regex fallback keeps
+today's coarse classes"): the classification tests parametrise over
+``parser_tier`` so the tree-sitter contract and the regex-fallback
+contract are each asserted wherever they can run. Bare CI (no grammar
+wheels installed) skips the tree-sitter leg with a reason and still
+executes the fallback leg; provisioned hosts run both.
 """
 
 from __future__ import annotations
@@ -26,6 +33,28 @@ from core.audit.callsite_consistency import (
     detect_callsite_deviations,
     parse_source_cached,
 )
+from core.testing import force_census_regex_fallback, ts_parser_available
+
+
+@pytest.fixture(params=["tree-sitter", "regex-fallback"])
+def parser_tier(request, monkeypatch):
+    """Run the census contract on both extraction tiers."""
+    if request.param == "regex-fallback":
+        force_census_regex_fallback(monkeypatch)
+    return request.param
+
+
+def _tier(parser_tier: str, *langs: str) -> str:
+    """``"ts"`` / ``"rx"``; skips the tree-sitter leg when any of the
+    fixture's grammars is not installed (bare CI)."""
+    if parser_tier == "tree-sitter":
+        missing = [lang for lang in langs if not ts_parser_available(lang)]
+        if missing:
+            pytest.skip(
+                "no tree-sitter grammar for: " + ", ".join(missing),
+            )
+        return "ts"
+    return "rx"
 
 
 def _usages(source_texts: dict[str, str]) -> dict[tuple[str, str], str]:
@@ -39,7 +68,8 @@ def _usages(source_texts: dict[str, str]) -> dict[tuple[str, str], str]:
 
 
 class TestCUsage:
-    def test_void_cast_is_acknowledged(self):
+    def test_void_cast_is_acknowledged(self, parser_tier):
+        _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 (void)drop_privileges();
@@ -49,7 +79,8 @@ class TestCUsage:
         u = _usages({"main.c": src})
         assert u[("drop_privileges", "run")] == USAGE_ACKNOWLEDGED
 
-    def test_bare_statement_is_discarded(self):
+    def test_bare_statement_is_discarded(self, parser_tier):
+        _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 drop_privileges();
@@ -59,7 +90,8 @@ class TestCUsage:
         u = _usages({"main.c": src})
         assert u[("drop_privileges", "run")] == USAGE_DISCARDED
 
-    def test_condition_is_tested(self):
+    def test_condition_is_tested(self, parser_tier):
+        _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 if (drop_privileges() != 0)
@@ -70,7 +102,8 @@ class TestCUsage:
         u = _usages({"main.c": src})
         assert u[("drop_privileges", "run")] == USAGE_TESTED
 
-    def test_captured_then_tested_is_tested(self):
+    def test_captured_then_tested_is_tested(self, parser_tier):
+        tier = _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 int rc = drop_privileges();
@@ -80,9 +113,13 @@ class TestCUsage:
             }
         """)
         u = _usages({"main.c": src})
-        assert u[("drop_privileges", "run")] == USAGE_TESTED
+        # Fallback contract: no read-scan without a tree (§2.1) — a
+        # captured binding stays captured_used on the regex tier.
+        expected = USAGE_TESTED if tier == "ts" else USAGE_CAPTURED_USED
+        assert u[("drop_privileges", "run")] == expected
 
-    def test_captured_never_read_is_captured_unused(self):
+    def test_captured_never_read_is_captured_unused(self, parser_tier):
+        tier = _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 int rc = drop_privileges();
@@ -91,9 +128,15 @@ class TestCUsage:
             }
         """)
         u = _usages({"main.c": src})
-        assert u[("drop_privileges", "run")] == USAGE_CAPTURED_UNUSED
+        # Fallback contract: without a read-scan the regex tier cannot
+        # see that the binding is never consulted.
+        expected = (
+            USAGE_CAPTURED_UNUSED if tier == "ts" else USAGE_CAPTURED_USED
+        )
+        assert u[("drop_privileges", "run")] == expected
 
-    def test_captured_and_passed_on_is_captured_used(self):
+    def test_captured_and_passed_on_is_captured_used(self, parser_tier):
+        _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 int rc = drop_privileges();
@@ -104,7 +147,8 @@ class TestCUsage:
         u = _usages({"main.c": src})
         assert u[("drop_privileges", "run")] == USAGE_CAPTURED_USED
 
-    def test_return_call_is_propagated(self):
+    def test_return_call_is_propagated(self, parser_tier):
+        _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 return drop_privileges();
@@ -113,7 +157,8 @@ class TestCUsage:
         u = _usages({"main.c": src})
         assert u[("drop_privileges", "run")] == USAGE_PROPAGATED
 
-    def test_argument_call_is_captured_used(self):
+    def test_argument_call_is_captured_used(self, parser_tier):
+        tier = _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 report(drop_privileges());
@@ -121,13 +166,17 @@ class TestCUsage:
             }
         """)
         u = _usages({"main.c": src})
-        assert u[("drop_privileges", "run")] == USAGE_CAPTURED_USED
+        # Fallback contract: line shapes only — the inner call rides
+        # the statement-only classification of its line.
+        expected = USAGE_CAPTURED_USED if tier == "ts" else USAGE_DISCARDED
+        assert u[("drop_privileges", "run")] == expected
 
 
 class TestGoUsage:
-    def test_blank_assign_is_captured_unused(self):
+    def test_blank_assign_is_captured_unused(self, parser_tier):
         """Regression for the pre-enum hole: `_ = f()` counted as
         captured; it is an assigned-then-unreadable discard."""
+        _tier(parser_tier, "go")
         src = textwrap.dedent("""\
             package main
 
@@ -138,7 +187,8 @@ class TestGoUsage:
         u = _usages({"main.go": src})
         assert u[("doWork", "run")] == USAGE_CAPTURED_UNUSED
 
-    def test_err_checked_is_tested(self):
+    def test_err_checked_is_tested(self, parser_tier):
+        tier = _tier(parser_tier, "go")
         src = textwrap.dedent("""\
             package main
 
@@ -152,9 +202,13 @@ class TestGoUsage:
             }
         """)
         u = _usages({"main.go": src})
-        assert u[("doWork", "run")] == USAGE_TESTED
+        # Fallback contract: `v, err := f()` is an assignment line —
+        # without a tree the later `err != nil` test is invisible.
+        expected = USAGE_TESTED if tier == "ts" else USAGE_CAPTURED_USED
+        assert u[("doWork", "run")] == expected
 
-    def test_err_never_consulted_is_captured_unused(self):
+    def test_err_never_consulted_is_captured_unused(self, parser_tier):
+        _tier(parser_tier, "go")
         src = textwrap.dedent("""\
             package main
 
@@ -181,7 +235,8 @@ class TestGoUsage:
         assert u[("doWork", "run")] == USAGE_CAPTURED_USED
         del src
 
-    def test_err_rebound_before_read_is_captured_unused(self):
+    def test_err_rebound_before_read_is_captured_unused(self, parser_tier):
+        tier = _tier(parser_tier, "go")
         src = textwrap.dedent("""\
             package main
 
@@ -192,13 +247,18 @@ class TestGoUsage:
             }
         """)
         u = _usages({"main.go": src})
-        # doWork's binding is rebound before any read.
-        assert u[("doWork", "run")] == USAGE_CAPTURED_UNUSED
+        # doWork's binding is rebound before any read — visible only
+        # with a tree; the fallback sees two capture lines.
+        expected = (
+            USAGE_CAPTURED_UNUSED if tier == "ts" else USAGE_CAPTURED_USED
+        )
+        assert u[("doWork", "run")] == expected
         assert u[("otherWork", "run")] == USAGE_CAPTURED_USED
 
 
 class TestPythonRustUsage:
-    def test_python_underscore_is_acknowledged(self):
+    def test_python_underscore_is_acknowledged(self, parser_tier):
+        _tier(parser_tier, "python")
         src = textwrap.dedent("""\
             def run():
                 _ = do_work()
@@ -206,16 +266,22 @@ class TestPythonRustUsage:
         u = _usages({"app.py": src})
         assert u[("do_work", "run")] == USAGE_ACKNOWLEDGED
 
-    def test_python_unused_binding_is_captured_unused(self):
+    def test_python_unused_binding_is_captured_unused(self, parser_tier):
+        tier = _tier(parser_tier, "python")
         src = textwrap.dedent("""\
             def run():
                 result = do_work()
                 other_thing()
         """)
         u = _usages({"app.py": src})
-        assert u[("do_work", "run")] == USAGE_CAPTURED_UNUSED
+        # Fallback contract: no read-scan — captured stays captured.
+        expected = (
+            USAGE_CAPTURED_UNUSED if tier == "ts" else USAGE_CAPTURED_USED
+        )
+        assert u[("do_work", "run")] == expected
 
-    def test_rust_let_underscore_is_acknowledged(self):
+    def test_rust_let_underscore_is_acknowledged(self, parser_tier):
+        _tier(parser_tier, "rust")
         src = textwrap.dedent("""\
             fn run() {
                 let _ = do_work();
@@ -226,7 +292,8 @@ class TestPythonRustUsage:
 
 
 class TestCensusAggregate:
-    def test_counts_and_check_ratio(self):
+    def test_counts_and_check_ratio(self, parser_tier):
+        _tier(parser_tier, "c")
         parts = []
         for i in range(9):
             parts.append(textwrap.dedent(f"""\
@@ -253,7 +320,8 @@ class TestCensusAggregate:
         assert len(c.deviants) == 1
         assert c.deviants[0].enclosing_function == "caller_9"
 
-    def test_acknowledged_excluded_from_ratio(self):
+    def test_acknowledged_excluded_from_ratio(self, parser_tier):
+        _tier(parser_tier, "c")
         parts = []
         for i in range(4):
             parts.append(textwrap.dedent(f"""\
@@ -276,7 +344,8 @@ class TestCensusAggregate:
         assert c.check_ratio == pytest.approx(1.0)
         assert not c.deviants
 
-    def test_majority_discard_gives_ignorability(self):
+    def test_majority_discard_gives_ignorability(self, parser_tier):
+        _tier(parser_tier, "c")
         parts = []
         for i in range(5):
             parts.append(textwrap.dedent(f"""\
@@ -290,7 +359,8 @@ class TestCensusAggregate:
         assert c.majority_says_discard_ok
         assert not c.majority_says_check
 
-    def test_census_to_dict_shape(self):
+    def test_census_to_dict_shape(self, parser_tier):
+        _tier(parser_tier, "c")
         src = textwrap.dedent("""\
             int run(void) {
                 do_work();
@@ -304,7 +374,8 @@ class TestCensusAggregate:
         assert "check_ratio" in row
         assert row["deviants"][0]["usage"] == "discarded"
 
-    def test_error_path_site_marked(self):
+    def test_error_path_site_marked(self, parser_tier):
+        tier = _tier(parser_tier, "python")
         src = textwrap.dedent("""\
             def run():
                 try:
@@ -314,7 +385,10 @@ class TestCensusAggregate:
         """)
         census = build_return_census({"app.py": src})
         site = census["cleanup"].sites[0]
-        assert site.on_error_path is True
+        # Fallback contract: no error-path walk without a tree — the
+        # regex tier never marks a site on_error_path (the verdict
+        # channel's error-path demotion is tree-sitter-tier only).
+        assert site.on_error_path is (tier == "ts")
         assert census["step"].sites[0].on_error_path is False
 
 
@@ -346,13 +420,20 @@ class TestLegacyCompat:
 
 
 class TestParseCache:
-    def test_cache_returns_same_tree(self):
+    def test_cache_returns_same_tree(self, parser_tier):
+        tier = _tier(parser_tier, "c")
         clear_parse_cache()
         src = "int run(void) { do_work(); return 0; }\n"
         t1, lang1 = parse_source_cached("a.c", src)
         t2, lang2 = parse_source_cached("a.c", src)
-        assert lang1 == "c" and lang2 == "c"
-        assert t1 is t2
+        if tier == "ts":
+            assert lang1 == "c" and lang2 == "c"
+            assert t1 is t2
+        else:
+            # Degradation contract: without tree-sitter the cache
+            # answers (None, None) — consumers fall back, never crash.
+            assert (t1, lang1) == (None, None)
+            assert (t2, lang2) == (None, None)
 
     def test_unsupported_language_falls_through(self):
         clear_parse_cache()

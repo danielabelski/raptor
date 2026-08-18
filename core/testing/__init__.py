@@ -38,15 +38,23 @@ from core.testing.llm_env import (
     PROXY_ENV_VARS,
     reset_llm_egress_state,
 )
+from core.testing.treesitter import (
+    force_census_regex_fallback,
+    requires_ts,
+    ts_parser_available,
+)
 
 __all__ = [
     "DEFAULT_OLLAMA_HOST",
     "PROXY_ENV_VARS",
     "FakeModel",
     "FakeStructuredProvider",
+    "force_census_regex_fallback",
     "git_run",
     "init_scratch_repo",
     "install_provider",
     "make_test_client",
+    "requires_ts",
     "reset_llm_egress_state",
+    "ts_parser_available",
 ]

@@ -38,6 +38,7 @@ from .callsite_consistency import (
     build_return_census,
     census_to_dict,
 )
+from .consistency_dimensions import DIMENSION_ORDERING
 from .consistency_verify import (
     DIMENSION_CLEANUP,
     DIMENSION_RETURN_CHECK,
@@ -366,8 +367,11 @@ def run_consistency_prepass(
                 ],
             })
 
-    # ── cleanup dimension (§3.2) ────────────────────────────────────
-    if not _over_budget():
+    # ── learned pairs (shared by cleanup §3.2 and ordering §3.5) ────
+    learned_pairs: list[Any] = []
+    try:
+        from .consistency_dimensions import learned_cleanup_pairs
+
         function_names: set[str] = set()
         for frec in (inventory or {}).get("files", []) or []:
             for fn in frec.get("functions", []) or []:
@@ -378,15 +382,20 @@ def run_consistency_prepass(
                 for site in entry.sites:
                     if site.enclosing_function not in ("", "<module>"):
                         function_names.add(site.enclosing_function)
+        learned_pairs = learned_cleanup_pairs(
+            domain_model, function_names,
+        )
+    except Exception:
+        logger.debug("consistency prepass: learned pairs failed",
+                     exc_info=True)
+
+    # ── cleanup dimension (§3.2) ────────────────────────────────────
+    if not _over_budget():
         try:
-            from .consistency_dimensions import (
-                detect_cleanup_deviations,
-                learned_cleanup_pairs,
-            )
-            pairs = learned_cleanup_pairs(domain_model, function_names)
+            from .consistency_dimensions import detect_cleanup_deviations
             cleanup_devs = (
-                detect_cleanup_deviations(source_texts, pairs)
-                if pairs else []
+                detect_cleanup_deviations(source_texts, learned_pairs)
+                if learned_pairs else []
             )
         except Exception:
             logger.debug("consistency prepass: cleanup failed",
@@ -466,6 +475,70 @@ def run_consistency_prepass(
                 line=dev.line,
                 security_relevant=True,
             ))
+
+    # ── ordering dimension (§3.5) — detection-grade throughout ──────
+    if not _over_budget():
+        try:
+            from .consistency_dimensions import (
+                detect_ordering_deviations,
+            )
+            order_devs = detect_ordering_deviations(
+                source_texts, pairs=learned_pairs,
+            )
+        except Exception:
+            logger.debug("consistency prepass: ordering failed",
+                         exc_info=True)
+            order_devs = []
+        counts = _dim(DIMENSION_ORDERING)
+        for dev in order_devs:
+            if dev.data_dependent:
+                # The deviant's earlier call feeds the later call —
+                # the order is forced; enumerated inconclusive, no lead.
+                counts["inconclusive"] += 1
+                telemetry["inconclusive_reasons"][
+                    "order-data-dependent"
+                ] = telemetry["inconclusive_reasons"].get(
+                    "order-data-dependent", 0,
+                ) + 1
+                continue
+            counts["confirmed"] += 1
+            mechanical.append({
+                "file": dev.file,
+                "function": dev.enclosing_function,
+                "detector": "ordering_deviation",
+                "line": dev.line,
+                "description": dev.description,
+                "callee": dev.second_op,
+                "rule_id": (
+                    dev.peer_evidence.rule_id
+                    if dev.peer_evidence else ""
+                ),
+                "cwe": dev.cwe,
+            })
+            leads.append({
+                "dimension": DIMENSION_ORDERING,
+                "callee": f"{dev.first_op}/{dev.second_op}",
+                "file": dev.file,
+                "function": dev.enclosing_function,
+                "line": dev.line,
+                "rule_id": (
+                    dev.peer_evidence.rule_id
+                    if dev.peer_evidence else ""
+                ),
+                "description": dev.description[:300],
+                "security_relevant": dev.flavor != "sequence",
+                "n": dev.n,
+                "conforming": dev.conforming,
+                "ratio": dev.ratio,
+                "contract_source": "majority",
+                "sites": [
+                    f"{e.file}:{e.line} {e.snippet}".strip()
+                    for e in (
+                        dev.peer_evidence.exhibits
+                        if dev.peer_evidence else []
+                    )
+                ],
+            })
 
     capped_leads = _rank_leads(leads)
     telemetry["leads_seeded"] = len(capped_leads)

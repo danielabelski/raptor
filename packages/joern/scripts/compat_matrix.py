@@ -212,7 +212,10 @@ def run_e2e(joern_dir: str) -> dict:
         if srv is not None:
             try:
                 srv.stop()
-            except Exception:  # noqa: BLE001, S110 — best-effort teardown
+            except (OSError, subprocess.SubprocessError):
+                # Best-effort teardown: stop() can leak OSError from
+                # signalling and TimeoutExpired from the post-SIGKILL
+                # wait; a wiring bug must still crash the matrix.
                 pass
         shutil.rmtree(fixture_dir, ignore_errors=True)
         shutil.rmtree(cpg_dir, ignore_errors=True)

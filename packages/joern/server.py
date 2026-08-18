@@ -326,10 +326,13 @@ class JoernServer:
                 logger.error("Joern server exited during boot: %s",
                              stderr[:500])
                 return False
-            with contextlib.suppress(Exception):
-                resp = self._post_sync(_HEALTH_QUERY, timeout=5)
-                if resp is not None:
-                    return True
+            # _post_sync returns None on every transport failure
+            # (both httpx and urllib paths catch their own errors),
+            # so a not-ready server just polls again — no suppression
+            # needed, and a wiring bug here should surface.
+            resp = self._post_sync(_HEALTH_QUERY, timeout=5)
+            if resp is not None:
+                return True
             time.sleep(_BOOT_POLL_INTERVAL_S)
         return False
 
@@ -407,7 +410,10 @@ class JoernServer:
             pass
 
         if self._http_client is not None:
-            with contextlib.suppress(Exception):
+            # Closing an httpx client tears down pooled sockets —
+            # OSError is the only legitimate failure; anything else
+            # is a wiring bug.
+            with contextlib.suppress(OSError):
                 self._http_client.close()
             self._http_client = None
         self._proc = None

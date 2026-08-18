@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -49,6 +50,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Skip-budget delegated to core.sandbox.audit_budget.AuditBudget,
+# which is shared with the Linux ptrace tracer so the two backends
+# stay in sync. See that module for the full mechanism (token-bucket
+# + per-category + per-PID + 1-in-N sampling + CLI override).
+from . import audit_budget as _audit_budget
 from . import evidence as _evidence_mod
 from .seatbelt import SANDBOX_KEXT_SENDER
 
@@ -96,12 +102,6 @@ _WARM_UP_SBPL = "(version 1)(deny default (with report))"
 # back to the canonical /usr/bin location that ships with macOS.
 _SANDBOX_EXEC_FALLBACK = "/usr/bin/sandbox-exec"
 
-
-# Skip-budget delegated to core.sandbox.audit_budget.AuditBudget,
-# which is shared with the Linux ptrace tracer so the two backends
-# stay in sync. See that module for the full mechanism (token-bucket
-# + per-category + per-PID + 1-in-N sampling + CLI override).
-from . import audit_budget as _audit_budget
 
 # Sandbox kext eventMessage format. Spike #4 confirmed:
 #   "Sandbox: <ProcessName>(<PID>) <verdict> <action> <path>"
@@ -180,19 +180,58 @@ class LogStreamer:
 
     Owned by ``_macos_spawn.run_sandboxed`` for the duration of one
     sandboxed call. NOT a singleton — a fresh streamer per sandbox()
-    call, so concurrent sandboxes don't conflict on filtering /
-    routing of records. Slight overhead (one log-stream subprocess
-    per call) but each is cheap (~10MB resident, ~0 CPU when idle).
+    call, so concurrent sandboxes never conflict on ROUTING: each
+    run's records land in its own run_dir / JSONL with its own nonce.
+    Slight overhead (one log-stream subprocess per call) but each is
+    cheap (~10MB resident, ~0 CPU when idle).
+
+    Event ATTRIBUTION is a separate, weaker guarantee. ``log stream``
+    is a host-wide feed — every Sandbox.kext event on the machine
+    matches the sender predicate, including events from unrelated or
+    sibling sandboxed processes running concurrently. Two scoping
+    layers narrow attribution to this run's process tree:
+
+      * predicate-level — when ``target_pid`` is known at
+        construction, the log-stream predicate itself is narrowed to
+        eventMessages carrying that exact PID (the only PID datum the
+        kext embeds). Precise but narrow: processes the target forks
+        carry other PIDs and their events never arrive, and the
+        warm-up attachment gate is skipped (its synthetic workload's
+        events cannot match the scoped predicate).
+      * parse-time — ``register_target_pid()`` marks a PID (and its
+        process group, when resolvable) as in-scope; the reader
+        thread drops every parsed record whose PID is out of scope
+        BEFORE it is nonce-stamped, budget-counted, or appended.
+        Defence in depth behind the predicate, and the only layer
+        that can widen to the process group.
+
+    With no scope registered (legacy callers), attribution stays
+    host-wide: kext events from unrelated sandboxed processes ARE
+    written into this run's JSONL, and allowlists derived from it
+    can be contaminated by them. Register the child PID as soon as
+    it is known to close that window.
     """
 
     def __init__(self, run_dir: Path,
                  budget: _audit_budget.AuditBudget | None = None,
                  *, observe_mode: bool = False,
-                 observe_nonce: str | None = None):
+                 observe_nonce: str | None = None,
+                 target_pid: int | None = None):
         self._run_dir = Path(run_dir)
         self._proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None
         self._stopped = threading.Event()
+        # PID scoping state (see class docstring). _target_pid drives
+        # the predicate-level narrowing in start(); the pid/pgid sets
+        # drive the parse-time filter in _read_loop. Guarded by a
+        # dedicated lock because register_target_pid() is called from
+        # the parent thread while the reader thread consults the sets.
+        self._scope_lock = threading.Lock()
+        self._scope_pids: set[int] = set()
+        self._scope_pgids: set[int] = set()
+        self._target_pid = int(target_pid) if target_pid is not None else None
+        if self._target_pid is not None:
+            self.register_target_pid(self._target_pid)
         # Per-run provenance secret — included in every record so the
         # parser can drop spoofed entries written by the target
         # binary into the bind-mounted JSONL. Held in process state
@@ -223,6 +262,73 @@ class LogStreamer:
         # See _append_record_locked for the tamper rationale.
         self._evidence: _evidence_mod.EvidenceFile | None = None
 
+    def register_target_pid(self, pid: int) -> None:
+        """Mark ``pid`` — and its process group, when resolvable —
+        as in-scope for event attribution.
+
+        Call as soon as the sandboxed child's PID is known (it is
+        usually not known when the streamer starts). Repeatable:
+        each call widens the scope, so hybrid runs can register the
+        workload plus helper processes. The process-group lookup is
+        best-effort — a PID that is already gone (or was never local)
+        still gets exact-PID matching, just no group widening.
+        """
+        pid = int(pid)
+        pgid: int | None = None
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            pass
+        with self._scope_lock:
+            self._scope_pids.add(pid)
+            if pgid is not None:
+                self._scope_pgids.add(pgid)
+
+    def _record_in_scope(self, record: dict) -> bool:
+        """Parse-time PID filter (see class docstring).
+
+        With no scope registered, every record passes — legacy
+        host-wide attribution, documented as unguaranteed. With a
+        scope, a record is in-scope when its PID was registered
+        directly, or when its process group matches a registered
+        one (catches children the target forked, which the
+        predicate-level narrowing cannot). A PID whose group cannot
+        be resolved (process already exited, or a foreign PID the
+        kernel refuses) is out of scope — reject rather than
+        attribute an unverifiable event to this run.
+        """
+        with self._scope_lock:
+            pids = frozenset(self._scope_pids)
+            pgids = frozenset(self._scope_pgids)
+        if not pids and not pgids:
+            return True
+        pid = record.get("target_pid")
+        if not isinstance(pid, int):
+            return False
+        if pid in pids:
+            return True
+        if pgids:
+            try:
+                return os.getpgid(pid) in pgids
+            except OSError:
+                return False
+        return False
+
+    def _build_predicate(self) -> str:
+        """log-stream predicate. Always sender-scoped to Sandbox.kext;
+        additionally PID-scoped when the target PID was known at
+        construction. The kext embeds the acting PID in eventMessage
+        as ``<name>(<pid>) ...`` — the only PID datum available at
+        predicate level — so the narrowing is a CONTAINS clause on
+        ``(<pid>) ``. The close-paren + trailing space keep a PID
+        like 123 from matching 1234."""
+        predicate = f'senderImagePath == "{SANDBOX_KEXT_SENDER}"'
+        if self._target_pid is not None:
+            predicate += (
+                f' AND eventMessage CONTAINS "({self._target_pid}) "'
+            )
+        return predicate
+
     def start(self) -> None:
         """Spawn `log stream` filtered to sandbox kext events, gate
         on a synthetic warm-up workload to confirm attachment to the
@@ -239,11 +345,19 @@ class LogStreamer:
         On hosts where ``sandbox-exec`` is missing (non-Darwin or
         stripped installs) or the warm-up times out, falls back to a
         best-effort proceed: the streamer is started anyway, callers
-        accept that early events may be missed. Logged at debug for
-        operator triage."""
-        predicate = (
-            f'senderImagePath == "{SANDBOX_KEXT_SENDER}"'
-        )
+        accept that early events may be missed. Those two causes are
+        logged at debug for operator triage; a third — the warm-up
+        probe's Popen itself failing (ENOENT / EACCES) — is
+        deliberately logged at WARNING with traceback, since it
+        signals a sandbox-exec regression the operator must see.
+
+        When the predicate is PID-scoped (``target_pid`` at
+        construction), the warm-up gate is skipped entirely: the
+        synthetic workload runs under its own PID, so its kext
+        events can never pass the scoped predicate and the gate
+        would always time out. Callers choosing predicate-level
+        scoping trade away the cold-start attachment confirmation."""
+        predicate = self._build_predicate()
         self._proc = subprocess.Popen(
             [
                 "/usr/bin/log", "stream",
@@ -271,8 +385,16 @@ class LogStreamer:
             start_new_session=True,
         )
         try:
-            attached = self._warm_up_until_attached()
-            if not attached:
+            if self._target_pid is not None:
+                # PID-scoped predicate — the warm-up's synthetic
+                # workload events can't match it (see docstring).
+                logger.debug(
+                    "seatbelt audit: warm-up gate skipped — predicate "
+                    "is PID-scoped to %d and cannot see the synthetic "
+                    "workload's events",
+                    self._target_pid,
+                )
+            elif not self._warm_up_until_attached():
                 logger.debug(
                     "seatbelt audit: warm-up gate did not see kext events "
                     "from synthetic workload within %ss; proceeding in "
@@ -474,6 +596,14 @@ class LogStreamer:
                 )
                 if record is None:
                     continue
+                if not self._record_in_scope(record):
+                    # Host-wide kext event from a process outside the
+                    # registered scope — a sibling sandboxed run or an
+                    # unrelated sandboxed app. Drop BEFORE the budget
+                    # and the append so foreign events are never
+                    # nonce-stamped into this run's JSONL and never
+                    # consume its audit budget.
+                    continue
                 # Defer all budget logic to AuditBudget.evaluate.
                 # Returns (KEEP|DROP, optional marker dict). Marker
                 # is appended FIRST so it lands in the JSONL right
@@ -645,6 +775,7 @@ class LogStreamer:
 def start_log_streamer(run_dir: Path, *,
                        observe_mode: bool = False,
                        observe_nonce: str | None = None,
+                       target_pid: int | None = None,
                        ) -> LogStreamer:
     """Convenience: instantiate + start a LogStreamer.
 
@@ -661,8 +792,15 @@ def start_log_streamer(run_dir: Path, *,
     record. Pass the same value to parse_observe_log(expected_nonce)
     so spoofed records (written by the target into the bind-mounted
     JSONL) get dropped. Generated by core.sandbox.context.
+
+    `target_pid`: scope event attribution to this PID at the
+    log-stream predicate level (see LogStreamer's class docstring
+    for the trade-offs). Callers that only learn the child PID after
+    spawn should instead call ``register_target_pid()`` on the
+    returned streamer for parse-time scoping.
     """
     s = LogStreamer(run_dir, observe_mode=observe_mode,
-                    observe_nonce=observe_nonce)
+                    observe_nonce=observe_nonce,
+                    target_pid=target_pid)
     s.start()
     return s

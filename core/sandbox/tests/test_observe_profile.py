@@ -16,10 +16,12 @@ Two layers:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
 
+from core.sandbox import observe_profile as observe_profile_mod
 from core.sandbox.observe_profile import (
     OBSERVE_FILENAME,
     ConnectTarget,
@@ -82,6 +84,24 @@ def _connect_record(ip: str, port: int,
         "target_pid": 1234,
         "args": [3, 0, 16, 0, 0, 0],
         "path": f"{ip}:{port} ({family})",
+    }
+
+
+def _macos_connect_record(dest: str, pid: int = 1234) -> dict:
+    """Build a network-outbound record shaped like the macOS log
+    streamer's parse_log_entry output (canned darwin record — kext
+    destinations carry NO family suffix)."""
+    return {
+        "ts": "2026-05-08T00:00:00Z",
+        "cmd": f"<sandbox audit: network-outbound {dest}>",
+        "returncode": 0,
+        "type": "network",
+        "verdict": "deny",
+        "observe": True,
+        "syscall": "network-outbound",
+        "path": dest,
+        "target_pid": pid,
+        "process_name": "curl",
     }
 
 
@@ -191,6 +211,169 @@ class TestParseConnect:
         _write_jsonl(tmp_path / OBSERVE_FILENAME, [rec])
         profile = parse_observe_log(tmp_path)
         assert profile.connect_targets == []
+
+    def test_linux_connect_never_uses_macos_grammar(self, tmp_path):
+        # A Linux `connect` record whose path lacks the "(family)"
+        # suffix is a sockaddr-decode anomaly, not a macOS record —
+        # it must NOT fall through to the looser bare host:port
+        # grammar reserved for network-outbound records.
+        rec = _connect_record("1.2.3.4", 443)
+        rec["path"] = "1.2.3.4:443"
+        _write_jsonl(tmp_path / OBSERVE_FILENAME, [rec])
+        profile = parse_observe_log(tmp_path)
+        assert profile.connect_targets == []
+
+
+class TestParseMacOSConnect:
+    """macOS network-outbound records carry the kext's raw
+    destination in the path field — bare ``host:port`` with no
+    family suffix, or a unix-socket path. The parser must surface
+    the host:port shapes as ConnectTargets so darwin-sourced streams
+    feed external_reach and egress-allowlist derivation exactly like
+    Linux ones. Canned records; runs hermetically on Linux."""
+
+    def _parse(self, tmp_path, *dests):
+        _write_jsonl(tmp_path / OBSERVE_FILENAME,
+                     [_macos_connect_record(d) for d in dests])
+        return parse_observe_log(tmp_path)
+
+    def test_ipv4_dest_parsed(self, tmp_path):
+        profile = self._parse(tmp_path, "140.82.112.3:443")
+        assert profile.connect_targets == [
+            ConnectTarget(ip="140.82.112.3", port=443, family="AF_INET"),
+        ]
+
+    def test_hostname_dest_parsed(self, tmp_path):
+        profile = self._parse(tmp_path, "example.com:8443")
+        assert profile.connect_targets == [
+            ConnectTarget(ip="example.com", port=8443, family="AF_INET"),
+        ]
+
+    def test_wildcard_dest_parsed(self, tmp_path):
+        # SBPL-style wildcard destination ("*:443") — keep it verbatim
+        # so diagnostics stay honest about what the kext reported.
+        profile = self._parse(tmp_path, "*:443")
+        assert profile.connect_targets == [
+            ConnectTarget(ip="*", port=443, family="AF_INET"),
+        ]
+
+    def test_bracketed_ipv6_dest_parsed(self, tmp_path):
+        profile = self._parse(tmp_path, "[2606:50c0:8000::153]:443")
+        assert profile.connect_targets == [
+            ConnectTarget(ip="2606:50c0:8000::153", port=443,
+                          family="AF_INET6"),
+        ]
+
+    def test_bare_ipv6_dest_parsed_at_last_colon(self, tmp_path):
+        profile = self._parse(tmp_path, "::1:443")
+        assert profile.connect_targets == [
+            ConnectTarget(ip="::1", port=443, family="AF_INET6"),
+        ]
+
+    def test_unix_socket_dest_yields_no_target(self, tmp_path):
+        # Unix-domain sockets are local IPC, not egress.
+        profile = self._parse(tmp_path, "/private/var/run/mDNSResponder")
+        assert profile.connect_targets == []
+
+    def test_dedup_with_linux_records(self, tmp_path):
+        _write_jsonl(tmp_path / OBSERVE_FILENAME, [
+            _connect_record("1.2.3.4", 443),
+            _macos_connect_record("1.2.3.4:443"),  # same triple
+            _macos_connect_record("5.6.7.8:80"),
+        ])
+        profile = parse_observe_log(tmp_path)
+        assert profile.connect_targets == [
+            ConnectTarget(ip="1.2.3.4", port=443, family="AF_INET"),
+            ConnectTarget(ip="5.6.7.8", port=80, family="AF_INET"),
+        ]
+
+    def test_macos_targets_flow_to_external_reach(self, tmp_path):
+        # Fix contract: the operator-facing derivation path consumes
+        # macOS-parsed targets identically to Linux ones — same
+        # ConnectTarget triples, same external_reach formatting.
+        from core.sandbox.observe_context_merge import (
+            merge_observation_into_context_map,
+        )
+        profile = self._parse(tmp_path, "140.82.112.3:443")
+        merged = merge_observation_into_context_map({}, profile)
+        obs = merged["runtime_observation"]
+        assert obs["connect_targets"] == [
+            {"ip": "140.82.112.3", "port": 443, "family": "AF_INET"},
+        ]
+        assert obs["correlations"]["external_reach"] == [
+            "140.82.112.3:443 (AF_INET)",
+        ]
+
+
+class TestDarwinConnectGapWarning:
+    """A darwin-sourced stream whose network-outbound records all
+    fail to parse must warn (throttled) instead of silently handing
+    downstream consumers an empty connect_targets list."""
+
+    GAP_TEXT = "yielded zero connect targets"
+
+    @pytest.fixture(autouse=True)
+    def _reset_throttle(self, monkeypatch):
+        # Open the throttle window so each test observes the warning
+        # decision itself, not a leftover stamp from a prior test.
+        monkeypatch.setattr(observe_profile_mod,
+                            "_connect_gap_last_warn", float("-inf"))
+
+    def _parse_with_caplog(self, tmp_path, caplog, records):
+        _write_jsonl(tmp_path / OBSERVE_FILENAME, records)
+        with caplog.at_level(logging.WARNING,
+                             logger="core.sandbox.observe_profile"):
+            return parse_observe_log(tmp_path)
+
+    def test_zero_parse_warning_fires(self, tmp_path, caplog):
+        # A destination shape the parser doesn't understand (no
+        # trailing :port) — e.g. a future kext format change.
+        profile = self._parse_with_caplog(
+            tmp_path, caplog,
+            [_macos_connect_record("unrecognised-destination-shape")],
+        )
+        assert profile.connect_targets == []
+        assert self.GAP_TEXT in caplog.text
+        assert "network-outbound" in caplog.text
+
+    def test_warning_throttled_on_repeat_parse(self, tmp_path, caplog):
+        records = [_macos_connect_record("unrecognised-destination-shape")]
+        self._parse_with_caplog(tmp_path, caplog, records)
+        assert caplog.text.count(self.GAP_TEXT) == 1
+        # Immediate re-parse of the same broken log: throttle holds.
+        self._parse_with_caplog(tmp_path, caplog, records)
+        assert caplog.text.count(self.GAP_TEXT) == 1
+
+    def test_no_warning_when_macos_target_parsed(self, tmp_path, caplog):
+        profile = self._parse_with_caplog(
+            tmp_path, caplog,
+            [_macos_connect_record("1.2.3.4:443"),
+             _macos_connect_record("unrecognised-destination-shape")],
+        )
+        assert len(profile.connect_targets) == 1
+        assert self.GAP_TEXT not in caplog.text
+
+    def test_no_warning_for_unix_socket_only_stream(self, tmp_path,
+                                                    caplog):
+        # Local IPC destinations correctly yield no targets — that's
+        # not a parse gap and must stay quiet.
+        self._parse_with_caplog(
+            tmp_path, caplog,
+            [_macos_connect_record("/private/var/run/mDNSResponder")],
+        )
+        assert self.GAP_TEXT not in caplog.text
+
+    def test_no_warning_for_linux_stream(self, tmp_path, caplog):
+        # Linux-sourced streams (connect records) never trip the
+        # darwin diagnostic, even when a path fails to parse.
+        bad = _connect_record("1.2.3.4", 443)
+        bad["path"] = "garbage"
+        profile = self._parse_with_caplog(
+            tmp_path, caplog,
+            [bad, _connect_record("5.6.7.8", 80)],
+        )
+        assert len(profile.connect_targets) == 1
+        assert self.GAP_TEXT not in caplog.text
 
 
 class TestMacOSKextActionClassification:

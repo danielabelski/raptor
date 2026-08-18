@@ -51,6 +51,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,9 +105,15 @@ _STAT_SYSCALLS = frozenset({
 _CONNECT_SYSCALLS = frozenset({
     # Linux syscall name.
     "connect",
-    # macOS — kext network egress action. The path field in these
-    # records carries the destination string the kext logs (host or
-    # ip:port); _parse_connect_path tolerates either shape.
+    # macOS — kext network egress action. The path field carries the
+    # destination string exactly as the kext logged it: either a
+    # unix-domain socket path ("/private/var/run/mDNSResponder" —
+    # local IPC, deliberately not a connect target) or a
+    # "<host-or-ip>:<port>" destination ("1.2.3.4:443", "*:443",
+    # "[::1]:443", "example.com:443"). The Linux tracer's
+    # "ip:port (family)" shape never appears in macOS records;
+    # _parse_connect_path routes network-outbound paths through
+    # _parse_macos_connect_destination instead.
     "network-outbound",
 })
 
@@ -140,6 +147,51 @@ _CONNECT_PATH_RE = re.compile(
     r"^(?P<ip>[^\s]+):(?P<port>\d+)\s+\((?P<family>AF_INET6?)\)$",
 )
 
+# Match the macOS Sandbox.kext network-outbound destination shape:
+# ``"<dest>:<port>"`` with no family suffix (the kext does not report
+# the address family). ``dest`` may be an IPv4 literal, a bracketed
+# or bare IPv6 literal, a hostname, or the SBPL wildcard ``*``. The
+# dest group is greedy so a bare IPv6 literal splits at the LAST
+# colon ("::1:443" → dest "::1", port 443).
+_MACOS_CONNECT_DEST_RE = re.compile(
+    r"^(?P<dest>.+):(?P<port>\d+)$",
+)
+
+# Throttle for the darwin connect-parse-gap diagnostic below. One
+# warning per interval is enough — a probe run that trips the gap
+# does so for every network-outbound record it contains, and batch
+# callers (project merge, calibrate) parse many logs back to back.
+_CONNECT_GAP_WARN_INTERVAL_S = 300.0
+_connect_gap_last_warn = float("-inf")
+
+
+def _warn_darwin_connect_gap(run_dir, unparsed: int) -> None:
+    """Loud (but throttled) diagnostic for the macOS connect parse gap.
+
+    Emitted by parse_observe_log when a darwin-sourced stream carried
+    network-outbound records with non-local destinations, yet parsing
+    produced zero connect targets — historically this failure mode
+    was silent and every macOS egress observation was lost. Throttled
+    via module-global monotonic stamp so repeated parses of the same
+    broken log don't flood operator output.
+    """
+    global _connect_gap_last_warn
+    now = time.monotonic()
+    if now - _connect_gap_last_warn < _CONNECT_GAP_WARN_INTERVAL_S:
+        return
+    _connect_gap_last_warn = now
+    logger.warning(
+        "parse_observe_log: %d macOS network-outbound record(s) in %s "
+        "yielded zero connect targets — the kext destination shape "
+        "matched neither the Linux 'ip:port (family)' form nor the "
+        "macOS 'host:port' / '[v6]:port' / '*:port' forms this parser "
+        "understands. external_reach reporting and egress-allowlist "
+        "derivation for this run are missing ALL macOS egress "
+        "evidence; extend _parse_macos_connect_destination in "
+        "core/sandbox/observe_profile.py to cover the new shape.",
+        unparsed, run_dir,
+    )
+
 
 @dataclass(frozen=True)
 class ConnectTarget:
@@ -157,7 +209,11 @@ class ConnectTarget:
     """
     ip: str
     port: int
-    family: str  # "AF_INET" | "AF_INET6"
+    # "AF_INET" | "AF_INET6". Authoritative for Linux records (the
+    # tracer decodes the sockaddr); inferred from the destination
+    # literal for macOS records (the kext does not report a family —
+    # see _parse_macos_connect_destination).
+    family: str
 
 
 @dataclass
@@ -295,11 +351,63 @@ def _open_record_is_write_intent(record: dict) -> bool:
     return bool(flags & (_O_CREAT | _O_TRUNC | _O_APPEND))
 
 
+def _is_local_socket_destination(path) -> bool:
+    """True for macOS network-outbound destinations that name a
+    unix-domain socket (an absolute filesystem path). Local IPC, not
+    egress — such records correctly yield no ConnectTarget and must
+    not trip the connect-parse-gap diagnostic."""
+    return bool(path) and path.startswith("/")
+
+
+def _parse_macos_connect_destination(path: str) -> ConnectTarget | None:
+    """Parse a macOS Sandbox.kext network-outbound destination.
+
+    The kext logs the destination bare — no ``(AF_INET)`` family
+    suffix — so the family is inferred from the literal: a bracketed
+    IPv6 form or a colon inside the host part → ``AF_INET6``;
+    everything else (IPv4 literal, hostname, SBPL wildcard ``*``) →
+    ``AF_INET``. The inferred family is a display / dedup key for
+    downstream consumers, not a socket parameter.
+
+    Returns None for unix-domain socket paths (local IPC, not
+    egress) and for destinations without a trailing ``:<port>``.
+    """
+    if _is_local_socket_destination(path):
+        return None
+    m = _MACOS_CONNECT_DEST_RE.match(path)
+    if m is None:
+        return None
+    dest = m.group("dest")
+    try:
+        port = int(m.group("port"))
+    except ValueError:
+        return None
+    if dest.startswith("[") and dest.endswith("]"):
+        dest = dest[1:-1]
+        family = "AF_INET6"
+    else:
+        family = "AF_INET6" if ":" in dest else "AF_INET"
+    if not dest:
+        return None
+    return ConnectTarget(ip=dest, port=port, family=family)
+
+
 def _parse_connect_path(record: dict) -> ConnectTarget | None:
-    """Pull ip:port (family) out of a connect record's path field.
+    """Pull a ConnectTarget out of a connect record's path field.
+
+    Two record vocabularies feed this:
+
+      * Linux tracer ``connect`` records — path is
+        ``"<ip>:<port> (<family>)"`` (_CONNECT_PATH_RE).
+      * macOS kext ``network-outbound`` records — path is the raw
+        kext destination (``host:port`` / ``[v6]:port`` / ``*:port``
+        or a unix-socket path); handled by
+        _parse_macos_connect_destination, and only for records whose
+        syscall is ``network-outbound`` so a malformed Linux connect
+        path can never fall through to the looser macOS grammar.
 
     Returns None when the record's ``path`` is absent or doesn't
-    match the expected shape. The tracer skips ``path`` for
+    match either expected shape. The tracer skips ``path`` for
     connect() when sockaddr decode failed (unsupported family,
     stale memory, etc.) — those records carry the raw arg pointer
     in args[1] only, which the parser can't decode at parse time.
@@ -308,15 +416,17 @@ def _parse_connect_path(record: dict) -> ConnectTarget | None:
     if not path:
         return None
     m = _CONNECT_PATH_RE.match(path)
-    if m is None:
-        return None
-    try:
-        port = int(m.group("port"))
-    except ValueError:
-        return None
-    return ConnectTarget(
-        ip=m.group("ip"), port=port, family=m.group("family"),
-    )
+    if m is not None:
+        try:
+            port = int(m.group("port"))
+        except ValueError:
+            return None
+        return ConnectTarget(
+            ip=m.group("ip"), port=port, family=m.group("family"),
+        )
+    if record.get("syscall") == "network-outbound":
+        return _parse_macos_connect_destination(path)
+    return None
 
 
 def _iter_records(path: Path) -> Iterable[dict]:
@@ -442,6 +552,13 @@ def parse_observe_log(run_dir, *,
     seen_stat: set = set()
     seen_connect: set = set()
 
+    # Darwin connect-parse-gap accounting. network-outbound is a
+    # macOS-only record name, so its presence marks the stream as
+    # darwin-sourced. Unix-socket destinations (local IPC) are
+    # excluded — yielding no target for those is correct, not a gap.
+    darwin_connect_parsed = 0
+    darwin_connect_unparsed = 0
+
     for rec in _iter_records(log_path):
         if not isinstance(rec, dict):
             continue
@@ -519,10 +636,24 @@ def parse_observe_log(run_dir, *,
                 profile.paths_stat.append(path)
         elif name in _CONNECT_SYSCALLS:
             target = _parse_connect_path(rec)
+            if (name == "network-outbound"
+                    and not _is_local_socket_destination(rec.get("path"))):
+                if target is None:
+                    darwin_connect_unparsed += 1
+                else:
+                    darwin_connect_parsed += 1
             if target is None:
                 continue
             if target not in seen_connect:
                 seen_connect.add(target)
                 profile.connect_targets.append(target)
+
+    # Diagnostic: a darwin-sourced stream carried egress evidence but
+    # parsing surfaced none of it. Historically this was silent —
+    # connect_targets came back empty and every downstream consumer
+    # (external_reach, egress-allowlist derivation) lost all macOS
+    # egress evidence with no failure mode visible. Never again.
+    if darwin_connect_unparsed and not darwin_connect_parsed:
+        _warn_darwin_connect_gap(run_dir, darwin_connect_unparsed)
 
     return profile

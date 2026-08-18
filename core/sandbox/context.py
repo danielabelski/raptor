@@ -739,8 +739,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
 
         # Decide enforcement path, strongest first.
         #
-        # Tier 1 — netns bridge (any Landlock ABI; needs netns
-        # capability): the child runs in an EMPTY netns (loopback
+        # Tier 1 — netns bridge (any Landlock ABI; needs the SPAWN
+        # backend): the child runs in an EMPTY netns (loopback
         # brought up by the spawn layer) and reaches the proxy only
         # through the forwarder that relays loopback TCP → unix
         # socket. Containment is topological: no interfaces, no
@@ -750,20 +750,42 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # FileLockContentionHandler / local-IP detection) work here.
         # Previously this tier engaged only on ABI < 4 hosts; it is
         # strictly stronger than the Landlock pin (port-scoped to ANY
-        # host) on every host, so it is now the default whenever the
-        # netns capability exists.
+        # host) on every host, so it is the default whenever it can
+        # actually engage.
         #
-        # Tier 2 — Landlock TCP pin (ABI >= 4, no netns): connect
-        # pinned to the proxy port + seccomp UDP block for DNS/UDP
-        # exfil. Known cost: gradle-class UDP-at-startup tools break
-        # ("Could not determine a usable local IP").
+        # "Can actually engage" means more than netns capability: the
+        # forwarder that bridges the empty netns to the proxy's unix
+        # socket is forked by _spawn.run_sandboxed, and that backend
+        # is only used when the mount-ns tier is live (use_mount —
+        # see the backend selection below and `spawn_eligible`). On a
+        # host with netns but WITHOUT the spawn backend (no uidmap
+        # helpers, LSM-restricted unprivileged userns → the CLI
+        # `unshare` fallback path), choosing this tier used to hand
+        # the child an empty netns with NO forwarder: the proxy was
+        # unreachable, every use_egress_proxy child silently lost all
+        # network, and the proxy's audit stream recorded nothing.
+        # Mirror use_mount's condition here so such hosts take Tier 2
+        # — the tier the design assigns to "no netns" hosts, and the
+        # tier they took before the netns default — keeping the
+        # chokepoint reachable and its event telemetry live.
         #
-        # Tier 3 — advisory (ABI < 4, no netns): env vars only.
+        # Tier 2 — Landlock TCP pin (ABI >= 4, no netns bridge):
+        # connect pinned to the proxy port + seccomp UDP block for
+        # DNS/UDP exfil. Known cost: gradle-class UDP-at-startup
+        # tools break ("Could not determine a usable local IP").
+        #
+        # Tier 3 — advisory (ABI < 4, no netns bridge): env vars only.
         _proxy_abi = (
             _get_landlock_abi() if check_landlock_available() else 0
         )
         _proxy_netns_capable = (
             sys.platform != "darwin" and check_net_available()
+            # The forwarder rides the spawn backend: engaged only when
+            # the mount-ns tier will be used for this context (same
+            # condition as `use_mount` below, which cannot be computed
+            # yet — `effectively_disabled` resolves after profile
+            # parsing; a disabled sandbox never reaches enforcement).
+            and bool(target or output) and check_mount_available()
         )
         if _proxy_netns_capable:
             _use_proxy_netns = True
@@ -806,9 +828,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 _proxy_unix_path = None
         elif _proxy_abi < 4:
             logger.warning(
-                "Sandbox: no netns capability AND Landlock ABI %d < 4 "
-                "(no TCP allowlist) — egress proxy allowlist is "
-                "advisory only on this host.",
+                "Sandbox: no netns bridge (netns capability or the "
+                "mount-ns spawn backend is unavailable) AND Landlock "
+                "ABI %d < 4 (no TCP allowlist) — egress proxy "
+                "allowlist is advisory only on this host.",
                 _proxy_abi,
             )
 
@@ -888,9 +911,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             from .errors import SandboxSetupError
             raise SandboxSetupError(
                 "loopback_unix_bridges requires the netns egress tier "
-                "(no netns capability on this host, or the proxy unix "
-                "lane failed to bind) — refusing to run the child "
-                "without its bridged loopback service."
+                "(netns capability or the mount-ns spawn backend is "
+                "unavailable on this host, or the proxy unix lane "
+                "failed to bind) — refusing to run the child without "
+                "its bridged loopback service."
             )
         # Bridged children must reach their loopback service DIRECT —
         # routing 127.0.0.1 through the CONNECT proxy would be denied

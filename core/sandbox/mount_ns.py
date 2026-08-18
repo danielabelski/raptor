@@ -125,8 +125,9 @@ _SHADOW_PATHS = frozenset((
 # FileNotFoundError / RuntimeError, not the OSError raised by CDLL on
 # a missing soname). find_library returns None on failure, which CDLL
 # also rejects — but it rejects consistently with "no libc at all",
-# not "wrong libc name on this distro".
-import ctypes.util as _ctypes_util
+# not "wrong libc name on this distro".  (Import placed here, next to
+# its rationale, after the syscall-number guard above — E402 accepted.)
+import ctypes.util as _ctypes_util  # noqa: E402
 
 _libc = ctypes.CDLL(_ctypes_util.find_library("c"), use_errno=True)
 
@@ -502,6 +503,15 @@ def setup_mount_ns(target: str | None, output: str | None,
     if extra_ro_paths:
         for path in extra_ro_paths:
             if not path or _shadows_per_ns(path):
+                continue
+            # Paths already served by the step-8 target/output binds
+            # keep their step-8 rw/ro semantics. Without this skip, a
+            # target that is ALSO the output (writable clone/build
+            # destinations — restrict_reads callers put target in the
+            # read allowlist, which forwards here) gets an ro bind
+            # stacked ON TOP of its rw bind and every child write
+            # fails with EROFS.
+            if os.path.abspath(path) in (target, output):
                 continue
             if not os.path.isdir(path) and not os.path.isfile(path):
                 continue

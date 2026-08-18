@@ -22,18 +22,21 @@ pytestmark = [
 ]
 
 
-import os
-import subprocess
-import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
+# Imports intentionally follow the module-level pytestmark block —
+# E402 accepted (placement is stylistic; import side effects run
+# regardless of position).
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import unittest  # noqa: E402
+from pathlib import Path  # noqa: E402
+from tempfile import TemporaryDirectory  # noqa: E402
 
-from core.sandbox import (
+from core.sandbox import (  # noqa: E402
     check_landlock_available,
     check_net_available,
     sandbox,
 )
-from core.sandbox import (
+from core.sandbox import (  # noqa: E402
     run as sandbox_run,
 )
 
@@ -171,6 +174,31 @@ class TestE2ELandlockWriteBlocking(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0)
             self.assertEqual(Path(f"{output}/test.txt").read_text().strip(), "allowed")
+
+    def test_target_equals_output_stays_writable_under_restrict_reads(self):
+        """target == output must stay writable when restrict_reads puts
+        the target in the read allowlist.
+
+        Regression: the read allowlist forwarded the target into
+        mount-ns extra_ro_paths, which stacked an ro bind ON TOP of
+        the step-8 rw bind — every child write failed with EROFS.
+        This is the sandboxed-clone posture (clone_repository passes
+        target=output=destination parent via run_untrusted_networked,
+        restrict_reads=True)."""
+        with TemporaryDirectory() as shared:
+            result = sandbox_run(
+                ["sh", "-c", f"echo allowed > {shared}/test.txt"],
+                target=shared, output=shared,
+                restrict_reads=True,
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"write failed: {result.stdout!r} {result.stderr!r}",
+            )
+            self.assertEqual(
+                Path(f"{shared}/test.txt").read_text().strip(), "allowed",
+            )
 
     def test_write_to_tmp_allowed(self):
         """Writing to /tmp succeeds."""

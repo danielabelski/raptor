@@ -32,6 +32,13 @@ instructor==1.15.4
 # auth, only for SigV4. Workers use the stock anthropic SDK, never boto3/botocore.
 # botocore==1.43.16
 
+# HTTP/2 for the pooled LLM transports: only read when the operator opts in
+# with RAPTOR_HTTP2=1 (see docs/llm.md "HTTP Transport Tuning"). Without the
+# package the opt-in warns once and stays on HTTP/1.1 — nothing breaks, so it
+# ships commented out rather than as a hard dep. Multiplexes all concurrent
+# LLM calls over one connection; biggest win behind chained proxies.
+# h2==4.4.1
+
 # Optional: Rich inventory metadata (decorators, annotations, visibility, typed params)
 # Without a grammar a language falls back to the regex extractor, which finds
 # fewer functions and no line_end — so anything that slices source by span

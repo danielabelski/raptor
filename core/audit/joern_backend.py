@@ -113,12 +113,20 @@ def joern_tunables(overrides: dict[str, Any] | None = None):
             return None
 
 
-def start_joern_server(target_path, joern_overrides=None, tunables=None):
+def start_joern_server(target_path, joern_overrides=None, tunables=None,
+                       out_dir=None):
     """Start or reuse a persistent Joern server if Joern is available.
 
     Returns the server instance or None.  When reusing a lifecycle-managed
     server, builds/imports the CPG for *target_path* so queries run
     against the correct codebase.
+
+    After the CPG loads, tool-corroborated project sanitisers from the
+    IRIS store are installed as flow-semantics kill rows so taint
+    sweeps stop propagating through validators the refinement loop has
+    confirmed. ``out_dir`` (a run output dir) pins the store lookup;
+    without it the store resolves via the active project. Callers that
+    pass their own server through config own its semantics.
     """
     if not joern_available(overrides=joern_overrides):
         return None
@@ -155,7 +163,50 @@ def start_joern_server(target_path, joern_overrides=None, tunables=None):
         except Exception:
             logger.debug("joern server stop failed", exc_info=True)
         return None
+    install_flow_semantics(srv, target_path, out_dir=out_dir)
     return srv
+
+
+def install_flow_semantics(srv, target_path, out_dir=None) -> int:
+    """Install learned sanitiser kill rows on a booted Joern server.
+
+    Rows come from the IRIS store's suppression-direction reader
+    (``get_project_sanitisers`` — tool-corroborated / operator-promoted
+    specs only, the same XREF_BACKED floor guard-adequacy uses). Kill
+    rows remove flows, so the suppression-direction gate is
+    load-bearing: a heuristic-tier sanitiser must not silence a sweep.
+
+    Returns the number of rows installed. No learned sanitisers, a
+    server without semantics support, or any store/install failure
+    degrade to 0 rows with the server untouched — vocabulary quality
+    must never cost a sweep.
+    """
+    if srv is None or not hasattr(srv, "set_flow_semantics"):
+        return 0
+    try:
+        from core.iris.api import get_project_sanitisers
+    except ImportError:
+        return 0
+    try:
+        names = get_project_sanitisers(
+            out_dir=Path(out_dir) if out_dir else None,
+            target_path=Path(target_path) if target_path else None,
+        )
+    except Exception:
+        logger.debug("IRIS sanitiser recall failed", exc_info=True)
+        return 0
+    if not names:
+        return 0
+    try:
+        installed = srv.set_flow_semantics(sorted(names))
+    except Exception:
+        logger.debug("flow-semantics install failed", exc_info=True)
+        return 0
+    logger.info(
+        "joern flow semantics: %d of %d learned sanitiser kill row(s) "
+        "installed", installed, len(names),
+    )
+    return installed
 
 
 def _ensure_cpg_loaded(srv, target_path, tunables=None):

@@ -20,16 +20,19 @@ from pathlib import Path
 # Add repo root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+# Import errors are deferred to main() so the module stays import-safe
+# (test collection must never die on a missing optional dependency).
 try:
     import httpx
     from sage_sdk.async_client import AsyncSageClient
     from sage_sdk.auth import AgentIdentity
     from sage_sdk.exceptions import SageError
     from sage_sdk.models import MemoryType
-except ImportError:
-    print("ERROR: sage-agent-sdk not installed.")
-    print("  pip install sage-agent-sdk")
-    sys.exit(1)
+except ImportError as _exc:
+    _SAGE_SDK_IMPORT_ERROR = _exc
+    httpx = AsyncSageClient = AgentIdentity = SageError = MemoryType = None
+else:
+    _SAGE_SDK_IMPORT_ERROR = None
 
 from core.sage.scripts._common import async_memory_exists
 
@@ -499,6 +502,10 @@ async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
 
 
 def main():
+    if _SAGE_SDK_IMPORT_ERROR is not None:
+        print("ERROR: sage-agent-sdk not installed.")
+        print("  pip install sage-agent-sdk")
+        sys.exit(1)
     parser = argparse.ArgumentParser(
         description="Seed RAPTOR institutional knowledge into SAGE"
     )

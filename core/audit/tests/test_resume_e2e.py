@@ -136,7 +136,13 @@ def _journal_entries(out_dir: Path) -> list[dict]:
 def killed_run(tmp_path_factory):
     """Segment 1: real orchestrator, stub reviews, SIGKILL mid-loop.
 
-    Yields ``(out_dir, target_dir)``.
+    Yields ``(out_dir, target_dir, killed_state)`` where
+    ``killed_state`` snapshots the run metadata and resume
+    eligibility AT KILL TIME: later fixtures/tests mutate the run
+    (resume, completion), and under randomised test order
+    (RAPTOR_RANDOMISE_TESTS) the killed-state assertions can run
+    after those mutations — they must assert on the snapshot, not on
+    the current on-disk state.
     """
     root = tmp_path_factory.mktemp("resume_e2e")
     target = _make_target(root)
@@ -200,23 +206,28 @@ def killed_run(tmp_path_factory):
 
     os.kill(child.pid, signal.SIGKILL)
     child.wait(timeout=30)
-    return out, target
+
+    from core.audit.resume import resume_ineligibility
+    from core.run import load_run_metadata
+    killed_state = {
+        "status": load_run_metadata(out)["status"],
+        "ineligibility": resume_ineligibility(out),
+        "journal_entries": _journal_entries(out),
+    }
+    return out, target, killed_state
 
 
 class TestKilledRunState:
 
     def test_status_stuck_running_and_resumable(self, killed_run):
-        out, _target = killed_run
-        from core.audit.resume import resume_ineligibility
-        from core.run import load_run_metadata
-        meta = load_run_metadata(out)
-        assert meta["status"] == "running", (
+        _out, _target, killed_state = killed_run
+        assert killed_state["status"] == "running", (
             "SIGKILL must leave the run without a terminal transition"
         )
-        assert resume_ineligibility(out) is None
+        assert killed_state["ineligibility"] is None
 
     def test_journal_survived_the_kill(self, killed_run):
-        entries = _journal_entries(killed_run[0])
+        entries = killed_run[2]["journal_entries"]
         assert len(entries) >= 2
         assert all(e.get("verdict") == "clean" for e in entries)
 
@@ -244,9 +255,10 @@ def resumed_run(killed_run):
     )
     from core.run.metadata import resume_run
 
-    out, target = killed_run
+    out, target, killed_state = killed_run
     seg1_keys = {
-        f"{e['file']}:{e['function']}" for e in _journal_entries(out)
+        f"{e['file']}:{e['function']}"
+        for e in killed_state["journal_entries"]
     }
     seg1_count = len(seg1_keys)
 
@@ -405,8 +417,17 @@ class TestResumeCliGates:
     """`raptor-audit resume` refusal gates (no LLM plumbing reached)."""
 
     def test_refuses_completed_run(self, resumed_run):
-        # resumed_run's last test completed the run — the CLI must now
-        # refuse it and point at a new run.
+        # Complete the run HERE rather than relying on
+        # test_lifecycle_completes_with_segment_history having run
+        # first — under randomised test order (the nightly sets
+        # RAPTOR_RANDOMISE_TESTS) this test can come earlier, and a
+        # still-running run with a dead worker pid is legitimately
+        # resumable, so the CLI proceeded instead of refusing.
+        # complete_run is idempotent on a completed run (the terminal-
+        # status guard only refuses CHANGES of terminal state).
+        from core.run import complete_run
+        complete_run(resumed_run["out"])
+
         r = subprocess.run(
             [sys.executable, _AUDIT_CLI, "resume",
              str(resumed_run["out"])],

@@ -7,10 +7,8 @@ an executor function; execute_witness() looks it up and calls it.
 from __future__ import annotations
 
 import ast
-import contextlib
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -436,12 +434,20 @@ def _run_script_witness(
     timeout_s: int,
     language: str,
 ) -> DarkVerifyResult:
-    """Write a script to disk, run it in the sandbox, classify output."""
-    script_file = None
+    """Write a script to disk, run it in the sandbox, classify output.
+
+    The script lives in its OWN temp directory, not as a bare file in
+    /tmp: under mount-namespace isolation the sandbox shadows /tmp with
+    a private tmpfs, and a ``tool_paths`` entry of /tmp itself is not
+    bind-mounted wholesale — the interpreter then cannot see its script
+    at all ("no output from witness" on every mount-ns host, while
+    Landlock-only hosts worked). A dedicated subdirectory IS
+    bind-mounted read-only into the sandbox view.
+    """
+    script_dir = None
     try:
-        fd, script_path = tempfile.mkstemp(suffix=suffix, prefix="raptor_dark_")
-        os.close(fd)
-        script_file = Path(script_path)
+        script_dir = Path(tempfile.mkdtemp(prefix="raptor_dark_"))
+        script_file = script_dir / f"witness{suffix}"
         script_file.write_text(script, encoding="utf-8")
 
         sandbox_run = _import_sandbox_run()
@@ -454,7 +460,7 @@ def _run_script_witness(
             capture_output=True, text=True,
             timeout=timeout_s,
             caller_label=f"audit-dark-verify-{language}",
-            tool_paths=[str(script_file.parent)],
+            tool_paths=[str(script_dir)],
         )
 
         stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
@@ -473,9 +479,8 @@ def _run_script_witness(
             match_detail=f"execution failed: {type(exc).__name__}: {exc}",
         )
     finally:
-        if script_file and script_file.exists():
-            with contextlib.suppress(OSError):
-                script_file.unlink()
+        if script_dir is not None:
+            shutil.rmtree(script_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

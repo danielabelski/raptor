@@ -1623,8 +1623,13 @@ class TestRealExecutionRust:
         assert "7" in r.actual_return
 
     def test_confirms_panic_as_crash(self, tmp_path):
-        """-C panic=abort turns a panic into SIGABRT so the shared signal
-        classifier confirms it (unwind would exit 101 = normal exit)."""
+        """-C panic=abort turns a panic into a fatal signal so the shared
+        signal classifier confirms it (unwind would exit 101 = normal
+        exit). WHICH signal is host-dependent: normally SIGABRT, but the
+        witness runs as pid 1 of the sandbox's pid namespace, where the
+        default SIGABRT action is ignored and glibc's abort() escalates
+        to a trap — observed as SIGSEGV — on mount-ns hosts. The pin is
+        that the panic surfaces as a crash SIGNAL, not a clean exit."""
         src = tmp_path / "oob.rs"
         src.write_text(
             "pub fn idx(v: &[i32]) -> i32 { v[10] }\n", encoding="utf-8",
@@ -1640,7 +1645,7 @@ class TestRealExecutionRust:
         )
         r = execute_witness(spec, tmp_path)
         assert r.verdict == "confirmed"
-        assert "SIGABRT" in r.actual_exception
+        assert r.actual_exception.startswith("signal: SIG")
 
     def test_target_with_own_main(self, tmp_path):
         """A bin-crate target's fn main is renamed before the include!

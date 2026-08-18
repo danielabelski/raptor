@@ -877,7 +877,10 @@ class EgressProxy:
         if self._loop is not None and self._loop.is_running():
             async def _close():
                 srv.close()
-            with contextlib.suppress(Exception):
+            # Loop may shut down between the is_running() check and
+            # scheduling (RuntimeError); a wedged loop times out the
+            # future (TimeoutError).
+            with contextlib.suppress(RuntimeError, TimeoutError):
                 future = asyncio.run_coroutine_threadsafe(
                     _close(), self._loop,
                 )
@@ -924,7 +927,9 @@ class EgressProxy:
         if self._loop is not None and self._loop.is_running():
             async def _close():
                 srv.close()
-            with contextlib.suppress(Exception):
+            # Same failure modes as close_tcp_lane: loop shutdown race
+            # (RuntimeError) or a wedged loop (TimeoutError).
+            with contextlib.suppress(RuntimeError, TimeoutError):
                 future = asyncio.run_coroutine_threadsafe(
                     _close(), self._loop,
                 )
@@ -1319,7 +1324,10 @@ class EgressProxy:
         with self._unix_lock:
             unix_paths = list(self._unix_servers.keys())
         for p in unix_paths:
-            with contextlib.suppress(Exception):
+            # unbind_unix handles its own loop/unlink failures; what
+            # can still escape at teardown is logging to an already-
+            # closed stream (ValueError) or a broken fd (OSError).
+            with contextlib.suppress(OSError, ValueError):
                 self.unbind_unix(p)
         if drain_timeout > 0 and self._server is not None and self._loop.is_running():
             async def _graceful():
@@ -1438,7 +1446,10 @@ class EgressProxy:
             self._client_tasks.clear()
             if self._server is not None and self._loop is not None:
                 self._server.close()
-                with contextlib.suppress(Exception):
+                # run_until_complete on a loop that crashed or was
+                # stopped above raises RuntimeError; socket teardown
+                # can surface OSError.
+                with contextlib.suppress(RuntimeError, OSError):
                     self._loop.run_until_complete(self._server.wait_closed())
             if self._loop is not None:
                 self._loop.close()
@@ -1501,7 +1512,9 @@ class EgressProxy:
                 # The reject path used to `return` before the try/finally
                 # below the cap-counter, so the writer was never closed
                 # on rejection — every 429 leaked the inbound socket.
-                with contextlib.suppress(Exception):
+                # Peer may already be gone (OSError); transport may be
+                # detached during loop shutdown (RuntimeError).
+                with contextlib.suppress(OSError, RuntimeError):
                     writer.close()
                     await writer.wait_closed()
             return
@@ -1532,7 +1545,9 @@ class EgressProxy:
         finally:
             with self._active_lock:
                 self._active_tunnels -= 1
-            with contextlib.suppress(Exception):
+            # Peer may already be gone (OSError); transport may be
+            # detached during loop shutdown (RuntimeError).
+            with contextlib.suppress(OSError, RuntimeError):
                 writer.close()
                 await writer.wait_closed()
 
@@ -1926,7 +1941,9 @@ class EgressProxy:
                 f"egress proxy: relay ended {host}:{port}: {e.__class__.__name__}"
             )
         finally:
-            with contextlib.suppress(Exception):
+            # Upstream may already be gone (OSError); transport may be
+            # detached during loop shutdown (RuntimeError).
+            with contextlib.suppress(OSError, RuntimeError):
                 up_writer.close()
                 await up_writer.wait_closed()
             # Update the already-recorded event with final byte counts
@@ -1982,7 +1999,9 @@ class EgressProxy:
     async def _write_error(self, writer: asyncio.StreamWriter,
                            code: int, reason: str) -> None:
         body = f"HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        with contextlib.suppress(Exception):
+        # Client may have hung up before the error line (OSError);
+        # transport may be detached during loop shutdown (RuntimeError).
+        with contextlib.suppress(OSError, RuntimeError):
             writer.write(body.encode("ascii"))
             await writer.drain()
 
@@ -2040,6 +2059,10 @@ def get_proxy(
                 "egress proxy: singleton thread has died — "
                 "discarding stale instance and creating a fresh one"
             )
+            # Broad by design: stop() on a proxy whose loop thread
+            # already died runs against violated internal invariants —
+            # any failure mode is acceptable as long as the stale
+            # instance is discarded below.
             with contextlib.suppress(Exception):
                 _instance.stop()
             _instance = None

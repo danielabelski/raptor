@@ -105,6 +105,9 @@ def _write_setup_status(fd: int, category: bytes, reason: str = "") -> None:
     child after fork — must not raise and must not touch the Python logger
     (not fork-safe), so swallow everything.
     """
+    # Broad by design: fork-safe last-chance status write in a dying
+    # child (see docstring) — any propagation here would run the
+    # parent's stack in the child.
     with contextlib.suppress(BaseException):
         payload = category + b":" + reason.encode("utf-8", "replace")[:512]
         os.write(fd, payload)
@@ -191,7 +194,10 @@ def _gidmap_allow_available() -> str | None:
                     )
                     if "cap_setgid" in r.stdout:
                         result = str(GIDMAP_ALLOW_PATH)
-        except Exception:  # noqa: BLE001, S110 — capability probe is best-effort; ANY failure means "helper unavailable", cached as False
+        except (OSError, subprocess.SubprocessError):
+            # Capability probe is best-effort; a probe failure
+            # (unreadable path, missing/hung getcap) means "helper
+            # unavailable", cached as False.
             pass
         state._gidmap_allow_cache = result
         return result or None
@@ -1223,7 +1229,13 @@ def run_sandboxed(
             if _audit_engaged or seccomp_profile == "debug":
                 # prctl failure isn't fatal — Yama may already be
                 # permissive. Tracer's SEIZE is the actual gate.
-                with contextlib.suppress(Exception):
+                # Legitimate failures: ctypes absent on minimal Python
+                # builds (ImportError), libc lookup/load failure
+                # (OSError), prctl symbol missing on exotic libcs
+                # (AttributeError — ctypes raises it on symbol access).
+                with contextlib.suppress(
+                    ImportError, OSError, AttributeError,
+                ):
                     import ctypes as _c
                     import ctypes.util as _cu
                     _c_libc = _c.CDLL(_cu.find_library("c"),
@@ -1346,6 +1358,10 @@ def run_sandboxed(
                         # are still intact (no exec has happened).
                         with contextlib.suppress(OSError):
                             os.unshare(CLONE_NEWNS)
+                        # Broad by design: forked forwarder child must
+                        # reach os._exit(0) on ANY failure — letting an
+                        # exception propagate would run the parent's
+                        # stack in the child.
                         with contextlib.suppress(BaseException):
                             _proxy_forwarder_fn(
                                 proxy_forwarder_port,
@@ -1635,7 +1651,8 @@ def run_sandboxed(
                 status_w, _status_step,
                 _tb.splitlines()[-1] if _tb else "",
             )
-            with contextlib.suppress(Exception):
+            # os.write to a possibly-closed/broken stderr → OSError.
+            with contextlib.suppress(OSError):
                 os.write(2, f"RAPTOR sandbox child failure:\n{traceback.format_exc()}\n".encode())
             os._exit(126)
 

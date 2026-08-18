@@ -598,7 +598,10 @@ def run_landlock_audit(
                 pass
             finally:
                 tracer_pid = -1
-            with contextlib.suppress(Exception):
+            # _kill_and_reap handles the expected cases internally;
+            # what escapes is OSError (PermissionError when the pid
+            # was recycled to a foreign process).
+            with contextlib.suppress(OSError):
                 _kill_and_reap(target_pid)
                 target_pid = -1
             rc_hint = ""
@@ -713,11 +716,13 @@ def run_landlock_audit(
         )
     finally:
         _cleanup_fds()
+        # _kill_and_reap only escapes with OSError (PermissionError on
+        # pid recycle); everything else it handles internally.
         if target_pid > 0:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 _kill_and_reap(target_pid)
         if tracer_pid > 0:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 _kill_and_reap(tracer_pid)
         # Release the anonymous config fd (normally already closed
         # right after the tracer fork; covers early-exit paths).

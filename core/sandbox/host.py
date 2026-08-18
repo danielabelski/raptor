@@ -240,7 +240,9 @@ class SandboxHost:
         # already dead, the close RPC below then fails fast with
         # EPIPE instead of waiting out its timeout.
         self._release_daemon_fds()
-        with contextlib.suppress(Exception):
+        # _rpc wraps channel failures in HostRPCError; a malformed
+        # reply from a dying daemon surfaces as ValueError (json).
+        with contextlib.suppress(HostRPCError, ValueError):
             self._rpc({"cmd": "close"}, timeout=5.0)
         for fd in (self._write_fd, self._read_fd):
             with contextlib.suppress(OSError):

@@ -88,8 +88,27 @@ def _cmd_run(args: argparse.Namespace) -> int:
                    toolchain=collect_toolchain(),
                    run_output_dir=str(pipeline_out))
 
+    report_dict = report.to_dict()
+
+    # Mechanical-warm section: when the profile's pipeline produced
+    # suppression evidence records, score them as would-suppress
+    # counts (raw numbers unchanged). Plain scan produces none today.
+    suppressions = pipeline_out / "suppressions.jsonl"
+    if suppressions.is_file():
+        from core.recall.warm import (
+            apply_would_suppress,
+            load_suppression_records,
+            matched_expected_entries,
+        )
+        records = load_suppression_records(suppressions)
+        expected_dicts = [e.to_dict() for e in manifest.expected]
+        report_dict["warm"] = apply_would_suppress(
+            report_dict, records,
+            matched_expected=matched_expected_entries(
+                report_dict, expected_dicts))
+
     json_path = out_dir / "report.json"
-    json_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n",
+    json_path.write_text(json.dumps(report_dict, indent=2) + "\n",
                          encoding="utf-8")
     md = render_markdown(report)
     (out_dir / "report.md").write_text(md, encoding="utf-8")
@@ -148,6 +167,40 @@ def _cmd_census(args: argparse.Namespace) -> int:
     (out_dir / "census.md").write_text(md, encoding="utf-8")
     print(md)
     print(f"census: {out_dir / 'census.json'}")
+    return 0
+
+
+def _cmd_warm(args: argparse.Namespace) -> int:
+    from core.recall.warm import (
+        apply_would_suppress,
+        load_suppression_records,
+        matched_expected_entries,
+        render_warm_markdown,
+    )
+
+    try:
+        report = json.loads(args.report.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"error: cannot read report: {exc}", file=sys.stderr)
+        return 2
+    records = load_suppression_records(args.suppressions)
+    matched: list[dict] = []
+    if args.manifest:
+        try:
+            manifest = load_manifest(args.manifest)
+        except ManifestError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        matched = matched_expected_entries(
+            report, [e.to_dict() for e in manifest.expected])
+    warm = apply_would_suppress(report, records, matched_expected=matched)
+    md = render_warm_markdown(warm)
+    out_dir = args.out or args.report.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "warm.json").write_text(
+        json.dumps(warm, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "warm.md").write_text(md, encoding="utf-8")
+    print(md)
     return 0
 
 
@@ -217,6 +270,17 @@ def main(argv: list[str] | None = None) -> int:
                        help="census output dir (default: report's dir)")
     cen_p.set_defaults(func=_cmd_census)
 
+    warm_p = sub.add_parser(
+        "warm",
+        help="score suppression records as would-suppress counts "
+             "(raw numbers unchanged)")
+    warm_p.add_argument("--report", type=Path, required=True)
+    warm_p.add_argument("--suppressions", type=Path, required=True)
+    warm_p.add_argument("--manifest", type=Path, default=None,
+                        help="enables the true-finding damage check")
+    warm_p.add_argument("--out", type=Path, default=None)
+    warm_p.set_defaults(func=_cmd_warm)
+
     ow_p = sub.add_parser(
         "owasp-manifest",
         help="generate the OWASP Benchmark recall manifest from the "
@@ -230,3 +294,6 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"unrecognized arguments: {' '.join(rest)}")
     return args.func(args)
 
+
+if __name__ == "__main__":  # python -m core.recall.cli
+    raise SystemExit(main())

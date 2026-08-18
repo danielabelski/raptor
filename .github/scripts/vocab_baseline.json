@@ -1145,6 +1145,11 @@
   "kind": "literal",
   "note": "recall-report field names (counts/percentages/lists of the recall measurement JSON), not name vocabulary \u2014 same class as the finding-dict field-name entries"
  },
+ "core/recall/warm.py::apply_would_suppress": {
+  "count": 10,
+  "kind": "literal",
+  "note": "mechanical-warm report field names (raw/warm FP counts, per-CWE rows, damage list), not name vocabulary \u2014 same class as the recall-report field-name entries"
+ },
  "core/reporting/findings.py::counts": {
   "count": 10,
   "kind": "literal"

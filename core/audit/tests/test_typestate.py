@@ -232,6 +232,25 @@ class TestFormatTypestateForContext:
         assert "double_free" in text
         assert "malloc/free" in text
         assert "line 10" in text
+        # The machine-checked state evidence is part of the rendered
+        # bullet — the LLM shouldn't have to re-infer it from prose.
+        assert "state: freed" in text
+        assert "requires: allocated" in text
+
+    def test_renders_multiple_required_states_sorted(self):
+        violations = [
+            TypeStateViolation(
+                type_name="lock",
+                operation="unlock",
+                current_state="unlocked",
+                required_states={"locked", "armed"},
+                location="line 3",
+                path_description="unlock without lock",
+                violation_kind="lock_not_held",
+            ),
+        ]
+        text = format_typestate_for_context(violations)
+        assert "requires: armed/locked" in text
 
     def test_empty_violations(self):
         assert format_typestate_for_context([]) == ""

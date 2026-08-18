@@ -390,9 +390,11 @@ def format_typestate_for_context(
 
     lines = ["### Type-state violations"]
     for v in violations[:8]:
+        required = "/".join(sorted(v.required_states)) or "none"
         lines.append(
             f"- **{v.violation_kind}**: `{v.operation}` on `{v.type_name}` "
-            f"at {v.location} — {v.path_description}"
+            f"at {v.location} (state: {v.current_state}, requires: "
+            f"{required}) — {v.path_description}"
         )
 
     return "\n".join(lines)

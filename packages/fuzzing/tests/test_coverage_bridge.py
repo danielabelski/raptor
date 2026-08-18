@@ -344,3 +344,96 @@ class TestOrchestratorWiring:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+class TestDefaultRunnerSandboxed:
+    """Corpus replay executes the untrusted fuzz target on attacker-
+    derived inputs — the default runner must go through core.sandbox.run
+    with the network denied (mirroring the afl-showmap sibling), discard
+    replay output, and cap gcov capture."""
+
+    @staticmethod
+    def _capture(monkeypatch, *, stdout=b"", returncode=0):
+        import subprocess as sp
+
+        import core.sandbox
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return sp.CompletedProcess(
+                cmd, returncode, stdout=stdout, stderr=b"",
+            )
+
+        monkeypatch.setattr(core.sandbox, "run", fake_run)
+        return calls
+
+    def test_replay_sandboxed_network_denied_output_discarded(
+        self, tmp_path, monkeypatch,
+    ):
+        import subprocess as sp
+
+        from packages.fuzzing.coverage_bridge import _default_runner
+
+        calls = self._capture(monkeypatch)
+        binary = tmp_path / "target"
+        binary.write_bytes(b"\x7fELF")
+        inp = tmp_path / "corpus" / "id_0"
+        inp.parent.mkdir()
+        inp.write_bytes(b"AAAA")
+        build = tmp_path / "build"
+        build.mkdir()
+
+        _default_runner([str(binary), str(inp)], cwd=build)
+
+        cmd, kwargs = calls[0]
+        assert kwargs["block_network"] is True
+        assert kwargs["stdout"] == sp.DEVNULL
+        assert kwargs["stderr"] == sp.DEVNULL
+        assert kwargs["target"] == str(build)
+        assert kwargs["output"] == str(build)
+        readable = set(kwargs["readable_paths"])
+        assert str(binary.resolve().parent) in readable
+        assert str(inp.resolve().parent) in readable
+
+    def test_gcov_capture_is_capped(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing.coverage_bridge import (
+            _MAX_CAPTURE_BYTES,
+            _default_runner,
+        )
+
+        calls = self._capture(
+            monkeypatch, stdout=b"y" * (_MAX_CAPTURE_BYTES + 4096),
+        )
+        build = tmp_path / "build"
+        build.mkdir()
+        gcda = build / "a.gcda"
+        gcda.write_bytes(b"z")
+
+        proc = _default_runner(
+            ["gcov", "-f", "-t", str(gcda)], cwd=build, timeout=60,
+        )
+        cmd, kwargs = calls[0]
+        assert kwargs["stdout"] == sp.PIPE
+        assert kwargs["block_network"] is True
+        assert len(proc.stdout) == _MAX_CAPTURE_BYTES
+
+    def test_sandbox_setup_error_fails_loud(self, tmp_path):
+        from core.sandbox import SandboxSetupError
+
+        def runner(cmd, **kw):
+            raise SandboxSetupError("isolation unavailable")
+
+        inp = tmp_path / "in0"
+        inp.write_bytes(b"A")
+        with pytest.raises(SandboxSetupError):
+            replay_corpus(tmp_path / "bin", [inp], runner=runner)
+
+        gcda = tmp_path / "b" / "x.gcda"
+        gcda.parent.mkdir()
+        gcda.write_bytes(b"z")
+        with pytest.raises(SandboxSetupError):
+            collect_gcov_function_coverage(tmp_path / "b", runner=runner)

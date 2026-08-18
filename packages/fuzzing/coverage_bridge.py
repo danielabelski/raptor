@@ -34,6 +34,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from core.sandbox import SandboxSetupError
+
 logger = logging.getLogger(__name__)
 
 COVERAGE_FUZZ_FILE = "coverage-fuzz.json"
@@ -43,6 +45,11 @@ COVERAGE_FUZZ_FILE = "coverage-fuzz.json"
 MAX_REPLAY_INPUTS = 200
 _REPLAY_TIMEOUT_S = 5
 _GCOV_TIMEOUT_S = 60
+
+# Cap on captured tool output. gcov -f -t reports are proportional to
+# source size (low MB at the extreme); anything past the cap is
+# adversarial and gets truncated before parsing.
+_MAX_CAPTURE_BYTES = 4 * 1024 * 1024
 
 _FUNC_RE = re.compile(r"^Function '(.+)'$")
 _FILE_RE = re.compile(r"^File '(.+)'$")
@@ -56,18 +63,54 @@ def _default_runner(
     stdin_bytes: bytes | None = None,
     timeout: int = _REPLAY_TIMEOUT_S,
 ) -> subprocess.CompletedProcess:
-    """Run a target/gcov command with the sanitised environment."""
-    from core.config import RaptorConfig
+    """Run a target-replay or gcov command inside the sandbox.
 
-    return subprocess.run(
+    Corpus replay executes the UNTRUSTED fuzz target on attacker-derived
+    crash/queue bytes — the same trust boundary as the afl-showmap path
+    in ``afl_runner``, which runs under ``core.sandbox.run`` with the
+    network denied. Mirror it: namespace/Landlock isolation,
+    ``block_network=True``, writes confined to the build dir (the
+    replay must flush ``.gcda`` counters there), reads limited to the
+    tool/binary and corpus-input parents.
+
+    Capture is bounded: replay stdout/stderr is discarded outright
+    (nothing consumes it, and a hostile target could otherwise balloon
+    memory through ``capture_output``); gcov's parsed report is
+    truncated at ``_MAX_CAPTURE_BYTES``.
+    """
+    from core.sandbox import run as _sandbox_run
+
+    workdir = Path(cwd) if cwd else Path.cwd()
+    readable = {str(Path(cmd[0]).resolve().parent)}
+    for arg in cmd[1:]:
+        try:
+            p = Path(arg)
+            if p.is_file():
+                readable.add(str(p.resolve().parent))
+        except OSError:
+            continue
+
+    is_gcov = Path(cmd[0]).name == "gcov"
+    proc = _sandbox_run(
         cmd,
-        cwd=str(cwd) if cwd else None,
+        block_network=True,
+        target=str(workdir),
+        output=str(workdir),
+        readable_paths=sorted(readable),
+        cwd=str(workdir),
         input=stdin_bytes,
-        env=RaptorConfig.get_safe_env(),
-        capture_output=True,
+        stdout=subprocess.PIPE if is_gcov else subprocess.DEVNULL,
+        stderr=subprocess.PIPE if is_gcov else subprocess.DEVNULL,
         timeout=timeout,
         check=False,
+        caller_label="fuzz-coverage-bridge",
+        sanitise_host_fingerprint=True,
     )
+    for stream in ("stdout", "stderr"):
+        data = getattr(proc, stream, None)
+        if isinstance(data, (bytes, str)) and len(data) > _MAX_CAPTURE_BYTES:
+            setattr(proc, stream, data[:_MAX_CAPTURE_BYTES])
+    return proc
 
 
 def find_corpus_inputs(
@@ -155,6 +198,12 @@ def replay_corpus(
             replayed += 1
         except (subprocess.TimeoutExpired, OSError):
             continue
+        except SandboxSetupError:
+            # Sandbox isolation could not engage — fail loud rather
+            # than silently skipping every input (mirrors the
+            # afl-showmap sibling; the orchestrator surfaces this as
+            # a bridge failure and no unsandboxed replay happens).
+            raise
         except Exception:
             logger.debug("replay failed for %s", inp, exc_info=True)
             continue
@@ -223,6 +272,8 @@ def collect_gcov_function_coverage(
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
+        except SandboxSetupError:
+            raise  # fail loud — see replay_corpus
         except Exception:
             logger.debug("gcov failed for %s", gcda, exc_info=True)
             continue

@@ -71,7 +71,7 @@ def test_process_pair_yield(monkeypatch, tmp_path: Path):
     res = process_pair(_pair(), work_dir=tmp_path)
     assert res.status == "ok"
     assert res.after_count == 1 and res.before_count == 3
-    assert res.is_yield and res.is_fp_candidate
+    assert res.is_yield
 
 
 def test_process_pair_build_fail(monkeypatch, tmp_path: Path):

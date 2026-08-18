@@ -37,6 +37,12 @@ from core.git.clone import (
     safe_git_readonly_command,
 )
 
+# CodeQL resource tunables live in ``packages.codeql`` — the central
+# home for all CodeQL-related utilities.  We re-export the type at the
+# old name so other modules (and tests that import it via cvefix_walk)
+# keep working without churn.
+from packages.codeql.tunables import CodeQLTunables
+
 DEFAULT_CODEQL_BIN = "codeql"
 
 # Package repos autobuild may fetch from. A build needing other repos fails the
@@ -205,10 +211,6 @@ class WalkResult:
     def is_yield(self) -> bool:
         return self.status == "ok" and self.before_count > 0
 
-    @property
-    def is_fp_candidate(self) -> bool:
-        return self.status == "ok" and self.after_count > 0
-
 
 # --- subprocess steps (module-level so tests can stub them) ---
 
@@ -324,12 +326,6 @@ def _fetch_pair(repo_url: str, fix_hash: str, dest: Path, timeout: int) -> bool:
     return _run_git(["-C", str(dest), "fetch", "-q", "--depth", "2", "origin", fix_hash],
                     timeout, network=True)
 
-
-# CodeQL resource tunables live in ``packages.codeql`` — the central
-# home for all CodeQL-related utilities.  We re-export the type at the
-# old name so other modules in this file (and tests that import it via
-# cvefix_walk) keep working without churn.
-from packages.codeql.tunables import CodeQLTunables
 
 _DEFAULT_TUNABLES = CodeQLTunables()
 
@@ -666,7 +662,10 @@ def main(argv=None) -> None:
     ap.add_argument("--analyze-timeout", type=int, default=180,
                     help="codeql database analyze timeout, seconds (default 180)")
     a = ap.parse_args(argv)
-    log = lambda m: print(m, flush=True)
+
+    def log(m):
+        print(m, flush=True)
+
     # Resolve operator overrides against tuning.json-backed defaults.
     tunables = CodeQLTunables.from_tuning(
         overrides={"threads": a.threads, "ram_mb": a.ram,

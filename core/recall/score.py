@@ -159,6 +159,10 @@ def score(
     for c in clean_hits:
         entry = c.expected.to_dict()
         entry["tools"] = c.tools
+        # rule attribution feeds the FP census (which rules drive the
+        # clean-region hits); additive — older reports lack it
+        entry["rules"] = sorted(
+            {str(p.get("rule_id")) for p in c.hits if p.get("rule_id")})
         clean_fps.append(entry)
 
     return RecallReport(

@@ -98,6 +98,59 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_census(args: argparse.Namespace) -> int:
+    from core.recall.census import build_census, render_census_markdown
+    from core.recall.matcher import clean_region_hits
+
+    try:
+        report = json.loads(args.report.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"error: cannot read report: {exc}", file=sys.stderr)
+        return 2
+    clean_fps = report.get("clean_region_fps", [])
+
+    # Rule attribution: reports produced before the score() rules
+    # field need a re-match against the run dir's SARIFs.
+    rules_by_id: dict[str, list[str]] | None = None
+    if clean_fps and not any(e.get("rules") for e in clean_fps):
+        run_dir = args.run_dir or (
+            Path(report["run_output_dir"])
+            if report.get("run_output_dir") else None)
+        if (run_dir is None or not Path(run_dir).is_dir()
+                or args.manifest is None):
+            print("warning: report carries no rule attribution and no "
+                  "usable run dir + manifest — census will rank "
+                  "idioms/CWEs only", file=sys.stderr)
+        else:
+            try:
+                manifest = load_manifest(args.manifest)
+            except ManifestError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            produced = collect_findings(Path(run_dir),
+                                        source_root=args.source_root)
+            hits = clean_region_hits(manifest.clean_regions, produced,
+                                     manifest.tolerance)
+            rules_by_id = {
+                h.expected.id: sorted(
+                    {str(p.get("rule_id")) for p in h.hits
+                     if p.get("rule_id")})
+                for h in hits
+            }
+
+    census = build_census(clean_fps, source_root=args.source_root,
+                          rules_by_id=rules_by_id)
+    md = render_census_markdown(census)
+    out_dir = args.out or args.report.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "census.json").write_text(
+        json.dumps(census, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "census.md").write_text(md, encoding="utf-8")
+    print(md)
+    print(f"census: {out_dir / 'census.json'}")
+    return 0
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     try:
         base = json.loads(args.base.read_text(encoding="utf-8"))
@@ -147,6 +200,23 @@ def main(argv: list[str] | None = None) -> int:
     cmp_p.add_argument("new", type=Path)
     cmp_p.set_defaults(func=_cmd_compare)
 
+    cen_p = sub.add_parser(
+        "census",
+        help="rank clean-region FPs by rule, CWE, and sanitizer idiom")
+    cen_p.add_argument("--report", type=Path, required=True)
+    cen_p.add_argument("--manifest", type=Path, default=None,
+                       help="needed to recompute rule attribution for "
+                            "reports that predate the rules field")
+    cen_p.add_argument("--run-dir", type=Path, default=None,
+                       help="pipeline run dir override (default: the "
+                            "report's run_output_dir)")
+    cen_p.add_argument("--source-root", type=Path, default=None,
+                       help="clean-case source tree (the pinned "
+                            "benchmark clone) for idiom classification")
+    cen_p.add_argument("--out", type=Path, default=None,
+                       help="census output dir (default: report's dir)")
+    cen_p.set_defaults(func=_cmd_census)
+
     ow_p = sub.add_parser(
         "owasp-manifest",
         help="generate the OWASP Benchmark recall manifest from the "
@@ -159,3 +229,4 @@ def main(argv: list[str] | None = None) -> int:
     if rest:
         p.error(f"unrecognized arguments: {' '.join(rest)}")
     return args.func(args)
+

@@ -1,0 +1,111 @@
+"""Tests for the clean-region FP census."""
+
+from __future__ import annotations
+
+import json
+
+from core.recall.census import (
+    UNCLASSIFIED,
+    build_census,
+    classify_source,
+    render_census_markdown,
+)
+
+ESAPI_SRC = """
+import org.owasp.esapi.ESAPI;
+String bar = ESAPI.encoder().encodeForHTML(param);
+switch (param) { default: break; }
+"""
+
+ENCODER_SRC = """
+import org.owasp.encoder.Encode;
+out.println(Encode.forHtml(param));
+"""
+
+PREPARED_SRC = """
+PreparedStatement ps = conn.prepareStatement(sql);
+ps.setString(1, param);
+"""
+
+TABLE_SRC = """
+java.util.ArrayList<String> valuesList = new java.util.ArrayList<String>();
+switch (param) { case "a": break; }
+"""
+
+PLAIN_SRC = "String x = doSomething(param);\n"
+
+
+class TestClassifySource:
+    def test_esapi_outranks_allowlist(self):
+        primary, matched = classify_source(ESAPI_SRC)
+        assert primary == "esapi_encoder"
+        assert "allowlist_or_table" in matched
+
+    def test_owasp_encoder(self):
+        assert classify_source(ENCODER_SRC)[0] == "owasp_java_encoder"
+
+    def test_prepared_statement(self):
+        assert classify_source(PREPARED_SRC)[0] == "prepared_statement"
+
+    def test_table_lookup(self):
+        assert classify_source(TABLE_SRC)[0] == "allowlist_or_table"
+
+    def test_unclassified_is_honest(self):
+        primary, matched = classify_source(PLAIN_SRC)
+        assert primary == UNCLASSIFIED
+        assert matched == []
+
+
+def _fp(case_id, cwe, path, rules=None):
+    entry = {"id": case_id, "cwe": cwe, "file": path}
+    if rules is not None:
+        entry["rules"] = rules
+    return entry
+
+
+class TestBuildCensus:
+    def test_rankings_and_rule_attribution(self, tmp_path):
+        (tmp_path / "a.java").write_text(ESAPI_SRC, encoding="utf-8")
+        (tmp_path / "b.java").write_text(ENCODER_SRC, encoding="utf-8")
+        (tmp_path / "c.java").write_text(PLAIN_SRC, encoding="utf-8")
+        fps = [
+            _fp("A", "CWE-79", "a.java", rules=["r.xss"]),
+            _fp("B", "CWE-79", "b.java", rules=["r.xss"]),
+            _fp("C", "CWE-89", "c.java", rules=["r.sqli"]),
+        ]
+        census = build_census(fps, source_root=tmp_path)
+        assert census["fp_total"] == 3
+        assert census["by_rule"][0] == {"rule": "r.xss", "count": 2}
+        idioms = {r["idiom"]: r["count"] for r in census["by_idiom"]}
+        assert idioms["esapi_encoder"] == 1
+        assert idioms[UNCLASSIFIED] == 1
+        cross = {(r["rule"], r["idiom"]) for r in census["rule_x_idiom"]}
+        assert ("r.xss", "esapi_encoder") in cross
+
+    def test_rules_by_id_fallback(self, tmp_path):
+        (tmp_path / "a.java").write_text(ESAPI_SRC, encoding="utf-8")
+        fps = [_fp("A", "CWE-79", "a.java")]  # no rules field
+        census = build_census(
+            fps, source_root=tmp_path,
+            rules_by_id={"A": ["r.late"]})
+        assert census["by_rule"][0]["rule"] == "r.late"
+
+    def test_missing_source_counts_unreadable(self, tmp_path):
+        fps = [_fp("A", "CWE-79", "nope.java", rules=["r"])]
+        census = build_census(fps, source_root=tmp_path)
+        assert census["unreadable_sources"] == 1
+        assert census["by_idiom"][0]["idiom"] == UNCLASSIFIED
+
+    def test_no_rule_attribution_bucket(self, tmp_path):
+        (tmp_path / "a.java").write_text(PLAIN_SRC, encoding="utf-8")
+        census = build_census([_fp("A", "CWE-79", "a.java")],
+                              source_root=tmp_path)
+        assert census["by_rule"][0]["rule"] == "(no-rule-attribution)"
+
+    def test_markdown_and_json_roundtrip(self, tmp_path):
+        (tmp_path / "a.java").write_text(ESAPI_SRC, encoding="utf-8")
+        census = build_census([_fp("A", "CWE-79", "a.java", rules=["r"])],
+                              source_root=tmp_path)
+        md = render_census_markdown(census)
+        assert "esapi_encoder" in md and "| r |" in md
+        json.dumps(census)  # JSON-serialisable

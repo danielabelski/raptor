@@ -218,8 +218,13 @@ class JoernServer:
         # (each such post would block for its full timeout).
         self._restarting = threading.Event()
         # Monotonic timestamp of the last relaunch-on-death attempt
-        # (``ensure_alive``); 0.0 = never attempted.
-        self._relaunch_last_attempt = 0.0
+        # (``ensure_alive``); None = never attempted. NOT 0.0: on
+        # Linux ``time.monotonic()`` is seconds since boot, so on a
+        # freshly booted host (CI runners, just-rebooted operator
+        # boxes) ``now - 0.0 < cooldown`` held for the first five
+        # minutes of uptime and the FIRST relaunch attempt was
+        # silently refused.
+        self._relaunch_last_attempt: float | None = None
         self._workdir: str | None = None
         self._auth_user: str | None = None
         self._auth_password: str | None = None
@@ -491,7 +496,10 @@ class JoernServer:
         if proc is None and self._cpg_path is None:
             return False
         now = time.monotonic()
-        if now - self._relaunch_last_attempt < cooldown_s:
+        if (
+            self._relaunch_last_attempt is not None
+            and now - self._relaunch_last_attempt < cooldown_s
+        ):
             return False
         self._relaunch_last_attempt = now
         logger.warning(

@@ -199,7 +199,7 @@ def _connect_existing(state: dict[str, Any]) -> JoernServer | None:
     # bypasses ``__init__``, so omitting it made EVERY query on a
     # reused server raise AttributeError.
     srv._restarting = threading.Event()
-    srv._relaunch_last_attempt = 0.0
+    srv._relaunch_last_attempt = None
     srv._workdir = None
     srv._auth_user = auth_user
     srv._auth_password = auth_password

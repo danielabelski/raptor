@@ -74,17 +74,39 @@ class TestEnsureAlive:
         restart.assert_called_once()
 
     def test_cooldown_bounds_attempts(self):
+        # Hermetic clock: ``time.monotonic()`` is seconds-since-boot
+        # on Linux, so real-clock arithmetic here couples the test to
+        # host uptime (a freshly booted CI runner sits inside the
+        # first cooldown window). Drive the window explicitly.
         srv = JoernServer()
         srv._proc = _dead_proc()
-        with patch.object(srv, "restart", return_value=False) as restart:
+        clock = {"now": 1000.0}
+        with patch("packages.joern.server.time.monotonic",
+                   side_effect=lambda: clock["now"]), \
+                patch.object(srv, "restart", return_value=False) as restart:
             assert srv.ensure_alive() is False
             # Within the cooldown window: no second boot attempt.
+            clock["now"] += 1.0
             assert srv.ensure_alive() is False
             assert restart.call_count == 1
             # Window elapsed: retry.
-            srv._relaunch_last_attempt = 0.0
+            clock["now"] += 400.0
             assert srv.ensure_alive() is False
             assert restart.call_count == 2
+
+    def test_first_attempt_allowed_on_freshly_booted_host(self):
+        # Regression: with the old ``0.0`` "never attempted" sentinel,
+        # a host whose monotonic clock (== uptime on Linux) was still
+        # below the cooldown refused the FIRST relaunch attempt — the
+        # taint tier stayed down for the first five minutes after boot,
+        # exactly the window CI runners live in.
+        srv = JoernServer()
+        srv._proc = _dead_proc()
+        with patch("packages.joern.server.time.monotonic",
+                   return_value=42.0), \
+                patch.object(srv, "restart", return_value=True) as restart:
+            assert srv.ensure_alive() is True
+        restart.assert_called_once()
 
     def test_never_started_handle_left_alone(self):
         # A handle that never served a CPG (e.g. lifecycle reuse of a
@@ -138,4 +160,4 @@ class TestReusedHandleQueryability:
             srv = lifecycle._connect_existing(state)
         assert srv is not None
         assert not srv._restarting.is_set()
-        assert srv._relaunch_last_attempt == 0.0
+        assert srv._relaunch_last_attempt is None

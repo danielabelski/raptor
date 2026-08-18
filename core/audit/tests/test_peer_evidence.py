@@ -132,7 +132,10 @@ class TestEvidenceGradeFirewall:
     def test_existing_stamps_unchanged(self):
         assert is_tool_evidence("semgrep")
         assert is_tool_evidence("semgrep+joern")
-        assert is_tool_evidence("fail_open:ignored-return-naming")
+        # Detection-grade by fail_open's own is_detection_rule_id —
+        # corroboration only, never full tool evidence alone.
+        assert not is_tool_evidence("fail_open:ignored-return-naming")
+        assert is_tool_evidence("fail_open:ignored-return")
         assert not is_tool_evidence("")
         assert not is_tool_evidence("none")
         assert not is_tool_evidence("llm-claimed:manual")

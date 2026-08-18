@@ -414,11 +414,18 @@ class TestLifecycleChannelChainEmission:
         from core.audit.evidence_grade import is_tool_evidence
         for stamp in (
             "ptr_lifecycle:stale-alias",
-            "ptr_lifecycle:stale-alias-naming",
             "lock_region:callback-under-lock",
-            "lock_region:callback-under-lock-naming",
         ):
             assert is_tool_evidence(stamp), stamp
+        # The -naming variants are detection-grade by each channel's
+        # own is_detection_rule_id — they may ride in a composite with
+        # a real receipt but are never full tool evidence alone.
+        for stamp in (
+            "ptr_lifecycle:stale-alias-naming",
+            "lock_region:callback-under-lock-naming",
+        ):
+            assert not is_tool_evidence(stamp), stamp
+            assert is_tool_evidence(f"coccinelle+{stamp}"), stamp
 
     def test_receipt_descriptions(self):
         from core.audit.evidence_grade import grade_review_result

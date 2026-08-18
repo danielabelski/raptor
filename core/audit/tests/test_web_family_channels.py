@@ -185,12 +185,18 @@ class TestDarkVerifyEligibility:
         assert "suspicious" in statuses
 
     def test_existing_families_have_no_filter(self):
-        # The pre-existing seven dark-verify families keep their
-        # unfiltered behaviour.
-        for cwe in ("CWE-287", "CWE-862", "CWE-863", "CWE-134",
-                    "CWE-190", "CWE-416", "CWE-457"):
+        # Only the original auth trio keeps unfiltered behaviour —
+        # dark verify is their primary grounding mechanism.
+        for cwe in ("CWE-287", "CWE-862", "CWE-863"):
             assert dark_verify_applicable(cwe)
             assert dark_verify_statuses(cwe) is None, cwe
+        # The expanded families bound witness-call cost the same way
+        # the web families do: clean outcomes are not eligible.
+        for cwe in ("CWE-134", "CWE-190", "CWE-416", "CWE-457"):
+            assert dark_verify_applicable(cwe)
+            assert dark_verify_statuses(cwe) == frozenset(
+                {"dark", "suspicious", "finding"}
+            ), cwe
 
     def test_status_filter_bounds_witness_calls(self, monkeypatch, tmp_path):
         """A clean-status CWE-918 outcome must not spend a witness call;

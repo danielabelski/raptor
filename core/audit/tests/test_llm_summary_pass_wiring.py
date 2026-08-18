@@ -30,9 +30,13 @@ import pytest
 
 pytestmark = pytest.mark.slow
 
-# Distinctive sink name: appears in the callee summary's taint flow and
-# nowhere in the target source, so finding it in the caller's review
-# prompt proves the LLM summary (not the source slice) delivered it.
+# Distinctive sink name: appears in the callee summary's taint flow
+# AND (as a call site) in the callee's own source — the summary pass
+# source-grounds every extracted claim (``_ground_summary``), so a
+# sink name absent from the source would be dropped as a potential
+# injection. Delivery is proven by finding the marker inside the
+# CALLER prompt's "Callee CPG summaries" section specifically: callee
+# summaries are the only channel that renders sink names there.
 _MARKER_SINK = "zz_llm_summary_marker_sink"
 
 _SUMMARY_JSON = json.dumps({
@@ -50,6 +54,8 @@ _SUMMARY_JSON = json.dumps({
 })
 
 _CALLEE = """\
+void zz_llm_summary_marker_sink(char *dst, const char *src, int len);
+
 int parse_header(char *dst, const char *src, int len)
 {
     int i;
@@ -69,6 +75,7 @@ int parse_header(char *dst, const char *src, int len)
         return -1;
     }
     if (n > 64) {
+        zz_llm_summary_marker_sink(dst, src, len);
         return -1;
     }
     return n;
@@ -170,6 +177,22 @@ def wired_run(tmp_path_factory):
     checklist = build_checklist(str(target), str(out))
     assert (out / "checklist.json").exists()
 
+    # Candidate discovery needs the caller→callee edge to see the
+    # functions as CONNECTED. With tree-sitter grammars installed the
+    # inventory extractor supplies it, but the grammars are optional
+    # (commented out in requirements.txt) — the regex fallback finds
+    # no call edges, the pass sees two disconnected functions, and
+    # this suite reports "unwired" on a wiring that is fine. Supply
+    # the edge through the context map (the pass's other documented
+    # edge source) so the guard tests the WIRING, not the grammar
+    # install.
+    (out / "context-map.json").write_text(json.dumps({
+        "call_edges": [{
+            "caller_file": "net.c", "caller": "handle_request",
+            "callee": "parse_header", "callee_file": "net.c",
+        }],
+    }))
+
     from core.audit.llm_review import make_review_fn
     from core.audit.orchestrator import OrchestratorConfig, run_orchestrator
 
@@ -229,7 +252,13 @@ class TestSummaryPassWiring:
             "callee-summary section missing from the caller's review "
             "prompt — LLM summaries are not reaching reviews"
         )
-        assert _MARKER_SINK in prompt, (
+        # Scope the marker check to the summaries SECTION: the marker
+        # is also a call site in the callee's source (it must be, to
+        # survive the pass's source-grounding), so a callee source
+        # snippet elsewhere in the prompt could carry it vacuously.
+        section = prompt.split("Callee CPG summaries", 1)[1]
+        section = section.split("\n### ", 1)[0]
+        assert _MARKER_SINK in section, (
             "the LLM-extracted callee summary content did not reach "
             "the caller's review prompt"
         )

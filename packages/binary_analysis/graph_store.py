@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Self
 
 GRAPH_FILENAME = "binary-graph.sqlite"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _json(value: Any) -> str:
@@ -46,12 +46,16 @@ def open_graph(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    _migrate(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _migrate(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -134,14 +138,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 snapshot_id TEXT NOT NULL,
                 node_id TEXT NOT NULL,
                 evidence_id TEXT NOT NULL,
-                PRIMARY KEY(snapshot_id, node_id, evidence_id)
+                PRIMARY KEY(snapshot_id, node_id, evidence_id),
+                FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS edge_evidence (
                 snapshot_id TEXT NOT NULL,
                 edge_id TEXT NOT NULL,
                 evidence_id TEXT NOT NULL,
-                PRIMARY KEY(snapshot_id, edge_id, evidence_id)
+                PRIMARY KEY(snapshot_id, edge_id, evidence_id),
+                FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS artifacts (
@@ -149,7 +155,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 kind TEXT NOT NULL,
                 path TEXT NOT NULL,
                 sha256 TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY(snapshot_id, kind, path)
+                PRIMARY KEY(snapshot_id, kind, path),
+                FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
             );
 
             CREATE INDEX IF NOT EXISTS idx_binary_nodes_kind ON nodes(snapshot_id, kind);
@@ -157,10 +164,64 @@ def _migrate(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_binary_evidence_tier ON evidence(snapshot_id, tier);
             """
         )
+    elif current == 1:
+        _upgrade_v1_to_v2(conn)
     conn.execute(f"PRAGMA user_version={int(SCHEMA_VERSION)}")
     conn.execute(
         "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
         ("schema_version", str(SCHEMA_VERSION)),
+    )
+
+
+def _upgrade_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v1 omitted the snapshot FK on node_evidence/edge_evidence/artifacts,
+    so a snapshot REPLACE cascaded nodes/edges/evidence but orphaned these
+    rows. SQLite cannot add a FK in place; rebuild each table and drop rows
+    already orphaned."""
+    conn.executescript(
+        """
+        BEGIN;
+        ALTER TABLE node_evidence RENAME TO node_evidence_v1;
+        CREATE TABLE node_evidence (
+            snapshot_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            PRIMARY KEY(snapshot_id, node_id, evidence_id),
+            FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
+        );
+        INSERT INTO node_evidence(snapshot_id, node_id, evidence_id)
+            SELECT snapshot_id, node_id, evidence_id FROM node_evidence_v1
+            WHERE snapshot_id IN (SELECT id FROM snapshots);
+        DROP TABLE node_evidence_v1;
+
+        ALTER TABLE edge_evidence RENAME TO edge_evidence_v1;
+        CREATE TABLE edge_evidence (
+            snapshot_id TEXT NOT NULL,
+            edge_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            PRIMARY KEY(snapshot_id, edge_id, evidence_id),
+            FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
+        );
+        INSERT INTO edge_evidence(snapshot_id, edge_id, evidence_id)
+            SELECT snapshot_id, edge_id, evidence_id FROM edge_evidence_v1
+            WHERE snapshot_id IN (SELECT id FROM snapshots);
+        DROP TABLE edge_evidence_v1;
+
+        ALTER TABLE artifacts RENAME TO artifacts_v1;
+        CREATE TABLE artifacts (
+            snapshot_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            path TEXT NOT NULL,
+            sha256 TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(snapshot_id, kind, path),
+            FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
+        );
+        INSERT INTO artifacts(snapshot_id, kind, path, sha256)
+            SELECT snapshot_id, kind, path, sha256 FROM artifacts_v1
+            WHERE snapshot_id IN (SELECT id FROM snapshots);
+        DROP TABLE artifacts_v1;
+        COMMIT;
+        """
     )
 
 

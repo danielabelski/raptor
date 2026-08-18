@@ -363,6 +363,51 @@ class TestContextMap:
         assert "target@0x1000" in out
         assert "target@0x2000" in out
 
+    @staticmethod
+    def _blackbox_data(ep_address, fn_address):
+        return {
+            "meta": {"analysis_mode": "blackbox_binary"},
+            "entry_points": [
+                {"id": "EP-001", "name": "main", "address": ep_address}
+            ],
+            "sink_details": [
+                {"id": "SINK-001", "operation": "system", "file": "", "line": ""}
+            ],
+            "interesting_functions": [
+                {"id": "BFN-1000", "name": "main", "address": fn_address}
+            ],
+            "candidate_flows": [
+                {
+                    "source_function": "BFN-1000",
+                    "sink": "SINK-001",
+                    "relationship": "calls",
+                }
+            ],
+        }
+
+    def test_int_address_joins_entry_to_candidate_flow(self):
+        # The entry_by_address join key normalises via _addr, so integer
+        # addresses join like the hex-string addresses the pipeline also
+        # emits. Same address as int on both sides: the flow source must
+        # resolve to the entry-point node, and no duplicate candidate
+        # node may be emitted for the same function.
+        out = gen_context_map(self._blackbox_data(4096, 4096))
+        assert 'EP-001 -. "calls candidate" .-> SINK-001' in out
+        assert "BFN-1000[" not in out
+
+    def test_hex_string_address_join_unchanged(self):
+        out = gen_context_map(self._blackbox_data("0x1000", "0x1000"))
+        assert 'EP-001 -. "calls candidate" .-> SINK-001' in out
+        assert "BFN-1000[" not in out
+
+    def test_candidate_node_int_address_rendered_as_hex(self):
+        # Unmatched candidate function with an int address renders in
+        # hex, consistent with entry-point location formatting.
+        out = gen_context_map(self._blackbox_data(8192, 4096))
+        assert "BFN-1000[" in out
+        assert "0x1000" in out
+        assert "4096" not in out
+
     def test_public_endpoint_labelled(self):
         out = gen_context_map(CONTEXT_MAP_FULL)
         assert "PUBLIC" in out
@@ -755,6 +800,108 @@ class TestForwardReachableBlocks:
         assert 'flowchart TD' in diagram
         # The host appears (with sanitisation applied).
         assert "src/a.py" in diagram
+
+
+class TestForwardReachableLabelCleaning:
+    """Host / internal / external labels (and the per-entry section
+    title) route through the same cleaning ``generate()`` applies via
+    ``_text`` — html-unescape + C0 control-char strip + sanitize — not
+    bare ``sanitize()``."""
+
+    def _entry_with_forward(self, fr_overrides=None, ep_overrides=None):
+        fr = {
+            "host": "handle_request",
+            "internal_count": 1,
+            "external_count": 1,
+            "internal_names": ["parse_input"],
+            "external_names": ["libcurl_send"],
+            "truncated": False,
+        }
+        if fr_overrides:
+            fr.update(fr_overrides)
+        ep = {"id": "EP-001", "path": "/api", "forward_reachable": fr}
+        if ep_overrides:
+            ep.update(ep_overrides)
+        return {"entry_points": [ep]}
+
+    def test_host_label_strips_c0_control_chars(self):
+        from packages.diagram.context_map import (
+            generate_forward_reachable_blocks,
+        )
+        data = self._entry_with_forward({"host": "evil\x1b[2Jhost\x00name"})
+        blocks = generate_forward_reachable_blocks(data)
+        assert len(blocks) == 1
+        _, diagram = blocks[0]
+        assert "\x1b" not in diagram
+        assert "\x00" not in diagram
+        assert "HOST[" in diagram
+
+    def test_internal_label_strips_c0_control_chars(self):
+        from packages.diagram.context_map import (
+            generate_forward_reachable_blocks,
+        )
+        data = self._entry_with_forward(
+            {"internal_names": ["fn\x1b]0;owned\x07name"]}
+        )
+        _, diagram = generate_forward_reachable_blocks(data)[0]
+        assert "\x1b" not in diagram
+        assert "\x07" not in diagram
+        assert 'INT000["fn' in diagram
+
+    def test_external_label_strips_c0_control_chars(self):
+        from packages.diagram.context_map import (
+            generate_forward_reachable_blocks,
+        )
+        data = self._entry_with_forward({"external_names": ["dep\x08\x08call"]})
+        _, diagram = generate_forward_reachable_blocks(data)[0]
+        assert "\x08" not in diagram
+        assert 'EXT000[/"dep' in diagram
+
+    def test_forward_labels_html_unescape_like_generate(self):
+        # generate() unescapes entities before re-sanitizing, so a
+        # pre-escaped name collapses to one level of escaping. The
+        # sibling forward renderer must match.
+        from packages.diagram.context_map import (
+            generate_forward_reachable_blocks,
+        )
+        data = self._entry_with_forward({"internal_names": ["a &amp; b"]})
+        _, diagram = generate_forward_reachable_blocks(data)[0]
+        assert 'INT000["a &amp; b"]' in diagram
+        assert "&amp;amp;" not in diagram
+
+    def test_forward_labels_still_escape_mermaid_metachars(self):
+        # Regression guard: cleaning must not weaken the existing
+        # metacharacter escaping.
+        from packages.diagram.context_map import (
+            generate_forward_reachable_blocks,
+        )
+        data = self._entry_with_forward(
+            {
+                "host": 'h"ost{x}',
+                "internal_names": ["int<b>"],
+                "external_names": ["ext\nline"],
+            }
+        )
+        _, diagram = generate_forward_reachable_blocks(data)[0]
+        assert 'h"ost' not in diagram
+        assert "{x}" not in diagram
+        assert "&lt;b&gt;" in diagram
+        assert "ext line" in diagram
+
+    def test_section_title_strips_c0_control_chars(self):
+        # The "<ep-id>: <host>" markdown heading is built from the same
+        # untrusted fields, so it gets the same treatment.
+        from packages.diagram.context_map import (
+            generate_forward_reachable_blocks,
+        )
+        data = self._entry_with_forward(
+            {"host": "h\x1bost"}, {"id": "EP\x00-001"}
+        )
+        title, _ = generate_forward_reachable_blocks(data)[0]
+        assert "\x1b" not in title
+        assert "\x00" not in title
+        assert "EP" in title
+        assert "ost" in title
 
 
 # ---------------------------------------------------------------------------

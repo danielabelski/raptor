@@ -12,6 +12,19 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+# Error classification moved to the shared consumer-side envelope
+# (core.llm.structured_call) — the word-boundary regexes this module
+# introduced are now the ONE classifier, extended with audit's
+# provider phrasings ("model refused", content_filter, "blocked by").
+# The aliased names below stay as thin aliases: they are this
+# package's documented seam (tests and callers import them from here).
+from core.llm.structured_call import (
+    classify_error_text as _classify_error,
+)
+from core.llm.structured_call import (
+    is_auth_error_text as _is_auth_error,
+)
+
 logger = logging.getLogger(__name__)
 
 # Corpora checked by dispatch preflight.  Excludes "structural_injection"
@@ -24,6 +37,17 @@ _DISPATCH_CORPORA = (
     "unicode_smuggling",
     "encoding_evasion",
 )
+
+
+class _ModelCircuitOpen(Exception):
+    """Signal from a worker that its model was already circuit-broken.
+
+    Every (model, item) future is pre-submitted before the drain loop
+    starts, so "stopping dispatch to this model" needs an execution-time
+    check: a queued future whose model has since been declared dead
+    raises this instead of spending another API call on it. Carries the
+    model key as its message.
+    """
 
 
 class DispatchResult:
@@ -150,20 +174,6 @@ def _format_elapsed(seconds: float) -> str:
     """Format elapsed seconds. Delegates to core.reporting.formatting."""
     from core.reporting.formatting import format_elapsed
     return format_elapsed(seconds)
-
-
-# Error classification moved to the shared consumer-side envelope
-# (core.llm.structured_call) — the word-boundary regexes this module
-# introduced are now the ONE classifier, extended with audit's
-# provider phrasings ("model refused", content_filter, "blocked by").
-# The module-level names below stay as thin aliases: they are this
-# package's documented seam (tests and callers import them from here).
-from core.llm.structured_call import (
-    classify_error_text as _classify_error,
-)
-from core.llm.structured_call import (
-    is_auth_error_text as _is_auth_error,
-)
 
 
 def dispatch_task(
@@ -304,11 +314,15 @@ def _dispatch_inner(
     running_cost = 0.0
     results = []
     abort = False
+    abort_reason = "auth failure"
     _per_model_auth_fail: set = set()
     _per_model_dead: set = set()
     _per_model_state: dict[str, dict[str, int]] = {}
 
     import threading as _th
+    # Guards _per_model_dead: the drain loop (main thread) adds dead
+    # models while worker threads check membership in _do_one.
+    _dead_lock = _th.Lock()
     # Key by (item_id, model_key) tuple — NOT just item_id. With N
     # models analysing the same item (multi-model orchestration),
     # all N writes land on the same `iid` key and last-writer-
@@ -334,6 +348,15 @@ def _dispatch_inner(
         futures = {}
         for model, item in work:
             def _do_one(m=model, it=item):
+                # Circuit-breaker enforcement. All (model, item)
+                # futures are pre-submitted before the drain loop
+                # starts, so a model declared dead mid-run still has
+                # queued work — short-circuit those futures here
+                # instead of spending another API call on a model
+                # that keeps failing.
+                with _dead_lock:
+                    if _model_key(m) in _per_model_dead:
+                        raise _ModelCircuitOpen(_model_key(m))
                 # Prefilter hook (fast-tier scorecard) — fires before
                 # prompt build and full dispatch so we don't pay for
                 # token-heavy work when the cheap-tier verdict is
@@ -482,6 +505,27 @@ def _dispatch_inner(
                 )
                 print(f"{prefix} {display} {status}{cost_str}")
 
+            except _ModelCircuitOpen:
+                # The worker short-circuited a pre-submitted future
+                # for an already-dead model: no API call was made, no
+                # nonce was stored, and this is not a fresh failure —
+                # record the skip without touching the per-model
+                # consecutive-failure counters or telemetry.
+                model_name = model.model_name if model is not None else "?"
+                results.append({
+                    "finding_id": item_id,
+                    "error": "skipped (model circuit-broken)",
+                    "error_type": "circuit_breaker",
+                    "analysed_by": model_name,
+                })
+                display = task.get_item_display(item)
+                prefix = (
+                    f"  [{completed}/{total} "
+                    f"{_format_elapsed(elapsed)} "
+                    f"${running_cost:.2f}]"
+                )
+                print(f"{prefix} {display} skipped — model circuit-broken")
+
             except Exception as e:  # noqa: BLE001 — per-item isolation: one failed dispatch must not sink the batch
                 err_str = str(e)
                 error_type = _classify_error(err_str)
@@ -546,6 +590,7 @@ def _dispatch_inner(
                             file=sys.stderr,
                         )
                         abort = True
+                        abort_reason = "auth failure"
                         executor.shutdown(wait=False, cancel_futures=True)
                         break
                     else:
@@ -566,8 +611,9 @@ def _dispatch_inner(
                 # fail/fail/fail-from-same-model bursts that the
                 # GLOBAL counter saw as universal failure even
                 # when other models had succeeded between them.
-                # Per-model counter only triggers when this
-                # Circuit-break a model after 3 consecutive failures.
+                # Per-model counter only triggers when this model
+                # itself fails 3 times in a row: circuit-break it
+                # (enforced by the dead-check in _do_one).
                 pm = _per_model_state.setdefault(
                     model_key, {"consec": 0, "completed": 0},
                 )
@@ -581,10 +627,17 @@ def _dispatch_inner(
                         " to this model (others continue)",
                         file=sys.stderr,
                     )
-                    _per_model_dead.add(model_key)
+                    with _dead_lock:
+                        _per_model_dead.add(model_key)
                     distinct_models = {_model_key(m) for m, _ in work}
                     if _per_model_dead >= distinct_models:
+                        print(
+                            "\n  All models circuit-broken —"
+                            " aborting remaining",
+                            file=sys.stderr,
+                        )
                         abort = True
+                        abort_reason = "all models circuit-broken"
                         executor.shutdown(wait=False, cancel_futures=True)
                         break
 
@@ -593,9 +646,13 @@ def _dispatch_inner(
         for item in selected:
             item_id = task.get_item_id(item)
             if item_id not in completed_ids:
+                # Pre-fix this hardcoded "aborted (auth failure)" even
+                # when the abort came from the all-models-circuit-broken
+                # branch — mislabelling non-auth death spirals in the
+                # per-item error records. Carry the actual reason.
                 results.append({
                     "finding_id": item_id,
-                    "error": "aborted (auth failure)",
+                    "error": f"aborted ({abort_reason})",
                 })
 
     # Finalize (e.g. consensus verdict rules)

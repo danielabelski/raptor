@@ -39,7 +39,6 @@ class CampaignPlan:
     can_run: bool = False
     blockers: list[str] = field(default_factory=list)
     hints: list[str] = field(default_factory=list)
-    cmd_preview: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [

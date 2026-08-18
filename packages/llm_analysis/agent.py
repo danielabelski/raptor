@@ -578,6 +578,16 @@ class VulnerabilityContext:
         else:
             result["has_dataflow"] = False
 
+        # Mechanical evidence tier — derived from the receipts already
+        # in this dict (SMT witness, mechanical dataflow validation,
+        # execution oracle). Only stamped once an analysis verdict
+        # exists: in prep-only mode there is no verdict to tier.
+        if self.analysis is not None:
+            from packages.llm_analysis.verification_tier import (
+                derive_verification_tier,
+            )
+            result["verification_tier"] = derive_verification_tier(result)
+
         return result
 
 
@@ -3148,6 +3158,17 @@ class AutonomousSecurityAgentV2:
         # manual review handles reasoning)
         is_prep_only = isinstance(self.llm, ClaudeCodeProvider)
 
+        # Evidence tiering: mechanically corroborated verdicts surface
+        # first (stable within tier); untiered prep-only entries keep
+        # their order at the end. Labeling/ordering only — nothing is
+        # dropped or demoted by tier.
+        from packages.llm_analysis.verification_tier import (
+            sort_results_by_tier,
+            tier_counts,
+        )
+        results = sort_results_by_tier(results)
+        verification_tiers = tier_counts(results)
+
         report = {
             "mode": "prep_only" if is_prep_only else "full",
             "processed": len(unique_findings),
@@ -3176,6 +3197,7 @@ class AutonomousSecurityAgentV2:
             "guard_dominance": {
                 "skipped_llm_calls": guard_dominance_skipped_llm_calls,
             },
+            "verification_tiers": verification_tiers,
             "execution_time": execution_time,
             "llm_stats": llm_stats,
             "results": results,
@@ -3210,6 +3232,14 @@ class AutonomousSecurityAgentV2:
             logger.info("✓ Processed: %d findings", len(unique_findings))
             logger.info("✓ Analyzed: %d with LLM", analyzed)
             logger.info("✓ Exploitable: %d vulnerabilities", exploitable)
+            if verification_tiers:
+                logger.info(
+                    "✓ Evidence tiers: %d confirmed / %d tool_backed "
+                    "/ %d llm_only",
+                    verification_tiers.get("confirmed", 0),
+                    verification_tiers.get("tool_backed", 0),
+                    verification_tiers.get("llm_only", 0),
+                )
             logger.info("✓ Exploits generated: %d", exploits_generated)
             logger.info("✓ Patches generated: %d", patches_generated)
             if journal_entries_emitted > 0:

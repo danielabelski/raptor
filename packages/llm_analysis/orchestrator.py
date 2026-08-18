@@ -2210,7 +2210,24 @@ def _merge_results(
             finding.pop("patch_gate", None)
             finding["has_patch"] = False
 
+    # Evidence tiering for the merged report — same labeling/ordering
+    # the in-process agent applies, derived from the merged finding
+    # dicts (receipts may sit top-level here rather than under
+    # ``analysis``). Findings the cc dispatch never analysed stay
+    # untiered and keep their relative order at the end.
+    from packages.llm_analysis.verification_tier import (
+        derive_verification_tier,
+        sort_results_by_tier,
+        tier_counts,
+    )
+    for finding in results:
+        fid = finding.get("finding_id")
+        if fid in cc_by_id and "error" not in (cc_by_id.get(fid) or {}):
+            finding["verification_tier"] = derive_verification_tier(finding)
+    results = sort_results_by_tier(results)
+
     merged["results"] = results
+    merged["verification_tiers"] = tier_counts(results)
     merged["analyzed"] = analysed
     merged["exploitable"] = exploitable
     merged["exploits_generated"] = exploits_generated

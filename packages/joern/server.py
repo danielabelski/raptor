@@ -1176,6 +1176,8 @@ class JoernServer:
             "import io.shiftleft.semanticcpg.language._",
             "import io.shiftleft.codepropertygraph.generated.nodes.CfgNode",
             "import scala.util.Try",
+        ]
+        lines += [
             f"val batchConfig = EngineConfig(maxCallDepth = {max_call_depth})",
             (
                 "implicit val batchContext: EngineContext = "
@@ -1183,8 +1185,25 @@ class JoernServer:
             ),
         ]
 
+        # Transport and echo discipline (three interacting REPL facts,
+        # all observed on the supported joern line):
+        # * println output does NOT come back through /query-sync —
+        #   flows must ride the FINAL EXPRESSION's string echo, exactly
+        #   like tiered_taint.sc / _build_taint_query do.
+        # * a bare `val flowsN = ....l` at top level echoes the fully
+        #   pretty-printed node list, flooding (and truncating) the
+        #   response — each pair runs inside locally{} so intermediate
+        #   vals never echo.
+        # * interpolator dollars are single ($ln): a doubled $$ is
+        #   Scala's ESCAPED literal dollar and would emit the JSON
+        #   un-interpolated.
+        lines.append(
+            "val raptorBatchLines = "
+            "scala.collection.mutable.ListBuffer.empty[String]"
+        )
         for i, (src, sink) in enumerate(valid_pairs):
             lines.append(
+                f'locally {{\n'
                 f'val src{i} = cpg.method.name("{src}").parameter\n'
                 f'val snk{i} = cpg.call.name("{sink}").argument\n'
                 f'val flows{i} = snk{i}.reachableByFlows(src{i}).take(50).l\n'
@@ -1199,13 +1218,17 @@ class JoernServer:
                 f'    }}\n'
                 f'    val fnEsc = fn.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"").replace("\\n", " ")\n'
                 f'    val flEsc = fl.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"").replace("\\n", " ")\n'
-                f'    s"""{{"line":$$ln,"code":"$$cd","function":"$$fnEsc","file":"$$flEsc"}}"""\n'
+                f'    s"""{{"line":$ln,"code":"$cd","function":"$fnEsc","file":"$flEsc"}}"""\n'
                 f'  }}.mkString(",")\n'
-                f'  println("JOERN_FLOW:[" + steps + "]")\n'
+                f'  raptorBatchLines += ("JOERN_FLOW:[" + steps + "]")\n'
+                f'}}\n'
                 f'}}'
             )
 
-        lines.append('"batch-done"')
+        lines.append(
+            '"JOERN_FLOWS_START\\n" + raptorBatchLines.mkString("\\n") '
+            '+ "\\nJOERN_FLOWS_END"'
+        )
         query = "\n".join(lines)
 
         result = self.query(query, timeout=timeout, validate=True, check_length=False)

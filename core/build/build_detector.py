@@ -758,12 +758,33 @@ class BuildDetector:
     # injection-shaped flag is correctly rejected.
     _SAFE_FLAG_TOKEN = re.compile(r'\A-?[A-Za-z0-9._/+=-]+\Z')
 
+    # Flag-NAME allowlist for synthesised builds. The metacharacter
+    # check alone let any flag name through — the CC prompt promises
+    # "-I/-D/-include/-std only", but a prompt-injected model reply
+    # could smuggle code-execution flags (-fplugin=, -B, -specs=,
+    # --wrapper) that are metacharacter-clean. Names here are every
+    # shape the heuristic detectors and the prompt contract emit.
+    # Unknown names are DROPPED AND LOGGED, not fatal: a build missing
+    # an exotic flag degrades visibly, and operators who genuinely
+    # need one have the trusted escape hatch — /project set
+    # build-command[.<lang>] supplies the whole build command and
+    # bypasses flag synthesis entirely.
+    _SAFE_FLAG_NAME = re.compile(
+        r'\A(?:'
+        r'-I.+|-D[A-Za-z_].*'           # include dirs / defines
+        r'|-include|-std=.+'            # forced header / language std
+        r'|-sourcepath|-cp|-classpath'  # javac shapes
+        r'|[^-].*'                      # positional value of a pair flag
+        r')\Z'
+    )
+
     def _validate_flags(self, flags: list) -> list:
         """Validate and normalise compiler flags.
 
         Accepts both single tokens ("-DFOO") and space-separated pairs
         ("-include header.h"). Splits pairs into individual tokens.
-        Rejects anything with shell/Make metacharacters.
+        Two gates, both required: no shell/Make metacharacters
+        (character level) AND a known flag name (_SAFE_FLAG_NAME).
         """
         safe = []
         for flag in flags:
@@ -771,10 +792,17 @@ class BuildDetector:
                 continue
             # Split space-separated flags like "-include header.h"
             tokens = flag.split()
-            if all(self._SAFE_FLAG_TOKEN.match(t) for t in tokens):
-                safe.extend(tokens)
-            else:
+            if not all(self._SAFE_FLAG_TOKEN.match(t) for t in tokens):
                 logger.warning("Rejected unsafe compiler flag: %s", flag)
+                continue
+            if not all(self._SAFE_FLAG_NAME.match(t) for t in tokens):
+                logger.warning(
+                    "Dropped compiler flag outside the synthesis "
+                    "allowlist: %s (operators needing it: "
+                    "/project set build-command)", flag,
+                )
+                continue
+            safe.extend(tokens)
         return safe
 
     def synthesise_build_command(self, language: str) -> BuildSystem | None:

@@ -412,6 +412,95 @@ class TestStreamBytes:
         assert client._http.request.call_count == 0
 
 
+class TestStreamPostRedirectRevalidation:
+    """stream_bytes revalidates the post-redirect final URL before
+    yielding any body byte — same gate as the buffered path."""
+
+    def test_https_to_http_downgrade_redirect_refused(self):
+        """A followed https -> http redirect on a streamed download must
+        raise HttpError before any body byte is yielded — the TLS
+        downgrade gate `_fetch_once` already had."""
+        resp = _stub_response(b"x" * 100,
+                              final_url="http://attacker.example/payload")
+
+        class HttpsOnly(UrllibClient):
+            _ALLOWED_SCHEMES = ("https",)
+
+        pool = MagicMock()
+        pool.request.return_value = resp
+        client = HttpsOnly(_http=pool)
+        it = client.stream_bytes("https://example.com/blob")
+        with pytest.raises(HttpError, match="refused redirect"):
+            next(it)
+        resp.release_conn.assert_called_once()
+
+    def test_redirect_to_disallowed_scheme_refused_for_default_client(self):
+        """Even the default (http+https) client refuses a redirect whose
+        final URL fails _validate_url — e.g. embedded credentials."""
+        resp = _stub_response(b"x",
+                              final_url="https://user:pw@example.com/blob")
+        client, _pool = _client_with_mock_pool(resp)
+        it = client.stream_bytes("https://example.com/blob")
+        with pytest.raises(HttpError, match="refused redirect"):
+            next(it)
+
+    def test_same_scheme_redirect_streams_normally(self):
+        """A validated https -> https redirect still streams the body."""
+        resp = _stub_response(b"abc",
+                              final_url="https://cdn.example.com/blob")
+        client, _pool = _client_with_mock_pool(resp)
+        chunks = list(client.stream_bytes("https://example.com/blob"))
+        assert b"".join(chunks) == b"abc"
+
+    def test_relative_geturl_resolved_not_refused(self):
+        """urllib3 geturl() can return a relative path on a 200 response
+        (Location header without redirect) — resolve, don't refuse."""
+        resp = _stub_response(b"data", final_url="/v1/blob")
+        client, _pool = _client_with_mock_pool(resp)
+        chunks = list(client.stream_bytes("https://example.com/v1/blob"))
+        assert b"".join(chunks) == b"data"
+
+    def test_falsy_geturl_falls_back_to_request_url(self):
+        """geturl() returning '' (no URL recorded) must not trigger
+        revalidation or refusal."""
+        resp = _stub_response(b"ok", final_url="")
+        client, _pool = _client_with_mock_pool(resp)
+        chunks = list(client.stream_bytes("https://example.com/blob"))
+        assert b"".join(chunks) == b"ok"
+
+
+class TestStreamErrorSnippetRedaction:
+    """The 4xx body snippet embedded in a streaming-path HttpError is
+    redacted and decoded tolerantly — parity with the buffered path."""
+
+    def test_4xx_body_secret_redacted_in_stream_error(self):
+        """A token echoed in a 4xx body must not appear verbatim in the
+        HttpError raised by the streaming path (parity with
+        `_fetch_once`'s redaction)."""
+        token = "ghp_" + "a" * 36
+        resp = _stub_response(
+            f"invalid token {token}".encode(),
+            status=403, reason="Forbidden", final_url="",
+        )
+        client, _pool = _client_with_mock_pool(resp)
+        it = client.stream_bytes("https://example.com/blob")
+        with pytest.raises(HttpError) as excinfo:
+            next(it)
+        assert token not in str(excinfo.value)
+        assert excinfo.value.status == 403
+
+    def test_4xx_non_utf8_body_does_not_crash(self):
+        """Non-UTF-8 error bodies decode with errors='replace' instead
+        of raising UnicodeDecodeError from the error path itself."""
+        resp = _stub_response(b"\xff\xfe bad", status=404,
+                              reason="Not Found", final_url="")
+        client, _pool = _client_with_mock_pool(resp)
+        it = client.stream_bytes("https://example.com/blob")
+        with pytest.raises(HttpError) as excinfo:
+            next(it)
+        assert excinfo.value.status == 404
+
+
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------

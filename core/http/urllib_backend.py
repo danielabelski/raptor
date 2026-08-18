@@ -758,16 +758,45 @@ class UrllibClient:
             retries=False,
         )
         try:
+            # Re-validate the post-redirect URL BEFORE yielding any
+            # body bytes — same scheme/userinfo/host gates as the
+            # initial request. Pre-fix this streaming path followed
+            # redirects (``redirect=True``) with NO revalidation,
+            # while `_fetch_once` revalidated: a 302
+            # `Location: http://attacker.com/...` from an https://
+            # request downgraded a streamed download to cleartext
+            # silently. Same relative-path resolution as
+            # `_fetch_once` (urllib3's geturl() can return a
+            # relative path; resolve against the request URL first).
+            final_url = resp.geturl() or url
+            if isinstance(final_url, str) and final_url != url:
+                from urllib.parse import urljoin, urlparse
+                if not urlparse(final_url).scheme:
+                    final_url = urljoin(url, final_url)
+                try:
+                    self._validate_url(final_url)
+                except HttpError as exc:
+                    raise HttpError(
+                        f"refused redirect from {_safe_url_for_log(url)} "
+                        f"to {_safe_url_for_log(final_url)}: {exc}"
+                    ) from exc
             if resp.status == 304:
                 raise NotModified(
                     f"304 Not Modified for {_safe_url_for_log(url)}",
                 )
             if resp.status >= 400:
+                # Bounded read for the error message, secrets
+                # redacted — same defang as `_fetch_once`'s 4xx
+                # branch (4xx bodies commonly echo the request
+                # token back).
                 snippet = resp.read(512, decode_content=True) or b""
                 reason = resp.reason or "?"
+                from core.security.redaction import redact_secrets
+                snippet_text = snippet.decode("utf-8", errors="replace")
+                snippet_safe = redact_secrets(snippet_text, reveal_secrets=False)
                 raise HttpError(
                     f"HTTP {resp.status} from {_safe_url_for_log(url)}: "
-                    f"{reason} {snippet!r}"[:200],
+                    f"{reason} {snippet_safe!r}"[:200],
                     status=resp.status,
                 )
             # Pre-fix the loop honoured ``timeout`` for the

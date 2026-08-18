@@ -306,6 +306,14 @@ class TestRunOrchestrator:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
+            # hermetic: with Joern installed, the post-resolution channel
+            # settles the unverifiable suspicious verdict as "dark" and
+            # spends a live LLM call doing so (see TestSuspiciousPromotion).
+            joern_overrides={"enabled": False},
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False,
             max_refinements=0,
@@ -1030,6 +1038,10 @@ class TestSweepValidation:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=True, batch_sloc_threshold=0,
         )
@@ -1050,6 +1062,10 @@ class TestSweepValidation:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False, batch_sloc_threshold=0,
             prefilter=False, max_refinements=0,
@@ -1493,6 +1509,10 @@ class TestGateEnforcement:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False,
             max_refinements=0,
@@ -1517,6 +1537,10 @@ class TestGateEnforcement:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False,
             batch_sloc_threshold=0,
@@ -1572,6 +1596,10 @@ class TestSuspiciousPromotion:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=True, batch_sloc_threshold=0,
             # Hermetic: with Joern installed, the suspicious-demotion
@@ -1603,6 +1631,14 @@ class TestSuspiciousPromotion:
         config = OrchestratorConfig(
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=True, batch_sloc_threshold=0,
+            # Hermetic: with Joern installed, the post-resolution
+            # channel settles the unverifiable suspicious verdicts as
+            # "dark" (no tool could confirm or refute) — and spends
+            # live LLM calls getting there when the host has a
+            # configured provider. The assertions below are about
+            # sweep promotion, not host tooling. Same pin as
+            # test_suspicious_with_prefilter_hit_promoted.
+            joern_overrides={"enabled": False},
         )
         result = run_orchestrator(config, review_fn)
         assert result.sweep_promoted == 0
@@ -2323,6 +2359,10 @@ class TestRefutationGateWirePoint:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             batch_sloc_threshold=0,
         )
@@ -2945,6 +2985,10 @@ class TestIterativeReReview:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=False, batch_sloc_threshold=0,
             propagate_constraints=True,
@@ -3040,6 +3084,10 @@ class TestIterativeReReview:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out, resume=False,
             sweep_validate_findings=True, batch_sloc_threshold=0,
             propagate_constraints=True,
@@ -3244,6 +3292,10 @@ class TestDeepenSuspicious:
             )
 
         config = OrchestratorConfig(
+            # hermetic: findings survive to post-loop — without the pin,
+            # config.validate (default True) dispatches the real validation
+            # pipeline on hosts with a Claude CLI (live spend, minutes).
+            validate=False,
             target_path=target, out_dir=out,
             budget=10, batch_sloc_threshold=0,
             deepen_suspicious=True,

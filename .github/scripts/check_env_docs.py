@@ -162,6 +162,10 @@ EXTERNAL_NAMES = frozenset({
     "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
     "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_MANTLE",
     "CLAUDE_ENV_FILE",
+    # Harness supervision contract (read by core.run.supervisor to
+    # detect subagent background shells and their kill cap).
+    "CLAUDE_SUBAGENT_BG_SHELL_MAX_MS", "CLAUDE_CODE_CHILD_SESSION",
+    "AI_AGENT",
     # Other ecosystems' detection / SDK surface
     "PYTEST_CURRENT_TEST", "CONDA_DEFAULT_ENV", "AZURE_OPENAI_ENDPOINT",
 })
@@ -224,7 +228,7 @@ CAPS_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 class Occurrence:
-    __slots__ = ("file", "line", "kind")
+    __slots__ = ("file", "kind", "line")
 
     def __init__(self, file: str, line: int, kind: str):
         self.file = file
@@ -785,9 +789,9 @@ def main() -> int:
                     f"(first seen {occ.file}:{occ.line}) — add it to "
                     f"{DOC_PATH}"
                 )
-        elif cls in ("internal", "external-standard"):
-            if name not in mentioned:
-                warns.append(f"undocumented {cls} variable: {name}")
+        elif (cls in ("internal", "external-standard")
+                and name not in mentioned):
+            warns.append(f"undocumented {cls} variable: {name}")
 
     # Documented names must exist somewhere in the inventory. The
     # policy-table identifiers (LLM_API_KEY_VARS etc.) are legitimate

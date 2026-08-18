@@ -49,6 +49,7 @@ from .diff import compare_inventories
 from .exclusions import (
     DEFAULT_EXCLUDES,
     ROOT_ANCHORED_EXCLUDE_DIRS,
+    generated_marker_corroborated,
     is_binary_file,
     is_generated_file,
     match_exclusion_reason,
@@ -932,8 +933,23 @@ def _process_single_file(
                     "_pattern": f"size>{MAX_FILE_BYTES}"}
         content = raw_bytes.decode('utf-8', errors='ignore')
 
+        _uncorroborated_generated = False
         if skip_generated and is_generated_file(content):
-            return {"path": rel_path, "_excluded": True, "_reason": "generated_file", "_pattern": None}
+            if generated_marker_corroborated(rel_path):
+                return {"path": rel_path, "_excluded": True,
+                        "_reason": "generated_file", "_pattern": None}
+            # The in-file marker is target-controlled text; honouring
+            # it alone let one comment line self-exclude a file from
+            # every analysis tier (evasion channel). Without path
+            # corroboration the file STAYS in the inventory and the
+            # claim rides along as a visible flag consumers may use
+            # to deprioritise — never to skip silently.
+            _uncorroborated_generated = True
+            logger.info(
+                "inventory: %s carries a generated-file marker but no "
+                "generated-shaped path/name — keeping it in the "
+                "inventory (marker alone does not exclude)", rel_path,
+            )
 
         # Content-based routing: .h headers with C++ markers parse as
         # C++ (class methods / templates otherwise silently drop);
@@ -989,6 +1005,8 @@ def _process_single_file(
             '_stat': file_stat,
             'items': [item.to_dict() for item in items],
         }
+        if _uncorroborated_generated:
+            record['generated_marker'] = 'uncorroborated'
         # Per-item span hashes (core.staleness format: SHA-256[:12] of
         # the raw span lines). The function-level inventory diff
         # compares these across runs to find added/changed functions

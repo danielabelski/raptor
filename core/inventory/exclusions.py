@@ -2,6 +2,7 @@
 
 import fnmatch
 import os
+import re
 from pathlib import Path
 
 # Default exclude patterns — comprehensive list for clean inventory
@@ -167,6 +168,38 @@ def is_generated_file(content: str, check_lines: int = 10) -> bool:
             if marker in lowered:
                 return True
     return False
+
+
+# Path/name shapes that independently support a generated-file claim.
+# The in-file marker is TARGET-CONTROLLED text: honouring it alone let
+# one comment line self-exclude any file from every analysis tier — a
+# self-service evasion channel. A generator's output almost always
+# ALSO lands in a generated-shaped location or carries a
+# generated-shaped name; requiring that corroboration keeps the
+# noise-reduction for real generated code while a hand-planted marker
+# on a normal source file no longer buys invisibility.
+_GENERATED_PATH_HINTS = (
+    "generated", "gen", "autogen", "codegen", "build", "dist",
+    "target", "out", "output", "node_modules", "vendor", "third_party",
+)
+_GENERATED_NAME_RE = re.compile(
+    r"(\.generated\.|_generated\.|\.auto\.|_pb2(_grpc)?\.py$"
+    r"|\.pb\.(go|cc|h)$|\.min\.(js|css)$|\.bundle\.(js|css)$"
+    r"|(^|/)(lex\.yy\.c|y\.tab\.[ch])$|\.tab\.[ch]$"
+    r"|_string(er)?\.go$|\.g\.(dart|cs)$|_gen\.(go|py|rs|c|h)$"
+    r"|\.pyi$|\.d\.ts$)",
+    re.IGNORECASE,
+)
+
+
+def generated_marker_corroborated(filepath: str) -> bool:
+    """True when the file's PATH independently supports its
+    generated-file marker (see the rationale above)."""
+    norm = filepath.replace("\\", "/").lower()
+    if _GENERATED_NAME_RE.search(norm):
+        return True
+    parts = norm.split("/")[:-1]
+    return any(part in _GENERATED_PATH_HINTS for part in parts)
 
 
 def should_exclude(filepath: str, exclude_patterns: list[str]) -> bool:

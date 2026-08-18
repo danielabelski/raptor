@@ -112,6 +112,7 @@ def classify_function(
     on_taint_path: bool = False,
     has_joern_flows: bool = False,
     has_dangerous_callees: bool = False,
+    is_callback_target: bool = False,
     binary_absent: bool = False,
     sink_unreachable: bool = False,
     prefilter: PrefilterResult | None = None,
@@ -136,12 +137,18 @@ def classify_function(
 
     stack_buffer_writer = writes_fixed_stack_buffer(source)
 
+    # A function registered as a callback / dispatch-table handler is
+    # never "callerless": its callers are invisible to the static call
+    # graph (invoked through a function pointer), so the mechanical
+    # "no sink path" evidence that feeds this skip cannot be trusted
+    # for it. Consumes the dispatch-table census — no new detection.
     if (
         sink_unreachable
         and not is_entry_point
         and not is_sink
         and not is_trust_boundary
         and not has_dangerous_callees
+        and not is_callback_target
         and not stack_buffer_writer
         and sloc <= 30
     ):
@@ -250,6 +257,7 @@ def classify_all(
     binary_absent_keys: frozenset[str] = frozenset(),
     sink_unreachable_keys: frozenset[str] = frozenset(),
     dangerous_callee_keys: frozenset[str] = frozenset(),
+    callback_target_names: frozenset[str] = frozenset(),
     priority_scores: dict[str, float] | None = None,
     prefilter_results: dict[str, PrefilterResult] | None = None,
     target_path: Path | None = None,
@@ -260,6 +268,12 @@ def classify_all(
     stack-buffer skip veto: only functions the sink-unreachable skip
     rule could otherwise drop (small, no exempting signal) get their
     line range read — a handful per run, never the whole tree.
+
+    ``callback_target_names`` are bare function names known to be
+    registered in dispatch/ops tables (function-pointer callers): the
+    sink-unreachable skip never fires for them. Names, not
+    ``file:function`` keys — a registration site knows the handler's
+    name, not its defining file.
     """
     scores = priority_scores or {}
     prefilters = prefilter_results or {}
@@ -282,6 +296,7 @@ def classify_all(
             and bare_key not in sinks
             and bare_key not in trust_boundaries
             and bare_key not in dangerous_callee_keys
+            and gap["name"] not in callback_target_names
         ):
             source = _read_function_source(gap, target_path)
 
@@ -297,6 +312,7 @@ def classify_all(
             on_taint_path=bare_key in taint_path_keys,
             has_joern_flows=bare_key in joern_flow_keys,
             has_dangerous_callees=bare_key in dangerous_callee_keys,
+            is_callback_target=gap["name"] in callback_target_names,
             binary_absent=bare_key in binary_absent_keys,
             sink_unreachable=bare_key in sink_unreachable_keys,
             prefilter=prefilters.get(bare_key),

@@ -950,6 +950,22 @@ def review_one_function(
 
     # ── Triage skip ───────────────────────────────────────────────────
     triage = triage_results.get(gap_key_lined) or triage_results.get(gap_key)
+    if (
+        triage
+        and triage.bucket == TriageBucket.SKIP
+        and gap.get("pinned")
+        and not gap.get("force_review")
+    ):
+        # An operator pin is an explicit review order — it bypasses
+        # triage skips entirely. Loud: the operator asked for this
+        # function by name; silently recording a classifier skip as
+        # "clean" is how a pinned real finding got dropped.
+        logger.warning(
+            "--pin override: %s:%s was triage-SKIP (%s) — operator pin "
+            "forces LLM review",
+            gap["file"], gap["name"], ", ".join(triage.reasons),
+        )
+        triage = None
     if triage and triage.bucket == TriageBucket.SKIP and not gap.get("force_review"):
         _increment_tier(result, "triage_skip", "confirmed")
         # Oracle-earned skips are dead code, not reviewed-clean: the
@@ -3215,6 +3231,34 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 skip_llm=True,
                 skip_reason="generated code",
             )
+    # Hydrated detector gaps + dispatch tables are built BEFORE triage
+    # so the classifier can consume the dispatch-table census: a
+    # function registered as a handler is invoked through a function
+    # pointer — never "callerless" for skip purposes. (They were built
+    # after classify_all when their only consumer was the peer-group
+    # resolver.)
+    detector_gaps = hydrate_live_gaps_for_detectors(
+        [g for g in gaps if not g.get("dead")],
+        Path(config.target_path),
+    )
+    prep_dispatch_tables = None
+    callback_target_names: frozenset[str] = frozenset()
+    try:
+        from .dispatch_table import build_dispatch_tables
+
+        prep_dispatch_tables = build_dispatch_tables(detector_gaps)
+        if prep_dispatch_tables:
+            logger.info(
+                "dispatch tables: %d extracted for peer-group L2",
+                len(prep_dispatch_tables),
+            )
+            callback_target_names = frozenset(
+                name
+                for table in prep_dispatch_tables
+                for name in table.handlers.values()
+            )
+    except Exception:
+        logger.debug("dispatch-table extraction failed", exc_info=True)
     triage_results = classify_all(
         gaps,
         entry_points=frozenset(entry_points),
@@ -3225,6 +3269,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         binary_absent_keys=frozenset(binary_absent_keys),
         sink_unreachable_keys=sink_unreachable_keys,
         dangerous_callee_keys=dangerous_callee_keys,
+        callback_target_names=callback_target_names,
         priority_scores=priority_scores,
         prefilter_results=gen_prefilters or None,
         target_path=Path(config.target_path),
@@ -3248,10 +3293,6 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         discover_conventions,
     )
 
-    detector_gaps = hydrate_live_gaps_for_detectors(
-        [g for g in gaps if not g.get("dead")],
-        Path(config.target_path),
-    )
     conv_vocab = None
     # load_domain_model self-handles read/parse errors; only path-level
     # OSErrors can legitimately escape.
@@ -3296,20 +3337,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         for g in gaps
         if g.get("name")
     ]
-    # Dispatch tables extracted from the hydrated gaps — the L2
-    # (dispatch-site) layer's first producer at this call site.
-    prep_dispatch_tables = None
-    try:
-        from .dispatch_table import build_dispatch_tables
-
-        prep_dispatch_tables = build_dispatch_tables(detector_gaps)
-        if prep_dispatch_tables:
-            logger.info(
-                "dispatch tables: %d extracted for peer-group L2",
-                len(prep_dispatch_tables),
-            )
-    except Exception:
-        logger.debug("dispatch-table extraction failed", exc_info=True)
+    # Dispatch tables (peer-group L2) were extracted above, before
+    # triage — ``prep_dispatch_tables`` is reused here unchanged.
 
     # L1: cached r2 binary call edges for the declared binaries.
     # Cache-only (populated by /agentic / /codeql --binary-edges or a

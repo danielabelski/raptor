@@ -491,6 +491,12 @@ def hoist_pins(
         "--pin: %d function(s) hoisted to the front of the schedule: %s",
         len(matched), ", ".join(sorted(matched)),
     )
+    # An operator pin is an explicit review order: mark the gap so the
+    # review loop's triage-skip gate cannot drop it (a pinned function
+    # was once schedule-hoisted here and then triage-SKIPPED anyway —
+    # "guaranteed slot" without guaranteed review).
+    for g in pinned:
+        g["pinned"] = True
     pinned_ids = {id(g) for g in pinned}
     return pinned + [g for g in gaps if id(g) not in pinned_ids]
 

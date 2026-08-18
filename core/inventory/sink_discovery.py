@@ -652,6 +652,28 @@ def discover_sinks(
         if graph.indirection:
             file_has_indirection[filepath] = graph.indirection
 
+    # Per-function indirect-call awareness (C only). In C a call whose
+    # callee is a field expression — ``ctx->remove_session_cb(ctx, c)``,
+    # chain length > 1 — is definitionally a call through a function
+    # pointer: C has no methods, so the callee set is statically
+    # unknowable. Such a function must never earn ``sink_unreachable``
+    # ("no sink path, no dangerous callees") — the unseen callback may
+    # be anything, including a sink. The file-level indirection flags
+    # (L1) only cover ``(*fp)(...)`` and local fn-ptr variables; the
+    # field-call form was the blind spot that triage-skipped a real
+    # callback-invoking function. Consumes the existing call-graph
+    # chains — no new parsing. Scoped to ``.c`` files: in C++/Python/JS
+    # an ``a.b(...)`` chain is an ordinary method call.
+    c_indirect_callers: set[FuncKey] = set()
+    for filepath, graph in call_graphs.items():
+        if not filepath.endswith(".c"):
+            continue
+        for call in graph.calls:
+            if call.chain and len(call.chain) > 1:
+                c_indirect_callers.add(
+                    (filepath, call.caller or "<module>"),
+                )
+
     unreachable_eligible: dict[tuple[str, str], UnreachableVerdict] = {}
     for key in all_func_keys:
         if key in reachable_keys:
@@ -664,6 +686,14 @@ def discover_sinks(
                 function=funcname,
                 eligible=False,
                 reason=f"indirection flags: {sorted(indir)}",
+            )
+            continue
+        if key in c_indirect_callers:
+            unreachable_eligible[key] = UnreachableVerdict(
+                file=filepath,
+                function=funcname,
+                eligible=False,
+                reason="indirect call through function-pointer field",
             )
             continue
         unreachable_eligible[key] = UnreachableVerdict(

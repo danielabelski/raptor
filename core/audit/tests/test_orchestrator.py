@@ -4677,6 +4677,46 @@ class TestUpdateRunProgress:
         meta = json.loads(meta_path.read_text())
         assert meta["extra"]["progress"]["completed"] == 7
 
+    def test_checkpoint_write_is_atomic_and_clean(self, tmp_path):
+        """Written via the shared atomic primitive: other fields
+        survive, and no tempfile debris is left behind (only the
+        flock sidecar every metadata writer shares)."""
+        from core.audit.orchestrator import _update_run_progress
+
+        meta_path = tmp_path / ".raptor-run.json"
+        meta_path.write_text(json.dumps({
+            "status": "running",
+            "command": "audit",
+            "extra": {"note": "keep-me"},
+        }))
+        _update_run_progress(tmp_path, OrchestratorResult(reviewed=3))
+
+        meta = json.loads(meta_path.read_text())
+        assert meta["status"] == "running"
+        assert meta["extra"]["note"] == "keep-me"
+        assert meta["extra"]["progress"]["completed"] == 3
+        leftovers = [
+            q.name for q in tmp_path.iterdir()
+            if q.name not in (".raptor-run.json", ".raptor-run.json.lock")
+        ]
+        assert leftovers == []
+
+    def test_missing_metadata_is_noop(self, tmp_path):
+        from core.audit.orchestrator import _update_run_progress
+
+        _update_run_progress(tmp_path, OrchestratorResult(reviewed=1))
+        assert not (tmp_path / ".raptor-run.json").exists()
+
+    def test_corrupt_metadata_does_not_raise(self, tmp_path):
+        from core.audit.orchestrator import _update_run_progress
+
+        meta_path = tmp_path / ".raptor-run.json"
+        meta_path.write_text("{torn write")
+        _update_run_progress(tmp_path, OrchestratorResult(reviewed=1))
+        # Untouched: a corrupt file is not silently replaced here
+        # (recovery belongs to the lifecycle layer).
+        assert meta_path.read_text() == "{torn write"
+
 
 class TestRunCritiqueConcurrency:
     """_run_critique runs from concurrent review workers: promotions

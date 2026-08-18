@@ -327,16 +327,29 @@ def install_sigterm_grace() -> bool:
 
 
 def _update_run_progress(out_dir: Path, result: Any) -> None:
-    """Update run metadata with progress checkpoint."""
+    """Update run metadata with progress checkpoint.
+
+    Atomic + locked like every other ``.raptor-run.json`` writer
+    (``_update_status``): a bare ``write_text`` torn by a kill left
+    the run metadata unparseable, and an unlocked read-modify-write
+    raced the lifecycle writers (last writer dropped the other's
+    update).
+    """
     meta_path = out_dir / ".raptor-run.json"
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta.setdefault("extra", {})["progress"] = {
-            # OrchestratorResult counts completed reviews in
-            # ``reviewed`` (it has no ``completed`` field).
-            "completed": getattr(result, "reviewed", 0),
-        }
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        from core.json import load_json, save_json
+        from core.run.metadata import _metadata_lock
+
+        with _metadata_lock(meta_path):
+            meta = load_json(meta_path)
+            if not isinstance(meta, dict):
+                return
+            meta.setdefault("extra", {})["progress"] = {
+                # OrchestratorResult counts completed reviews in
+                # ``reviewed`` (it has no ``completed`` field).
+                "completed": getattr(result, "reviewed", 0),
+            }
+            save_json(meta_path, meta)
     except Exception:
         logger.debug("progress checkpoint write failed", exc_info=True)
 

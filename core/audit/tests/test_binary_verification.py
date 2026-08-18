@@ -92,6 +92,9 @@ class TestSweepValidateBinary:
         mock_config.target_path = Path("/nonexistent")
         mock_config.sweep_validate_findings = True
         mock_config.codeql_db_path = None
+        # A bare MagicMock out_dir is truthy and walks into the
+        # domain-model loader; the real config carries a Path or None.
+        mock_config.out_dir = None
 
         result = _sweep_validate(
             outcome, mock_config,
@@ -115,6 +118,7 @@ class TestSweepValidateBinary:
         mock_config = MagicMock()
         mock_config.target_path = Path("/nonexistent")
         mock_config.codeql_db_path = None
+        mock_config.out_dir = None
 
         result = _sweep_validate(outcome, mock_config)
         assert result is not None

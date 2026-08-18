@@ -46,6 +46,7 @@ from core.evidence import (
     format_evidence_prose,
     format_evidence_structured,
 )
+from core.smt_solver.availability import Z3_ERRORS
 from packages.checker_synthesis.library import RuleLibrary
 
 from ._util import extract_context_map_set
@@ -204,6 +205,23 @@ from .topo_order import topological_sort as _topological_sort
 from .triage import TriageBucket, classify_all, format_triage_summary
 
 logger = logging.getLogger(__name__)
+
+# ── Narrowed exception sets for best-effort blocks ──────────────────
+# suppress(Exception) narrowing sweep: miswiring-class exceptions
+# (TypeError, AttributeError, KeyError, NameError, ImportError on
+# in-repo modules) must propagate — a swallowed one hides a wired-in
+# call gone wrong.
+
+#: Best-effort analysis/formatting over data derived from arbitrary
+#: (hostile) target source: format/encoding quirks, pathological
+#: nesting.  Deliberately excludes the miswiring classes.
+_ENRICH_ERRORS = (ValueError, IndexError, RecursionError)
+
+#: SMT screens over hostile C/Go source.  The condition_smt checkers
+#: self-handle child-process and import failures; what can still
+#: escape is extraction quirks (``_ENRICH_ERRORS``), subprocess spawn
+#: failures (OSError) and in-process Z3 errors.
+_SMT_SCREEN_ERRORS = (*_ENRICH_ERRORS, OSError, *Z3_ERRORS)
 
 _shutdown_event = _threading.Event()
 
@@ -1012,7 +1030,9 @@ def review_one_function(
         )
         outcome.line = gap.get("line_start", 0)
         if _dead_reason.startswith("binary_oracle_absent") and config.out_dir:
-            with contextlib.suppress(Exception):
+            # Best-effort audit trail; record_suppression self-handles
+            # IO — only path-level OSErrors can legitimately escape.
+            with contextlib.suppress(OSError):
                 from core.analysis.reach_chokepoint import record_suppression
 
                 record_suppression(
@@ -1055,7 +1075,9 @@ def review_one_function(
         return outcome
 
     # ── SAGE: pre-compute source hash for hypothesis recall/store ────
-    with contextlib.suppress(Exception):
+    # hash_span self-handles unreadable files; only path-level OSErrors
+    # can legitimately escape.
+    with contextlib.suppress(OSError):
         from core.sage.hooks import compute_finding_source_hash
 
         line_start = gap.get("line_start", 0)
@@ -1153,7 +1175,7 @@ def review_one_function(
 
     # --- Mechanical gates: per-function context enrichment ---
     if provenance_map and gap_key_mech in provenance_map:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .mechanical_gates import format_provenance_for_context
 
             ctx["entry_point_provenance"] = format_provenance_for_context(
@@ -1166,7 +1188,7 @@ def review_one_function(
         ctx["feeds_security_decision"] = True
 
     if ctx.get("source") and gap.get("file", "").endswith(".py"):
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .mechanical_gates import detect_constant_dangerous_calls
 
             const_calls = detect_constant_dangerous_calls(
@@ -1177,13 +1199,13 @@ def review_one_function(
                 ctx["constant_dangerous_calls"] = const_calls
 
     if ctx.get("callers"):
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .mechanical_gates import sort_callers_by_constraint
 
             ctx["callers"] = sort_callers_by_constraint(ctx["callers"])
 
     if ctx.get("source"):
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .mechanical_gates import extract_type_constraints
 
             tc = extract_type_constraints(
@@ -1194,7 +1216,7 @@ def review_one_function(
             if tc:
                 ctx["type_constraints"] = tc
 
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(*_ENRICH_ERRORS):
         from .condition_cpg import check_interprocedural_guards
 
         ipc_result = check_interprocedural_guards(
@@ -1393,14 +1415,14 @@ def review_one_function(
             if func_file == d.file
         ]
         if func_displacements:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_ENRICH_ERRORS):
                 from .dispatch_table import format_displacement_context
                 _dc = format_displacement_context(func_displacements)
                 if _dc:
                     ctx["capability_displacement"] = _dc
 
     if shared.struct_accessor_index:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .struct_accessor_index import (
                 format_co_accessor_context,
                 get_co_accessors,
@@ -1446,7 +1468,7 @@ def review_one_function(
     if project_learnings:
         ctx["project_context"] = project_learnings
     if fp_patterns:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .fp_feedback import format_fp_warnings
 
             fp_warn = format_fp_warnings(fp_patterns, gap["file"])
@@ -1458,7 +1480,7 @@ def review_one_function(
             getattr(_vh_rec, "validate_history", None) if _vh_rec else None
         )
         if _vh_entry:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_ENRICH_ERRORS):
                 from .validate_bridge import format_validate_history
 
                 _vh_text = format_validate_history(_vh_entry)
@@ -1571,7 +1593,7 @@ def review_one_function(
         )
 
     # ── Intra-function sibling analysis ─────────────────────────────
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(*_ENRICH_ERRORS):
         from .intra_function import (
             analyse_intra_function,
             format_intra_function_context,
@@ -1973,7 +1995,7 @@ def review_one_function(
 
     # ── Semantic confidence classification ──────────────────────────
     if outcome.status in ("finding", "suspicious") and not outcome.semantic_confidence:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .semantic_confidence import classify_semantic_confidence
             _sc = classify_semantic_confidence(
                 outcome.hypothesis or "",
@@ -2085,7 +2107,7 @@ def review_one_function(
     # run on unchanged source stamps the re-confirmed finding so
     # compute_tier() reaches CONFIRMED instead of LLM_ONLY.
     if outcome.status in ("finding", "suspicious") and evidence_index:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_ENRICH_ERRORS):
             from .validate_bridge import validate_runtime_stamp
 
             _vrt_rec = evidence_index.get(gap_key)
@@ -3098,7 +3120,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         for gap in gaps:
             fp = gap.get("file", "")
             if fp and fp not in _ops_srcs:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError):
                     sp = config.target_path / fp
                     if sp.is_file():
                         _ops_srcs[fp] = sp.read_text(errors="replace")
@@ -3215,7 +3237,9 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         Path(config.target_path),
     )
     conv_vocab = None
-    with contextlib.suppress(Exception):
+    # load_domain_model self-handles read/parse errors; only path-level
+    # OSErrors can legitimately escape.
+    with contextlib.suppress(OSError):
         from .condition_smt import DomainVocabulary
         from .journal import load_domain_model
         conv_vocab = DomainVocabulary.from_domain_model(
@@ -3409,7 +3433,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         for gap in gaps:
             fp = gap.get("file", "")
             if fp and fp not in prepass_texts:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError):
                     src_path = config.target_path / fp
                     if src_path.is_file():
                         prepass_texts[fp] = src_path.read_text(
@@ -3442,7 +3466,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                     n_leads, n_handoffs,
                 )
             if config.out_dir:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, ValueError):
                     append_audit_log(config.out_dir, {
                         "action": "consistency_prepass",
                         **(consistency_prepass.get("telemetry") or {}),
@@ -4554,7 +4578,7 @@ def _run_audit_body(
                 "invariant prescreening: %d match(es) injected", n_inv_matches,
             )
             if config.out_dir:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, ValueError):
                     mech_path = config.out_dir / "mechanical-findings.json"
                     mech_path.write_text(
                         json.dumps(mechanical_findings, indent=2),
@@ -5689,7 +5713,9 @@ def _run_audit_body(
 
         tp = Path(config.target_path)
         ns_vocab = None
-        with contextlib.suppress(Exception):
+        # load_domain_model / vocab-pack merge self-handle parse
+        # errors; only path-level OSErrors can legitimately escape.
+        with contextlib.suppress(OSError):
             from .condition_smt import DomainVocabulary
             ns_vocab = DomainVocabulary.from_domain_model(
                 domain_model, target_path=config.target_path,
@@ -6558,7 +6584,7 @@ class _InjectModeResolver:
             )
             self._check_lock_domain = check_lock_domain
             dm = None
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 from .journal import load_domain_model
                 dm = load_domain_model(config.out_dir)
             self._vocab = DomainVocabulary.from_domain_model(
@@ -6712,7 +6738,7 @@ def _run_mechanical_detectors(
     for gap in gaps:
         fp = gap.get("file", "")
         if fp and fp not in source_texts:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 src_path = config.target_path / fp
                 if src_path.is_file():
                     source_texts[fp] = src_path.read_text(errors="replace")
@@ -6957,7 +6983,9 @@ def _run_mechanical_detectors(
 
     # --- Structural detectors ---
     call_graphs = None
-    with contextlib.suppress(Exception):
+    # Tree walk + pure-AST extraction over hostile source: IO errors,
+    # parse quirks and pathological nesting are the legitimate set.
+    with contextlib.suppress(OSError, ValueError, RecursionError):
         from core.inventory.call_graph import load_call_graphs
 
         call_graphs = load_call_graphs(config.target_path, None)
@@ -7097,7 +7125,7 @@ def _run_mechanical_detectors(
         from .callback_lifetime import check_callback_lifetime_local
 
         cb_vocab = None
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             from .condition_smt import DomainVocabulary
             from .journal import load_domain_model
             cb_vocab = DomainVocabulary.from_domain_model(
@@ -8435,7 +8463,7 @@ class StudyQueue:
             proc = self._inflight_proc
             self._not_empty.notify_all()
         if proc is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 proc.kill()
 
     @property
@@ -8451,7 +8479,7 @@ class StudyQueue:
             kill_now = self._stop_requested
         if kill_now and proc is not None:
             # A stop raced ahead of registration — honour it.
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 proc.kill()
 
     def clear_inflight(self) -> None:
@@ -9549,13 +9577,13 @@ def _run_study_prep(
         deadline = time.monotonic() + timeout
         while True:
             if study_queue is not None and study_queue.stop_requested:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                     proc.kill()
                     proc.wait(timeout=10)
                 raise _StudyStopRequested
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                     proc.kill()
                     proc.wait(timeout=10)
                 raise subprocess.TimeoutExpired(cmd, timeout)
@@ -10090,10 +10118,9 @@ def _study_consumer_loop(
 
 def _is_suspicious_outcome(key: str, outcomes: _LockedOutcomes) -> bool:
     """Check if a reviewed function has a suspicious verdict."""
-    with contextlib.suppress(Exception):
-        outcome = outcomes.get(key)
-        if outcome and hasattr(outcome, "status"):
-            return outcome.status == "suspicious"
+    outcome = outcomes.get(key)
+    if outcome and hasattr(outcome, "status"):
+        return outcome.status == "suspicious"
     return False
 
 
@@ -10230,7 +10257,9 @@ def _tally_outcome(
 
 def _sage_store_observation(text: str, kind: str, source: str) -> None:
     """Best-effort store of a tool-confirmed observation to SAGE."""
-    with contextlib.suppress(Exception):
+    # store_audit_observation self-handles transport failures; only a
+    # partial/optional SAGE install (import failure) remains.
+    with contextlib.suppress(ImportError):
         from core.sage.hooks import store_audit_observation
 
         store_audit_observation(
@@ -11849,7 +11878,7 @@ def _run_tool_chain(
     confirmed: list[str] = []
 
     if domain_vocab is None and config.out_dir:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             from .condition_smt import DomainVocabulary
             from .journal import load_domain_model
             dm = load_domain_model(config.out_dir)
@@ -16320,14 +16349,15 @@ def _pre_loop_smt_screen(
 
     _extract_sg = None
     _check_pf = None
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(ImportError):
         from .condition_extraction import extract_sink_guards as _extract_sg
         from .condition_smt import check_path_feasibility as _check_pf
 
     dm = None
-    with contextlib.suppress(Exception):
-        from .journal import load_domain_model
-        dm = load_domain_model(config.out_dir)
+    if getattr(config, "out_dir", None):
+        with contextlib.suppress(OSError):
+            from .journal import load_domain_model
+            dm = load_domain_model(config.out_dir)
     vocab = DomainVocabulary.from_domain_model(
         dm, target_path=config.target_path,
     )
@@ -16353,7 +16383,7 @@ def _pre_loop_smt_screen(
             continue
 
         tool_hit = ""
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_SMT_SCREEN_ERRORS):
             abr = check_auth_bypass(source, vocab)
             if abr.bypass_found:
                 tool_hit = "smt:check-auth-bypass"
@@ -16361,7 +16391,7 @@ def _pre_loop_smt_screen(
                     tool_hit += ":witness"
 
         if not tool_hit and is_c:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 ldr = check_lock_discipline(source, vocab)
                 if ldr.violation_found:
                     tool_hit = "smt:check-lock-discipline"
@@ -16369,7 +16399,7 @@ def _pre_loop_smt_screen(
                         tool_hit += ":witness"
 
         if not tool_hit and is_c:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 rlr = check_resource_leak(source, vocab)
                 if rlr.leak_found:
                     tool_hit = "smt:check-resource-leak"
@@ -16377,13 +16407,13 @@ def _pre_loop_smt_screen(
                         tool_hit += ":witness"
 
         if not tool_hit and is_c:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 npr = check_null_propagation(source, vocab)
                 if npr.null_deref_found:
                     tool_hit = "smt:check-null-propagation"
 
         if not tool_hit and is_c_or_go:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 inr = check_integer_narrowing(source)
                 if inr.narrowing_found:
                     tool_hit = "smt:check-integer-narrowing"
@@ -16391,13 +16421,13 @@ def _pre_loop_smt_screen(
                         tool_hit += ":witness"
 
         if not tool_hit and is_c_or_go:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 err = check_early_release(source, vocab)
                 if err.early_release_found:
                     tool_hit = "smt:check-early-release"
 
         if not tool_hit and is_c:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 from .callback_lifetime import check_callback_lifetime_local
                 clr = check_callback_lifetime_local(source, vocab)
                 if clr.violation_found:
@@ -16408,7 +16438,7 @@ def _pre_loop_smt_screen(
         # instead — results go to the LLM as context, not as verdicts.
 
         if not tool_hit and is_c:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 ttr = check_toctou(source)
                 if ttr.toctou_found:
                     tool_hit = "smt:check-toctou"
@@ -16424,7 +16454,7 @@ def _pre_loop_smt_screen(
             continue
 
         if is_c and _extract_sg is not None and _check_pf is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 guards = _extract_sg(source, file_path)
                 if guards:
                     all_infeasible = True
@@ -16461,7 +16491,7 @@ def _pre_loop_smt_screen(
                         continue
 
         if is_c and not tool_hit:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
                 from .condition_smt import check_race_protection
                 rpr = check_race_protection(source, vocab)
                 if rpr.protected:
@@ -16505,9 +16535,10 @@ def _promote_smt_clean(
         return
 
     dm = None
-    with contextlib.suppress(Exception):
-        from .journal import load_domain_model
-        dm = load_domain_model(config.out_dir)
+    if getattr(config, "out_dir", None):
+        with contextlib.suppress(OSError):
+            from .journal import load_domain_model
+            dm = load_domain_model(config.out_dir)
     vocab = DomainVocabulary.from_domain_model(
         dm, target_path=config.target_path,
     )
@@ -16798,7 +16829,9 @@ def _demote_absent_promotions(
         return 0
 
     context_map = None
-    with contextlib.suppress(Exception):
+    # load_context_map self-handles malformed JSON; only OSErrors on
+    # the read itself can legitimately escape.
+    with contextlib.suppress(OSError):
         context_map = load_context_map(config.out_dir)
     fake_gaps = [
         {
@@ -16844,7 +16877,9 @@ def _demote_absent_promotions(
         )
         demoted.tools_dispatched = outcome.tools_dispatched
         demoted.tools_errored = outcome.tools_errored
-        with contextlib.suppress(Exception):
+        # Pure in-repo grading over constant inputs — only a partial
+        # install (import failure) can legitimately fail here.
+        with contextlib.suppress(ImportError):
             from .evidence_grade import EvidenceSource, grade_evidence
 
             ev = grade_evidence(
@@ -16864,7 +16899,9 @@ def _demote_absent_promotions(
         demoted_count += 1
 
         if config.out_dir:
-            with contextlib.suppress(Exception):
+            # Best-effort audit trail; record_suppression self-handles
+            # IO — only path-level OSErrors can legitimately escape.
+            with contextlib.suppress(OSError):
                 from core.analysis.reach_chokepoint import record_suppression
 
                 record_suppression(

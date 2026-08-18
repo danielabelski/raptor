@@ -981,7 +981,9 @@ def run_coccinelle_sweep(
         effective_rule = cocci_rule
         _rendered_tmp = None
         if domain_vocab is not None:
-            with contextlib.suppress(Exception):
+            # Rendering reads the rule file and writes a tempfile: IO
+            # and text-decode errors are the legitimate failure set.
+            with contextlib.suppress(OSError, ValueError):
                 from engine.coccinelle.vocab_renderer import render as _render_cocci
                 _rendered_tmp = _render_cocci(Path(cocci_rule), domain_vocab)
                 if _rendered_tmp is not None:
@@ -1393,6 +1395,10 @@ def _smt_verb_in_subprocess(
             check=False, env=smt_child_env(),
         )
         if proc.returncode == 0:
+            # Broad by design: pickle.loads on malformed child stdout
+            # can raise nearly anything (UnpicklingError, EOFError,
+            # AttributeError, ImportError, ...); any failure degrades
+            # to the loud warning below.
             with contextlib.suppress(Exception):
                 sr = pickle.loads(proc.stdout)
                 if isinstance(sr, SweepResult):
@@ -2237,7 +2243,9 @@ def run_consistency_check(
         effective_rule = cocci_rule
         _rendered_tmp = None
         if domain_vocab is not None:
-            with contextlib.suppress(Exception):
+            # Rendering reads the rule file and writes a tempfile: IO
+            # and text-decode errors are the legitimate failure set.
+            with contextlib.suppress(OSError, ValueError):
                 from engine.coccinelle.vocab_renderer import render as _render_cocci
                 _rendered_tmp = _render_cocci(Path(cocci_rule), domain_vocab)
                 if _rendered_tmp is not None:

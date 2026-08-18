@@ -158,7 +158,9 @@ def load_or_build_taint_approx(
     if out_dir:
         cache_path = out_dir / "taint-approx.json"
         if cache_path.exists():
-            with contextlib.suppress(Exception):
+            # load_json (non-strict) self-handles read/parse errors;
+            # only path-level OSErrors can legitimately escape.
+            with contextlib.suppress(OSError):
                 from core.json import load_json
                 cached = load_json(cache_path)
                 if cached:
@@ -168,7 +170,9 @@ def load_or_build_taint_approx(
                     return cached
     results = _build_taint_approx(target_path, scope=scope)
     if results and out_dir:
-        with contextlib.suppress(Exception):
+        # Cache write is best-effort: IO failures and non-finite
+        # values in the data (allow_nan=False) are the legitimate set.
+        with contextlib.suppress(OSError, ValueError):
             from core.json import save_json
             save_json(out_dir / "taint-approx.json", results)
     return results

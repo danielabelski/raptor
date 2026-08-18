@@ -316,7 +316,9 @@ class Collector:
     def invalidate_domain_model_cache(self) -> None:
         """Call after the domain model changes (e.g. JIT study loop)."""
         self._domain_model_hash = None
-        with contextlib.suppress(Exception):
+        # cache_clear() cannot raise; only a partial install (import
+        # failure) can legitimately fail here.
+        with contextlib.suppress(ImportError):
             from core.concepts.audit_bridge import _load_cached
             _load_cached.cache_clear()
 

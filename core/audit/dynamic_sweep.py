@@ -210,7 +210,9 @@ def _detect_compiler(target_path: Path, file_path: str) -> str:
         _, compiler, _, _ = detector._detect_build_params("cpp")
         if compiler:
             return compiler
-    except Exception:  # noqa: BLE001, S110 — optional dependency
+    except (OSError, ValueError):
+        # Best-effort detection: tree walk / build-file parse failures
+        # fall back to extension-based compiler choice below.
         pass
     # Fallback: choose compiler based on the file being compiled.
     if file_path.endswith((".cpp", ".cc", ".cxx")):

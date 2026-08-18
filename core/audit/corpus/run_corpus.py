@@ -726,12 +726,15 @@ def _build_probe_context(
 
     is_c = any(file_path.endswith(e) for e in (".c", ".h"))
     if is_c:
+        from core.smt_solver.availability import Z3_ERRORS
         try:
             from core.audit.condition_smt import check_race_protection
             rpr = check_race_protection(source)
             if rpr.protected:
                 ctx["race_protected"] = rpr.reasoning
-        except Exception:  # noqa: BLE001, S110 — optional enrichment only
+        except (ValueError, IndexError, RecursionError, OSError, *Z3_ERRORS):
+            # Optional enrichment over hostile C source: extraction
+            # quirks and Z3 errors degrade to "no race annotation".
             pass
 
     return ctx

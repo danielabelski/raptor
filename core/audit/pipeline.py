@@ -177,14 +177,14 @@ def _ensure_dispatcher_route(client, models: list[str]) -> None:
             continue
         try:
             candidates.append(client.config.config_for_model(name))
-        except Exception:
+        except Exception:  # unresolvable name surfaces later
             logger.debug("config_for_model(%r) failed", name, exc_info=True)
     try:
         from core.llm.dispatcher.lifecycle import (
             ensure_route_for_model_configs,
         )
         ensure_route_for_model_configs(candidates, label="raptor-audit")
-    except Exception:
+    except Exception:  # provider errors surface downstream
         logger.warning(
             "could not start in-process LLM dispatcher for "
             "Bedrock-routed models", exc_info=True,
@@ -305,7 +305,9 @@ def _is_verification_evidence(ev: str) -> bool:
     """
     if not ev or ev.startswith(_NON_MECHANICAL):
         return False
-    with contextlib.suppress(Exception):
+    # Import guard only: pipeline↔orchestrator is a potential import
+    # cycle; _is_detection_only itself is a pure string check.
+    with contextlib.suppress(ImportError):
         from core.audit.orchestrator import _is_detection_only
         if _is_detection_only(ev):
             return False
@@ -619,7 +621,9 @@ def _mark_dampened(item, info: dict) -> None:
     if isinstance(rr, dict):
         rr["file_dampening"] = info
     else:
-        with contextlib.suppress(Exception):
+        # Outcome objects vary (dicts, dataclasses, mocks); slotted or
+        # frozen ones reject the attribute — dampening info is optional.
+        with contextlib.suppress(AttributeError):
             item.review_result = {"file_dampening": info}
 
 

@@ -852,7 +852,9 @@ def _system_prompt_for_mode(
     out_dir: Path | None = None,
 ) -> str:
     base = _QUALITY_SYSTEM_PROMPT if mode.is_defect_oriented else _DEFAULT_SYSTEM_PROMPT
-    with contextlib.suppress(Exception):
+    # load_corrections self-handles malformed JSON; file reads racing a
+    # corpus-dir cleanup can still raise OSError.
+    with contextlib.suppress(OSError):
         from .learning import format_corrections_for_prompt, load_corrections
         corrections = load_corrections(out_dir)
         if corrections:

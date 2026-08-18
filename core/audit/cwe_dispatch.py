@@ -449,9 +449,12 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
     # authenticity family. No static dataflow channel can adjudicate;
     # the role-bound channels are the verifiers: fail_open (a
     # verification role whose failure/absence lets data through —
-    # fail_open_verify.FAIL_OPEN_CWES) and the api-boundary
+    # fail_open_verify.FAIL_OPEN_CWES), the api-boundary
     # obligation check (the caller-side "must verify before passing"
-    # contract — api_boundary.API_BOUNDARY_CWES).
+    # contract — api_boundary.API_BOUNDARY_CWES), and the
+    # release_order ordering leg (data released before the integrity
+    # finalizer completes — release_order joins this chain additively;
+    # fail_open keeps its membership).
     "CWE-345": {
         "smt": None,
         "cocci": None,
@@ -499,6 +502,24 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "sinks": [],
     },
     "CWE-772": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
+    # Release-before-verify family (EFAIL shape) — the release_order
+    # channel (dominance comparator,
+    # release_order.RELEASE_ORDER_CWES) is the verifier via the
+    # fallback chain.
+    "CWE-354": {
+        "smt": None,
+        "cocci": None,
+        "joern": False,
+        "codeql": None,
+        "sinks": [],
+    },
+    "CWE-347": {
         "smt": None,
         "cocci": None,
         "joern": False,

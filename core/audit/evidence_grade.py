@@ -101,7 +101,7 @@ _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "prefilter", "critique", "sweep", "sarif_cache",
     "dynamic", "frida", "dark_verify", "precondition",
     "fail_open", "consistency", "ptr_lifecycle", "lock_region",
-    "resource_bounds",
+    "resource_bounds", "release_order",
 })
 
 
@@ -118,7 +118,9 @@ def _is_detection_variant(part: str) -> bool:
     """
     if part.startswith("consistency:") and part.endswith("-majority"):
         return True
-    return part.startswith("resource_bounds:") and \
+    if part.startswith("resource_bounds:") and part.endswith("-naming"):
+        return True
+    return part.startswith("release_order:") and \
         part.endswith("-naming")
 
 
@@ -263,6 +265,24 @@ _RECEIPT_MAP: dict[str, tuple] = {
         (
             "unbounded-accumulation shape confirmed by the "
             "bound-witness comparator"
+        ),
+    ),
+    # Release-order channel receipts (the bare namespace covers the
+    # -naming detection variants riding in aggregation composites).
+    "release_order:release-before-verify": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a release site handing data to an escaping destination "
+            "is not dominated by the integrity finalizer's status "
+            "check (per-site dominator receipts; cfg+joern when the "
+            "engines agree)"
+        ),
+    ),
+    "release_order": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "release-before-verify ordering confirmed by the "
+            "dominance comparator"
         ),
     ),
     # Consistency channel receipts (per dimension; the bare namespace

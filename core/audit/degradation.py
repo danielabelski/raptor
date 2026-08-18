@@ -45,7 +45,9 @@ _DEGRADATION_MATRIX: list[Fallback] = [
         tool="joern",
         fallback_tool="tree-sitter + LLM",
         impact="Higher LLM cost (~70% vs ~20-30% of functions need LLM summaries), "
-               "lower summary precision. Cross-file resolution falls back to import-based resolver.",
+               "lower summary precision. Cross-file resolution falls back to import-based resolver. "
+               "release_order channel: the guard-dominance cross-check leg is skipped — "
+               "verdicts carry single-engine (engine=\"cfg\") receipts.",
         fallback_description="tree-sitter for AST extraction, LLM for summaries",
     ),
     Fallback(
@@ -145,7 +147,9 @@ _DEGRADATION_MATRIX: list[Fallback] = [
                "resource_bounds channel: the bound-witness comparator "
                "needs the CFG/dominator walk and reports "
                "inconclusive('census-degraded') rather than confirming "
-               "a no-bound claim without the guard walk.",
+               "a no-bound claim without the guard walk. release_order "
+               "channel: dominance needs the CFG and reports "
+               "inconclusive('cfg-unavailable').",
         fallback_description="ast for Python handlers, line-regex for "
                              "C call-site shapes and the coarse census",
     ),

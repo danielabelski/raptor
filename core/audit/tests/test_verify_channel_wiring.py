@@ -678,3 +678,107 @@ class TestResourceBoundsWiring:
         )
         assert confirmed == ["resource_bounds:unbounded-accumulation"]
         assert counters["resource_bounds"].confirmed == 1
+
+
+class TestReleaseOrderWiring:
+    """Five-channel programme: release_order chain wiring (§9)."""
+
+    HYP = ("decrypted chunks are written to `out` before the cipher "
+           "status is verified")
+
+    def test_cwe_fallback_emits_channel(self):
+        for cwe in ("CWE-354", "CWE-347", "CWE-345"):
+            assert "release_order" in _types(_cwe_fallback_chain(cwe)), cwe
+
+    def test_cwe_345_keeps_fail_open_membership(self):
+        types = _types(_cwe_fallback_chain("CWE-345"))
+        assert "fail_open" in types
+        assert "release_order" in types
+
+    def test_hypothesis_chain_emits_channel(self):
+        chain = _hypothesis_to_tool_chain(self.HYP, "src/a.c")
+        assert "release_order" in _types(chain)
+
+    def test_cross_channel_negatives(self):
+        # A resource_bounds hypothesis must not dispatch release_order
+        # and vice versa.
+        chain = _hypothesis_to_tool_chain(
+            "the session list grows without limit", "src/a.c",
+        )
+        assert "release_order" not in _types(chain)
+        chain = _hypothesis_to_tool_chain(self.HYP, "src/a.c")
+        assert "resource_bounds" not in _types(chain)
+
+    def test_tier_counter_and_cheap_lane(self):
+        assert "release_order" in orch._make_tier_counters()
+        assert "release_order" in orch._REFUTED_CHEAP_CHANNELS
+
+    def test_namespace_receipts_and_detection_variant(self):
+        from core.audit.evidence_grade import (
+            _RECEIPT_MAP,
+            is_tool_evidence,
+        )
+        from core.audit.orchestrator import _is_detection_only
+        assert is_tool_evidence("release_order:release-before-verify")
+        assert "release_order:release-before-verify" in _RECEIPT_MAP
+        assert "release_order" in _RECEIPT_MAP
+        naming = "release_order:release-before-verify-naming"
+        assert not is_tool_evidence(naming)
+        assert _is_detection_only(naming)
+        assert not _is_detection_only(
+            "release_order:release-before-verify",
+        )
+
+    def test_detection_variant_solo_promotion_trips_alarm(self, tmp_path):
+        from types import SimpleNamespace
+
+        from core.audit.promotion_alarm import check_and_emit
+        record = check_and_emit(
+            tmp_path,
+            SimpleNamespace(
+                file="src/a.c", function="f", status="finding",
+                evidence_tool=(
+                    "release_order:release-before-verify-naming"
+                ),
+                review_result=None, hypothesis=self.HYP,
+            ),
+            stage="test",
+        )
+        assert record is not None
+
+    def test_run_tool_chain_dispatch_passes_joern_server(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.release_order as ro
+
+        seen = {}
+
+        class _Res:
+            outcome = "confirmed"
+            reason = "r"
+            rule_id = "release_order:release-before-verify"
+            corroboration = []
+
+            def to_dict(self):
+                return {"outcome": self.outcome}
+
+        def _fake(*a, **kw):
+            seen.update(kw)
+            return _Res()
+
+        monkeypatch.setattr(ro, "run_release_order_check", _fake)
+        counters = {"release_order": TierCounters()}
+        server = object()
+        confirmed = _run_tool_chain(
+            [{"type": "release_order", "config": {}}],
+            config=_Cfg(tmp_path),
+            file_path="src/a.c",
+            function_name="f",
+            source="",
+            hypothesis=self.HYP,
+            tier_counters=counters,
+            joern_server=server,
+        )
+        assert confirmed == ["release_order:release-before-verify"]
+        assert seen["joern_server"] is server
+        assert counters["release_order"].confirmed == 1

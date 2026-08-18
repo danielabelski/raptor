@@ -499,6 +499,7 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "fail_open": TierCounters(),
         "consistency": TierCounters(),
         "resource_bounds": TierCounters(),
+        "release_order": TierCounters(),
         "compiler": TierCounters(),
         "refuted_sweep": TierCounters(),
         "adversarial_refute": TierCounters(),
@@ -3696,6 +3697,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     # channel; every entry degrades independently.
     _channel_prepasses: list[tuple[str, str]] = [
         ("resource_bounds", "run_resource_bounds_prepass"),
+        ("release_order", "run_release_order_prepass"),
     ]
     for _ch_name, _ch_fn in _channel_prepasses:
         try:
@@ -11998,6 +12000,20 @@ def _hypothesis_to_tool_chain(
                 chain.append({"type": "resource_bounds", "config": {}})
                 seen_types.add("resource_bounds")
 
+    # Release-before-verify hypotheses ("decrypted chunks are written
+    # to out before the cipher status is verified" — the EFAIL shape):
+    # the release_order channel tests finalizer-status dominance over
+    # every release site mechanically.
+    if "release_order" not in seen_types:
+        try:
+            from .release_order import is_release_order_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_release_order_hypothesis(hypothesis):
+                chain.append({"type": "release_order", "config": {}})
+                seen_types.add("release_order")
+
     # Invariant-shaped hypotheses ("obuf_len <= obuf_size holds…"):
     # the preservation harness checks the stated invariant against the
     # function's mutation sites — the channel gap that left every
@@ -12295,6 +12311,17 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         # comparator is the verifier. Pure static analysis, cheap.
         if resource_bounds_applicable(cwe):
             chain.append({"type": "resource_bounds", "config": {}})
+
+    try:
+        from .release_order import release_order_applicable
+    except ImportError:
+        pass
+    else:
+        # Release-before-verify family (RELEASE_ORDER_CWES —
+        # CWE-354/347, plus the CWE-345 authenticity chain joined
+        # additively): the dominance comparator is the verifier.
+        if release_order_applicable(cwe):
+            chain.append({"type": "release_order", "config": {}})
 
     smt_verb = smt_verb_for_cwe(cwe)
     if smt_verb:
@@ -13016,6 +13043,75 @@ def _run_tool_chain(
                     if tier_counters:
                         _increment_tier_dict(
                             tier_counters, "resource_bounds",
+                            "inconclusive",
+                        )
+
+            elif tool_type == "release_order":
+                from .fail_open_roles import RoleContext as _RoRoleCtx
+                from .release_order import run_release_order_check
+
+                ro_dm = None
+                with contextlib.suppress(Exception):
+                    from .journal import load_domain_model as _ro_ldm
+                    ro_dm = _ro_ldm(config.out_dir) \
+                        if config.out_dir else None
+                ro_ctx = _RoRoleCtx(
+                    out_dir=config.out_dir,
+                    annotations_dir=getattr(
+                        config, "annotations_dir", None,
+                    ),
+                    inventory=getattr(config, "inventory", None),
+                    context_map=getattr(config, "context_map", None),
+                )
+                ro_res = run_release_order_check(
+                    effective_target,
+                    file_path,
+                    function_name,
+                    hypothesis,
+                    inventory=getattr(config, "inventory", None),
+                    context=ro_ctx,
+                    domain_model=ro_dm,
+                    joern_server=joern_server,
+                )
+                # Prior receipts corroborate; the in-flight
+                # consistency ordering dimension's PeerEvidence dicts
+                # join the same list once that comparator lands.
+                ro_res.corroboration.extend(
+                    c for c in confirmed
+                    if not c.startswith("release_order")
+                )
+                _record_channel_receipt(
+                    config, "release_order_check", file_path,
+                    function_name, ro_res,
+                )
+                if ro_res.outcome == "confirmed":
+                    confirmed.append(ro_res.rule_id)
+                    logger.info(
+                        "release-order confirmed %s:%s — %s",
+                        file_path, function_name, ro_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "release_order",
+                            "confirmed",
+                        )
+                elif ro_res.outcome == "refuted":
+                    logger.info(
+                        "release-order refuted %s:%s — %s",
+                        file_path, function_name, ro_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "release_order", "refuted",
+                        )
+                else:
+                    logger.info(
+                        "release-order inconclusive %s:%s — %s",
+                        file_path, function_name, ro_res.reason,
+                    )
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "release_order",
                             "inconclusive",
                         )
 
@@ -16327,6 +16423,13 @@ def _is_detection_only(tool_id: str) -> bool:
         from core.audit.resource_bounds import is_detection_rule_id
         return is_detection_rule_id(tool_id)
 
+    if tool_id.startswith("release_order:"):
+        # -naming variants (seed-exemplar-only verify/release pairing)
+        # may not promote alone; learned-pair confirmations promote
+        # directly.
+        from core.audit.release_order import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
+
     return False
 
 
@@ -16358,7 +16461,7 @@ def _source_has_arithmetic(source: str) -> bool:
 _REFUTED_CHEAP_CHANNELS = frozenset({
     "semgrep", "smt", "coccinelle", "coccinelle_flow", "compiler",
     "fail_open", "consistency", "ptr_lifecycle", "lock_region",
-    "resource_bounds",
+    "resource_bounds", "release_order",
 })
 
 # Bound the extra tool work per function: at most this many hypotheses

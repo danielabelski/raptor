@@ -8,9 +8,17 @@ The child receives:
   * ``RAPTOR_LLM_TOKEN_FD`` — file descriptor number to read the
     token from.
 
-The worker's environment intentionally does NOT contain any LLM
-provider API keys. The dispatcher injects them at request time
-from its in-memory secret store.
+Credential posture: the dispatcher injects API keys at request time
+from its in-memory secret store, so the worker does not NEED keys in
+its environment — but whether it HAS them is the caller's choice of
+``env``. With ``env=None`` (or an explicit ``get_safe_env()``) the
+worker is keyless. The canonical LLM-purposed caller,
+``raptor.py:_run_script``, deliberately passes
+``RaptorConfig.get_llm_env()`` — provider keys flow into those
+children as a fallback for the env-direct path (see the
+``_get_or_start_dispatcher`` docstring there). This helper adds the
+socket/token plumbing; it does not strip keys from a caller-supplied
+env.
 """
 
 from __future__ import annotations
@@ -32,10 +40,13 @@ def spawn_worker(
 ) -> subprocess.Popen:
     """Spawn ``cmd`` with credential isolation wired up.
 
-    ``env`` is the base environment for the child (typically
-    ``RaptorConfig.get_safe_env()`` so no API keys leak in). The
-    helper adds ``RAPTOR_LLM_SOCKET`` and ``RAPTOR_LLM_TOKEN_FD`` on
-    top. Other ``Popen`` kwargs flow through unchanged.
+    ``env`` is the base environment for the child, passed through
+    verbatim — ``RaptorConfig.get_safe_env()`` for keyless workers,
+    ``RaptorConfig.get_llm_env()`` where the caller wants provider
+    keys available as an env-direct fallback (``raptor.py:_run_script``
+    does this). The helper adds ``RAPTOR_LLM_SOCKET`` and
+    ``RAPTOR_LLM_TOKEN_FD`` on top. Other ``Popen`` kwargs flow
+    through unchanged.
 
     ``label`` shows up in the dispatcher's audit log so it's possible
     to correlate dispatched calls back to the originating subprocess.

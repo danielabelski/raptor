@@ -5,6 +5,7 @@
 
 Subcommands:
     run      — run the full audit orchestrator (LLM review + tool validation)
+    resume   — re-enter a failed/interrupted run as the same run
     gaps     — compute unreviewed functions from inventory + coverage
     context  — assemble context slice for one function
     sweep    — log a tool-grounded check (semgrep/coccinelle/codeql/smt/compilation)
@@ -1199,7 +1200,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
 
     from core.audit.pipeline import AuditPipelineOpts, run_audit_pipeline
-    from core.audit.report import generate_report, write_report
 
     # --- auto-load threat model ---
     threat_model = None
@@ -1327,7 +1327,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         _lifecycle_fail(out_dir, f"audit pipeline failed: {exc}")
         return 1
 
-    # --- report ---
+    # --- report + lifecycle (shared with resume) ---
+    model_id = args.model[0] if args.model else ""
+    return _finalize_run(out_dir, result, model_id, scope=args.scope)
+
+
+def _finalize_run(
+    out_dir: Path,
+    result,
+    model_id: str,
+    *,
+    scope=None,
+    segment: int | None = None,
+) -> int:
+    """Post-pipeline tail shared by `run` and `resume`: final report,
+    console summary, lifecycle transition, exit code."""
+    import subprocess
+
+    from core.audit.report import generate_report, write_report
+
     report = generate_report(out_dir)
     report_path = write_report(report, out_dir)
 
@@ -1344,13 +1362,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     # silently contradict each other).
     mech = getattr(result, "post_loop_mechanical", 0)
     mech_s = f" (+{mech} mechanical post-loop)" if mech else ""
-    print(f"Audit complete in {duration_str}: "
+    segment_s = f" (segment {segment})" if segment else ""
+    print(f"Audit complete{segment_s} in {duration_str}: "
           f"{result.reviewed} LLM-reviewed{mech_s}, "
           f"{result.findings} findings, {result.suspicious} suspicious, "
           f"{result.clean} clean, {result.errors} errors", flush=True)
     reused = getattr(result, "reused_from_prior", 0)
     if reused:
-        print(f"{reused} reused from prior runs (source unchanged, $0)",
+        origin = "this run's prior segments" if segment else "prior runs"
+        print(f"{reused} reused from {origin} (source unchanged, $0)",
               flush=True)
     from core.audit.cost_tracker import format_cost_summary
     cost_line = format_cost_summary(result)
@@ -1362,7 +1382,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # zero-slot in-scope files are the silent-failure mode — always
     # state the allocation when a scope was set.
     scope_cov_path = out_dir / "scope-coverage.json"
-    if args.scope and scope_cov_path.is_file():
+    if scope and scope_cov_path.is_file():
         try:
             with open(scope_cov_path, encoding="utf-8") as f:
                 _sc = json.load(f)
@@ -1386,7 +1406,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             pass
 
     # --- lifecycle complete ---
-    model_id = args.model[0] if args.model else ""
     lifecycle_args = [
         str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
         "complete", str(out_dir),
@@ -1494,6 +1513,256 @@ def _check_legacy_state(project_dir: Path) -> str | None:
         "To skip and mark inert: libexec/raptor-migrate-journal "
         f"{project_dir} --skip-and-mark-inert\n\n"
         "The migration is idempotent — running it twice is safe."
+    )
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Re-enter a failed/interrupted audit run AS THE SAME RUN.
+
+    Prior-segment journal verdicts are re-imported at $0 (hash-
+    verified), the remaining gaps are recomputed against the ORIGINAL
+    checklist/scope/pins, the remaining budget is the original cap
+    minus booked spend (reconciled ledger authoritative), ledgers and
+    telemetry append with a resume-marker row, and ONE final report
+    covers all segments.
+    """
+    from core.audit.resume import (
+        append_resume_markers,
+        booked_spend_usd,
+        compute_drift,
+        journal_spend_usd,
+        load_prior_cost_breakdown,
+        load_run_config,
+        resume_ineligibility,
+    )
+    from core.run.metadata import load_run_metadata, resume_run
+
+    out_dir = Path(args.out_dir).resolve()
+    if not out_dir.is_dir():
+        print(f"error: {out_dir} is not a directory", file=sys.stderr)
+        return 1
+
+    err = resume_ineligibility(out_dir)
+    if err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+
+    run_cfg = load_run_config(out_dir)
+    if run_cfg is None:
+        print(
+            f"error: no audit-run-config.json in {out_dir} — this run "
+            "predates resumable audits (or the config persist failed). "
+            "Start a new run instead; cross-run verdict reuse imports "
+            "its journal verdicts at $0.",
+            file=sys.stderr,
+        )
+        return 1
+
+    meta = load_run_metadata(out_dir) or {}
+    target_str = meta.get("target_path") or run_cfg.get("target_path")
+    if not target_str:
+        print("error: run metadata records no target_path", file=sys.stderr)
+        return 1
+    target_path = Path(target_str).resolve()
+    if not target_path.is_dir():
+        print(f"error: target not found: {target_path}", file=sys.stderr)
+        return 1
+
+    checklist_path = out_dir / "checklist.json"
+    if not checklist_path.exists():
+        print(
+            f"error: no checklist.json in {out_dir} — the run died "
+            "before its inventory was built; nothing to resume. "
+            "Start a new run.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # --- staleness gate: the run's recorded hashes vs the tree NOW ---
+    drifted, checked = compute_drift(out_dir, target_path)
+    if drifted and not args.allow_drift:
+        print(
+            f"error: target tree drifted since this run's reviews — "
+            f"{len(drifted)} of {checked} hashed verdicts no longer "
+            f"match the source:",
+            file=sys.stderr,
+        )
+        for d in drifted[:10]:
+            cur = d.current_hash or "missing"
+            print(
+                f"  {d.file}:{d.function} (hash {d.stored_hash} → {cur})",
+                file=sys.stderr,
+            )
+        if len(drifted) > 10:
+            print(f"  ... and {len(drifted) - 10} more", file=sys.stderr)
+        print(
+            "Refusing to resume. Pass --allow-drift to resume anyway: "
+            "drifted functions are re-verified per-function by the "
+            "journal hash checks and re-reviewed instead of reused.",
+            file=sys.stderr,
+        )
+        return 1
+    if drifted:
+        print(
+            f"--allow-drift: {len(drifted)} of {checked} verdicts "
+            "drifted — each is re-verified by the journal hash checks "
+            "and will RE-REVIEW (not reuse):",
+            flush=True,
+        )
+        for d in drifted:
+            cur = d.current_hash or "missing"
+            print(
+                f"  drift: {d.file}:{d.function} "
+                f"(hash {d.stored_hash} → {cur}) — re-reviewing",
+                flush=True,
+            )
+
+    # --- remaining budget: original cap minus booked spend ---
+    prior_breakdown = load_prior_cost_breakdown(out_dir)
+    if prior_breakdown is not None:
+        booked = booked_spend_usd(prior_breakdown)
+        ledger_note = "reconciled ledger"
+    else:
+        booked = journal_spend_usd(out_dir)
+        ledger_note = (
+            "journal per-entry floor — the run died before its first "
+            "ledger reconciliation"
+        )
+    original_cap = run_cfg.get("max_cost_usd")
+    from core.audit.resume import (
+        EXHAUSTED_BUDGET_EPSILON_USD,
+        remaining_budget_usd,
+    )
+    remaining = remaining_budget_usd(original_cap, booked)
+    if original_cap is not None:
+        print(
+            f"Resume budget: original cap ${float(original_cap):.2f}, "
+            f"booked ${booked:.2f} ({ledger_note}), "
+            f"remaining ${max(0.0, float(original_cap) - booked):.2f}",
+            flush=True,
+        )
+        if remaining == EXHAUSTED_BUDGET_EPSILON_USD:
+            print(
+                "No budget remains — re-importing prior verdicts and "
+                "finalising the report only (no new LLM reviews).",
+                flush=True,
+            )
+    else:
+        print(
+            f"Resume budget: no cap on the original run "
+            f"(booked ${booked:.2f}, {ledger_note})",
+            flush=True,
+        )
+
+    # --- lifecycle: interrupted/failed → running, segment row ---
+    try:
+        segment = resume_run(out_dir, note="raptor-audit resume")
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    append_resume_markers(out_dir, segment)
+    print(f"Resuming {out_dir} as segment {segment}", flush=True)
+
+    # --- rebuild pipeline opts from the ORIGINAL run config ---
+    from core.audit.pipeline import AuditPipelineOpts, run_audit_pipeline
+
+    try:
+        checklist_data = json.loads(checklist_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        checklist_data = None
+
+    # Binary-oracle verdicts were enriched into checklist.json during
+    # segment 1 — re-extract, no re-analysis needed.
+    binary_verdicts = None
+    if checklist_data and not run_cfg.get("no_binary_oracle"):
+        try:
+            from core.analysis.binary_oracle import extract_verdicts
+            binary_verdicts = extract_verdicts(checklist_data) or None
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "binary verdict re-extraction failed", exc_info=True)
+
+    threat_model = None
+    try:
+        from core.threat_model import load_for_target
+        tm = load_for_target(target_path)
+        if tm is not None:
+            threat_model = tm.to_dict()
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "threat-model auto-load failed", exc_info=True)
+
+    from core.audit._util import format_progress_line
+
+    def on_progress(idx: int, total: int, outcome):
+        print(format_progress_line(idx, total, outcome), flush=True)
+
+    models = run_cfg.get("models") or []
+    include_kinds_raw = run_cfg.get("include_kinds")
+    max_seconds = (
+        args.max_time if args.max_time is not None
+        else run_cfg.get("max_seconds")
+    )
+    opts = AuditPipelineOpts(
+        target_path=target_path,
+        out_dir=out_dir,
+        scope=run_cfg.get("scope"),
+        scope_floor=bool(run_cfg.get("scope_floor", True)),
+        pins=run_cfg.get("pins"),
+        models=models if models else None,
+        max_cost_usd=remaining,
+        max_seconds=max_seconds,
+        budget=run_cfg.get("budget"),
+        strategy_filter=run_cfg.get("strategy_filter"),
+        review_passes=int(run_cfg.get("review_passes") or 1),
+        batch_sloc_threshold=run_cfg.get("batch_sloc_threshold"),
+        include_kinds=(
+            {k.strip() for k in include_kinds_raw.split(",") if k.strip()}
+            if include_kinds_raw else None
+        ),
+        adversarial=bool(run_cfg.get("adversarial")),
+        max_propagation_depth=run_cfg.get("max_propagation_depth"),
+        subsystem_depth=int(run_cfg.get("subsystem_depth") or 0),
+        validate=bool(run_cfg.get("validate", True)),
+        no_binary_oracle=bool(run_cfg.get("no_binary_oracle")),
+        binary_verdicts=binary_verdicts,
+        inventory=checklist_data,
+        annotations_dir=(
+            Path(run_cfg["annotations_dir"])
+            if run_cfg.get("annotations_dir") else None
+        ),
+        codeql_db_path=run_cfg.get("codeql_db_path"),
+        threat_model=threat_model,
+        on_progress=on_progress,
+        dynamic_validation=(
+            False if run_cfg.get("no_dynamic")
+            else (True if run_cfg.get("dynamic") else None)
+        ),
+        verdict_reuse=bool(run_cfg.get("verdict_reuse", True)),
+        pre_scan=bool(run_cfg.get("pre_scan")),
+        schedule=run_cfg.get("schedule") or "cost",
+        on_demand_synthesis=bool(run_cfg.get("on_demand_synthesis", True)),
+        probe_determine_value=bool(run_cfg.get("probe_determine_value")),
+        deepen_reserve_fraction=run_cfg.get("deepen_reserve_fraction"),
+        same_run_reuse=True,
+        prior_cost_breakdown=prior_breakdown,
+        resume_segment=segment,
+    )
+
+    print(f"\nResuming audit of {target_path}", flush=True)
+    print(f"Output: {out_dir}\n", flush=True)
+
+    try:
+        result = run_audit_pipeline(opts)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: audit pipeline failed: {exc}", file=sys.stderr)
+        _lifecycle_fail(out_dir, f"audit resume failed: {exc}")
+        return 1
+
+    model_id = models[0] if models else ""
+    return _finalize_run(
+        out_dir, result, model_id,
+        scope=run_cfg.get("scope"), segment=segment,
     )
 
 
@@ -1820,6 +2089,28 @@ def main() -> int:
     from core.analysis.binary_oracle_cli import add_binary_args
     add_binary_args(p_run, include_edges=False)
 
+    # resume (re-enter a failed/interrupted run as the same run)
+    p_resume = sub.add_parser(
+        "resume",
+        help="Resume a failed/interrupted audit run as the same run",
+    )
+    p_resume.add_argument(
+        "out_dir",
+        help="Output directory of the run to resume",
+    )
+    p_resume.add_argument(
+        "--allow-drift", action="store_true",
+        help="Resume even when the target tree drifted from the run's "
+             "recorded per-function hashes — drifted functions are "
+             "re-verified (loudly, per function) and re-reviewed "
+             "instead of reused",
+    )
+    p_resume.add_argument(
+        "--max-time", type=float, default=None,
+        help="Wall-clock cap for THIS segment (default: the original "
+             "run's --max-time)",
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1838,6 +2129,7 @@ def main() -> int:
         "critique": cmd_critique,
         "ast": cmd_ast,
         "run": cmd_run,
+        "resume": cmd_resume,
     }
 
     return dispatch[args.command](args)

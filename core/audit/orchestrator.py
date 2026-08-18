@@ -3463,6 +3463,21 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 "semantic-consistency routing failed", exc_info=True,
             )
 
+    # Route perlasm generated-asm leads through the same channel:
+    # the zero-length-loop-entry check runs over inventory records
+    # with ``language == "asm-generated"`` (emitted by the perlasm
+    # enrichment) and its detection-grade findings reach
+    # mechanical-findings.json + the per-gap review prompt exactly
+    # like the semantic-consistency outliers above.
+    try:
+        from .asm_zero_len_loop import scan_inventory_asm
+
+        for mf in scan_inventory_asm(checklist):
+            key = f"{mf['file']}:{mf['function']}"
+            mechanical_findings.setdefault(key, []).append(mf)
+    except Exception:
+        logger.debug("perlasm asm-check routing failed", exc_info=True)
+
     # Standing consistency pre-pass (§2.3/§2.4): usage-enum census +
     # return-census.json, LLM-free verdicts on census deviants,
     # flag/mode + cleanup comparators, capped checklist leads, and the

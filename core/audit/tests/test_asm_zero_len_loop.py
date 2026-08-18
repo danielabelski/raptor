@@ -274,3 +274,92 @@ class TestMechanicalConversion:
     ])
     def test_scan_inventory_asm_tolerates_bad_records(self, checklist):
         assert scan_inventory_asm(checklist) == []
+
+
+@pytest.fixture(scope="module")
+def prep_with_generated_asm(tmp_path_factory):
+    """Real ``_compute_audit_prep`` over a checklist carrying an
+    asm-generated record — the orchestrator routing seam, hermetic
+    (no perl, no sandbox: the record is appended post-build, exactly
+    the shape ``core.inventory.perlasm`` emits).
+    """
+    import os
+    import subprocess
+    import sys
+
+    raptor_dir = Path(__file__).resolve().parents[3]
+    target = tmp_path_factory.mktemp("perlasm_target")
+    (target / "app.py").write_text(
+        "def entry(data):\n    return data.strip()\n"
+    )
+    out = tmp_path_factory.mktemp("perlasm_out")
+    env = dict(
+        os.environ,
+        CLAUDECODE="1",
+        _RAPTOR_TRUSTED="1",
+        PYTHONPATH=str(raptor_dir),
+        RAPTOR_NO_PERLASM="1",
+    )
+    r = subprocess.run(
+        [sys.executable, str(raptor_dir / "libexec" / "raptor-build-checklist"),
+         str(target), str(out)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert r.returncode == 0, f"build-checklist failed: {r.stderr}"
+
+    cached = tmp_path_factory.mktemp("perlasm_cache") / "kernel.S"
+    cached.write_text(_fixture("aes-sha1-armv8.linux64.S"))
+    checklist_path = out / "checklist.json"
+    checklist = json.loads(checklist_path.read_text())
+    checklist["files"].append({
+        "path": ".perlasm-generated/crypto/aes/asm/aes-sha1-armv8.pl.linux64.S",
+        "language": "asm-generated",
+        "lines": 128, "sloc": 100,
+        "sha256": "0" * 64,
+        "items": [{"name": "asm_aescbc_sha1_hmac", "kind": "function",
+                   "line_start": 13, "line_end": 128, "checked_by": []}],
+        "perlasm": {
+            "generator": "crypto/aes/asm/aes-sha1-armv8.pl",
+            "flavour": "linux64",
+            "generated_path": str(cached),
+        },
+    })
+    checklist_path.write_text(json.dumps(checklist))
+
+    from core.audit.orchestrator import (
+        OrchestratorConfig,
+        _compute_audit_prep,
+    )
+
+    config = OrchestratorConfig(
+        target_path=target,
+        out_dir=out,
+        resume=False,
+        force=True,
+        include_stale=False,
+        enable_session_context=False,
+        propagate_constraints=False,
+    )
+    prep = _compute_audit_prep(config)
+    assert prep is not None, "prep returned None (checklist missing?)"
+    return prep, out
+
+
+class TestOrchestratorRouting:
+    """The seam: asm leads reach the mechanical-findings channel."""
+
+    def test_finding_routed_to_mechanical_channel(
+            self, prep_with_generated_asm):
+        prep, _ = prep_with_generated_asm
+        key = (".perlasm-generated/crypto/aes/asm/"
+               "aes-sha1-armv8.pl.linux64.S:asm_aescbc_sha1_hmac")
+        entries = prep["mechanical_findings"].get(key, [])
+        assert any(e["detector"] == DETECTOR_NAME for e in entries)
+
+    def test_finding_persisted_to_disk(self, prep_with_generated_asm):
+        _, out = prep_with_generated_asm
+        mech = json.loads((out / "mechanical-findings.json").read_text())
+        assert any(
+            e["detector"] == DETECTOR_NAME
+            for entries in mech.values() for e in entries
+        )

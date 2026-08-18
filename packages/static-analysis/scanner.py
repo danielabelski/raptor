@@ -2528,6 +2528,17 @@ def main():
              "repo code executes. Off by default (operator opt-in).",
     )
     ap.add_argument(
+        "--no-sanitizer-cut-postpass", action="store_true",
+        dest="no_sanitizer_cut_postpass",
+        help="Disable the record-only sanitizer-cut post-pass. By "
+             "default eligible findings (CWE with catalog sanitizers, "
+             "supported language) are evaluated by the value-bound "
+             "gate and suppress/candidate verdicts are recorded to "
+             "suppressions.jsonl as evidence (dropped: false). The "
+             "post-pass never drops or demotes a finding in any mode; "
+             "this flag skips it entirely.",
+    )
+    ap.add_argument(
         "--no-graduated-rules", action="store_true",
         dest="no_graduated_rules",
         help="Disable the graduated synthesized-rules stage. By default "
@@ -2980,6 +2991,30 @@ def main():
                 logger.warning("SARIF merge failed, using individual files: %s", e)
                 (out_dir / "sarif_merge.stderr.log").write_text(str(e), encoding="utf-8")
 
+        # Record-only sanitizer-cut post-pass: value-bound gate
+        # verdicts land in suppressions.jsonl as evidence (dropped:
+        # false) for the warm scorer / operators. Reads the filtered
+        # combined SARIF when it exists so --exclude-dir is honored;
+        # falls back to the per-tool SARIFs. Failure degrades to a
+        # warning — the post-pass can never fail a scan, and it never
+        # mutates a finding.
+        sanitizer_cut_postpass_stats = None
+        if (
+            RaptorConfig.SANITIZER_CUT_POSTPASS_ENABLED
+            and not args.no_sanitizer_cut_postpass
+            and sarif_inputs
+        ):
+            try:
+                from core.analysis.sanitizer_cut_postpass import run_postpass
+                postpass_inputs = (
+                    [merged] if merged.exists() else list(sarif_inputs)
+                )
+                sanitizer_cut_postpass_stats = run_postpass(
+                    postpass_inputs, repo_path, out_dir,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("sanitizer-cut post-pass failed: %s", e)
+
         # Generate metrics. When --exclude-dir filtered the combined
         # SARIF, metrics should reflect the filtered set — read from
         # the just-written combined.sarif rather than the unfiltered
@@ -3001,6 +3036,10 @@ def main():
         # then failed. Empty list means every requested pack ran.
         metrics["dropped_registry_packs"] = sorted(_dropped_registry_packs)
         metrics["nosemgrep_suppressed_count"] = nosemgrep_count
+        # Record-only post-pass stats (None when disabled or no SARIFs)
+        # — verdict counts, refusal reasons, budget skips. The verdicts
+        # themselves live in suppressions.jsonl.
+        metrics["sanitizer_cut_postpass"] = sanitizer_cut_postpass_stats
         metrics["show_suppressed"] = getattr(args, "show_suppressed", False)
         save_json(out_dir / "scan_metrics.json", metrics)
 

@@ -195,6 +195,14 @@ class RaptorConfig:
     # `/codeql --no-learned-models`.
     CODEQL_LEARNED_MODELS_ENABLED: bool = True
 
+    # Record-only sanitizer-cut post-pass over scan SARIF findings
+    # (core/analysis/sanitizer_cut_postpass.py): value-bound gate
+    # verdicts are written to suppressions.jsonl as evidence
+    # (dropped: false) so the recall harness's warm scorer can measure
+    # the projected FP rate. Never mutates, demotes, or drops a
+    # finding. Per-run CLI override: `--no-sanitizer-cut-postpass`.
+    SANITIZER_CUT_POSTPASS_ENABLED: bool = True
+
     # Threat models passed to `codeql database analyze` on the STANDARD
     # suite pass (`--threat-model=<name>` per entry, additive to the
     # always-on `default`/remote model). `local` enables the

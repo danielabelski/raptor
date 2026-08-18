@@ -293,6 +293,36 @@ class TestComposeProxyHostsRepoDerived:
         assert "alt.example.com" in hosts
         assert "reg.example.com:443" not in hosts
 
+    def test_operator_registry_port_env_admits_host(
+        self, tmp_path, monkeypatch, _stub_sources,
+    ):
+        """RAPTOR_SCA_REGISTRY_PORTS (operator config, never repo-
+        derived) widens the tolerated port set so self-hosted
+        registries like reg.corp:5000 keep their base-image SBOM
+        fetches. The port is still stripped for the hostname-keyed
+        allowlist."""
+        from packages.sca import compose_proxy_hosts
+        monkeypatch.setenv("RAPTOR_SCA_REGISTRY_PORTS", "5000, 8081")
+        _stub_sources(image_hosts=["reg.corp:5000",
+                                    "mirror.corp:8081",
+                                    "evil.example.com:9999"])
+        hosts = compose_proxy_hosts(tmp_path)
+        assert "reg.corp" in hosts
+        assert "mirror.corp" in hosts
+        assert "evil.example.com" not in hosts   # port not declared
+
+    def test_operator_registry_port_env_rejects_garbage(
+        self, tmp_path, monkeypatch, _stub_sources, caplog,
+    ):
+        """Invalid env entries are ignored (warned), never widen."""
+        from packages.sca import compose_proxy_hosts
+        monkeypatch.setenv("RAPTOR_SCA_REGISTRY_PORTS",
+                           "0, 70000, abc, -1")
+        _stub_sources(image_hosts=["reg.corp:5000"])
+        with caplog.at_level("WARNING", logger="packages.sca"):
+            hosts = compose_proxy_hosts(tmp_path)
+        assert "reg.corp" not in hosts
+
     def test_no_target_no_repo_derived_section(self, caplog):
         """``target=None`` short-circuits before the repo-derived
         section — no added/rejected log lines."""

@@ -156,11 +156,15 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
             unknown_response_fields,
             validate_structured_response,
         )
-        # Strict schema floor — same mandatory last hop as
-        # LLMClient.generate_structured. The CC subprocess transport
-        # bypasses the client, so the unknown-field rejection must run
-        # here too; a violating response is treated like a parse
-        # failure (existing per-finding error handling).
+        # Strict schema floor — same security property as
+        # LLMClient.generate_structured: fields outside the requested
+        # schema never reach downstream consumers. The CC subprocess
+        # transport bypasses the client, so the check must run here
+        # too — but unlike the client's structured path there is NO
+        # retry/fallback loop at this level, so treating a benign
+        # extra key as a whole-response failure silently dropped an
+        # otherwise-valid analysis. Strip the unknown fields, keep
+        # the valid subset, and record the event for diagnosis.
         # ``finding_id`` is transport-injected (parse_cc_structured
         # setdefaults it into every envelope), not model-smuggled —
         # exempt it for schemas that don't declare it.
@@ -169,11 +173,17 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
             if k != "finding_id"
         ]
         if unknown:
-            result = {
-                "error": f"schema violation: unknown fields {unknown}",
-            }
-            write_debug(out_dir, "dispatch_schema", proc.stdout, proc.stderr, result)
-            return DispatchResult(result=result)
+            logger.warning(
+                "CC response carried fields outside the requested "
+                "schema (%s) — stripped; keeping the valid subset",
+                unknown,
+            )
+            write_debug(
+                out_dir, "dispatch_schema", proc.stdout, proc.stderr,
+                {"warning": f"unknown fields stripped: {unknown}"},
+            )
+            for k in unknown:
+                parsed.pop(k, None)
         validated = validate_structured_response(parsed, effective_schema)
         parsed = validated.data
         quality = validated.quality
@@ -249,7 +259,7 @@ def _safe_id(finding_id: str) -> str:
 
 
 def write_debug(
-    out_dir: Path,
+    out_dir: Path | str,
     finding_id: str,
     stdout: str,
     stderr: str,
@@ -257,7 +267,10 @@ def write_debug(
 ) -> None:
     """Write raw CC output to a debug file on failure."""
     try:
-        debug_dir = out_dir / "debug"
+        # Coerce: invoke_cc_simple's callers pass str out_dirs; a bare
+        # `str / str` TypeError here would turn a debug-artifact write
+        # into a dispatch crash.
+        debug_dir = Path(out_dir) / "debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
         safe_id = _safe_id(finding_id)
         debug_file = debug_dir / f"cc_{safe_id}.txt"

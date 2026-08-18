@@ -366,7 +366,13 @@ def run_sca(
                     m for m in manifests if m.ecosystem != "Inline"
                 ]
             raw_deps: list[Dependency] = []
-            with capture_parse_failures() as parse_failures:
+            # scan_root_context: lets bounded parser reads accept
+            # symlinked manifests whose resolved target stays inside
+            # the target tree (monorepo shared-manifest layouts)
+            # while still refusing links that escape it.
+            from .parsers._safe_read import scan_root_context
+            with capture_parse_failures() as parse_failures, \
+                    scan_root_context(target):
                 for m in manifests:
                     raw_deps.extend(parse_manifest(m))
     finally:

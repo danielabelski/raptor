@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import re
+import urllib.parse
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -49,6 +50,26 @@ from core.json import TTL_FOREVER, JsonCache
 from .models import Confidence, Dependency, PinStyle
 
 logger = logging.getLogger(__name__)
+
+
+def _cache_key_component(value: str) -> str:
+    """Percent-encode one cache-key path segment — injective, like the
+    registries/osv sweep — AND neutralise the degenerate segments the
+    cache layer refuses (``""``, ``"."``, ``".."``). ``quote`` leaves
+    dots and the empty string untouched, so a hostile dep literally
+    named ``..`` used to raise ValueError out of ``JsonCache.get`` and
+    abort the whole scan. The extra escapes stay injective: ``%`` in
+    the input encodes to ``%25``, so no other input can produce
+    ``%2E``-form output, and only the empty string maps to the
+    ``(empty)`` marker (``(`` itself encodes to ``%28``).
+    """
+    enc = urllib.parse.quote(value, safe="")
+    if not enc:
+        return "(empty)"
+    if enc in (".", ".."):
+        return enc.replace(".", "%2E")
+    return enc
+
 
 # Bounded recursion. Even huge dep trees rarely exceed depth 10 in
 # practice (npm/PyPI; Cargo less). 12 is a safe soft cap.
@@ -254,7 +275,10 @@ def _walk_one_ecosystem(
         # walker from discovering any transitives. The child-
         # emission paths below maintain the set so re-queued
         # children are short-circuited at the source.
-        cache_key = f"metadata_walk/{ecosystem}/{name}/{version}"
+        cache_key = (
+            f"metadata_walk/{_cache_key_component(ecosystem)}/"
+            f"{_cache_key_component(name)}/{_cache_key_component(version)}"
+        )
 
         if cache is not None:
             cached = cache.get(cache_key, ttl_seconds=TTL_FOREVER)

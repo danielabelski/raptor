@@ -67,6 +67,92 @@ class TransitiveStatus:
     failures: int = 0
 
 
+# ``-r`` / ``-c`` include directives in requirements-style files. Kept
+# in sync with packages/sca/parsers/requirements.py's directive set;
+# used here only for path-membership checks (the file named by the
+# directive is never opened unless it, too, is a discovered manifest).
+_REQ_INCLUDE_PREFIXES = (
+    "-r ", "--requirement ", "--requirement=",
+    "-c ", "--constraint ", "--constraint=",
+)
+# Mirrors the requirements parser's include-depth cap.
+_REQ_INCLUDE_MAX_DEPTH = 5
+
+
+def _requirements_include_targets(path: Path) -> set[Path]:
+    """Resolved ``-r``/``-c`` include targets of one requirements file."""
+    targets: set[Path] = set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return targets
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith(_REQ_INCLUDE_PREFIXES):
+            continue
+        if line.startswith(("--requirement=", "--constraint=")):
+            ref = line.split("=", 1)[1].strip()
+        else:
+            parts = line.split(None, 1)
+            ref = parts[1].strip() if len(parts) > 1 else ""
+        if not ref:
+            continue
+        try:
+            targets.add((path.parent / ref).resolve())
+        except OSError:
+            continue
+    return targets
+
+
+def _augment_declared_with_includes(
+    manifests: Sequence[Manifest], declared: set[Path],
+) -> set[Path]:
+    """Count include-only requirements manifests as declaring deps.
+
+    A top-level ``requirements.txt`` containing only ``-r reqs/base.txt``
+    produces deps whose ``declared_in`` is the INCLUDED file, so the
+    top-level path never appears in the declared-path set — yet it is
+    exactly the file the cascade resolver must compile. Walk ``-r``/
+    ``-c`` chains (bounded fixpoint, path comparison only) and add any
+    manifest whose include chain reaches a declared path.
+    """
+    result = set(declared)
+    resolved_declared = set(result)
+    for d in declared:
+        try:
+            resolved_declared.add(d.resolve())
+        except OSError:
+            continue
+    pending = [
+        m for m in manifests
+        if not m.is_lockfile
+        and m.ecosystem == "PyPI"
+        and m.path.suffix in (".txt", ".in")
+        and m.path not in result
+    ]
+    for _ in range(_REQ_INCLUDE_MAX_DEPTH):
+        if not pending:
+            break
+        still_pending = []
+        progressed = False
+        for m in pending:
+            targets = _requirements_include_targets(m.path)
+            if targets & resolved_declared:
+                result.add(m.path)
+                try:
+                    resolved_declared.add(m.path.resolve())
+                except OSError:
+                    pass
+                resolved_declared.add(m.path)
+                progressed = True
+            else:
+                still_pending.append(m)
+        pending = still_pending
+        if not progressed:
+            break
+    return result
+
+
 def _is_cargo_workspace_root(cargo_toml: Path) -> bool:
     """True if *cargo_toml* declares ``[workspace]``."""
     try:
@@ -184,6 +270,12 @@ def expand_missing_transitives(
     # to surface a misleading "no cascade resolver registered for
     # Kubernetes" skip line.
     _declared_paths = {d.declared_in for d in direct_deps}
+    # Include-only manifests declare their deps through -r/-c chains;
+    # without this they'd be filtered as "zero direct deps" and lose
+    # transitive expansion entirely.
+    _declared_paths = _augment_declared_with_includes(
+        manifests, _declared_paths,
+    )
     by_eco_dir: dict[tuple[str, Path], list[Manifest]] = {}
     for m in manifests:
         if m.is_lockfile:

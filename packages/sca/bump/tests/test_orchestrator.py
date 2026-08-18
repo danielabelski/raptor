@@ -1989,10 +1989,13 @@ class TestRunBumpPolicyTrustGate:
         with caplog.at_level("WARNING",
                               logger="packages.sca.bump.policy"):
             run_bump(tmp_path, http=http, trust_repo=False)
+        # The whole repo policy file is now ignored on untrusted
+        # runs (not just the operator-only toggle) — the warning
+        # names the file and the opt-in rather than each key.
         warned = [r for r in caplog.records
-                  if "binary_capability_delta" in r.getMessage()
-                  and "not repo-trusted" in r.getMessage()]
-        assert warned, "expected the ignored-toggle warning"
+                  if "not repo-trusted" in r.getMessage()
+                  and "--trust-repo" in r.getMessage()]
+        assert warned, "expected the not-repo-trusted warning"
 
     def test_trusted_run_honours_repo_policy_toggle(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture,

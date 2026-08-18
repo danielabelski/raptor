@@ -482,3 +482,39 @@ def test_walk_default_caps_are_bounded():
     )
     assert 0 < DEFAULT_MAX_VISITS <= 500
     assert 0 < DEFAULT_MAX_FANOUT <= 100
+
+
+# ---------------------------------------------------------------------------
+# degenerate dep names must never abort the scan
+# ---------------------------------------------------------------------------
+
+
+def test_degenerate_dep_name_does_not_abort_walk(tmp_path):
+    """A hostile dep literally named ``..`` (or ``.``, or ``""``) used
+    to raise ValueError out of JsonCache and abort the whole scan; the
+    cache-key components are now encoded past the degenerate-segment
+    refusal."""
+    http = _StubHttp({
+        "/pypi/a/1.0/json": {"info": {"requires_dist": []}},
+    })
+    cache = JsonCache(root=tmp_path / "cache")
+    for name in ("..", ".", ""):
+        result = walk_transitive(
+            [_direct("PyPI", name, "1.0")], http=http, cache=cache,
+        )
+        assert result is not None  # walk completed — no abort
+
+
+def test_cache_key_component_injective_and_safe():
+    from packages.sca.registry_metadata_walk import _cache_key_component
+
+    # Degenerate segments neutralised.
+    assert _cache_key_component("..") == "%2E%2E"
+    assert _cache_key_component(".") == "%2E"
+    assert _cache_key_component("") == "(empty)"
+    # Injective: inputs that would collide under flattening stay apart.
+    assert _cache_key_component("a/b") != _cache_key_component("a_b")
+    assert _cache_key_component("%2E") != _cache_key_component(".")
+    assert _cache_key_component("(empty)") != _cache_key_component("")
+    # Plain names unchanged.
+    assert _cache_key_component("requests") == "requests"

@@ -228,7 +228,12 @@ version.  Preserve the manifest's existing formatting, comments, and \
 pin style.  If the manifest uses exact pins, produce an exact pin.  \
 If it uses range pins, produce the tightest range that includes the fix.
 
-Only change the one dependency — do not touch unrelated lines."""
+Only change the one dependency — do not touch unrelated lines.
+
+If NO fixed version exists (the "Fixed version" field is empty), do not \
+invent one.  Say so explicitly and suggest a workaround instead: an \
+alternative package, a version constraint excluding the vulnerable \
+range, or a configuration-level mitigation."""
 
 
 def build_sca_patch_prompt_bundle(
@@ -244,7 +249,12 @@ def build_sca_patch_prompt_bundle(
     dep_name = sca.get("name", "unknown")
     dep_version = sca.get("version", "")
     ecosystem = sca.get("ecosystem", "")
-    fixed_version = sca.get("fixed_version", "")
+    # `or ""` (not a dict-get default): SCA emits the key with an
+    # explicit None when no fixed release exists, and a None value
+    # crashes the envelope's slot renderer. The empty string keeps
+    # the "Fixed version:" line blank, which is what the system
+    # prompt's no-fixed-version workaround guidance keys off.
+    fixed_version = sca.get("fixed_version") or ""
     manifest_path = sca.get("declared_in", finding.get("file_path", ""))
     advisory = sca.get("advisory", {})
     cve_id = ""

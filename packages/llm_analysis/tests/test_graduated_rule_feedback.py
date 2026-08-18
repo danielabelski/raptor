@@ -15,9 +15,9 @@ from types import SimpleNamespace
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from typing import ClassVar
+from typing import ClassVar  # noqa: E402
 
-from packages.llm_analysis.agent import AutonomousSecurityAgentV2
+from packages.llm_analysis.agent import AutonomousSecurityAgentV2  # noqa: E402
 
 
 class _FakeLibrary:
@@ -90,3 +90,52 @@ class TestGraduatedRuleFeedback:
             _vuln("synthesized:uaf-variant-3", None),
         )
         assert calls == []
+
+    def test_missing_checker_synthesis_package_is_suppressed(
+        self, monkeypatch,
+    ):
+        """The process_findings call site wraps the helper in
+        ``suppress(OSError, ImportError)`` — an env without
+        packages.checker_synthesis must degrade to "no feedback
+        recorded", not crash the analysis loop on the first
+        synthesized: finding. Pin the call-site contract by
+        exercising the same suppression the loop uses."""
+        import builtins
+        import contextlib
+
+        real_import = builtins.__import__
+
+        def _no_checker_synthesis(name, *args, **kwargs):
+            if name.startswith("packages.checker_synthesis"):
+                raise ImportError(f"No module named {name!r}")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.delitem(
+            sys.modules, "packages.checker_synthesis.library",
+            raising=False,
+        )
+        monkeypatch.setattr(builtins, "__import__", _no_checker_synthesis)
+        agent = _agent_stub()
+        vuln = _vuln("synthesized:uaf-variant-3",
+                     {"is_true_positive": True})
+        # Bare call raises ImportError...
+        try:
+            agent._record_graduated_rule_feedback(vuln)
+            raised = False
+        except ImportError:
+            raised = True
+        assert raised
+        # ...and the loop's suppression absorbs it.
+        with contextlib.suppress(OSError, ImportError):
+            agent._record_graduated_rule_feedback(vuln)
+
+    def test_call_site_suppresses_import_error(self):
+        """Source pin: the process_findings call site must include
+        ImportError in its suppress (a synthesized: finding in an env
+        without packages.checker_synthesis crashed the loop)."""
+        src = (REPO / "packages" / "llm_analysis" / "agent.py").read_text(
+            encoding="utf-8",
+        )
+        idx = src.index("self._record_graduated_rule_feedback(vuln)")
+        window = src[max(0, idx - 700):idx]
+        assert "contextlib.suppress(OSError, ImportError)" in window

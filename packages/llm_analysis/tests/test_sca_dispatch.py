@@ -218,3 +218,46 @@ class TestBuildSCAPrompts:
         bundle = build_sca_patch_prompt_bundle(f)
         user = next(m.content for m in bundle.messages if m.role == "user")
         assert "3.1.0" in user
+
+    # --- content pins: the envelope migration must not silently drop
+    # prompt substance. These mirror the assertions the plain-string
+    # builders carried before the bundle cutover.
+
+    def test_exploit_bundle_includes_kev(self):
+        f = _make_sca_finding(in_kev=True)
+        bundle = build_sca_exploit_prompt_bundle(f)
+        user = next(m.content for m in bundle.messages if m.role == "user")
+        assert "known exploited in the wild" in user
+
+    def test_exploit_bundle_omits_kev_when_not_listed(self):
+        f = _make_sca_finding(in_kev=False)
+        bundle = build_sca_exploit_prompt_bundle(f)
+        user = next(m.content for m in bundle.messages if m.role == "user")
+        assert "known exploited in the wild" not in user
+
+    def test_exploit_bundle_includes_epss(self):
+        f = _make_sca_finding(epss=0.75)
+        bundle = build_sca_exploit_prompt_bundle(f)
+        user = next(m.content for m in bundle.messages if m.role == "user")
+        assert "epss" in user.lower()
+        assert "75.0%" in user
+
+    def test_exploit_bundle_includes_cvss(self):
+        f = _make_sca_finding(cvss_score=9.8)
+        bundle = build_sca_exploit_prompt_bundle(f)
+        user = next(m.content for m in bundle.messages if m.role == "user")
+        assert "cvss" in user.lower()
+        assert "9.8" in user
+
+    def test_exploit_bundle_includes_reachability(self):
+        f = _make_sca_finding(reachability="likely_called")
+        bundle = build_sca_exploit_prompt_bundle(f)
+        user = next(m.content for m in bundle.messages if m.role == "user")
+        assert "likely_called" in user
+
+    def test_patch_prompt_no_fixed_version_workaround_guidance(self):
+        f = _make_sca_finding(fixed_version=None)
+        bundle = build_sca_patch_prompt_bundle(f)
+        system = next(m.content for m in bundle.messages if m.role == "system")
+        assert "workaround" in system.lower()
+        assert "alternative" in system.lower()

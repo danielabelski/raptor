@@ -697,6 +697,41 @@ class TestCircuitBreakerEnforcement:
                 if r.get("analysed_by") == "model-b" and "error" not in r]
         assert len(b_ok) == 12
 
+    def test_proven_model_survives_transient_failure_burst(self):
+        """A model with prior successes must NOT be circuit-broken by 3
+        consecutive transient failures — the breaker requires a model
+        that has NEVER succeeded (completed == consec). Losing that
+        guard truncated single-model batches on any timeout burst."""
+        findings = [_make_finding(f"f-{i:03d}") for i in range(8)]
+        call_count = [0]
+
+        def burst_fn(prompt, schema, system_prompt, temperature, model):
+            call_count[0] += 1
+            # 2 successes, then a 3-failure transient burst, then recover.
+            if call_count[0] in (3, 4, 5):
+                raise RuntimeError("upstream timeout")
+            return _make_dispatch_result()
+
+        results = dispatch_task(
+            task=AnalysisTask(),
+            items=findings,
+            dispatch_fn=burst_fn,
+            role_resolution={},
+            prior_results={},
+            cost_tracker=CostTracker(0),
+            max_parallel=1,  # sequential: makes the burst consecutive
+        )
+
+        # Every item dispatched — no abort-fill, no circuit_breaker skips.
+        assert call_count[0] == 8
+        assert len(results) == 8
+        assert not [r for r in results
+                    if r.get("error", "").startswith("aborted")]
+        assert not [r for r in results
+                    if r.get("error_type") == "circuit_breaker"]
+        successes = [r for r in results if "error" not in r]
+        assert len(successes) == 5
+
     def test_all_dead_abort_reason_not_mislabelled_as_auth(self):
         """Abort-fill records from the all-models-circuit-broken branch
         used to say "aborted (auth failure)"."""

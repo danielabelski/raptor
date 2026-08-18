@@ -371,3 +371,73 @@ def test_live_cc_dispatch_sentinel_home_file_not_leaked(tmp_path):
             sentinel.unlink()
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Schema floor: unknown fields stripped, valid subset kept
+# ---------------------------------------------------------------------------
+
+_FLOOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string"},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["verdict"],
+}
+
+
+def _invoke_with_canned_stdout(tmp_path, stdout: str):
+    from packages.llm_analysis.cc_dispatch import invoke_cc_simple
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(exist_ok=True)
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+
+    def _canned(cmd, *args, **kwargs):
+        return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+    with patch("core.sandbox.run_untrusted_networked",
+               side_effect=_canned), \
+         patch("packages.llm_analysis.cc_dispatch.run_untrusted_networked",
+               side_effect=_canned, create=True):
+        return invoke_cc_simple(
+            prompt="ignored", schema=_FLOOR_SCHEMA,
+            repo_path=str(repo), claude_bin="/usr/bin/true",
+            out_dir=str(out_dir), timeout=5,
+        )
+
+
+def test_unknown_field_stripped_valid_subset_kept(tmp_path):
+    """A benign extra top-level key must not void the whole analysis:
+    the unknown field is stripped (never reaches downstream consumers)
+    and the schema-conformant subset survives. This transport has no
+    retry loop, so discard-on-violation silently dropped findings."""
+    import json as _json
+
+    stdout = _json.dumps({"structured_output": {
+        "verdict": "exploitable",
+        "reasoning": "traced the taint",
+        "smuggled_note": "model volunteered an extra key",
+    }})
+    dr = _invoke_with_canned_stdout(tmp_path, stdout)
+
+    assert "error" not in dr.result
+    assert dr.result["verdict"] == "exploitable"
+    assert dr.result["reasoning"] == "traced the taint"
+    # Security property intact: the unknown field never propagates.
+    assert "smuggled_note" not in dr.result
+
+
+def test_conformant_response_untouched_by_floor(tmp_path):
+    import json as _json
+
+    stdout = _json.dumps({"structured_output": {
+        "verdict": "clean",
+        "reasoning": "no path",
+    }})
+    dr = _invoke_with_canned_stdout(tmp_path, stdout)
+
+    assert "error" not in dr.result
+    assert dr.result["verdict"] == "clean"

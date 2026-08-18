@@ -612,14 +612,19 @@ def _dispatch_inner(
                 # GLOBAL counter saw as universal failure even
                 # when other models had succeeded between them.
                 # Per-model counter only triggers when this model
-                # itself fails 3 times in a row: circuit-break it
-                # (enforced by the dead-check in _do_one).
+                # itself fails 3 times in a row AND has never
+                # succeeded (completed == consec: every completion
+                # so far was one of those failures). A proven model
+                # riding out a transient burst (timeout storm, proxy
+                # blip) keeps dispatching; a model that has produced
+                # nothing but failures gets circuit-broken (enforced
+                # by the dead-check in _do_one).
                 pm = _per_model_state.setdefault(
                     model_key, {"consec": 0, "completed": 0},
                 )
                 pm["completed"] += 1
                 pm["consec"] += 1
-                if pm["consec"] >= 3:
+                if pm["consec"] >= 3 and pm["completed"] == pm["consec"]:
                     print(
                         f"\n  Model {model_key}:"
                         f" {pm['consec']} consecutive"

@@ -23,6 +23,7 @@ into otherwise-generic ``core.http`` / ``core.json.cache`` machinery:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -183,7 +184,39 @@ _HOSTNAME_RE = re.compile(
 # allowlist is hostname-keyed, so the port is stripped — but only
 # the standard HTTP(S) ports are accepted at all; anything else is
 # rejected so a manifest can't smuggle odd-port syntax through.
+# Self-hosted registries commonly serve on non-standard ports
+# (``registry.corp:5000``); the OPERATOR — not the scanned repo —
+# can extend the tolerated set via ``RAPTOR_SCA_REGISTRY_PORTS``
+# (comma-separated port numbers). The port is still stripped before
+# the hostname reaches the allowlist; the env var only widens which
+# repo-derived ``host:port`` strings are considered well-formed.
 _ALLOWED_HOST_PORTS = frozenset({"80", "443"})
+
+
+def _operator_extra_ports() -> frozenset:
+    """Ports the operator declared via ``RAPTOR_SCA_REGISTRY_PORTS``.
+
+    Read per call (not at import) so tests and long-lived processes
+    honour changes; validation is strict — each entry must be a
+    decimal port in 1-65535, anything else is ignored with a warning
+    so a typo can't silently disable the whole list.
+    """
+    raw = os.environ.get("RAPTOR_SCA_REGISTRY_PORTS", "")
+    if not raw:
+        return frozenset()
+    ports = set()
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.isdigit() and 1 <= int(tok) <= 65535:
+            ports.add(tok)
+        else:
+            logger.warning(
+                "sca: ignoring invalid RAPTOR_SCA_REGISTRY_PORTS "
+                "entry %r (want a decimal port 1-65535)", tok,
+            )
+    return frozenset(ports)
 
 
 def _normalise_repo_host(raw: object) -> str | None:
@@ -202,7 +235,8 @@ def _normalise_repo_host(raw: object) -> str | None:
     if any(c in raw for c in "/@\\?#,"):
         return None
     host, sep, port = raw.partition(":")
-    if sep and port not in _ALLOWED_HOST_PORTS:
+    if sep and port not in _ALLOWED_HOST_PORTS \
+            and port not in _operator_extra_ports():
         return None
     if not _HOSTNAME_RE.match(host):
         return None

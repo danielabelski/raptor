@@ -2981,8 +2981,13 @@ class AutonomousSecurityAgentV2:
                     # (a scan hit judged FP must count against the
                     # rule). Best-effort against manifest IO failures
                     # — never blocks analysis; RuleLibrary handles
-                    # corrupt-manifest shapes itself.
-                    with contextlib.suppress(OSError):
+                    # corrupt-manifest shapes itself. ImportError too:
+                    # the helper imports packages.checker_synthesis
+                    # lazily, and one synthesized: finding in an env
+                    # without that package must degrade to "no
+                    # feedback recorded", not crash the whole
+                    # analysis loop mid-run.
+                    with contextlib.suppress(OSError, ImportError):
                         self._record_graduated_rule_feedback(vuln)
 
                     # Track dataflow validation

@@ -62,15 +62,14 @@ _POLICY_FILE = ".raptor-sca-bump.yml"
 _POLICY_FILE_GITHUB = ".github/sca/raptor-sca-bump-policy.yml"
 _POLICY_LOCATIONS = (_POLICY_FILE, _POLICY_FILE_GITHUB)
 
-# Top-level keys the repo file may set WITHOUT the run being
-# repo-trusted. ``skip:`` rules and numeric thresholds only narrow
-# what the bumper does; anything else — today
-# ``binary_capability_delta`` (network pulls + native parsing) — is
-# operator-only, so a hostile target can't switch on
-# security-sensitive machinery by shipping a policy file. New
-# top-level keys default to operator-only until deliberately added
-# here.
-_REPO_SETTABLE_KEYS = frozenset({"skip", "thresholds"})
+# The policy file ships INSIDE the scanned repo, so on an untrusted
+# run every key in it is attacker-writable. ``skip:`` rules and
+# loosened thresholds (``rapid_release_days: 0``) let a hostile
+# target hide its own outdated-pin findings — the same reason the
+# scan-side suppression overlay is trust-gated. The whole file is
+# therefore honoured only on repo-trusted runs (``--trust-repo`` or
+# the project ``config`` trust marker); untrusted runs get the
+# default policy plus a warning naming the opt-in.
 
 
 @dataclass(frozen=True)
@@ -159,16 +158,27 @@ def load_policy(target: Path, *, trust_repo: bool = False) -> BumpPolicy:
     never crashes on a bad policy — operators get the default behaviour and
     a log entry to fix the file.
 
-    ``trust_repo`` gates keys outside :data:`_REPO_SETTABLE_KEYS`:
-    on untrusted runs those keys are ignored with a warning naming
-    them, so operators can opt in deliberately (``--trust-repo`` or
-    the project ``config`` trust marker).
+    ``trust_repo`` gates the WHOLE file: the policy ships inside the
+    scanned repo, and its suppressions/thresholds can hide the repo's
+    own outdated-pin findings. On untrusted runs the file is ignored
+    with a warning naming the opt-in (``--trust-repo`` or the project
+    ``config`` trust marker) — matching the scan-side suppression
+    overlay's trust gate.
     """
     policy_path = next(
         (target / rel for rel in _POLICY_LOCATIONS if (target / rel).exists()),
         None,
     )
     if policy_path is None:
+        return BumpPolicy()
+    if not trust_repo:
+        logger.warning(
+            "sca.bump.policy: %s found but the run is not repo-trusted "
+            "— a scanned repo's skip rules and thresholds can hide its "
+            "own outdated-pin findings, so the file is ignored; set the "
+            "project `config` trust marker or pass --trust-repo to "
+            "honour it", policy_path,
+        )
         return BumpPolicy()
     try:
         text = policy_path.read_text(encoding="utf-8")
@@ -255,26 +265,12 @@ def load_policy(target: Path, *, trust_repo: bool = False) -> BumpPolicy:
                 block_on_minor_skew=bms,
             )
 
-    # Everything outside the repo-settable allowlist is an
-    # operator-only toggle. On untrusted runs, name each ignored key
-    # so the operator can opt in deliberately rather than silently
-    # losing the setting.
-    if not trust_repo:
-        gated = sorted(k for k in data
-                       if isinstance(k, str) and k not in _REPO_SETTABLE_KEYS)
-        if gated:
-            logger.warning(
-                "sca.bump.policy: %s sets operator-only key(s) %s but "
-                "the run is not repo-trusted — ignored; set the project "
-                "`config` trust marker or pass --trust-repo to honour "
-                "them", policy_path, ", ".join(gated),
-            )
-
     # ``binary_capability_delta`` is the top-level toggle name in
     # the YAML — keeping the YAML key short while the field name
     # stays explicit. False / missing yields the default (off).
-    # Repo-settable only on trusted runs (see _REPO_SETTABLE_KEYS).
-    bcd_enabled = trust_repo and data.get("binary_capability_delta") is True
+    # (trust_repo is already guaranteed True here — the untrusted
+    # path returned the default policy above.)
+    bcd_enabled = data.get("binary_capability_delta") is True
 
     return BumpPolicy(
         skip=skips, thresholds=th,

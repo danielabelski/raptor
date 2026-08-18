@@ -351,19 +351,21 @@ class TestFailureModes:
         assert isinstance(result, ResolutionFailure)
         assert "bare-name" in result.reason or "no sink call" in result.reason
 
-    def test_non_python_language_returns_failure(self, tmp_path):
+    def test_unsupported_language_returns_failure(self, tmp_path):
         # Doesn't actually need to exist on disk for this check —
-        # language detection happens before file read.
+        # language detection happens before file read. Python, C/C++,
+        # and Java all have resolver legs now; .ts is the
+        # representative still-unsupported language.
         finding = {
             "cwe": "CWE-79",
-            "file_path": str(tmp_path / "app.java"),
+            "file_path": str(tmp_path / "app.ts"),
             "source_line": 1,
             "sink_line": 5,
         }
         result = resolve_finding(finding)
         assert isinstance(result, ResolutionFailure)
         assert "not yet supported" in result.reason
-        assert "java" in result.reason
+        assert "typescript" in result.reason
 
 
 # ---------------------------------------------------------------------------

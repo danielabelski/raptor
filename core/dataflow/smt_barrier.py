@@ -936,7 +936,8 @@ def _value_bound_dominates(
     * ``None``  → "consult lexical fallback." Returned when the
       value-bound gate is disabled (``off`` / ``shadow`` mode), the
       resolver can't normalise the finding (missing kwargs, file
-      unreadable, function not found, non-python language, …), or the
+      unreadable, function not found, or a language without a
+      resolver leg — python, c/c++, and java are wired), or the
       gate's verdict was ``candidate_only`` (control-flow holds but
       value binding unproven).
 

@@ -30,7 +30,10 @@ Scope:
 * **Python intra-procedural** — full end-to-end.
 * **C / C++ intra-procedural** — full end-to-end via Phase 9's
   :func:`build_cpp_intraproc_cfg`, wired through here in Phase 11.
-* **Java / other** — return ``ResolutionFailure`` with
+* **Java intra-procedural** — tree-sitter CFG with import-resolved
+  callable names; methods containing constructs the builder can't
+  model faithfully are refused (whole-build ``ResolutionFailure``).
+* **Other languages** — return ``ResolutionFailure`` with
   ``reason="language=… not yet supported"``; they await future
   arcs.
 
@@ -46,6 +49,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     FrozenSet,
     List,
@@ -65,6 +69,9 @@ from core.analysis.cfg_builder_cpp import (
     CPPCFGNode,
     build_cpp_intraproc_cfg,
 )
+
+if TYPE_CHECKING:                                       # pragma: no cover
+    from core.analysis.cfg_builder_java import JavaCFG
 
 
 # CWE extraction patterns.
@@ -107,9 +114,9 @@ class ResolvedFinding:
     sink_arg: str
     cwe: str
     language: str
-    cfg: Union[PythonCFG, CPPCFG]
-    source_node: Union[PyCFGNode, CPPCFGNode]
-    sink_node: Union[PyCFGNode, CPPCFGNode]
+    cfg: Union[PythonCFG, CPPCFG, "JavaCFG"]
+    source_node: Any
+    sink_node: Any
     inter_proc_bindings: FrozenSet = frozenset()
 
 
@@ -378,11 +385,13 @@ def _resolve_from_parsed(parsed: _ParsedFinding) -> Resolution:
         return _resolve_from_parsed_python(parsed)
     if parsed.language in ("c", "cpp"):
         return _resolve_from_parsed_cpp(parsed)
+    if parsed.language == "java":
+        return _resolve_from_parsed_java(parsed)
     return ResolutionFailure(
         reason=(
             f"language={parsed.language!r} not yet supported — "
-            "python is shipped (phases 1-7), c/c++ wired in phase 11; "
-            "other languages await future arcs"
+            "python is shipped (phases 1-7), c/c++ wired in phase 11, "
+            "java in the b13 leg; other languages await future arcs"
         ),
     )
 
@@ -695,6 +704,123 @@ def _node_at_lineno(cfg: PythonCFG, lineno: int) -> Optional[PyCFGNode]:
         if n.lineno == lineno:
             return n
     return None
+
+
+# ---------------------------------------------------------------------------
+# Java resolution (b13 leg)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
+    """Java branch of the resolver.
+
+    Uses the tree-sitter Java builder
+    (:func:`core.analysis.cfg_builder_java.build_java_intraproc_cfg`)
+    with the finding's line range as the overload disambiguator —
+    Java methods share names across overloads, so name-only selection
+    could build the wrong body. The builder REFUSES methods
+    containing constructs it cannot model faithfully (lambdas,
+    anonymous classes, switch, labeled jumps); refusal degrades to
+    :class:`ResolutionFailure`, never a silently wrong graph.
+    """
+    from core.analysis.cfg_builder_java import (
+        JavaCFGNode,
+        build_java_intraproc_cfg,
+        find_enclosing_method,
+    )
+
+    file_path = Path(parsed.file)
+    try:
+        source_text = file_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return ResolutionFailure(reason=f"cannot read {parsed.file}: {e}")
+
+    fn_name, fn_start = find_enclosing_method(
+        source_text, parsed.source_lineno, parsed.sink_lineno,
+    )
+    if fn_name is None:
+        return ResolutionFailure(
+            reason=(
+                f"no enclosing Java method for source line "
+                f"{parsed.source_lineno} / sink line {parsed.sink_lineno} "
+                f"in {parsed.file} (tree-sitter grammar missing or no "
+                "method declaration spans the range)"
+            ),
+        )
+
+    cfg = build_java_intraproc_cfg(
+        source_text, fn_name,
+        line_hint=(parsed.source_lineno, parsed.sink_lineno),
+    )
+    if cfg is None:
+        return ResolutionFailure(
+            reason=(
+                f"Java CFG construction refused for {fn_name} in "
+                f"{parsed.file} (grammar missing, or the method contains "
+                "a construct the builder refuses: lambda, method "
+                "reference, anonymous/local class, switch, or labeled "
+                "jump)"
+            ),
+        )
+
+    def node_at(lineno: int) -> Optional[JavaCFGNode]:
+        for n in cfg.nodes():
+            if isinstance(n, JavaCFGNode) and n.lineno == lineno:
+                return n
+        return None
+
+    if parsed.source_lineno == fn_start:
+        source_node, source_symbols = cfg.entry_node, frozenset(cfg.params)
+    else:
+        source_node = node_at(parsed.source_lineno)
+        if source_node is None:
+            return ResolutionFailure(
+                reason=(
+                    f"no source statement at line {parsed.source_lineno} "
+                    f"in {fn_name}"
+                ),
+            )
+        source_symbols = source_node.defs \
+            if source_node.defs else source_node.uses
+
+    sink_node = node_at(parsed.sink_lineno)
+    if sink_node is None or not sink_node.call_sites:
+        return ResolutionFailure(
+            reason=(
+                f"no sink call at line {parsed.sink_lineno} in {fn_name}"
+            ),
+        )
+    sink_arg = ""
+    if parsed.sink_arg_hint:
+        for cs in sink_node.call_sites:
+            if parsed.sink_arg_hint in cs.arg_names:
+                sink_arg = parsed.sink_arg_hint
+                break
+    if not sink_arg:
+        outermost = sink_node.call_sites[-1]
+        if outermost.arg_names:
+            sink_arg = sorted(outermost.arg_names)[0]
+    if not sink_arg:
+        return ResolutionFailure(
+            reason=(
+                f"sink call at line {parsed.sink_lineno} has no bare-name "
+                "argument; cannot resolve sink_arg"
+            ),
+        )
+
+    return ResolvedFinding(
+        file=parsed.file,
+        enclosing_function=fn_name,
+        source_lineno=parsed.source_lineno,
+        source_symbols=source_symbols,
+        sink_lineno=parsed.sink_lineno,
+        sink_arg=sink_arg,
+        cwe=parsed.cwe,
+        language=parsed.language,
+        cfg=cfg,
+        source_node=source_node,
+        sink_node=sink_node,
+    )
 
 
 # ---------------------------------------------------------------------------

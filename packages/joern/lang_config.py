@@ -112,6 +112,55 @@ GO = LangProfile(
     joern_parse_language="gosrc",
 )
 
+# Seed sink lists for the three frontends below are capped at 9 names
+# (vocab-guardrail seed-set rule) — growth must come from learned
+# vocabulary (study loop / flow semantics), never by editing these
+# tuples. Frontends verified empirically (parse + query on a fixture)
+# before each profile was added; rubysrc and php were probed and
+# REJECTED: rubysrc's embedded ast-gen dies loading its parser gem and
+# joern-parse still exits 0 with an empty CPG, php2cpg requires a php
+# interpreter on PATH. Neither failure is detectable from exit codes
+# alone, so neither earns a profile until a working install is proven.
+
+KOTLIN = LangProfile(
+    max_call_depth=4,
+    max_call_depth_targeted=3,
+    max_args_to_allow=200,
+    max_output_args_expansion=200,
+    sinks=(
+        "exec", "start", "ProcessBuilder",
+        "executeQuery", "rawQuery", "execSQL",
+        "readObject", "fromJson", "loadUrl",
+    ),
+    joern_parse_language="kotlin",
+)
+
+CSHARP = LangProfile(
+    max_call_depth=4,
+    max_call_depth_targeted=3,
+    max_args_to_allow=200,
+    max_output_args_expansion=200,
+    sinks=(
+        "Start", "ExecuteReader", "ExecuteNonQuery", "ExecuteScalar",
+        "Deserialize", "ReadObject", "LoadXml", "WriteAllText",
+        "OpenRead",
+    ),
+    joern_parse_language="csharpsrc",
+)
+
+SWIFT = LangProfile(
+    max_call_depth=3,
+    max_call_depth_targeted=2,
+    max_args_to_allow=100,
+    max_output_args_expansion=100,
+    sinks=(
+        "launch", "run", "system", "popen",
+        "sqlite3_exec", "evaluateJavaScript", "loadHTMLString",
+        "write", "contentsOfFile",
+    ),
+    joern_parse_language="swiftsrc",
+)
+
 _PROFILES: dict[str, LangProfile] = {
     "python": PYTHON,
     "pythonsrc": PYTHON,
@@ -127,6 +176,11 @@ _PROFILES: dict[str, LangProfile] = {
     "ts": JAVASCRIPT,
     "go": GO,
     "gosrc": GO,
+    "kotlin": KOTLIN,
+    "csharp": CSHARP,
+    "csharpsrc": CSHARP,
+    "swift": SWIFT,
+    "swiftsrc": SWIFT,
 }
 
 DEFAULT = PYTHON
@@ -144,6 +198,9 @@ _EXT_LANGUAGE_MAP: dict[str, str] = {
     ".js": "javascript", ".jsx": "javascript",
     ".ts": "typescript", ".tsx": "typescript",
     ".go": "go",
+    ".kt": "kotlin", ".kts": "kotlin",
+    ".cs": "csharp",
+    ".swift": "swift",
 }
 
 

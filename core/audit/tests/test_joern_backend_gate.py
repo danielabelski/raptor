@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
 
 from core.audit.joern_backend import (
     _C_EXTENSIONS,
@@ -44,8 +43,13 @@ class TestJoernExtensions:
 
     def test_unprofiled_languages_not_admitted(self):
         admitted = _joern_extensions()
-        for ext in (".rb", ".php", ".scala", ".kt"):
+        for ext in (".rb", ".php", ".scala"):
             assert ext not in admitted
+
+    def test_profiled_frontends_admitted(self):
+        admitted = _joern_extensions()
+        for ext in (".kt", ".kts", ".cs", ".swift"):
+            assert ext in admitted
 
 
 class TestTargetHasJoernSources:
@@ -81,9 +85,14 @@ class TestTargetHasJoernSources:
         assert target_has_joern_sources(tmp_path / "absent") is False
 
 
-@pytest.mark.parametrize("ext", [".kt", ".scala"])
-def test_jvm_unprofiled_extensions_do_not_boot_joern(tmp_path, ext):
-    # Joern's javasrc frontend does not parse Kotlin or Scala; the
-    # gate must not admit them on the strength of the Java profile.
-    (tmp_path / f"Main{ext}").write_text("fun main() {}\n")
+def test_scala_does_not_boot_joern(tmp_path):
+    # No Scala frontend; the gate must not admit .scala on the
+    # strength of the Java profile. (Kotlin has its own verified
+    # frontend and profile now, so it admits.)
+    (tmp_path / "Main.scala").write_text("object Main\n")
     assert target_has_joern_sources(tmp_path) is False
+
+
+def test_kotlin_admits_with_dedicated_frontend(tmp_path):
+    (tmp_path / "Main.kt").write_text("fun main() {}\n")
+    assert target_has_joern_sources(tmp_path) is True

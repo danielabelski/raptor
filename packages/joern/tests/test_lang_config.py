@@ -180,5 +180,21 @@ class TestSupportedSourceExtensions:
     def test_unprofiled_languages_excluded(self):
         from packages.joern.lang_config import supported_source_extensions
         exts = supported_source_extensions()
-        for ext in (".rb", ".php", ".scala", ".kt"):
+        # rubysrc / php2cpg probed and rejected (broken ast-gen /
+        # missing interpreter — see the profile note); no Scala
+        # frontend exists.
+        for ext in (".rb", ".php", ".scala"):
             assert ext not in exts
+
+    def test_verified_frontends_included(self):
+        from packages.joern.lang_config import (
+            profile_for,
+            supported_source_extensions,
+        )
+        exts = supported_source_extensions()
+        for ext, frontend in ((".kt", "kotlin"), (".kts", "kotlin"),
+                              (".cs", "csharpsrc"), (".swift", "swiftsrc")):
+            assert ext in exts
+            lang = {".kt": "kotlin", ".kts": "kotlin",
+                    ".cs": "csharp", ".swift": "swift"}[ext]
+            assert profile_for(lang).joern_parse_language == frontend

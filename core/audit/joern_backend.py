@@ -26,7 +26,11 @@ _JOERN_STALL_FLOOR_S = 30
 # DEFAULT (Python) and pin the pythonsrc frontend — an empty or
 # wrong-language CPG — so the gate refuses them with a logged reason
 # instead of booting Joern.
-_UNPROFILED_EXTENSIONS = frozenset({".rb", ".php", ".scala", ".kt"})
+# .rb and .php stay here deliberately: joern ships rubysrc2cpg and
+# php2cpg frontends, but rubysrc's embedded ast-gen fails loading its
+# parser gem (empty CPG, exit 0) and php2cpg needs a php interpreter
+# on PATH — both probed and rejected; see lang_config's profile note.
+_UNPROFILED_EXTENSIONS = frozenset({".rb", ".php", ".scala"})
 
 
 def _joern_extensions() -> frozenset[str]:

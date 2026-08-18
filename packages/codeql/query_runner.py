@@ -487,10 +487,31 @@ class QueryRunner:
 
             from core.sarif.parser import load_sarif
             sarif_data = load_sarif(sarif_path) if sarif_path.exists() else None
-            if sarif_data:
-                for run in sarif_data.get("runs", []):
-                    findings_count += len(run.get("results", []))
-                    queries_executed += len(run.get("tool", {}).get("driver", {}).get("rules", []))
+            if sarif_data is None:
+                # rc==0 but no readable SARIF: a missing / oversized /
+                # unparseable output is an analysis failure, never a
+                # successful zero-finding run — success=True here reads
+                # downstream as a clean scan.
+                reason = (
+                    "SARIF output missing after successful analyze"
+                    if not sarif_path.exists()
+                    else "SARIF output unreadable (parse/size failure)"
+                )
+                errors.append(f"{reason}: {sarif_path}")
+                logger.error("✗ %s: %s", reason, sarif_path)
+                return QueryResult(
+                    success=False,
+                    language=language,
+                    database_path=database_path,
+                    sarif_path=None,
+                    findings_count=0,
+                    duration_seconds=time.time() - start_time,
+                    errors=errors,
+                    suite_name=suite_name,
+                )
+            for run in sarif_data.get("runs", []):
+                findings_count += len(run.get("results", []))
+                queries_executed += len(run.get("tool", {}).get("driver", {}).get("rules", []))
 
             logger.info("✓ Analysis completed for %s", language)
             logger.info("  Findings: %s", findings_count)

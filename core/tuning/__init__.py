@@ -88,9 +88,13 @@ _DEFAULTS = {
     "joern_heap_mb": "auto",
     "joern_cpg_timeout_s": 300,
     "joern_query_timeout_s": 300,
-    "max_semgrep_workers": 4,
-    "max_codeql_workers": 2,
-    "max_fuzz_parallel": 4,
+    # Worker counts default to hardware-aware auto: the per-process
+    # jobs/threads division at the dispatch sites makes half-CPU
+    # worker pools safe on any host size (previously pinned at
+    # small-host literals 4/2/4).
+    "max_semgrep_workers": "auto",
+    "max_codeql_workers": "auto",
+    "max_fuzz_parallel": "auto",
     "max_inventory_workers": "auto",
     "max_json_memo_mb": 128,
 }

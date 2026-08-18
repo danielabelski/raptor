@@ -37,7 +37,7 @@ Static analysis scan using Semgrep (and optionally CodeQL and Coccinelle).
 | `--compiler-scan-max-tus <n>` | Cap on translation units for `--compiler-scan` (default 2000) |
 | `--expanded-semgrep` | Re-run rules over preprocessor-expanded views of macro-heavy C/C++ TUs |
 | `--keep` | Keep intermediate scan artefacts |
-| `--sequential` | Run scanners sequentially instead of in parallel |
+| `--sequential` | Fully serial run: packs one at a time and stages in order (no Semgrep/CodeQL overlap) |
 | `--out <dir>` | Output directory override |
 | `--exclude-dir <glob>` | Exclude directories matching glob (repeatable) |
 | `--extra-config <path>` | Additional Semgrep config file (repeatable) |

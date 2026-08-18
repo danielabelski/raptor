@@ -24,16 +24,16 @@ class TestLoadTuning(unittest.TestCase):
 
     def test_missing_file_returns_defaults(self):
         t = load_tuning(Path("/nonexistent/tuning.json"))
-        self.assertEqual(t.max_semgrep_workers, 4)
-        self.assertEqual(t.max_codeql_workers, 2)
-        self.assertEqual(t.max_fuzz_parallel, 4)
+        self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
+        self.assertEqual(t.max_codeql_workers, _detect_codeql_workers())
+        self.assertEqual(t.max_fuzz_parallel, _detect_fuzz_parallel())
 
     def test_empty_file_returns_defaults(self):
         with TemporaryDirectory() as d:
             p = Path(d) / "tuning.json"
             p.write_text("")
             t = load_tuning(p)
-            self.assertEqual(t.max_semgrep_workers, 4)
+            self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
 
     def test_explicit_values(self):
         with TemporaryDirectory() as d:
@@ -135,7 +135,7 @@ class TestLoadTuning(unittest.TestCase):
             p = Path(d) / "tuning.json"
             p.write_text(json.dumps({"max_semgrep_workers": -1}))
             t = load_tuning(p)
-            self.assertEqual(t.max_semgrep_workers, 4)
+            self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
 
     def test_zero_threads_accepted(self):
         with TemporaryDirectory() as d:
@@ -149,14 +149,14 @@ class TestLoadTuning(unittest.TestCase):
             p = Path(d) / "tuning.json"
             p.write_text(json.dumps({"max_codeql_workers": 0}))
             t = load_tuning(p)
-            self.assertEqual(t.max_codeql_workers, 2)
+            self.assertEqual(t.max_codeql_workers, _detect_codeql_workers())
 
     def test_string_value_falls_back(self):
         with TemporaryDirectory() as d:
             p = Path(d) / "tuning.json"
             p.write_text(json.dumps({"max_semgrep_workers": "banana"}))
             t = load_tuning(p)
-            self.assertEqual(t.max_semgrep_workers, 4)
+            self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
 
     def test_unknown_key_warns(self):
         with TemporaryDirectory() as d:
@@ -172,14 +172,14 @@ class TestLoadTuning(unittest.TestCase):
             p = Path(d) / "tuning.json"
             p.write_text("{broken")
             t = load_tuning(p)
-            self.assertEqual(t.max_semgrep_workers, 4)
+            self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
 
     def test_non_object_returns_defaults(self):
         with TemporaryDirectory() as d:
             p = Path(d) / "tuning.json"
             p.write_text("[1, 2, 3]")
             t = load_tuning(p)
-            self.assertEqual(t.max_semgrep_workers, 4)
+            self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
 
     def test_comments_in_file(self):
         with TemporaryDirectory() as d:
@@ -201,8 +201,8 @@ class TestLoadTuning(unittest.TestCase):
             p.write_text(json.dumps({"max_fuzz_parallel": 8}))
             t = load_tuning(p)
             self.assertEqual(t.max_fuzz_parallel, 8)
-            self.assertEqual(t.max_semgrep_workers, 4)
-            self.assertEqual(t.max_codeql_workers, 2)
+            self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
+            self.assertEqual(t.max_codeql_workers, _detect_codeql_workers())
 
 
     def test_codeql_enabled_true(self):
@@ -278,7 +278,7 @@ class TestLoadTuning(unittest.TestCase):
             with patch("core.tuning._TUNING_PATH", p):
                 t = load_tuning()
             self.assertTrue(p.exists())
-            self.assertEqual(t.max_semgrep_workers, 4)
+            self.assertEqual(t.max_semgrep_workers, _detect_semgrep_workers())
 
 
 class TestAutoDetection(unittest.TestCase):

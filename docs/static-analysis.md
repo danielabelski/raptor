@@ -23,9 +23,13 @@ For LLM-powered analysis of scan results, use `/agentic` or
 
 Dispatches to `python3 raptor.py scan`. Runs Semgrep (always) and
 Coccinelle (default-on for C/C++ targets). CodeQL is opt-in via
-`--codeql`. Two further opt-in channels ride the Semgrep stage on
-C/C++ targets: the compiler analyzers (`--compiler-scan`) and the
-expanded-view Semgrep pass (`--expanded-semgrep`).
+`--codeql`; when enabled it runs **concurrently with the Semgrep
+stage** (they are independent SARIF producers — the CodeQL database
+build is usually the critical path, so it starts first and its
+console lines are tagged `[codeql]`). Two further opt-in channels
+run as their own stages after Semgrep on C/C++ targets: the
+compiler analyzers (`--compiler-scan`) and the expanded-view
+Semgrep pass (`--expanded-semgrep`).
 
 ### CLI Flags
 
@@ -46,7 +50,7 @@ expanded-view Semgrep pass (`--expanded-semgrep`).
 | `--compiler-scan-max-tus <n>` | 2000 | Cap on translation units analysed by `--compiler-scan` (skipped TUs are reported) |
 | `--expanded-semgrep` | off | Re-run the loaded ruleset over fidelity-3 preprocessor-expanded views of macro-heavy C/C++ TUs, line-mapped back to the originals |
 | `--keep` | off | Keep temporary working directory after completion |
-| `--sequential` | off | Disable parallel scanning; run packs one at a time |
+| `--sequential` | off | Fully serial run: packs one at a time and stages in order (no Semgrep/CodeQL overlap) |
 | `--out <dir>` | auto | Output directory override |
 | `--exclude-dir <glob>` | none | Drop results from matching paths (repeatable, OR semantics) |
 | `--extra-config <path>` | none | Additional Semgrep rule source path (repeatable) |
@@ -289,10 +293,19 @@ a false-pass "0 findings" result.
 ### Parallel Execution
 
 By default, packs run in parallel via `ThreadPoolExecutor` with
-`max_workers` defaulting to 4 (or half the available CPUs when set to
-`auto`). A post-completion check verifies that every submitted pack's
-SARIF file actually exists on disk -- missing files (filesystem error,
-sandbox teardown race) are added to the `failed_scans` list.
+`max_workers` from `tuning.json` (`max_semgrep_workers`, default
+`auto` = half the available CPUs). Each pack's semgrep process gets a
+`--jobs` share of the cores divided by the number of packs actually
+running at once, so concurrent packs cannot each claim every core. A
+post-completion check verifies that every submitted pack's SARIF file
+actually exists on disk -- missing files (filesystem error, sandbox
+teardown race) are added to the `failed_scans` list.
 
-Pass `--sequential` to disable parallelism and run packs one at a
-time.
+With `--codeql`, the CodeQL stage (database build + analyze) runs
+concurrently with the Semgrep packs; its console lines are tagged
+`[codeql]` and a stage-completion line reports its duration. Multi-
+language builds also divide `-j` between concurrent per-language
+invocations when `codeql_threads` is `auto`.
+
+Pass `--sequential` for a fully serial run: packs one at a time AND
+stages in order (no Semgrep/CodeQL overlap).

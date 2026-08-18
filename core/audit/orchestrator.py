@@ -454,6 +454,45 @@ class OrchestratorConfig:
     # unchanged reviewed functions are suppressed, nothing imported.
     # ``force=True`` bypasses both (everything re-reviews).
     verdict_reuse: bool = True
+    # ── Accumulated-knowledge gates ────────────────────────────────
+    # Every gate below defaults ON — today's production behaviour.
+    # The corpus runner's cold profile turns them off so a
+    # measurement run sees exactly what a first-time user with
+    # default flags and cold caches would see; nothing outside the
+    # run's own target and out_dir feeds the verdicts. Each disabled
+    # gate logs one INFO line at run start (see _apply_profile_gates)
+    # so runs are self-describing.
+    #
+    # Profile label stamped into those log lines. Informational only;
+    # no behaviour keys off the string.
+    profile: str = "deployed"
+    # IRIS: taint-spec synthesis, project-sink store reads, the
+    # refinement loop (including its prior_specs store reads), and
+    # the heuristic assumption/bypass passes.
+    iris: bool = True
+    # SAGE recall READS: prior hypothesis-verdict recall, prior-run
+    # observation seeding, and SAGE-recalled proven-rule replay in
+    # checker synthesis. SAGE writes are unaffected.
+    sage_recall: bool = True
+    # Graduated-rule library replay (RuleLibrary.find_replayable) in
+    # checker synthesis. In-run on-demand synthesis, library writes,
+    # and graduation stay on.
+    library_replay: bool = True
+    # Cross-run journal reads: the verdict-reuse import eligibility
+    # AND the sibling-run / project-index sources feeding external
+    # checker-synthesis seeds. The run's OWN journal stays readable.
+    cross_run_import: bool = True
+    # Prior domain-model import: when False, domain-model loads see
+    # only THIS run's out_dir (the in-run study pass still writes and
+    # re-reads its fresh model there); a project-level
+    # domain-model.json from an earlier /understand --study run is
+    # not imported.
+    domain_model_import: bool = True
+    # Operator annotation reads (review-context assembly, the
+    # stale-annotation merge, fp-feedback). When False the project
+    # resolve fallback is suppressed and annotations_dir is cleared
+    # at run start.
+    annotations_read: bool = True
     # Opt-in (--pre-scan): when NO scan SARIF exists — neither this
     # run's scan/ dir nor any fresh sibling run — run one bounded
     # semgrep baseline pass over the scoped target with RAPTOR's
@@ -897,6 +936,59 @@ def _fn_filter_keep(gap: dict[str, Any], fn_filter: tuple) -> bool:
     return _fn_filter_match(gap, fn_filter)
 
 
+# Accumulated-knowledge gates: (config field, log label). Order is
+# the log order at run start.
+_KNOWLEDGE_GATES = (
+    ("iris", "iris"),
+    ("sage_recall", "sage recall"),
+    ("library_replay", "graduated-rule library replay"),
+    ("cross_run_import", "cross-run journal import"),
+    ("domain_model_import", "prior domain-model import"),
+    ("annotations_read", "annotations read"),
+)
+
+
+def _apply_profile_gates(config: OrchestratorConfig) -> None:
+    """Log one INFO line per disabled accumulated-knowledge gate and
+    normalize dependent config.
+
+    Runs once at run start so a cold-profile run is self-describing
+    in its log. ``annotations_read=False`` also clears
+    ``annotations_dir`` here — every downstream consumer reads that
+    field directly, so clearing it at the source covers them all
+    (the resolve fallback is gated separately at its two seams).
+    """
+    profile = getattr(config, "profile", "deployed") or "deployed"
+    for field_name, label in _KNOWLEDGE_GATES:
+        if not getattr(config, field_name, True):
+            logger.info("profile=%s: %s disabled", profile, label)
+    if not getattr(config, "annotations_read", True):
+        config.annotations_dir = None
+
+
+def _load_domain_model(config: OrchestratorConfig):
+    """Domain-model read chokepoint honouring ``domain_model_import``.
+
+    Gate on (default): the standard search — this run's out_dir, then
+    the project-level ``concepts/domain-model.json`` locations a prior
+    /understand --study run may have produced. Gate off: only the
+    run's own out_dir, so the in-run study pass's fresh model is
+    still picked up but nothing pre-existing is imported.
+    """
+    from .journal import load_domain_model
+    return load_domain_model(
+        config.out_dir,
+        run_only=not getattr(config, "domain_model_import", True),
+    )
+
+
+def _annotations_dir(config: OrchestratorConfig):
+    """Annotations-read chokepoint for the resolve-fallback seams."""
+    if not getattr(config, "annotations_read", True):
+        return None
+    return config.annotations_dir or _resolve_ann_dir(config.out_dir)
+
+
 def run_orchestrator(
     config: OrchestratorConfig,
     review_fn: Callable[[dict[str, Any], OrchestratorConfig], ReviewOutcome],
@@ -918,6 +1010,11 @@ def run_orchestrator(
         OrchestratorResult summarizing the run.
     """
     start_time = time.monotonic()
+
+    # Accumulated-knowledge gate banner + config normalization (one
+    # INFO line per disabled gate; clears annotations_dir when
+    # annotation reads are off).
+    _apply_profile_gates(config)
 
     # Graceful SIGTERM (main thread, once): drain + salvage instead of
     # dying mid-write when an external supervisor stops the run.
@@ -1315,7 +1412,14 @@ def review_one_function(
                 gap["_sage_source_hash"] = src_hash
 
     # ── SAGE: recall prior hypothesis verdict → skip if clean/dormant ─
-    if not config.force and not gap.get("force_review") and gap.get("_sage_source_hash"):
+    # Gated by ``config.sage_recall`` (cold-profile corpus runs) on
+    # top of the force/force_review bypasses.
+    if (
+        getattr(config, "sage_recall", True)
+        and not config.force
+        and not gap.get("force_review")
+        and gap.get("_sage_source_hash")
+    ):
         try:
             from core.sage.hooks import recall_audit_hypothesis_verdict
 
@@ -2693,6 +2797,66 @@ def _record_triage_suppressions(
     return written
 
 
+def _iris_prep_specs(
+    config: OrchestratorConfig,
+    gaps: list[dict[str, Any]],
+    taint_summary_results: dict | None,
+) -> tuple[list, Any]:
+    """IRIS prep seam: taint-spec synthesis + project-sink store read.
+
+    Returns ``(iris_taint_specs, project_sinks)``. Gated by
+    ``config.iris`` — a cold-profile run gets ``([], None)`` without
+    touching the spec synthesiser or the persistent sink store (the
+    disable is announced once at run start by _apply_profile_gates).
+    """
+    if not getattr(config, "iris", True):
+        return [], None
+
+    iris_taint_specs: list = []
+    try:
+        from .iris_specs import compile_joern_config, identify_candidates, specs_to_json
+
+        taint_chain_callees: set[str] = set()
+        if taint_summary_results:
+            for _ts_summ in taint_summary_results.values():
+                for _ts_callee in getattr(_ts_summ, "callees", []):
+                    taint_chain_callees.add(_ts_callee)
+        iris_candidates = identify_candidates(
+            gaps,
+            taint_chain_callees=taint_chain_callees,
+        )
+        if iris_candidates:
+            iris_taint_specs = [_iris_candidate_to_spec(c) for c in iris_candidates]
+            if iris_taint_specs and config.out_dir:
+                spec_path = config.out_dir / "iris-taint-specs.json"
+                spec_path.write_text(specs_to_json(iris_taint_specs))
+                joern_cfg = compile_joern_config(iris_taint_specs)
+                if joern_cfg.strip():
+                    (config.out_dir / "iris-joern.scala").write_text(joern_cfg)
+                logger.info(
+                    "IRIS: synthesised %d taint specs (%d sources, %d sinks, "
+                    "%d sanitisers, %d propagators)",
+                    len(iris_taint_specs),
+                    sum(1 for s in iris_taint_specs if s.role == "source"),
+                    sum(1 for s in iris_taint_specs if s.role == "sink"),
+                    sum(1 for s in iris_taint_specs if s.role == "sanitiser"),
+                    sum(1 for s in iris_taint_specs if s.role == "propagator"),
+                )
+    except Exception:
+        logger.debug("IRIS spec synthesis failed", exc_info=True)
+
+    project_sinks = None
+    try:
+        from core.iris.api import get_project_sinks
+        project_sinks = get_project_sinks(out_dir=config.out_dir)
+        if project_sinks:
+            logger.info("IRIS: loaded %d project sinks for wrapper pre-filter", len(project_sinks))
+    except Exception:
+        logger.debug("IRIS sink loading skipped", exc_info=True)
+
+    return iris_taint_specs, project_sinks
+
+
 def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     """Compute all mode-independent prep for the audit loop.
 
@@ -3124,6 +3288,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     )
     _reuse_enabled = (
         getattr(config, "verdict_reuse", True)
+        and getattr(config, "cross_run_import", True)
         and not config.force
         and (_project_dir is not None or _same_run_reuse)
     )
@@ -3196,51 +3361,14 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                     taint_summary_results,
                 )
 
-    iris_taint_specs: list = []
-    try:
-        from .iris_specs import compile_joern_config, identify_candidates, specs_to_json
-
-        taint_chain_callees: set[str] = set()
-        if taint_summary_results:
-            for _ts_summ in taint_summary_results.values():
-                for _ts_callee in getattr(_ts_summ, "callees", []):
-                    taint_chain_callees.add(_ts_callee)
-        iris_candidates = identify_candidates(
-            gaps,
-            taint_chain_callees=taint_chain_callees,
-        )
-        if iris_candidates:
-            iris_taint_specs = [_iris_candidate_to_spec(c) for c in iris_candidates]
-            if iris_taint_specs and config.out_dir:
-                spec_path = config.out_dir / "iris-taint-specs.json"
-                spec_path.write_text(specs_to_json(iris_taint_specs))
-                joern_cfg = compile_joern_config(iris_taint_specs)
-                if joern_cfg.strip():
-                    (config.out_dir / "iris-joern.scala").write_text(joern_cfg)
-                logger.info(
-                    "IRIS: synthesised %d taint specs (%d sources, %d sinks, "
-                    "%d sanitisers, %d propagators)",
-                    len(iris_taint_specs),
-                    sum(1 for s in iris_taint_specs if s.role == "source"),
-                    sum(1 for s in iris_taint_specs if s.role == "sink"),
-                    sum(1 for s in iris_taint_specs if s.role == "sanitiser"),
-                    sum(1 for s in iris_taint_specs if s.role == "propagator"),
-                )
-    except Exception:
-        logger.debug("IRIS spec synthesis failed", exc_info=True)
-
-    project_sinks = None
-    try:
-        from core.iris.api import get_project_sinks
-        project_sinks = get_project_sinks(out_dir=config.out_dir)
-        if project_sinks:
-            logger.info("IRIS: loaded %d project sinks for wrapper pre-filter", len(project_sinks))
-    except Exception:
-        logger.debug("IRIS sink loading skipped", exc_info=True)
+    iris_taint_specs, project_sinks = _iris_prep_specs(
+        config, gaps, taint_summary_results,
+    )
 
     if config.include_stale:
-        ann_dir = config.annotations_dir or _resolve_ann_dir(config.out_dir)
-        gaps = _merge_stale(gaps, ann_dir, config.target_path)
+        ann_dir = _annotations_dir(config)
+        if ann_dir is not None:
+            gaps = _merge_stale(gaps, ann_dir, config.target_path)
 
     prior_constraints = load_constraints(config.out_dir)
     open_keys = (
@@ -3526,9 +3654,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     # OSErrors can legitimately escape.
     with contextlib.suppress(OSError):
         from .condition_smt import DomainVocabulary
-        from .journal import load_domain_model
         conv_vocab = DomainVocabulary.from_domain_model(
-            load_domain_model(config.out_dir),
+            _load_domain_model(config),
             target_path=config.target_path,
         )
     conventions = discover_conventions(
@@ -3547,9 +3674,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     # at this call site, so it never ran.
     prep_domain_model = None
     try:
-        from .journal import load_domain_model
 
-        prep_domain_model = load_domain_model(config.out_dir)
+        prep_domain_model = _load_domain_model(config)
     except Exception:
         logger.debug(
             "domain model load for peer groups failed", exc_info=True,
@@ -4725,6 +4851,228 @@ def _demotion_log_entry(d) -> dict:
     }
 
 
+def _iris_refine_and_bypass(
+    config: OrchestratorConfig,
+    gaps: list[dict[str, Any]],
+    taint_summary_results: dict | None,
+    joern_server: Any,
+    checklist: dict[str, Any],
+    iris_taint_specs: list,
+) -> tuple[Any, list[Any]]:
+    """IRIS post-loop seam: refinement loop + bypass detection.
+
+    Returns ``(bypass_runner, iris_bypass_findings)`` — always bound,
+    ``(None, [])`` when nothing refines. Gated by ``config.iris``: a
+    cold-profile run skips the refine loop, its prior_specs store
+    reads, and the bypass analyzer entirely (announced once at run
+    start by _apply_profile_gates).
+    """
+    if not getattr(config, "iris", True):
+        return None, []
+
+    bypass_runner = None
+    iris_bypass_findings: list[Any] = []
+    try:
+        from core.iris.refine import refine_loop as iris_refine_loop
+
+        from .iris_specs import identify_candidates
+
+        taint_chain_callees_post: set[str] = set()
+        if taint_summary_results:
+            for _ts_summ in taint_summary_results.values():
+                for _ts_callee in getattr(_ts_summ, "callees", []):
+                    taint_chain_callees_post.add(_ts_callee)
+        iris_candidates = identify_candidates(
+            gaps,
+            taint_chain_callees=taint_chain_callees_post,
+        )
+        if iris_candidates:
+            joern_tool_runner = None
+            if joern_server is not None:
+                joern_tool_runner = _make_iris_joern_tool_runner(joern_server)
+
+            bypass_runner = None
+            try:
+                from core.inventory.call_graph import load_call_graphs
+                from core.iris import CompositionalAnalyzer
+
+                call_graphs = load_call_graphs(config.target_path, checklist)
+                if call_graphs:
+                    analyzer = CompositionalAnalyzer(call_graphs)
+
+                    def bypass_runner(assumptions):
+                        findings = []
+                        seen: set[tuple[str, str, str]] = set()
+                        for a in assumptions:
+                            findings.extend(analyzer.detect_bypasses(a))
+                            findings.extend(analyzer.detect_ordering_violations(a))
+                            findings.extend(analyzer.detect_type_hierarchy_bypasses(a))
+                        widened: list = []
+                        for f in findings:
+                            if f.via_intermediate:
+                                widened.extend(analyzer.widen_from_finding(f))
+                        findings.extend(widened)
+                        deduped: list = []
+                        for f in findings:
+                            key = (f.caller_file, f.caller_function, f.missing_enforcer)
+                            if key not in seen:
+                                seen.add(key)
+                                deduped.append(f)
+                        return deduped
+            except Exception:
+                logger.debug("IRIS bypass analyzer init failed", exc_info=True)
+
+            iris_llm = None
+            try:
+                # Budget-governed client: iris refinement spend must hit
+                # the run ledger and the reservation gate (a private
+                # client once dispatched an iris call 11 minutes after
+                # budget exhaustion).
+                iris_llm = _run_llm_client(config)
+            except Exception:
+                logger.debug("IRIS LLM client init failed", exc_info=True)
+
+            codeql_tool_runner = None
+            if config.codeql_db_path:
+                try:
+                    from core.iris.codeql_runner import make_codeql_tool_runner
+
+                    codeql_tool_runner = make_codeql_tool_runner(
+                        db_path=Path(config.codeql_db_path),
+                        out_dir=config.out_dir,
+                    )
+                except Exception:
+                    logger.debug("IRIS CodeQL runner init failed", exc_info=True)
+
+            iris_tool_runner = _composite_tool_runner(
+                joern_tool_runner,
+                codeql_tool_runner,
+            )
+
+            # Prior specs: persistent project store + the run-local
+            # refined artifact (resume / re-entry continuity), then
+            # this run's heuristic candidates. merge_specs keeps the
+            # higher evidence tier on collision, so a tool-confirmed
+            # spec from a previous round is never demoted by a fresh
+            # heuristic candidate.
+            prior_specs = iris_taint_specs or []
+            try:
+                from core.iris.store import (
+                    load_refined_specs as _iris_load_refined,
+                )
+                from core.iris.store import (
+                    load_specs as _iris_load_store,
+                )
+                from core.iris.store import (
+                    merge_specs as _iris_merge,
+                )
+
+                _iris_prior_store: list = []
+                _iris_prior_refined: list = []
+                if config.out_dir:
+                    _iris_prior_store = _iris_load_store(
+                        config.out_dir,
+                        target_path=Path(config.target_path),
+                    )
+                    _iris_prior_refined = _iris_load_refined(
+                        config.out_dir,
+                    )
+                if _iris_prior_store or _iris_prior_refined:
+                    prior_specs = _iris_merge(
+                        _iris_merge(
+                            _iris_prior_store, _iris_prior_refined,
+                        ),
+                        prior_specs,
+                    )
+                    logger.info(
+                        "IRIS: seeded refine loop with %d prior specs "
+                        "(%d store, %d refined artifact)",
+                        len(prior_specs), len(_iris_prior_store),
+                        len(_iris_prior_refined),
+                    )
+            except Exception:
+                logger.debug(
+                    "IRIS prior-spec load failed", exc_info=True,
+                )
+            refined_specs, history, assumptions, bypass_findings = iris_refine_loop(
+                iris_candidates,
+                llm_client=iris_llm,
+                tool_runner=iris_tool_runner,
+                prior_specs=prior_specs,
+                bypass_runner=bypass_runner,
+                target_path=config.target_path,
+            )
+
+            if refined_specs:
+                from .iris_specs import specs_to_json
+
+                logger.info(
+                    "IRIS: refined %d specs (%d rounds)",
+                    len(refined_specs),
+                    len(history),
+                )
+                if config.out_dir:
+                    spec_path = config.out_dir / "iris-taint-specs-refined.json"
+                    spec_path.write_text(specs_to_json(refined_specs))
+                    # Caller-persist step: merge the refined specs
+                    # into the persistent project store (evidence
+                    # tiers carried through; envelope metadata —
+                    # history, assumptions, target — preserved).
+                    # Suppression-direction readers are tier-gated in
+                    # core.iris.api, so heuristic-tier refined specs
+                    # land as prompt-only hints, never suppression.
+                    try:
+                        from dataclasses import asdict as _dc_asdict
+
+                        from core.iris.store import (
+                            checklist_sha as _iris_cl_sha,
+                        )
+                        from core.iris.store import (
+                            persist_refined_specs as _iris_persist,
+                        )
+
+                        _iris_persist(
+                            config.out_dir,
+                            refined_specs,
+                            cl_sha=(
+                                _iris_cl_sha(checklist)
+                                if checklist else ""
+                            ),
+                            history=[_dc_asdict(r) for r in history],
+                            assumptions=assumptions or None,
+                            target_path=Path(config.target_path),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "IRIS refined-spec store persist failed",
+                            exc_info=True,
+                        )
+
+            if assumptions:
+                logger.info(
+                    "iris.synthesise: %d assumptions from %d sink/sanitiser specs",
+                    len(assumptions),
+                    sum(1 for s in refined_specs if s.role in ("sink", "sanitiser")),
+                )
+
+            if bypass_findings:
+                logger.info(
+                    "IRIS bypass: %d bypass findings",
+                    len(bypass_findings),
+                )
+                iris_bypass_findings = [
+                    bf for bf in bypass_findings
+                    if hasattr(bf, "caller_file")
+                ]
+                if config.out_dir:
+                    _write_iris_bypass_findings(
+                        config.out_dir, iris_bypass_findings,
+                    )
+    except Exception:
+        logger.debug("IRIS refinement/bypass failed", exc_info=True)
+    return bypass_runner, iris_bypass_findings
+
+
 def _run_audit_body(
     config,
     review_fn,
@@ -5214,9 +5562,8 @@ def _run_audit_body(
     # --- Domain model: loaded once, reloaded after study loop ---
     domain_model = None
     try:
-        from .journal import load_domain_model
 
-        domain_model = load_domain_model(config.out_dir)
+        domain_model = _load_domain_model(config)
         if domain_model:
             n_inv = len(domain_model.get("invariants", []))
             n_con = len(domain_model.get("concepts", []))
@@ -6218,210 +6565,14 @@ def _run_audit_body(
             logger.debug("IRIS re-query failed", exc_info=True)
 
     # --- IRIS refinement loop + bypass detection ---
-    # Bound unconditionally: the assignment inside ``if iris_candidates``
-    # below never runs when there are no candidates (or when the refine
-    # imports fail first), and the heuristic-assumption pass afterwards
-    # reads the name.
-    bypass_runner = None
-    iris_bypass_findings: list[Any] = []
-    try:
-        from core.iris.refine import refine_loop as iris_refine_loop
-
-        from .iris_specs import identify_candidates
-
-        taint_chain_callees_post: set[str] = set()
-        if taint_summary_results:
-            for _ts_summ in taint_summary_results.values():
-                for _ts_callee in getattr(_ts_summ, "callees", []):
-                    taint_chain_callees_post.add(_ts_callee)
-        iris_candidates = identify_candidates(
-            gaps,
-            taint_chain_callees=taint_chain_callees_post,
-        )
-        if iris_candidates:
-            joern_tool_runner = None
-            if joern_server is not None:
-                joern_tool_runner = _make_iris_joern_tool_runner(joern_server)
-
-            bypass_runner = None
-            try:
-                from core.inventory.call_graph import load_call_graphs
-                from core.iris import CompositionalAnalyzer
-
-                call_graphs = load_call_graphs(config.target_path, checklist)
-                if call_graphs:
-                    analyzer = CompositionalAnalyzer(call_graphs)
-
-                    def bypass_runner(assumptions):
-                        findings = []
-                        seen: set[tuple[str, str, str]] = set()
-                        for a in assumptions:
-                            findings.extend(analyzer.detect_bypasses(a))
-                            findings.extend(analyzer.detect_ordering_violations(a))
-                            findings.extend(analyzer.detect_type_hierarchy_bypasses(a))
-                        widened: list = []
-                        for f in findings:
-                            if f.via_intermediate:
-                                widened.extend(analyzer.widen_from_finding(f))
-                        findings.extend(widened)
-                        deduped: list = []
-                        for f in findings:
-                            key = (f.caller_file, f.caller_function, f.missing_enforcer)
-                            if key not in seen:
-                                seen.add(key)
-                                deduped.append(f)
-                        return deduped
-            except Exception:
-                logger.debug("IRIS bypass analyzer init failed", exc_info=True)
-
-            iris_llm = None
-            try:
-                # Budget-governed client: iris refinement spend must hit
-                # the run ledger and the reservation gate (a private
-                # client once dispatched an iris call 11 minutes after
-                # budget exhaustion).
-                iris_llm = _run_llm_client(config)
-            except Exception:
-                logger.debug("IRIS LLM client init failed", exc_info=True)
-
-            codeql_tool_runner = None
-            if config.codeql_db_path:
-                try:
-                    from core.iris.codeql_runner import make_codeql_tool_runner
-
-                    codeql_tool_runner = make_codeql_tool_runner(
-                        db_path=Path(config.codeql_db_path),
-                        out_dir=config.out_dir,
-                    )
-                except Exception:
-                    logger.debug("IRIS CodeQL runner init failed", exc_info=True)
-
-            iris_tool_runner = _composite_tool_runner(
-                joern_tool_runner,
-                codeql_tool_runner,
-            )
-
-            # Prior specs: persistent project store + the run-local
-            # refined artifact (resume / re-entry continuity), then
-            # this run's heuristic candidates. merge_specs keeps the
-            # higher evidence tier on collision, so a tool-confirmed
-            # spec from a previous round is never demoted by a fresh
-            # heuristic candidate.
-            prior_specs = iris_taint_specs or []
-            try:
-                from core.iris.store import (
-                    load_refined_specs as _iris_load_refined,
-                )
-                from core.iris.store import (
-                    load_specs as _iris_load_store,
-                )
-                from core.iris.store import (
-                    merge_specs as _iris_merge,
-                )
-
-                _iris_prior_store: list = []
-                _iris_prior_refined: list = []
-                if config.out_dir:
-                    _iris_prior_store = _iris_load_store(
-                        config.out_dir,
-                        target_path=Path(config.target_path),
-                    )
-                    _iris_prior_refined = _iris_load_refined(
-                        config.out_dir,
-                    )
-                if _iris_prior_store or _iris_prior_refined:
-                    prior_specs = _iris_merge(
-                        _iris_merge(
-                            _iris_prior_store, _iris_prior_refined,
-                        ),
-                        prior_specs,
-                    )
-                    logger.info(
-                        "IRIS: seeded refine loop with %d prior specs "
-                        "(%d store, %d refined artifact)",
-                        len(prior_specs), len(_iris_prior_store),
-                        len(_iris_prior_refined),
-                    )
-            except Exception:
-                logger.debug(
-                    "IRIS prior-spec load failed", exc_info=True,
-                )
-            refined_specs, history, assumptions, bypass_findings = iris_refine_loop(
-                iris_candidates,
-                llm_client=iris_llm,
-                tool_runner=iris_tool_runner,
-                prior_specs=prior_specs,
-                bypass_runner=bypass_runner,
-                target_path=config.target_path,
-            )
-
-            if refined_specs:
-                from .iris_specs import specs_to_json
-
-                logger.info(
-                    "IRIS: refined %d specs (%d rounds)",
-                    len(refined_specs),
-                    len(history),
-                )
-                if config.out_dir:
-                    spec_path = config.out_dir / "iris-taint-specs-refined.json"
-                    spec_path.write_text(specs_to_json(refined_specs))
-                    # Caller-persist step: merge the refined specs
-                    # into the persistent project store (evidence
-                    # tiers carried through; envelope metadata —
-                    # history, assumptions, target — preserved).
-                    # Suppression-direction readers are tier-gated in
-                    # core.iris.api, so heuristic-tier refined specs
-                    # land as prompt-only hints, never suppression.
-                    try:
-                        from dataclasses import asdict as _dc_asdict
-
-                        from core.iris.store import (
-                            checklist_sha as _iris_cl_sha,
-                        )
-                        from core.iris.store import (
-                            persist_refined_specs as _iris_persist,
-                        )
-
-                        _iris_persist(
-                            config.out_dir,
-                            refined_specs,
-                            cl_sha=(
-                                _iris_cl_sha(checklist)
-                                if checklist else ""
-                            ),
-                            history=[_dc_asdict(r) for r in history],
-                            assumptions=assumptions or None,
-                            target_path=Path(config.target_path),
-                        )
-                    except Exception:
-                        logger.debug(
-                            "IRIS refined-spec store persist failed",
-                            exc_info=True,
-                        )
-
-            if assumptions:
-                logger.info(
-                    "iris.synthesise: %d assumptions from %d sink/sanitiser specs",
-                    len(assumptions),
-                    sum(1 for s in refined_specs if s.role in ("sink", "sanitiser")),
-                )
-
-            if bypass_findings:
-                logger.info(
-                    "IRIS bypass: %d bypass findings",
-                    len(bypass_findings),
-                )
-                iris_bypass_findings = [
-                    bf for bf in bypass_findings
-                    if hasattr(bf, "caller_file")
-                ]
-                if config.out_dir:
-                    _write_iris_bypass_findings(
-                        config.out_dir, iris_bypass_findings,
-                    )
-    except Exception:
-        logger.debug("IRIS refinement/bypass failed", exc_info=True)
+    bypass_runner, iris_bypass_findings = _iris_refine_and_bypass(
+        config,
+        gaps,
+        taint_summary_results,
+        joern_server,
+        checklist,
+        iris_taint_specs,
+    )
 
     if result.findings >= 2 and config.out_dir:
         try:
@@ -6451,7 +6602,12 @@ def _run_audit_body(
     except Exception:
         logger.debug("taint-spec post-loop checks failed", exc_info=True)
 
-    post_loop_findings.extend(_heuristic_bypass_findings(gaps, bypass_runner))
+    if getattr(config, "iris", True):
+        # Heuristic assumption/bypass pass rides the same IRIS gate
+        # as spec synthesis and refinement.
+        post_loop_findings.extend(
+            _heuristic_bypass_findings(gaps, bypass_runner),
+        )
     post_loop_findings.extend(
         _refine_bypass_post_loop_findings(
             iris_bypass_findings, post_loop_findings,
@@ -7448,8 +7604,7 @@ class _InjectModeResolver:
             self._check_lock_domain = check_lock_domain
             dm = None
             with contextlib.suppress(OSError):
-                from .journal import load_domain_model
-                dm = load_domain_model(config.out_dir)
+                dm = _load_domain_model(config)
             self._vocab = DomainVocabulary.from_domain_model(
                 dm, target_path=config.target_path,
             )
@@ -7987,9 +8142,8 @@ def _run_mechanical_detectors(
         cb_vocab = None
         with contextlib.suppress(OSError):
             from .condition_smt import DomainVocabulary
-            from .journal import load_domain_model
             cb_vocab = DomainVocabulary.from_domain_model(
-                load_domain_model(config.out_dir),
+                _load_domain_model(config),
                 target_path=config.target_path,
             )
 
@@ -8149,7 +8303,7 @@ def _build_context(
     so the LLM reasons from code alone.  sink_unreachable is still set
     (it's a prefilter, not a leading hint).
     """
-    ann_dir = config.annotations_dir or _resolve_ann_dir(config.out_dir)
+    ann_dir = _annotations_dir(config)
     ctx = assemble_context(
         target_path=config.target_path,
         file_path=gap["file"],
@@ -10926,9 +11080,8 @@ def _study_consumer_loop(
 
         # Reload domain model
         try:
-            from .journal import load_domain_model
 
-            new_dm = load_domain_model(config.out_dir)
+            new_dm = _load_domain_model(config)
             if new_dm:
                 shared.domain_model = new_dm
                 if collector is not None:
@@ -11254,8 +11407,11 @@ def _seed_observations_from_sage(config: OrchestratorConfig) -> list[dict[str, s
     so they inform prompts but never drive mechanical decisions.
     Recalled text passes through ``_sanitise_observation`` — the same
     injection scan live observations get — before it can re-enter a
-    prompt. Never raises; returns ``[]`` when SAGE is unavailable.
+    prompt. Never raises; returns ``[]`` when SAGE is unavailable or
+    SAGE recall is gated off (cold-profile corpus runs).
     """
+    if not getattr(config, "sage_recall", True):
+        return []
     try:
         from core.sage.hooks import recall_audit_observations
     except ImportError:
@@ -13022,8 +13178,7 @@ def _run_tool_chain(
     if domain_vocab is None and config.out_dir:
         with contextlib.suppress(OSError):
             from .condition_smt import DomainVocabulary
-            from .journal import load_domain_model
-            dm = load_domain_model(config.out_dir)
+            dm = _load_domain_model(config)
             domain_vocab = DomainVocabulary.from_domain_model(
                 dm, target_path=effective_target,
             )
@@ -13508,8 +13663,7 @@ def _run_tool_chain(
 
                 rb_dm = None
                 with contextlib.suppress(Exception):
-                    from .journal import load_domain_model as _rb_ldm
-                    rb_dm = _rb_ldm(config.out_dir) \
+                    rb_dm = _load_domain_model(config) \
                         if config.out_dir else None
                 rb_ctx = _RbRoleCtx(
                     out_dir=config.out_dir,
@@ -13576,8 +13730,7 @@ def _run_tool_chain(
 
                 ro_dm = None
                 with contextlib.suppress(Exception):
-                    from .journal import load_domain_model as _ro_ldm
-                    ro_dm = _ro_ldm(config.out_dir) \
+                    ro_dm = _load_domain_model(config) \
                         if config.out_dir else None
                 ro_ctx = _RoRoleCtx(
                     out_dir=config.out_dir,
@@ -13645,8 +13798,7 @@ def _run_tool_chain(
 
                 ps_dm = None
                 with contextlib.suppress(Exception):
-                    from .journal import load_domain_model as _ps_ldm
-                    ps_dm = _ps_ldm(config.out_dir) \
+                    ps_dm = _load_domain_model(config) \
                         if config.out_dir else None
                 ps_ctx = _PsRoleCtx(
                     out_dir=config.out_dir,
@@ -17884,8 +18036,7 @@ def _pre_loop_smt_screen(
     dm = None
     if getattr(config, "out_dir", None):
         with contextlib.suppress(OSError):
-            from .journal import load_domain_model
-            dm = load_domain_model(config.out_dir)
+            dm = _load_domain_model(config)
     vocab = DomainVocabulary.from_domain_model(
         dm, target_path=config.target_path,
     )
@@ -18065,8 +18216,7 @@ def _promote_smt_clean(
     dm = None
     if getattr(config, "out_dir", None):
         with contextlib.suppress(OSError):
-            from .journal import load_domain_model
-            dm = load_domain_model(config.out_dir)
+            dm = _load_domain_model(config)
     vocab = DomainVocabulary.from_domain_model(
         dm, target_path=config.target_path,
     )

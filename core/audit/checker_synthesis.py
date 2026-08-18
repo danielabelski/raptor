@@ -310,7 +310,10 @@ def synthesize_and_sweep(
 
     lib = RuleLibrary()
     engine = detect_engine(seed.file)
-    if engine and seed.cwe:
+    # Graduated-rule replay is an accumulated-knowledge read: gated
+    # off in cold-profile corpus runs (library writes and the fresh
+    # synthesis below stay on).
+    if engine and seed.cwe and getattr(config, "library_replay", True):
         candidates = lib.find_replayable(seed.cwe, engine)
         if candidates:
             try:
@@ -359,7 +362,14 @@ def synthesize_and_sweep(
     # per operator policy); the rule body on disk must still match the
     # stamped body hash.
     sage_provenance = ""
-    if cs_result is None and engine and seed.cwe:
+    if (
+        cs_result is None
+        and engine
+        and seed.cwe
+        # SAGE rule replay is a recall read — same gate as the other
+        # SAGE recall surfaces (cold-profile corpus runs).
+        and getattr(config, "sage_recall", True)
+    ):
         replay = _sage_replay_rule(engine, seed.cwe, seed, Path(target_path))
         if replay is not None:
             cs_result, sage_provenance = replay

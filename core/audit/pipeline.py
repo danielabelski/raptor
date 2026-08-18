@@ -119,6 +119,29 @@ class AuditPipelineOpts:
     # that a classifier skip can never exercise. Production default
     # unchanged (on).
     triage: bool = True
+    # ── Accumulated-knowledge gates (see OrchestratorConfig) ────────
+    # All default ON — production behaviour unchanged. The corpus
+    # runner's cold profile turns them off so a measurement run sees
+    # what a first-time user with default flags and cold caches would
+    # see. ``profile`` is the label stamped into the per-gate disable
+    # log lines.
+    profile: str = "deployed"
+    # IRIS: spec synthesis, sink-store reads, refinement (incl.
+    # prior_specs store reads), heuristic assumption passes.
+    iris: bool = True
+    # SAGE recall reads (hypothesis verdicts, prior-run observations,
+    # proven-rule replay). Writes unaffected.
+    sage_recall: bool = True
+    # Graduated-rule library replay (find_replayable). In-run
+    # on-demand synthesis and library writes stay on.
+    library_replay: bool = True
+    # Cross-run journal reads: verdict-reuse eligibility + sibling/
+    # project journal sources for external synthesis seeds.
+    cross_run_import: bool = True
+    # Prior domain-model import (in-run study output still read).
+    domain_model_import: bool = True
+    # Operator annotation reads.
+    annotations_read: bool = True
     # Opt-in (--pre-scan): bounded semgrep baseline pass when no scan
     # SARIF exists in this run or any fresh sibling run.
     pre_scan: bool = False
@@ -277,6 +300,13 @@ def _build_orchestrator_config(
         force=opts.force,
         prefilter_skip=opts.prefilter_skip,
         triage=opts.triage,
+        profile=opts.profile,
+        iris=opts.iris,
+        sage_recall=opts.sage_recall,
+        library_replay=opts.library_replay,
+        cross_run_import=opts.cross_run_import,
+        domain_model_import=opts.domain_model_import,
+        annotations_read=opts.annotations_read,
         pre_scan=opts.pre_scan,
         schedule=opts.schedule,
         on_demand_synthesis=opts.on_demand_synthesis,

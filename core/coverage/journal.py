@@ -556,9 +556,24 @@ def compute_domain_model_hash(out_dir: Path) -> str | None:
         return None
 
 
-def load_domain_model(out_dir: Path) -> dict[str, Any] | None:
-    """Load parsed domain-model.json for concept-level relevance checks."""
-    path = _find_domain_model_file(out_dir)
+def load_domain_model(
+    out_dir: Path,
+    *,
+    run_only: bool = False,
+) -> dict[str, Any] | None:
+    """Load parsed domain-model.json for concept-level relevance checks.
+
+    ``run_only=True`` restricts the search to ``out_dir`` itself — the
+    model this run's own study pass wrote — skipping the project-level
+    candidates a prior run may have left behind (cold-profile corpus
+    runs must not import accumulated knowledge).
+    """
+    if run_only:
+        path = out_dir / "domain-model.json"
+        if not path.is_file():
+            return None
+    else:
+        path = _find_domain_model_file(out_dir)
     if path is None:
         return None
     try:

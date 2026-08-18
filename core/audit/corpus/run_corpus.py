@@ -2630,10 +2630,22 @@ def main(argv: list[str] | None = None) -> int:
     # point results.json is finalized, so gate-fail and
     # conservation-violation exits are captured too.  Probe rows skip
     # the orchestrator entirely and are opt-in via --record-probe.
+    recorded_history = False
     if not args.probe or args.record_probe:
         from .history import record_run
 
-        record_run(
+        # Selection: distinguish a full-corpus run from a selective
+        # refire (--class / --label) so history readers never misread
+        # a subset rerun as a full-run regression. The label-set hash
+        # already reflects the subset; this records intent.
+        if args.bug_class or args.label_ids:
+            selection: Any = {
+                "class": args.bug_class,
+                "labels": sorted(args.label_ids),
+            }
+        else:
+            selection = "full"
+        recorded_history = record_run(
             results, meta,
             output_path=args.output,
             run_tag=run_tag,
@@ -2647,7 +2659,30 @@ def main(argv: list[str] | None = None) -> int:
                 "splice": str(args.splice) if args.splice else None,
             },
             profile=args.profile,
+            selection=selection,
         )
+
+    # Selective-refire delta report: when specific labels were
+    # refired (--label) and the history store holds prior verdicts,
+    # phrase each flip for the operator. Read-only history use —
+    # results.json and the store are already final; nothing here
+    # feeds the pipeline — and best-effort: a report failure never
+    # fails the run.
+    if args.label_ids and recorded_history:
+        try:
+            from .history import refire_deltas, run_id_for_output, store_path
+
+            delta_lines = refire_deltas(
+                store_path(),
+                sorted(args.label_ids),
+                current_run_id=run_id_for_output(args.output),
+            )
+            if delta_lines:
+                print("\nRefire deltas (vs latest prior history):")
+                for line in delta_lines:
+                    print(f"  {line}")
+        except Exception:
+            logger.debug("refire delta report failed", exc_info=True)
 
     _print_accounting(
         violations, census, len(selected_labels), len(account_models),

@@ -1333,3 +1333,145 @@ class TestSpendGate:
         out = capsys.readouterr().out
         assert "Pin census:" in out
         assert "1 missing" in out
+
+
+class TestRefireLoop:
+    """Selective-refire ergonomics: --label is repeatable, composes
+    with --class, records a subset selection in history, and prints
+    per-label deltas against the latest prior history."""
+
+    def _label_for(self, fid, bug_class="auth", file="a.c"):
+        return SimpleNamespace(
+            function_id=fid,
+            bug_class=bug_class,
+            expected_status="finding",
+            expected_mechanism="",
+            expected_mode_results={},
+            source=SimpleNamespace(
+                repo="test", sha="x", file=file, line_start=1, line_end=6,
+            ),
+        )
+
+    def _wire(self, tmp_path, monkeypatch, labels, actual_by_fid):
+        from contextlib import contextmanager
+
+        import core.audit.corpus.history as history_mod
+        import core.audit.corpus.label as label_mod
+
+        @contextmanager
+        def fake_project(run_tag):
+            yield f"corpus-{run_tag}"
+
+        src = tmp_path / "repo"
+        src.mkdir(exist_ok=True)
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+
+        monkeypatch.setattr(
+            label_mod, "load_all_labels",
+            lambda bug_class=None: [
+                lb for lb in labels
+                if bug_class is None or lb.bug_class == bug_class
+            ],
+        )
+        monkeypatch.setattr(
+            run_corpus, "_resolve_source_dirs",
+            lambda labels, do_fetch=False: {"test": src},
+        )
+        monkeypatch.setattr(
+            run_corpus, "_corpus_project_context", fake_project,
+        )
+        monkeypatch.setenv(
+            history_mod.HISTORY_ENV, str(tmp_path / "history.jsonl"),
+        )
+        seen = {}
+
+        def fake_ensemble(run_labels, dirs, **kw):
+            seen["fids"] = [lb.function_id for lb in run_labels]
+            return ([
+                dict(
+                    _result_row(
+                        lb.function_id, "finding",
+                        actual_by_fid.get(lb.function_id, "clean"),
+                    ),
+                    model="",
+                )
+                for lb in run_labels
+            ], [])
+
+        monkeypatch.setattr(
+            run_corpus, "_run_ensemble_audit", fake_ensemble,
+        )
+        return seen
+
+    def test_label_is_repeatable_and_composes_with_class(
+        self, tmp_path, monkeypatch,
+    ):
+        labels = [
+            self._label_for("a.c:f", bug_class="auth"),
+            self._label_for("a.c:g", bug_class="auth"),
+            self._label_for("a.c:h", bug_class="lifecycle"),
+        ]
+        seen = self._wire(tmp_path, monkeypatch, labels, {})
+        out = tmp_path / "r1.json"
+        rc = run_corpus.main([
+            "--output", str(out),
+            "--class", "auth",
+            "--label", "a.c:f",
+            "--label", "a.c:g",
+            "--label", "a.c:h",  # filtered out by --class
+        ])
+        assert rc in (0, 2)  # gates may fail on tiny synthetic runs
+        assert seen["fids"] == ["a.c:f", "a.c:g"]
+
+    def test_subset_selection_recorded_in_history(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.corpus.history as history_mod
+
+        labels = [self._label_for("a.c:f"), self._label_for("a.c:g")]
+        self._wire(
+            tmp_path, monkeypatch, labels, {"a.c:f": "finding"},
+        )
+        run_corpus.main([
+            "--output", str(tmp_path / "r1.json"), "--label", "a.c:f",
+        ])
+        runs, _ = history_mod.load_store(tmp_path / "history.jsonl")
+        assert runs[-1]["selection"] == {"class": None, "labels": ["a.c:f"]}
+
+        self._wire(tmp_path, monkeypatch, labels,
+                   {"a.c:f": "finding", "a.c:g": "finding"})
+        run_corpus.main(["--output", str(tmp_path / "r2.json")])
+        runs, _ = history_mod.load_store(tmp_path / "history.jsonl")
+        assert runs[-1]["selection"] == "full"
+
+    def test_refire_prints_delta_against_prior_run(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        labels = [self._label_for("a.c:f"), self._label_for("a.c:g")]
+
+        # Run 1 (full): label misses — clean where finding expected.
+        self._wire(tmp_path, monkeypatch, labels, {})
+        run_corpus.main(["--output", str(tmp_path / "r1.json")])
+        capsys.readouterr()
+
+        # Run 2 (refire of the fixed label): now a finding.
+        self._wire(tmp_path, monkeypatch, labels, {"a.c:f": "finding"})
+        run_corpus.main([
+            "--output", str(tmp_path / "r2.json"), "--label", "a.c:f",
+        ])
+        out = capsys.readouterr().out
+        assert "Refire deltas" in out
+        assert (
+            "a.c:f: clean -> finding (expected finding) — "
+            "IMPROVED, now matches [vs r1]" in out
+        )
+
+    def test_full_runs_print_no_delta_block(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        labels = [self._label_for("a.c:f")]
+        self._wire(tmp_path, monkeypatch, labels, {})
+        run_corpus.main(["--output", str(tmp_path / "r1.json")])
+        self._wire(tmp_path, monkeypatch, labels, {"a.c:f": "finding"})
+        run_corpus.main(["--output", str(tmp_path / "r2.json")])
+        assert "Refire deltas" not in capsys.readouterr().out

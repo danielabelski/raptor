@@ -164,6 +164,7 @@ def build_run_record(
     labels_hash: str,
     imported: bool = False,
     profile: str = "deployed",
+    selection: Any = "full",
 ) -> Dict[str, Any]:
     """Build the RUN header record for one corpus run.
 
@@ -171,6 +172,13 @@ def build_run_record(
     (``cold`` = raw first-time-user capability, ``deployed`` = all
     accumulated-knowledge channels on). Records written before the
     field existed are read as ``deployed`` (see :func:`run_profile`).
+
+    ``selection`` distinguishes a full-corpus run (``"full"``) from a
+    selective refire (a dict like ``{"class": ..., "labels": [...]}``
+    mirroring the --class/--label filters), so history readers never
+    misread a 3-label refire as a full-run regression. The label-set
+    hash already reflects the subset; this field records the
+    operator's intent. Absent on pre-selection records.
     """
     reviewed = [r for r in results if not r.get("skipped")]
     return {
@@ -179,6 +187,7 @@ def build_run_record(
         "timestamp": timestamp,
         "pipeline_tree_sha": tree_sha,
         "profile": profile or "deployed",
+        "selection": selection if selection is not None else "full",
         "config": dict(config),
         "label_set_hash": labels_hash,
         "gates": _gate_outcomes(results),
@@ -199,6 +208,26 @@ def build_run_record(
         ),
         "imported": imported,
     }
+
+
+def describe_selection(run_rec: Dict[str, Any]) -> str:
+    """Human-readable selection: 'full', 'class=x', 'N label(s)'.
+
+    Pre-selection records return '' (unknown — full runs and refires
+    were recorded identically before the field existed).
+    """
+    sel = run_rec.get("selection")
+    if sel is None:
+        return ""
+    if sel == "full":
+        return "full"
+    parts = []
+    if isinstance(sel, dict):
+        if sel.get("class"):
+            parts.append(f"class={sel['class']}")
+        if sel.get("labels"):
+            parts.append(f"{len(sel['labels'])} label(s)")
+    return "refire: " + ", ".join(parts) if parts else "refire"
 
 
 def run_profile(run_rec: Dict[str, Any]) -> str:
@@ -271,6 +300,7 @@ def record_run(
     config: Optional[Dict[str, Any]] = None,
     store: Optional[Path] = None,
     profile: str = "deployed",
+    selection: Any = "full",
 ) -> bool:
     """Append one run to the history store.  Never raises.
 
@@ -291,6 +321,7 @@ def record_run(
             config=config or {},
             labels_hash=label_set_hash(labels) if labels else "",
             profile=profile,
+            selection=selection,
         )
         span_shas = {
             lb.function_id: getattr(lb.source, "span_sha", "") or ""
@@ -489,6 +520,14 @@ def format_compare(diff: Dict[str, Any]) -> str:
         f"Compare {a.get('run_id')} ({a.get('timestamp') or '?'}) -> "
         f"{b.get('run_id')} ({b.get('timestamp') or '?'})"
     )
+    for run, tag in ((a, "run a"), (b, "run b")):
+        desc = describe_selection(run)
+        if desc and desc != "full":
+            lines.append(
+                f"  NOTE: {tag} ({run.get('run_id')}) is a selective "
+                f"refire ({desc}) — flips reflect the refired subset, "
+                f"not a full-run regression"
+            )
     prof_a, prof_b = run_profile(a), run_profile(b)
     if (prof_a, prof_b) != ("deployed", "deployed"):
         note = (
@@ -716,6 +755,83 @@ def format_stability(groups: List[Dict[str, Any]]) -> str:
             )
             lines.append(f"    {fid}: {detail}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# refire deltas
+# ---------------------------------------------------------------------------
+
+def refire_deltas(
+    store: Path,
+    function_ids: List[str],
+    *,
+    current_run_id: str,
+) -> List[str]:
+    """Per-label verdict deltas vs each label's latest PRIOR record.
+
+    Post-run operator reporting for the selective-refire loop (fix a
+    detector -> refire one label -> read the flip): for every refired
+    label, find its most recent record from a run recorded BEFORE the
+    current one and phrase the change. Read-only use of the history
+    store, consistent with the reporting-only rule — it reports to
+    the operator after results are final and never feeds the
+    pipeline. Returns [] when the store or the current run is absent.
+    """
+    try:
+        runs, labels_by_run = load_store(store)
+    except OSError:
+        return []
+    order = [r.get("run_id", "") for r in runs]
+    if current_run_id not in order:
+        return []
+    # Last occurrence: a reused --output path re-records under the
+    # same id; the newest header is the refire. (Reusing a path also
+    # merges the two runs' label records — distinct --output paths
+    # per refire keep deltas exact; see the corpus README.)
+    cur_idx = max(
+        i for i, rid in enumerate(order) if rid == current_run_id
+    )
+    current = runs[cur_idx]
+    cur_labels = _latest_labels(current, labels_by_run)
+    prior_runs = [
+        r for r in runs[:cur_idx]
+        if r.get("run_id") != current_run_id
+    ]
+
+    lines: List[str] = []
+    for fid in function_ids:
+        now = cur_labels.get(fid)
+        if now is None:
+            continue
+        prev = None
+        for run in reversed(prior_runs):
+            rec = _latest_labels(run, labels_by_run).get(fid)
+            if rec is not None:
+                prev = (run, rec)
+                break
+        expected = now.get("expected", "")
+        match_tag = "matches" if now.get("match") else "mismatched"
+        if prev is None:
+            lines.append(
+                f"{fid}: {now.get('actual', '')} "
+                f"(expected {expected}, {match_tag}) — no prior history"
+            )
+            continue
+        prev_run, prev_rec = prev
+        if prev_rec.get("actual") == now.get("actual"):
+            lines.append(
+                f"{fid}: {now.get('actual', '')} — unchanged since "
+                f"{prev_run.get('run_id', '?')} (still {match_tag})"
+            )
+        else:
+            flip = classify_flip(prev_rec, now)
+            lines.append(
+                f"{fid}: {prev_rec.get('actual', '')} -> "
+                f"{now.get('actual', '')} (expected {expected}) — "
+                f"{flip.upper()}, now {match_tag} "
+                f"[vs {prev_run.get('run_id', '?')}]"
+            )
+    return lines
 
 
 # ---------------------------------------------------------------------------

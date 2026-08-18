@@ -782,3 +782,155 @@ class TestProfileField:
         b.pop("profile", None)
         out = history.format_compare(history.compare_runs(a, b, {}, {}))
         assert "Profiles:" not in out
+
+
+class TestSelectionField:
+    """Subset refires must be distinguishable from full runs."""
+
+    def test_default_selection_is_full(self):
+        rec = history.build_run_record(
+            [_row()], {}, run_id="r", timestamp="", tree_sha="t",
+            config={}, labels_hash="",
+        )
+        assert rec["selection"] == "full"
+
+    def test_refire_selection_recorded(self, tmp_path):
+        store = tmp_path / "s.jsonl"
+        out = tmp_path / "results.json"
+        out.write_text("{}")
+        history.record_run(
+            [_row()], {}, output_path=out, labels=[_label()],
+            config={}, store=store,
+            selection={"class": None, "labels": ["a.c:f"]},
+        )
+        runs, _ = history.load_store(store)
+        assert runs[0]["selection"] == {
+            "class": None, "labels": ["a.c:f"],
+        }
+
+    def test_describe_selection(self):
+        assert history.describe_selection({"selection": "full"}) == "full"
+        assert history.describe_selection({}) == ""  # pre-selection record
+        assert history.describe_selection(
+            {"selection": {"class": "auth", "labels": []}},
+        ) == "refire: class=auth"
+        assert history.describe_selection(
+            {"selection": {"class": None, "labels": ["a", "b"]}},
+        ) == "refire: 2 label(s)"
+
+    def test_compare_flags_refire_runs(self):
+        a = _run_rec("full-run")
+        b = _run_rec("refire-run")
+        b["selection"] = {"class": None, "labels": ["a.c:f"]}
+        out = history.format_compare(history.compare_runs(a, b, {}, {}))
+        assert "selective refire" in out
+        assert "not a full-run regression" in out
+
+    def test_compare_silent_for_full_and_old_records(self):
+        a = _run_rec("r1")  # pre-selection record (no field)
+        b = _run_rec("r2")
+        b["selection"] = "full"
+        out = history.format_compare(history.compare_runs(a, b, {}, {}))
+        assert "selective refire" not in out
+
+
+class TestRefireDeltas:
+    def _store_with(self, tmp_path, records):
+        store = tmp_path / "s.jsonl"
+        history.append_records(store, records)
+        return store
+
+    def test_flip_is_phrased_with_prior_run(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            _run_rec("v1"),
+            _label_rec("a.c:f", "clean", run_id="v1",
+                       expected="finding", match=False),
+            _run_rec("v2"),
+            _label_rec("a.c:f", "finding", run_id="v2",
+                       expected="finding", match=True),
+        ])
+        lines = history.refire_deltas(
+            store, ["a.c:f"], current_run_id="v2",
+        )
+        assert lines == [
+            "a.c:f: clean -> finding (expected finding) — "
+            "IMPROVED, now matches [vs v1]",
+        ]
+
+    def test_unchanged_label_says_so(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            _run_rec("v1"),
+            _label_rec("a.c:f", "clean", run_id="v1",
+                       expected="finding", match=False),
+            _run_rec("v2"),
+            _label_rec("a.c:f", "clean", run_id="v2",
+                       expected="finding", match=False),
+        ])
+        lines = history.refire_deltas(
+            store, ["a.c:f"], current_run_id="v2",
+        )
+        assert lines == [
+            "a.c:f: clean — unchanged since v1 (still mismatched)",
+        ]
+
+    def test_no_prior_history(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            _run_rec("v1"),
+            _label_rec("a.c:f", "finding", run_id="v1",
+                       expected="finding", match=True),
+        ])
+        lines = history.refire_deltas(
+            store, ["a.c:f"], current_run_id="v1",
+        )
+        assert lines == [
+            "a.c:f: finding (expected finding, matches) — "
+            "no prior history",
+        ]
+
+    def test_prior_found_across_intervening_runs(self, tmp_path):
+        """The latest PRIOR record wins even when the label skipped
+        the run in between."""
+        store = self._store_with(tmp_path, [
+            _run_rec("v1"),
+            _label_rec("a.c:f", "error", run_id="v1",
+                       expected="finding", match=False),
+            _run_rec("v2"),  # refire of some OTHER label
+            _label_rec("b.c:g", "clean", run_id="v2"),
+            _run_rec("v3"),
+            _label_rec("a.c:f", "finding", run_id="v3",
+                       expected="finding", match=True),
+        ])
+        lines = history.refire_deltas(
+            store, ["a.c:f"], current_run_id="v3",
+        )
+        assert lines == [
+            "a.c:f: error -> finding (expected finding) — "
+            "RECOVERED, now matches [vs v1]",
+        ]
+
+    def test_missing_store_or_run_returns_empty(self, tmp_path):
+        assert history.refire_deltas(
+            tmp_path / "absent.jsonl", ["a.c:f"], current_run_id="x",
+        ) == []
+        store = self._store_with(tmp_path, [_run_rec("v1")])
+        assert history.refire_deltas(
+            store, ["a.c:f"], current_run_id="nope",
+        ) == []
+
+    def test_reused_output_path_takes_last_header(self, tmp_path):
+        """Same --output twice -> same run id; the newest header is
+        the current run."""
+        store = self._store_with(tmp_path, [
+            _run_rec("same"),
+            _label_rec("a.c:f", "clean", run_id="same"),
+            _run_rec("same"),
+            _label_rec("a.c:f", "finding", run_id="same",
+                       expected="clean", match=False),
+        ])
+        lines = history.refire_deltas(
+            store, ["a.c:f"], current_run_id="same",
+        )
+        # Merged label records degrade to "unchanged" — but never a
+        # crash and never a phantom prior run.
+        assert len(lines) == 1
+        assert "unchanged" in lines[0] or "no prior history" in lines[0]

@@ -96,6 +96,115 @@ class TestReturnCheckGroundTruth:
         assert len(result.false_negatives) == 1
 
 
+class TestArgumentShapeGroundTruth:
+    def test_type_witness_scores_true_positive(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        parts = []
+        for i in range(4):
+            parts.append(
+                f"void copy_{i}(const char *s) {{\n"
+                f"    char buf{i}[64];\n"
+                f"    fill_buffer(buf{i}, sizeof(buf{i}), s);\n}}\n"
+            )
+        parts.append(
+            "void copy_dev(const char *s, char *out) {\n"
+            "    fill_buffer(out, sizeof(out), s);\n}\n"
+        )
+        (target / "copy.c").write_text("\n".join(parts))
+        (target / "ground-truth.json").write_text(json.dumps([{
+            "id": "GT-ARGSHAPE-1",
+            "file": "copy.c",
+            "function": "copy_dev",
+            "vuln_type": "CWE-467",
+            "depth": "L1",
+        }]))
+        out = tmp_path / "out"
+        out.mkdir()
+        prepass = run_consistency_prepass(
+            {"copy.c": (target / "copy.c").read_text()},
+            target_path=target,
+            out_dir=out,
+        )
+        shape = [
+            f for f in prepass["findings"]
+            if f["dimension"] == "argument-shape"
+        ]
+        assert shape and shape[0]["function"] == "copy_dev"
+        (out / "findings.json").write_text(json.dumps([
+            {
+                "file": f["file"],
+                "function": f["function"],
+                "status": f["status"],
+            }
+            for f in shape
+        ]))
+        result = evaluate_run(out, load_ground_truth(target))
+        assert len(result.true_positives) == 1
+        assert result.false_positives == []
+
+
+class TestCloneDriftGroundTruth:
+    def test_fix_anchored_drift_scores_true_positive(self, tmp_path):
+        guarded = (
+            "int wire_a(pkt_t *p, size_t n) {\n"
+            "    if (validate_len(p, n) != 0)\n"
+            "        return -1;\n"
+            "    for (size_t i = 0; i < n; i++) {\n"
+            "        acc += p->data[i] * scale_factor(p, i);\n"
+            "        emit_sample(acc, p->flags, i);\n"
+            "    }\n"
+            "    flush_output(p, acc);\n"
+            "    return finalize_packet(p, acc, n);\n}\n"
+        )
+        drifted = guarded.replace("wire_a", "wire_b").replace(
+            "    if (validate_len(p, n) != 0)\n        return -1;\n",
+            "",
+        )
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "wb.c").write_text(drifted)
+        (target / "ground-truth.json").write_text(json.dumps([{
+            "id": "GT-CLONEDRIFT-1",
+            "file": "wb.c",
+            "function": "wire_b",
+            "vuln_type": "CWE-120",
+            "depth": "L1",
+        }]))
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "fix-history.json").write_text(json.dumps({
+            "variant_sites": [{
+                "file": "wb.c", "name": "wire_b", "sha": "d" * 40,
+                "guard": "validate_len",
+                "sensitive": "finalize_packet",
+                "fixed_file": "wa.c", "fixed_line": 2,
+                "fixed_region": guarded,
+            }],
+        }))
+        prepass = run_consistency_prepass(
+            {"wb.c": drifted},
+            target_path=target,
+            out_dir=out,
+        )
+        drift = [
+            f for f in prepass["findings"]
+            if f["dimension"] == "clone-drift"
+        ]
+        assert drift and drift[0]["function"] == "wire_b"
+        (out / "findings.json").write_text(json.dumps([
+            {
+                "file": f["file"],
+                "function": f["function"],
+                "status": f["status"],
+            }
+            for f in drift
+        ]))
+        result = evaluate_run(out, load_ground_truth(target))
+        assert len(result.true_positives) == 1
+        assert result.false_positives == []
+
+
 class TestCleanupGroundTruth:
     def test_cleanup_dimension_scores_true_positive(self, tmp_path):
         target = tmp_path / "target"

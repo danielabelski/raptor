@@ -287,11 +287,20 @@ def assemble_context(
     ctx["strategy_primers"] = _load_strategy_primers(strategies)
     # Always inject security context + bug patterns (independent of primers)
     if out_dir:
+        # Domain-model blocks are LLM-paraphrased TARGET content (study
+        # reads the repo under analysis; SAGE recall is prior-run
+        # paraphrase of the same) — wrap them in the nonce'd untrusted
+        # envelope so forged headings / envelope tags planted in the
+        # target cannot read as trusted prompt prose.
         try:
             from core.concepts.audit_bridge import domain_security_context
             sc_block = domain_security_context(out_dir)
             if sc_block:
-                ctx["domain_security_context"] = sc_block
+                ctx["domain_security_context"] = wrap_untrusted(
+                    sc_block,
+                    kind="domain-security-context",
+                    origin="understand-study domain-model",
+                )
         except Exception:
             logger.debug("domain security context failed", exc_info=True)
         try:
@@ -300,7 +309,11 @@ def assemble_context(
                 out_dir, file_path, function_name, ctx.get("source", ""),
             )
             if bp_block:
-                ctx["domain_bug_patterns"] = bp_block
+                ctx["domain_bug_patterns"] = wrap_untrusted(
+                    bp_block,
+                    kind="domain-bug-patterns",
+                    origin="understand-study domain-model",
+                )
         except Exception:
             logger.debug("domain bug patterns failed", exc_info=True)
 
@@ -312,6 +325,19 @@ def assemble_context(
                 out_dir, file_path, function_name, ctx.get("source", ""),
             )
             if dynamic:
+                # Same provenance as the domain-model blocks above:
+                # study-derived paraphrase of the target. Each primer
+                # is enveloped individually so it cannot forge peer
+                # structure among the trusted static primers it is
+                # rendered beside.
+                dynamic = [
+                    wrap_untrusted(
+                        p,
+                        kind="domain-primer",
+                        origin="understand-study domain-model",
+                    )
+                    for p in dynamic
+                ]
                 ctx["strategy_primers"].extend(dynamic)
                 # Kept separately too: when the static pattern library
                 # lives in the (cached) system prompt, the per-call
@@ -343,7 +369,13 @@ def assemble_context(
                 out_dir, file_path, function_name, ctx.get("source", ""),
             )
             if dm_block:
-                ctx["domain_model"] = dm_block
+                # Includes the SAGE cross-session recall block —
+                # second-order target-derived text.
+                ctx["domain_model"] = wrap_untrusted(
+                    dm_block,
+                    kind="domain-model",
+                    origin="understand-study domain-model + SAGE recall",
+                )
         except Exception:
             logger.debug(
                 "domain model context failed for %s:%s",

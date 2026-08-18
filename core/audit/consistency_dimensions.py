@@ -1154,6 +1154,223 @@ def detect_argument_shape_deviations(
     return deviations[:_MAX_DEVIATIONS]
 
 
+# ── interface-implementor parity (§3.8) ─────────────────────────────
+#
+# "n implementors of the same interface validate, 1 doesn't." Peer
+# groups are NOT formed here — they come from the layered resolver
+# (``core.analysis.peer_groups``): dispatch-table members (L2) and
+# same-type cohorts (L4), the two layers whose membership is a
+# mechanical fact rather than a naming heuristic. The comparator is
+# the existing property-vector majority vote
+# (``sibling_analysis.find_asymmetries``) over structural safety
+# properties (auth check, null guard, bounds guard, error handling —
+# the in-tree property regexes, no project vocabulary).
+#
+# Escalation-only (§3.8): interface members legitimately differ (a
+# read-only op skipping the write-permission check is correct), so
+# every receipt is detection-grade (``consistency:interface-majority``)
+# and promotes only through cross-namespace aggregation. Statistic:
+# ≥ 3 implementors with bodies, majority ratio ≥ 0.75, minority
+# strictly smaller (``find_asymmetries``' own rule).
+
+DIMENSION_INTERFACE = "interface"
+
+INTERFACE_MIN_GROUP = MIN_GROUP_SITES
+
+# Peer-group layers whose membership is mechanical (L2 dispatch-site
+# extraction, L4 type-cohort index).
+_INTERFACE_GROUP_TYPES = frozenset({"dispatch_site", "type_cohort"})
+
+# Property → CWE, per the §3.8 set (auth omission is CWE-862; the
+# validation-shaped properties map to the broad input-validation
+# class, deliberately NOT added to CONSISTENCY_CWES — this dimension
+# is prepass-lead-only and must not widen the CWE dispatch surface).
+_INTERFACE_PROPERTY_CWE = {
+    "auth_check": "CWE-862",
+    "null_guard": "CWE-20",
+    "bounds_guard": "CWE-20",
+    "error_handling": "CWE-20",
+}
+
+
+def _interface_properties(body: str) -> dict[str, bool]:
+    from .sibling_analysis import (
+        _AUTH_CHECK_RE,
+        _BOUNDS_GUARD_RE,
+        _ERROR_RETURN_RE,
+        _NULL_GUARD_RE,
+    )
+    return {
+        "auth_check": bool(_AUTH_CHECK_RE.search(body)),
+        "null_guard": bool(_NULL_GUARD_RE.search(body)),
+        "bounds_guard": bool(_BOUNDS_GUARD_RE.search(body)),
+        "error_handling": bool(_ERROR_RETURN_RE.search(body)),
+    }
+
+
+@dataclass
+class InterfaceDeviation:
+    """One implementor lacking a property its interface peers share."""
+
+    group_id: str
+    property_name: str
+    file: str
+    line: int
+    enclosing_function: str
+    n: int
+    conforming: int
+    cwe: str
+    peer_evidence: PeerEvidence | None = None
+
+    @property
+    def ratio(self) -> float:
+        return self.conforming / self.n if self.n else 0.0
+
+    @property
+    def description(self) -> str:
+        return (
+            f"{self.conforming}/{self.n} implementors in "
+            f"{self.group_id} perform {self.property_name}; "
+            f"{self.enclosing_function} does not"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "group_id": self.group_id,
+            "property": self.property_name,
+            "file": self.file,
+            "line": self.line,
+            "enclosing_function": self.enclosing_function,
+            "n": self.n,
+            "conforming": self.conforming,
+            "ratio": round(self.ratio, 3),
+            "cwe": self.cwe,
+        }
+        if self.peer_evidence is not None:
+            d["peer_evidence"] = self.peer_evidence.to_dict()
+        return d
+
+
+def detect_interface_deviations(
+    source_texts: dict[str, str],
+    peer_groups: list[Any] | None,
+    *,
+    min_group: int = INTERFACE_MIN_GROUP,
+    ratio: float = CONSISTENCY_RATIO,
+) -> list[InterfaceDeviation]:
+    """Interface-implementor parity comparator (§3.8). See the
+    section docstring for group sources, properties and bounds."""
+    if not peer_groups:
+        return []
+    from .sibling_analysis import SiblingGroup, find_asymmetries
+
+    spans = _function_spans(source_texts)
+    by_key: dict[tuple[str, str], tuple[int, str]] = {}
+    by_name: dict[str, tuple[str, int, str]] = {}
+    for file_path, name, start, lines in spans:
+        body = "\n".join(lines)
+        by_key.setdefault((file_path, name), (start, body))
+        by_name.setdefault(name, (file_path, start, body))
+
+    deviations: list[InterfaceDeviation] = []
+    for group in peer_groups:
+        gtype = getattr(group, "sibling_type", "")
+        gtype = getattr(gtype, "value", gtype)
+        if gtype not in _INTERFACE_GROUP_TYPES:
+            continue
+        siblings = list(getattr(group, "siblings", []) or [])
+        if len(siblings) < min_group:
+            continue
+
+        resolved = []
+        for s in siblings:
+            hit = by_key.get((s.file, s.function))
+            if hit is not None:
+                resolved.append((s, hit[0], hit[1]))
+                continue
+            named = by_name.get(s.function)
+            if named is not None:
+                resolved.append((s, named[1], named[2]))
+        if len(resolved) < min_group:
+            continue
+
+        from .sibling_analysis import SiblingPath
+        voting = SiblingGroup(
+            group_id=group.group_id,
+            sibling_type=group.sibling_type,
+            description=getattr(group, "description", ""),
+            siblings=[
+                SiblingPath(
+                    label=s.function,
+                    file=s.file,
+                    function=s.function,
+                    line=line,
+                    properties=_interface_properties(body),
+                )
+                for s, line, body in resolved
+            ],
+        )
+        line_of = {s.function: line for s, line, _ in resolved}
+        file_of = {s.function: s.file for s, line, _ in resolved}
+
+        for asym in find_asymmetries(voting):
+            # Security direction only: the minority LACKS the
+            # property the majority performs.
+            if str(asym.majority_value).lower() != "true" \
+                    or str(asym.minority_value).lower() != "false":
+                continue
+            if asym.confidence < ratio:
+                continue
+            exhibits = [
+                PeerExhibit(
+                    file_of.get(fn, ""), line_of.get(fn, 0),
+                    f"{fn} performs {asym.property_name}",
+                )
+                for fn in sorted(
+                    line_of.keys() - set(asym.minority_siblings),
+                )[:3]
+            ]
+            total = asym.majority_count + asym.minority_count
+            for fn in asym.minority_siblings:
+                deviations.append(InterfaceDeviation(
+                    group_id=group.group_id,
+                    property_name=asym.property_name,
+                    file=file_of.get(fn, ""),
+                    line=line_of.get(fn, 0),
+                    enclosing_function=fn,
+                    n=total,
+                    conforming=asym.majority_count,
+                    cwe=_INTERFACE_PROPERTY_CWE.get(
+                        asym.property_name, "CWE-20",
+                    ),
+                    peer_evidence=PeerEvidence(
+                        dimension=DIMENSION_INTERFACE,
+                        formation="interface",
+                        group_key=group.group_id,
+                        n=total,
+                        conforming=asym.majority_count,
+                        ratio=asym.confidence,
+                        deviant=PeerExhibit(
+                            file_of.get(fn, ""), line_of.get(fn, 0),
+                            f"{fn} lacks {asym.property_name}",
+                        ),
+                        exhibits=exhibits,
+                        contract_source="majority",
+                        provenance=(
+                            f"interface:{gtype}:{asym.property_name}"
+                        ),
+                    ),
+                ))
+                if len(deviations) >= _MAX_DEVIATIONS:
+                    break
+            if len(deviations) >= _MAX_DEVIATIONS:
+                break
+        if len(deviations) >= _MAX_DEVIATIONS:
+            break
+    deviations.sort(key=lambda d: (d.file, d.line, d.property_name))
+    return deviations
+
+
 # ── ordering (A-then-B) consistency (§3.5) ──────────────────────────
 #
 # "n sites do check-then-use, 1 does use-then-check." Peer group:

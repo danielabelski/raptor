@@ -144,6 +144,7 @@ def run_consistency_prepass(
     context_map: dict[str, Any] | None = None,
     domain_model: dict[str, Any] | None = None,
     joern_server: Any = None,
+    peer_groups: list[Any] | None = None,
     budget_s: float = PREPASS_BUDGET_S,
 ) -> dict[str, Any]:
     """Run the standing pre-pass. Returns::
@@ -614,6 +615,62 @@ def run_consistency_prepass(
                     )
                 ],
             })
+
+    # ── interface-implementor parity (§3.8) — escalation-only ───────
+    if not _over_budget() and peer_groups:
+        try:
+            from .consistency_dimensions import (
+                DIMENSION_INTERFACE,
+                detect_interface_deviations,
+            )
+            iface_devs = detect_interface_deviations(
+                source_texts, peer_groups,
+            )
+        except Exception:
+            logger.debug("consistency prepass: interface parity "
+                         "failed", exc_info=True)
+            iface_devs = []
+        if iface_devs:
+            counts = _dim(DIMENSION_INTERFACE)
+            for dev in iface_devs:
+                counts["confirmed"] += 1
+                mechanical.append({
+                    "file": dev.file,
+                    "function": dev.enclosing_function,
+                    "detector": "interface_deviation",
+                    "line": dev.line,
+                    "description": dev.description,
+                    "callee": dev.property_name,
+                    "rule_id": (
+                        dev.peer_evidence.rule_id
+                        if dev.peer_evidence else ""
+                    ),
+                    "cwe": dev.cwe,
+                })
+                leads.append({
+                    "dimension": DIMENSION_INTERFACE,
+                    "callee": dev.property_name,
+                    "file": dev.file,
+                    "function": dev.enclosing_function,
+                    "line": dev.line,
+                    "rule_id": (
+                        dev.peer_evidence.rule_id
+                        if dev.peer_evidence else ""
+                    ),
+                    "description": dev.description[:300],
+                    "security_relevant": dev.cwe == "CWE-862",
+                    "n": dev.n,
+                    "conforming": dev.conforming,
+                    "ratio": dev.ratio,
+                    "contract_source": "majority",
+                    "sites": [
+                        f"{e.file}:{e.line} {e.snippet}".strip()
+                        for e in (
+                            dev.peer_evidence.exhibits
+                            if dev.peer_evidence else []
+                        )
+                    ],
+                })
 
     # ── clone-drift dimension (§3.9) ────────────────────────────────
     if not _over_budget():

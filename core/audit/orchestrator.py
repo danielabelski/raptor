@@ -3495,6 +3495,10 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 context_map=context_map,
                 domain_model=prep_domain_model,
                 joern_server=joern_server,
+                # Interface-implementor parity (§3.8) consumes the
+                # resolver's mechanical layers (L2 dispatch-site, L4
+                # type-cohort) — groups already built above.
+                peer_groups=peer_groups,
             )
             for mf in consistency_prepass.get("mechanical", []):
                 key = f"{mf['file']}:{mf['function']}"

@@ -150,6 +150,50 @@ def _safe_int(value: Any, *, default: int) -> int:
     return to_int_safe(value, default=default, on_error=_log)
 
 
+def _endpoint_display(api_base: str | None) -> str:
+    """Loggable form of a provider ``api_base``.
+
+    Loopback endpoints print verbatim (diagnostic, not sensitive);
+    anything remote collapses to a placeholder so operator-private
+    inference endpoints (e.g. a remote Ollama server selected via
+    OLLAMA_HOST) never reach logs — the project invariant is that a
+    remote endpoint location is never disclosed in code, comments,
+    or logs.
+    """
+    if not api_base:
+        return "default"
+    from core.llm.egress import url_is_loopback
+    return api_base if url_is_loopback(api_base) else "[REMOTE-ENDPOINT]"
+
+
+def _redact_endpoint(text: str, api_base: str | None) -> str:
+    """Strip a remote ``api_base``'s host from *text* before logging.
+
+    SDK / httpx exception bodies routinely embed the request URL.
+    For a loopback base that is harmless; for a remote base it would
+    write the endpoint location into WARNING-level logs and
+    ``error_message`` fields that flow into shareable reports (same
+    invariant as :func:`_endpoint_display`). Replaces the netloc
+    (host:port) first, then the bare hostname, so partial forms are
+    caught too.
+    """
+    if not text or not api_base:
+        return text
+    from urllib.parse import urlsplit
+
+    from core.llm.egress import url_is_loopback
+    if url_is_loopback(api_base):
+        return text
+    try:
+        parts = urlsplit(api_base if "://" in api_base else f"//{api_base}")
+    except ValueError:
+        return text
+    for token in (parts.netloc, parts.hostname):
+        if token:
+            text = text.replace(token, "[REMOTE-ENDPOINT]")
+    return text
+
+
 # SDK availability flags (canonical source is detection.py).  Placed
 # after the helpers above rather than in the top import block; the
 # conditional SDK re-imports below depend on these flags at module
@@ -608,13 +652,21 @@ class LLMProvider(ABC):
         with self._instructor_lock:
             self._instructor_consec_failures += 1
             consec = self._instructor_consec_failures
+        # redact_secrets + endpoint scrub, not just escape: this
+        # funnel catches bare SDK exceptions whose bodies can echo
+        # Authorization / x-api-key headers, the prompt, and the
+        # request URL — same treatment as the generate() handlers.
         from core.security.log_sanitisation import escape_nonprintable as _esc
+        from core.security.redaction import redact_secrets as _redact
+        detail = _esc(_redact(_redact_endpoint(
+            str(exc), getattr(self.config, "api_base", None),
+        )))[:512]
         logger.warning(
             "Instructor structured generation failed for %s/%s (%d/%d). "
             "Exception (%s): %s",
             self.config.provider, self.config.model_name,
             consec, _INSTRUCTOR_MAX_CONSEC_FAILURES,
-            type(exc).__name__, _esc(str(exc))[:512],
+            type(exc).__name__, detail,
         )
         if consec >= _INSTRUCTOR_MAX_CONSEC_FAILURES:
             logger.warning(
@@ -1324,7 +1376,13 @@ class OpenAICompatibleProvider(LLMProvider):
         # persisted — a fresh process re-detects on first turn.
         self._tool_use_unsupported = False
 
-        logger.debug("Initialized OpenAICompatibleProvider: %s (base_url=%s)", config.model_name, config.api_base)
+        # _endpoint_display, never the raw api_base: with OLLAMA_HOST
+        # pointed at a remote inference server, the raw value would
+        # write that server's location into the debug log.
+        logger.debug(
+            "Initialized OpenAICompatibleProvider: %s (base_url=%s)",
+            config.model_name, _endpoint_display(config.api_base),
+        )
 
     def generate(self, prompt: str, system_prompt: str | None = None,
                  **kwargs) -> LLMResponse:
@@ -1429,10 +1487,14 @@ class OpenAICompatibleProvider(LLMProvider):
             # produces a 3-line cluster per upstream failure — see
             # the log-noise commit history. DEBUG keeps the deep-
             # debugging detail (escaped + redacted exception body)
-            # available with ``-v`` / RAPTOR_LOG_LEVEL=DEBUG without
+            # available with ``-v`` / RAPTOR_LOG_FILE_LEVEL=DEBUG without
             # spamming normal runs.
-            logger.debug("OpenAI completion failed: %s",
-                         escape_nonprintable(redact_secrets(str(e)))[:1024])
+            logger.debug(
+                "OpenAI completion failed: %s",
+                escape_nonprintable(redact_secrets(_redact_endpoint(
+                    str(e), self.config.api_base,
+                )))[:1024],
+            )
             raise
 
     def generate_structured(self, prompt: str, schema: dict[str, Any],
@@ -1624,11 +1686,23 @@ class OpenAICompatibleProvider(LLMProvider):
                     and isinstance(exc, APIStatusError)
                     and _is_tool_use_unsupported_error(exc)
                 ):
+                    # Same sanitisation as the terminal-error path
+                    # below — this WARNING also interpolates a raw
+                    # SDK exception body.
+                    from core.security.log_sanitisation import (
+                        escape_nonprintable as _esc,
+                    )
+                    from core.security.redaction import (
+                        redact_secrets as _redact,
+                    )
                     logger.warning(
-                        f"OpenAICompatibleProvider.turn: model "
-                        f"{self.config.model_name!r} rejected tools — "
-                        f"falling back to JSON-protocol synthesis for "
-                        f"this provider instance: {exc}"
+                        "OpenAICompatibleProvider.turn: model %r rejected "
+                        "tools — falling back to JSON-protocol synthesis "
+                        "for this provider instance: %s",
+                        self.config.model_name,
+                        _esc(_redact(_redact_endpoint(
+                            str(exc), self.config.api_base,
+                        )))[:512],
                     )
                     self._tool_use_unsupported = True
                     return self._tool_use_fallback(
@@ -1647,8 +1721,16 @@ class OpenAICompatibleProvider(LLMProvider):
                     # can carry ANSI / BIDI / control bytes that
                     # forge log entries on operator TTYs. Defang
                     # before the warning + the TurnResponse.error.
+                    # redact_secrets + endpoint scrub too: APIError
+                    # bodies may echo Authorization / x-api-key
+                    # headers, the prompt, and the request URL —
+                    # symmetric with the generate() handler.
                     from core.security.log_sanitisation import escape_nonprintable
-                    err_msg = f"{kind} error after {attempt + 1} attempt(s): {escape_nonprintable(str(exc))}"
+                    from core.security.redaction import redact_secrets
+                    err_msg = (
+                        f"{kind} error after {attempt + 1} attempt(s): "
+                        f"{escape_nonprintable(redact_secrets(_redact_endpoint(str(exc), self.config.api_base)))}"
+                    )
                     logger.warning("OpenAICompatibleProvider.turn: %s", err_msg)
                     return TurnResponse(
                         content=[],
@@ -1658,9 +1740,15 @@ class OpenAICompatibleProvider(LLMProvider):
                         error_message=err_msg,
                     )
                 delay = (backoff_factor ** attempt) * (0.5 + random.random())
+                from core.security.log_sanitisation import escape_nonprintable
+                from core.security.redaction import redact_secrets
                 logger.info(
-                    f"OpenAICompatibleProvider.turn: transient error attempt "
-                    f"{attempt + 1}, retrying in {delay:.1f}s: {exc}"
+                    "OpenAICompatibleProvider.turn: transient error attempt "
+                    "%d, retrying in %.1fs: %s",
+                    attempt + 1, delay,
+                    escape_nonprintable(redact_secrets(_redact_endpoint(
+                        str(exc), self.config.api_base,
+                    )))[:512],
                 )
                 time.sleep(delay)
         # No `else:` branch — the for/else here was dead. Every
@@ -1834,12 +1922,18 @@ class OpenAICompatibleProvider(LLMProvider):
                     from core.llm.throttle import broadcast_rate_limit
                     broadcast_rate_limit()
                 if not _is_transient_openai(exc) or attempt >= max_retries:
+                    # redact_secrets + endpoint scrub, not just
+                    # escape — same SDK exception class as turn()
+                    # above (header/prompt/URL echo).
                     from core.security.log_sanitisation import (
                         escape_nonprintable,
                     )
+                    from core.security.redaction import redact_secrets
                     logger.warning(
                         "OpenAICompatibleProvider.turn_stream: %s",
-                        escape_nonprintable(str(exc)),
+                        escape_nonprintable(redact_secrets(_redact_endpoint(
+                            str(exc), self.config.api_base,
+                        )))[:512],
                     )
                     yield StreamChunk(
                         type="done", stop_reason=StopReason.ERROR,
@@ -2624,10 +2718,16 @@ class AnthropicProvider(LLMProvider):
                     broadcast_rate_limit()
                 if not _is_transient_anthropic(exc) or attempt >= max_retries:
                     kind = "transient" if _is_transient_anthropic(exc) else "permanent"
-                    # escape_nonprintable — see OpenAICompatibleProvider.turn
-                    # above for the rationale.
+                    # escape_nonprintable + redact_secrets — see
+                    # OpenAICompatibleProvider.turn above for the
+                    # rationale (APIError bodies may echo auth
+                    # headers and the prompt).
                     from core.security.log_sanitisation import escape_nonprintable
-                    err_msg = f"{kind} error after {attempt + 1} attempt(s): {escape_nonprintable(str(exc))}"
+                    from core.security.redaction import redact_secrets
+                    err_msg = (
+                        f"{kind} error after {attempt + 1} attempt(s): "
+                        f"{escape_nonprintable(redact_secrets(_redact_endpoint(str(exc), self.config.api_base)))}"
+                    )
                     logger.warning("AnthropicProvider.turn: %s", err_msg)
                     return TurnResponse(
                         content=[],
@@ -2637,9 +2737,15 @@ class AnthropicProvider(LLMProvider):
                         error_message=err_msg,
                     )
                 delay = (backoff_factor ** attempt) * (0.5 + random.random())
+                from core.security.log_sanitisation import escape_nonprintable
+                from core.security.redaction import redact_secrets
                 logger.info(
-                    f"AnthropicProvider.turn: transient error attempt "
-                    f"{attempt + 1}, retrying in {delay:.1f}s: {exc}"
+                    "AnthropicProvider.turn: transient error attempt "
+                    "%d, retrying in %.1fs: %s",
+                    attempt + 1, delay,
+                    escape_nonprintable(redact_secrets(_redact_endpoint(
+                        str(exc), self.config.api_base,
+                    )))[:512],
                 )
                 time.sleep(delay)
         # No `else:` branch — the for/else here was dead. Every
@@ -3371,8 +3477,17 @@ class GeminiProvider(LLMProvider):
             )
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
-            # Schema/parsing error — native mode incompatible, fall back to JSON-in-prompt
-            logger.warning("Gemini native structured generation failed (falling back): %s", e)
+            # Schema/parsing error — native mode incompatible, fall back
+            # to JSON-in-prompt. Sanitise before logging: the rendered
+            # exception can embed the model's raw output (control
+            # bytes / secret-shaped tokens) — same funnel class as the
+            # _structured_fallback handler.
+            from core.security.log_sanitisation import escape_nonprintable
+            from core.security.redaction import redact_secrets
+            logger.warning(
+                "Gemini native structured generation failed (falling back): %s",
+                escape_nonprintable(redact_secrets(str(e)))[:512],
+            )
             return self._structured_fallback(prompt, schema, pydantic_model, system_prompt, timeout_s=kwargs.get("timeout_s"))
         except Exception:
             # Auth, network, quota — don't waste a second call

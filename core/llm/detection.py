@@ -120,6 +120,25 @@ def _host_is_local(raw: str) -> bool:
     return False
 
 
+def _redact_remote_host(text: str, url: str) -> str:
+    """Strip *url*'s host (and ``host:port``) from *text* before logging.
+
+    Connection errors from requests/urllib3 embed the target host in
+    their message (``HTTPConnectionPool(host='...', port=...)``), so
+    redacting the display name alone still leaked a remote OLLAMA
+    host through the interpolated exception text.
+    """
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url if "://" in url else f"//{url}")
+    except ValueError:
+        return text
+    for token in (parts.netloc, parts.hostname):
+        if token:
+            text = text.replace(token, "[REMOTE-OLLAMA]")
+    return text
+
+
 _cached_ollama_models: list[str] | None = None
 _ollama_checked: bool = False
 
@@ -164,8 +183,16 @@ def _get_available_ollama_models() -> list[str]:
         _cached_ollama_models = []
         _ollama_checked = True
     except Exception as e:  # noqa: BLE001
-        ollama_display = RaptorConfig.OLLAMA_HOST if _host_is_local(RaptorConfig.OLLAMA_HOST) else '[REMOTE-OLLAMA]'
-        logger.debug("Could not connect to Ollama at %s: %s", ollama_display, e)
+        if _host_is_local(RaptorConfig.OLLAMA_HOST):
+            ollama_display = RaptorConfig.OLLAMA_HOST
+            err_display = str(e)
+        else:
+            # Redact the exception text too, not just the display
+            # name — requests/urllib3 connection errors embed the
+            # target host verbatim in their message.
+            ollama_display = '[REMOTE-OLLAMA]'
+            err_display = _redact_remote_host(str(e), ollama_url)
+        logger.debug("Could not connect to Ollama at %s: %s", ollama_display, err_display)
         # Cache the unreachable result too (see the non-200 branch) —
         # an absent Ollama is the common case on cloud-key installs.
         _cached_ollama_models = []
@@ -176,7 +203,10 @@ def _get_available_ollama_models() -> list[str]:
 def _check_litellm_installed() -> bool:
     """Check for litellm: auto-migrate config if present, stop if compromised.
 
-    Returns True if litellm was found (migration handled here), False otherwise.
+    Returns True if litellm was found, False otherwise. The migration
+    attempt here is best-effort (failures are swallowed) — callers must
+    still run :func:`_check_litellm_migration` to surface manual
+    guidance when auto-migration failed.
     """
     try:
         from importlib.metadata import PackageNotFoundError
@@ -192,7 +222,9 @@ def _check_litellm_installed() -> bool:
             #   * RuntimeError — Path.home() raises this when no HOME
             #     is set (some daemon/systemd-unit environments).
             #   * OSError — exists() / migration file ops.
-            #   * yaml.YAMLError — malformed source config from migrate.
+            # (yaml.YAMLError — malformed source config — never
+            # reaches here: _try_auto_migrate swallows it internally
+            # and returns False.)
             # Bare `except Exception` would also swallow programming
             # bugs (AttributeError, NameError) introduced by future
             # edits — losing valuable signal during development.
@@ -254,7 +286,7 @@ def _check_litellm_installed() -> bool:
                     f"Ref: https://github.com/BerriAI/litellm/issues/24518"
                 )
 
-            return True  # litellm found, migration handled
+            return True  # litellm found (migration attempt was best-effort)
         except PackageNotFoundError:
             return False  # litellm not installed
     except ImportError:
@@ -276,13 +308,18 @@ def _try_auto_migrate(old_config: Path, new_config: Path) -> bool:
 
 
     # Allowlist of providers RAPTOR's downstream code can handle.
-    # LiteLLM supports a much wider set (vertex_ai, bedrock, sagemaker,
+    # LiteLLM supports a much wider set (vertex_ai, sagemaker,
     # cohere, replicate, etc.) — migrating those produces JSON
     # entries that our config loader silently ignores at best, or
     # crashes on at worst. Skip with a debug log so the operator can
     # see what was dropped and add a manual entry if needed.
+    # ``bedrock`` is first-class downstream (config.py registers
+    # _build_bedrock_config; _config_has_keyed_models recognises the
+    # provider and its auth signals), so Bedrock entries migrate too —
+    # pre-fix they were silently dropped to skipped_unknown.
     _SUPPORTED_PROVIDERS = frozenset({
         "anthropic", "openai", "gemini", "mistral", "ollama", "claudecode",
+        "bedrock",
     })
 
     try:
@@ -449,10 +486,12 @@ def generate_sample_config() -> str:
     return raw
 
 
-# ``RAPTOR_CONFIG`` is overloaded (known wart, documented in
-# docs/environment.md): core.llm reads it as the models.json path,
-# packages/exploit_feasibility reads it as its analysis-settings JSON
-# path. These field names are AnalysisConfig's signature (a seed
+# ``RAPTOR_CONFIG`` is core.llm's models.json path.
+# packages/exploit_feasibility historically overloaded the same
+# variable for its analysis-settings JSON before cutting over to
+# ``RAPTOR_EF_CONFIG`` (docs/environment.md), so stale environments
+# may still point RAPTOR_CONFIG at an AnalysisConfig file. These
+# field names are AnalysisConfig's signature (a seed
 # subset of its distinctive fields — any one suffices, so the set
 # doesn't need to be exhaustive) — a dict with no "models" key but
 # any of these was almost certainly written for the OTHER reader, so
@@ -488,10 +527,9 @@ def _warn_analysis_settings_mismatch(config_path: Path) -> None:
         "packages/exploit_feasibility analysis-settings file "
         "(AnalysisConfig JSON), not a models config. core.llm expects "
         "{\"models\": [...]} or a bare list here — no models will be "
-        "loaded. RAPTOR_CONFIG is overloaded between the two readers "
-        "(see docs/environment.md); point it at models.json and give "
-        "exploit-feasibility settings via ./.raptor.json or "
-        "~/.config/raptor/config.json instead.",
+        "loaded. Point RAPTOR_CONFIG at models.json; "
+        "exploit-feasibility settings moved to RAPTOR_EF_CONFIG "
+        "(see docs/environment.md).",
         config_path,
     )
 
@@ -701,11 +739,19 @@ def detect_llm_availability() -> LLMAvailability:
     if _cached_llm_availability is not None:
         return _cached_llm_availability
 
-    litellm_found = _check_litellm_installed()
-    if not litellm_found:
-        # Only check for old config if litellm isn't installed
-        # (if it is, _check_litellm_installed already handled migration)
-        _check_litellm_migration()
+    _check_litellm_installed()
+    # Always run the migration check, whether or not litellm is
+    # installed. _check_litellm_installed attempts auto-migration as a
+    # best-effort side effect but swallows failures and returns True
+    # whenever litellm is present — pre-fix the guidance below was
+    # gated on `not litellm_found`, so an operator with litellm
+    # installed and a stale LiteLLM config whose auto-migration failed
+    # never saw the step-by-step manual migration instructions.
+    # When the earlier attempt succeeded (or no old config exists)
+    # this is a cheap no-op (two Path.exists checks); when it failed,
+    # this retries once and, on a second failure, prints the manual
+    # guidance.
+    _check_litellm_migration()
 
     # Check cloud API keys, gated on SDK availability
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY")) and (ANTHROPIC_SDK_AVAILABLE or OPENAI_SDK_AVAILABLE)

@@ -315,6 +315,39 @@ class TestMigrationDetection:
         assert captured.out == ""
 
 
+class TestMigrationGuidanceAlwaysRuns:
+    """The guidance check runs whether or not litellm is installed.
+
+    ``detect_llm_availability`` must call ``_check_litellm_migration``
+    even when litellm is present, so a swallowed auto-migration
+    failure still surfaces the manual instructions."""
+
+    def _detect_with(self, monkeypatch, litellm_installed):
+        from core.llm import detection
+        calls = []
+        monkeypatch.setattr(
+            detection, "_check_litellm_installed",
+            lambda: litellm_installed,
+        )
+        monkeypatch.setattr(
+            detection, "_check_litellm_migration",
+            lambda: calls.append("migration-check"),
+        )
+        monkeypatch.setattr(detection, "_warn_unusable_keys", lambda: None)
+        monkeypatch.setattr(
+            detection, "_get_available_ollama_models", lambda: [],
+        )
+        monkeypatch.setattr(detection, "_cached_llm_availability", None)
+        detection.detect_llm_availability()
+        return calls
+
+    def test_migration_check_runs_when_litellm_found(self, monkeypatch):
+        assert self._detect_with(monkeypatch, True) == ["migration-check"]
+
+    def test_migration_check_still_runs_when_litellm_absent(self, monkeypatch):
+        assert self._detect_with(monkeypatch, False) == ["migration-check"]
+
+
 try:
     import yaml  # noqa: F401 — availability probe for the @skipif gate below
     HAS_PYYAML = True
@@ -476,6 +509,44 @@ model_list:
         data = json.loads(new.read_text())
         assert len(data["models"]) == 1
         assert data["models"][0]["model"] == "claude-opus-4-6"
+
+    def test_bedrock_entry_migrates(self, tmp_path):
+        # Bedrock is a first-class provider downstream — migration
+        # must carry its entries instead of dropping them.
+        from core.llm.detection import _try_auto_migrate
+        old, new = self._make_litellm_config(tmp_path, """
+model_list:
+  - model_name: bedrock-opus
+    litellm_params:
+      model: bedrock/anthropic.claude-opus-4-6
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+""")
+        result = _try_auto_migrate(old, new)
+        assert result is True
+        models = json.loads(new.read_text())["models"]
+        providers = {m["provider"] for m in models}
+        assert "bedrock" in providers
+        assert "anthropic" in providers
+        bedrock = next(m for m in models if m["provider"] == "bedrock")
+        assert bedrock["model"] == "anthropic.claude-opus-4-6"
+
+    def test_unsupported_provider_still_skipped(self, tmp_path):
+        from core.llm.detection import _try_auto_migrate
+        old, new = self._make_litellm_config(tmp_path, """
+model_list:
+  - model_name: vertex
+    litellm_params:
+      model: vertex_ai/gemini-pro
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+""")
+        result = _try_auto_migrate(old, new)
+        assert result is True
+        models = json.loads(new.read_text())["models"]
+        assert {m["provider"] for m in models} == {"anthropic"}
 
     def test_prints_needs_keys_warning(self, tmp_path, capsys):
         from core.llm.detection import _try_auto_migrate

@@ -387,7 +387,16 @@ def strip_json_fences(text: str) -> str:
     last_candidate: str | None = None
     for part in parts[1::2]:
         lines = part.strip().split("\n", 1)
-        candidate = lines[1].strip() if len(lines) > 1 and not lines[0].startswith("{") else part.strip()
+        # First line is a language tag ("json") only when it doesn't
+        # already start the JSON payload. Pre-fix the check covered
+        # "{" but not "[": a fenced array whose "[" sat alone on the
+        # first line had that line discarded as a "tag", corrupting
+        # the candidate and dropping the block entirely.
+        candidate = (
+            lines[1].strip()
+            if len(lines) > 1 and not lines[0].lstrip().startswith(("{", "["))
+            else part.strip()
+        )
         if candidate and candidate[0] not in "{[":
             # Single-line fenced block with the language tag on the
             # same line ("```json {...}```") — drop the tag.
@@ -441,11 +450,46 @@ def extract_envelope_metadata(envelope: dict, into: dict) -> None:
         # already provided a value. Honors caller intent when
         # they have richer attribution context than the envelope.
         into["analysed_by"] = "claude-code"
-    usage = envelope.get("usage") or {}
+    usage = envelope.get("usage")
+    if not isinstance(usage, dict):
+        # Same malformed-envelope tolerance as the modelUsage branch
+        # above — a non-dict ``usage`` must degrade to "no token
+        # figures", not crash the parse.
+        usage = {}
     in_tokens = usage.get("input_tokens", 0) or 0
     out_tokens = usage.get("output_tokens", 0) or 0
     if "input_tokens" in usage or "output_tokens" in usage:
         into["_tokens"] = in_tokens + out_tokens
+
+
+def _envelope_error(envelope: dict) -> Any | None:
+    """In-band failure reported by a ``claude -p`` JSON envelope, or None.
+
+    Shared by :func:`parse_cc_structured` and :func:`parse_cc_freeform`
+    so the two parsers cannot drift on what counts as a failed run.
+
+    ``is_error is True`` covers the canonical bool. We also accept
+    string ``"true"`` / ``"True"`` because some upstream JSON
+    serialisers / fixture builders coerce bool to string. The
+    error-string check rejects the literal ``"false"`` / ``"none"`` /
+    ``"null"`` which are truthy by Python's bool() but semantically
+    empty — ``if envelope.get("error")`` alone fired for
+    ``error: "false"`` on responses that were actually fine.
+    """
+    err_field = envelope.get("error")
+    if isinstance(err_field, str) and err_field.strip().lower() in (
+        "false", "none", "null", "0", "",
+    ):
+        err_field = None
+    is_error_flag = envelope.get("is_error")
+    is_error = (
+        is_error_flag is True
+        or (isinstance(is_error_flag, str)
+            and is_error_flag.strip().lower() == "true")
+    )
+    if is_error or err_field:
+        return err_field or "claude -p reported is_error=true"
+    return None
 
 
 def parse_cc_structured(
@@ -480,6 +524,30 @@ def parse_cc_structured(
                 inner.setdefault("finding_id", finding_id)
                 extract_envelope_metadata(result, inner)
                 return inner
+            # Envelope reporting an in-band failure (is_error=true /
+            # non-empty error) with no structured_output: surface it
+            # as an error result. Pre-fix the whole envelope was
+            # returned verbatim as if it were a valid parsed finding —
+            # a failed run masked as a garbage result (and the
+            # parse_cc_freeform comment claiming this check existed
+            # here was false). Same redaction + defang rationale as
+            # the empty-output path above: the error text comes from
+            # the CC subprocess and may carry credentials or
+            # terminal-control bytes.
+            env_error = _envelope_error(result)
+            if env_error is not None:
+                from core.security.prompt_output_sanitise import escape_nonprintable
+                out: dict[str, Any] = {
+                    "finding_id": finding_id,
+                    "error": escape_nonprintable(
+                        redact_secrets(str(env_error)[:500])
+                    ),
+                }
+                # Failed runs still cost money — keep the envelope's
+                # cost/duration/model telemetry, as parse_cc_freeform
+                # does on its error path.
+                extract_envelope_metadata(result, out)
+                return out
             result.setdefault("finding_id", finding_id)
             return result
     except json.JSONDecodeError:
@@ -559,28 +627,11 @@ def parse_cc_freeform(stdout: str, stderr: str = "") -> dict[str, Any]:
             # An envelope with is_error=true (or non-empty error) reports an
             # in-band failure; without this check, "" content would surface
             # as if it were a successful empty response. parse_cc_structured
-            # already checks this — keep behaviour symmetric here.
-            #
-            # `is True` covers the canonical bool. We also accept string
-            # `"true"` / `"True"` because some upstream JSON serialisers
-            # / fixture builders coerce bool to string. The error-string
-            # check rejects the literal `"false"` / `"none"` / `"null"`
-            # which are truthy by Python's bool() but semantically empty
-            # — `if envelope.get("error")` alone fired for `error: "false"`
-            # on responses that were actually fine.
-            err_field = envelope.get("error")
-            if isinstance(err_field, str) and err_field.strip().lower() in (
-                "false", "none", "null", "0", "",
-            ):
-                err_field = None
-            is_error_flag = envelope.get("is_error")
-            is_error = (
-                is_error_flag is True
-                or (isinstance(is_error_flag, str)
-                    and is_error_flag.strip().lower() == "true")
-            )
-            if is_error or err_field:
-                parsed["error"] = err_field or "claude -p reported is_error=true"
+            # runs the same check via the shared _envelope_error helper —
+            # keep behaviour symmetric here.
+            env_error = _envelope_error(envelope)
+            if env_error is not None:
+                parsed["error"] = env_error
             extract_envelope_metadata(envelope, parsed)
             return parsed
     except json.JSONDecodeError:

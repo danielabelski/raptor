@@ -82,6 +82,16 @@ class TestStripJsonFences:
         text = '```json {"a": 1}```'
         assert strip_json_fences(text) == '{"a": 1}'
 
+    def test_multiline_array_own_bracket_line(self):
+        # A fenced array's leading ``[`` alone on the first line must
+        # not be treated as a language tag.
+        text = "prose\n```\n[\n1,\n2\n]\n```\nmore prose"
+        assert strip_json_fences(text) == "[\n1,\n2\n]"
+
+    def test_language_tagged_object_still_stripped(self):
+        text = "```json\n{\"a\": 1}\n```"
+        assert strip_json_fences(text) == '{"a": 1}'
+
 
 class TestParseCCStructured:
     def test_valid_json(self):
@@ -144,6 +154,76 @@ class TestParseCCStructured:
         assert "session_id" not in result
 
 
+class TestParseCCStructuredEnvelopeError:
+    """is_error envelopes are errors, not findings.
+
+    ``parse_cc_structured`` must honour the envelope's in-band failure
+    signal (``is_error`` / non-empty ``error``) instead of returning a
+    failed run's envelope as a valid parsed finding.
+    """
+
+    def test_is_error_envelope_without_structured_output_is_error(self):
+        envelope = (
+            '{"type": "result", "is_error": true, "result": "",'
+            ' "total_cost_usd": 0.12, "duration_ms": 3400}'
+        )
+        parsed = parse_cc_structured(envelope, "", "f-1")
+        assert parsed["finding_id"] == "f-1"
+        assert "error" in parsed
+        assert "is_error" in parsed["error"]
+        # Failed runs still cost money — telemetry survives.
+        assert parsed["cost_usd"] == 0.12
+        assert parsed["duration_seconds"] == 3.4
+
+    def test_error_field_envelope_is_error(self):
+        envelope = '{"type": "result", "error": "budget exceeded"}'
+        parsed = parse_cc_structured(envelope, "", "f-2")
+        assert parsed["error"] == "budget exceeded"
+        assert parsed["finding_id"] == "f-2"
+
+    def test_string_true_is_error_flag_counts(self):
+        envelope = '{"is_error": "true", "result": ""}'
+        parsed = parse_cc_structured(envelope, "", "f-3")
+        assert "error" in parsed
+
+    def test_semantically_empty_error_strings_are_not_errors(self):
+        # "false"/"none"/"null"/"0"/"" are truthy-string noise, not
+        # failures — same semantics as parse_cc_freeform. The dict is
+        # returned verbatim (keeping its own keys), NOT collapsed into
+        # an error-only result that would drop the payload fields.
+        for noise in ("false", "none", "null", "0", ""):
+            envelope = f'{{"error": "{noise}", "verdict": "ok"}}'
+            parsed = parse_cc_structured(envelope, "", "f-4")
+            assert parsed["verdict"] == "ok", noise
+            assert parsed.get("error") == noise, noise
+
+    def test_structured_output_still_wins(self):
+        # A validated structured_output object is the success path;
+        # its presence keeps the pre-existing behaviour.
+        envelope = (
+            '{"type": "result", "is_error": false,'
+            ' "structured_output": {"verdict": "exploitable"}}'
+        )
+        parsed = parse_cc_structured(envelope, "", "f-5")
+        assert parsed["verdict"] == "exploitable"
+        assert "error" not in parsed
+
+    def test_envelope_error_text_is_defanged_and_redacted(self):
+        secret = "sk-" + "a" * 48
+        envelope_error = f"boom \x1b[31m {secret}"
+        envelope = json.dumps({"is_error": True, "error": envelope_error})
+        parsed = parse_cc_structured(envelope, "", "f-6")
+        assert secret not in parsed["error"]
+        assert "\x1b" not in parsed["error"]
+        assert "[REDACTED]" in parsed["error"]
+
+    def test_plain_structured_dict_unchanged(self):
+        # A non-envelope dict (no is_error / error fields) is returned
+        # verbatim with the transport-injected finding_id.
+        parsed = parse_cc_structured('{"verdict": "ok"}', "", "f-7")
+        assert parsed == {"verdict": "ok", "finding_id": "f-7"}
+
+
 class TestParseCCFreeform:
     def test_extracts_content_and_cost(self):
         envelope = json.dumps({
@@ -175,6 +255,18 @@ class TestParseCCFreeform:
         assert parsed["content"] == "analysis text"
         assert "cost_usd" not in parsed
 
+    # Error-signal semantics stay symmetric with parse_cc_structured —
+    # pin both directions.
+
+    def test_is_error_still_flagged(self):
+        parsed = parse_cc_freeform('{"result": "", "is_error": true}')
+        assert parsed["error"] == "claude -p reported is_error=true"
+
+    def test_error_false_still_clean(self):
+        parsed = parse_cc_freeform('{"result": "hi", "error": "false"}')
+        assert "error" not in parsed
+        assert parsed["content"] == "hi"
+
 
 class TestExtractEnvelopeMetadata:
     def test_full_envelope(self):
@@ -196,6 +288,19 @@ class TestExtractEnvelopeMetadata:
         extract_envelope_metadata({}, into)
         assert "cost_usd" not in into
         assert into["analysed_by"] == "claude-code"
+
+    def test_string_usage_does_not_crash(self):
+        # A non-dict ``usage`` field degrades instead of crashing.
+        into: dict = {}
+        extract_envelope_metadata({"usage": "corrupt"}, into)
+        assert "_tokens" not in into
+
+    def test_dict_usage_still_counted(self):
+        into: dict = {}
+        extract_envelope_metadata(
+            {"usage": {"input_tokens": 3, "output_tokens": 4}}, into,
+        )
+        assert into["_tokens"] == 7
 
 
 class TestBuildCCCommandResume:

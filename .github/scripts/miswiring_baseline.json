@@ -263,9 +263,6 @@
   "artifacts:write_only_artifact::hash-pin.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::iris-taint-specs-refined.json": {
-   "note": "written by the audit orchestrator after iris_refine_loop; still unread: the promoted-spec readers in /validate//understand//agentic consume the project store (<project>/iris-specs/specs.json via core.iris.api), which only promote_spec_on_annotation writes \u2014 the refine loop's caller-persist step (core.iris.store.save_specs merge of refined specs) is unwired, and auto-persisting LLM-refined sanitiser specs into untiered suppression-direction readers (get_project_sanitisers) needs an evidence-tier gate first; artifact doubles as operator-facing run output"
-  },
   "artifacts:write_only_artifact::mechanical-findings.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },

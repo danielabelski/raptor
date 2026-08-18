@@ -5659,7 +5659,51 @@ def _run_audit_body(
                 codeql_tool_runner,
             )
 
+            # Prior specs: persistent project store + the run-local
+            # refined artifact (resume / re-entry continuity), then
+            # this run's heuristic candidates. merge_specs keeps the
+            # higher evidence tier on collision, so a tool-confirmed
+            # spec from a previous round is never demoted by a fresh
+            # heuristic candidate.
             prior_specs = iris_taint_specs or []
+            try:
+                from core.iris.store import (
+                    load_refined_specs as _iris_load_refined,
+                )
+                from core.iris.store import (
+                    load_specs as _iris_load_store,
+                )
+                from core.iris.store import (
+                    merge_specs as _iris_merge,
+                )
+
+                _iris_prior_store: list = []
+                _iris_prior_refined: list = []
+                if config.out_dir:
+                    _iris_prior_store = _iris_load_store(
+                        config.out_dir,
+                        target_path=Path(config.target_path),
+                    )
+                    _iris_prior_refined = _iris_load_refined(
+                        config.out_dir,
+                    )
+                if _iris_prior_store or _iris_prior_refined:
+                    prior_specs = _iris_merge(
+                        _iris_merge(
+                            _iris_prior_store, _iris_prior_refined,
+                        ),
+                        prior_specs,
+                    )
+                    logger.info(
+                        "IRIS: seeded refine loop with %d prior specs "
+                        "(%d store, %d refined artifact)",
+                        len(prior_specs), len(_iris_prior_store),
+                        len(_iris_prior_refined),
+                    )
+            except Exception:
+                logger.debug(
+                    "IRIS prior-spec load failed", exc_info=True,
+                )
             refined_specs, history, assumptions, bypass_findings = iris_refine_loop(
                 iris_candidates,
                 llm_client=iris_llm,
@@ -5680,6 +5724,40 @@ def _run_audit_body(
                 if config.out_dir:
                     spec_path = config.out_dir / "iris-taint-specs-refined.json"
                     spec_path.write_text(specs_to_json(refined_specs))
+                    # Caller-persist step: merge the refined specs
+                    # into the persistent project store (evidence
+                    # tiers carried through; envelope metadata —
+                    # history, assumptions, target — preserved).
+                    # Suppression-direction readers are tier-gated in
+                    # core.iris.api, so heuristic-tier refined specs
+                    # land as prompt-only hints, never suppression.
+                    try:
+                        from dataclasses import asdict as _dc_asdict
+
+                        from core.iris.store import (
+                            checklist_sha as _iris_cl_sha,
+                        )
+                        from core.iris.store import (
+                            persist_refined_specs as _iris_persist,
+                        )
+
+                        _iris_persist(
+                            config.out_dir,
+                            refined_specs,
+                            cl_sha=(
+                                _iris_cl_sha(checklist)
+                                if checklist else ""
+                            ),
+                            history=[_dc_asdict(r) for r in history],
+                            assumptions=assumptions or None,
+                            target_path=Path(config.target_path),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "IRIS refined-spec store persist failed",
+                            exc_info=True,
+                        )
+
             if assumptions:
                 logger.info(
                     "iris.synthesise: %d assumptions from %d sink/sanitiser specs",

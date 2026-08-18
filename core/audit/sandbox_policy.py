@@ -169,6 +169,22 @@ _LLM_PHASES = frozenset({
     # Pre-loop LLM summary extraction (core.audit.llm_summaries),
     # booked into the phase ledger as the "summary" call class.
     "summary",
+    # Remaining LLM-side ledger names. The orchestrator feeds this
+    # validator the COST-LEDGER phase keys, and that ledger books LLM
+    # spend classes exclusively — subprocess tools never book cost
+    # there (their runners enforce sandboxing at the invocation
+    # chokepoint instead). Every name the ledger can carry is
+    # therefore LLM-side by construction: the cost tracker's known
+    # phases plus any telemetry call class book_unbooked_classes
+    # imports (spec_inference, iris, glance_batch, audit, the
+    # "unclassified" fallback…). A live run warned "invoked without
+    # policy: refinement, iris, unclassified" — three LLM spend
+    # buckets, zero subprocesses; pure false positives.
+    "refinement", "spec_inference", "iris", "glance_batch", "audit",
+    "unclassified", "concept_discovery", "rule_refinement", "stress",
+    "triage", "prefilter", "clean_check", "sweep", "synthesis",
+    "dynamic", "reachability", "propagation", "attacker_synthesis",
+    "dark_verify", "report", "deepen", "study",
 })
 
 
@@ -178,8 +194,11 @@ def validate_all_tools_sandboxed(
     """Check that every invoked tool has a sandbox policy.
 
     Returns a list of tools WITHOUT a policy (should be empty).
-    LLM-only phases (review, checker_synthesis, etc.) are excluded —
-    they don't invoke external tools.
+    LLM-only phases and cost-ledger spend buckets (review,
+    checker_synthesis, refinement, iris, etc.) are excluded — they
+    don't invoke external tools; subprocess tools enforce their
+    policies at the runner chokepoint and never appear in the cost
+    ledger this validator is fed from.
     """
     missing = []
     for tool in invoked_tools:

@@ -450,14 +450,16 @@ def resolve_model_name(model: str) -> str:
     if MODEL_LIMITS.get(model) is not None:
         return model
 
-    try:
-        from core.security.llm_family import resolve_model_shorthand
+    from core.security.llm_family import resolve_model_shorthand
 
-        resolved = resolve_model_shorthand(model, MODEL_LIMITS.keys())
-        if resolved is not None:
-            return resolved
-    except Exception:
-        pass
+    # No except here by design: resolve_model_shorthand raises
+    # ValueError on an ambiguous shorthand ("haiku" matching two
+    # configured models) so the operator can disambiguate, and
+    # TypeError on a misrouted non-string — both are deliberate
+    # fail-loud signals this wrapper used to swallow.
+    resolved = resolve_model_shorthand(model, MODEL_LIMITS.keys())
+    if resolved is not None:
+        return resolved
     return model
 
 

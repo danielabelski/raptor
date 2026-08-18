@@ -45,9 +45,13 @@ class TaintSpec:
     return_tainted: bool = False
     confidence: float = 0.5
     evidence_tier: EvidenceTier = EvidenceTier.HEURISTIC
+    # Provenance label ("heuristic", "operator_confirmed", ...).
+    # Mirrors core.iris.specs.TaintSpec so the two spec shapes stay
+    # interchangeable across the refine loop / store merge seam.
+    source: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "function": self.function,
             "file": self.file,
             "role": self.role,
@@ -57,6 +61,9 @@ class TaintSpec:
             "confidence": self.confidence,
             "evidence_tier": self.evidence_tier.value,
         }
+        if self.source:
+            d["source"] = self.source
+        return d
 
 
 @dataclass
@@ -337,5 +344,6 @@ def specs_from_json(raw: str) -> List[TaintSpec]:
             return_tainted=item.get("return_tainted", False),
             confidence=item.get("confidence", 0.5),
             evidence_tier=tier,
+            source=item.get("source", ""),
         ))
     return specs

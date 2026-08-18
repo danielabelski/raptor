@@ -242,3 +242,158 @@ class TestRoundRecord:
         r = RoundRecord(round=0, n_specs=10, n_confirmed=7, n_refuted=2)
         assert r.round == 0
         assert r.n_specs == 10
+
+
+class TestLoadRefinedSpecs:
+    """Run-local refined-artifact reader (refine-loop continuity)."""
+
+    def _write_artifact(self, run_dir, specs):
+        import json
+
+        payload = json.dumps([s.to_dict() for s in specs], indent=2)
+        (run_dir / "iris-taint-specs-refined.json").write_text(payload)
+
+    def test_round_trip_preserves_tier_and_source(self, tmp_path):
+        from core.iris.store import load_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        self._write_artifact(run_dir, [
+            _make_spec(fn="confirmed", role="sanitiser",
+                       evidence_tier=EvidenceTier.XREF_BACKED,
+                       source="operator_confirmed"),
+            _make_spec(fn="guessy", role="sink",
+                       evidence_tier=EvidenceTier.HEURISTIC),
+        ])
+        loaded = load_refined_specs(run_dir)
+        by_fn = {s.function: s for s in loaded}
+        assert by_fn["confirmed"].evidence_tier == EvidenceTier.XREF_BACKED
+        assert by_fn["confirmed"].source == "operator_confirmed"
+        assert by_fn["guessy"].evidence_tier == EvidenceTier.HEURISTIC
+
+    def test_missing_artifact_empty(self, tmp_path):
+        from core.iris.store import load_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        assert load_refined_specs(run_dir) == []
+
+    def test_malformed_artifact_empty(self, tmp_path):
+        from core.iris.store import load_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        (run_dir / "iris-taint-specs-refined.json").write_text("{not json")
+        assert load_refined_specs(run_dir) == []
+        (run_dir / "iris-taint-specs-refined.json").write_text('{"a": 1}')
+        assert load_refined_specs(run_dir) == []
+
+    def test_unknown_tier_degrades_to_heuristic_never_up(self, tmp_path):
+        import json
+
+        from core.iris.store import load_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        (run_dir / "iris-taint-specs-refined.json").write_text(json.dumps([
+            {"function": "f", "file": "a.py", "role": "sanitiser",
+             "evidence_tier": "totally_made_up_tier"},
+        ]))
+        loaded = load_refined_specs(run_dir)
+        assert loaded[0].evidence_tier == EvidenceTier.HEURISTIC
+
+
+class TestPersistRefinedSpecs:
+    """Caller-persist step: store merge + envelope-metadata preservation."""
+
+    def test_merges_into_empty_store(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        dest = persist_refined_specs(run_dir, [
+            _make_spec(fn="new_sani", role="sanitiser"),
+        ])
+        assert dest is not None
+        loaded = load_specs(run_dir)
+        assert [s.function for s in loaded] == ["new_sani"]
+
+    def test_merge_keeps_higher_tier(self, tmp_path):
+        """A tool-confirmed store spec survives a heuristic re-refine."""
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            _make_spec(fn="sani", role="sanitiser",
+                       evidence_tier=EvidenceTier.XREF_BACKED),
+        ])
+        persist_refined_specs(run_dir, [
+            _make_spec(fn="sani", role="sanitiser",
+                       evidence_tier=EvidenceTier.HEURISTIC),
+        ])
+        loaded = load_specs(run_dir)
+        assert loaded[0].evidence_tier == EvidenceTier.XREF_BACKED
+
+    def test_preserves_envelope_metadata(self, tmp_path):
+        from pathlib import Path
+
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(
+            run_dir,
+            [_make_spec(fn="old_spec", role="sink")],
+            cl_sha="abc123",
+            round_num=2,
+            history=[{"round": 0, "n_specs": 1}, {"round": 1, "n_specs": 1}],
+            target_path=Path("/repo/a"),
+            assumptions=[SafetyAssumption(
+                target="old_spec", file="src/auth.py",
+                assumption="requires check",
+                category=AssumptionCategory.ORDERING,
+                enforced_by=["check"],
+            )],
+        )
+        persist_refined_specs(
+            run_dir,
+            [_make_spec(fn="refined_spec", role="sanitiser")],
+            history=[{"round": 0, "n_specs": 2}],
+        )
+        meta = load_store_metadata(run_dir)
+        # checklist_sha kept when caller passes none
+        assert meta["checklist_sha"] == "abc123"
+        # prior history preserved, new round appended
+        assert len(meta["history"]) == 3
+        # target path preserved
+        assert meta["target_path"] == str(Path("/repo/a").resolve())
+        # stored assumptions preserved
+        assert len(meta["assumptions"]) == 1
+        # both specs present after merge
+        fns = {s.function for s in load_specs(run_dir)}
+        assert fns == {"old_spec", "refined_spec"}
+
+    def test_cross_target_guard(self, tmp_path):
+        from pathlib import Path
+
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [_make_spec(fn="theirs")],
+                   target_path=Path("/repo/a"))
+        dest = persist_refined_specs(
+            run_dir, [_make_spec(fn="mine")],
+            target_path=Path("/repo/b"),
+        )
+        assert dest is None
+        assert {s.function for s in load_specs(run_dir)} == {"theirs"}
+
+    def test_empty_refined_is_noop(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        assert persist_refined_specs(run_dir, []) is None
+        assert load_specs(run_dir) == []

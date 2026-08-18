@@ -201,6 +201,118 @@ def save_specs(
     return dest
 
 
+def load_refined_specs(out_dir: Path) -> list[TaintSpec]:
+    """Load the run-local refined-spec artifact.
+
+    ``iris-taint-specs-refined.json`` is written into the *run* output
+    dir by the audit orchestrator after the refine loop.  Reading it
+    back (resumed / re-entered runs, and as a prior-spec source next
+    to the project store) preserves refinement continuity even when
+    the project store is absent.  Evidence tiers round-trip: the
+    artifact rows carry ``evidence_tier`` and ``_specs_from_list``
+    restores them (unknown / missing tier degrades to heuristic, never
+    upward).
+    """
+    path = Path(out_dir) / "iris-taint-specs-refined.json"
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        logger.debug(
+            "iris.store: failed to load refined artifact %s",
+            path, exc_info=True,
+        )
+        return []
+    if not isinstance(data, list):
+        return []
+    return _specs_from_list(data)
+
+
+def persist_refined_specs(
+    out_dir: Path,
+    refined: list[TaintSpec],
+    *,
+    cl_sha: str = "",
+    history: list[dict[str, Any]] | None = None,
+    assumptions: list[SafetyAssumption] | None = None,
+    target_path: "Path | None" = None,
+) -> "Path | None":
+    """Merge refine-loop output into the project store.
+
+    The caller-persist step for ``refine_loop``: loads the existing
+    store envelope, merges the refined specs in (higher evidence tier
+    wins — ``merge_specs``), and saves with envelope metadata
+    preserved:
+
+    * prior ``history`` rounds are kept, new round records appended;
+    * stored assumptions are merged (``merge_assumptions``);
+    * ``checklist_sha`` / ``target_path`` are only replaced when the
+      caller provides them.
+
+    Cross-target guard: when the store belongs to a different target
+    the merge is skipped (returns ``None``) rather than contaminating
+    another project's specs.
+
+    Safe to call before the suppression-direction readers because
+    those are tier-gated (``core.iris.api.SUPPRESSION_MIN_TIER``):
+    a heuristic-tier refined sanitiser lands in the store as prompt
+    context only and cannot flow into suppression.
+    """
+    if not refined:
+        return None
+    meta = load_store_metadata(out_dir)
+    stored_target = meta.get("target_path", "")
+    if (
+        target_path is not None
+        and stored_target
+        and str(Path(stored_target).resolve()) != str(Path(target_path).resolve())
+    ):
+        logger.debug(
+            "iris.store: refusing refined-spec merge into store for "
+            "different target (%s vs %s)", stored_target, target_path,
+        )
+        return None
+
+    existing = _specs_from_list(meta.get("specs", []))
+    merged = merge_specs(existing, refined)
+
+    prior_history = [
+        h for h in (meta.get("history") or []) if isinstance(h, dict)
+    ]
+    new_history = prior_history + [
+        h for h in (history or []) if isinstance(h, dict)
+    ]
+
+    from .assumptions import merge_assumptions
+
+    existing_assumptions = assumptions_from_list(meta.get("assumptions", []))
+    merged_assumptions = merge_assumptions(
+        existing_assumptions, list(assumptions or []),
+    )
+
+    try:
+        prior_round = int(meta.get("round", 0) or 0)
+    except (TypeError, ValueError):
+        prior_round = 0
+
+    resolved_target: Path | None = None
+    if target_path is not None:
+        resolved_target = Path(target_path)
+    elif stored_target:
+        resolved_target = Path(stored_target)
+
+    return save_specs(
+        out_dir,
+        merged,
+        cl_sha=cl_sha or meta.get("checklist_sha", ""),
+        round_num=prior_round + len(history or []),
+        history=new_history,
+        target_path=resolved_target,
+        assumptions=merged_assumptions or None,
+    )
+
+
 def merge_specs(
     existing: list[TaintSpec],
     new: list[TaintSpec],

@@ -20,6 +20,7 @@ from core.audit.peer_evidence import (
     is_detection_rule_id,
     rule_id,
 )
+from core.testing import requires_ts
 
 PROMOTE_CAPABLE_RULES = (
     "consistency:sanitize-sink",
@@ -84,6 +85,7 @@ class TestAggregationFirewall:
             assert is_tool_evidence(rule), rule
 
 
+@requires_ts('c')
 class TestPrepassTelemetryDimensions:
     def test_both_dimensions_report_counters(self, tmp_path):
         """One fixture exercising both phase-3 dimensions in a single

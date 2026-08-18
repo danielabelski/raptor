@@ -16,6 +16,7 @@ from core.audit.consistency_dimensions import (
     detect_ordering_deviations,
 )
 from core.audit.evidence_grade import is_tool_evidence
+from core.testing import requires_ts
 
 
 def _check_then_open(n_majority: int, deviant_body: str) -> dict[str, str]:
@@ -62,6 +63,7 @@ _CONFORMING_TWIN = textwrap.dedent("""\
 
 
 class TestCheckBeforeUse:
+    @requires_ts('c')
     def test_toctou_shape_needs_shared_argument_witness(self):
         devs = detect_ordering_deviations(
             _check_then_open(3, _DEVIANT_SHARED_ARG),
@@ -78,6 +80,7 @@ class TestCheckBeforeUse:
         # Honesty: the shape witness does not prove a race window.
         assert "no race window proven" in d.description
 
+    @requires_ts('c')
     def test_without_witness_no_toctou_claim(self):
         devs = detect_ordering_deviations(
             _check_then_open(3, _DEVIANT_DISTINCT_ARGS),
@@ -100,6 +103,7 @@ class TestCheckBeforeUse:
 
 
 class TestReceipts:
+    @requires_ts('c')
     def test_detection_grade_receipt_with_ordered_exhibits(self):
         devs = detect_ordering_deviations(
             _check_then_open(3, _DEVIANT_SHARED_ARG),
@@ -128,6 +132,7 @@ class TestReceipts:
         )
 
 
+@requires_ts('c')
 class TestDataDependency:
     def test_forced_order_marked_data_dependent(self):
         """The deviant's earlier call binds the handle the later call
@@ -155,6 +160,7 @@ class TestDataDependency:
         assert devs[0].data_dependent
 
 
+@requires_ts('c')
 class TestInitBeforeUse:
     def test_learned_acquire_flavor(self):
         parts = []
@@ -186,6 +192,7 @@ class TestInitBeforeUse:
         assert devs[0].cwe == "CWE-908"
 
 
+@requires_ts('c')
 class TestPrepassWiring:
     def test_ordering_leads_and_telemetry(self, tmp_path):
         from core.audit.consistency_prepass import run_consistency_prepass

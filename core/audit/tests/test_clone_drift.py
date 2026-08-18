@@ -19,6 +19,7 @@ from core.audit.clone_drift import (
 )
 from core.audit.consistency_verify import clone_drift_verdict
 from core.audit.evidence_grade import is_tool_evidence
+from core.testing import requires_ts
 
 _GUARDED = textwrap.dedent("""\
     int handle_packet(pkt_t *p, size_t n) {
@@ -55,6 +56,7 @@ _UNRELATED = textwrap.dedent("""\
 
 
 class TestGenericWinnowing:
+    @requires_ts('c')
     def test_guard_divergence_between_near_clones(self):
         devs = detect_clone_drift({
             "src/pkt.c": _GUARDED,
@@ -113,6 +115,7 @@ def _anchor(*, guard: str = "validate_len") -> dict:
 
 
 class TestFixAnchoredLeg:
+    @requires_ts('c')
     def test_near_clone_missing_guard_promotes(self):
         devs = fix_anchored_drift([_anchor()], {"src/frm.c": _DRIFTED})
         assert len(devs) == 1
@@ -210,6 +213,7 @@ class TestVariantSiteRecords:
 
 
 class TestPrepassWiring:
+    @requires_ts('c')
     def test_fix_anchored_finding_and_generic_lead(self, tmp_path):
         from core.audit.consistency_prepass import run_consistency_prepass
 

@@ -13,6 +13,7 @@ import textwrap
 
 from core.audit.evidence_grade import _RECEIPT_MAP, is_tool_evidence
 from core.audit.peer_evidence import is_detection_rule_id, rule_id
+from core.testing import requires_ts
 
 PROMOTE_CAPABLE_RULES = (
     "consistency:return-check",
@@ -72,6 +73,7 @@ class TestAggregationFirewall:
             assert is_tool_evidence(rule), rule
 
 
+@requires_ts('c')
 class TestPrepassTelemetryDimensions:
     def test_every_dimension_reports_a_counter(self, tmp_path):
         """One fixture exercising all phase-2 dimensions in a single

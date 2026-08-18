@@ -15,6 +15,7 @@ from core.audit.consistency_dimensions import (
 )
 from core.audit.evidence_grade import is_tool_evidence
 from core.audit.sibling_analysis import SiblingGroup, SiblingPath
+from core.testing import requires_ts
 
 _CHECKED_HANDLER = textwrap.dedent("""\
     int op_{name}(req_t *r) {{
@@ -63,6 +64,7 @@ _MEMBERS = ["op_read", "op_stat", "op_poll", "op_write"]
 
 
 class TestDispatchGroupParity:
+    @requires_ts('c')
     def test_handler_skipping_auth_check_flagged(self):
         devs = detect_interface_deviations(
             _fixture(deviant=True), [_dispatch_group(_MEMBERS)],
@@ -114,6 +116,7 @@ class TestDispatchGroupParity:
             _fixture(deviant=True), [group],
         ) == []
 
+    @requires_ts('c')
     def test_type_cohort_layer_accepted(self):
         group = _dispatch_group(_MEMBERS)
         group.sibling_type = "type_cohort"
@@ -130,6 +133,7 @@ class TestDispatchGroupParity:
 
 
 class TestPrepassWiring:
+    @requires_ts('c')
     def test_interface_leads_and_telemetry(self, tmp_path):
         from core.audit.consistency_prepass import run_consistency_prepass
 

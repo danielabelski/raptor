@@ -23,6 +23,7 @@ from core.audit.consistency_verify import (
     RULE_GUARD_PRESENCE,
     guard_presence_verdict,
 )
+from core.testing import requires_ts
 
 
 def _null_fixture(*, deviant: bool, conforming: int = 3) -> dict[str, str]:
@@ -66,6 +67,7 @@ def _bounds_fixture(*, deviant: bool, conforming: int = 3) -> dict[str, str]:
 
 
 class TestNullLeg:
+    @requires_ts('c')
     def test_unguarded_deref_among_checked_siblings(self):
         devs = detect_guard_presence_deviations(
             _null_fixture(deviant=True),
@@ -98,6 +100,7 @@ class TestNullLeg:
 
 
 class TestBoundsLeg:
+    @requires_ts('c')
     def test_unbounded_subscript_among_checked_siblings(self):
         devs = detect_guard_presence_deviations(
             _bounds_fixture(deviant=True),
@@ -124,6 +127,7 @@ class TestBoundsLeg:
         assert detect_guard_presence_deviations(texts) == []
 
 
+@requires_ts('c')
 class TestSmtEscalation:
     def _deviant(self, conforming: int = 9):
         return detect_guard_presence_deviations(
@@ -219,6 +223,7 @@ _RAW_CALLER = textwrap.dedent("""\
 """)
 
 
+@requires_ts('c')
 class TestGuardElsewhereWalk:
     def _run(self, caller_src: str):
         texts, inventory = _caller_inventory(
@@ -267,6 +272,7 @@ class TestGuardElsewhereWalk:
         assert res.rule_id == "consistency:guard-presence-majority"
 
 
+@requires_ts('c')
 class TestPrepassIntegration:
     def test_detection_grade_lead_and_telemetry(self, tmp_path):
         from core.audit.consistency_prepass import run_consistency_prepass

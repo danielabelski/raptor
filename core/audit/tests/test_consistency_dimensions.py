@@ -10,6 +10,7 @@ import textwrap
 from core.audit.consistency_dimensions import (
     detect_flag_mode_deviations,
 )
+from core.testing import requires_ts
 
 
 def _open_fixture(deviant_flags: str) -> dict[str, str]:
@@ -31,6 +32,7 @@ def _open_fixture(deviant_flags: str) -> dict[str, str]:
 
 
 class TestBitmaskLeg:
+    @requires_ts('c')
     def test_missing_nofollow_flagged_and_graded(self):
         devs = detect_flag_mode_deviations(
             _open_fixture("O_WRONLY|O_CREAT"),
@@ -81,6 +83,7 @@ class TestBitmaskLeg:
         assert detect_flag_mode_deviations(texts) == []
 
 
+@requires_ts('c')
 class TestValueLeg:
     def test_permissive_mode_deviant_graded(self):
         parts = []
@@ -147,6 +150,7 @@ class TestKwargLeg:
         """))
         return {"client.py": "\n".join(parts)}
 
+    @requires_ts('python')
     def test_verify_false_among_true_peers(self):
         devs = detect_flag_mode_deviations(self._requests_fixture("False"))
         kw = [d for d in devs if d.kind == "kwarg"]
@@ -169,6 +173,7 @@ class TestTierAFlagRegistryPolicy:
 
         assert registry_budget_violations() == []
 
+    @requires_ts('c')
     def test_grading_is_grading_only(self):
         """An ungraded (non-Tier-A) flag deviation is still detected —
         the comparator is vocabulary-free (§3.7)."""
@@ -261,6 +266,7 @@ class TestCleanupPairs:
 
 
 class TestCleanupIntraLeg:
+    @requires_ts('c')
     def test_deviant_error_path_confirms(self):
         from core.audit.consistency_dimensions import (
             detect_cleanup_deviations,
@@ -302,6 +308,7 @@ class TestCleanupIntraLeg:
         assert [d for d in devs if d.leg == "intra_path"] == []
 
 
+@requires_ts('c')
 class TestCleanupCrossLeg:
     def _cross_fixture(self, *, transfer: bool) -> dict[str, str]:
         parts = []

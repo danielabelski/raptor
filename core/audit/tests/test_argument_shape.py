@@ -15,6 +15,7 @@ from core.audit.consistency_dimensions import (
 )
 from core.audit.consistency_verify import argument_shape_verdict
 from core.audit.evidence_grade import is_tool_evidence
+from core.testing import requires_ts
 
 
 def _sizeof_fixture(deviant_arg: str, *, n: int = 4) -> dict[str, str]:
@@ -35,6 +36,7 @@ def _sizeof_fixture(deviant_arg: str, *, n: int = 4) -> dict[str, str]:
 
 
 class TestSizeofTypeWitness:
+    @requires_ts('c')
     def test_sizeof_pointer_among_buffer_sizes_is_type_witness(self):
         devs = detect_argument_shape_deviations(
             _sizeof_fixture("sizeof(out)"),
@@ -105,6 +107,7 @@ class TestSizeofTypeWitness:
 
 
 class TestStemConfusion:
+    @requires_ts('c')
     def test_capacity_among_length_stays_detection_grade(self):
         parts = []
         for i in range(9):
@@ -131,6 +134,7 @@ class TestStemConfusion:
         assert not d.peer_evidence.registry_grade
 
 
+@requires_ts('c')
 class TestVerdict:
     def test_type_witness_confirms_promote_capable(self):
         devs = detect_argument_shape_deviations(
@@ -167,6 +171,7 @@ class TestVerdict:
 
 
 class TestPrepassWiring:
+    @requires_ts('c')
     def test_type_witness_becomes_llm_free_finding(self, tmp_path):
         from core.audit.consistency_prepass import run_consistency_prepass
 

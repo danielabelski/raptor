@@ -21,6 +21,7 @@ from core.audit.consistency_verify import (
     RULE_SANITIZE_SINK,
     sanitize_sink_verdict,
 )
+from core.testing import requires_ts
 
 _SINKS = {
     "db_exec": {"source": "context_map", "cwe": "CWE-89",
@@ -54,6 +55,7 @@ def _fixture(*, deviant: bool, conforming: int = 3) -> dict[str, str]:
 
 
 class TestSanitizeSinkComparator:
+    @requires_ts('c')
     def test_raw_writer_among_escaped_writers_is_flagged(self):
         devs = detect_sanitize_sink_deviations(
             _fixture(deviant=True), _SINKS, _SANITIZERS,
@@ -66,6 +68,7 @@ class TestSanitizeSinkComparator:
         assert d.cwe == "CWE-89"
         assert not d.annotated and not d.registry_grade
 
+    @requires_ts('c')
     def test_receipt_carries_sanitizing_exhibits(self):
         d = detect_sanitize_sink_deviations(
             _fixture(deviant=True), _SINKS, _SANITIZERS,
@@ -138,6 +141,7 @@ class TestPremiseSplit:
             assert "fail_open" not in (res.to_dict().get("reason") or "")
 
 
+@requires_ts('c')
 class TestSanitizeSinkVerdict:
     def test_majority_only_is_detection_grade(self):
         dev = detect_sanitize_sink_deviations(
@@ -203,6 +207,7 @@ class TestPrepassIntegration:
         )])
         return ann_dir
 
+    @requires_ts('c')
     def test_annotated_sink_yields_promote_capable_finding(self, tmp_path):
         from core.audit.consistency_prepass import run_consistency_prepass
 

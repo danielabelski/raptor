@@ -15,6 +15,7 @@ import json
 
 from core.audit.consistency_prepass import run_consistency_prepass
 from core.audit.measurement import evaluate_run, load_ground_truth
+from core.testing import requires_ts
 
 
 def _callers(checked: int, deviant: bool) -> str:
@@ -97,6 +98,7 @@ class TestReturnCheckGroundTruth:
 
 
 class TestArgumentShapeGroundTruth:
+    @requires_ts('c')
     def test_type_witness_scores_true_positive(self, tmp_path):
         target = tmp_path / "target"
         target.mkdir()
@@ -145,6 +147,7 @@ class TestArgumentShapeGroundTruth:
 
 
 class TestCloneDriftGroundTruth:
+    @requires_ts('c')
     def test_fix_anchored_drift_scores_true_positive(self, tmp_path):
         guarded = (
             "int wire_a(pkt_t *p, size_t n) {\n"
@@ -206,6 +209,7 @@ class TestCloneDriftGroundTruth:
 
 
 class TestCleanupGroundTruth:
+    @requires_ts('c')
     def test_cleanup_dimension_scores_true_positive(self, tmp_path):
         target = tmp_path / "target"
         target.mkdir()
@@ -337,6 +341,7 @@ class TestSanitizeSinkGroundTruth:
         ]))
         return evaluate_run(out, load_ground_truth(target)), found
 
+    @requires_ts('c')
     def test_raw_writer_scores_true_positive(self, tmp_path):
         result, found = self._run(tmp_path, deviant=True)
         assert found and found[0]["rule_id"] == \
@@ -417,6 +422,7 @@ class TestGuardPresenceGroundTruth:
         (out / "findings.json").write_text(json.dumps(findings))
         return evaluate_run(out, load_ground_truth(target)), findings
 
+    @requires_ts('c')
     def test_unguarded_deref_scores_true_positive(self, tmp_path):
         result, findings = self._run(tmp_path, deviant=True)
         assert findings and findings[0]["rule_id"] == \

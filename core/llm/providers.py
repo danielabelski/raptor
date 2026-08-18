@@ -600,12 +600,16 @@ class LLMProvider(ABC):
             self.instructor_client = None
 
     def _structured_fallback(self, prompt: str, schema: dict[str, Any],
-                             pydantic_model, system_prompt: str | None = None
+                             pydantic_model, system_prompt: str | None = None,
+                             timeout_s: float | None = None,
                              ) -> StructuredResponse:
         """
         Universal fallback: ask for JSON in the prompt, validate
         with Pydantic. Works with any LLM that can produce JSON.
         Usage is tracked by self.generate() — no double counting.
+        ``timeout_s`` is the caller's per-call ceiling, forwarded to
+        ``generate`` (providers without per-request timeout support
+        ignore it there).
         """
         schema_json = json.dumps(schema, indent=2)
         schema_block = (
@@ -617,7 +621,7 @@ class LLMProvider(ABC):
         augmented_system = (
             (system_prompt or "") + schema_block
         )
-        response = self.generate(prompt, augmented_system)
+        response = self.generate(prompt, augmented_system, timeout_s=timeout_s)
         if response.finish_reason in ("max_tokens", "length"):
             raise json.JSONDecodeError(
                 "Response truncated (output token limit reached)",
@@ -1484,7 +1488,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 self._note_instructor_failure(e)
 
         # Fallback: JSON-in-prompt
-        return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
+        return self._structured_fallback(prompt, schema, pydantic_model, system_prompt, timeout_s=kwargs.get("timeout_s"))
 
     # ------------------------------------------------------------------
     # Tool-use turn primitive — OpenAI function-calling shape.
@@ -2153,6 +2157,19 @@ class AnthropicProvider(LLMProvider):
             "messages": messages,
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
         }
+        # Per-call timeout ceiling. Call classes plumb ``timeout_s``
+        # (REVIEW_TIMEOUT_S=480 for reviews, SHORT_CALL_TIMEOUT_S=120
+        # for summaries) — previously only the claudecode transport
+        # honoured it, so SDK calls ran at the client-level default
+        # (120s): every deep-dive review needing >120s died in
+        # 3 SDK attempts x 120s walls while its class ceiling said
+        # 480. The SDK accepts a per-request ``timeout`` override.
+        _timeout_s = kwargs.get("timeout_s")
+        if _timeout_s:
+            try:
+                create_kwargs["timeout"] = float(_timeout_s)
+            except (TypeError, ValueError):
+                pass
         # Opus 4.7+ deprecated `temperature` (400 if sent); omit it for those.
         if supports_temperature(self.config.model_name):
             create_kwargs["temperature"] = kwargs.get("temperature", self.config.temperature)
@@ -2306,6 +2323,18 @@ class AnthropicProvider(LLMProvider):
                     "messages": messages,
                     "max_tokens": self.config.max_tokens,
                 }
+                # Per-call timeout ceiling (see ``generate``): without
+                # it structured review calls ran at the client-level
+                # default (120s) while their class ceiling said 480s —
+                # the exact calls large enough to need instructor were
+                # the ones the wall killed. Instructor forwards unknown
+                # kwargs to the underlying SDK ``messages.create``.
+                _timeout_s = kwargs.get("timeout_s")
+                if _timeout_s:
+                    try:
+                        create_kwargs["timeout"] = float(_timeout_s)
+                    except (TypeError, ValueError):
+                        pass
                 # Opus 4.7+ deprecated `temperature` (400 if sent); omit it for those.
                 if supports_temperature(self.config.model_name):
                     create_kwargs["temperature"] = temperature
@@ -2374,7 +2403,7 @@ class AnthropicProvider(LLMProvider):
                 self._note_instructor_failure(e)
 
         # Fallback: JSON-in-prompt
-        return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
+        return self._structured_fallback(prompt, schema, pydantic_model, system_prompt, timeout_s=kwargs.get("timeout_s"))
 
     # ------------------------------------------------------------------
     # Tool-use turn primitive — Anthropic-native.
@@ -3304,7 +3333,7 @@ class GeminiProvider(LLMProvider):
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # Schema/parsing error — native mode incompatible, fall back to JSON-in-prompt
             logger.warning("Gemini native structured generation failed (falling back): %s", e)
-            return self._structured_fallback(prompt, schema, pydantic_model, system_prompt)
+            return self._structured_fallback(prompt, schema, pydantic_model, system_prompt, timeout_s=kwargs.get("timeout_s"))
         except Exception:
             # Auth, network, quota — don't waste a second call
             raise

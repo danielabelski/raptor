@@ -798,3 +798,30 @@ class TestJoernServerAuth:
     def test_no_credential_means_no_header(self):
         srv = JoernServer()
         assert srv._auth_headers() == {}
+
+
+class TestHasScalaError:
+    """Error detection must scan the full stdout — the REPL echoes the
+    submitted script first, so long batch scripts push compiler
+    diagnostics past any fixed prefix window."""
+
+    def test_error_marker_beyond_2000_bytes_detected(self):
+        from packages.joern.server import _has_scala_error
+        echoed_script = "val step = cpg.call.name(\"memcpy\").l\n" * 200
+        stdout = echoed_script + "-- [E006] Not Found Error: value cpgx"
+        assert len(echoed_script) > 2000
+        assert _has_scala_error(stdout)
+
+    def test_clean_output_not_flagged(self):
+        from packages.joern.server import _has_scala_error
+        stdout = 'res0: List[String] = List("a")\n' * 200
+        assert not _has_scala_error(stdout)
+
+    def test_empty_output_not_flagged(self):
+        from packages.joern.server import _has_scala_error
+        assert not _has_scala_error("")
+
+    def test_ansi_wrapped_marker_detected(self):
+        from packages.joern.server import _has_scala_error
+        stdout = ("x" * 3000) + "\x1b[31m-- [E007]\x1b[0m mismatch"
+        assert _has_scala_error(stdout)

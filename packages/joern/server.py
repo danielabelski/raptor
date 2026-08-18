@@ -91,10 +91,15 @@ def _has_scala_error(stdout: str) -> bool:
 
     The Joern REPL returns success=True even when the Scala compiler
     emits errors. The error text appears in stdout with ANSI codes.
+
+    Scans the FULL output: the REPL echoes the submitted script before
+    the compiler diagnostics, so a long batch script pushed the
+    ``-- [E`` marker past a fixed 2000-byte prefix window and the
+    failed query read as a successful zero-flow ("no taint") result.
     """
     if not stdout:
         return False
-    plain = _strip_ansi(stdout[:2000])
+    plain = _strip_ansi(stdout)
     return any(marker in plain for marker in _SCALA_ERROR_MARKERS)
 
 

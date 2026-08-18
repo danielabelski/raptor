@@ -552,6 +552,39 @@ def test_rules_disabled_skips_cascade(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(result, AgentOutput)
 
 
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE"])
+def test_rules_disabled_shared_truthy_spellings(
+    monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    """Pre-fix only the exact string ``1`` disabled the rules —
+    ``CVE_DIFF_DISABLE_RULES=true`` silently left them on."""
+    from cve_diff.agent.loop import _rules_disabled
+
+    monkeypatch.setenv("CVE_DIFF_DISABLE_RULES", value)
+    assert _rules_disabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+def test_rules_enabled_falsy_and_empty_spellings(
+    monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    from cve_diff.agent.loop import _rules_disabled
+
+    monkeypatch.setenv("CVE_DIFF_DISABLE_RULES", value)
+    assert _rules_disabled() is False
+
+
+def test_rules_enabled_when_unset_or_unrecognised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cve_diff.agent.loop import _rules_disabled
+
+    monkeypatch.delenv("CVE_DIFF_DISABLE_RULES", raising=False)
+    assert _rules_disabled() is False
+    monkeypatch.setenv("CVE_DIFF_DISABLE_RULES", "disable")
+    assert _rules_disabled() is False
+
+
 # ---------- Verified-SHA submit gate ----------
 
 

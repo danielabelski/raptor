@@ -13,7 +13,6 @@ Dataclasses live in ``agent/types.py``; tools in ``agent/tools.py``.
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -25,6 +24,7 @@ from cve_diff.agent.types import AgentContext, AgentOutput, AgentResult, AgentSu
 from cve_diff.infra import github_client
 from cve_diff.llm.client import MODEL_PRICES
 
+from core.config import env_flag
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
 from core.llm.tool_use.loop import ToolUseLoop
@@ -58,7 +58,7 @@ class AgentConfig:
 
 
 def _rules_disabled() -> bool:
-    return os.environ.get("CVE_DIFF_DISABLE_RULES") == "1"
+    return env_flag("CVE_DIFF_DISABLE_RULES", default=False)
 
 
 _MAX_UNVERIFIED_SUBMITS = 2

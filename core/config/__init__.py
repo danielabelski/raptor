@@ -1150,6 +1150,43 @@ def pin_raptor_dir_in_environ() -> None:
     pin_raptor_dir(os.environ)
 
 
+# Canonical boolean-toggle spellings. One parser for every operator
+# on/off env var so the accepted spellings don't drift per reader
+# (pre-fix: SAGE_FORCE_CPU treated "0" as enabling, RAPTOR_SAGE_AFL_PRIOR
+# ignored "off", CVE_DIFF_DISABLE_RULES ignored "true").
+_ENV_FLAG_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_ENV_FLAG_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def env_flag(name: str, default: bool) -> bool:
+    """Parse the boolean environment toggle *name*.
+
+    Canonical spellings, case-insensitive, surrounding whitespace
+    ignored: truthy = ``1``/``true``/``yes``/``on``, falsy =
+    ``0``/``false``/``no``/``off``. Unset or empty returns *default*.
+    Any other value warns (so a typo like ``SAGE_FORCE_CPU=ture``
+    doesn't silently pick the default) and returns *default*.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if not value:
+        return default
+    if value in _ENV_FLAG_TRUTHY:
+        return True
+    if value in _ENV_FLAG_FALSY:
+        return False
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "%s=%r is not a recognised boolean toggle "
+        "(1/true/yes/on or 0/false/no/off); using default %s",
+        name, raw, default,
+    )
+    return default
+
+
 # Convenience aliases for backward compatibility
 def get_out_dir() -> Path:
     """Backward compatible function for getting output directory."""

@@ -613,3 +613,61 @@ class TestGetLlmEnvRoutingFamily:
         with patch.dict(os.environ, self._FAMILY):
             env = RaptorConfig.get_llm_env()
             assert env.get("RAPTOR_DIR") == str(RaptorConfig.REPO_ROOT)
+
+
+class TestEnvFlag:
+    """Shared boolean-toggle parser (``core.config.env_flag``)."""
+
+    _VAR = "RAPTOR_TEST_ENV_FLAG"
+
+    def _flag(self, value, default):
+        from core.config import env_flag
+        with patch.dict(os.environ, {self._VAR: value}):
+            return env_flag(self._VAR, default=default)
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+    def test_truthy_spellings(self, value):
+        assert self._flag(value, default=False) is True
+        assert self._flag(value, default=True) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off"])
+    def test_falsy_spellings(self, value):
+        assert self._flag(value, default=True) is False
+        assert self._flag(value, default=False) is False
+
+    @pytest.mark.parametrize("value", ["TRUE", " On ", "YES", "\ttrue\n"])
+    def test_case_and_whitespace_insensitive_truthy(self, value):
+        assert self._flag(value, default=False) is True
+
+    @pytest.mark.parametrize("value", ["FALSE", " Off ", "NO", "\t0\n"])
+    def test_case_and_whitespace_insensitive_falsy(self, value):
+        assert self._flag(value, default=True) is False
+
+    def test_unset_returns_default(self):
+        from core.config import env_flag
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(self._VAR, None)
+            assert env_flag(self._VAR, default=True) is True
+            assert env_flag(self._VAR, default=False) is False
+
+    def test_empty_and_blank_return_default(self):
+        assert self._flag("", default=True) is True
+        assert self._flag("   ", default=False) is False
+
+    def test_unrecognised_warns_and_returns_default(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="core.config"):
+            assert self._flag("enabled", default=True) is True
+            assert self._flag("ture", default=False) is False
+        warnings = [r for r in caplog.records
+                    if "not a recognised boolean toggle" in r.getMessage()]
+        assert len(warnings) == 2
+        assert self._VAR in warnings[0].getMessage()
+
+    def test_recognised_values_do_not_warn(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="core.config"):
+            self._flag("on", default=False)
+            self._flag("off", default=True)
+        assert not [r for r in caplog.records
+                    if "boolean toggle" in r.getMessage()]

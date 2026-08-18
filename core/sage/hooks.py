@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.config import env_flag
 from core.hash import sha256_string
 from core.logging import get_logger
 from core.security.redaction import redact_secrets
@@ -157,7 +158,9 @@ def _get_client() -> SageClient | None:
         ):
             needs_init = True
         if needs_init:
-            if not _ollama_gpu_available() and not os.getenv("SAGE_FORCE_CPU"):
+            if not _ollama_gpu_available() and not env_flag(
+                "SAGE_FORCE_CPU", default=False
+            ):
                 logger.debug(
                     "SAGE pipeline hooks disabled on CPU — too slow for "
                     "automated use. Set SAGE_FORCE_CPU=1 to override. "

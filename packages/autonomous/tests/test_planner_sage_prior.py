@@ -80,6 +80,46 @@ class TestPlannerSageMechanicalPrior(unittest.TestCase):
             strat = planner.select_fuzzing_strategy(state)
         self.assertNotIn("-L", strat.get("extra_flags", []))
 
+    def test_disable_env_shared_toggle_spellings(self):
+        """All shared falsy spellings disable — pre-fix ``off`` was
+        silently ignored (only 0/false/no were recognised)."""
+        rows = [_stamped_strategy_row("mopt-havoc")]
+        state = FuzzingState(start_time=0.0, current_time=1.0)
+        for value in ("off", "false", "no", "OFF"):
+            planner = FuzzingPlanner(memory=None, sage_strategy_rows=rows)
+            with mock.patch.dict(
+                os.environ, {"RAPTOR_SAGE_AFL_PRIOR": value}, clear=False
+            ):
+                strat = planner.select_fuzzing_strategy(state)
+            self.assertNotIn(
+                "-L", strat.get("extra_flags", []),
+                f"RAPTOR_SAGE_AFL_PRIOR={value} did not disable the prior",
+            )
+
+    def test_enable_env_shared_toggle_spellings(self):
+        rows = [_stamped_strategy_row("mopt-havoc")]
+        state = FuzzingState(start_time=0.0, current_time=1.0)
+        for value in ("1", "true", "yes", "on"):
+            planner = FuzzingPlanner(memory=None, sage_strategy_rows=rows)
+            with mock.patch.dict(
+                os.environ, {"RAPTOR_SAGE_AFL_PRIOR": value}, clear=False
+            ):
+                strat = planner.select_fuzzing_strategy(state)
+            self.assertIn(
+                "-L", strat.get("extra_flags", []),
+                f"RAPTOR_SAGE_AFL_PRIOR={value} did not keep the prior on",
+            )
+
+    def test_unrecognised_env_value_keeps_default_on(self):
+        rows = [_stamped_strategy_row("mopt-havoc")]
+        planner = FuzzingPlanner(memory=None, sage_strategy_rows=rows)
+        state = FuzzingState(start_time=0.0, current_time=1.0)
+        with mock.patch.dict(
+            os.environ, {"RAPTOR_SAGE_AFL_PRIOR": "disable"}, clear=False
+        ):
+            strat = planner.select_fuzzing_strategy(state)
+        self.assertIn("-L", strat.get("extra_flags", []))
+
 
 class TestDecisionHistorySerialisation(unittest.TestCase):
     def test_action_stored_as_string_not_enum(self):

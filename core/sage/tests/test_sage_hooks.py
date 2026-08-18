@@ -2009,5 +2009,70 @@ class TestRowMacDemotionPerHook(unittest.TestCase):
                 self.assertTrue(recall(stored), f"{name}: key restored")
 
 
+class TestForceCpuToggle(unittest.TestCase):
+    """``SAGE_FORCE_CPU`` uses the shared toggle spellings.
+
+    Pre-fix any non-empty value — including ``0`` — forced the
+    CPU-disabled hooks back on.
+    """
+
+    def setUp(self):
+        import core.sage.hooks as hooks
+        self._hooks = hooks
+        self._saved = (
+            hooks._client, hooks._client_initialised,
+            hooks._client_none_decided_at,
+        )
+
+    def tearDown(self):
+        hooks = self._hooks
+        (hooks._client, hooks._client_initialised,
+         hooks._client_none_decided_at) = self._saved
+
+    def _get_client_with(self, env_value):
+        """Run a fresh ``_get_client`` init decision on CPU-only Ollama."""
+        import os
+        from unittest import mock
+
+        hooks = self._hooks
+        hooks._client = None
+        hooks._client_initialised = False
+        hooks._client_none_decided_at = 0.0
+
+        env = {"SAGE_FORCE_CPU": env_value} if env_value is not None else {}
+        fake_client = MagicMock()
+        fake_client.is_available.return_value = True
+        with mock.patch.dict(os.environ, env, clear=False):
+            if env_value is None:
+                os.environ.pop("SAGE_FORCE_CPU", None)
+            with patch.object(hooks, "_ollama_gpu_available",
+                              return_value=False), \
+                 patch.object(hooks.SageConfig, "from_env",
+                              return_value=MagicMock()), \
+                 patch.object(hooks, "SageClient",
+                              return_value=fake_client):
+                return hooks._get_client()
+
+    def test_unset_stays_disabled_on_cpu(self):
+        self.assertIsNone(self._get_client_with(None))
+
+    def test_falsy_values_do_not_force(self):
+        for value in ("0", "false", "no", "off", ""):
+            self.assertIsNone(
+                self._get_client_with(value),
+                f"SAGE_FORCE_CPU={value!r} forced hooks on",
+            )
+
+    def test_truthy_values_force_hooks_on(self):
+        for value in ("1", "true", "yes", "on"):
+            self.assertIsNotNone(
+                self._get_client_with(value),
+                f"SAGE_FORCE_CPU={value!r} did not force hooks on",
+            )
+
+    def test_unrecognised_value_stays_disabled(self):
+        self.assertIsNone(self._get_client_with("enable"))
+
+
 if __name__ == "__main__":
     unittest.main()

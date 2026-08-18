@@ -23,8 +23,12 @@ Conventions used below:
 - **Fail direction** for toggles: *fail-closed* means the unset/invalid
   state is the restrictive one; *fail-open* means it is the permissive
   one.
-- Truthy spellings differ per variable and are stated per row — several
-  toggles accept only one exact string.
+- **Boolean toggles** parsed through the shared parser
+  (`core.config.env_flag`) accept `1`/`true`/`yes`/`on` and
+  `0`/`false`/`no`/`off` (case-insensitive, whitespace-trimmed);
+  unset/empty means the row's default and any other spelling warns and
+  uses the default. Rows below say "shared toggle spellings" for these.
+  Toggles not yet on the parser state their accepted spellings per row.
 
 
 ## Core runtime
@@ -166,14 +170,14 @@ support".
 |----------|---------|---------|
 | `CODEQL_CLI` | `codeql` on `PATH` | Path to the CodeQL CLI binary. Env (validated) > `PATH` lookup; neither resolving raises `RuntimeError` (fail-closed). |
 | `CODEQL_QUERIES` | official packs | Path to a local CodeQL queries checkout; pack references are rewritten to absolute suite paths (offline/pinned query sets). Unresolvable suites log an error and fall back to the pack reference. |
-| `CVE_DIFF_DISABLE_RULES` | rules on | Exactly `1` disables the cve-diff agent's mechanical no-evidence surrender rule (benchmarking/ablation). Other spellings — including `true` — do nothing. |
+| `CVE_DIFF_DISABLE_RULES` | rules on | Truthy disables the cve-diff agent's mechanical no-evidence surrender rule (benchmarking/ablation). Shared toggle spellings; unrecognised values warn and leave the rules on. |
 | `CVE_DIFF_SURRENDER_COST_FLOOR_USD` | `0.80` | Minimum spend before the surrender rule may fire. Read at module import; malformed falls back silently. |
 | `CVE_DIFF_MIN_CLASSES_FOR_SURRENDER` | `5` | Distinct source classes that must be tried before surrender. Read at module import; malformed falls back silently. |
 | `NVD_API_KEY` | unset | NVD API key (raises quota from 5 to 50 req/30 s). Must be a UUID — non-UUID values are silently dropped to avoid 401 retry storms. Unset is fine (public quota + backoff). |
 | `DT_API_KEY` | unset | Dependency-Track API key for `raptor-sca dt-push`. `--api-key` flag > env; neither → exit 2 with a clear message. |
 | `RAPTOR_SCA_AGENT` | in-tree agent | Path override for the sandboxed SCA agent entry point (legacy external checkouts). Must exist, be readable, and carry the SCA marker import — a bad override disables the subprocess launch rather than silently falling back. |
 | `RAPTOR_SCA_STRESS_EPHEMERAL` | off | Any non-empty value (including `0`) makes SCA stress calibration clone into a throwaway temp dir instead of the persistent cache. Diagnostic only. |
-| `RAPTOR_SAGE_AFL_PRIOR` | `1` | `0`/`false`/`no` disables mechanical AFL flag injection from high-confidence SAGE cross-run priors. Any other value — including `off` — leaves it enabled. |
+| `RAPTOR_SAGE_AFL_PRIOR` | `1` | Falsy disables mechanical AFL flag injection from high-confidence SAGE cross-run priors. Shared toggle spellings (`off` now works); unrecognised values warn and leave it enabled. |
 
 
 ## SAGE
@@ -187,7 +191,7 @@ Prose and the container-side variables: [SAGE](sage.md),
 | `SAGE_TIMEOUT` | `30.0` | API request timeout in seconds (float); non-float or non-positive warns and uses the default. |
 | `SAGE_OLLAMA_URL` | `http://localhost:11435` | Ollama URL for the direct-embed path (CPU hosts bypassing the Go-side embed timeout). Read once at module import. |
 | `SAGE_EMBED_MODEL` | auto-detected by setup | Embedding model override — set **before running `raptor-sage-setup`** (GPU hosts auto-select `snowflake-arctic-embed:m`, CPU `nomic-embed-text`); changing it later without re-running setup desyncs client and container. |
-| `SAGE_FORCE_CPU` | unset | Pipeline hooks are disabled on CPU-only Ollama by default (fail-closed for latency); **any non-empty value** — including `0` — forces them on. |
+| `SAGE_FORCE_CPU` | unset | Pipeline hooks are disabled on CPU-only Ollama by default (fail-closed for latency); truthy forces them on. Shared toggle spellings — `0`/`false`/`no`/`off` no longer force; unrecognised values warn and leave them disabled. |
 | `SAGE_PROPOSE_DELAY_MS` | `0` | Safety-valve delay between SAGE proposes, capped at 300 000 ms; invalid values silently mean 0. Rarely needed. |
 | `SAGE_RECALL_WORKERS` | auto (4 GPU / 2 CPU) | Recall concurrency, clamped 1–8; malformed falls back to auto. |
 

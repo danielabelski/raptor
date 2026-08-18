@@ -391,6 +391,12 @@ class OrchestratorConfig:
     threat_model: dict[str, Any] | None = None
     validate: bool = True
     prefilter: bool = True
+    # Triage-classifier SKIP shortcut. False disables the skip — every
+    # workqueue function gets a real review instead of a classifier
+    # "clean" (corpus calibration sets this off so labeled deep
+    # mechanisms are actually exercised). Buckets other than SKIP
+    # (glance/investigate/deep_dive) are unaffected.
+    triage: bool = True
     sweep_validate_findings: bool = True
     deepen_suspicious: bool = True
     # Slice of the LLM cost cap held back from the discovery loop so
@@ -1127,6 +1133,14 @@ def review_one_function(
 
     # ── Triage skip ───────────────────────────────────────────────────
     triage = triage_results.get(gap_key_lined) or triage_results.get(gap_key)
+    if (
+        triage is not None
+        and triage.bucket == TriageBucket.SKIP
+        and not getattr(config, "triage", True)
+    ):
+        # Triage-classifier skips disabled for this run: fall through
+        # to a real review instead of recording a classifier clean.
+        triage = None
     if (
         triage
         and triage.bucket == TriageBucket.SKIP

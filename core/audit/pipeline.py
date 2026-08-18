@@ -106,6 +106,12 @@ class AuditPipelineOpts:
     # sets this: a label pin must never be suppressed by state left
     # behind by an earlier run. Production default unchanged (off).
     force: bool = False
+    # Triage-classifier SKIP shortcut. False disables the skip so every
+    # scheduled function receives a real review. The corpus runner
+    # defaults this off: labels encode deep-mechanism expectations
+    # that a classifier skip can never exercise. Production default
+    # unchanged (on).
+    triage: bool = True
     # Opt-in (--pre-scan): bounded semgrep baseline pass when no scan
     # SARIF exists in this run or any fresh sibling run.
     pre_scan: bool = False
@@ -262,6 +268,7 @@ def _build_orchestrator_config(
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
         force=opts.force,
+        triage=opts.triage,
         pre_scan=opts.pre_scan,
         schedule=opts.schedule,
         on_demand_synthesis=opts.on_demand_synthesis,

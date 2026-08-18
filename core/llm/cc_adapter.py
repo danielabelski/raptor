@@ -62,6 +62,32 @@ _CC_AWS_STATIC_CREDENTIAL_NAMES = (
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
 )
 
+# credential_mode="proxy": names/prefixes that must NOT ride the
+# backend overlay into a proxy-mode child. Credential material is the
+# obvious set. Operator base-URL pins are stripped because the caller
+# sets the one true gateway route after the overlay, and the
+# CLAUDE_CODE_SKIP_* family is stripped-then-reset so only the
+# skip-auth flags THIS mode needs are present. Backend-SELECTION flags
+# (CLAUDE_CODE_USE_*) are deliberately KEPT: the CLI's provider mode
+# decides which gateway env vars it reads (verified against the CLI —
+# a Bedrock install ignores ``ANTHROPIC_BASE_URL`` and reads
+# ``ANTHROPIC_BEDROCK_MANTLE_BASE_URL`` instead).
+_CC_PROXY_STRIP_EXACT = frozenset({
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+})
+_CC_PROXY_STRIP_PREFIXES = ("CLAUDE_CODE_SKIP_",)
+
+
+def _cc_proxy_strip(key: str) -> bool:
+    if key in _CC_PROXY_STRIP_EXACT:
+        return True
+    if key.startswith(_CC_PROXY_STRIP_PREFIXES):
+        return True
+    # Operator base-URL pins (ANTHROPIC_BASE_URL, and the per-cloud
+    # ANTHROPIC_*_BASE_URL variants) — the caller sets the one true
+    # gateway route after the overlay.
+    return key.startswith("ANTHROPIC_") and "BASE_URL" in key
+
 
 def resolve_claude_cli(explicit: str | None = None) -> str | None:
     """Resolve the ``claude`` CLI to its REAL path for sandboxed dispatch.
@@ -94,8 +120,36 @@ def resolve_claude_cli(explicit: str | None = None) -> str | None:
         return path
 
 
-def cc_subprocess_env(*, mint_aws_credentials: bool = False) -> dict:
+def cc_subprocess_env(
+    *,
+    mint_aws_credentials: bool = False,
+    credential_mode: str = "env",
+    proxy_base_url: str | None = None,
+    proxy_auth_token: str | None = None,
+) -> dict:
     """Sanitised env for spawning the trusted ``claude`` binary.
+
+    ``credential_mode`` selects the child's credential posture:
+
+    * ``"env"`` (default) — current behaviour: backend-selection AND
+      credential families overlay from the parent env (plus optional
+      AWS credential minting for sandboxed Bedrock children).
+    * ``"proxy"`` — the child holds ZERO provider credentials. No
+      ``ANTHROPIC_API_KEY``, no ``AWS_*`` material, no minting. It
+      authenticates to the local LLM dispatcher with a scoped minted
+      token: ``proxy_base_url`` is the dispatcher gateway ORIGIN
+      (``http://127.0.0.1:<port>``) and ``proxy_auth_token`` the
+      minted token, carried in ``ANTHROPIC_AUTH_TOKEN`` (the CLI
+      sends it as ``Authorization: Bearer``). Backend-selection vars
+      (``CLAUDE_CODE_USE_*``, model pins) are kept — they decide
+      which gateway route family is set (see
+      :func:`_cc_proxy_mode_env`); credential families are stripped.
+      ``NO_PROXY`` gains ``127.0.0.1``/``localhost`` so the loopback
+      gateway is never hijacked by an operator's corporate proxy.
+      Both proxy arguments are mandatory in this mode (ValueError
+      otherwise) — a proxy-mode child without a dispatcher route must
+      fail fast at spawn, not hang credential-less at its first API
+      call.
 
     ``mint_aws_credentials=True`` additionally resolves the parent's
     AWS credential chain and attaches the frozen session credentials
@@ -132,6 +186,20 @@ def cc_subprocess_env(*, mint_aws_credentials: bool = False) -> dict:
 
     from core.config import RaptorConfig
     from core.llm.egress import operator_proxy_env
+
+    if credential_mode not in ("env", "proxy"):
+        raise ValueError(
+            f"credential_mode must be 'env' or 'proxy', "
+            f"got {credential_mode!r}"
+        )
+    if credential_mode == "proxy":
+        return _cc_proxy_mode_env(proxy_base_url, proxy_auth_token)
+    if proxy_base_url or proxy_auth_token:
+        raise ValueError(
+            "proxy_base_url/proxy_auth_token are only valid with "
+            "credential_mode='proxy'"
+        )
+
     env = RaptorConfig.get_safe_env()
     # Bedrock installs signal via env (the launcher exports it).
     # Settings.json-only Bedrock setups must export the var too —
@@ -165,6 +233,123 @@ def cc_subprocess_env(*, mint_aws_credentials: bool = False) -> dict:
                 if key in os.environ:
                     env[key] = os.environ[key]
     env.update(operator_proxy_env())
+    return env
+
+
+def _cc_proxy_mode_env(
+    proxy_base_url: str | None, proxy_auth_token: str | None,
+) -> dict:
+    """Build the credential-free env for a proxy-mode CLI child.
+
+    See :func:`cc_subprocess_env` (credential_mode="proxy") for the
+    contract. Invariant this function owns: the returned dict carries
+    NO provider credential material — no ``ANTHROPIC_API_KEY``, no
+    ``AWS_*`` values at all — only the minted scoped token in
+    ``ANTHROPIC_AUTH_TOKEN`` and loopback dispatcher gateway routes.
+
+    ``proxy_base_url`` is the dispatcher gateway ORIGIN
+    (``http://127.0.0.1:<port>``); the per-install route suffixes are
+    derived here because they follow the CLI's backend mode:
+
+    * API-key installs: ``ANTHROPIC_BASE_URL = <origin>/anthropic``
+      with the token as the CLI's gateway bearer.
+    * Bedrock installs: the CLI ignores ``ANTHROPIC_BASE_URL`` — it
+      reads the Bedrock gateway family (names verified against the
+      shipped CLI, 2.1.234): ``ANTHROPIC_BEDROCK_MANTLE_BASE_URL``
+      (Mantle data-plane; the CLI POSTs ``<base>/v1/messages?beta=
+      true`` with ``Authorization: Bearer $ANTHROPIC_AUTH_TOKEN`` when
+      ``CLAUDE_CODE_SKIP_MANTLE_AUTH=1``) and
+      ``ANTHROPIC_BEDROCK_BASE_URL`` (control-plane; the CLI probes
+      ``GET <base>/inference-profiles``, which the dispatcher answers
+      with a canned empty listing for scoped tokens). The Mantle
+      surface is FORCED (``CLAUDE_CODE_USE_MANTLE=1``): the dispatcher
+      fronts Bedrock through its Mantle leg — native Anthropic
+      Messages with SSE streaming — while the legacy InvokeModel
+      streaming surface has no dispatcher leg.
+    """
+    import os
+
+    from core.config import RaptorConfig
+    from core.llm.egress import operator_proxy_env
+
+    if not proxy_base_url or not proxy_auth_token:
+        raise ValueError(
+            "credential_mode='proxy' requires proxy_base_url and "
+            "proxy_auth_token — spawn must fail fast when no "
+            "dispatcher route exists"
+        )
+
+    env = RaptorConfig.get_safe_env()
+    bedrock = bool(os.environ.get("CLAUDE_CODE_USE_BEDROCK"))
+    if not bedrock and (
+        os.environ.get("CLAUDE_CODE_USE_VERTEX")
+        or os.environ.get("CLAUDE_CODE_USE_FOUNDRY")
+    ):
+        raise ValueError(
+            "credential_mode='proxy' supports Anthropic-API and "
+            "Bedrock installs — the dispatcher has no Vertex/Foundry "
+            "leg to front"
+        )
+    for key, value in os.environ.items():
+        if not key.startswith(_CC_BACKEND_ENV_PREFIXES):
+            continue
+        if _cc_proxy_strip(key):
+            continue
+        env[key] = value
+    origin = proxy_base_url.rstrip("/")
+    if bedrock:
+        # Force the Mantle surface and normalize the install's model
+        # pins to ids Mantle accepts, so the child requests a model
+        # the dispatcher's Mantle leg can serve.
+        env["CLAUDE_CODE_USE_MANTLE"] = "1"
+        env["ANTHROPIC_BEDROCK_MANTLE_BASE_URL"] = (
+            origin + "/bedrock/mantle"
+        )
+        env["ANTHROPIC_BEDROCK_BASE_URL"] = origin + "/bedrock"
+        env["CLAUDE_CODE_SKIP_MANTLE_AUTH"] = "1"
+        env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] = "1"
+        try:
+            from core.llm.bedrock_prefixes import mantle_model_id
+            for model_var in ("ANTHROPIC_MODEL",
+                              "ANTHROPIC_SMALL_FAST_MODEL"):
+                pinned = env.get(model_var)
+                if isinstance(pinned, str) and pinned:
+                    env[model_var] = mantle_model_id(pinned)
+        except Exception:  # noqa: BLE001 — best-effort normalization
+            logger.debug(
+                "proxy-mode model-id normalization failed", exc_info=True,
+            )
+    else:
+        env["ANTHROPIC_BASE_URL"] = origin + "/anthropic"
+    env["ANTHROPIC_AUTH_TOKEN"] = proxy_auth_token
+    # Operator proxy env for any non-LLM egress the CLI attempts (the
+    # sandbox's own proxy overrides win when sandboxed)…
+    env.update(operator_proxy_env())
+    # …but the loopback dispatcher must NEVER route through a corporate
+    # proxy: merge loopback into NO_PROXY (union with whatever the
+    # operator set — same helper the egress chokepoint uses).
+    from core.llm.egress import _augment_no_proxy
+    existing = env.get("NO_PROXY") or env.get("no_proxy") or ""
+    merged = _augment_no_proxy(existing)
+    env["NO_PROXY"] = merged
+    env["no_proxy"] = merged
+
+    # Belt-and-braces enforcement of the zero-credential invariant —
+    # get_safe_env plus the strip above already guarantee it, but this
+    # assert is what the security posture rests on, so verify rather
+    # than trust the layering.
+    leaked = [
+        k for k in env
+        if k.startswith("AWS_")
+        or (k == "ANTHROPIC_API_KEY")
+    ]
+    for key in leaked:
+        env.pop(key, None)
+    if leaked:
+        logger.warning(
+            "proxy-mode child env: stripped unexpected credential-"
+            "family keys that survived filtering: %s", sorted(leaked),
+        )
     return env
 
 

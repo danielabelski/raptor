@@ -638,6 +638,163 @@ class TestCcSubprocessEnv:
         assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
 
 
+class TestCcSubprocessEnvProxyMode:
+    """credential_mode="proxy": the child holds ZERO provider
+    credentials — only the minted dispatcher token and loopback base
+    URL. The env-construction invariant the credential-proxy posture
+    rests on."""
+
+    _BASE = "http://127.0.0.1:61781"   # dispatcher gateway origin
+    _TOKEN = "minted-child-token-value"
+
+    def _proxy_env(self):
+        from core.llm.cc_adapter import cc_subprocess_env
+        return cc_subprocess_env(
+            credential_mode="proxy",
+            proxy_base_url=self._BASE,
+            proxy_auth_token=self._TOKEN,
+        )
+
+    def test_zero_credential_material(self, monkeypatch):
+        """Grep the whole env dict for credential-family names — only
+        the minted token may be present."""
+        import re
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-SECRET")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "operator-gateway-token")
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "SECRETKEY")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "SESSTOKEN")
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "BRTOKEN")
+        monkeypatch.setenv("AWS_PROFILE", "prod")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        env = self._proxy_env()
+        cred_shaped = re.compile(r"AWS_|API_KEY|SECRET|BEARER")
+        offenders = [k for k in env if cred_shaped.search(k)]
+        assert offenders == []
+        # And no credential VALUE leaked under another name.
+        joined = json.dumps(env)
+        for secret in ("sk-ant-SECRET", "AKIAEXAMPLE", "SECRETKEY",
+                       "SESSTOKEN", "BRTOKEN", "operator-gateway-token"):
+            assert secret not in joined
+        # The one credential present is the minted scoped token,
+        # riding the Bedrock gateway route family (USE_BEDROCK install).
+        assert env["ANTHROPIC_AUTH_TOKEN"] == self._TOKEN
+        assert env["ANTHROPIC_BEDROCK_MANTLE_BASE_URL"] == (
+            self._BASE + "/bedrock/mantle"
+        )
+        assert env["ANTHROPIC_BEDROCK_BASE_URL"] == self._BASE + "/bedrock"
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_bedrock_gateway_route_family(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.delenv("CLAUDE_CODE_USE_MANTLE", raising=False)
+        # Operator pins must not survive — the dispatcher gateway is
+        # the child's one and only backend.
+        monkeypatch.setenv("ANTHROPIC_BEDROCK_BASE_URL", "https://gw.example")
+        monkeypatch.setenv("CLAUDE_CODE_SKIP_AWS_CRED_CACHE", "1")
+        monkeypatch.setenv("RAPTOR_CC_EFFORT", "high")
+        monkeypatch.setenv("RAPTOR_BEDROCK_MODEL", "anthropic.claude-x")
+        env = self._proxy_env()
+        # Backend-selection flags KEPT (the CLI's provider mode decides
+        # which gateway vars it reads); Mantle surface forced.
+        assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert env["CLAUDE_CODE_USE_MANTLE"] == "1"
+        # Gateway routes are OURS, not the operator pin.
+        assert env["ANTHROPIC_BEDROCK_BASE_URL"] == self._BASE + "/bedrock"
+        assert env["ANTHROPIC_BEDROCK_MANTLE_BASE_URL"] == (
+            self._BASE + "/bedrock/mantle"
+        )
+        # Skip-auth flags reset to exactly what this mode needs.
+        assert env["CLAUDE_CODE_SKIP_MANTLE_AUTH"] == "1"
+        assert env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
+        assert "CLAUDE_CODE_SKIP_AWS_CRED_CACHE" not in env
+        # Non-credential knobs still ride the overlay.
+        assert env["RAPTOR_CC_EFFORT"] == "high"
+        assert env["RAPTOR_BEDROCK_MODEL"] == "anthropic.claude-x"
+
+    def test_api_install_routes_via_anthropic(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_MANTLE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_FOUNDRY", raising=False)
+        env = self._proxy_env()
+        assert env["ANTHROPIC_BASE_URL"] == self._BASE + "/anthropic"
+        assert "ANTHROPIC_BEDROCK_MANTLE_BASE_URL" not in env
+
+    def test_vertex_install_rejected(self, monkeypatch):
+        import pytest
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+        with pytest.raises(ValueError, match="Vertex"):
+            self._proxy_env()
+
+    def test_bedrock_model_pins_normalized_to_mantle(self, monkeypatch):
+        from core.llm.bedrock_prefixes import mantle_model_id
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv(
+            "ANTHROPIC_MODEL", "us.anthropic.claude-opus-4-8",
+        )
+        env = self._proxy_env()
+        assert env["ANTHROPIC_MODEL"] == mantle_model_id(
+            "us.anthropic.claude-opus-4-8",
+        )
+
+    def test_no_proxy_gains_loopback_and_keeps_operator_entries(
+        self, monkeypatch,
+    ):
+        """Mandatory-proxy hosts break when the corporate proxy
+        hijacks loopback traffic — the child must reach the
+        dispatcher's 127.0.0.1 base URL DIRECT."""
+        from core.llm import egress
+        monkeypatch.setattr(egress, "_original_proxy_env", None)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+        monkeypatch.setenv("NO_PROXY", "internal.example")
+        env = self._proxy_env()
+        entries = [p.strip() for p in env["NO_PROXY"].split(",")]
+        assert "internal.example" in entries   # operator entry preserved
+        assert "127.0.0.1" in entries
+        assert "localhost" in entries
+        assert env["no_proxy"] == env["NO_PROXY"]
+        # Operator proxy still available for anything non-loopback.
+        assert env["HTTPS_PROXY"] == "http://proxy.example:3128"
+
+    def test_proxy_mode_requires_route_and_token(self):
+        import pytest
+
+        from core.llm.cc_adapter import cc_subprocess_env
+        with pytest.raises(ValueError, match="fail fast"):
+            cc_subprocess_env(credential_mode="proxy")
+        with pytest.raises(ValueError, match="fail fast"):
+            cc_subprocess_env(
+                credential_mode="proxy", proxy_base_url=self._BASE,
+            )
+
+    def test_invalid_mode_and_misused_args_rejected(self):
+        import pytest
+
+        from core.llm.cc_adapter import cc_subprocess_env
+        with pytest.raises(ValueError, match="credential_mode"):
+            cc_subprocess_env(credential_mode="direct")
+        with pytest.raises(ValueError, match="only valid"):
+            cc_subprocess_env(proxy_auth_token="tok")
+
+    def test_no_aws_minting_in_proxy_mode(self, monkeypatch):
+        """Proxy mode must never call the AWS credential chain — even
+        on a Bedrock install where env mode would mint."""
+        import core.llm.cc_adapter as cc_adapter
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+        def _boom(env):
+            raise AssertionError("_mint_child_aws_credentials called")
+
+        monkeypatch.setattr(
+            cc_adapter, "_mint_child_aws_credentials", _boom,
+        )
+        env = self._proxy_env()
+        assert "AWS_ACCESS_KEY_ID" not in env
+
+
 class TestNeutralCwd:
     def test_creates_private_dir_once(self):
         import os

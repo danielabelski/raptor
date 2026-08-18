@@ -430,8 +430,19 @@ def _calibrated_readable_paths(
     return union
 
 
+# Allowlist for credential-proxy dispatches: the child needs ONLY the
+# loopback dispatcher (reached direct via the sandbox bridge / NO_PROXY,
+# never through the CONNECT proxy — which rejects loopback targets by
+# design). Handing the proxy a loopback-only allowlist therefore makes
+# it a deny-all chokepoint for every remote host while satisfying the
+# sandbox's non-empty-allowlist invariant.
+_LOOPBACK_ONLY_HOSTS: tuple[str, ...] = ("127.0.0.1", "localhost")
+
+
 def proxy_hosts_for_cc_dispatch(
     claude_bin: str | None = None,
+    *,
+    credential_mode: str = "env",
 ) -> list[str]:
     """Return the egress proxy hostname allowlist for a cc_dispatch
     invocation, given the current process env + operator config.
@@ -441,10 +452,18 @@ def proxy_hosts_for_cc_dispatch(
             calibration fingerprints exactly that binary; when None,
             falls back to PATH lookup. cc_dispatch sites should
             pass the same value they'll spawn so the policy matches.
+        credential_mode: ``"proxy"`` returns the loopback-only
+            allowlist — a credential-proxy child talks solely to the
+            local LLM dispatcher, so every remote host (including the
+            provider endpoints an env-mode child would need) is
+            denied at the chokepoint.
 
     Priority: override > calibrated profile > provider env vars >
     default Anthropic.
     """
+    if credential_mode == "proxy":
+        return list(_LOOPBACK_ONLY_HOSTS)
+
     override = _load_override_config()
     if override is not None:
         return override

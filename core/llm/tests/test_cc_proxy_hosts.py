@@ -831,3 +831,32 @@ class TestBedrockMantle:
         assert _hostname_in(
             hosts, "bedrock-runtime.eu-west-3.amazonaws.com",
         )
+
+
+class TestCredentialProxyMode:
+    """credential_mode="proxy": loopback-only allowlist — the child
+    talks solely to the local LLM dispatcher, so every remote host is
+    denied at the chokepoint. Highest priority: beats the operator
+    override, calibration, and every provider env var."""
+
+    def test_loopback_only(self, isolated_env, no_override_config,
+                           no_calibrate):
+        hosts = proxy_hosts_for_cc_dispatch(credential_mode="proxy")
+        assert hosts == ["127.0.0.1", "localhost"]
+
+    def test_beats_provider_env_and_override(
+        self, isolated_env, monkeypatch, tmp_path, no_calibrate,
+    ):
+        import core.llm.cc_proxy_hosts as mod
+        override = tmp_path / "override.json"
+        override.write_text('{"proxy_hosts": ["evil.example.com"]}')
+        monkeypatch.setattr(mod, "_OVERRIDE_CONFIG_PATH", override)
+        isolated_env.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        isolated_env.setenv("AWS_REGION", "us-east-1")
+        hosts = proxy_hosts_for_cc_dispatch(credential_mode="proxy")
+        assert hosts == ["127.0.0.1", "localhost"]
+
+    def test_env_mode_unchanged(self, isolated_env, no_override_config,
+                                no_calibrate):
+        hosts = proxy_hosts_for_cc_dispatch(credential_mode="env")
+        assert "api.anthropic.com" in hosts

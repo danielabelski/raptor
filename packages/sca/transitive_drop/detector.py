@@ -638,13 +638,13 @@ def _dep_state_nuget(
 ) -> dict | None:
     """NuGet nuspec files declare per-TFM dependency groups.
     A dep that appears in fewer TFM groups in a newer version is
-    the closest analog to "moved to optional" — we conservatively
-    report "required=True" when the dep appears in AT LEAST ONE
-    group, "extras-gated" when it appears in only some groups but
-    not all of the ones it appeared in the current version.
+    the closest analog to "moved to optional", but per-TFM gating
+    is not modelled in v1.
 
-    For v1 we keep it simple: required if listed in ANY TFM group,
-    extras-gated only if NO TFM has it.
+    For v1 we keep it simple: required if listed in ANY TFM group;
+    otherwise ``required=False`` with an always-empty ``extras``
+    list, which the consumer maps to "removed" (NuGet drops are
+    never labelled "extras-gated" — conservative direction).
     """
     if not hasattr(client, "get_nuspec"):
         return None

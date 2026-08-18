@@ -5,8 +5,8 @@ Reachability]`` where ``dep_key`` is ``Dependency.key()``. The pipeline
 threads this map into ``findings.build_vuln_findings`` so each
 ``VulnFinding`` carries a verdict + evidence lines.
 
-Python (AST-based), npm (regex sweep), Cargo, Go, RubyGems, NuGet,
-Composer all covered. Ecosystems without a handler return
+Python (AST-based), npm (regex sweep), Cargo, Go, Maven, RubyGems,
+NuGet, Composer all covered. Ecosystems without a handler return
 ``not_evaluated`` so the reporter can be honest about the gap.
 
 **Tier-3 escalation (PyPI only):** when the caller passes ``http``
@@ -148,7 +148,9 @@ def scan(
             continue
         eco_scans[eco] = scan_result
         # Dedup by dep name within ecosystem so multiple version rows
-        # for the same dep share one resolve call.
+        # for the same dep share one resolve call — except the
+        # Go-with-advisory-symbols branch below, which keys by
+        # ``d.key()`` because ``advisory_symbols`` is per-version.
         seen: dict[str, Reachability] = {}
         # Pre-build advisory symbol map for Go function-level reachability.
         go_symbols = _build_go_symbol_map(osv_results) if eco == "Go" else {}

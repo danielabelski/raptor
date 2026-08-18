@@ -491,7 +491,7 @@ def _commented_severity(dep: Dependency, severity: str) -> str:
     """Downgrade hygiene / supply-chain / license severities on
     commented-out dep lines.
 
-    Mirrors the vuln-finding downgrade in ``_vuln_finding_to_row``:
+    Mirrors the vuln-finding downgrade in ``_assemble_finding``:
     a ``# pkg==X`` comment is documentation, not an active dep, so
     operators don't want CI gated on it. Floor at ``info``; the
     operator can opt back in with ``--fail-on-info`` when they

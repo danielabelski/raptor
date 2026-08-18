@@ -17,7 +17,8 @@ include them with ``--include-suppressed``.
 
 Exit codes:
     0  — B introduces no new findings (resolutions are fine)
-    1  — B introduces new findings above ``--fail-on-severity`` threshold
+    1  — B introduces new findings above ``--fail-on-severity`` threshold,
+         or any new KEV-listed finding (regardless of severity/threshold)
     2  — invalid arguments
 """
 

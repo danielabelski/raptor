@@ -46,11 +46,13 @@ File semantics that matter for the parser
    here. Same comment as above — this module handles one file.
 
 4. **MSBuild expressions** in the Version attribute
-   (``Version="$(MyVersion)"``) are NOT resolved. Property
-   expansion would require evaluating ``<PropertyGroup>`` blocks
-   and inheriting from ``Directory.Build.props``. We log a debug
-   note and skip the entry; the csproj falls through to the "no
-   resolvable version" path.
+   (``Version="$(MyVersion)"``) are resolved only against the SAME
+   file's ``<PropertyGroup>`` blocks (recursive, depth-capped).
+   Cross-file inheritance from ``Directory.Build.props``, item /
+   metadata references, and anything that still looks like an
+   expression after substitution are NOT resolved — for those we
+   log a debug note and skip the entry; the csproj falls through
+   to the "no resolvable version" path.
 
 Defusedxml dependency
 ~~~~~~~~~~~~~~~~~~~~~
@@ -448,11 +450,12 @@ _MAX_WALK_UP_DEPTH = 12
 
 
 def _find_msbuild_chain(start_dir: Path, filename: str) -> list[Path]:
-    """Shared walk-up implementation for both
-    ``find_cpm_chain`` (Directory.Packages.props) and
-    ``find_build_props_chain`` (Directory.Build.props). Both
-    follow the same MSBuild auto-import convention: walk parents,
-    stop at the nearest ``.git`` or filesystem root.
+    """Shared walk-up implementation for ``find_cpm_chain``
+    (Directory.Packages.props), ``find_build_props_chain``
+    (Directory.Build.props) and ``find_build_targets_chain``
+    (Directory.Build.targets). All three follow the same MSBuild
+    auto-import convention: walk parents, stop at the nearest
+    ``.git`` or filesystem root.
 
     Capped at ``_MAX_WALK_UP_DEPTH`` parents as a defence-in-depth
     bound. The .git-boundary check is the primary stop signal, but

@@ -18,7 +18,8 @@ Two-pass lookup (unchanged behaviour, internals delegated):
 
 Caching:
 
-- Per-query (``queries/<eco>-<name>-<ver>``) ID-list cache lives here
+- Per-query (``queries/<eco>/<name>/<ver>``, each segment
+  percent-encoded) ID-list cache lives here
   (Dependency-keyed, separate ``query_ttl``).
 - Per-vuln (``osv/vulns/<id>``) record cache lives in the shared
   client (uses our cache + ``vuln_ttl``).
@@ -84,7 +85,8 @@ _BATCH_CHUNK_SIZE = 500
 _DEFAULT_QUERY_TTL = 24 * 3600
 _DEFAULT_VULN_TTL = 24 * 3600
 
-# OSV severity types we care about, in preference order.
+# OSV severity types we accept; the winner among matching entries is
+# picked by highest numeric score, not by position in this tuple.
 _CVSS_TYPES = ("CVSS_V3", "CVSS_V31")
 
 # OSV ecosystem identifiers diverge from RAPTOR's internal names in

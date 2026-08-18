@@ -363,7 +363,7 @@ def _resolve_manifest_paths(
             paths.append(str(rel))
         if paths:
             return paths
-    # Fallback walk — bounded; only top-level + immediate subdirs.
+    # Fallback walk — full depth, pruned only by the discovery skip set.
     for entry in _iter_manifest_files(target):
         try:
             rel = entry.resolve().relative_to(target)
@@ -374,8 +374,9 @@ def _resolve_manifest_paths(
 
 
 def _iter_manifest_files(target: Path) -> Iterable[Path]:
-    """Bounded walk for manifest files when the caller hasn't passed
-    a manifest list.  Honours the ``EXCLUDED_DIR_NAMES`` skip set."""
+    """Walk for manifest files when the caller hasn't passed a
+    manifest list.  Recurses to every depth; the only pruning is the
+    ``EXCLUDED_DIR_NAMES`` skip set."""
     import os
 
     from ..discovery import EXCLUDED_DIR_NAMES

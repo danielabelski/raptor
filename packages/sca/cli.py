@@ -28,8 +28,9 @@ Outputs (scan):
 
 Exit codes:
     0 — subcommand completed successfully.
-    1 — fix: major-version bumps blocked (review needed); upgrade: mixed/
-        regression; check: review needed; diff: new findings.
+    1 — scan: --fail-on-* CI-gate threshold breached; fix: major-version
+        bumps blocked (review needed); upgrade: mixed/regression;
+        check: review needed; diff: new findings.
     2 — invalid arguments; check: block.
     3 — unrecoverable internal error.
 """

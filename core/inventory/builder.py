@@ -350,15 +350,16 @@ def build_inventory(
             pool = None
         if pool is None:
             pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-            submit_fn = lambda fp: pool.submit(
-                _process_single_file, fp, target, exclude_patterns,
-                skip_generated, old_files_by_path, allow_unreachable,
-                macro_config, build_tus, crate_modules,
-            )
+
+            def submit_fn(fp, pool=pool):
+                return pool.submit(
+                    _process_single_file, fp, target, exclude_patterns,
+                    skip_generated, old_files_by_path, allow_unreachable,
+                    macro_config, build_tus, crate_modules,
+                )
         else:
-            submit_fn = lambda fp: pool.submit(
-                _process_file_in_worker, fp,
-            )
+            def submit_fn(fp, pool=pool):
+                return pool.submit(_process_file_in_worker, fp)
         with pool:
             futures = {submit_fn(fp): fp for fp in file_list}
             for future in as_completed(futures):

@@ -64,6 +64,13 @@ def resolve_peer_groups(
     """
     groups: list[SiblingGroup] = []
     claimed: set[tuple[str, str]] = set()  # (file, function) pairs
+    # Per-layer summary: "ran → N groups" vs "skipped (no input)". The
+    # previous single "claimed by L0-L3" counter couldn't distinguish
+    # the two, and its "L0" vocabulary collided with the unrelated
+    # mechanical "Layer 0" pattern sweep — a run whose exclusive
+    # layers all lacked inputs printed "0 functions claimed by L0-L3"
+    # next to "Layer 0: N findings", reading as a contradiction.
+    layer_report: list[str] = []
 
     def _remaining():
         return [
@@ -81,34 +88,56 @@ def resolve_peer_groups(
         l0 = _joern_co_callee_groups(joern_server, _remaining())
         _claim(l0)
         groups.extend(l0)
+        layer_report.append(f"joern co-callee {len(l0)}")
+    else:
+        layer_report.append("joern co-callee skipped (no server)")
 
     # L1: r2 binary co-callee (exclusive)
     if binary_edge_index is not None:
         l1 = _binary_co_callee_groups(binary_edge_index, _remaining())
         _claim(l1)
         groups.extend(l1)
+        layer_report.append(f"binary co-callee {len(l1)}")
+    else:
+        layer_report.append("binary co-callee skipped (no edge index)")
 
     # L2: Dispatch-site (exclusive)
     if dispatch_tables:
         l2 = _dispatch_site_groups(dispatch_tables, _remaining())
         _claim(l2)
         groups.extend(l2)
+        layer_report.append(f"dispatch-site {len(l2)}")
+    else:
+        layer_report.append("dispatch-site skipped (no tables)")
 
     # L3: Domain model (exclusive)
     if domain_model:
         l3 = _domain_model_groups(domain_model, _remaining())
         _claim(l3)
         groups.extend(l3)
+        layer_report.append(f"domain-model {len(l3)}")
+    else:
+        layer_report.append("domain-model skipped (no model)")
 
     # L4–L6: independent (no claim removal between them)
-    groups.extend(_type_cohort_groups(type_ref_index, functions))
-    groups.extend(_verb_prefix_groups(functions, checklist=checklist))
-    groups.extend(_paired_operation_groups(functions))
+    if type_ref_index:
+        l4 = _type_cohort_groups(type_ref_index, functions)
+        groups.extend(l4)
+        layer_report.append(f"type-cohort {len(l4)}")
+    else:
+        layer_report.append("type-cohort skipped (no index)")
+    l5 = _verb_prefix_groups(functions, checklist=checklist)
+    groups.extend(l5)
+    layer_report.append(f"verb-prefix {len(l5)}")
+    l6 = _paired_operation_groups(functions)
+    groups.extend(l6)
+    layer_report.append(f"paired-op {len(l6)}")
 
     logger.info(
-        "peer group resolver: %d groups (%d functions claimed by L0-L3, "
-        "%d total functions)",
-        len(groups), len(claimed), len(functions),
+        "peer group resolver: %d groups from %d functions, %d claimed "
+        "by exclusive layers — %s",
+        len(groups), len(functions), len(claimed),
+        "; ".join(layer_report),
     )
     return groups
 

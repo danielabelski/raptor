@@ -3325,12 +3325,27 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             exc_info=True,
         )
 
+    # L4: type-cohort index from the inventory's recorded param /
+    # return types (typed extractors) with a C/C++ signature fallback.
+    # No usable type metadata → None → the layer stays empty.
+    prep_type_ref_index = None
+    try:
+        from core.analysis.peer_groups import type_ref_index_from_inventory
+
+        prep_type_ref_index = type_ref_index_from_inventory(checklist)
+    except Exception:
+        logger.debug(
+            "type-cohort index build for peer groups failed",
+            exc_info=True,
+        )
+
     peer_groups = resolve_peer_groups(
         gap_func_dicts,
         joern_server=joern_server,
         binary_edge_index=prep_binary_edge_index,
         dispatch_tables=prep_dispatch_tables or None,
         domain_model=prep_domain_model,
+        type_ref_index=prep_type_ref_index,
         checklist=checklist,
     )
 

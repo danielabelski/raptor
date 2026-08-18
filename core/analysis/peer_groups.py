@@ -203,6 +203,170 @@ def binary_edge_index_from_inventory(
     return merged
 
 
+# Types too ubiquitous to define a peer cohort.  Merged across
+# languages — a lowercase match in ANY language's primitive set
+# disqualifies the token (cross-language collisions like ``string``
+# are never distinctive anyway).
+_NON_DISTINCTIVE_TYPES = frozenset({
+    # C / C++
+    "void", "int", "char", "long", "short", "float", "double", "bool",
+    "unsigned", "signed", "const", "volatile", "struct", "enum",
+    "union", "auto", "register", "static", "extern", "inline",
+    "size_t", "ssize_t", "wchar_t", "ptrdiff_t", "intptr_t",
+    "uintptr_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t",
+    "uint16_t", "uint32_t", "uint64_t", "uint", "uchar", "ulong",
+    "ushort", "byte", "off_t", "time_t", "pid_t", "uid_t", "gid_t",
+    "mode_t", "dev_t", "ino_t", "socklen_t", "va_list", "file",
+    "std", "string", "vector", "map", "set", "pair", "shared_ptr",
+    "unique_ptr", "weak_ptr", "optional", "variant", "function",
+    "string_view", "array", "deque", "list", "tuple", "nullptr_t",
+    # Python
+    "str", "bytes", "bytearray", "dict", "frozenset", "none",
+    "nonetype", "any", "object", "callable", "iterable", "iterator",
+    "sequence", "mapping", "generator", "coroutine", "awaitable",
+    "union", "type", "self", "cls", "path", "pathlike",
+    # Java / C#
+    "integer", "boolean", "character", "number", "arraylist",
+    "hashmap", "hashset", "linkedlist", "exception",
+    "runnable", "thread", "task", "action", "func", "ienumerable",
+    "ilist", "idictionary", "stringbuilder", "charsequence",
+    # JS / TS
+    "promise", "record", "partial", "readonly", "undefined", "null",
+    "symbol", "bigint", "date", "regexp", "error",
+    # Go
+    "rune", "uintptr", "interface", "chan", "context", "error",
+    # Rust
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32",
+    "u64", "u128", "usize", "f32", "f64", "vec", "box", "rc", "arc",
+    "option", "result", "cow", "cell", "refcell", "mutex", "rwlock",
+    "btreemap", "btreeset", "osstring", "pathbuf",
+})
+
+_TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# C signature fallback: languages whose extractor records no parameter
+# metadata but does record the raw signature — mine ``foo_t`` /
+# ``struct foo`` tokens out of it (same trick the study-prep type
+# index uses).
+_SIG_FALLBACK_LANGUAGES = frozenset({"c", "cpp"})
+_SIG_TYPE_RE = re.compile(r"\b(?:struct\s+(\w+)|(\w+_t))\b")
+
+
+def _distinctive_type_tokens(type_str: str) -> set[str]:
+    """Extract distinctive type-name tokens from one type annotation.
+
+    Tokenises so decorated forms (``const request_ctx_t *``,
+    ``Optional[AuthContext]``, ``std::vector<Packet>``) all yield their
+    distinctive core; primitives / ubiquitous stdlib names are dropped.
+    """
+    tokens: set[str] = set()
+    for tok in _TYPE_TOKEN_RE.findall(type_str):
+        if len(tok) < 3:
+            continue
+        if tok.lower() in _NON_DISTINCTIVE_TYPES:
+            continue
+        tokens.add(tok)
+    return tokens
+
+
+def _param_type_strs(meta: dict[str, Any]) -> list[str]:
+    """Parameter type annotations from inventory metadata.
+
+    Handles both serialised shapes: ``[[name, type], ...]`` (checklist
+    JSON round-trip) and ``[{"name": ..., "type": ...}, ...]``.
+    """
+    out: list[str] = []
+    for p in meta.get("parameters") or []:
+        t = None
+        if isinstance(p, dict):
+            t = p.get("type")
+        elif isinstance(p, (list, tuple)) and len(p) > 1:
+            t = p[1]
+        if isinstance(t, str) and t:
+            out.append(t)
+    return out
+
+
+def type_ref_index_from_inventory(
+    inventory: dict[str, Any] | None,
+    *,
+    max_cohort_size: int = 24,
+    max_types: int = 200,
+) -> dict[str, list[tuple[str, str]]] | None:
+    """L4 producer: type-cohort index from inventory type metadata.
+
+    Walks the checklist inventory and maps each distinctive type name
+    to the functions whose parameters or return type mention it — the
+    ``type_ref_index`` shape ``_type_cohort_groups`` consumes
+    (``{type_name: [(function, usage_class), ...]}``, usage class is
+    ``"param"`` / ``"return"`` / ``"signature"``).
+
+    Language-aware where the inventory supports it: typed extractors
+    (Python AST, Java, tree-sitter C/C++) feed ``metadata.parameters``
+    / ``metadata.return_type``; for C/C++ items without parameter
+    metadata the raw signature is mined for ``foo_t`` / ``struct foo``
+    tokens.  Bounded: cohorts larger than *max_cohort_size* are
+    dropped (a type half the codebase touches is not distinctive), and
+    at most *max_types* cohorts are returned (smallest — most
+    distinctive — first).
+
+    Returns ``None`` when the inventory records no usable type
+    information, so the L4 layer stays empty and resolver behaviour is
+    unchanged.
+    """
+    if not isinstance(inventory, dict):
+        return None
+
+    index: dict[str, dict[str, str]] = {}
+
+    def _record(type_str: str, fn_name: str, usage: str) -> None:
+        for tok in _distinctive_type_tokens(type_str):
+            index.setdefault(tok, {}).setdefault(fn_name, usage)
+
+    for f in inventory.get("files") or []:
+        if not isinstance(f, dict):
+            continue
+        lang = (f.get("language") or "").lower()
+        for item in f.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("kind", "function") != "function":
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            meta = item.get("metadata")
+            meta = meta if isinstance(meta, dict) else {}
+            param_types = _param_type_strs(meta)
+            for t in param_types:
+                _record(t, name, "param")
+            ret = meta.get("return_type")
+            if isinstance(ret, str) and ret:
+                _record(ret, name, "return")
+            if not param_types and lang in _SIG_FALLBACK_LANGUAGES:
+                sig = item.get("signature")
+                if isinstance(sig, str) and sig:
+                    for m in _SIG_TYPE_RE.finditer(sig):
+                        _record(m.group(1) or m.group(2), name,
+                                "signature")
+
+    cohorts = {
+        t: members for t, members in index.items()
+        if 2 <= len(members) <= max_cohort_size
+    }
+    if not cohorts:
+        return None
+
+    result: dict[str, list[tuple[str, str]]] = {}
+    for t in sorted(cohorts, key=lambda k: (len(cohorts[k]), k))[:max_types]:
+        result[t] = sorted(cohorts[t].items())
+    logger.info(
+        "peer groups L4: type-cohort index with %d distinctive types",
+        len(result),
+    )
+    return result
+
+
 # ── L0: Joern co-callee groups ────────────────────────────────────────
 
 

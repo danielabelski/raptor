@@ -1,11 +1,15 @@
 """Wiring tests: the prep phase feeds the peer-group resolver's L1
-(binary co-callee) layer.
+(binary co-callee) and L4 (type cohort) layers.
 
-resolve_peer_groups has accepted ``binary_edge_index`` since the
-layered resolver landed, but the prep-phase call site never produced
-it — the layer was dead in production. These exercise the real
-``_compute_audit_prep`` with a warmed per-build-id r2 edge cache + an
-enriched-inventory ``binary_oracle`` block.
+resolve_peer_groups has accepted ``binary_edge_index`` and
+``type_ref_index`` since the layered resolver landed, but the
+prep-phase call site never produced them — both layers were dead in
+production. These exercise the real ``_compute_audit_prep`` with
+
+* a warmed per-build-id r2 edge cache + an enriched-inventory
+  ``binary_oracle`` block (L1), and
+* a Python target whose AST extractor records parameter type
+  annotations (L4).
 """
 
 from __future__ import annotations
@@ -58,6 +62,55 @@ def _run_prep(target: Path, out: Path):
     prep = _compute_audit_prep(config)
     assert prep is not None
     return prep
+
+
+# ── L4: type cohort from inventory type annotations ──────────────────
+
+# Two functions with unrelated names — no verb prefix (L5), no paired
+# operation (L6), no dispatch table (L2), no domain model (L3) — that
+# share one distinctive annotation type. Only the L4 producer can
+# group them.
+_TYPED_SRC = textwrap.dedent('''\
+    class AuthContext:
+        """Shared distinctive type."""
+
+
+    def frobnicate(ctx: AuthContext):
+        """One."""
+        return ctx
+
+
+    def quuxify(ctx: AuthContext):
+        """Two."""
+        return ctx
+''')
+
+
+@pytest.fixture()
+def prep_with_typed_inventory(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "authy.py").write_text(_TYPED_SRC)
+    out = tmp_path / "out"
+    out.mkdir()
+    _build_checklist(target, out)
+    return _run_prep(target, out)
+
+
+class TestTypeCohortPeerGroupWiring:
+    def test_l4_type_cohort_group_formed(self, prep_with_typed_inventory):
+        groups = prep_with_typed_inventory["peer_groups"]
+        cohorts = [g for g in groups if g.sibling_type == "type_cohort"]
+        assert cohorts, (
+            "expected an L4 type-cohort group from the inventory's "
+            f"parameter annotations; got {[g.group_id for g in groups]}"
+        )
+        by_id = {g.group_id: g for g in cohorts}
+        assert "type_cohort:AuthContext" in by_id
+        members = {
+            s.function for s in by_id["type_cohort:AuthContext"].siblings
+        }
+        assert members == {"frobnicate", "quuxify"}
 
 
 # ── L1: binary co-callee from the warmed r2 edge cache ───────────────

@@ -15,6 +15,11 @@
   "count": 29,
   "kind": "literal"
  },
+ "core/analysis/peer_groups.py::_NON_DISTINCTIVE_TYPES": {
+  "count": 156,
+  "kind": "literal",
+  "note": "language-primitive / ubiquitous-stdlib TYPE-name stoplist for the L4 type-cohort producer (language taxonomy, not target API names; a type in this set can never define a peer cohort)"
+ },
  "core/analysis/peer_groups.py::_VERB_PREFIX_RE": {
   "count": 77,
   "kind": "alternation"

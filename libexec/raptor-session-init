@@ -15,16 +15,10 @@ older Claude Code versions and direct/manual callers.
 
 No project env vars are set — the .active symlink is the only source of truth.
 """
-import faulthandler
-import signal
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-faulthandler.enable()
-if hasattr(signal, "SIGUSR1"):
-    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
 # fmt: off

@@ -13,15 +13,9 @@ output_dir/checkers/ and a manifest to compiled-invariants.json.
 Optionally sweeps a target codebase for violations when --target is set.
 """
 import argparse
-import faulthandler
 import logging
-import signal
 import sys
 from pathlib import Path
-
-faulthandler.enable()
-if hasattr(signal, "SIGUSR1"):
-    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
 # fmt: off

@@ -16,16 +16,10 @@ The prompt is built from positional arguments (joined by spaces) plus any
 a pipe, stdin is the prompt.
 """
 import argparse
-import faulthandler
 import json
 import logging
-import signal
 import sys
 from pathlib import Path
-
-faulthandler.enable()
-if hasattr(signal, "SIGUSR1"):
-    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
 # fmt: off

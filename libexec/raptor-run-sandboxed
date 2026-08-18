@@ -29,17 +29,11 @@ Exit codes:
 - 2 on sandbox invocation failure (unshare, kernel, etc.)
 """
 
-import faulthandler
 import logging
-import signal
 import sys
 
 # RAPTOR imports
 raptor_dir = str(__import__("pathlib").Path(__file__).resolve().parents[1])  # libexec -> raptor
-
-faulthandler.enable()
-if hasattr(signal, "SIGUSR1"):
-    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
 # fmt: off

@@ -29,13 +29,7 @@ Exit codes: 0 all selected cases passed or skipped, 1 any failure,
 2 usage error.
 """
 
-import faulthandler
-import signal
 import sys
-
-faulthandler.enable()
-if hasattr(signal, "SIGUSR1"):
-    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
 # fmt: off

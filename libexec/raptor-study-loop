@@ -22,18 +22,12 @@ Usage:
     raptor-study-loop <target> <output_dir> [options]
 """
 import argparse
-import faulthandler
 import json
 import re
-import signal
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
-faulthandler.enable()
-if hasattr(signal, "SIGUSR1"):
-    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
 # fmt: off

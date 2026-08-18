@@ -17,10 +17,8 @@ The root is the search space for include resolution (defaults to
 detecting the top-level source root from the target path).
 """
 import bisect
-import faulthandler
 import json
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -28,10 +26,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-faulthandler.enable()
-if hasattr(signal, "SIGUSR1"):
-    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
 
 # ─── trust-marker check (do not import; inline by design) ───
 # fmt: off

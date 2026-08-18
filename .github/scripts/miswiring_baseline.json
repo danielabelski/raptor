@@ -575,9 +575,6 @@
   "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.create_from_directory": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
-  "dead:dead_method:packages/fuzzing/telemetry.py:FuzzingTelemetry.record_payload_failure": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_method:packages/joern/server.py:JoernServer.run_taint_queries_batch": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },

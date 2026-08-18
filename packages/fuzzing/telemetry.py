@@ -291,10 +291,6 @@ class FuzzingTelemetry:
                     payload={"source": source, "excerpt": excerpt, "rationale": rationale[:200]},
                 ))
 
-    def record_payload_failure(self, reason: str = "") -> None:
-        with self._lock:
-            self.stats.payloads_failed += 1
-
     def update_stats(self, **kwargs) -> None:
         """Update the cumulative stats. Triggers status line refresh."""
         with self._lock:

@@ -619,6 +619,12 @@
   },
   "artifacts:write_only_artifact::study-stale.json": {
    "note": "operator-facing mirror of the staleness quarantine; the machine-consumed re-derive signal rides the reading list (pending items drained on the next study pass)"
+  },
+  "artifacts:write_only_artifact::rule-eval-results.json": {
+   "note": "rule_eval outputs: operator-facing results JSON and human summary for the corpus rule-verification runner; read by the operator, never by production code"
+  },
+  "artifacts:write_only_artifact::rule-eval-summary.txt": {
+   "note": "rule_eval outputs: operator-facing results JSON and human summary for the corpus rule-verification runner; read by the operator, never by production code"
   }
  }
 }

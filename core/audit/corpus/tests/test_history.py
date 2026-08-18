@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import core.audit.corpus.history as history
+import core.audit.corpus.run_corpus as run_corpus
 
 
 @pytest.fixture(autouse=True)
@@ -541,3 +542,133 @@ class TestCli:
         store.write_text(json.dumps(_run_rec("env-run")) + "\n")
         assert history.main(["runs"]) == 0
         assert "env-run" in capsys.readouterr().out
+
+
+class TestWriterHook:
+    """The run_corpus hook records after results.json is finalized;
+    probes are opt-in via --record-probe; failure never fails the run."""
+
+    def _patch_common(self, tmp_path, monkeypatch):
+        from contextlib import contextmanager
+
+        import core.audit.corpus.label as label_mod
+
+        @contextmanager
+        def fake_project(run_tag):
+            yield f"corpus-{run_tag}"
+
+        src = tmp_path / "repo"
+        src.mkdir(exist_ok=True)
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+        monkeypatch.setattr(
+            label_mod, "load_all_labels",
+            lambda bug_class=None: [_label()],
+        )
+        monkeypatch.setattr(
+            run_corpus, "_resolve_source_dirs",
+            lambda labels, do_fetch=False: {"test": src},
+        )
+        monkeypatch.setattr(
+            run_corpus, "_corpus_project_context", fake_project,
+        )
+
+    def test_audit_run_records_history(self, tmp_path, monkeypatch):
+        self._patch_common(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_corpus, "_run_ensemble_audit",
+            lambda labels, dirs, **kw: ([_row()], []),
+        )
+        store = tmp_path / "hook-store.jsonl"
+        monkeypatch.setenv(history.HISTORY_ENV, str(store))
+        out = tmp_path / "corpus-hook-run" / "results.json"
+        out.parent.mkdir()
+        rc = run_corpus.main(["--output", str(out)])
+        assert rc == 0
+        runs, labels_by_run = history.load_store(store)
+        assert len(runs) == 1
+        run = runs[0]
+        assert run["run_id"] == "corpus-hook-run"
+        assert run["config"]["mode"] == "ensemble"
+        assert run["config"]["triage"] == "off"
+        assert run["config"]["prefilter"] == "off"
+        assert run["config"]["scope"] == "excerpt"
+        assert len(run["label_set_hash"]) == 64
+        assert run["imported"] is False
+        recs = labels_by_run["corpus-hook-run"]
+        assert [r["function_id"] for r in recs] == ["a.c:f"]
+        assert recs[0]["span_sha"] == "0123456789ab"
+
+    def test_gate_fail_run_still_records(self, tmp_path, monkeypatch):
+        self._patch_common(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_corpus, "_run_ensemble_audit",
+            lambda labels, dirs, **kw: (
+                [_row(expected="finding", actual="clean", match=False)],
+                [],
+            ),
+        )
+        monkeypatch.setattr(
+            "core.audit.corpus.label.load_all_labels",
+            lambda bug_class=None: [_label(expected="finding")],
+        )
+        store = tmp_path / "hook-store.jsonl"
+        monkeypatch.setenv(history.HISTORY_ENV, str(store))
+        out = tmp_path / "results.json"
+        rc = run_corpus.main(["--output", str(out)])
+        assert rc == run_corpus.EXIT_GATE_FAIL
+        runs, _ = history.load_store(store)
+        assert len(runs) == 1
+        assert runs[0]["gates"]["passed"] is False
+
+    def test_probe_not_recorded_by_default(self, tmp_path, monkeypatch):
+        self._patch_common(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_corpus, "_run_probe",
+            lambda labels, dirs, **kw: [
+                _row(evidence_tool="probe"),
+            ],
+        )
+        store = tmp_path / "hook-store.jsonl"
+        monkeypatch.setenv(history.HISTORY_ENV, str(store))
+        out = tmp_path / "results.json"
+        rc = run_corpus.main(["--probe", "--output", str(out)])
+        assert rc == 0
+        assert not store.exists()
+
+    def test_probe_recorded_with_flag(self, tmp_path, monkeypatch):
+        self._patch_common(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_corpus, "_run_probe",
+            lambda labels, dirs, **kw: [
+                _row(evidence_tool="probe"),
+            ],
+        )
+        store = tmp_path / "hook-store.jsonl"
+        monkeypatch.setenv(history.HISTORY_ENV, str(store))
+        out = tmp_path / "results.json"
+        rc = run_corpus.main(
+            ["--probe", "--record-probe", "--output", str(out)],
+        )
+        assert rc == 0
+        runs, _ = history.load_store(store)
+        assert len(runs) == 1
+        assert runs[0]["config"]["mode"] == "probe"
+        assert runs[0]["config"]["triage"] is None
+
+    def test_store_failure_does_not_fail_run(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        self._patch_common(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_corpus, "_run_ensemble_audit",
+            lambda labels, dirs, **kw: ([_row()], []),
+        )
+        blocker = tmp_path / "blocker"
+        blocker.write_text("")
+        monkeypatch.setenv(
+            history.HISTORY_ENV, str(blocker / "store.jsonl"),
+        )
+        out = tmp_path / "results.json"
+        rc = run_corpus.main(["--output", str(out)])
+        assert rc == 0
+        assert "not recorded" in capsys.readouterr().err

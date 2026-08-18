@@ -19,6 +19,7 @@ from core.concepts.lang_resolve import (
     resolve_concept_docs,
     resolve_identifiers,
 )
+from core.testing import requires_ts
 
 # ------------------------------------------------------------------
 # Language support surface
@@ -226,7 +227,14 @@ func ParseHeader(b []byte) (*Header, error) {
         it = res.items[0]
         assert it.kind == "function"
         assert "returns an error" in it.doc_comment
-        assert "decodeHeader" in it.calls
+
+    @requires_ts("go")
+    def test_function_calls_extracted(self, tree: Path) -> None:
+        # Callee extraction needs a tree — without the go grammar the
+        # resolver still yields the item, docs and definition, but the
+        # calls list stays coarse.
+        res = resolve_identifiers(tree, ["ParseHeader"])
+        assert "decodeHeader" in res.items[0].calls
 
     def test_struct_type(self, tree: Path) -> None:
         res = resolve_identifiers(tree, ["Header"])
@@ -355,6 +363,11 @@ pub fn decode_frame(buf: &[u8]) -> Result<Frame, Error> {
         res = resolve_identifiers(tree, ["decode_frame"])
         assert len(res.items) == 1
         assert "Returns Err on truncated input" in res.items[0].doc_comment
+
+    @requires_ts("rust")
+    def test_function_calls_extracted(self, tree: Path) -> None:
+        # Same contract as the Go twin: calls need the rust grammar.
+        res = resolve_identifiers(tree, ["decode_frame"])
         assert "parse_prefix" in res.items[0].calls
 
     def test_struct(self, tree: Path) -> None:

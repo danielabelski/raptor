@@ -26,6 +26,7 @@ from core.audit.fail_open_census import (
     run_fail_open_census,
     seed_fail_open_leads,
 )
+from core.testing import requires_ts
 
 _RAPTOR_DIR = Path(__file__).resolve().parents[3]
 _CHECKLIST_CLI = str(_RAPTOR_DIR / "libexec" / "raptor-build-checklist")
@@ -70,7 +71,11 @@ _GO_RECOVER = (
 
 
 class TestCensus:
+    @requires_ts("java", "go")
     def test_leads_across_languages(self):
+        # Python leads come from stdlib ast; the Java/Go legs need
+        # their grammars (analyzers answer None without them — the
+        # census then simply has no leads for those files).
         res = run_fail_open_census({
             "src/gate.py": _PY_SWALLOW,
             "src/ChainValidator.java": _JAVA_SWALLOW,

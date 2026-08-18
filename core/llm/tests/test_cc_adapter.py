@@ -853,3 +853,111 @@ class TestMintChildAwsCredentials:
             _mint_child_aws_credentials(env)  # must not raise
         assert "AWS_ACCESS_KEY_ID" not in env
         assert any("botocore" in r.getMessage() for r in caplog.records)
+
+
+class TestCcEnvCredentialScoping:
+    """Regression: the Bedrock gate used to copy the entire ambient
+    AWS_* prefix — static long-lived secrets included — plus the
+    first-party ANTHROPIC_API_KEY into CLI children that run with
+    Bash+Write against hostile repos. Secret material is now scoped:
+    named non-secret AWS vars pass through, the session trio comes
+    from the mint (sandboxed children) or the explicit static
+    passthrough (unsandboxed substrate children), and the Anthropic
+    key survives only where the child's provider requires it."""
+
+    def _install_mint_stub(self, monkeypatch):
+        import sys
+        import types
+        from unittest.mock import MagicMock
+        frozen = MagicMock()
+        frozen.access_key = "ASIAMINTED"
+        frozen.secret_key = "secret-minted"
+        frozen.token = "tok"
+        creds = MagicMock()
+        creds.get_frozen_credentials.return_value = frozen
+        session = MagicMock()
+        session.get_credentials.return_value = creds
+        pkg = types.ModuleType("botocore")
+        mod = types.ModuleType("botocore.session")
+        mod.Session = MagicMock(return_value=session)
+        pkg.session = mod
+        monkeypatch.setitem(sys.modules, "botocore", pkg)
+        monkeypatch.setitem(sys.modules, "botocore.session", mod)
+
+    def test_bedrock_no_blanket_aws_prefix_copy(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        self._install_mint_stub(monkeypatch)
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIASTATICLONGLIVED")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "static-secret")
+        monkeypatch.setenv("AWS_UNRELATED_TOOL_SECRET", "leakme")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        env = cc_subprocess_env(mint_aws_credentials=True)
+        # Ambient static secret is never copied verbatim into the
+        # sandboxed child; the minted session values replace it.
+        assert env["AWS_ACCESS_KEY_ID"] == "ASIAMINTED"
+        assert env["AWS_SECRET_ACCESS_KEY"] == "secret-minted"
+        assert env["AWS_SESSION_TOKEN"] == "tok"
+        # Arbitrary ambient AWS_* names no longer ride the prefix.
+        assert "AWS_UNRELATED_TOOL_SECRET" not in env
+        # Named non-secret selection vars still pass.
+        assert env["AWS_REGION"] == "us-east-1"
+
+    def test_bedrock_drops_first_party_anthropic_secrets(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xxx")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
+        monkeypatch.setenv("ANTHROPIC_MODEL", "example.model-mapping-id")
+        env = cc_subprocess_env()
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+        # Non-secret model mapping still flows.
+        assert env["ANTHROPIC_MODEL"] == "example.model-mapping-id"
+
+    def test_vertex_drops_first_party_anthropic_secrets(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xxx")
+        env = cc_subprocess_env()
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_first_party_keeps_anthropic_key(self, monkeypatch):
+        """On first-party API installs the key IS the child's auth."""
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xxx")
+        env = cc_subprocess_env()
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant-xxx"
+
+    def test_unsandboxed_substrate_static_trio_passthrough(self, monkeypatch):
+        """mint=False (pure-LLM substrate) children cannot re-resolve
+        env-provided static credentials — exactly that named trio
+        passes; arbitrary AWS_* still does not."""
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIASTATIC")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "static-secret")
+        monkeypatch.setenv("AWS_UNRELATED_TOOL_SECRET", "leakme")
+        env = cc_subprocess_env()
+        assert env["AWS_ACCESS_KEY_ID"] == "AKIASTATIC"
+        assert env["AWS_SECRET_ACCESS_KEY"] == "static-secret"
+        assert "AWS_UNRELATED_TOOL_SECRET" not in env
+
+    def test_bearer_token_passthrough_on_bedrock(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-tok")
+        env = cc_subprocess_env()
+        assert env["AWS_BEARER_TOKEN_BEDROCK"] == "bearer-tok"
+
+    def test_non_bedrock_gets_no_aws_names(self, monkeypatch):
+        from core.llm.cc_adapter import cc_subprocess_env
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-tok")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        env = cc_subprocess_env()
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in env
+        assert "AWS_REGION" not in env

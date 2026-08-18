@@ -20,13 +20,8 @@ logger = logging.getLogger(__name__)
 # its backend: CLAUDE_CODE_* (USE_BEDROCK / USE_VERTEX / USE_MANTLE and
 # friends), ANTHROPIC_* (API key, MODEL mapping for alternate clouds).
 # Prefix families rather than an exact list so new provider knobs keep
-# working. AWS_* (profile / region / credentials for Bedrock) is
-# handled separately: passed ONLY when CLAUDE_CODE_USE_BEDROCK is set,
-# so cloud credentials never flow to CLI children on installs that
-# don't need them — some of those children (cc_dispatch, validate
-# post-pass) run with tools enabled against hostile repos, and while
-# they inherently hold their own provider auth, there is no reason to
-# widen that to ambient AWS credentials on non-Bedrock setups.
+# working. The Anthropic secret pair is subtracted from the overlay
+# when an alternate-cloud backend is selected — see cc_subprocess_env.
 # RAPTOR_BEDROCK_/RAPTOR_CC_: RAPTOR's own LLM operator knobs
 # (model/profile/region pins, effort, budget). The pure-LLM substrate
 # child ignores them, but skill-pass children (skill_dispatch,
@@ -36,7 +31,36 @@ logger = logging.getLogger(__name__)
 _CC_BACKEND_ENV_PREFIXES = (
     "CLAUDE_CODE_", "ANTHROPIC_", "RAPTOR_BEDROCK_", "RAPTOR_CC_",
 )
-_CC_BEDROCK_ENV_PREFIX = "AWS_"
+
+# AWS names a Bedrock-backed CLI child needs, passed ONLY when
+# CLAUDE_CODE_USE_BEDROCK is set. An explicit allowlist, NOT the AWS_*
+# prefix: the previous blanket copy swept every ambient AWS_* value —
+# static long-lived secrets included — into CLI children, some of
+# which (cc_dispatch, validate post-pass) run with Bash+Write enabled
+# against hostile repos. Non-secret selection/config names only;
+# secret material flows exclusively through
+# _mint_child_aws_credentials (sandboxed children, scoped session
+# trio) or the explicit static-trio passthrough for unsandboxed
+# substrate children (see cc_subprocess_env).
+_CC_AWS_PASSTHROUGH_NAMES = (
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_CA_BUNDLE",
+    # The Bedrock bearer token is the CLI's API-key-style Bedrock auth;
+    # it cannot be minted through the credential chain, so on installs
+    # that use it the child needs the literal value.
+    "AWS_BEARER_TOKEN_BEDROCK",
+)
+
+# The SigV4 credential trio. Passed through verbatim ONLY for
+# unsandboxed substrate children (mint_aws_credentials=False): they
+# resolve their own chain (~/.aws, IMDS) for role/profile identities,
+# but env-provided static credentials are the one source the child
+# cannot re-resolve. Sandboxed children never receive the ambient
+# values — they get the minted (short-lived where the identity allows)
+# session trio instead.
+_CC_AWS_STATIC_CREDENTIAL_NAMES = (
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+)
 
 
 def resolve_claude_cli(explicit: str | None = None) -> str | None:
@@ -114,11 +138,32 @@ def cc_subprocess_env(*, mint_aws_credentials: bool = False) -> dict:
     # documented trade-off; the gate keeps AWS credentials out of
     # children on every install that never asked for Bedrock.
     bedrock = bool(os.environ.get("CLAUDE_CODE_USE_BEDROCK"))
+    vertex = bool(os.environ.get("CLAUDE_CODE_USE_VERTEX"))
     for key, value in os.environ.items():
-        if key.startswith(_CC_BACKEND_ENV_PREFIXES) or bedrock and key.startswith(_CC_BEDROCK_ENV_PREFIX):
+        if key.startswith(_CC_BACKEND_ENV_PREFIXES):
             env[key] = value
-    if bedrock and mint_aws_credentials:
-        _mint_child_aws_credentials(env)
+    if bedrock or vertex:
+        # The child's provider is an alternate cloud — the first-party
+        # Anthropic API key/token is dead weight there, and some of
+        # these children run with tools enabled against hostile repos.
+        # Keep the key only where the child's provider requires it
+        # (first-party API installs, where it IS the auth).
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    if bedrock:
+        for key in _CC_AWS_PASSTHROUGH_NAMES:
+            if key in os.environ:
+                env[key] = os.environ[key]
+        if mint_aws_credentials:
+            _mint_child_aws_credentials(env)
+        else:
+            # Unsandboxed substrate children resolve role/profile
+            # identities themselves (~/.aws + IMDS are reachable);
+            # only env-provided static credentials need the explicit
+            # named passthrough.
+            for key in _CC_AWS_STATIC_CREDENTIAL_NAMES:
+                if key in os.environ:
+                    env[key] = os.environ[key]
     env.update(operator_proxy_env())
     return env
 
@@ -127,10 +172,9 @@ def _mint_child_aws_credentials(env: dict) -> None:
     """Attach resolved AWS session credentials for a Bedrock-backed
     CLI child that cannot resolve its own.
 
-    The ``AWS_*`` overlay above copies whatever the parent env holds —
-    but on IAM-role hosts that is only *names* (``AWS_PROFILE``,
-    ``AWS_REGION``), never secret material: the real credentials live
-    behind ``~/.aws`` + IMDS. The child runs sandboxed — Landlock
+    The allowlisted AWS overlay above passes only *names*
+    (``AWS_PROFILE``, ``AWS_REGION``), never secret material: the real
+    credentials live behind ``~/.aws`` + IMDS. The child runs sandboxed — Landlock
     denies ``~/.aws`` and the egress allowlist has no route to IMDS
     (169.254.169.254:80) — so every provider in the child's own AWS
     credential chain is dead and the CLI exits 1 with "Could not load

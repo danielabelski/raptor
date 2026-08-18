@@ -73,8 +73,16 @@ def verify_pinned_clone(manifest: RecallManifest,
 
 
 def build_pipeline_argv(manifest: RecallManifest, target: Path,
-                        repo_root: Path) -> list[str]:
-    """Argv for the manifest's detection profile (operator surface)."""
+                        repo_root: Path,
+                        pipeline_out: Path | None = None) -> list[str]:
+    """Argv for the manifest's detection profile (operator surface).
+
+    ``pipeline_out`` pins the run's output directory. Without it the
+    lifecycle resolves the ACTIVE PROJECT when the target path matches
+    — a recall measurement would then attach to (and pollute) whatever
+    project the operator happens to have active. Measurement runs must
+    be hermetic.
+    """
     raptor_py = repo_root / "raptor.py"
     if manifest.profile == "scan":
         argv = [sys.executable, str(raptor_py), "scan",
@@ -87,8 +95,14 @@ def build_pipeline_argv(manifest: RecallManifest, target: Path,
                 "--repo", str(target)]
     else:  # pragma: no cover - manifest validation refuses others
         raise RunnerError(f"unknown profile {manifest.profile!r}")
+    if pipeline_out is not None:
+        argv += ["--out", str(pipeline_out)]
     if manifest.build_command:
         argv += ["--build-command", manifest.build_command]
+        # The CodeQL agent refuses --build-command without exactly one
+        # --languages; the manifest's language is the authority.
+        if manifest.profile == "scan-codeql" and manifest.language:
+            argv += ["--languages", manifest.language]
     return argv
 
 
@@ -108,7 +122,9 @@ def run_pipeline(manifest: RecallManifest, target: Path, repo_root: Path,
             "costs tokens; use scan/scan-codeql for free recall "
             "baselines", manifest.profile)
 
-    argv = build_pipeline_argv(manifest, target, repo_root)
+    pipeline_out = log_path.parent / "pipeline-run"
+    argv = build_pipeline_argv(manifest, target, repo_root,
+                               pipeline_out=pipeline_out)
     logger.info("running: %s", " ".join(argv))
     try:
         proc = subprocess.run(
@@ -124,11 +140,26 @@ def run_pipeline(manifest: RecallManifest, target: Path, repo_root: Path,
         encoding="utf-8")
 
     m = _OUTPUT_DIR_RE.search(proc.stdout or "")
-    if not m:
+    sentinel_dir = Path(m.group(1).strip()) if m else None
+
+    # The artifacts land in the --out dir we pinned; the lifecycle's
+    # OUTPUT_DIR sentinel can point elsewhere (raptor.py resolves the
+    # lifecycle dir before honouring a forwarded --out — it never
+    # passes it to get_output_dir(explicit_out=...)). Score where the
+    # artifacts actually are; the sentinel is only a fallback.
+    if pipeline_out.is_dir() and any(pipeline_out.glob("*.sarif")):
+        if sentinel_dir is not None and sentinel_dir != pipeline_out:
+            logger.warning(
+                "OUTPUT_DIR sentinel (%s) diverges from the pinned "
+                "--out dir; scoring the pinned dir", sentinel_dir)
+        out_dir = pipeline_out
+    elif sentinel_dir is not None:
+        out_dir = sentinel_dir
+    else:
         raise RunnerError(
-            f"pipeline printed no OUTPUT_DIR sentinel "
+            f"pipeline produced no SARIFs in {pipeline_out} and "
+            f"printed no OUTPUT_DIR sentinel "
             f"(exit {proc.returncode}); full log: {log_path}")
-    out_dir = Path(m.group(1).strip())
     if proc.returncode != 0:
         # A partially-failed run may still hold SARIFs; the caller
         # decides, but the failure must be visible.

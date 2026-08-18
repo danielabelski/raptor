@@ -85,6 +85,27 @@ class TestArgv:
             tmp_path / "t", tmp_path)
         assert argv[argv.index("--build-command") + 1] == "make -j2"
 
+    def test_codeql_build_command_carries_language(self, tmp_path):
+        # The CodeQL agent errors on --build-command without exactly
+        # one --languages (observed live on the OWASP baseline run).
+        argv = build_pipeline_argv(
+            _manifest("scan-codeql", build_command="mvn package"),
+            tmp_path / "t", tmp_path)
+        assert argv[argv.index("--languages") + 1] == "java"
+        argv = build_pipeline_argv(
+            _manifest("scan", build_command="mvn package"),
+            tmp_path / "t", tmp_path)
+        assert "--languages" not in argv
+
+    def test_pipeline_out_pins_output_dir(self, tmp_path):
+        # Hermeticity: without an explicit --out the lifecycle attaches
+        # to the operator's active project when the target path matches
+        # — a measurement run must never do that.
+        out = tmp_path / "run" / "pipeline-run"
+        argv = build_pipeline_argv(_manifest("scan"), tmp_path / "t",
+                                   tmp_path, pipeline_out=out)
+        assert argv[argv.index("--out") + 1] == str(out)
+
 
 class TestRunPipeline:
     def _proc(self, stdout="", rc=0):
@@ -106,6 +127,24 @@ class TestRunPipeline:
                    return_value=self._proc("no sentinel here", rc=3)), \
              pytest.raises(RunnerError, match="OUTPUT_DIR"):
             run_pipeline(_manifest(), tmp_path / "t", tmp_path, log)
+
+    def test_pinned_dir_with_sarifs_beats_divergent_sentinel(
+            self, tmp_path, caplog):
+        # The lifecycle sentinel can point at a project dir even when
+        # a forwarded --out carried the artifacts elsewhere; score the
+        # dir that actually holds SARIFs.
+        log = tmp_path / "pipeline.log"
+        pinned = log.parent / "pipeline-run"
+        pinned.mkdir()
+        (pinned / "combined.sarif").write_text('{"runs": []}',
+                                               encoding="utf-8")
+        elsewhere = tmp_path / "project_dir"
+        elsewhere.mkdir()
+        with patch("core.recall.runner.subprocess.run",
+                   return_value=self._proc(f"OUTPUT_DIR={elsewhere}\n")):
+            got = run_pipeline(_manifest(), tmp_path / "t", tmp_path, log)
+        assert got == pinned
+        assert "diverges" in caplog.text
 
     def test_nonzero_exit_with_dir_still_scores(self, tmp_path, caplog):
         out = tmp_path / "run_out"

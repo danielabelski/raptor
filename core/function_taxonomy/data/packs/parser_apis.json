@@ -26,6 +26,16 @@
   },
   {
    "cves": [
+    "CVE-2019-12900"
+   ],
+   "library": "bzip2",
+   "name": "BZ2_decompress",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
     "CVE-2023-50471",
     "CVE-2023-50472"
    ],
@@ -55,6 +65,36 @@
    ]
   },
   {
+   "cves": [
+    "CVE-2020-10735"
+   ],
+   "library": "cpython",
+   "name": "PyDoc_STRVAR",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2020-10735"
+   ],
+   "library": "cpython",
+   "name": "PyLong_FromString",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2020-10735"
+   ],
+   "library": "cpython",
+   "name": "PyLong_GetInfo",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
    "cves": [],
    "library": "cpython",
    "name": "PyRun_File",
@@ -71,11 +111,52 @@
    ]
   },
   {
+   "cves": [
+    "CVE-2008-5983"
+   ],
+   "library": "cpython",
+   "name": "PySys_GetObject",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2008-5983"
+   ],
+   "library": "cpython",
+   "name": "PySys_SetArgv",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2012-2135"
+   ],
+   "library": "cpython",
+   "name": "PyUnicode_DecodeUTF16Stateful",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
    "cves": [],
    "library": "cpython",
    "name": "Py_CompileString",
    "provenance": [
     "legacy-catalog"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2020-10735",
+    "CVE-2023-52425"
+   ],
+   "library": "cpython",
+   "name": "Py_UNUSED",
+   "provenance": [
+    "cve-fix-diff"
    ]
   },
   {
@@ -234,6 +315,80 @@
    ]
   },
   {
+   "cves": [
+    "CVE-2013-4244"
+   ],
+   "library": "libtiff",
+   "name": "TIFFAdvanceDirectory",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2013-4243",
+    "CVE-2016-9297"
+   ],
+   "library": "libtiff",
+   "name": "TIFFFetchNormalTag",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2018-7456"
+   ],
+   "library": "libtiff",
+   "name": "TIFFFetchStripThing",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFFillStrip",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFFillTile",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2014-8128",
+    "CVE-2015-7554",
+    "CVE-2016-10095",
+    "CVE-2016-5318"
+   ],
+   "library": "libtiff",
+   "name": "TIFFMergeFieldInfo",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2016-9273"
+   ],
+   "library": "libtiff",
+   "name": "TIFFNumberOfStrips",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
    "cves": [],
    "library": "libtiff",
    "name": "TIFFOpen",
@@ -242,11 +397,193 @@
    ]
   },
   {
-   "cves": [],
+   "cves": [
+    "CVE-2018-7456"
+   ],
+   "library": "libtiff",
+   "name": "TIFFPrintDirectory",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2015-8665",
+    "CVE-2015-8683"
+   ],
+   "library": "libtiff",
+   "name": "TIFFRGBAImageBegin",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2015-8665",
+    "CVE-2015-8683",
+    "CVE-2016-3622"
+   ],
+   "library": "libtiff",
+   "name": "TIFFRGBAImageOK",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFRasterScanlineSize",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2013-4243"
+   ],
+   "library": "libtiff",
+   "name": "TIFFReadBufferSetup",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2018-7456"
+   ],
+   "library": "libtiff",
+   "name": "TIFFReadDirEntryOutputErr",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2014-8128",
+    "CVE-2015-7554",
+    "CVE-2016-10095",
+    "CVE-2016-5318",
+    "CVE-2018-7456"
+   ],
    "library": "libtiff",
    "name": "TIFFReadDirectory",
    "provenance": [
+    "cve-fix-diff",
     "legacy-catalog"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFReadRawStrip",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFReadRawTile",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFReadRawTile1",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFScanlineSize",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2018-10779"
+   ],
+   "library": "libtiff",
+   "name": "TIFFSetupStrips",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFStripSize",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFTileRowSize",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFTileSize",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFVStripSize",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-14973"
+   ],
+   "library": "libtiff",
+   "name": "TIFFVTileSize",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2014-8127",
+    "CVE-2016-3658",
+    "CVE-2018-10963"
+   ],
+   "library": "libtiff",
+   "name": "TIFFWriteDirectorySec",
+   "provenance": [
+    "cve-fix-diff"
    ]
   },
   {
@@ -1271,11 +1608,62 @@
    ]
   },
   {
+   "cves": [
+    "CVE-2022-4450"
+   ],
+   "library": "openssl",
+   "name": "PEM_read_bio_ex",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2019-1547"
+   ],
+   "library": "openssl",
+   "name": "d2i_ECPKParameters",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2015-0209"
+   ],
+   "library": "openssl",
+   "name": "d2i_ECParameters",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2015-0209",
+    "CVE-2019-1547"
+   ],
+   "library": "openssl",
+   "name": "d2i_ECPrivateKey",
+   "provenance": [
+    "cve-fix-diff"
+   ]
+  },
+  {
    "cves": [],
    "library": "openssl",
    "name": "d2i_PrivateKey",
    "provenance": [
     "legacy-catalog"
+   ]
+  },
+  {
+   "cves": [
+    "CVE-2015-0209"
+   ],
+   "library": "openssl",
+   "name": "d2i_X509_AUX",
+   "provenance": [
+    "cve-fix-diff"
    ]
   },
   {

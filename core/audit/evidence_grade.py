@@ -100,7 +100,7 @@ VALID_EVIDENCE_TOOLS: frozenset = frozenset({
 _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "prefilter", "critique", "sweep", "sarif_cache",
     "dynamic", "frida", "dark_verify", "precondition",
-    "fail_open", "consistency",
+    "fail_open", "consistency", "ptr_lifecycle", "lock_region",
 })
 
 
@@ -304,6 +304,37 @@ _RECEIPT_MAP: dict[str, tuple] = {
     "consistency": (
         EvidenceSource.TREE_SITTER,
         "peer-majority consistency evidence (PeerEvidence receipts)",
+    ),
+    # ptr_lifecycle channel receipts (leg B; the bare namespace covers
+    # the -naming detection variants riding in aggregation
+    # composites). Leg A (field-parity) emits under the consistency
+    # namespace by construction and needs no row here.
+    "ptr_lifecycle:stale-alias": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a lifecycle event released the aliased owner with the "
+            "alias live and read afterwards (alias edge + event + "
+            "invalidation search + post-event read receipts)"
+        ),
+    ),
+    "ptr_lifecycle": (
+        EvidenceSource.TREE_SITTER,
+        "stale-alias shape confirmed by the ptr_lifecycle census",
+    ),
+    # lock_region channel receipts (the bare namespace covers the
+    # -naming detection variants).
+    "lock_region:callback-under-lock": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a callback-shaped invocation sits between a paired lock "
+            "acquire and its release (region + invocation + setter "
+            "receipts)"
+        ),
+    ),
+    "lock_region": (
+        EvidenceSource.TREE_SITTER,
+        "callback-under-lock shape confirmed by the lock_region "
+        "channel",
     ),
     "sarif_cache": (EvidenceSource.SEMGREP, "matched prior SARIF result"),
     "precondition": (

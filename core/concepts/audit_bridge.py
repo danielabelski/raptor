@@ -682,7 +682,6 @@ def invariant_violations_for_hypothesis(
     out_dir: Path,
     hypothesis: str,
     *,
-    finding_file: str = "",
     finding_cwe: str = "",
 ) -> list[dict[str, str]]:
     """Find invariants whose domain aligns with a hypothesis.
@@ -701,14 +700,12 @@ def invariant_violations_for_hypothesis(
 
     hyp_lower = hypothesis.lower()
     results: list[dict[str, str]] = []
-    matched_ids: set[str] = set()
 
     for inv in model.get("invariants", []):
         inv_id = inv.get("id", "")
 
         if _match_pass_cwe(inv, finding_cwe):
             results.append(_inv_to_result(inv, match_pass="cwe"))
-            matched_ids.add(inv_id)
             continue
 
         negation = (inv.get("negation") or "").lower()
@@ -733,7 +730,6 @@ def invariant_violations_for_hypothesis(
 
         if match:
             results.append(_inv_to_result(inv, match_pass="keyword"))
-            matched_ids.add(inv_id)
 
     return results
 
@@ -743,7 +739,6 @@ def invariants_contradicting_finding(
     hypothesis: str,
     preconditions: list[dict[str, Any]],
     *,
-    finding_file: str = "",
     finding_cwe: str = "",
 ) -> list[dict[str, str]]:
     """Find invariants that contradict a finding's hypothesis or preconditions.
@@ -752,8 +747,7 @@ def invariants_contradicting_finding(
     against all invariants. Returns matching invariants (deduplicated).
     """
     matches = invariant_violations_for_hypothesis(
-        out_dir, hypothesis,
-        finding_file=finding_file, finding_cwe=finding_cwe,
+        out_dir, hypothesis, finding_cwe=finding_cwe,
     )
     seen_ids = {m["invariant_id"] for m in matches}
 
@@ -762,8 +756,7 @@ def invariants_contradicting_finding(
         if not assumption:
             continue
         pre_matches = invariant_violations_for_hypothesis(
-            out_dir, assumption,
-            finding_file=finding_file, finding_cwe=finding_cwe,
+            out_dir, assumption, finding_cwe=finding_cwe,
         )
         for m in pre_matches:
             if m["invariant_id"] not in seen_ids:

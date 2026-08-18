@@ -331,7 +331,6 @@ class TestEnrichedMatching:
         results = invariant_violations_for_hypothesis(
             enriched_dir,
             "page-cache corruption via write to shared page",
-            finding_file="algif_aead.c",
             finding_cwe="CWE-787",
         )
         ids = [r["invariant_id"] for r in results]
@@ -344,7 +343,6 @@ class TestEnrichedMatching:
         results = invariant_violations_for_hypothesis(
             enriched_dir,
             "double put_page on error path leads to use-after-free",
-            finding_file="algif_aead.c",
             finding_cwe="",
         )
         ids = [r["invariant_id"] for r in results]
@@ -401,7 +399,6 @@ class TestEnrichedMatching:
             enriched_dir,
             "integer overflow in ivlen causes out-of-bounds write",
             [],
-            finding_file="af_alg.c",
             finding_cwe="CWE-190",
         )
         ids = [r["invariant_id"] for r in results]

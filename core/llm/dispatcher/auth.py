@@ -79,8 +79,8 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Callable, Mapping, Optional
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -157,10 +157,8 @@ class ProviderRule:
         "authorization", "x-api-key", "x-goog-api-key",
         "api-key", "openai-organization",
     )
-    prepare_request: Optional[
-        Callable[[str, str, Mapping[str, str], bytes], PreparedRequest]
-    ] = None
-    is_configured: Optional[Callable[[], bool]] = None
+    prepare_request: Callable[[str, str, Mapping[str, str], bytes], PreparedRequest] | None = None
+    is_configured: Callable[[], bool] | None = None
 
 
 # The AWS signer cache is a per-profile dict: key absent = not yet
@@ -435,21 +433,19 @@ class CredentialStore:
             if remaining <= 0:
                 warnings.append(
                     "AWS_BEARER_TOKEN_BEDROCK has already expired "
-                    "(exp was %d seconds ago).  Regenerate the token "
-                    "in the Bedrock console, or switch to a long-term "
+                    f"(exp was {-remaining} seconds ago).  Regenerate the "
+                    "token in the Bedrock console, or switch to a long-term "
                     "API key (Bedrock → API Keys → Long-term)."
-                    % (-remaining)
                 )
             elif remaining < expected_run_seconds:
                 warnings.append(
-                    "AWS_BEARER_TOKEN_BEDROCK expires in %d minutes "
-                    "but this run may take up to %d minutes.  Long "
+                    f"AWS_BEARER_TOKEN_BEDROCK expires in {remaining // 60} "
+                    f"minutes but this run may take up to "
+                    f"{expected_run_seconds // 60} minutes.  Long "
                     "scans will fail when the token expires.  Use a "
                     "long-term API key (Bedrock → API Keys → Long-term)"
                     " or switch to SigV4 with a profile / SSO "
-                    "(auto-refreshes)." % (
-                        remaining // 60, expected_run_seconds // 60,
-                    )
+                    "(auto-refreshes)."
                 )
         # SigV4-without-botocore case — operator signalled SigV4
         # intent (any of: env access keys, AWS_PROFILE, shared
@@ -631,6 +627,7 @@ class CredentialStore:
         the same creds + region serve both Mantle and runtime."""
         try:
             import botocore.credentials
+            import botocore.exceptions
             import botocore.session
         except ImportError:
             return None
@@ -647,7 +644,15 @@ class CredentialStore:
                     profile=pinned_profile,
                 )
                 creds = session.get_credentials()
-            except Exception:
+            except (
+                OSError,
+                ValueError,
+                botocore.exceptions.BotoCoreError,
+                botocore.exceptions.ClientError,
+            ):
+                # Credential-chain resolution failed (missing/expired
+                # profile, unreadable ~/.aws, STS/SSO refresh error) —
+                # signal "no chain credentials" to the caller.
                 return None, None
             chain_region = None
             try:
@@ -662,7 +667,9 @@ class CredentialStore:
                     ) or session.get_config_variable("region")
                 else:
                     chain_region = session.get_config_variable("region")
-            except Exception:
+            except (OSError, botocore.exceptions.BotoCoreError):
+                # Unreadable / malformed ~/.aws config: fall back to
+                # the ambient region rather than failing auth.
                 pass
             return creds, chain_region
 
@@ -1255,7 +1262,7 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
             # field populated and makes a stray non-hook forward fail
             # loudly rather than hitting a real endpoint.
             upstream_base_url="https://bedrock-mantle-not-configured.invalid",
-            inject_headers=lambda: {},
+            inject_headers=dict,
             prepare_request=_bedrock_prepare,
             is_configured=_bedrock_configured,
         ),

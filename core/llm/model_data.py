@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Static model data — costs, limits, endpoints, defaults.
 
@@ -53,10 +52,13 @@ import re as _re
 
 from .bedrock_prefixes import (
     BEDROCK_GLOBAL_PREFIX as _BEDROCK_GLOBAL_COST_PREFIX,
+)
+from .bedrock_prefixes import (
     BEDROCK_PROVIDER_SEGMENTS as _BEDROCK_PROVIDER_SEGMENTS,
+)
+from .bedrock_prefixes import (
     BEDROCK_REGIONAL_SURCHARGE_PREFIXES as _BEDROCK_REGIONAL_COST_PREFIXES,
 )
-
 
 # Provider API endpoints (Anthropic uses native SDK, no base_url needed)
 PROVIDER_ENDPOINTS = {
@@ -443,7 +445,10 @@ def resolve_model_name(model: str) -> str:
             mc = _get_default_primary_model()
             if mc is not None and mc.model_name:
                 return mc.model_name
-        except Exception:
+        except (OSError, ValueError):
+            # Unreadable / malformed models.json mid-resolution: the
+            # literal "default" passes through to the caller's own
+            # provider resolution.
             pass
         return model
 

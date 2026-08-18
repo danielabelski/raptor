@@ -414,7 +414,10 @@ def _resolve_claudecode_model() -> str:
     if explicit:
         return explicit
     if os.environ.get("RAPTOR_CC_PIN_MODEL", "1") != "0":
-        with contextlib.suppress(Exception):
+        # cached_cc_session_model handles cache-read errors itself;
+        # only residual filesystem races (which() / stat paths) are a
+        # legitimate reason to fall through to the sentinel.
+        with contextlib.suppress(OSError):
             from core.llm.cc_probe import cached_cc_session_model
             cached = cached_cc_session_model()
             if cached:
@@ -472,7 +475,7 @@ def _build_claudecode_config() -> Optional['ModelConfig']:
     )
 
 
-def _cc_bedrock_topology() -> tuple[Optional[str], Optional[str]]:
+def _cc_bedrock_topology() -> tuple[str | None, str | None]:
     """``(surface, model)`` observed from a Claude Code install that is
     itself on Bedrock — the backfill source for minimal Bedrock config
     (an entry or env opt-in that omits the surface or model).  A CC
@@ -494,7 +497,7 @@ def _cc_bedrock_topology() -> tuple[Optional[str], Optional[str]]:
     if not os.getenv("CLAUDE_CODE_USE_BEDROCK"):
         return None, None
     surface = "mantle" if os.getenv("CLAUDE_CODE_USE_MANTLE") else "runtime"
-    model: Optional[str] = None
+    model: str | None = None
     try:
         from core.llm.cc_probe import cached_cc_session_model
         model = cached_cc_session_model()

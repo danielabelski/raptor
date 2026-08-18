@@ -5592,25 +5592,37 @@ def _run_audit_body(
 
     # --- Callee-contract propagation (#6): re-review callers whose
     #     callee assumption was contradicted by the callee's review ---
+    # Budget-gated like the synthesis pass above: a budget/deadline-
+    # stopped run must not dispatch a fresh post-loop LLM pass — it
+    # overruns the SIGTERM drain margin and gets hard-killed with no
+    # report, leaving the lifecycle stuck running.
     try:
-        contract_re = _callee_contract_requeue(
-            result, config, review_fn,
-            checklist=checklist,
-            context_map=context_map,
-            fuzz_coverage=fuzz_coverage,
-            evidence_index=evidence_index,
-            discovered_evidence=discovered_evidence,
-            session_observations=session_observations,
-            joern_server=joern_server,
-            start_time=start_time,
-            on_progress=on_progress,
-            max_workers=resolved_workers,
-        )
-        if contract_re:
+        if executor_stats.budget_stopped or _check_budget(
+            config, start_time, result,
+        ):
             logger.info(
-                "callee-contract propagation: re-reviewed %d callers",
-                contract_re,
+                "callee-contract propagation skipped — budget/deadline "
+                "exhausted",
             )
+        else:
+            contract_re = _callee_contract_requeue(
+                result, config, review_fn,
+                checklist=checklist,
+                context_map=context_map,
+                fuzz_coverage=fuzz_coverage,
+                evidence_index=evidence_index,
+                discovered_evidence=discovered_evidence,
+                session_observations=session_observations,
+                joern_server=joern_server,
+                start_time=start_time,
+                on_progress=on_progress,
+                max_workers=resolved_workers,
+            )
+            if contract_re:
+                logger.info(
+                    "callee-contract propagation: re-reviewed %d callers",
+                    contract_re,
+                )
     except Exception:
         logger.debug(
             "callee-contract propagation failed", exc_info=True,
@@ -6668,6 +6680,7 @@ def _run_audit_body(
                     system_prompt=s or None,
                 ).content
             ),
+            start_time=start_time,
         )
     except Exception:
         logger.debug("dark verification pass failed", exc_info=True)
@@ -19578,6 +19591,11 @@ def _callee_contract_requeue(
 
     def _do_review(item):
         idx, _gap, _prior, ctx = item
+        # Poll the budget/SIGTERM rails before EACH dispatch — this
+        # pass runs after the main loop, exactly where a budget-
+        # stopped run would otherwise overrun the drain margin.
+        if _check_budget(config, start_time, result):
+            return (idx, None, None)
         try:
             outcome = review_fn(ctx, config)
             return (idx, outcome, None)
@@ -19585,7 +19603,11 @@ def _callee_contract_requeue(
             return (idx, None, exc)
 
     if effective_workers <= 1:
-        raw_results = [_do_review(item) for item in prepared]
+        raw_results = []
+        for item in prepared:
+            if _check_budget(config, start_time, result):
+                break
+            raw_results.append(_do_review(item))
     else:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19599,6 +19621,8 @@ def _callee_contract_requeue(
     re_reviewed = 0
     for idx, outcome, exc in sorted(raw_results, key=lambda r: r[0]):
         _, gap, prior_outcome, _ctx = prepared[idx]
+        if outcome is None and exc is None:
+            continue  # budget-skipped — never dispatched
         if exc is not None:
             logger.warning(
                 "callee-contract re-review failed for %s:%s: %s",
@@ -20048,6 +20072,7 @@ def _run_dark_verification(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     llm_client: Callable | None = None,
+    start_time: float | None = None,
 ) -> None:
     """Run dark-verification pass on eligible outcomes.
 
@@ -20106,6 +20131,20 @@ def _run_dark_verification(
     records: list[dict[str, Any]] = []
 
     for outcome in dark_outcomes:
+        # Poll the budget/SIGTERM rails before each witness dispatch:
+        # this post-loop pass multiplies with the expanded CWE
+        # eligibility, and without polling neither the SIGTERM drain
+        # nor max_seconds could stop it — budget exhaustion just made
+        # every remaining iteration a failed LLM call.
+        if start_time is not None and _check_budget(
+            config, start_time, result,
+        ):
+            logger.info(
+                "dark verification stopped — budget/deadline exhausted "
+                "(%d/%d outcomes verified)",
+                len(records), len(dark_outcomes),
+            )
+            break
         lang = language_for_file(outcome.file)
         if lang is None:
             continue

@@ -784,6 +784,27 @@ _CALL_IN_LINE_RE = re.compile(
     r"(\w+(?:\.\w+)*)\s*\(",
 )
 
+# C/C++-style function definition or prototype: type token(s), then
+# the function name, then a parameter list, ending in `{` (definition),
+# `;` (prototype/declaration) or nothing (K&R brace-on-next-line).
+# Without this the fallback census counted every same-repo prototype
+# (`int do_auth(void);` in a header) as a DISCARDED call site — a
+# phantom deviant per declaration — and never tracked the enclosing
+# function for C (every site attributed to ``<module>``). Keyword
+# lookahead keeps control-flow lines (`if (f() != 0)`) and
+# `return f();` on the call-site path.
+_C_FUNC_HEADER_RE = re.compile(
+    r"^\s*"
+    r"(?:__attribute__\s*\(\(.*?\)\)\s*)*"
+    r"(?!(?:if|else|while|for|switch|do|case|goto|return|yield|"
+    r"sizeof|new|delete|throw|await)\b)"
+    r"(?:[A-Za-z_]\w*[ \t*&]+)+"
+    r"(?:__attribute__\s*\(\(.*?\)\)\s*)*"
+    r"(?P<name>[A-Za-z_]\w*)\s*"
+    r"\([^;{}()]*\)\s*"
+    r"(?P<tail>[{;])?\s*$",
+)
+
 _ASSIGN_LINE_RE = re.compile(
     r"^\s*(?:(?:const|let|var|auto|int|char|void|bool|string|float|double|"
     r"long|unsigned|size_t|ssize_t|[\w:*&]+)\s+)?"
@@ -829,6 +850,16 @@ def _extract_callsites_regex(
         if fm:
             current_func = fm.group(1) or fm.group(2) or current_func
             continue
+
+        cm = _C_FUNC_HEADER_RE.match(line)
+        if cm:
+            if cm.group("name") not in _KEYWORDS:
+                if cm.group("tail") != ";":
+                    # Definition header: subsequent sites belong to it.
+                    current_func = cm.group("name")
+                # Either way the line itself declares — the name-plus-
+                # parens here is not a call site.
+                continue
 
         stripped = line.lstrip()
         # Determine how this line consumes return values.

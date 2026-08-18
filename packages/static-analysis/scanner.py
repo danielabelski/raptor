@@ -120,6 +120,13 @@ def _pack_tuple_for_id(pack_id: str) -> tuple[str, str]:
     return (f"semgrep_{safe}", full_id)
 
 
+# Registry packs dropped by the reachability probe this run.
+# Accumulated across dispatcher calls (parallel/sequential dispatch and
+# the expanded-semgrep stage all probe independently) so main() can
+# record the full loss in scan_metrics.json.
+_dropped_registry_packs: list[str] = []
+
+
 def _drop_unreachable_registry_packs(
     configs: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
@@ -128,6 +135,11 @@ def _drop_unreachable_registry_packs(
     A 3-second TCP probe distinguishes "airgapped" from "slow link".
     Cached packs (resolved to local paths by ``get_semgrep_config``)
     and local rule directories pass through unchanged.
+
+    Dropping is loud: with an unpopulated local registry cache an
+    offline run loses EVERY baseline pack, which pre-fix read as a
+    clean-but-quiet scan. Each drop prints an operator banner and is
+    accumulated in ``_dropped_registry_packs`` for scan_metrics.json.
     """
     needs_network = [
         (n, c) for n, c in configs
@@ -175,6 +187,17 @@ def _drop_unreachable_registry_packs(
             "semgrep.dev unreachable (3 s probe failed) — "
             "dropping %d uncached registry pack(s): %s",
             len(dropped), ", ".join(dropped),
+        )
+        for name in dropped:
+            if name not in _dropped_registry_packs:
+                _dropped_registry_packs.append(name)
+        print(
+            f"⚠️  semgrep: {len(dropped)} registry pack(s) dropped "
+            f"({', '.join(dropped)}) — semgrep.dev unreachable and no "
+            "local cache for them. Coverage is reduced for this run; "
+            "populate engine/semgrep/rules/registry-cache/ with "
+            "engine/semgrep/tools/cache-packs.py to scan offline.",
+            file=sys.stderr,
         )
         drop_set = {c for _, c in needs_network}
         return [(n, c) for n, c in configs if c not in drop_set]
@@ -2956,6 +2979,11 @@ def main():
         # tracked this, nothing failed") rather than absent-key
         # (couldn't-be-bothered).
         metrics["semgrep_failed_packs"] = semgrep_failed
+        # Registry packs the reachability probe dropped before dispatch
+        # (see _drop_unreachable_registry_packs) — distinct from
+        # semgrep_failed_packs, which records packs that DISPATCHED and
+        # then failed. Empty list means every requested pack ran.
+        metrics["dropped_registry_packs"] = sorted(_dropped_registry_packs)
         metrics["nosemgrep_suppressed_count"] = nosemgrep_count
         metrics["show_suppressed"] = getattr(args, "show_suppressed", False)
         save_json(out_dir / "scan_metrics.json", metrics)

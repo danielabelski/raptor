@@ -554,3 +554,82 @@ class TestSemgrepDroppedFiles:
         bad = tmp_path / "bad.json"
         bad.write_text("{not json")
         assert _scanner_mod._semgrep_dropped_files([bad]) == {}
+# ---------------------------------------------------------------------------
+# _drop_unreachable_registry_packs — loud degradation + metrics record
+# ---------------------------------------------------------------------------
+
+
+class _FailingSock:
+    def settimeout(self, _t):
+        pass
+
+    def connect(self, _addr):
+        raise OSError("unreachable")
+
+    def close(self):
+        pass
+
+
+class _ConnectingSock(_FailingSock):
+    def connect(self, _addr):
+        return None
+
+
+class TestDropUnreachableRegistryPacks:
+    CONFIGS = [
+        ("semgrep_security_audit", "p/security-audit"),
+        ("semgrep_secrets", "p/secrets"),
+        ("category_crypto", "/repo/engine/semgrep/rules/crypto"),
+    ]
+
+    def setup_method(self):
+        _scanner_mod._dropped_registry_packs.clear()
+
+    def teardown_method(self):
+        _scanner_mod._dropped_registry_packs.clear()
+
+    def test_unreachable_drops_records_and_prints(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "socket.socket", lambda *a, **k: _FailingSock(),
+        )
+        kept = _scanner_mod._drop_unreachable_registry_packs(
+            list(self.CONFIGS),
+        )
+        assert kept == [self.CONFIGS[2]]
+        assert _scanner_mod._dropped_registry_packs == [
+            "semgrep_security_audit", "semgrep_secrets",
+        ]
+        err = capsys.readouterr().err
+        assert "registry pack(s) dropped" in err
+        assert "cache-packs.py" in err
+
+    def test_drops_accumulate_without_duplicates(self, monkeypatch):
+        monkeypatch.setattr(
+            "socket.socket", lambda *a, **k: _FailingSock(),
+        )
+        _scanner_mod._drop_unreachable_registry_packs(list(self.CONFIGS))
+        _scanner_mod._drop_unreachable_registry_packs(list(self.CONFIGS))
+        assert _scanner_mod._dropped_registry_packs == [
+            "semgrep_security_audit", "semgrep_secrets",
+        ]
+
+    def test_reachable_keeps_everything_quietly(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "socket.socket", lambda *a, **k: _ConnectingSock(),
+        )
+        kept = _scanner_mod._drop_unreachable_registry_packs(
+            list(self.CONFIGS),
+        )
+        assert kept == list(self.CONFIGS)
+        assert _scanner_mod._dropped_registry_packs == []
+        assert "dropped" not in capsys.readouterr().err
+
+    def test_local_only_configs_skip_probe(self, monkeypatch):
+        def _boom(*_a, **_k):
+            raise AssertionError("probe must not run for local configs")
+
+        monkeypatch.setattr("socket.socket", _boom)
+        local = [("category_crypto", "/repo/rules/crypto")]
+        assert _scanner_mod._drop_unreachable_registry_packs(
+            list(local),
+        ) == local

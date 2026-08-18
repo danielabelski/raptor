@@ -27,8 +27,13 @@ propagate.
 The augmented pack is RAPTOR-internal (built by PR2a from
 LLM-extracted CandidateValidator records that have themselves been
 through identifier validation), so we don't enable CodeQL's pack-
-trust check here. If the upstream extraction is compromised the
-pack content was already validated at emission time.
+trust check here. Two compensating properties bound the exposure:
+this module feeds the measurement harness only (baseline-vs-augmented
+SARIF diff → suppression-rate metric; not the production finding
+path), and ``analyze`` refuses any extension pack that contains
+executable query content (``.ql``/``.qll``) — the pack may carry
+declarative data extensions only, so a compromised emission step
+cannot smuggle runnable queries into the analyze invocation.
 """
 
 from __future__ import annotations
@@ -55,6 +60,30 @@ class CodeQLRunError(RuntimeError):
     """Raised when ``codeql database analyze`` exits non-zero or
     times out. The message includes the CLI command, exit code, and
     captured stderr (trimmed)."""
+
+
+def _require_data_only_pack(pack_dir: Path) -> None:
+    """Refuse extension packs carrying executable query content.
+
+    The pack is loaded with CodeQL's pack-trust check disabled, which
+    is safe only because a data-extension pack is declarative YAML.
+    A ``.ql``/``.qll`` file inside it would be compiled and run by the
+    analyze invocation — enforce the data-only shape here rather than
+    trusting the emission step.
+    """
+    if not pack_dir.is_dir():
+        raise ValueError(
+            f"extension pack is not a directory: {pack_dir}")
+    offenders = [
+        p for p in pack_dir.rglob("*")
+        if p.suffix in (".ql", ".qll")
+    ]
+    if offenders:
+        raise ValueError(
+            "extension pack must contain data extensions only; "
+            f"found query content: {offenders[0]}"
+            + (f" (+{len(offenders) - 1} more)" if len(offenders) > 1 else "")
+        )
 
 
 @dataclass(frozen=True)
@@ -108,6 +137,9 @@ def analyze(
     """
     if not queries:
         raise ValueError("analyze: at least one query spec required")
+
+    if extension_pack is not None:
+        _require_data_only_pack(Path(extension_pack))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -235,6 +235,18 @@ TIER_B_FRAMEWORK_HOOKS: tuple[FrameworkHook, ...] = (
         r"|\bimplements\s+(?:jakarta\.servlet\.|javax\.servlet\.)?Filter\b"
         r"|\bvoid\s+doFilter\s*\(",
     ),
+    # Go middleware mechanics: the net/http wrapper signature (shared
+    # by chi and most router ecosystems) and gin's HandlerFunc type.
+    # Plain `func(w, r)` request handlers deliberately do NOT match —
+    # a handler is not a gate; the wrapper shape is.
+    FrameworkHook(
+        "go-net/http", "middleware",
+        r"func\s*\w*\s*\(\s*\w+\s+http\.Handler\s*\)\s*http\.Handler",
+    ),
+    FrameworkHook(
+        "gin", "middleware",
+        r"\bgin\.HandlerFunc\b|func\s*\(\s*\w+\s+\*gin\.Context\s*\)",
+    ),
 )
 
 # ── Naming heuristics (weakest tier; detection-grade only) ──────────

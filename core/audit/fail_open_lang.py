@@ -25,6 +25,12 @@ parser reports ``None`` and the channel returns
 ``inconclusive("language-unsupported")`` rather than guessing at
 brace-delimited handler bodies.
 
+Phase 2 also adds Go (discarded error returns — blank-identifier
+assignment, err bound-then-never-checked, bare call statements — and
+``recover()``-to-continue deferred handlers). Same no-regex-fallback
+rule as Java: whether an ``if err != nil`` check dominates the
+continuation is not honestly decidable from line shapes.
+
 Suffix→language mapping is strictly
 ``core.inventory.languages.LANGUAGE_MAP`` — no new extension list
 (dedup wave-3 rule). Unsupported languages are the caller's problem:
@@ -44,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 # Languages with an analyzer. Grows per phase (JS/TS/Rust in
 # phase 3).
-SUPPORTED_LANGUAGES = frozenset({"python", "c", "cpp", "java"})
+SUPPORTED_LANGUAGES = frozenset({"python", "c", "cpp", "java", "go"})
 
 # Handler outcome kinds (permissive unless noted).
 OUTCOME_PASS = "pass"
@@ -54,12 +60,14 @@ OUTCOME_ASSIGN_DEFAULT = "assign_default"
 OUTCOME_QUIET_LOG_ONLY = "quiet_log_only"
 OUTCOME_IGNORED_RETURN = "ignored_return"
 OUTCOME_TRISTATE_ACCEPTS_ERROR = "tristate_accepts_error"
+OUTCOME_RECOVER_CONTINUE = "recover_continue"
 OUTCOME_FAIL_CLOSED = "fail_closed"        # refuting shape
 OUTCOME_FALLBACK_ACTION = "fallback_action"  # undecided shape
 
 PERMISSIVE_OUTCOMES = frozenset({
     OUTCOME_PASS, OUTCOME_CONTINUE, OUTCOME_RETURN_PERMISSIVE,
     OUTCOME_ASSIGN_DEFAULT, OUTCOME_QUIET_LOG_ONLY,
+    OUTCOME_RECOVER_CONTINUE,
 })
 
 
@@ -1206,4 +1214,359 @@ def java_class_extends(source: str, type_name: str) -> str | None:
                     if t.is_named:
                         return _ts_node_text(t, src).rsplit(".", 1)[-1]
         return None
+    return None
+
+
+# ── Go legs: discarded errors + recover()-to-continue ───────────────
+# Go has no exceptions: the handler-outcome question splits into (a)
+# what happens to the `error` second return (blank-discarded /
+# assigned-never-checked / bare call statement) and (b) whether a
+# deferred recover() swallows panics and lets the request/loop
+# continue. CWE-252 premise split: these sites are adjudicated here
+# only for role-bound, hypothesis-driven checks; the contract/majority
+# census sweep over ALL callees is the consistency programme's
+# (callsite_consistency), which classifies the same Go shapes with its
+# usage enum and hands acknowledged discards of security-role callees
+# back to this channel as fail-open hypotheses.
+
+_GO_FUNC_TYPES = ("function_declaration", "method_declaration")
+_GO_ABORT_RE = re.compile(
+    r"\bos\.Exit\s*\(|\blog\.Fatal\w*\s*\(|\bpanic\s*\(",
+)
+
+
+def _go_enclosing_function(node, src: bytes):
+    cur = node.parent
+    while cur is not None:
+        if cur.type in _GO_FUNC_TYPES:
+            return cur
+        cur = cur.parent
+    return None
+
+
+def _go_function_name(func_node, src: bytes) -> str:
+    if func_node is None:
+        return ""
+    name_node = func_node.child_by_field_name("name")
+    return _ts_node_text(name_node, src) if name_node is not None else ""
+
+
+def _go_calls_in(node, src: bytes, *, skip=None) -> list[str]:
+    """Call names inside a node (selector calls dotted), optionally
+    skipping one subtree (the recover defer literal itself)."""
+    calls: list[str] = []
+    stack = list(node.children) if node is not None else []
+    while stack:
+        cur = stack.pop()
+        if skip is not None and cur == skip:
+            continue
+        if cur.type == "call_expression":
+            name = _call_name(cur, src)
+            # Identifier-shaped names only: a func-literal invocation's
+            # "name" is the literal's whole source text.
+            if name and name != "recover" \
+                    and re.fullmatch(r"[A-Za-z_][\w.]*", name):
+                calls.append(name)
+        stack.extend(cur.children)
+    return calls
+
+
+def go_recover_handlers(
+    source: str, file_path: str,
+) -> list[HandlerOutcome] | None:
+    """Deferred ``recover()`` blocks, classified.
+
+    A ``defer func(){ ... recover() ... }()`` whose body neither
+    re-panics nor aborts swallows every panic in the enclosing
+    function — ``recover_continue``, a permissive outcome. Re-panic /
+    ``os.Exit`` / ``log.Fatal`` bodies are fail-closed. ``None`` when
+    no tree-sitter go parser is available.
+    """
+    parser = _ts_parser("go")
+    if parser is None:
+        return None
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        logger.debug("fail_open_lang: go parse failed for %s",
+                     file_path, exc_info=True)
+        return None
+    lines = source.splitlines()
+    out: list[HandlerOutcome] = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type != "defer_statement":
+            continue
+        call = next(
+            (c for c in node.children if c.type == "call_expression"),
+            None,
+        )
+        if call is None:
+            continue
+        fn = call.child_by_field_name("function")
+        if fn is None or fn.type != "func_literal":
+            continue
+        literal_text = _ts_node_text(fn, src)
+        if not re.search(r"\brecover\s*\(\s*\)", literal_text):
+            continue
+        body_after_recover = literal_text.split("recover", 1)[1]
+        if _GO_ABORT_RE.search(body_after_recover):
+            outcome_kind = OUTCOME_FAIL_CLOSED
+            value = ("re-panics" if "panic" in body_after_recover
+                     else "aborts")
+        else:
+            outcome_kind = OUTCOME_RECOVER_CONTINUE
+            value = ("recovered-and-logged"
+                     if re.search(r"\blog\.", body_after_recover)
+                     else "recovered-and-discarded")
+        func_node = _go_enclosing_function(node, src)
+        func_name = _go_function_name(func_node, src)
+        # The guarded region is the whole enclosing function: a
+        # deferred recover swallows a panic raised anywhere in it.
+        region = (func_node.child_by_field_name("body")
+                  if func_node is not None else None)
+        try_calls = _go_calls_in(region, src, skip=fn)
+        try_span = (
+            (region.start_point[0] + 1, region.end_point[0] + 1)
+            if region is not None
+            else (_line_of(node), _line_of(node))
+        )
+        line = _line_of(node)
+        out.append(HandlerOutcome(
+            idiom="recover_continue",
+            file=file_path,
+            line=line,
+            caught=["<panic>"],
+            broad=True,
+            outcome_kind=outcome_kind,
+            permissive_value=value,
+            evidence_snippet=" ".join(
+                ln.strip()
+                for ln in lines[line - 1:min(len(lines), line + 2)]
+            ),
+            parser="tree-sitter",
+            enclosing_function=func_name,
+            try_calls=try_calls,
+            try_span=try_span,
+        ))
+    return out
+
+
+def _go_err_binding_name(assign, src: bytes) -> tuple[str, list[str]]:
+    """(last-LHS identifier, all LHS identifiers) of a Go assignment /
+    short var declaration — the error binding is conventionally last."""
+    left = assign.child_by_field_name("left")
+    if left is None or left.type != "expression_list":
+        return "", []
+    names = [
+        _ts_node_text(c, src)
+        for c in left.children
+        if c.type == "identifier"
+    ]
+    return (names[-1] if names else ""), names
+
+
+def _go_next_use(func_node, src: bytes, var: str, after_byte: int):
+    """First identifier node spelling ``var`` after ``after_byte`` in
+    the function, or None."""
+    if func_node is None:
+        return None
+    best = None
+    stack = [func_node]
+    while stack:
+        cur = stack.pop()
+        if cur.type == "identifier" and cur.start_byte > after_byte \
+                and _ts_node_text(cur, src) == var:
+            if best is None or cur.start_byte < best.start_byte:
+                best = cur
+        stack.extend(cur.children)
+    return best
+
+
+def _go_use_is_reassignment(use, src: bytes) -> bool:
+    """Is this identifier occurrence an LHS position of `=`/`:=`?"""
+    cur = use
+    while cur.parent is not None:
+        parent = cur.parent
+        if parent.type == "expression_list":
+            grand = parent.parent
+            if grand is not None and grand.type in (
+                    "assignment_statement", "short_var_declaration"):
+                return grand.child_by_field_name("left") == parent
+        cur = parent
+        if cur.type in ("block",) + _GO_FUNC_TYPES:
+            break
+    return False
+
+
+def _classify_go_call_site(
+    node, src: bytes, lines: list[str],
+) -> CallSiteOutcome:
+    """One Go call node → guarded/unguarded/undecided for the
+    discarded-error leg."""
+    line = _line_of(node)
+    code = lines[line - 1].strip() if line <= len(lines) else ""
+    site = CallSiteOutcome(
+        file="", line=line, code=code, verdict="undecided",
+        parser="tree-sitter",
+    )
+    cur = node.parent
+    while cur is not None:
+        t = cur.type
+        if t == "expression_statement":
+            site.verdict = "unguarded"
+            site.shape = "bare-statement"
+            site.evidence = (
+                "call result neither assigned nor compared"
+            )
+            return site
+        if t in ("assignment_statement", "short_var_declaration"):
+            err_var, names = _go_err_binding_name(cur, src)
+            if not err_var:
+                site.evidence = "unrecognised assignment shape"
+                return site
+            if err_var == "_":
+                site.verdict = "unguarded"
+                site.shape = "blank-discard"
+                site.evidence = (
+                    "error result explicitly discarded with the "
+                    "blank identifier"
+                )
+                return site
+            func_node = _go_enclosing_function(cur, src)
+            use = _go_next_use(func_node, src, err_var, cur.end_byte)
+            if use is None:
+                site.verdict = "unguarded"
+                site.shape = "err-never-checked"
+                site.evidence = (
+                    f"`{err_var}` bound at line {line} is never "
+                    "read afterwards in this function"
+                )
+                return site
+            if _go_use_is_reassignment(use, src):
+                site.verdict = "unguarded"
+                site.shape = "err-overwritten-before-check"
+                site.evidence = (
+                    f"`{err_var}` bound at line {line} is "
+                    f"reassigned at line {_line_of(use)} before any "
+                    "check"
+                )
+                return site
+            site.verdict = "guarded"
+            site.shape = "tested"
+            site.evidence = (
+                f"`{err_var}` consumed at line {_line_of(use)}"
+            )
+            return site
+        if t in ("if_statement", "binary_expression", "for_statement",
+                 "expression_switch_statement", "unary_expression",
+                 "parenthesized_expression"):
+            site.verdict = "guarded"
+            site.shape = "tested"
+            site.evidence = "call result consumed by a control condition"
+            return site
+        if t == "return_statement":
+            site.verdict = "guarded"
+            site.shape = "propagated"
+            site.evidence = "call result propagated to the caller"
+            return site
+        if t == "argument_list":
+            site.verdict = "guarded"
+            site.shape = "consumed-as-argument"
+            site.evidence = "call result consumed by an enclosing call"
+            return site
+        cur = cur.parent
+    site.evidence = "could not classify the call's consumption context"
+    return site
+
+
+def go_discard_sites(
+    source: str,
+    file_path: str,
+    callee: str,
+    *,
+    function_span: tuple[int, int] | None = None,
+) -> list[CallSiteOutcome] | None:
+    """Call sites of ``callee`` classified for the Go discarded-error
+    leg. ``None`` when no tree-sitter go parser is available (dominance
+    of an `if err != nil` check is not honestly decidable from line
+    shapes)."""
+    parser = _ts_parser("go")
+    if parser is None:
+        return None
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+        lines = source.splitlines()
+    except Exception:
+        logger.debug("fail_open_lang: go discard scan failed for %s",
+                     file_path, exc_info=True)
+        return None
+    sites = []
+    for node in _iter_calls_ts(tree, src, callee, function_span):
+        site = _classify_go_call_site(node, src, lines)
+        site.file = file_path
+        sites.append(site)
+    return sites
+
+
+def go_function_returns_error(source: str, function_name: str) -> bool:
+    """True when a same-file Go function's result type includes
+    ``error`` — the leg-2b fallibility witness for the discard leg."""
+    parser = _ts_parser("go")
+    tail = function_name.rsplit(".", 1)[-1]
+    if parser is not None:
+        try:
+            src = source.encode("utf-8", errors="replace")
+            tree = parser.parse(src)
+            stack = [tree.root_node]
+            while stack:
+                node = stack.pop()
+                stack.extend(node.children)
+                if node.type not in _GO_FUNC_TYPES:
+                    continue
+                if _go_function_name(node, src) != tail:
+                    continue
+                result = node.child_by_field_name("result")
+                if result is None:
+                    return False
+                return bool(re.search(
+                    r"\berror\b", _ts_node_text(result, src),
+                ))
+            return False
+        except Exception:
+            logger.debug("fail_open_lang: go signature scan failed",
+                         exc_info=True)
+    # Line-regex fallback: `func [recv] name(...) (..., error) {` or
+    # `func name(...) error {`.
+    return bool(re.search(
+        rf"func\s+(?:\([^)]*\)\s*)?{re.escape(tail)}\s*\([^)]*\)\s*"
+        rf"(?:\([^()]*\berror\b[^()]*\)|error)\s*\{{",
+        source,
+    ))
+
+
+def go_function_span(
+    source: str, function_name: str,
+) -> tuple[int, int] | None:
+    """(start_line, end_line) of a Go function/method, or None."""
+    parser = _ts_parser("go")
+    if parser is None:
+        return None
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        return None
+    tail = function_name.rsplit(".", 1)[-1]
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type in _GO_FUNC_TYPES \
+                and _go_function_name(node, src) == tail:
+            return (node.start_point[0] + 1, node.end_point[0] + 1)
     return None

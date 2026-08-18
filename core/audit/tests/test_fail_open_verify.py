@@ -24,6 +24,9 @@ import pytest
 from core.audit.fail_open_lang import (
     c_ignored_return_sites,
     c_tristate_sites,
+    go_discard_sites,
+    go_function_returns_error,
+    go_recover_handlers,
     java_handlers,
     python_handlers,
 )
@@ -49,6 +52,7 @@ from core.audit.fail_open_verify import (
     REASON_TYPES_UNRESOLVED,
     RULE_HANDLER_OUTCOME,
     RULE_IGNORED_RETURN,
+    RULE_RECOVER_CONTINUE,
     RULE_TRISTATE,
     fail_open_applicable,
     is_detection_rule_id,
@@ -1138,6 +1142,319 @@ class TestVerdictsJava:
 
 
 
+class TestGoAnalyzers:
+    DISCARD = (
+        "package main\n"
+        "\n"
+        "func getSession(r *Request, n string) (*Session, error) "
+        "{ return load(r, n) }\n"
+        "\n"
+        "func serveAdmin(w W, r *Request) {\n"
+        "    sess, _ := getSession(r, \"admin-session\")\n"
+        "    if sess.Values[\"admin\"] == true { doServe(w, r) }\n"
+        "}\n"
+    )
+
+    def test_blank_discard_is_unguarded(self):
+        sites = go_discard_sites(self.DISCARD, "m.go", "getSession")
+        admin = [s for s in sites if s.shape == "blank-discard"]
+        assert admin and admin[0].verdict == "unguarded"
+        assert "blank identifier" in admin[0].evidence
+
+    def test_err_checked_is_guarded(self):
+        src = self.DISCARD.replace(
+            "sess, _ := getSession(r, \"admin-session\")\n"
+            "    if sess.Values",
+            "sess, err := getSession(r, \"admin-session\")\n"
+            "    if err != nil { return }\n"
+            "    if sess.Values",
+        )
+        sites = go_discard_sites(src, "m.go", "getSession")
+        outer = [s for s in sites if s.line > 4]
+        assert outer and outer[0].verdict == "guarded"
+        assert outer[0].shape == "tested"
+
+    def test_err_never_read_is_unguarded(self):
+        src = (
+            "package main\n"
+            "func f(r *Request) {\n"
+            "    v, err := validate(r)\n"
+            "    use(v)\n"
+            "}\n"
+        )
+        sites = go_discard_sites(src, "m.go", "validate")
+        assert sites[0].verdict == "unguarded"
+        assert sites[0].shape == "err-never-checked"
+
+    def test_err_overwritten_before_check_is_unguarded(self):
+        src = (
+            "package main\n"
+            "func f(r *Request) {\n"
+            "    a, err := validate(r)\n"
+            "    b, err := parse(r)\n"
+            "    if err != nil { return }\n"
+            "    use(a, b)\n"
+            "}\n"
+        )
+        sites = go_discard_sites(src, "m.go", "validate")
+        assert sites[0].verdict == "unguarded"
+        assert sites[0].shape == "err-overwritten-before-check"
+
+    def test_bare_statement_is_unguarded(self):
+        src = (
+            "package main\n"
+            "func f(r *Request) {\n"
+            "    validateToken(r)\n"
+            "}\n"
+        )
+        sites = go_discard_sites(src, "m.go", "validateToken")
+        assert sites[0].verdict == "unguarded"
+        assert sites[0].shape == "bare-statement"
+
+    def test_propagated_is_guarded(self):
+        src = (
+            "package main\n"
+            "func f(r *Request) error {\n"
+            "    return validateToken(r)\n"
+            "}\n"
+        )
+        sites = go_discard_sites(src, "m.go", "validateToken")
+        assert sites[0].verdict == "guarded"
+        assert sites[0].shape == "propagated"
+
+    def test_returns_error_signature(self):
+        assert go_function_returns_error(self.DISCARD, "getSession")
+        assert not go_function_returns_error(self.DISCARD, "serveAdmin")
+
+    RECOVER = (
+        "package main\n"
+        "func mw(next http.Handler) http.Handler {\n"
+        "    defer func() { if r := recover(); r != nil "
+        "{ log.Println(r) } }()\n"
+        "    mustAuthorize(nil)\n"
+        "    return next\n"
+        "}\n"
+    )
+
+    def test_recover_and_log_is_permissive(self):
+        handlers = go_recover_handlers(self.RECOVER, "m.go")
+        assert handlers is not None and len(handlers) == 1
+        h = handlers[0]
+        assert h.outcome_kind == "recover_continue"
+        assert h.is_permissive
+        assert h.broad is True
+        assert h.caught == ["<panic>"]
+        assert "mustAuthorize" in h.try_calls
+        assert h.enclosing_function == "mw"
+
+    def test_repanic_is_fail_closed(self):
+        src = self.RECOVER.replace(
+            "{ log.Println(r) }", "{ log.Println(r); panic(r) }",
+        )
+        h = go_recover_handlers(src, "m.go")[0]
+        assert h.outcome_kind == "fail_closed"
+        assert h.permissive_value == "re-panics"
+
+    def test_os_exit_is_fail_closed(self):
+        src = self.RECOVER.replace(
+            "{ log.Println(r) }", "{ os.Exit(1) }",
+        )
+        h = go_recover_handlers(src, "m.go")[0]
+        assert h.outcome_kind == "fail_closed"
+        assert h.permissive_value == "aborts"
+
+    def test_parser_absent_returns_none(self, monkeypatch):
+        import core.audit.fail_open_lang as fol
+        monkeypatch.setattr(fol, "_ts_parser", lambda lang: None)
+        assert go_recover_handlers(self.RECOVER, "m.go") is None
+        assert go_discard_sites(self.DISCARD, "m.go", "getSession") \
+            is None
+
+
+class TestVerdictsGo:
+    """Fixture pairs 7 (discarded session-store error) and 8
+    (recover-to-continue in auth middleware) from the design."""
+
+    MW_VULN = (
+        "package main\n"
+        "\n"
+        "func getSession(r *http.Request, name string) "
+        "(*Session, error) { return store.load(r, name) }\n"
+        "\n"
+        "func adminGate(next http.Handler) http.Handler {\n"
+        "    return http.HandlerFunc(func(w http.ResponseWriter, "
+        "r *http.Request) {\n"
+        "        sess, _ := getSession(r, \"admin-session\")\n"
+        "        if sess.Values[\"admin\"] == true "
+        "{ next.ServeHTTP(w, r) }\n"
+        "    })\n"
+        "}\n"
+    )
+    HYP_MW = (
+        "the error from getSession is discarded with the blank "
+        "identifier; a failed session load still serves the admin page"
+    )
+
+    def test_discarded_store_error_confirms_via_tier_b(self, tmp_path):
+        _write(tmp_path, "src/mw.go", self.MW_VULN)
+        res = run_fail_open_check(
+            tmp_path, "src/mw.go", "adminGate", self.HYP_MW,
+        )
+        assert res.outcome == "confirmed"
+        assert res.rule_id == RULE_IGNORED_RETURN
+        assert res.role is not None
+        assert res.role["provenance"].startswith("tier_b:go-net/http")
+        assert res.role["grade"] == "registry"
+        assert res.fallible is not None
+        assert res.fallible["evidence"] == \
+            "returns-error (same-file signature)"
+        assert res.sites
+        assert res.sites[0].shape == "blank-discard"
+
+    def test_checked_error_twin_refutes(self, tmp_path):
+        safe = self.MW_VULN.replace(
+            "sess, _ := getSession(r, \"admin-session\")\n"
+            "        if sess.Values",
+            "sess, err := getSession(r, \"admin-session\")\n"
+            "        if err != nil { http.Error(w, \"no\", 401); "
+            "return }\n"
+            "        if sess.Values",
+        )
+        _write(tmp_path, "src/mw.go", safe)
+        res = run_fail_open_check(
+            tmp_path, "src/mw.go", "adminGate", self.HYP_MW,
+        )
+        assert res.outcome == "refuted"
+        assert res.sites and all(
+            s.verdict == "guarded" for s in res.sites
+        )
+
+    def test_out_of_tree_callee_uses_inventory_signature(
+        self, tmp_path,
+    ):
+        src = (
+            "package main\n"
+            "func gate(w W, r *Request) {\n"
+            "    sess, _ := fetchSession(r, \"s\")\n"
+            "    serve(w, sess)\n"
+            "}\n"
+        )
+        _write(tmp_path, "src/gate.go", src)
+        inventory = {"files": [{
+            "path": "pkg/store/store.go",
+            "functions": [{
+                "name": "fetchSession",
+                "signature": "func fetchSession(r *Request, "
+                             "n string) (*Session, error)",
+            }],
+        }]}
+        res = run_fail_open_check(
+            tmp_path, "src/gate.go", "gate",
+            "the error from fetchSession is discarded and the "
+            "request proceeds",
+            inventory=inventory,
+        )
+        assert res.outcome == "confirmed"
+        assert res.fallible is not None
+        assert res.fallible["evidence"] == \
+            "returns-error (inventory signature)"
+        # naming-only role (session stem) -> detection variant.
+        assert res.rule_id == RULE_IGNORED_RETURN + "-naming"
+
+    def test_unresolvable_callee_gates_fallibility(self, tmp_path):
+        src = (
+            "package main\n"
+            "func gate(w W, r *Request) {\n"
+            "    sess, _ := fetchSession(r, \"s\")\n"
+            "    serve(w, sess)\n"
+            "}\n"
+        )
+        _write(tmp_path, "src/gate.go", src)
+        res = run_fail_open_check(
+            tmp_path, "src/gate.go", "gate",
+            "the error from fetchSession is discarded and the "
+            "request proceeds",
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_FALLIBILITY_UNRESOLVED in res.reason
+
+    RECOVER_VULN = (
+        "package main\n"
+        "\n"
+        "func requireAuth(next http.Handler) http.Handler {\n"
+        "    return http.HandlerFunc(func(w http.ResponseWriter, "
+        "r *http.Request) {\n"
+        "        defer func() { if rec := recover(); rec != nil "
+        "{ log.Println(rec) } }()\n"
+        "        mustAuthorize(r)\n"
+        "        next.ServeHTTP(w, r)\n"
+        "    })\n"
+        "}\n"
+    )
+    HYP_RECOVER = (
+        "a panic from mustAuthorize is recovered and the request "
+        "continues to the protected handler"
+    )
+
+    def test_recover_to_continue_confirms(self, tmp_path):
+        _write(tmp_path, "src/rec.go", self.RECOVER_VULN)
+        res = run_fail_open_check(
+            tmp_path, "src/rec.go", "requireAuth", self.HYP_RECOVER,
+        )
+        assert res.outcome == "confirmed"
+        assert res.rule_id.startswith(RULE_RECOVER_CONTINUE)
+        assert res.handler is not None
+        assert res.handler["outcome_kind"] == "recover_continue"
+        assert res.fallible is not None
+        assert res.fallible["evidence"] == \
+            "catchable: any-call-under-recover"
+
+    def test_repanic_twin_refutes(self, tmp_path):
+        safe = self.RECOVER_VULN.replace(
+            "{ log.Println(rec) }", "{ log.Println(rec); panic(rec) }",
+        )
+        _write(tmp_path, "src/rec.go", safe)
+        res = run_fail_open_check(
+            tmp_path, "src/rec.go", "requireAuth", self.HYP_RECOVER,
+        )
+        assert res.outcome == "refuted"
+        assert res.handler is not None
+        assert res.handler["permissive_value"] == "re-panics"
+
+    def test_no_recover_handler_is_unbindable(self, tmp_path):
+        src = (
+            "package main\n"
+            "func f(r *Request) { serve(r) }\n"
+        )
+        _write(tmp_path, "src/f.go", src)
+        res = run_fail_open_check(
+            tmp_path, "src/f.go", "f",
+            "a panic is recovered and processing continues",
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_HYPOTHESIS_UNBINDABLE in res.reason
+
+    def test_parser_absent_is_language_unsupported(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.fail_open_lang as fol
+        monkeypatch.setattr(fol, "_ts_parser", lambda lang: None)
+        _write(tmp_path, "src/mw.go", self.MW_VULN)
+        res = run_fail_open_check(
+            tmp_path, "src/mw.go", "adminGate", self.HYP_MW,
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_LANGUAGE_UNSUPPORTED in res.reason
+
+    def test_recover_hypothesis_routes_cwe_703(self):
+        from core.audit.cwe_dispatch import infer_cwe_from_hypothesis
+        assert infer_cwe_from_hypothesis(
+            "panic recovered and processing continues",
+        ) == "CWE-703"
+        assert infer_cwe_from_hypothesis(self.HYP_RECOVER) == "CWE-703"
+
+
+
 class TestCalibrationCases:
     """The two operator calibration shapes: both must confirm."""
 
@@ -1246,14 +1563,14 @@ class TestUndecidedGating:
         assert REASON_ROLE_UNBOUND in res.reason
 
     def test_language_unsupported_reason(self, tmp_path):
-        _write(tmp_path, "src/main.go", "package main\n")
+        _write(tmp_path, "src/main.rb", "def main; end\n")
         res = run_fail_open_check(
-            tmp_path, "src/main.go", "main",
+            tmp_path, "src/main.rb", "main",
             "the session store error is discarded",
         )
         assert res.outcome == "inconclusive"
         assert REASON_LANGUAGE_UNSUPPORTED in res.reason
-        assert "go" in res.reason
+        assert "ruby" in res.reason
 
     def test_hypothesis_unbindable_reason(self, tmp_path):
         src = "def clean(x):\n    return x + 1\n"

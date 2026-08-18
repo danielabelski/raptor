@@ -496,6 +496,11 @@ _HYPOTHESIS_CWE_MAP = [
       r"(?:error|return value|\berr\b)"), "CWE-252"),
     ((r"(?:return\s+value|result|\berr\b).{0,40}"
       r"(?:ignor|discard|not\s+checked|unchecked)"), "CWE-252"),
+    # Go recover()-to-continue phrasings (the fail_open channel's
+    # recover leg). Appended: first-match-wins, pre-existing behaviour
+    # unchanged.
+    ((r"panic\w*.{0,40}recover|recover\w*.{0,40}"
+      r"(?:continue|proceed|swallow)"), "CWE-703"),
     # Midpoint-D1 long-tail families (appended: first-match-wins, so
     # pre-existing behaviour is unchanged). No CWE-908 keyword row:
     # every realistic uninitialised-resource phrasing contains

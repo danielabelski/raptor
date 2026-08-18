@@ -65,6 +65,10 @@ from .fail_open_lang import (
     c_function_span,
     c_ignored_return_sites,
     c_tristate_sites,
+    go_discard_sites,
+    go_function_returns_error,
+    go_function_span,
+    go_recover_handlers,
     java_class_extends,
     java_function_throws,
     java_handlers,
@@ -935,6 +939,320 @@ def _run_c_check(
     )
 
 
+# ── Go legs: discarded error + recover-to-continue ──────────────────
+
+_RECOVER_HYPOTHESIS_RE = re.compile(r"\brecover|\bpanic", re.IGNORECASE)
+
+
+def _go_segment(source: str, function_name: str) -> str:
+    span = go_function_span(source, function_name)
+    if span is None:
+        return ""
+    lines = source.splitlines()
+    return "\n".join(lines[span[0] - 1:span[1]])
+
+
+def _inventory_signature(
+    inventory: dict[str, Any] | None, name: str,
+) -> str:
+    """Recorded signature/return type of *name* from the inventory
+    extractor metadata (Go fallibility fallback when the callee is not
+    defined in the hypothesis's file)."""
+    tail = name.rsplit(".", 1)[-1]
+    for frec in (inventory or {}).get("files", []) or []:
+        for fn in frec.get("functions", []) or []:
+            if fn.get("name") != tail:
+                continue
+            sig = fn.get("signature") or ""
+            meta = fn.get("metadata") or {}
+            return " ".join(
+                str(x) for x in (sig, meta.get("return_type") or "")
+            ).strip()
+    return ""
+
+
+def _go_fallibility(
+    callee: str,
+    role: RoleEvidence,
+    source: str,
+    inventory: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Leg 2b for Go: the callee's result includes ``error`` (same-file
+    signature, then inventory extractor metadata), or a learned
+    ``err_second`` contract."""
+    tail = _function_tail(callee)
+    if go_function_returns_error(source, tail):
+        return {
+            "callee": callee,
+            "evidence": "returns-error (same-file signature)",
+            "types": ["error"],
+        }
+    sig = _inventory_signature(inventory, tail)
+    if sig and re.search(r"\berror\b", sig):
+        return {
+            "callee": callee,
+            "evidence": "returns-error (inventory signature)",
+            "types": ["error"],
+        }
+    if role.contract == "err_second":
+        return {
+            "callee": callee,
+            "evidence": "contract:err_second",
+            "types": ["error"],
+        }
+    return None
+
+
+def _run_go_recover_check(
+    source: str,
+    file_path: str,
+    function_name: str,
+    role_context: RoleContext,
+    inventory: dict[str, Any] | None,
+) -> FailOpenResult:
+    all_handlers = go_recover_handlers(source, file_path)
+    if all_handlers is None:
+        return _inconclusive(
+            REASON_LANGUAGE_UNSUPPORTED,
+            "no tree-sitter go parser available — recover() handler "
+            "bodies are not honestly classifiable from line shapes",
+            language="go", rule_id=RULE_RECOVER_CONTINUE,
+        )
+    handlers = [
+        h for h in all_handlers
+        if _handler_in_function(h, function_name)
+    ]
+    if not handlers:
+        return _inconclusive(
+            REASON_HYPOTHESIS_UNBINDABLE,
+            f"no deferred recover() handler found in {function_name}",
+            language="go", rule_id=RULE_RECOVER_CONTINUE,
+        )
+
+    permissive = [h for h in handlers if h.is_permissive]
+    fail_closed = [h for h in handlers if h.is_fail_closed]
+    if not permissive:
+        if fail_closed:
+            first = fail_closed[0]
+            return FailOpenResult(
+                outcome="refuted",
+                reason=(
+                    f"recover() handler at {file_path}:{first.line} "
+                    f"is fail-closed ({first.permissive_value}); the "
+                    "panic does not proceed"
+                ),
+                rule_id=RULE_RECOVER_CONTINUE,
+                language="go",
+                handler=first.to_dict(),
+            )
+        first = handlers[0]
+        return _inconclusive(
+            REASON_HANDLER_UNDECIDED,
+            f"recover() handler at {file_path}:{first.line} outcome "
+            "not structurally decidable",
+            language="go", rule_id=RULE_RECOVER_CONTINUE,
+        )
+
+    segment = _go_segment(source, function_name)
+    role: RoleEvidence | None = None
+    chosen: HandlerOutcome | None = None
+    for handler in permissive:
+        role = bind_role(
+            handler.try_calls,
+            function_name,
+            file_path,
+            language="go",
+            context=role_context,
+            enclosing_source=segment,
+        )
+        if role is not None:
+            chosen = handler
+            break
+    if role is None or chosen is None:
+        return _inconclusive(
+            REASON_ROLE_UNBOUND,
+            "could not bind a security role to the recover()-guarded "
+            f"region (calls: "
+            f"{', '.join(permissive[0].try_calls) or '<none>'})",
+            language="go", rule_id=RULE_RECOVER_CONTINUE,
+        )
+
+    if not chosen.try_calls:
+        return _inconclusive(
+            REASON_FALLIBILITY_UNRESOLVED,
+            "the recover()-guarded region makes no calls — nothing "
+            "can panic, the handler is vacuous",
+            language="go", rule_id=RULE_RECOVER_CONTINUE,
+        )
+    # recover() catches every panic — the broad-catch acceptance rule
+    # (weaker receipt), mirroring any-call-under-broad-catch.
+    fallible = {
+        "callee": chosen.try_calls[0],
+        "line": chosen.try_span[0] if chosen.try_span else 0,
+        "evidence": "catchable: any-call-under-recover",
+        "types": ["<panic>"],
+    }
+
+    rule_id = _apply_role_grade(RULE_RECOVER_CONTINUE, role)
+    reason = (
+        f"{chosen.evidence_snippet or chosen.idiom} at "
+        f"{file_path}:{chosen.line} recovers any panic (incl. from "
+        f"{fallible['callee']}) inside {role.kind}-role region and "
+        f"control continues ({chosen.permissive_value})"
+    )
+    result = FailOpenResult(
+        outcome="confirmed",
+        reason=reason,
+        rule_id=rule_id,
+        language="go",
+        role=role.to_dict(),
+        handler=chosen.to_dict(),
+        fallible=fallible,
+    )
+    result.reachability = _entry_reachability(
+        role_context, inventory, file_path, function_name,
+    )
+    return result
+
+
+def _run_go_check(
+    source: str,
+    file_path: str,
+    function_name: str,
+    hypothesis: str,
+    role_context: RoleContext,
+    inventory: dict[str, Any] | None,
+) -> FailOpenResult:
+    if _RECOVER_HYPOTHESIS_RE.search(hypothesis):
+        return _run_go_recover_check(
+            source, file_path, function_name, role_context, inventory,
+        )
+
+    span = go_function_span(source, function_name)
+    segment = _go_segment(source, function_name) or source
+
+    candidates = _candidate_callees(hypothesis, segment)
+    if not candidates:
+        return _inconclusive(
+            REASON_HYPOTHESIS_UNBINDABLE,
+            f"hypothesis names no call present in {function_name}",
+            language="go", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    role: RoleEvidence | None = None
+    callee = ""
+    for candidate in candidates:
+        role = bind_role(
+            [candidate],
+            "",  # per-callee binding: the enclosing name must not
+                 # smuggle a role onto an unrelated callee
+            file_path,
+            language="go",
+            context=role_context,
+            # Tier-B middleware mechanics live on the enclosing
+            # function's signature (func(next http.Handler) ...).
+            enclosing_source=segment,
+        )
+        if role is not None:
+            callee = candidate
+            break
+    if role is None:
+        return _inconclusive(
+            REASON_ROLE_UNBOUND,
+            "could not bind a security role to any hypothesis callee "
+            f"({', '.join(candidates)})",
+            language="go", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    tail = _function_tail(callee)
+    fallible = _go_fallibility(callee, role, source, inventory)
+    if fallible is None:
+        return _inconclusive(
+            REASON_FALLIBILITY_UNRESOLVED,
+            f"no error-bearing signature resolvable for {callee} "
+            "(same-file, inventory) and no err_second contract — "
+            "cannot demonstrate the discarded result can fail",
+            language="go", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    sites = go_discard_sites(
+        source, file_path, tail, function_span=span,
+    )
+    if sites is None:
+        return _inconclusive(
+            REASON_LANGUAGE_UNSUPPORTED,
+            "no tree-sitter go parser available — `if err != nil` "
+            "dominance is not honestly decidable from line shapes",
+            language="go", rule_id=RULE_IGNORED_RETURN,
+        )
+    if not sites:
+        return _inconclusive(
+            REASON_HYPOTHESIS_UNBINDABLE,
+            f"no call sites of {callee} located in {function_name}",
+            language="go", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    unguarded = [s for s in sites if s.verdict == "unguarded"]
+    undecided = [s for s in sites if s.verdict == "undecided"]
+    rule_id = _apply_role_grade(RULE_IGNORED_RETURN, role)
+
+    if unguarded:
+        first = unguarded[0]
+        result = FailOpenResult(
+            outcome="confirmed",
+            reason=(
+                f"{first.code} at {file_path}:{first.line} — "
+                f"{first.evidence} ({role.kind}-role callee "
+                f"{callee}, {fallible['evidence']})"
+            ),
+            rule_id=rule_id,
+            language="go",
+            role=role.to_dict(),
+            handler={
+                "idiom": "ignored_return",
+                "line": first.line,
+                "caught": [callee],
+                "broad": False,
+                "outcome_kind": "ignored_return",
+                "permissive_value": first.shape,
+                "code": first.code,
+                "parser": first.parser,
+            },
+            fallible=fallible,
+            sites=sites,
+        )
+        result.reachability = _entry_reachability(
+            role_context, inventory, file_path, function_name,
+        )
+        return result
+    if not undecided:
+        return FailOpenResult(
+            outcome="refuted",
+            reason=(
+                f"all {len(sites)} site(s) of {callee} in "
+                f"{function_name} handle the error result fail-closed "
+                f"(receipts per site)"
+            ),
+            rule_id=RULE_IGNORED_RETURN,
+            language="go",
+            role=role.to_dict(),
+            fallible=fallible,
+            sites=sites,
+        )
+    return FailOpenResult(
+        outcome="inconclusive",
+        reason=(
+            f"{REASON_HANDLER_UNDECIDED}: {len(undecided)} of "
+            f"{len(sites)} site(s) could not be structurally decided"
+        ),
+        rule_id=RULE_IGNORED_RETURN,
+        language="go",
+        role=role.to_dict(),
+        fallible=fallible,
+        sites=sites,
+    )
+
+
 # ── channel entry point ─────────────────────────────────────────────
 
 
@@ -985,6 +1303,11 @@ def run_fail_open_check(
     if language == "java":
         return _run_java_check(
             source, file_path, function_name, ctx, inventory,
+        )
+    if language == "go":
+        return _run_go_check(
+            source, file_path, function_name, hypothesis, ctx,
+            inventory,
         )
     return _run_c_check(
         source, file_path, function_name, hypothesis, language, ctx,

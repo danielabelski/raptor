@@ -31,6 +31,7 @@ import logging
 import math
 import os
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -587,13 +588,25 @@ def run_skill_dispatch(
         # backend cannot plumb ``input=`` — passing it silently routes
         # the dispatch down the unshare-CLI fallback whose empty netns
         # has no forwarder (the child would have no network at all).
-        # The prompt file lives in the RAPTOR-owned run dir.
+        # The prompt can embed operator context and excerpts of the
+        # scanned source, so it must not persist on disk: it goes into
+        # a 0600 tempfile (mkstemp) that is unlinked before the child
+        # is spawned — the only remaining reference is the open fd the
+        # spawn backend dup2s onto the child's stdin, and the inode
+        # dies when both sides close it.
         stdin_kwargs: dict
         prompt_fh = None
         if cc_proxy_creds is not None:
-            prompt_path = run_dir / "cc-prompt.txt"
-            prompt_path.write_text(prompt, encoding="utf-8")
-            prompt_fh = open(prompt_path, "rb")  # noqa: SIM115
+            fd, tmp_prompt_path = tempfile.mkstemp(prefix="cc-prompt-")
+            try:
+                os.unlink(tmp_prompt_path)
+                prompt_fh = os.fdopen(fd, "w+b")
+            except OSError:
+                os.close(fd)
+                raise
+            prompt_fh.write(prompt.encode("utf-8"))
+            prompt_fh.flush()
+            prompt_fh.seek(0)
             stdin_kwargs = {"stdin": prompt_fh}
         else:
             stdin_kwargs = {"input": prompt}

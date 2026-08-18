@@ -188,9 +188,6 @@
   "artifacts:write_only_artifact::cascade.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::cc-prompt.txt": {
-   "note": "not write-only: written then immediately re-opened as the CLI child's stdin (open(path,'rb') on the same variable, fed to fd 0 by the spawn backend) — the consumer is the child process, which the read-attribution window cannot see. core/orchestration/skill_dispatch.py + libexec/raptor-cred-proxy-proof."
-  },
   "artifacts:write_only_artifact::cc-proxy-spend.json": {
    "note": "operator-facing per-run settlement record (reconciled credential-proxy token spend vs budget), same class as suppressions.jsonl: consumed by humans/jq from the run dir, deliberately not by production code."
   },

@@ -405,50 +405,51 @@ class TestProxyBridge:
 # context.py: proxy_netns fallback path
 # ---------------------------------------------------------------------------
 
+def _spawn_backend_live() -> bool:
+    """Production gates for the netns bridge tier (Tier 1): the
+    forwarder rides the fork spawn backend, which needs REAL userns +
+    mount-ns capability — the same probes context.py consults. Late
+    attribute lookup (``probes.check_...``) so a harness that patches
+    the probe module is honoured."""
+    if sys.platform != "linux":
+        return False
+    from core.sandbox import probes
+    return probes.check_net_available() and probes.check_mount_available()
+
+
 class TestProxyNetnsContextWiring:
-    """Verify context.py picks the netns path on low ABI."""
+    """Verify context.py routes between the egress tiers on the
+    production gates: netns bridge (Tier 1) needs the SPAWN backend
+    (net capability AND the mount probe), any Landlock ABI; without
+    the backend the context takes the Landlock TCP pin (ABI >= 4) /
+    advisory (ABI < 4) tier — both reported as ``landlock_tcp``.
+
+    The probe inputs are pinned by mock so each test asserts the TIER
+    DECISION for one explicit host shape; tests whose decision lands
+    on the netns tier additionally gate on the REAL probes because
+    they spawn a live child through that tier."""
 
     @pytest.fixture(autouse=True)
     def _tmpdir(self, tmp_path):
         self.out = str(tmp_path / "out")
         os.makedirs(self.out, exist_ok=True)
 
-    @pytest.mark.skipif(sys.platform != "linux", reason="netns is Linux-only")
-    def test_netns_path_selected_on_low_abi(self):
-        """When ABI < 4, sandbox_info reports netns enforcement."""
+    def _enforcement_with(self, *, abi: int, net: bool, mount: bool):
+        """Run a trivial child with the probe surface pinned; return
+        the proxy_enforcement the context chose."""
         from core.sandbox import sandbox
 
-        with mock.patch(
-            "core.sandbox.context._get_landlock_abi", return_value=3,
-        ), mock.patch(
-            "core.sandbox.context.check_landlock_available",
-            return_value=True,
-        ), sandbox(
-            target=self.out,
-            output=self.out,
-            use_egress_proxy=True,
-            proxy_hosts=["example.com"],
-        ) as run:
-            result = run(
-                ["echo", "proxy-netns-test"],
-                capture_output=True, text=True, timeout=15,
-            )
-            assert result.returncode == 0
-            assert result.sandbox_info.get("proxy_enforcement") == "netns"
-
-    def test_netns_tier_wins_on_high_abi(self):
-        """netns is the strongest tier and wins on ANY ABI when the
-        netns capability exists — the Landlock pin is port-scoped to
-        any host and needs the seccomp UDP block, so ABI >= 4 no
-        longer routes to landlock_tcp on netns-capable hosts."""
-        from core.sandbox import sandbox
-
-        abi = 4
         with mock.patch(
             "core.sandbox.context._get_landlock_abi", return_value=abi,
         ), mock.patch(
             "core.sandbox.context.check_landlock_available",
             return_value=True,
+        ), mock.patch(
+            "core.sandbox.context.check_net_available",
+            return_value=net,
+        ), mock.patch(
+            "core.sandbox.context.check_mount_available",
+            return_value=mount,
         ), sandbox(
             target=self.out,
             output=self.out,
@@ -456,11 +457,46 @@ class TestProxyNetnsContextWiring:
             proxy_hosts=["example.com"],
         ) as run:
             result = run(
-                ["echo", "proxy-tcp-test"],
+                ["echo", "proxy-tier-test"],
                 capture_output=True, text=True, timeout=15,
             )
             assert result.returncode == 0
-            assert result.sandbox_info.get("proxy_enforcement") == "netns"
+            return result.sandbox_info.get("proxy_enforcement")
+
+    @pytest.mark.skipif(
+        not _spawn_backend_live(),
+        reason="netns tier spawns a live child through the fork "
+               "backend (needs real userns + mount-ns capability)",
+    )
+    def test_netns_path_selected_on_low_abi(self):
+        """ABI < 4 with the spawn backend live → netns enforcement."""
+        assert self._enforcement_with(abi=3, net=True, mount=True) == "netns"
+
+    @pytest.mark.skipif(
+        not _spawn_backend_live(),
+        reason="netns tier spawns a live child through the fork "
+               "backend (needs real userns + mount-ns capability)",
+    )
+    def test_netns_tier_wins_on_high_abi(self):
+        """netns is the strongest tier and wins on ANY ABI when the
+        spawn backend is live — the Landlock pin is port-scoped to
+        any host and needs the seccomp UDP block, so ABI >= 4 no
+        longer routes to landlock_tcp on backend-capable hosts."""
+        assert self._enforcement_with(abi=4, net=True, mount=True) == "netns"
+
+    def test_landlock_tcp_when_mount_probe_fails_on_high_abi(self):
+        """netns capability alone is NOT enough: without the mount-ns
+        spawn backend there is no forwarder, so the context must take
+        the Landlock TCP pin tier (the netns tier would hand the child
+        an empty namespace with no route to the proxy)."""
+        assert (self._enforcement_with(abi=4, net=True, mount=False)
+                == "landlock_tcp")
+
+    def test_advisory_tier_when_mount_probe_fails_on_low_abi(self):
+        """Same mount-gate routing on ABI < 4: the advisory tier
+        (env-vars only) is reported under the same non-netns label."""
+        assert (self._enforcement_with(abi=3, net=True, mount=False)
+                == "landlock_tcp")
 
     def test_tcp_path_when_netns_unavailable(self):
         """Without netns capability, ABI >= 4 falls back to the

@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
+import urllib3
 from typing_extensions import Self
 
 from core.logging import get_logger
@@ -25,6 +26,16 @@ from core.security.redaction import redact_secrets
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _MAX_REDIRECTS = 10
+
+# What closing a Response/Session can legitimately raise: socket/SSL
+# teardown (OSError family) plus the requests/urllib3 error trees a
+# hostile server can force mid-stream. TypeError/AttributeError here
+# would be a wiring bug and must propagate.
+_CLOSE_ERRORS = (
+    OSError,
+    requests.RequestException,
+    urllib3.exceptions.HTTPError,
+)
 
 # Cap on buffered response body. A hostile in-scope endpoint can
 # serve multi-GB responses (or chunked-encoding slowloris) and OOM
@@ -266,7 +277,7 @@ class WebClient:
             # consumed) `.content` / `.text` remain accessible
             # via the object — caller can still inspect
             # `response.history[i].headers` etc. without issue.
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_CLOSE_ERRORS):
                 response.close()
 
             history.append(response)
@@ -318,7 +329,7 @@ class WebClient:
                         _MAX_RESPONSE_BYTES,
                         self._redact_for_logging(response.url or "<unknown>"),
                     )
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(*_CLOSE_ERRORS):
                         response.close()
                     break
             response._content = b"".join(chunks)
@@ -428,7 +439,7 @@ class WebClient:
         ``WebClient`` per target accumulate one urllib3 connection
         pool (sockets + SSL contexts) per scan until process exit.
         """
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_CLOSE_ERRORS):
             self.session.close()
 
     def __enter__(self) -> Self:

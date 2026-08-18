@@ -483,3 +483,74 @@ class TestCleanEnvironment:
         assert env_arg is not None
         assert "PATH" in env_arg
         assert venv_path not in env_arg["PATH"]
+
+
+class TestJobsPerWorker:
+    """Per-process --jobs so concurrent packs share the host instead of
+    each defaulting to every core."""
+
+    def test_divides_cores_by_active_workers(self):
+        f = _scanner_mod._semgrep_jobs_per_worker
+        assert f(n_configs=8, max_workers=4, cpu_count=64) == 16
+        assert f(n_configs=2, max_workers=4, cpu_count=64) == 32  # only 2 run
+        assert f(n_configs=1, max_workers=32, cpu_count=64) == 64  # solo pack
+
+    def test_floors_at_one(self):
+        f = _scanner_mod._semgrep_jobs_per_worker
+        assert f(n_configs=128, max_workers=128, cpu_count=4) == 1
+        assert f(n_configs=0, max_workers=4, cpu_count=8) == 8  # degenerate
+
+    def test_jobs_flag_reaches_argv(self, tmp_path):
+        from packages import semgrep as semgrep_pkg
+        cmd = semgrep_pkg.build_cmd(
+            tmp_path, "p/default", extra_args=["--jobs", "16"],
+        )
+        i = cmd.index("--jobs")
+        assert cmd[i + 1] == "16"
+
+
+class TestMaxMemoryPerWorker:
+    def test_divides_ram_share(self):
+        f = _scanner_mod._semgrep_max_memory_mb
+        # 64 GiB host, 4 active packs → 12 GiB each (75% / 4).
+        assert f(n_configs=8, max_workers=4, total_ram_mb=64 * 1024) == 12 * 1024
+
+    def test_floor_4g(self):
+        f = _scanner_mod._semgrep_max_memory_mb
+        assert f(n_configs=32, max_workers=32, total_ram_mb=16 * 1024) == 4096
+
+    def test_solo_pack_gets_most_of_ram(self):
+        f = _scanner_mod._semgrep_max_memory_mb
+        assert f(n_configs=1, max_workers=32, total_ram_mb=64 * 1024) == 48 * 1024
+
+
+class TestSemgrepDroppedFiles:
+    """Timeout/OOM file drops are silent coverage loss — the sweep
+    must find them across every pack's JSON and only those types."""
+
+    def _write(self, tmp_path, name, errors):
+        import json as _json
+        p = tmp_path / name
+        p.write_text(_json.dumps({"paths": {"scanned": ["a.c"]},
+                                  "errors": errors}))
+        return p
+
+    def test_collects_across_packs_and_filters_types(self, tmp_path):
+        j1 = self._write(tmp_path, "p1.json", [
+            {"type": "Timeout", "path": "src/huge.c", "message": "t"},
+            {"type": "SemgrepError", "path": "src/other.c", "message": "x"},
+        ])
+        j2 = self._write(tmp_path, "p2.json", [
+            {"type": "OutOfMemory", "path": "src/huge.c", "message": "m"},
+            {"type": "Timeout", "path": "src/gen.c", "message": "t"},
+        ])
+        d = _scanner_mod._semgrep_dropped_files([j1, j2])
+        assert d == {
+            "src/gen.c": ["Timeout"],
+            "src/huge.c": ["OutOfMemory", "Timeout"],
+        }
+
+    def test_unreadable_json_skipped(self, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json")
+        assert _scanner_mod._semgrep_dropped_files([bad]) == {}

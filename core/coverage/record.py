@@ -151,11 +151,20 @@ def cleanup_manifest(run_dir: Path) -> bool:
 
 
 def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
-                       rules_applied: list[str] | None = None) -> dict[str, Any] | None:
+                       rules_applied: list[str] | None = None,
+                       extra_error_json_paths: list[Path] | None = None,
+                       ) -> dict[str, Any] | None:
     """Build a coverage record from Semgrep JSON output.
 
     Reads paths.scanned from Semgrep's JSON output for authoritative
     file list, and errors for files_failed.
+
+    ``extra_error_json_paths``: the OTHER packs' JSON outputs.
+    ``paths.scanned`` is cumulative across packs (same tree walk), so
+    one file suffices for the examined list — but ``errors`` are
+    per-pack: a file dropped by rule timeouts under one pack's rules
+    is reported only in that pack's JSON. Merging every pack's errors
+    keeps files_failed from silently under-reporting coverage loss.
     """
     data = load_json(semgrep_json_path)
     if not data or not isinstance(data, dict):
@@ -166,7 +175,13 @@ def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
     if not scanned:
         return None
 
-    errors = data.get("errors", [])
+    errors = list(data.get("errors", []))
+    for extra in (extra_error_json_paths or []):
+        if Path(extra) == Path(semgrep_json_path):
+            continue
+        extra_data = load_json(extra)
+        if isinstance(extra_data, dict):
+            errors.extend(extra_data.get("errors", []))
     version = data.get("version", "")
 
     record = {
@@ -178,10 +193,16 @@ def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
         record["version"] = version
     if rules_applied:
         record["rules_applied"] = rules_applied
-    failed = [
-        {"path": e.get("path", ""), "reason": e.get("message", "error")}
-        for e in errors if e.get("path")
-    ]
+    seen: set = set()
+    failed = []
+    for e in errors:
+        if not e.get("path"):
+            continue
+        key = (e.get("path"), e.get("message", "error"))
+        if key in seen:
+            continue
+        seen.add(key)
+        failed.append({"path": e["path"], "reason": e.get("message", "error")})
     if failed:
         record["files_failed"] = failed
 

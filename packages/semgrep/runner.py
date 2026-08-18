@@ -85,6 +85,12 @@ def build_cmd(
         "--config", config,
         "--quiet",
         "--metrics", "off",
+        # Defaults ON upstream: fires an HTTP GET to semgrep.dev after
+        # every scan. Its 1-day cache lives under XDG_CACHE_HOME —
+        # RAPTOR's throwaway fake HOME — so every pack invocation
+        # re-pays the call (or a guaranteed-failing connect when the
+        # sandbox blocks network).
+        "--disable-version-check",
         "--error",
         "--sarif",
         "--disable-nosem",

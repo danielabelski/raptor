@@ -92,6 +92,13 @@ class TestBuildCmd:
         assert "--quiet" in cmd
         assert cmd[-1] == "/src"
 
+    def test_includes_disable_version_check(self):
+        """The post-scan version-check HTTP GET must never fire: its
+        cache lives in the throwaway fake HOME, so it would re-pay a
+        network round-trip (or a blocked connect) per pack."""
+        cmd = build_cmd(Path("/target"), "rules/")
+        assert "--disable-version-check" in cmd
+
     def test_includes_metrics_off(self):
         cmd = build_cmd(Path("/src"), "p/x", semgrep_bin="semgrep")
         assert "--metrics" in cmd

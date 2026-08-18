@@ -688,3 +688,36 @@ class TestCleanupManifest:
 
     def test_importable_from_package(self):
         from core.coverage import cleanup_manifest  # noqa: F401
+
+
+class TestSemgrepCrossPackErrorMerge:
+    """errors are per-pack; the record must merge every pack's, deduped."""
+
+    def _json(self, tmp_path, name, scanned, errors):
+        import json as _json
+        p = tmp_path / name
+        p.write_text(_json.dumps(
+            {"paths": {"scanned": scanned}, "errors": errors,
+             "version": "1.172.0"}))
+        return p
+
+    def test_extra_pack_errors_merged_and_deduped(self, tmp_path):
+        from core.coverage.record import build_from_semgrep
+        j1 = self._json(tmp_path, "a.json", ["a.c", "b.c"], [
+            {"path": "b.c", "message": "Timeout on b.c"},
+        ])
+        j2 = self._json(tmp_path, "b.json", ["a.c", "b.c"], [
+            {"path": "b.c", "message": "Timeout on b.c"},  # dup
+            {"path": "a.c", "message": "OOM on a.c"},
+        ])
+        rec = build_from_semgrep(tmp_path, j1,
+                                 extra_error_json_paths=[j1, j2])
+        failed = {(f["path"], f["reason"]) for f in rec["files_failed"]}
+        assert failed == {("b.c", "Timeout on b.c"), ("a.c", "OOM on a.c")}
+
+    def test_no_extras_keeps_old_shape(self, tmp_path):
+        from core.coverage.record import build_from_semgrep
+        j1 = self._json(tmp_path, "a.json", ["a.c"], [])
+        rec = build_from_semgrep(tmp_path, j1)
+        assert rec["files_examined"] == ["a.c"]
+        assert "files_failed" not in rec

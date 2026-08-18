@@ -10,6 +10,7 @@
 """
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -269,13 +271,13 @@ _SEMGREP_LANG_ALIASES: dict[str, set] = {
 # renderer share the single source of truth. Re-exported with
 # underscore prefix here for back-compat with internal callers
 # (e.g. tests) that imported from this module.
-from core.inventory.languages import (  # noqa: F401
+from core.inventory.languages import (  # noqa: E402, F401
     LANG_DISPLAY as _LANG_DISPLAY,  # tests reference via _scanner._LANG_DISPLAY
 )
-from core.inventory.languages import (
+from core.inventory.languages import (  # noqa: E402
     display_lang as _display_lang,  # noqa: F401 — tests reference via _scanner._display_lang
 )
-from core.inventory.languages import (
+from core.inventory.languages import (  # noqa: E402  (after the constants it displays)
     display_langs as _display_langs,  # used by call sites below
 )
 
@@ -853,6 +855,69 @@ def _compute_python_tool_paths(cmd) -> list:
     return sorted(paths)
 
 
+def _semgrep_jobs_per_worker(
+    n_configs: int,
+    max_workers: int,
+    cpu_count: int,
+) -> int:
+    """Per-process ``--jobs`` so concurrent packs share the host.
+
+    Unpinned, each semgrep process defaults to every core; N parallel
+    packs would oversubscribe the machine N-fold (and semgrep's
+    rule interpreter is memory-hungry per job). Divide the cores by
+    the number of packs actually running at once, floor 1.
+    """
+    active = max(1, min(max_workers, n_configs))
+    return max(1, cpu_count // active)
+
+
+# Semgrep error types that mean a FILE was dropped for resource
+# reasons — the scan "succeeded" while silently not analysing it.
+_SEMGREP_RESOURCE_DROP_TYPES = frozenset({
+    "Timeout", "OutOfMemory", "FixpointTimeout", "TimeoutDuringInterfile",
+})
+
+
+def _semgrep_dropped_files(json_paths: list) -> dict:
+    """Files dropped by per-rule timeouts / memory caps, across packs.
+
+    Returns ``{path: sorted list of error types}``. Errors are
+    per-pack, so every pack's JSON must be swept — a file dropped
+    under one pack's rules is invisible in the others'. Unreadable
+    JSONs are skipped (that pack already failed loudly elsewhere).
+    """
+    import json as _json
+    dropped: dict = {}
+    for jp in json_paths:
+        try:
+            data = _json.loads(Path(jp).read_text())
+        except (OSError, ValueError):
+            continue
+        for e in data.get("errors", []) if isinstance(data, dict) else []:
+            etype = str(e.get("type", ""))
+            if etype in _SEMGREP_RESOURCE_DROP_TYPES and e.get("path"):
+                dropped.setdefault(e["path"], set()).add(etype)
+    return {p: sorted(t) for p, t in sorted(dropped.items())}
+
+
+def _semgrep_max_memory_mb(
+    n_configs: int,
+    max_workers: int,
+    total_ram_mb: int,
+) -> int:
+    """Per-pack ``--max-memory`` backstop (MiB).
+
+    Local scans default to unlimited; with many packs running at once
+    that is OOM-killer roulette — the kernel picks a victim and the
+    pack dies with no attributable error. A generous share (75% of
+    RAM divided by the packs actually running, floor 4 GiB) converts
+    that into semgrep's own clean per-pack termination, surfaced
+    through the normal failed-pack path.
+    """
+    active = max(1, min(max_workers, n_configs))
+    return max(4096, (total_ram_mb * 3 // 4) // active)
+
+
 def run_single_semgrep(
     name: str,
     config: str,
@@ -861,6 +926,8 @@ def run_single_semgrep(
     timeout: int,
     progress_callback: Callable | None = None,
     extra_config_readable_paths: list[str] | None = None,
+    jobs: int | None = None,
+    max_memory_mb: int | None = None,
 ) -> tuple[str, bool]:
     """
     Run a single Semgrep scan.
@@ -890,6 +957,11 @@ def run_single_semgrep(
         json_output_path=json_out,
         rule_timeout=RaptorConfig.SEMGREP_RULE_TIMEOUT,
         semgrep_bin=semgrep_cmd,
+        extra_args=(
+            (["--jobs", str(jobs)] if jobs else [])
+            + (["--max-memory", str(max_memory_mb)] if max_memory_mb else [])
+            or None
+        ),
     )
 
     # Create clean environment without venv contamination or dangerous vars.
@@ -1180,6 +1252,15 @@ def semgrep_scan_parallel(
     sarif_paths: list[str] = []
     failed_scans: list[str] = []
 
+    _jobs = _semgrep_jobs_per_worker(
+        len(configs), RaptorConfig.MAX_SEMGREP_WORKERS,
+        os.cpu_count() or 4,
+    )
+    from core.tuning import _detect_total_ram_mb
+    _max_mem = _semgrep_max_memory_mb(
+        len(configs), RaptorConfig.MAX_SEMGREP_WORKERS,
+        _detect_total_ram_mb(),
+    )
     with ThreadPoolExecutor(max_workers=RaptorConfig.MAX_SEMGREP_WORKERS) as executor:
         future_to_config = {
             executor.submit(
@@ -1191,6 +1272,8 @@ def semgrep_scan_parallel(
                 timeout,
                 progress_callback,
                 extra_config_readable_paths=list(extra_configs or []),
+                jobs=_jobs,
+                max_memory_mb=_max_mem,
             ): (name, config)
             for name, config in configs
         }
@@ -1353,6 +1436,22 @@ def semgrep_scan_sequential(
         )
 
     return sarif_paths, failed_scans
+
+
+class _CodeQLStageTag(logging.Filter):
+    """Prefix log lines emitted from the concurrent CodeQL stage thread.
+
+    When the CodeQL stage overlaps the Semgrep stage their progress
+    lines interleave on the operator's console; the tag keeps the
+    stream legible without re-plumbing either stage's logging. The
+    prefix carries no format specifiers, so records with %-args still
+    format correctly.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if threading.current_thread().name.startswith("codeql-stage"):
+            record.msg = "[codeql] " + str(record.msg)
+        return True
 
 
 def run_codeql(
@@ -2410,7 +2509,7 @@ def main():
              "--traced-build. Per-run escape hatch.",
     )
     ap.add_argument("--keep", action="store_true", help="Keep temp working directory")
-    ap.add_argument("--sequential", action="store_true", help="Disable parallel scanning (for debugging)")
+    ap.add_argument("--sequential", action="store_true", help="Fully serial run: semgrep packs one at a time AND stages in order (no semgrep/codeql overlap). Debugging knob.")
     ap.add_argument("--out", default=None, help="Output directory (from lifecycle). Overrides auto-generated path.")
     ap.add_argument(
         "--exclude-dir", action="append", default=None, metavar="GLOB",
@@ -2612,6 +2711,40 @@ def main():
                     llm_configured=_llm_configured(),
                 ))
         logger.info("Starting Semgrep scans...")
+        # CodeQL stage overlap: the two heavyweight stages are
+        # independent SARIF producers, and the CodeQL DB build is
+        # usually the critical path — start it before the Semgrep
+        # packs so both run concurrently. --sequential keeps the
+        # fully serial order (debugging knob for both kinds of
+        # parallelism). Each stage's internal parallelism already
+        # shares the host (per-pack --jobs / per-build -j division);
+        # the transient 2:1 overlap is deliberate — the DB build's
+        # extractor phases are I/O-heavy while Semgrep is CPU-bound,
+        # and a hard split would idle cores for whichever stage
+        # finishes first.
+        run_codeql_stage = args.codeql and not args.no_codeql
+        _codeql_future = None
+        _codeql_pool = None
+        _codeql_t0 = 0.0
+        _stage_tag = _CodeQLStageTag()
+        if run_codeql_stage and not args.sequential:
+            _langs_arg = (
+                [x.strip() for x in args.languages.split(",") if x.strip()]
+                if args.languages else None  # None ⇒ agent auto-detects
+            )
+            print("⏱  Semgrep and CodeQL stages running concurrently "
+                  "(CodeQL lines tagged [codeql])", flush=True)
+            logging.getLogger().addFilter(_stage_tag)
+            _codeql_pool = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="codeql-stage")
+            _codeql_t0 = time.time()
+            _codeql_future = _codeql_pool.submit(
+                run_codeql, repo_path, out_dir,
+                languages=_langs_arg,
+                build_command=args.build_command,
+                traced_build=args.traced_build,
+            )
+
         if args.sequential:
             # Fallback to sequential for debugging
             logger.warning("Sequential scanning enabled (slower)")
@@ -2666,10 +2799,23 @@ def main():
 
         # CodeQL stage (optional). --no-codeql takes precedence —
         # script-friendly so a default-flip from "off" to "on" can
-        # be opted out of without code changes.
+        # be opted out of without code changes. When the stage was
+        # started concurrently above, join it here; the merge below
+        # needs its SARIFs either way.
         codeql_sarifs = []
-        run_codeql_stage = args.codeql and not args.no_codeql
-        if run_codeql_stage:
+        if _codeql_future is not None:
+            try:
+                codeql_sarifs = _codeql_future.result()
+            except Exception as e:  # noqa: BLE001 — stage isolation: semgrep results must survive
+                logger.error("CodeQL stage raised: %s", e)
+                print(f"⚠️  CodeQL stage failed: {e}", file=sys.stderr)
+            finally:
+                _codeql_pool.shutdown(wait=False)
+                logging.getLogger().removeFilter(_stage_tag)
+            print(f"⏱  CodeQL stage finished "
+                  f"({time.time() - _codeql_t0:.0f}s, "
+                  f"{len(codeql_sarifs)} SARIF file(s))", flush=True)
+        elif run_codeql_stage:
             languages = (
                 [s.strip() for s in args.languages.split(",") if s.strip()]
                 if args.languages else None  # None ⇒ agent auto-detects
@@ -2801,16 +2947,34 @@ def main():
             _rules_applied = _resolve_rules_applied(
                 groups, resolved_baseline, rules_dirs,
             )
-            for sarif_path in semgrep_sarifs:
-                json_path = Path(sarif_path).with_suffix(".json")
-                if json_path.exists():
-                    record = build_from_semgrep(
-                        out_dir, json_path,
-                        rules_applied=_rules_applied,
-                    )
-                    if record:
-                        write_record(out_dir, record, tool_name="semgrep")
-                        break  # one record covers all (paths.scanned is cumulative)
+            _all_semgrep_jsons = [
+                Path(sp).with_suffix(".json") for sp in semgrep_sarifs
+                if Path(sp).with_suffix(".json").exists()
+            ]
+            # Degradation visibility: a file dropped by rule timeouts /
+            # memory caps was NOT analysed even though the pack
+            # "succeeded" — silent coverage loss unless said out loud.
+            _dropped = _semgrep_dropped_files(_all_semgrep_jsons)
+            if _dropped:
+                _preview = ", ".join(list(_dropped)[:5])
+                _more = len(_dropped) - min(5, len(_dropped))
+                print(
+                    f"⚠️  semgrep: {len(_dropped)} file(s) dropped by "
+                    f"rule timeouts/memory caps — NOT analysed: "
+                    f"{_preview}"
+                    + (f" (+{_more} more)" if _more else "")
+                    + ". Full list in coverage-record files_failed.",
+                    file=sys.stderr,
+                )
+            for json_path in _all_semgrep_jsons:
+                record = build_from_semgrep(
+                    out_dir, json_path,
+                    rules_applied=_rules_applied,
+                    extra_error_json_paths=_all_semgrep_jsons,
+                )
+                if record:
+                    write_record(out_dir, record, tool_name="semgrep")
+                    break  # one record covers all (paths.scanned is cumulative; errors merged above)
 
             # CodeQL coverage — from SARIF artifacts
             for sarif_path in codeql_sarifs:

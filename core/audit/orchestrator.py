@@ -5124,6 +5124,17 @@ def _run_audit_body(
     joern_state = {"future": joern_future, "submit_time": joern_submit_time}
 
     def _joern_tick(gap: dict) -> None:
+        # Health probe at loop entry: relaunch-on-death is bounded and
+        # loud inside ensure_alive (at most one attempt per cooldown
+        # window). Without this, a died server process kept the whole
+        # taint tier down for the rest of the run — restart() is
+        # otherwise only reachable from query-timeout branches, which
+        # a dead process fails fast before ever hitting.
+        if joern_server is not None:
+            try:
+                joern_server.ensure_alive()
+            except Exception:
+                logger.debug("joern liveness probe failed", exc_info=True)
         jf = joern_state["future"]
         if jf is not None and jf.done():
             nonlocal evidence_index

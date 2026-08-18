@@ -195,6 +195,11 @@ def _connect_existing(state: dict[str, Any]) -> JoernServer | None:
     srv._cpg_path = None
     srv._last_post_error = ""
     srv._restart_lock = threading.Lock()
+    # ``query()`` consults this event before every post; ``__new__``
+    # bypasses ``__init__``, so omitting it made EVERY query on a
+    # reused server raise AttributeError.
+    srv._restarting = threading.Event()
+    srv._relaunch_last_attempt = 0.0
     srv._workdir = None
     srv._auth_user = auth_user
     srv._auth_password = auth_password

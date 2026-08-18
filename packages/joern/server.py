@@ -14,7 +14,6 @@ Usage::
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 import logging
 import os
@@ -75,6 +74,12 @@ _RESTARTING_ERROR = (
     "server restarting after stuck query — failing fast "
     "(no Joern evidence for this claim)"
 )
+
+# Bounded relaunch-on-death window (see ``ensure_alive``): at most one
+# relaunch attempt per this many seconds. A relaunch costs a JVM boot
+# + CPG reload (~1-2 min) — retrying faster than this would spend the
+# run's wall clock on a server that keeps dying.
+_RELAUNCH_COOLDOWN_S = 300.0
 
 
 def _strip_ansi(text: str) -> str:
@@ -212,6 +217,9 @@ class JoernServer:
         # fail fast instead of posting into a dead/booting server
         # (each such post would block for its full timeout).
         self._restarting = threading.Event()
+        # Monotonic timestamp of the last relaunch-on-death attempt
+        # (``ensure_alive``); 0.0 = never attempted.
+        self._relaunch_last_attempt = 0.0
         self._workdir: str | None = None
         self._auth_user: str | None = None
         self._auth_password: str | None = None
@@ -404,7 +412,23 @@ class JoernServer:
             self._proc.wait(timeout=_SHUTDOWN_GRACE_S)
         except subprocess.TimeoutExpired:
             _signal_group(signal.SIGKILL)
-            self._proc.wait(timeout=5)
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # SIGKILL is delivered but a huge-heap JVM's kernel-side
+                # teardown can outlive this grace. The process cannot
+                # execute further — proceed to cleanup regardless.
+                # Pre-fix this second TimeoutExpired escaped stop():
+                # ``_proc`` stayed set on a dead process, the workdir
+                # leaked, and a restart() that hit it aborted mid-way,
+                # leaving the server permanently in the
+                # "server process exited" fail-fast state for the rest
+                # of the run.
+                logger.warning(
+                    "Joern server (pid %d) did not reap within 5s of "
+                    "SIGKILL — proceeding with cleanup",
+                    pid,
+                )
         except OSError:
             pass
 
@@ -433,6 +457,64 @@ class JoernServer:
     def restarting(self) -> bool:
         """True while a restart (stop → boot → CPG reload) is running."""
         return self._restarting.is_set()
+
+    def ensure_alive(
+        self, *, cooldown_s: float = _RELAUNCH_COOLDOWN_S,
+    ) -> bool:
+        """Process-liveness probe with bounded relaunch-on-death.
+
+        The review loop calls this at dispatch time (the orchestrator's
+        joern tick). ``restart()`` is otherwise reachable only from
+        query-TIMEOUT branches — but a dead server process fails fast
+        BEFORE any HTTP post can time out, so death used to be
+        terminal: every subsequent query returned
+        ``["server process exited"]`` for the rest of the run and the
+        taint tier silently stayed down.
+
+        Bounded: at most one relaunch attempt per ``cooldown_s``
+        window, loudly logged both ways. Between attempts — and when
+        the relaunch itself fails — the tier stays down and queries
+        keep failing fast; the degradation is reported, not silent.
+
+        Returns True when the server is alive (or just came back).
+        """
+        if self._restarting.is_set():
+            return False
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            return True
+        # Dead process, or a previous relaunch died inside start()
+        # (proc is None). Only revive handles that actually served a
+        # CPG — a never-started client (e.g. a lifecycle reuse handle
+        # for a process this object doesn't own) has nothing to
+        # relaunch.
+        if proc is None and self._cpg_path is None:
+            return False
+        now = time.monotonic()
+        if now - self._relaunch_last_attempt < cooldown_s:
+            return False
+        self._relaunch_last_attempt = now
+        logger.warning(
+            "Joern server process is dead — attempting relaunch "
+            "(bounded: at most one attempt per %.0fs)",
+            cooldown_s,
+        )
+        ok = False
+        try:
+            ok = self.restart()
+        except Exception:  # noqa: BLE001 — probe must not kill the loop
+            logger.warning("Joern relaunch raised", exc_info=True)
+        if ok:
+            logger.warning(
+                "Joern server relaunched — taint tier restored",
+            )
+        else:
+            logger.warning(
+                "Joern relaunch failed — taint tier remains DOWN "
+                "(queries fail fast; next relaunch attempt in %.0fs)",
+                cooldown_s,
+            )
+        return ok
 
     def restart(self) -> bool:
         """Stop, restart, and reload the CPG.

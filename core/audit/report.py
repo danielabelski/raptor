@@ -63,6 +63,9 @@ def generate_report(
         coverage_delta: functions reviewed this run
         gaps_remaining: number of unreviewed functions
     """
+    completeness = _assess_completeness(out_dir)
+    segments = _load_segments(out_dir)
+
     audit_data = _load_review_state(out_dir)
     findings = _load_findings(out_dir)
     # JOIN findings with the journal for current-verdict authority.
@@ -98,7 +101,14 @@ def generate_report(
         "gaps_remaining": gaps_remaining,
         "findings": findings,
         "unrecorded_reads": unrecorded,
+        # Completeness is REPORTED, not assumed: the generator runs
+        # against any partial run dir (interrupted / killed / mid-run)
+        # and states what is missing; the verdict tables above always
+        # reflect whatever the journal holds.
+        "completeness": completeness,
     }
+    if segments:
+        report["segments"] = segments
     if not_attempted_count:
         report["not_attempted"] = {
             "reason": not_attempted.get("reason", "budget"),
@@ -213,6 +223,15 @@ def write_markdown_report(
             "(see not-attempted.json; gap-eligible next run)"
         )
     lines.append("")
+
+    # Run completeness — stated, not assumed (partial runs render the
+    # verdict tables from whatever the journal holds).
+    state_lines = _completeness_lines(report)
+    if state_lines:
+        lines.append("## Run completeness")
+        lines.append("")
+        lines.extend(state_lines)
+        lines.append("")
 
     # Summary
     lines.append("## Summary")
@@ -461,6 +480,80 @@ def _apply_journal_verdict_overrides(
     return out
 
 
+# Artifacts every finished orchestrator run writes. Absence of any of
+# them means the run stopped before its export tail (or the write
+# failed) — the report states this instead of silently rendering the
+# sections empty.
+_EXPECTED_ARTIFACTS = (
+    ("checklist.json", "inventory (checklist.json)"),
+    ("gaps.json", "gap schedule (gaps.json)"),
+    ("findings-graded.json", "graded findings export (findings-graded.json)"),
+    ("cost-breakdown.json", "cost ledger (cost-breakdown.json)"),
+)
+
+#: Run statuses `raptor-audit resume` can re-enter (mirrors
+#: core.run.metadata.RESUMABLE_STATUSES without importing it here —
+#: the report must render even when run metadata plumbing is absent).
+_RESUMABLE_STATUSES = frozenset({
+    "interrupted", "failed", "cancelled", "running",
+})
+
+
+def _assess_completeness(out_dir: Path) -> dict[str, Any]:
+    """State how complete this run dir is — never assume.
+
+    Returns ``{"run_status": str|None, "missing": [labels],
+    "no_verdicts": bool, "partial": bool, "resumable": bool}``.
+    ``partial`` is True when the lifecycle status is anything but
+    ``completed`` (including unknown) or an expected export artifact
+    is absent. The verdict tables elsewhere in the report are built
+    from the journal regardless — completeness only *names* the gaps.
+    """
+    status: str | None = None
+    try:
+        meta_path = out_dir / ".raptor-run.json"
+        if meta_path.is_file():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(meta, dict):
+                status = meta.get("status")
+    except (OSError, json.JSONDecodeError):
+        logger.debug("run metadata unreadable for completeness",
+                     exc_info=True)
+
+    missing = [
+        label for name, label in _EXPECTED_ARTIFACTS
+        if not (out_dir / name).is_file()
+    ]
+    no_verdicts = not (out_dir / "review-journal.jsonl").is_file()
+    partial = bool(missing) or status != "completed"
+    return {
+        "run_status": status,
+        "missing": missing,
+        "no_verdicts": no_verdicts,
+        "partial": partial,
+        "resumable": status in _RESUMABLE_STATUSES,
+    }
+
+
+def _load_segments(out_dir: Path) -> dict[str, Any] | None:
+    """Segment provenance for resumed runs, from ``extra.resumes``."""
+    try:
+        meta_path = out_dir / ".raptor-run.json"
+        if not meta_path.is_file():
+            return None
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        resumes = ((meta or {}).get("extra") or {}).get("resumes")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(resumes, list) or not resumes:
+        return None
+    rows = [r for r in resumes if isinstance(r, dict)]
+    return {
+        "count": len(rows) + 1,
+        "resumes": rows,
+    }
+
+
 def _load_dark_findings(out_dir: Path) -> list[dict[str, Any]]:
     """Load status=dark entries from findings-graded.json."""
     path = out_dir / "findings-graded.json"
@@ -654,14 +747,49 @@ def _find_unrecorded_reads(
     return result
 
 
+def _completeness_lines(report: dict[str, Any]) -> list[str]:
+    """Shared partial-run / segment statements for summary + markdown."""
+    lines: list[str] = []
+    segments = report.get("segments")
+    if segments:
+        lines.append(
+            f"Run segments: {int(segments.get('count', 0) or 0)} "
+            "(resumed run — one report covers all segments)"
+        )
+    completeness = report.get("completeness") or {}
+    if completeness.get("partial"):
+        status = _line(completeness.get("run_status") or "unknown",
+                       max_chars=40)
+        lines.append(
+            f"Partial run — lifecycle status: {status.title()}. "
+            "Verdict counts below reflect the journal as written."
+        )
+        for label in completeness.get("missing", []):
+            lines.append(f"  Missing: {_line(label, max_chars=80)}")
+        if completeness.get("no_verdicts"):
+            lines.append(
+                "  No review journal — the run stopped before any "
+                "verdict was recorded."
+            )
+        if completeness.get("resumable"):
+            lines.append(
+                "  Resumable: raptor-audit resume <run-dir> re-enters "
+                "this run ($0 verdict re-import, remaining budget)."
+            )
+    return lines
+
+
 def _format_summary(report: dict[str, Any]) -> str:
     """Format a human-readable summary."""
     stats = report.get("stats", {})
     mech = stats.get("mechanical", 0)
     mech_s = f" (+{mech} mechanical post-loop)" if mech else ""
-    lines = [
-        "## Audit Summary",
-        "",
+    lines = ["## Audit Summary", ""]
+    state_lines = _completeness_lines(report)
+    if state_lines:
+        lines.extend(state_lines)
+        lines.append("")
+    lines += [
         f"Functions LLM-reviewed: {stats.get('reviewed', 0)}{mech_s}",
         f"  Clean: {stats.get('clean', 0)}",
         f"  Dormant: {stats.get('dormant', 0)}",

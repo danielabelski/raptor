@@ -331,11 +331,34 @@ class TestToolVersion(unittest.TestCase):
     def test_unknown_tool_returns_none(self):
         self.assertIsNone(tool_version("not-a-real-engine"))
 
-    @unittest.skipUnless(shutil.which("semgrep"), "semgrep not installed")
     def test_semgrep_returns_version_string(self):
-        v = tool_version("semgrep")
-        self.assertIsInstance(v, str)
-        self.assertTrue(v)
+        # Hermetic: the live `semgrep --version` probe is a slow CLI
+        # that legitimately exceeds the 5s probe budget under a
+        # loaded `-n auto` battery — and tool_version returns None on
+        # timeout BY DESIGN (provenance is best-effort). Canned
+        # subprocess output pins the parse path deterministically.
+        import core.run.provenance as prov
+        fake = subprocess.CompletedProcess(
+            args=["semgrep", "--version"], returncode=0,
+            stdout="1.99.0\nextra probe noise\n", stderr="",
+        )
+        with mock.patch.object(
+            prov.subprocess, "run", return_value=fake,
+        ):
+            v = tool_version("semgrep")
+        self.assertEqual(v, "1.99.0")
+
+    def test_probe_timeout_returns_none(self):
+        # The timeout path must degrade to None, never raise — run
+        # finalisation depends on it.
+        import core.run.provenance as prov
+        with mock.patch.object(
+            prov.subprocess, "run",
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["semgrep", "--version"], timeout=5.0,
+            ),
+        ):
+            self.assertIsNone(tool_version("semgrep"))
 
     def test_absent_tool_returns_none(self):
         # 'coccinelle' probes `spatch`; if it isn't installed the probe must

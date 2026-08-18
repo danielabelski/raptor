@@ -1291,7 +1291,10 @@ def seed_from_config(store: CredentialStore) -> None:
     Silent on file-missing, parse-error, or schema-error — same posture
     as the rest of the config-reading path. A misconfigured file looks
     the same as no file at all and surfaces later as the dispatcher's
-    own ``503 provider not configured``.
+    own ``503 provider not configured``. One deliberate exception: a
+    file shaped like ``packages/exploit_feasibility``'s AnalysisConfig
+    JSON (the other reader of the overloaded ``RAPTOR_CONFIG``) warns
+    actionably — that mismatch has a specific cause worth naming.
     """
     try:
         from core.json import load_json_with_comments
@@ -1330,6 +1333,23 @@ def seed_from_config(store: CredentialStore) -> None:
 
     data = load_json_with_comments(config_path)
     if data is None:
+        return
+
+    # Schema guard: RAPTOR_CONFIG is overloaded — it is also
+    # packages/exploit_feasibility's analysis-settings path (see
+    # docs/environment.md). An AnalysisConfig-shaped file means the
+    # operator pointed the variable at the OTHER reader's file; say
+    # so once instead of silently seeding zero credentials.
+    from core.llm.detection import looks_like_analysis_settings
+    if looks_like_analysis_settings(data):
+        logging.getLogger(__name__).warning(
+            "credential seeding skipped: %s looks like a "
+            "packages/exploit_feasibility analysis-settings file "
+            "(AnalysisConfig JSON), not a models config. RAPTOR_CONFIG "
+            'is overloaded between the two readers — point it at '
+            'models.json ({"models": [...]}) for core.llm.',
+            config_path,
+        )
         return
 
     if isinstance(data, dict):

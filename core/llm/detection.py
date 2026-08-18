@@ -449,11 +449,64 @@ def generate_sample_config() -> str:
     return raw
 
 
+# ``RAPTOR_CONFIG`` is overloaded (known wart, documented in
+# docs/environment.md): core.llm reads it as the models.json path,
+# packages/exploit_feasibility reads it as its analysis-settings JSON
+# path. These field names are AnalysisConfig's signature (a seed
+# subset of its distinctive fields — any one suffices, so the set
+# doesn't need to be exhaustive) — a dict with no "models" key but
+# any of these was almost certainly written for the OTHER reader, so
+# say so instead of silently seeing zero models.
+_ANALYSIS_SETTINGS_KEYS = frozenset({
+    "checksec_path", "ropgadget_path", "one_gadget_path",
+    "timeout_fast", "enable_caching", "cache_dir",
+    "max_gadgets_to_analyze", "verify_format_n_empirically",
+    "sample_address_space",
+})
+
+_schema_mismatch_warned: set = set()
+
+
+def looks_like_analysis_settings(data: object) -> bool:
+    """True when *data* is shaped like ``packages/exploit_feasibility``'s
+    AnalysisConfig JSON rather than a models config."""
+    return (
+        isinstance(data, dict)
+        and "models" not in data
+        and bool(_ANALYSIS_SETTINGS_KEYS.intersection(data))
+    )
+
+
+def _warn_analysis_settings_mismatch(config_path: Path) -> None:
+    """Once per path per process — actionable, names the other reader."""
+    key = str(config_path)
+    if key in _schema_mismatch_warned:
+        return
+    _schema_mismatch_warned.add(key)
+    logger.error(
+        "RAPTOR_CONFIG points at %s, which looks like a "
+        "packages/exploit_feasibility analysis-settings file "
+        "(AnalysisConfig JSON), not a models config. core.llm expects "
+        "{\"models\": [...]} or a bare list here — no models will be "
+        "loaded. RAPTOR_CONFIG is overloaded between the two readers "
+        "(see docs/environment.md); point it at models.json and give "
+        "exploit-feasibility settings via ./.raptor.json or "
+        "~/.config/raptor/config.json instead.",
+        config_path,
+    )
+
+
 def _read_config_models() -> list:
     """Read model entries from RAPTOR config file.
 
     Shared config file parsing — used by both detection and config modules.
     Returns a list of model dicts, or empty list on any error.
+
+    Schema guard: ``RAPTOR_CONFIG`` is also read by
+    ``packages/exploit_feasibility`` as its analysis-settings path (one
+    name, two schemas). A file shaped like AnalysisConfig JSON logs an
+    actionable error (once per path) naming that other use instead of
+    silently yielding zero models.
 
     Anthropic model names are resolved through the live ``/v1/models``
     inventory before return: operators usually configure unversioned
@@ -477,6 +530,9 @@ def _read_config_models() -> list:
 
         # Accept both {"models": [...]} and bare [...]
         if isinstance(data, dict):
+            if looks_like_analysis_settings(data):
+                _warn_analysis_settings_mismatch(config_path)
+                return []
             model_list = data.get("models", [])
             if not isinstance(model_list, list):
                 return []

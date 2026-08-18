@@ -19,6 +19,18 @@ from core.audit.consistency_verify import _callee_returns_void
 from core.audit.fail_open_verify import _inventory_signature
 
 
+def _inventory_emits_go_signatures() -> bool:
+    """True when the builder's Go leg records signatures/return types.
+
+    Only the tree-sitter extraction path populates them; the regex
+    ``GoExtractor`` fallback documents parameters and return types as
+    unextractable. Probe the SAME loader the builder uses so this gate
+    cannot drift from what the fixture actually produced.
+    """
+    from core.inventory.extractors import _get_ts_languages
+    return "go" in _get_ts_languages()
+
+
 @pytest.fixture(scope="module")
 def real_inventory(tmp_path_factory):
     """A real builder-produced inventory over a tiny C + Go tree."""
@@ -84,6 +96,11 @@ class TestConsistencyPrepassReader:
 
 
 class TestFailOpenVerifyReader:
+    @pytest.mark.skipif(
+        not _inventory_emits_go_signatures(),
+        reason="inventory Go signatures need the tree-sitter Go grammar"
+               " (the regex fallback extracts names only)",
+    )
     def test_signature_found_in_real_inventory(self, real_inventory):
         sig = _inventory_signature(real_inventory, "VerifySig")
         assert sig, "inventory signature leg returned nothing"

@@ -53,10 +53,21 @@ _ENV = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/tmp"}
 
 CLONE_NEWUSER = 0x10000000
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("cc") is None or shutil.which("make") is None,
-    reason="C toolchain (cc + make) not available",
-)
+pytestmark = [
+    # The helpers are Linux userns machinery (prctl, /proc/<pid>/ns
+    # inspection, gid_map writes) and their sources include Linux-only
+    # headers (<sys/prctl.h>) — they neither build nor mean anything on
+    # other platforms, so the whole suite (including the `make` builds
+    # its fixtures run) is pinned to Linux rather than made portable.
+    pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="sandbox helper binaries are Linux-only userns machinery",
+    ),
+    pytest.mark.skipif(
+        shutil.which("cc") is None or shutil.which("make") is None,
+        reason="C toolchain (cc + make) not available",
+    ),
+]
 
 
 def _run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:

@@ -249,7 +249,14 @@ def refine_loop(
                 if gaps:
                     fb_dict["cwe_gaps"] = gaps
             except Exception:
-                pass
+                # Best-effort prompt enrichment: the feedback dict is
+                # complete without cwe_gaps, and the quality summary
+                # runs over arbitrary spec/outcome data — any failure
+                # here must not abort the refinement round.
+                logger.debug(
+                    "iris.refine: cwe-quality feedback enrichment "
+                    "failed", exc_info=True,
+                )
 
             expanded = _inject_bypass_candidates(
                 candidates, all_bypass_findings,

@@ -765,6 +765,64 @@ class DataflowValidator:
             self.logger.debug("Path condition extraction failed: %s", e)
             return [], {}
 
+    def _injection_prescreen(
+        self,
+        dataflow: DataflowPath,
+        repo_path: Path,
+    ) -> DataflowValidation | None:
+        """Run the string-theory prescreen over ALL of the result's
+        paths; materialise the demoted (SMT-unsat-shaped) verdict on
+        refutation, None otherwise. Failures degrade to None — the
+        prescreen must never block the normal validation flow."""
+        try:
+            from core.dataflow.injection_prescreen import (
+                prescreen_finding,
+                snapshot_stats,
+            )
+            verdict = prescreen_finding(
+                paths=[dataflow, *dataflow.alternatives],
+                repo_root=repo_path,
+                rule_id=dataflow.rule_id,
+            )
+        except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
+            self.logger.warning("Injection prescreen failed: %s", e)
+            return None
+        if verdict is None or not verdict.refuted:
+            return None
+        self.logger.info(
+            "Injection prescreen refuted %s in %.1f ms (%d path(s); "
+            "cumulative stats: %s)",
+            dataflow.rule_id, verdict.solver_ms, verdict.paths_checked,
+            snapshot_stats(),
+        )
+        barriers = [
+            (
+                f"path {ev['path_index'] + 1}: charset validator at "
+                f"{ev['validator_file']}:{ev['validator_line']} "
+                f"({ev['kind']}: [{ev['pattern']}])"
+            )
+            for ev in verdict.evidence
+        ]
+        return DataflowValidation(
+            is_exploitable=False,
+            confidence=SMT_INFEASIBLE_CONFIDENCE,
+            sanitizers_effective=True,
+            bypass_possible=False,
+            bypass_strategy=None,
+            attack_complexity="high",
+            reasoning=(
+                f"String-theory prescreen: {verdict.reason}. "
+                f"Confidence is capped at {SMT_INFEASIBLE_CONFIDENCE} "
+                "because the verdict rests on mechanical validator "
+                "extraction, which can misjudge dominance in unusual "
+                "control flow."
+            ),
+            barriers=barriers,
+            prerequisites=[],
+            smt_path_index=verdict.paths_checked - 1,
+            smt_paths_checked=verdict.paths_checked,
+        )
+
     def validate_dataflow_path(
         self,
         dataflow: DataflowPath,
@@ -787,6 +845,18 @@ class DataflowValidator:
         """
         from core.reporting.formatting import display_rule_id
         self.logger.info("Validating dataflow path: %s", display_rule_id(dataflow.rule_id))
+
+        # Zero-LLM injection prescreen: when every (codeFlow,
+        # threadFlow) path of an injection-class finding crosses a
+        # liftable charset validator whose accepted language provably
+        # excludes the sink's danger characters (Z3 regex-intersection
+        # emptiness — the smt_barrier proof applied to live findings),
+        # demote exactly like an SMT-unsat verdict: confidence-capped
+        # non-exploitable with the barrier evidence attached, before
+        # any LLM call. No signal → normal flow, nothing dropped.
+        prescreen = self._injection_prescreen(dataflow, repo_path)
+        if prescreen is not None:
+            return prescreen
 
         # SMT pre-check: extract path conditions (plus a bitvector type
         # hint from the LLM) and test joint satisfiability.  A finding

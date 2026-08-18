@@ -431,6 +431,32 @@ _LANG_EXTRACTORS = {
 }
 
 
+def extractor_languages() -> frozenset:
+    """Languages the mechanical validator extractor supports."""
+    return frozenset(_LANG_EXTRACTORS)
+
+
+def extract_validator_from_line(
+    line: str, language: str = "python",
+) -> ValidatorSpec | None:
+    """Run the per-``language`` extractor table on ONE source line.
+
+    Shared by the fix-diff scanner below and the live-finding
+    injection prescreen (core.dataflow.injection_prescreen), which
+    lifts validators from dataflow-path step lines instead of diff
+    ``+`` lines. First matching extractor wins; None when the line
+    carries no recognised validator shape.
+    """
+    extractors = _LANG_EXTRACTORS.get(language)
+    if not extractors:
+        return None
+    for try_fn in extractors:
+        spec = try_fn(line)
+        if spec is not None:
+            return spec
+    return None
+
+
 def extract_validator(fix_diff: str, language: str = "python") -> ValidatorSpec | None:
     """Scan the fix diff for a recognised mechanical validator pattern.
 
@@ -448,17 +474,14 @@ def extract_validator(fix_diff: str, language: str = "python") -> ValidatorSpec 
     """
     if not fix_diff:
         return None
-    extractors = _LANG_EXTRACTORS.get(language)
-    if not extractors:
+    if language not in _LANG_EXTRACTORS:
         return None
     for raw in fix_diff.splitlines():
         if not raw.startswith("+") or raw.startswith("+++"):
             continue
-        line = raw[1:]
-        for try_fn in extractors:
-            spec = try_fn(line)
-            if spec is not None:
-                return spec
+        spec = extract_validator_from_line(raw[1:], language)
+        if spec is not None:
+            return spec
     return None
 
 
@@ -1339,7 +1362,10 @@ def _expand_charset_body(body: str) -> set:
     return out
 
 
-def _prove_charset(spec: ValidatorSpec, sink_class: str, danger: list[str]) -> _ProofVerdict:
+def _prove_charset(
+    spec: ValidatorSpec, sink_class: str, danger: list[str],
+    timeout_ms: int | None = None,
+) -> _ProofVerdict:
     """Z3 regex-intersection emptiness for whole-string anchored allowlists."""
     name = z3.String("name")
     char_re = _charclass_to_re(spec.charset)
@@ -1350,6 +1376,12 @@ def _prove_charset(spec: ValidatorSpec, sink_class: str, danger: list[str]) -> _
         )
     validator_re = z3.Plus(char_re)
     s = z3.Solver()
+    if timeout_ms:
+        # Hard per-query bound for callers on a latency budget (the
+        # live-finding prescreen). Timeout surfaces as z3 `unknown`,
+        # which the caller below already treats as "declining" — a
+        # timed-out proof can never read as SOUND.
+        s.set("timeout", timeout_ms)
     s.add(z3.InRe(name, z3.Intersect(validator_re, _danger_re(danger))))
     r = s.check()
     if r == z3.unsat:
@@ -1415,7 +1447,10 @@ def _prove_charset_sub(
     )
 
 
-def prove_neutralizes(spec: ValidatorSpec, sink_class: str) -> _ProofVerdict:
+def prove_neutralizes(
+    spec: ValidatorSpec, sink_class: str,
+    timeout_ms: int | None = None,
+) -> _ProofVerdict:
     """Dispatch on ``spec.kind`` to the appropriate sound proof:
 
       * ``charset``     -> Z3 regex-intersection emptiness
@@ -1424,6 +1459,10 @@ def prove_neutralizes(spec: ValidatorSpec, sink_class: str) -> _ProofVerdict:
     Either way, SOUND verdicts are real mathematical proofs of
     language neutralisation; SAT/missing-element verdicts carry a
     concrete counterexample input.
+
+    ``timeout_ms`` bounds the Z3 query (charset kind only —
+    finite-set inclusion is constant-time); ``None`` keeps the
+    unbounded patch-verification behaviour.
     """
     danger = _DANGER_CHARS.get(sink_class)
     if danger is None:
@@ -1432,7 +1471,7 @@ def prove_neutralizes(spec: ValidatorSpec, sink_class: str) -> _ProofVerdict:
             f"no danger model for sink_class={sink_class!r}",
         )
     if spec.kind == "charset":
-        return _prove_charset(spec, sink_class, danger)
+        return _prove_charset(spec, sink_class, danger, timeout_ms=timeout_ms)
     if spec.kind == "charset_sub":
         return _prove_charset_sub(spec, sink_class, danger)
     return _ProofVerdict(

@@ -103,6 +103,45 @@ class TestRefuteByArchitecture:
         r = _refute_by_architecture(outcome, dm, None, _Config())
         assert r is not None
         assert r.gate == "architecture"
+
+    def test_visible_thread_primitive_vetoes_claim(self, tmp_path):
+        """The single_threaded claim is an unverified LLM output; when
+        the source visibly spawns threads the claim is provably wrong
+        and must not demote race findings."""
+        import core.audit.refutation as refutation_mod
+        (tmp_path / "worker.c").write_text(
+            "void start(void) { pthread_create(&t, 0, run, 0); }\n")
+        refutation_mod._threading_seen_cache.clear()
+        outcome = _Outcome(
+            hypothesis="data race in newaddress concurrent modification",
+        )
+        dm = _domain_model(
+            architecture={"threading_model": "single_threaded"},
+        )
+        try:
+            r = _refute_by_architecture(
+                outcome, dm, None, _Config(target_path=tmp_path))
+        finally:
+            refutation_mod._threading_seen_cache.clear()
+        assert r is None
+
+    def test_no_primitives_claim_still_suppresses(self, tmp_path):
+        import core.audit.refutation as refutation_mod
+        (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
+        refutation_mod._threading_seen_cache.clear()
+        outcome = _Outcome(
+            hypothesis="data race in newaddress concurrent modification",
+        )
+        dm = _domain_model(
+            architecture={"threading_model": "single_threaded"},
+        )
+        try:
+            r = _refute_by_architecture(
+                outcome, dm, None, _Config(target_path=tmp_path))
+        finally:
+            refutation_mod._threading_seen_cache.clear()
+        assert r is not None
+        assert r.gate == "architecture"
         assert r.demote_to == "clean"
         assert "single-threaded" in r.reason
 

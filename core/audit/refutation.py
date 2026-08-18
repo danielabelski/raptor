@@ -99,6 +99,63 @@ def refute_hypothesis(
 _RACE_CWES = frozenset({"CWE-362", "CWE-364", "CWE-366", "CWE-367"})
 
 
+# Thread-spawn primitives across the supported languages. Seed set,
+# deliberately small: this drives a one-way VETO (see below) where a
+# miss only means the veto doesn't fire — never new suppression.
+_THREADING_PRIMITIVE_RE = re.compile(
+    rb"pthread_create|std::j?thread|std::async"
+    rb"|CreateThread|_beginthread"
+    rb"|threading\.Thread|multiprocessing\.|concurrent\.futures"
+    rb"|\bgo\s+func\b|thread::spawn|tokio::spawn"
+    rb"|new\s+Thread\s*\(|ExecutorService"
+)
+_SOURCE_EXTS = frozenset({
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+    ".py", ".go", ".rs", ".java", ".kt", ".cs",
+})
+_SKIP_DIRS = frozenset({".git", "node_modules", "vendor", "third_party"})
+_VETO_SCAN_MAX_FILES = 2000
+_VETO_SCAN_MAX_BYTES = 256 * 1024
+
+_threading_seen_cache: Dict[str, bool] = {}
+
+
+def _threading_primitives_seen(target_path) -> bool:
+    """Bounded scan: does the target visibly spawn threads anywhere?
+
+    Cached per target path. Read errors and the file/byte caps fail
+    toward False — i.e. toward NOT vetoing — so a partial scan can
+    only under-veto, never over-suppress.
+    """
+    key = str(target_path)
+    cached = _threading_seen_cache.get(key)
+    if cached is not None:
+        return cached
+    import os as _os
+    seen = False
+    scanned = 0
+    for root, dirnames, filenames in _os.walk(key):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fn in filenames:
+            if _os.path.splitext(fn)[1] not in _SOURCE_EXTS:
+                continue
+            scanned += 1
+            if scanned > _VETO_SCAN_MAX_FILES:
+                break
+            try:
+                with open(_os.path.join(root, fn), "rb") as f:
+                    if _THREADING_PRIMITIVE_RE.search(
+                            f.read(_VETO_SCAN_MAX_BYTES)):
+                        seen = True
+                        break
+            except OSError:
+                continue
+        if seen or scanned > _VETO_SCAN_MAX_FILES:
+            break
+    _threading_seen_cache[key] = seen
+    return seen
+
+
 def _is_single_threaded(
     domain_model: Optional[Dict[str, Any]],
     config,
@@ -107,14 +164,31 @@ def _is_single_threaded(
 
     Only the domain model's ``architecture.threading_model`` field
     (produced by the study loop) is authoritative enough to suppress
-    race-condition findings.  Source-grep heuristics are too fragile:
-    kernel code uses its own primitives, excerpt trees are partial,
-    and framework-spawned threads leave no source footprint.
+    race-condition findings.  Source-grep heuristics are too fragile
+    to PROVE threading: kernel code uses its own primitives, excerpt
+    trees are partial, and framework-spawned threads leave no source
+    footprint.
+
+    The claim is an unverified LLM output derived from the untrusted
+    target, and this gate fails toward suppression — so a mechanical
+    VETO applies in the safe direction: when the source visibly
+    spawns threads, the single-threaded claim is provably wrong and
+    must not demote race findings. The veto can only prevent wrong
+    suppression, never add it.
     """
     if not domain_model:
         return False
     arch = domain_model.get("architecture", {})
-    return arch.get("threading_model", "") == "single_threaded"
+    if arch.get("threading_model", "") != "single_threaded":
+        return False
+    target = getattr(config, "target_path", None) if config else None
+    if target and _threading_primitives_seen(target):
+        logger.info(
+            "architecture gate: single_threaded claim vetoed — thread "
+            "primitives visible in %s; race findings NOT demoted", target,
+        )
+        return False
+    return True
 
 
 def _signal_reachable_set(

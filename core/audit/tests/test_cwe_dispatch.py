@@ -120,3 +120,20 @@ class TestDarkVerifyApplicable:
 
     def test_unknown_not_eligible(self):
         assert not dark_verify_applicable("CWE-99999")
+
+
+class TestDarkVerifyStatuses:
+    """Every dark_verify family outside the original auth trio declares
+    a status filter — a clean outcome must not spend a witness call."""
+
+    def test_expanded_families_filter_statuses(self):
+        from core.audit.cwe_dispatch import dark_verify_statuses
+        for cwe in ("CWE-134", "CWE-190", "CWE-416", "CWE-457"):
+            assert dark_verify_statuses(cwe) == frozenset(
+                {"dark", "suspicious", "finding"}
+            ), cwe
+
+    def test_auth_families_keep_unfiltered_behaviour(self):
+        from core.audit.cwe_dispatch import dark_verify_statuses
+        for cwe in ("CWE-287", "CWE-862", "CWE-863"):
+            assert dark_verify_statuses(cwe) is None

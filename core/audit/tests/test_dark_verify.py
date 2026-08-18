@@ -2111,6 +2111,106 @@ class TestRunDarkVerification:
         assert result.clean == 1
         assert result.dormant == 0
 
+    def test_refuted_witness_never_demotes_tool_backed_finding(self, tmp_path):
+        """Tool-backed floor: a refuted witness (one LLM-guessed input)
+        caps a verification-grade finding at suspicious — it never
+        erases an SMT/Coccinelle/Semgrep receipt to clean."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            _run_dark_verification,
+        )
+        src = tmp_path / "calc.py"
+        src.write_text(textwrap.dedent("""\
+            def alloc_size(n, elem_size):
+                return n + elem_size
+        """), encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "calc.py", "alloc_size", status="finding",
+            hypothesis="integer overflow in size calculation",
+        )
+        outcome.evidence_tool = "smt:check-overflow"
+        outcome.review_result = {"cwe_class": "CWE-190"}
+        result = self._make_result([outcome])
+
+        llm_response = json.dumps({
+            "module_path": "calc",
+            "function": "alloc_size",
+            "args": [1, 2],
+            "expected_exception": "OverflowError",
+            "rationale": "overflow on large inputs",
+        })
+
+        _run_dark_verification(result, config, llm_client=lambda s, u: llm_response)
+        assert result.outcomes[0].status == "suspicious"
+        assert "smt:check-overflow" in result.outcomes[0].evidence_tool
+        assert "dark_verify:refuted" in result.outcomes[0].evidence_tool
+        assert result.findings == 0
+        assert result.suspicious == 1
+        assert result.clean == 0
+
+    def test_refuted_witness_demotes_llm_claimed_finding(self, tmp_path):
+        """llm-claimed stamps are not verification-grade — the refute
+        demotes to clean as before."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            _run_dark_verification,
+        )
+        src = tmp_path / "calc2.py"
+        src.write_text(textwrap.dedent("""\
+            def scale(n):
+                return n * 2
+        """), encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "calc2.py", "scale", status="finding",
+            hypothesis="integer overflow",
+        )
+        outcome.evidence_tool = "llm-claimed:smt"
+        outcome.review_result = {"cwe_class": "CWE-190"}
+        result = self._make_result([outcome])
+
+        llm_response = json.dumps({
+            "module_path": "calc2",
+            "function": "scale",
+            "args": [2],
+            "expected_exception": "OverflowError",
+            "rationale": "overflow on large inputs",
+        })
+
+        _run_dark_verification(result, config, llm_client=lambda s, u: llm_response)
+        assert result.outcomes[0].status == "clean"
+        assert result.outcomes[0].evidence_tool == "dark_verify:refuted"
+        assert result.findings == 0
+        assert result.clean == 1
+
+    def test_clean_outcome_in_expanded_cwe_not_eligible(self, tmp_path):
+        """The expanded CWE families carry a status filter: a clean
+        CWE-190 outcome spends no witness call and stays clean."""
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            _run_dark_verification,
+        )
+        src = tmp_path / "calc3.py"
+        src.write_text("def f(n):\n    return n\n", encoding="utf-8")
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        outcome = self._make_outcome(
+            "calc3.py", "f", status="clean",
+            hypothesis="integer overflow",
+        )
+        outcome.review_result = {"cwe_class": "CWE-190"}
+        result = self._make_result([outcome])
+
+        calls = []
+
+        def _llm(s, u):
+            calls.append(1)
+            return "{}"
+
+        _run_dark_verification(result, config, llm_client=_llm)
+        assert calls == []
+        assert result.outcomes[0].status == "clean"
+
     def test_unsupported_language_skipped(self, tmp_path):
         from core.audit.orchestrator import (
             OrchestratorConfig,

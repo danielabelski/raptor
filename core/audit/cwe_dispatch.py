@@ -96,6 +96,7 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": "cpp/integer-overflow",
         "sinks": [],
         "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
     },
     "CWE-191": {
         "smt": "check-overflow",
@@ -273,6 +274,7 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": "cpp/non-constant-format",
         "sinks": ["printf", "fprintf", "sprintf", "syslog"],
         "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
     },
     # Use-after-free / double-free
     # CWE-416 keeps its full entry; the ptr_lifecycle channel joins
@@ -288,6 +290,7 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "sinks": ["kfree", "kfree_rcu", "free", "vfree", "kvfree",
                   "kfree_sensitive", "devm_kfree"],
         "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
     },
     # Expired-pointer dereference / operation-after-release — the
     # alias-hop lifecycle family. Channel-owned: the ptr_lifecycle
@@ -482,6 +485,7 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": "cpp/uninitialized-local",
         "sinks": [],
         "dark_verify": True,
+        "dark_verify_statuses": ("dark", "suspicious", "finding"),
     },
     # Unbounded allocation / accumulation family — no static dataflow
     # channel adjudicates; the resource_bounds channel (bound-witness

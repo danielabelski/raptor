@@ -20157,18 +20157,44 @@ def _run_dark_verification(
                 elif prior == "error":
                     result.errors -= 1
         elif verify_result.verdict == "refuted":
-            outcome.status = "clean"
-            outcome.evidence_tool = "dark_verify:refuted"
-            if prior != "clean":
-                result.clean += 1
-                if prior in ("dark", "dormant"):
-                    result.dormant -= 1
-                elif prior == "suspicious":
-                    result.suspicious -= 1
-                elif prior == "finding":
+            # Tool-backed floor: an executed witness is ONE LLM-guessed
+            # input. It can refute its own prediction, but it cannot
+            # erase a deterministic engine receipt (SMT / Coccinelle /
+            # Semgrep / CodeQL verification) — an overflow that doesn't
+            # crash on the guessed input is still an overflow. Findings
+            # with verification-grade evidence cap at suspicious with
+            # the refute recorded; everything else demotes to clean as
+            # before. Mirrors the dampening rule ("tool-backed findings
+            # are never demoted") and the runtime-veto floor.
+            from .evidence_grade import is_tool_evidence
+
+            prior_evidence = outcome.evidence_tool or ""
+            tool_backed = (
+                prior in ("finding", "suspicious")
+                and is_tool_evidence(prior_evidence)
+            )
+            if tool_backed:
+                outcome.status = "suspicious"
+                if "dark_verify:refuted" not in prior_evidence:
+                    outcome.evidence_tool = (
+                        f"{prior_evidence}+dark_verify:refuted"
+                    )
+                if prior == "finding":
                     result.findings -= 1
-                elif prior == "error":
-                    result.errors -= 1
+                    result.suspicious += 1
+            else:
+                outcome.status = "clean"
+                outcome.evidence_tool = "dark_verify:refuted"
+                if prior != "clean":
+                    result.clean += 1
+                    if prior in ("dark", "dormant"):
+                        result.dormant -= 1
+                    elif prior == "suspicious":
+                        result.suspicious -= 1
+                    elif prior == "finding":
+                        result.findings -= 1
+                    elif prior == "error":
+                        result.errors -= 1
 
         records.append(
             {

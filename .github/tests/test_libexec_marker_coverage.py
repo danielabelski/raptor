@@ -30,10 +30,16 @@ two-line ``# ruff: noqa`` prologue, the ``# fmt: off/on`` fence and the
 restructure the blocks (see RuffImmunityTests, which proves it against
 whatever ruff is installed). Adding or removing a marker is drift too.
 
-Out of scope here: the inline faulthandler blocks (superseded by
-core.startup.process_init and planned for deletion — pinning them
-would cement the obsolete copies) and the runtime behaviour of the
-surfaces (covered by the CLI tests and test_symlink_hop_bound.py).
+The inline faulthandler stanzas that used to precede the trust block
+were deleted (dedup programme §D): core.startup.process_init — imported
+by every python libexec script — enables faulthandler and registers the
+SIGUSR1 stack dump, with the stderr-fileno guard the inline copies
+lacked. FaulthandlerStanzaTests bans reintroduction; the two
+``python3 -I`` sandbox shims (isolated mode — cannot import core.*)
+keep an identity-pinned inline stanza by design.
+
+Out of scope here: the runtime behaviour of the surfaces (covered by
+the CLI tests and test_symlink_hop_bound.py).
 """
 
 from __future__ import annotations
@@ -176,6 +182,21 @@ SYSPATH_VARIANTS = {
 # The two `python3 -I` sandbox shims: isolated mode, no repo imports,
 # no sys.path mutation, no process_init — by design.
 NO_SYSPATH_PREAMBLE = {"raptor-pid1-shim", "raptor-seatbelt-shim"}
+
+# ─── faulthandler ────────────────────────────────────────────────────
+
+# Inline faulthandler stanzas are banned: the process_init import that
+# SyspathPreambleIdentityTests already requires on every python script
+# enables faulthandler and registers the SIGUSR1 stack dump (with the
+# stderr-fileno guard the deleted inline copies lacked). The only
+# permitted carriers are the two `python3 -I` sandbox shims — isolated
+# mode means no repo sys.path, so they cannot import
+# core.startup.process_init and keep the stanza inline by design.
+FAULTHANDLER_INLINE_SHIMS = {"raptor-pid1-shim", "raptor-seatbelt-shim"}
+
+FAULTHANDLER_STANZA = '''faulthandler.enable()
+if hasattr(signal, "SIGUSR1"):
+    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)'''
 
 # ─── bash surfaces (keyed by path relative to repo root) ─────────────
 
@@ -533,6 +554,51 @@ class SyspathPreambleIdentityTests(unittest.TestCase):
         self.assertEqual(
             problems, [],
             msg="sys.path preamble drift:\n" + "\n".join(problems),
+        )
+
+
+class FaulthandlerStanzaTests(unittest.TestCase):
+    """No inline faulthandler outside the two -I shims; shims pinned."""
+
+    def test_no_inline_faulthandler_outside_the_shims(self):
+        offenders = [
+            path.name
+            for path in _python_scripts()
+            if path.name not in FAULTHANDLER_INLINE_SHIMS
+            and "faulthandler"
+            in path.read_text(encoding="utf-8", errors="replace")
+        ]
+        self.assertEqual(
+            offenders, [],
+            msg=(
+                "inline faulthandler use in libexec scripts — the "
+                "mandatory core.startup.process_init import already "
+                "enables faulthandler and registers the SIGUSR1 stack "
+                "dump (with the stderr-fileno guard the old inline "
+                "copies lacked). Delete the stanza; only the two "
+                "`python3 -I` shims in FAULTHANDLER_INLINE_SHIMS may "
+                "carry one:\n" + "\n".join(offenders)
+            ),
+        )
+
+    def test_shims_carry_the_pinned_stanza(self):
+        problems = []
+        for name in sorted(FAULTHANDLER_INLINE_SHIMS):
+            text = (LIBEXEC / name).read_text(
+                encoding="utf-8", errors="replace",
+            )
+            if text.count("import faulthandler\n") != 1:
+                problems.append(
+                    f"{name}: expected exactly one `import faulthandler`"
+                )
+            if text.count(FAULTHANDLER_STANZA) != 1:
+                problems.append(
+                    f"{name}: enable/register stanza deviates from "
+                    "FAULTHANDLER_STANZA"
+                )
+        self.assertEqual(
+            problems, [],
+            msg="-I shim faulthandler stanza drift:\n" + "\n".join(problems),
         )
 
 

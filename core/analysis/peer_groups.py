@@ -13,7 +13,9 @@ Layer hierarchy:
   L3  Domain model groups        — study-run concepts (high)
 
   L4  Type cohort groups         — shared type parameter (medium-high)
-  L5  Verb-prefix + sig shape    — naming heuristic per-directory (medium)
+  L5  Decorator / verb-prefix    — shared-decorator groups first, then
+                                    verb-prefix + sig shape on what
+                                    remains, per-directory (medium)
   L6  Paired operations          — stem + verb match, global (medium)
 
 L0–L3 claim exclusively (a function in a higher layer is removed from
@@ -402,6 +404,39 @@ def type_ref_index_from_inventory(
 _JOERN_PEERS_RE = re.compile(r"^JOERN_PEERS:([^|]+)\|([^|]*)\|(.+)$")
 
 
+def _name_index(functions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Bare-name → record index for the grouping layers.
+
+    Function identity in the resolver is the (file, name) pair — that
+    is what the claim set tracks — but group membership arrives as
+    bare names (Joern callees, binary edges, dispatch handler values,
+    domain-model members, type refs, operation stems). When several
+    still-unclaimed records share a name, the bare name is ambiguous:
+    a last-wins dict would bind the sibling (and the subsequent
+    claim) to an arbitrary record and permanently shadow the others.
+    Ambiguous names are excluded from grouping instead.
+    """
+    by_name: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for f in functions:
+        name = f.get("name", "")
+        if not name:
+            continue
+        if name in by_name:
+            ambiguous.add(name)
+        else:
+            by_name[name] = f
+    for name in ambiguous:
+        del by_name[name]
+    if ambiguous:
+        logger.debug(
+            "peer groups: %d name(s) ambiguous across files, excluded "
+            "from name-keyed grouping: %s",
+            len(ambiguous), sorted(ambiguous)[:8],
+        )
+    return by_name
+
+
 def _parse_joern_peers(raw_output: str) -> list[tuple[str, str, list[str]]]:
     """Parse JOERN_PEERS: lines into (caller, file, [callees])."""
     results: list[tuple[str, str, list[str]]] = []
@@ -460,8 +495,8 @@ def _joern_co_callee_groups(
         return []
 
     raw_groups = _parse_joern_peers(result.raw_output or "")
-    func_names = {f.get("name", "") for f in functions}
-    func_by_name = {f.get("name", ""): f for f in functions if f.get("name")}
+    func_by_name = _name_index(functions)
+    func_names = set(func_by_name)
 
     groups: list[SiblingGroup] = []
     for caller, caller_file, callees in raw_groups:
@@ -507,8 +542,8 @@ def _binary_co_callee_groups(
     if not edges:
         return []
 
-    func_names = {f.get("name", "") for f in functions}
-    func_by_name = {f.get("name", ""): f for f in functions if f.get("name")}
+    func_by_name = _name_index(functions)
+    func_names = set(func_by_name)
 
     caller_to_callees: dict[str, list[str]] = defaultdict(list)
     for edge in edges:
@@ -556,8 +591,8 @@ def _dispatch_site_groups(
     if not tables or not functions:
         return []
 
-    func_names = {f.get("name", "") for f in functions}
-    func_by_name = {f.get("name", ""): f for f in functions if f.get("name")}
+    func_by_name = _name_index(functions)
+    func_names = set(func_by_name)
 
     groups: list[SiblingGroup] = []
     for table in tables:
@@ -603,8 +638,8 @@ def _domain_model_groups(
     if not model or not functions:
         return []
 
-    func_names = {f.get("name", "") for f in functions}
-    func_by_name = {f.get("name", ""): f for f in functions if f.get("name")}
+    func_by_name = _name_index(functions)
+    func_names = set(func_by_name)
 
     concepts = model.get("concepts", [])
     if not concepts:
@@ -658,7 +693,7 @@ def _type_cohort_groups(
     if not type_ref_index or not functions:
         return []
 
-    func_by_name = {f.get("name", ""): f for f in functions if f.get("name")}
+    func_by_name = _name_index(functions)
     func_names = set(func_by_name)
 
     groups: list[SiblingGroup] = []
@@ -765,7 +800,14 @@ def _verb_prefix_groups(
     functions: list[dict[str, Any]],
     checklist: dict[str, Any] | None = None,
 ) -> list[SiblingGroup]:
-    """L5: verb-prefix groups scoped per-directory with signature filtering."""
+    """L5: two per-directory passes folded into one result list.
+
+    First a decorator pass: functions sharing a decorator (checklist
+    ``metadata.attributes``) form a group per (directory, decorator),
+    with no verb match or signature filtering. Then a verb-prefix
+    pass with signature-shape filtering over the functions the
+    decorator pass did not claim.
+    """
     if not functions:
         return []
 
@@ -858,6 +900,7 @@ def _verb_prefix_groups(
                 sibling_type=SiblingType.PEER_FUNCTIONS,
                 description=f"{verb}_* functions in {directory or '.'}",
                 siblings=siblings,
+                shared_context=f"Shared verb prefix: {verb}_*",
             ))
 
     all_groups = decorator_groups + verb_groups
@@ -936,7 +979,7 @@ def _paired_operation_groups(
     if not functions:
         return []
 
-    func_by_name = {f.get("name", ""): f for f in functions if f.get("name")}
+    func_by_name = _name_index(functions)
     names = set(func_by_name)
     groups: list[SiblingGroup] = []
     paired: set[str] = set()
@@ -963,11 +1006,13 @@ def _paired_operation_groups(
             ],
         ))
 
-    # Prefix-swap pairs
+    # Prefix-swap pairs. Iterate sorted so stem-collision winners and
+    # first-claimed pairs are deterministic across runs (set iteration
+    # order varies with hash randomization); mirrors the suffix loop.
     for fwd_pat, rev_pat in _PAIR_PATTERNS:
         forward: dict[str, str] = {}
         reverse: dict[str, str] = {}
-        for name in names:
+        for name in sorted(names):
             m = fwd_pat.match(name)
             if m:
                 stem = m.group(2) or ""

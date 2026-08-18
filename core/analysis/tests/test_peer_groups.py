@@ -1,5 +1,8 @@
 """Tests for core.analysis.peer_groups — layered peer group resolver."""
 
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
@@ -258,6 +261,41 @@ class TestBinaryCoCalleeGroups:
         idx = FakeBinaryEdgeIndex(edges=[])
         assert _binary_co_callee_groups(idx, [_func("a")]) == []
 
+    def test_ambiguous_name_excluded_not_misbound(self):
+        """Two remaining records sharing a name: the bare callee name
+        is ambiguous — grouping must exclude it rather than bind the
+        sibling (and the claim) to an arbitrary file's record."""
+        idx = FakeBinaryEdgeIndex(edges=[
+            FakeBinaryCallEdge("dispatch", "parse"),
+            FakeBinaryCallEdge("dispatch", "handle_get"),
+            FakeBinaryCallEdge("dispatch", "handle_post"),
+        ])
+        funcs = [
+            _func("parse", file="src/a.c"),
+            _func("parse", file="src/b.c"),
+            _func("handle_get"),
+            _func("handle_post"),
+        ]
+        groups = _binary_co_callee_groups(idx, funcs)
+        assert len(groups) == 1
+        names = {s.function for s in groups[0].siblings}
+        assert names == {"handle_get", "handle_post"}
+        assert "parse" not in names
+
+    def test_unique_name_binds_to_its_own_file(self):
+        idx = FakeBinaryEdgeIndex(edges=[
+            FakeBinaryCallEdge("dispatch", "handle_get"),
+            FakeBinaryCallEdge("dispatch", "handle_post"),
+        ])
+        funcs = [
+            _func("handle_get", file="src/get.c", line=7),
+            _func("handle_post", file="src/post.c", line=9),
+        ]
+        groups = _binary_co_callee_groups(idx, funcs)
+        by_fn = {s.function: s for s in groups[0].siblings}
+        assert by_fn["handle_get"].file == "src/get.c"
+        assert by_fn["handle_post"].file == "src/post.c"
+
 
 # ── L2: Dispatch-site ─────────────────────────────────────────────────
 
@@ -461,6 +499,15 @@ class TestVerbPrefixGroups:
         # handle_delete alone in verb bucket → no group
         assert len(verb_groups) == 0
 
+    def test_verb_prefix_group_carries_shared_context(self):
+        groups = _verb_prefix_groups(
+            [_func("parse_header"), _func("parse_body")]
+        )
+        assert len(groups) == 1
+        group = groups[0]
+        assert group.shared_context
+        assert "parse" in group.shared_context
+
     def test_decorator_claim_does_not_cross_directories(self):
         funcs = [
             _func("handle_get", file="src/api/h.c", metadata={
@@ -528,6 +575,52 @@ class TestPairedOperationGroups:
         funcs = [_func("get_page"), _func("put_page")]
         groups = _paired_operation_groups(funcs)
         assert len(groups) == 1
+
+    # Names crafted so two forward names collide on the same
+    # lowercased stem ("blob") and contend for one reverse partner.
+    COLLIDING = (
+        "encode_Blob", "encode_blob", "decode_blob",
+        "get_item", "put_item", "set_item",
+        "lock_table", "unlock_table",
+    )
+
+    def test_stem_collision_winner_is_sorted_last_writer(self):
+        groups = _paired_operation_groups(
+            [_func(n) for n in self.COLLIDING]
+        )
+        pair_ids = {g.group_id for g in groups}
+        # sorted() puts "encode_Blob" before "encode_blob"; the
+        # last writer for stem "blob" is therefore "encode_blob".
+        assert "pair:encode_blob:decode_blob" in pair_ids
+        assert "pair:encode_Blob:decode_blob" not in pair_ids
+
+    def test_pairing_stable_across_hash_seeds(self):
+        # Set iteration order varies with PYTHONHASHSEED; the pairing
+        # must not.
+        snippet = (
+            "from core.analysis.peer_groups import _paired_operation_groups\n"
+            f"names = {list(self.COLLIDING)!r}\n"
+            "fns = [{'name': n, 'file': 'src/mod.c', 'line': 1}"
+            " for n in names]\n"
+            "print(sorted(g.group_id for g in"
+            " _paired_operation_groups(fns)))\n"
+        )
+        outputs = set()
+        for seed in ("0", "1", "42"):
+            env = dict(os.environ, PYTHONHASHSEED=seed)
+            proc = subprocess.run(
+                [sys.executable, "-c", snippet],
+                capture_output=True, text=True, env=env, check=True,
+            )
+            outputs.add(proc.stdout.strip())
+        assert len(outputs) == 1, outputs
+
+    def test_first_claim_still_exclusive(self):
+        # A name already claimed by an earlier pattern is not re-paired.
+        groups = _paired_operation_groups(
+            [_func("get_item"), _func("put_item"), _func("set_item")]
+        )
+        assert [g.group_id for g in groups] == ["pair:get_item:put_item"]
 
 
 # ── resolve_peer_groups integration ───────────────────────────────────

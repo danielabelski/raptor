@@ -64,6 +64,16 @@ def _scala_string_list(names: tuple[str, ...]) -> str:
     """Render a name tuple as the body of a Scala List(...) literal."""
     return ", ".join(f'"{n}"' for n in names)
 
+
+def guard_tested_sinks() -> tuple[str, ...]:
+    """The sink names the guarded/unguarded verdict actually tests.
+
+    Public accessor so evidence emitters can record what a "guarded"
+    verdict covered — the verdict is silent on every name outside
+    this list.
+    """
+    return _CORE_QUERY_SINKS
+
 _CONDUIT_PHRASES: tuple[str, ...] = (
     r"passes\b.*\bto\b",
     r"forwards\b.*\bto\b",
@@ -84,7 +94,7 @@ val guarded = Math.max(structurallyGuarded, controlGuarded)
 s"$guarded/$total"
 '''
 
-# parents: [0]=inventory, [1]=core, [2]=repo root
+# parents: [0]=analysis, [1]=core, [2]=repo root
 _QUERIES_DIR = Path(__file__).resolve().parents[2] / "packages" / "joern" / "queries"
 
 
@@ -209,8 +219,7 @@ def _joern_find_callers(
     if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", function_name):
         return []
 
-    # parents: [0]=inventory, [1]=core, [2]=repo root
-    query_path = Path(__file__).resolve().parents[2] / "packages" / "joern" / "queries" / "callers.sc"
+    query_path = _QUERIES_DIR / "callers.sc"
     if not query_path.exists():
         return []
 
@@ -235,6 +244,25 @@ def _joern_find_callers(
 # ─── Conduit detection ───────────────────────────────────────────────────────
 
 
+# Fenced code blocks, inline code spans, and markdown quote lines in a
+# finding description are the places where target-repo text (comments,
+# string literals, identifiers) is reproduced verbatim. The text-based
+# gates below must only read the model's own prose — otherwise a
+# scanned repo can plant phrases ("correctly bounded", "passes ... to
+# memcpy(") that mechanically demote real findings, and the demotion
+# is persisted as a cross-run suppression learning.
+_FENCED_CODE_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_QUOTE_LINE_RE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
+
+
+def _prose_only(body: str) -> str:
+    """Strip quoted target content so gates scan only model prose."""
+    body = _FENCED_CODE_RE.sub(" ", body)
+    body = _INLINE_CODE_RE.sub(" ", body)
+    return _QUOTE_LINE_RE.sub(" ", body)
+
+
 def is_conduit_candidate(body: str) -> bool:
     """Return True if a finding description looks like a conduit FP.
 
@@ -246,8 +274,11 @@ def is_conduit_candidate(body: str) -> bool:
     If the finding is about local logic (off-by-one, integer overflow,
     loop bounds), returns False — the function is NOT a conduit even if
     it's sink-unreachable.
+
+    Only the model's prose is scanned; code blocks / inline code /
+    quote lines are stripped first (see :func:`_prose_only`).
     """
-    body_lower = body.lower()
+    body_lower = _prose_only(body).lower()
     if _CONDUIT_CALL_RE.search(body_lower):
         return True
     for phrase in _CONDUIT_PHRASES:
@@ -263,10 +294,22 @@ def check_sink_guarded(
     function_name: str,
     joern_server,
 ) -> str | None:
-    """Query Joern: are all dangerous sink calls in this function guarded?
+    """Query Joern: are the TESTED sink calls in this function guarded?
 
-    Returns "guarded" if all sinks have a dominating conditional,
-    "unguarded" if any sink lacks one, None if query fails or no sinks.
+    Tests only the curated ``_CORE_QUERY_SINKS`` subset (see
+    ``guard_tested_sinks()``), NOT every name in
+    ``DANGEROUS_LIBC_SINKS`` — the whole-CPG name query deliberately
+    drops the noisy scan / vs*printf / rare exec variants and the
+    library-specific SQL names. Consequence for consumers: "guarded"
+    means every *tested* sink is dominated by a conditional; it says
+    nothing about calls to the omitted names, so a function pairing a
+    guarded tested-sink with an unguarded omitted-sink still reads
+    "guarded". Suppression decisions should record the tested list as
+    evidence (``compute_demotion_verdict`` does).
+
+    Returns "guarded" if all tested sinks have a dominating
+    conditional, "unguarded" if any lacks one, None if the query
+    fails or the function calls no tested sink.
     """
     if joern_server is None or not joern_server.is_alive():
         return None
@@ -405,7 +448,8 @@ def compute_demotion_verdict(
     Gates are checked in order (cheapest first):
     1. Entry-unreachability (pure graph lookup)
     2. Sink-unreachability + conduit check (graph + text analysis)
-    3. Guarded-sink (Joern query — expensive)
+    3. Safety self-contradiction (regex over the finding body)
+    4. Guarded-sink (Joern query — expensive, runs last)
     """
     if is_entry_unreachable(function_name, context_map, joern_server=joern_server):
         return (
@@ -424,16 +468,21 @@ def compute_demotion_verdict(
     ):
         return "[sink-unreachability: no transitive path to any known sink]"
 
-    if check_sink_guarded(function_name, joern_server) == "guarded":
-        return (
-            "[guarded-sink: all dangerous sink calls in this function "
-            "are dominated by conditionals]"
-        )
-
     if has_safety_self_contradiction(body):
         return (
             "[self-contradiction: the finding description asserts the "
             "code is safe or depends on a hypothetical caller violation]"
+        )
+
+    if check_sink_guarded(function_name, joern_server) == "guarded":
+        # The tested-sink list IS part of the evidence: a "guarded"
+        # verdict covers only these names, and the demotion must be
+        # auditable against what was actually checked.
+        return (
+            "[guarded-sink: all tested sink calls in this function "
+            "are dominated by conditionals; tested sinks: "
+            + ", ".join(guard_tested_sinks())
+            + "]"
         )
 
     return None
@@ -481,8 +530,13 @@ def has_safety_self_contradiction(body: str) -> bool:
 
     When the model's own words assert correctness but it still emitted
     a finding, that's a mechanical demotion signal.
+
+    Only the model's prose is scanned; code blocks / inline code /
+    quote lines are stripped first (see :func:`_prose_only`) so a
+    scanned repo cannot plant safety-assertion phrases that get quoted
+    into the description and mechanically demote a real finding.
     """
-    body_lower = body.lower()
+    body_lower = _prose_only(body).lower()
 
     for pattern in _SAFETY_ASSERTIONS:
         m = pattern.search(body_lower)
@@ -504,6 +558,7 @@ __all__ = [
     "build_sink_reachable_set",
     "check_sink_guarded",
     "compute_demotion_verdict",
+    "guard_tested_sinks",
     "has_safety_self_contradiction",
     "is_conduit_candidate",
     "is_entry_unreachable",

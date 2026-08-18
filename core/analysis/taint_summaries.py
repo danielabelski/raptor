@@ -413,7 +413,6 @@ def _find_return_value_at(
 
 def _compute_one_summary(
     cg: PyModuleCallGraph,
-    source_text: str,
     qualified_name: str,
     summaries_so_far: dict[str, TaintSummary],
 ) -> TaintSummary:
@@ -429,6 +428,24 @@ def _compute_one_summary(
     node = cg.find(qualified_name)
     if node is None:
         return TaintSummary(function=qualified_name, params=())
+    # Conditional redefinition: which body runs depends on
+    # module-import-time state, and summaries are name-keyed — a
+    # single-variant summary would silently stand in for both bodies
+    # (the pre-variants graph analysed only the LAST def, a taint
+    # false negative through the earlier one). Conservative unknown
+    # is sound, and the construct is rare enough that the precision
+    # loss is negligible.
+    _variants = cg.find_all(qualified_name)
+    if len(_variants) > 1:
+        return TaintSummary(
+            function=qualified_name,
+            params=node.params,
+            summary_unknown=True,
+            summary_unknown_reason=(
+                f"conditionally redefined ({len(_variants)} variants)"
+                " — behaviour is variant-dependent"
+            ),
+        )
     fn_ast = cg.function_ast(qualified_name)
     if fn_ast is None:
         return TaintSummary(
@@ -600,6 +617,9 @@ def build_taint_summaries(
 ) -> dict[str, TaintSummary]:
     """Compute taint summaries for every function in ``cg``.
 
+    ``source`` is unused — every AST and file path comes from ``cg``.
+    The parameter is kept for call-site compatibility only.
+
     Returns a dict keyed by qualified function name. The synthetic
     ``<module>`` entry node has no summary. Each summary's
     ``params`` matches the corresponding CFG's ``params`` — both
@@ -613,11 +633,6 @@ def build_taint_summaries(
     so Phase 14 can downgrade. In practice non-pathological codebases
     converge in 2–3 passes.
     """
-    if isinstance(source, Path):
-        source_text = source.read_text(encoding="utf-8")
-    else:
-        source_text = source
-
     target_nodes = [
         n for n in cg.nodes()
         if not n.is_module_entry
@@ -641,7 +656,7 @@ def build_taint_summaries(
                 # first pass; after that, leave it alone.
                 continue
             new_summary = _compute_one_summary(
-                cg, source_text, node.name, summaries,
+                cg, node.name, summaries,
             )
             old = summaries[node.name]
             if new_summary != old:

@@ -96,11 +96,16 @@ _INIT_DESTROY_PATTERNS = [
     (re.compile(r"^(\w+?)_get$"), re.compile(r"^(\w+?)_put$")),
 ]
 
+# Only names a model-discovery source can actually produce belong
+# here: the builtin _LIFECYCLE_PAIRS entries plus _lock/_unlock
+# convention names. Kernel semaphore names (down/down_read/down_write)
+# and spin_lock_irqsave don't match any pair or suffix pattern, so
+# membership could never test true — they are omitted rather than
+# carried as dead entries.
 _LOCK_METHODS = frozenset({
     "pthread_mutex_lock", "pthread_spin_lock",
     "pthread_rwlock_rdlock", "pthread_rwlock_wrlock",
-    "sem_wait", "spin_lock", "spin_lock_irqsave",
-    "mutex_lock", "down", "down_read", "down_write",
+    "sem_wait", "spin_lock", "mutex_lock",
     "read_lock", "write_lock",
 })
 

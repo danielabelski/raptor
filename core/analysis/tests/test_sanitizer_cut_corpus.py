@@ -79,6 +79,11 @@ _CORPUS_CASES = [
      "y", VERDICT_CANDIDATE_ONLY),
     ("bypass.py", "CWE-79", 12, 17, VERDICT_NO_SUPPRESS, "safe",
      VERDICT_NO_SUPPRESS),
+    # Converging defs: sanitizer among the sink-arg's reaching
+    # definers but not the only one — condition 3's exclusivity
+    # requirement refuses (pre-fix this falsely suppressed).
+    ("loop_rebind.py", "CWE-79", 14, 18, VERDICT_CANDIDATE_ONLY, "y",
+     VERDICT_CANDIDATE_ONLY),
     # Phase 14 flips this one — intra-proc can't see into _sanitize.
     ("sanitizer_in_helper.py", "CWE-79", 21, 23, VERDICT_NO_SUPPRESS, "y",
      VERDICT_SUPPRESS),

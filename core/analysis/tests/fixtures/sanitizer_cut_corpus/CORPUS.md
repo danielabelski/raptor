@@ -18,6 +18,7 @@ shapes the design doc enumerates.
 | `chained_sanitizer.py` | `candidate_only` | falsely suppresses | Phase 3's empty output_symbols on the nested call |
 | `sanitization_overwritten.py` | `candidate_only` | undefined (no AST handling) | Phase 2's reaching-defs catch the rebind |
 | `bypass.py` | `no_suppress` | undefined | Real bug — neither suppresses |
+| `loop_rebind.py` | `candidate_only` | undefined | Converging defs: condition 3's exclusivity requirement — membership among reaching definers alone falsely suppressed this before the fix |
 | `sanitizer_in_helper.py` | `no_suppress` (intra) → `suppress` (inter, Phase 14) | undefined | Phase 14's inter-procedural synthetic binding rescues this |
 
 ## Ablation

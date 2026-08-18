@@ -409,6 +409,7 @@ def _binding_satisfies_value_gate(
     tainted_at: Mapping[Any, FrozenSet[str]],
     sink: Any,
     sink_arg: str,
+    sanitizer_output_nodes: Set,
 ) -> bool:
     """Phase 4 conditions 2 and 3 for one binding.
 
@@ -418,18 +419,30 @@ def _binding_satisfies_value_gate(
     :func:`match_sanitizers_in_cfg`.)
 
     Condition 3: the binding's call assigns ``sink_arg`` as one of
-    its outputs AND the binding's node is among the reaching
-    definers of ``sink_arg`` at the sink (i.e. the cleaned value
-    actually arrives at the sink without being overwritten).
+    its outputs AND **every** reaching definer of ``sink_arg`` at
+    the sink is a sanitizer node whose outputs include ``sink_arg``
+    (``sanitizer_output_nodes``). Mere membership of the binding's
+    node among the reaching definers is not enough: when a loop (or
+    any converging control flow) lets a non-sanitizer definition of
+    ``sink_arg`` reach the sink alongside the sanitized one
+    (``y = escape(x); for i in it: y = i; render(y)``), the cleaned
+    value's identity at the sink is unproven and suppressing would
+    be a false negative. The straight-line rebind case was already
+    caught (the later def kills the earlier one); the exclusivity
+    requirement extends the same reasoning to converging defs.
     """
     # Condition 2 — tainted-input check
     tainted_in = tainted_at.get(binding.node, frozenset())
     if not (binding.input_symbols & tainted_in):
         return False
-    # Condition 3 — output reaches sink arg
+    # Condition 3 — output reaches sink arg, exclusively via
+    # sanitizer outputs
     if sink_arg not in binding.output_symbols:
         return False
-    if binding.node not in rd.at(sink, sink_arg):
+    reaching = rd.at(sink, sink_arg)
+    if binding.node not in reaching:
+        return False
+    if any(d not in sanitizer_output_nodes for d in reaching):
         return False
     return True
 
@@ -578,9 +591,17 @@ def evaluate_finding(
     # value-bound vertex cut.
     rd = reaching_defs(graph)
     tainted_at = _propagate_taint(graph, rd, sources_set, source_symbols)
+    # Nodes whose sanitizer call assigns ``sink_arg`` — the only
+    # definers condition 3 accepts as reaching the sink (exclusivity;
+    # see _binding_satisfies_value_gate).
+    sanitizer_output_nodes = {
+        b.node for b in matched_bindings if sink_arg in b.output_symbols
+    }
     value_bound_bindings = frozenset(
         b for b in matched_bindings
-        if _binding_satisfies_value_gate(b, rd, tainted_at, sink, sink_arg)
+        if _binding_satisfies_value_gate(
+            b, rd, tainted_at, sink, sink_arg, sanitizer_output_nodes,
+        )
     )
     value_bound_nodes = {b.node for b in value_bound_bindings}
     value_bound_cut = sanitizer_cuts_source_to_sink(

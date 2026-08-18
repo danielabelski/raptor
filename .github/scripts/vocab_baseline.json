@@ -88,6 +88,11 @@
   "count": 14,
   "kind": "literal"
  },
+ "core/analysis/sanitizer_cut_precision.py::to_dict": {
+  "count": 10,
+  "kind": "literal",
+  "note": "precision-report field names (counts/cross-tab keys of the sanitizer-cut gate report JSON), not name vocabulary \u2014 same class as the finding-dict field-name entries"
+ },
  "core/analysis/summaries.py::to_dict": {
   "count": 12,
   "kind": "literal"

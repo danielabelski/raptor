@@ -194,6 +194,29 @@ class ReviewJournalEntry:
         return d
 
 
+def is_mechanical_echo(entry: Any) -> bool:
+    """True for post-loop mechanical echo rows.
+
+    Pattern-scan findings are journalled after the review loop for
+    cross-layer visibility — one ``[mechanical]`` row per finding,
+    zero cost, no rationale, ``post-loop-mechanical`` strategy tag.
+    They are NOT LLM reviews: naive verdict counts that include them
+    inflate by one suspicious row per pattern-scan finding. Accepts a
+    :class:`ReviewJournalEntry` or a raw journal dict — the single
+    counting rule for every summary consumer.
+    """
+    if isinstance(entry, dict):
+        strategies = entry.get("strategies")
+        body = entry.get("body")
+    else:
+        strategies = getattr(entry, "strategies", None)
+        body = getattr(entry, "body", None)
+    return (
+        "post-loop-mechanical" in (strategies or [])
+        or (body or "").startswith("[mechanical]")
+    )
+
+
 def _canonical_strategy_hash(strategies: list[str]) -> str:
     """Sha1 of comma-joined sorted strategy names, first 12 chars.
 

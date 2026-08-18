@@ -435,11 +435,19 @@ def cmd_stats(args):
         print("  No journal entries found.")
         return
 
+    # Post-loop mechanical echo rows (one $0 row per pattern-scan
+    # finding, journalled for cross-layer visibility) are not LLM
+    # reviews — counted separately so verdict tallies aren't inflated.
+    from core.coverage.journal import is_mechanical_echo
+
+    echo_rows = sum(1 for e in entries if is_mechanical_echo(e))
     verdicts: dict[str, int] = {}
     total_cost = 0.0
     total_duration = 0.0
     models: set[str] = set()
     for e in entries:
+        if is_mechanical_echo(e):
+            continue
         verdicts[e.verdict] = verdicts.get(e.verdict, 0) + 1
         total_cost += e.cost_usd or 0.0
         total_duration += e.duration_s or 0.0
@@ -447,6 +455,11 @@ def cmd_stats(args):
             models.add(e.model)
 
     print(f"  Entries:  {len(entries)}")
+    if echo_rows:
+        print(
+            f"  Mechanical echo rows: {echo_rows} "
+            "(post-loop pattern scans — excluded from verdicts)"
+        )
     print(f"  Models:   {', '.join(_line(m, max_chars=60) for m in sorted(models)) or '(none)'}")
     print(f"  Cost:     ${total_cost:.2f}")
     print(f"  Duration: {total_duration:.0f}s ({total_duration / 60:.1f}m)")

@@ -811,6 +811,27 @@ class ProtocolCheck:
     ambiguity: str
     question: str
     cwe: str
+    # Protocol-evidence gate (the check_missing_app_features
+    # precedent): when set, the source must ALSO show this evidence
+    # before the check fires. Trigger words like "session"/"cookie"
+    # are shared vocabulary across protocols — TLS session-cache code
+    # was flagged with an HTTP CRLF-injection question purely on the
+    # word "session".
+    context: re.Pattern | None = None
+
+
+# Evidence that the source actually speaks HTTP (not merely shares
+# vocabulary with it): version strings, header-plumbing identifiers,
+# literal header writes.
+_HTTP_CONTEXT_RE = re.compile(
+    r"(?:HTTP/[0-9]"
+    r"|https?://"
+    r"|http[_-]?(?:request|response|header|server|client|conn)"
+    r"|(?:request|response)[_-]?headers?"
+    r"|Content-Length|Transfer-Encoding|Set-Cookie"
+    r"|X-Forwarded|status[_ -]?code)",
+    re.IGNORECASE,
+)
 
 
 _PROTOCOL_CHECKS = [
@@ -820,6 +841,7 @@ _PROTOCOL_CHECKS = [
         ambiguity="CL vs TE request smuggling",
         question="When both Content-Length and Transfer-Encoding are present, does the parser reject or pick one consistently?",
         cwe="CWE-444",
+        context=_HTTP_CONTEXT_RE,
     ),
     ProtocolCheck(
         protocol="HTTP",
@@ -827,6 +849,7 @@ _PROTOCOL_CHECKS = [
         ambiguity="CRLF header injection",
         question="Are header values checked for \\r\\n before being used in HTTP responses?",
         cwe="CWE-113",
+        context=_HTTP_CONTEXT_RE,
     ),
     ProtocolCheck(
         protocol="JWT",
@@ -877,6 +900,10 @@ def check_protocol_ambiguity(
 
         for check in _PROTOCOL_CHECKS:
             if not check.pattern.search(source):
+                continue
+            if check.context is not None and not check.context.search(source):
+                # Trigger word without protocol evidence — shared
+                # vocabulary, not a protocol handler.
                 continue
 
             key = f"{gap.get('file')}:{check.protocol}:{check.ambiguity}"

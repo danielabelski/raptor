@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from core.coverage.journal import is_mechanical_echo as _is_mechanical_echo
 from core.security.prompt_output_sanitise import sanitise_string
 
 logger = logging.getLogger(__name__)
@@ -399,10 +400,7 @@ def _load_review_state(out_dir: Path) -> dict[str, Any]:
             # checks journalled after the review loop) are not LLM
             # reviews — carry the marker so stats can state one
             # counting rule instead of silently inflating "reviewed".
-            "mechanical": (
-                "post-loop-mechanical" in (entry.strategies or [])
-                or (entry.body or "").startswith("[mechanical]")
-            ),
+            "mechanical": _is_mechanical_echo(entry),
         })
         if entry.file:
             files_examined.add(entry.file)

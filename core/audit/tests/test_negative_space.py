@@ -1004,3 +1004,52 @@ class TestVocabAuthConventionDiscovery:
             discover_conventions(gaps)
             == discover_conventions(gaps, domain_vocab=None)
         )
+
+
+class TestProtocolEvidenceGate:
+    """v4 misfire: TLS session-cache C code was flagged with an HTTP
+    CRLF-injection question purely on the word "session". HTTP checks
+    now require actual HTTP evidence in the source (the
+    check_missing_app_features gating precedent)."""
+
+    def test_tls_session_code_not_flagged_as_http(self):
+        gaps = [{
+            "name": "ssl_get_prev_session",
+            "file": "ssl/ssl_sess.c",
+            "source": (
+                "int ssl_get_prev_session(SSL_CONNECTION *s) {\n"
+                "    SSL_SESSION *ret = lookup_sess_in_cache(s, sess_id,"
+                " sess_id_len);\n"
+                "    if (ret->session_id_length == 0) return 0;\n"
+                "    ssl_session_calculate_timeout(ret);\n"
+                "}\n"
+            ),
+        }]
+        findings = check_protocol_ambiguity(gaps)
+        assert not any(f.protocol == "HTTP" if hasattr(f, "protocol")
+                       else "HTTP" in f.title for f in findings)
+
+    def test_real_http_response_code_still_flagged(self):
+        gaps = [{
+            "name": "write_session_cookie",
+            "file": "web/session.py",
+            "source": (
+                "def write_session_cookie(response, session_id):\n"
+                "    response.headers['Set-Cookie'] = "
+                "'session=' + session_id\n"
+            ),
+        }]
+        findings = check_protocol_ambiguity(gaps)
+        assert any("CRLF" in f.title for f in findings)
+
+    def test_cl_te_literals_are_their_own_evidence(self):
+        # The CL/TE check's trigger literals ARE HTTP evidence — the
+        # gate must not suppress it.
+        gaps = [{
+            "name": "parse_headers",
+            "file": "http.c",
+            "source": "if (has_content_length && strstr(h, "
+                      "\"Transfer-Encoding\")) reject();",
+        }]
+        findings = check_protocol_ambiguity(gaps)
+        assert any("CL vs TE" in f.title for f in findings)

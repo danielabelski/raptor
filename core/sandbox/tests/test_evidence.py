@@ -28,6 +28,16 @@ pytestmark = pytest.mark.skipif(
     reason="POSIX fd semantics required",
 )
 
+# For tests that drive tracer.trace() itself: the ptrace/seccomp
+# tracer only runs on Linux (its startup arch check rejects Darwin
+# machine names before the evidence-fd plumbing is reached). macOS
+# audit evidence is produced by the seatbelt log streamer instead —
+# covered in test_macos_spawn.py / seatbelt_audit tests.
+linux_only = pytest.mark.skipif(
+    not _sys.platform.startswith("linux"),
+    reason="tracer.trace() is the Linux ptrace tracer",
+)
+
 
 # ---------------------------------------------------------------------------
 # Path helpers + back-compat resolution
@@ -153,17 +163,17 @@ class TestEvidenceFile:
         # attacker's replacement.
         f = ev.EvidenceFile.open(tmp_path, "d.jsonl")
         f.write_record({"seq": 1})
+        # Pin the ORIGINAL inode read-side BEFORE the swap. The held
+        # fd is write-only, so it cannot be re-opened for reading
+        # portably: /proc/self/fd/N (Linux) re-opens the inode fresh,
+        # but /dev/fd/N (macOS) is a dup that keeps the write-only
+        # access mode and fails an O_RDONLY open with EPERM.
+        read_fd = os.open(f.path, os.O_RDONLY)
         hijack = tmp_path / "hijack"
         hijack.write_text("")
-        original_fd = f.fd
         os.replace(hijack, f.path)
         f.write_record({"seq": 2})
-        # Read back through the held fd's inode (the held fd is
-        # write-only; re-open it read-side via its fd path).
-        fd_ref = (f"/proc/self/fd/{original_fd}"
-                  if _sys.platform.startswith("linux")
-                  else f"/dev/fd/{original_fd}")
-        with open(fd_ref) as fh:
+        with open(read_fd) as fh:
             recs = [json.loads(x) for x in fh.read().splitlines()]
         assert recs == [{"seq": 1}, {"seq": 2}]
         # The attacker's replacement at the PATH got neither record.
@@ -326,6 +336,7 @@ class TestTracerFdConfigConsumption:
         with pytest.raises(OSError):
             os.fstat(cfg_fd)
 
+    @linux_only
     def test_trace_falls_back_when_evidence_fd_invalid(
             self, tmp_path, caplog, monkeypatch):
         # A stale/bad evidence_fd number must degrade to per-record
@@ -356,6 +367,7 @@ class TestTracerFdConfigConsumption:
         assert any("evidence_fd" in r.getMessage()
                    for r in caplog.records)
 
+    @linux_only
     def test_trace_adopts_valid_evidence_fd(self, tmp_path, monkeypatch):
         from core.sandbox import tracer as tracer_mod
         monkeypatch.setattr(tracer_mod, "_evidence_out_fd", None)

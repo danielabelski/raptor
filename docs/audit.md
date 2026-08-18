@@ -48,6 +48,7 @@ full flag table.
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
 | `--deepen-reserve <fraction>` | Slice of `--max-cost` held back for the deepen phase so announced re-reviews can execute (default 0.15; 0 disables) |
 | `--max-time <seconds>` | Wall-clock time limit |
+| `--no-supervisor-bound` | Do not default a wall budget under a capped Claude subagent shell (see [long-runs.md](long-runs.md)) |
 | `--review-passes <N>` | Independent review passes per function for self-consistency (default: 1) |
 | `--subsystem-depth <N>` | Directory grouping depth for subsystem-ordered review (default: 0) |
 | `--max-propagation-depth <N>` | Override adaptive constraint propagation depth (default: auto-calibrated p90+2, floor 5, cap 15) |
@@ -248,6 +249,24 @@ checkers then run on seeds + learned vocabulary alone.
 
 
 ## Post-run Workflows
+
+### Resuming an interrupted run
+
+An audit stopped by an external supervisor (harness shell cap, SIGTERM,
+SIGKILL, OOM) leaves coherent artifacts and can be re-entered **as the
+same run**:
+
+```bash
+libexec/raptor-audit resume "$OUTPUT_DIR" [--allow-drift]
+```
+
+Prior verdicts are re-imported at $0 (hash-verified), the remaining
+gaps are recomputed against the original checklist/scope/pins, the
+remaining budget is the original cap minus booked spend, and one final
+report covers all segments. Completed runs are refused — continue those
+in a new run (cross-run verdict reuse imports the verdicts at $0). See
+[long-runs.md](long-runs.md) for the supervisor caps, self-bounding,
+and SIGTERM semantics.
 
 ### Feedback loop
 

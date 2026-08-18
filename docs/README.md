@@ -62,6 +62,7 @@ overview:
 | [Fuzzing](fuzzing.md) | AFL++ and libFuzzer |
 | [Crash Analysis](crash-analysis.md) | Autonomous crash root-cause analysis |
 | [Audit](audit.md) | Systematic code review: hypotheses, tools, strategies, gates |
+| [Long Runs](long-runs.md) | External supervisors: shell caps, self-bounding, SIGTERM, `raptor-audit resume` |
 | [Validation](validation.md) | Exploitability validation pipeline (stages 0--1) |
 | [Binary Analysis](binary-analysis.md) | Binary oracle, `/binary`, exploit feasibility |
 | [SCA](sca.md) | Software composition analysis |

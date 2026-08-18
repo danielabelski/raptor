@@ -108,7 +108,9 @@ def _build_fresh(sha_dir: Path, build_o0: Path, build_o2: Path) -> None:
     subprocess.run(
         safe_git_command("-C", str(src), "fetch", "--depth", "1",
                          "origin", ZLIB_SHA),
-        env=get_safe_git_env(), check=True, timeout=60,
+        # Dials origin outside the sandbox egress proxy — keep the
+        # operator proxy vars (get_safe_git_env contract).
+        env=get_safe_git_env(preserve_proxy=True), check=True, timeout=60,
     )
     subprocess.run(
         safe_git_command("-C", str(src), "checkout", "FETCH_HEAD"),

@@ -114,7 +114,9 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
     subprocess.run(
         safe_git_command("-C", str(src), "fetch", "--depth", "1",
                          "origin", REGEX_TAG),
-        env=get_safe_git_env(), check=True, timeout=60,
+        # Dials origin outside the sandbox egress proxy — keep the
+        # operator proxy vars (get_safe_git_env contract).
+        env=get_safe_git_env(preserve_proxy=True), check=True, timeout=60,
     )
     subprocess.run(
         safe_git_command("-C", str(src), "checkout", "FETCH_HEAD"),

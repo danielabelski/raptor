@@ -286,6 +286,22 @@ legacy pre-stamp notes) veto feedback for their function entirely; agent
 notes and human claims stamped non-interactive only serve as the prior
 claim when no journal entry exists.
 
+Downgrades are refereed: a `ruled_out` may take a **tool-evidenced**
+finding to `clean` only when the ruling carries a mechanical
+disqualifier — dark-verify witness refutation (`witness_refuted`), an
+IRIS Tier-1 CodeQL refutation (`disproven.json`), the Stage-B SMT sweep
+proving every linked attack path infeasible, or a Stage-C sanity failure
+corroborated by a structural fact (Coccinelle `function_exists=False` /
+checklist miss).  An LLM-only ruling demotes a tool-evidenced `finding`
+to `suspicious` (evidence preserved, flagged for re-review) and leaves a
+tool-evidenced `suspicious` unchanged; findings whose prior verdict had
+no tool receipt keep the historical clean downgrade.  The audit-log
+`feedback` event records the referee outcome (`referee: <disqualifier>`
+or `referee: llm_only_ruling`), and referee-blocked disprovals are
+excluded from the model scorecard (an LLM-vs-LLM disagreement is not
+ground truth).  This mirrors G2 in the demotion direction: tool output
+is the verdict; LLM-only signals neither promote nor fully demote.
+
 ### Staleness check
 
 After source code changes:

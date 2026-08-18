@@ -93,6 +93,23 @@ class TestPythonExtraction:
         assert _kinds(inv, "RAPTOR_CHILD") == ["child-write"]
         assert "NOT_ENV_KEY" not in inv.vars
 
+    def test_env_flag_call_is_a_read(self, det, tmp_path):
+        """``core.config.env_flag(name, default)`` wraps
+        os.environ.get — the call site is the read (bare and
+        attribute forms, and NAME-constant keys)."""
+        root = _tree(tmp_path, {"core/a.py": (
+            "from core.config import env_flag\n"
+            "import core.config\n"
+            "_C_ENV = 'RAPTOR_EF_CONST'\n"
+            "a = env_flag('RAPTOR_EF_BARE', default=False)\n"
+            "b = core.config.env_flag('RAPTOR_EF_ATTR', default=True)\n"
+            "c = env_flag(_C_ENV, default=True)\n"
+        )})
+        inv = det.scan_tree(root)
+        assert _kinds(inv, "RAPTOR_EF_BARE") == ["read"]
+        assert _kinds(inv, "RAPTOR_EF_ATTR") == ["read"]
+        assert "read" in _kinds(inv, "RAPTOR_EF_CONST")
+
     def test_monkeypatch_recorded_separately(self, det, tmp_path):
         root = _tree(tmp_path, {"core/tests/test_a.py": (
             "def test_x(monkeypatch):\n"

@@ -21,6 +21,10 @@ Python (AST, no regex-over-source):
   such constants are routinely passed through helper functions
   (``_env_number(_KEEPALIVE_ENV, ...)``) where the actual
   ``os.environ.get`` key is an opaque parameter.
+  ``env_flag("VAR", ...)`` calls (``core.config``'s shared
+  boolean-toggle parser, bare or attribute form) count as reads at
+  the call site — inside the helper the ``os.environ.get`` key is an
+  opaque parameter.
   ``monkeypatch.setenv/delenv`` calls are recorded but excluded from
   the primary inventory (test scaffolding, not a code-level
   consumer).
@@ -379,6 +383,19 @@ class _PyScanner(ast.NodeVisitor):
         if (
             isinstance(func, ast.Name)
             and func.id in self.getenv_names
+            and node.args
+        ):
+            self._record(node.args[0], node.lineno, "read")
+        # core.config.env_flag(name, default) — the shared boolean-
+        # toggle parser wraps os.environ.get, so the call site is the
+        # real read of the variable (inside the helper the key is an
+        # opaque parameter).
+        if (
+            (
+                (isinstance(func, ast.Name) and func.id == "env_flag")
+                or (isinstance(func, ast.Attribute)
+                    and func.attr == "env_flag")
+            )
             and node.args
         ):
             self._record(node.args[0], node.lineno, "read")

@@ -387,7 +387,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             cpu_count: int | None = None,
             require_sanitisation: bool = False,
             etc_overlay: dict | None = None,
-            degraded_net_deny: bool = True):
+            degraded_net_deny: bool = True,
+            loopback_unix_bridges: dict | None = None):
     """Context manager for sandboxed subprocess execution.
 
     Each run() call inside the context runs the target command with the
@@ -721,6 +722,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     _proxy_tcp_lane_port = None
     _proxy_unix_path: str | None = None
     _proxy_forwarder_port: int | None = None
+    if loopback_unix_bridges and not use_egress_proxy:
+        raise ValueError(
+            "loopback_unix_bridges requires use_egress_proxy=True — "
+            "the bridge relay rides the netns egress tier."
+        )
     if use_egress_proxy:
         if not proxy_hosts:
             raise ValueError(
@@ -813,6 +819,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # inside the empty netns — no collision because the netns
             # is fresh.
             _proxy_forwarder_port = proxy_instance.port
+            if loopback_unix_bridges:
+                # Caller-declared bridge ports are baked into the
+                # child's env (base URLs) before this point, so THEY
+                # cannot move — shift the forwarder port instead on
+                # the (rare, ephemeral-port) collision. The netns is
+                # fresh; any free port number serves the forwarder.
+                while _proxy_forwarder_port in loopback_unix_bridges:
+                    _proxy_forwarder_port += 1
             block_network = True
             allowed_tcp_ports = None
         else:
@@ -863,6 +877,29 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # the Landlock tier the block is what closes DNS/UDP exfil.
         seccomp_block_udp = not _use_proxy_netns
 
+        # Caller-declared loopback bridges (LLM dispatcher for
+        # credential-proxy CLI children) exist only on the netns tier —
+        # the relay lives inside the child's fresh namespace. On the
+        # Landlock/advisory tiers there is no namespace to host it and
+        # binding on the HOST loopback would expose the bridged service
+        # to every local process. Fail closed with a clear error; the
+        # caller decides whether to fall back.
+        if loopback_unix_bridges and not _use_proxy_netns:
+            from .errors import SandboxSetupError
+            raise SandboxSetupError(
+                "loopback_unix_bridges requires the netns egress tier "
+                "(no netns capability on this host, or the proxy unix "
+                "lane failed to bind) — refusing to run the child "
+                "without its bridged loopback service."
+            )
+        # Bridged children must reach their loopback service DIRECT —
+        # routing 127.0.0.1 through the CONNECT proxy would be denied
+        # (gate 2 rejects loopback targets by design). Everything
+        # non-loopback still routes through the chokepoint.
+        _no_proxy_value = (
+            "127.0.0.1,localhost" if loopback_unix_bridges else ""
+        )
+
         _effective_proxy_port = (
             _proxy_forwarder_port
             if _use_proxy_netns
@@ -872,7 +909,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         proxy_env_overrides = {
             "HTTPS_PROXY": proxy_url, "https_proxy": proxy_url,
             "HTTP_PROXY": proxy_url, "http_proxy": proxy_url,
-            "NO_PROXY": "", "no_proxy": "",
+            "NO_PROXY": _no_proxy_value, "no_proxy": _no_proxy_value,
             # JVM tools (Maven, Gradle, sbt — NOT CodeQL, which reads
             # lowercase https_proxy itself) ignore proxy env entirely
             # and need java.net sysprops. JAVA_TOOL_OPTIONS is picked
@@ -2321,6 +2358,12 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             skip_mount_ns=_skip_mount_ns,
                             proxy_unix_socket=_proxy_unix_path if _use_proxy_netns else None,
                             proxy_forwarder_port=_proxy_forwarder_port if _use_proxy_netns else None,
+                            extra_unix_bridges=(
+                                sorted(loopback_unix_bridges.items())
+                                if (loopback_unix_bridges
+                                    and _use_proxy_netns)
+                                else None
+                            ),
                             exec_pid_callback=_exec_pid_callback,
                         )
                         used_spawn = True
@@ -3052,6 +3095,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         require_sanitisation: bool = False,
         etc_overlay: dict | None = None,
         degraded_net_deny: bool = True,
+        loopback_unix_bridges: dict | None = None,
         **kwargs) -> subprocess.CompletedProcess:
     """Run a single command in a sandbox. Convenience wrapper.
 
@@ -3081,7 +3125,8 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
                  cpu_count=cpu_count,
                  require_sanitisation=require_sanitisation,
                  etc_overlay=etc_overlay,
-                 degraded_net_deny=degraded_net_deny) as _run:
+                 degraded_net_deny=degraded_net_deny,
+                 loopback_unix_bridges=loopback_unix_bridges) as _run:
         return _run(cmd, **kwargs)
 
 
@@ -3311,6 +3356,7 @@ def run_untrusted_networked(
     writable_paths: list | None = None,
     fake_home: bool = False,
     keep_trust_markers: bool = False,
+    loopback_unix_bridges: dict | None = None,
     **kwargs,
 ) -> subprocess.CompletedProcess:
     """Variant of :func:`run_untrusted` that allows hostname-allowlisted
@@ -3356,6 +3402,19 @@ def run_untrusted_networked(
     has nothing to propagate). NEVER set this for commands derived
     from target-repo content; ``run_untrusted`` deliberately has no
     such opt-out.
+
+    ``loopback_unix_bridges`` — mapping of ``{port: unix_socket_path}``
+    relayed INSIDE the child's empty network namespace: the child
+    reaches ``127.0.0.1:<port>`` and the pre-Landlock relay forwards
+    the bytes to the named Unix socket on the host (same mechanism as
+    the egress-proxy bridge). Used by credential-proxy CLI children to
+    reach the LLM dispatcher without holding provider credentials.
+    Netns-tier only: on hosts where the netns tier cannot engage the
+    sandbox raises ``SandboxSetupError`` rather than running the child
+    without its bridged service (fail closed). When set, the sandbox's
+    proxy env carries ``NO_PROXY=127.0.0.1,localhost`` so bridged
+    loopback traffic goes direct instead of dying at the CONNECT
+    proxy's loopback rejection.
 
     Callers: Claude Code sub-agent dispatch (packages/llm_analysis/
     cc_dispatch.py, core/orchestration/agentic_passes.py,
@@ -3422,5 +3481,6 @@ def run_untrusted_networked(
         allowed_tcp_ports=[443],
         strict_env=True,
         strip_trust_markers=not keep_trust_markers,
+        loopback_unix_bridges=loopback_unix_bridges,
         **kwargs,
     )

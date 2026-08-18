@@ -560,6 +560,7 @@ def run_sandboxed(
     skip_mount_ns: bool = False,
     proxy_unix_socket: str | None = None,
     proxy_forwarder_port: int | None = None,
+    extra_unix_bridges: Sequence[tuple[int, str]] | None = None,
     exec_pid_callback: Callable[[int], None] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run `cmd` inside a fully-isolated sandbox.
@@ -1076,9 +1077,21 @@ def run_sandboxed(
         from core.sandbox._proxy_bridge import (
             _bring_up_loopback as _loopback_up_fn,
         )
+        # Bridge pairs (listen_port, unix_socket_path): the egress
+        # proxy's relay plus any caller-declared extra loopback
+        # services (LLM dispatcher for credential-proxy CLI children).
+        # Materialised pre-fork so the child needs no filesystem
+        # imports and no non-trivial object construction.
+        _bridge_pairs: list[tuple[int, str]] = []
         if proxy_unix_socket and proxy_forwarder_port:
+            _bridge_pairs.append((proxy_forwarder_port, proxy_unix_socket))
+        if extra_unix_bridges:
+            _bridge_pairs.extend(
+                (int(port), str(path)) for port, path in extra_unix_bridges
+            )
+        if _bridge_pairs:
             from core.sandbox._proxy_bridge import (
-                _run_forwarder as _proxy_forwarder_fn,
+                _run_bridges as _proxy_forwarder_fn,
             )
 
         # Suppress Python 3.12+ DeprecationWarning about multi-threaded
@@ -1395,8 +1408,7 @@ def run_sandboxed(
                         # stack in the child.
                         with contextlib.suppress(BaseException):
                             _proxy_forwarder_fn(
-                                proxy_forwarder_port,
-                                proxy_unix_socket,
+                                _bridge_pairs,
                                 _fwd_death_r,
                             )
                         os._exit(0)

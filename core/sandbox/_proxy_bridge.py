@@ -2,8 +2,11 @@
 
 Runs inside the sandboxed child's empty network namespace, forked off
 before Landlock/seccomp are applied. Listens on 127.0.0.1:<port> (TCP)
-inside the netns and relays every inbound connection to the egress
-proxy's Unix socket in the parent namespace (visible via bind-mount).
+inside the netns and relays every inbound connection to a Unix socket
+in the parent namespace (visible via the pre-pivot host mount view).
+One relay process can serve several (port, unix_path) bridges — the
+egress proxy's socket plus any extra loopback services the caller
+declared (e.g. the LLM dispatcher for credential-proxy CLI children).
 
 Fork-safe: uses only errno, fcntl, os-level I/O, socket, struct,
 select (all imported pre-fork at module load) plus a post-fork
@@ -37,30 +40,42 @@ def _bring_up_loopback():
 
 
 def _run_forwarder(listen_port, unix_socket_path, death_r):
-    """Relay TCP connections on 127.0.0.1:<listen_port> to *unix_socket_path*.
+    """Single-bridge compatibility wrapper over :func:`_run_bridges`."""
+    _run_bridges(((listen_port, unix_socket_path),), death_r)
 
-    Exits when *death_r* becomes readable (parent closed write end) or
-    if select() itself fails; individual relays that drain are torn
-    down but the loop keeps serving new connections until death_r
-    fires. Designed to run post-fork before Landlock/seccomp — the
-    forwarder itself is unrestricted.
+
+def _run_bridges(bridges, death_r):
+    """Relay TCP connections on 127.0.0.1:<port> to each bridge's
+    Unix socket.
+
+    ``bridges`` is a sequence of ``(listen_port, unix_socket_path)``
+    pairs; each gets its own loopback listener, all served by the one
+    select loop. Exits when *death_r* becomes readable (parent closed
+    write end) or if select() itself fails; individual relays that
+    drain are torn down but the loop keeps serving new connections
+    until death_r fires. Designed to run post-fork before
+    Landlock/seccomp — the forwarder itself is unrestricted.
 
     Uses only fork-safe primitives.
     """
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # SO_REUSEADDR: without it, a connection closed within the last
-    # ~60s leaves the port in TIME_WAIT and bind fails EADDRINUSE — a
-    # bridge restarted on the same port (sandbox re-spawn, back-to-back
-    # test runs) refused to come up. REUSEADDR only permits binding
-    # over TIME_WAIT remnants, not hijacking a live listener.
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", listen_port))
-    listener.listen(128)
-    listener.setblocking(False)
+    # listener fd -> (listener socket, unix socket path).
+    listeners = {}
+    for listen_port, unix_socket_path in bridges:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # SO_REUSEADDR: without it, a connection closed within the last
+        # ~60s leaves the port in TIME_WAIT and bind fails EADDRINUSE — a
+        # bridge restarted on the same port (sandbox re-spawn, back-to-back
+        # test runs) refused to come up. REUSEADDR only permits binding
+        # over TIME_WAIT remnants, not hijacking a live listener.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", listen_port))
+        listener.listen(128)
+        listener.setblocking(False)
+        listeners[listener.fileno()] = (listener, unix_socket_path)
 
     # pairs maps every relay fd -> its partner fd.
     pairs = {}
-    all_fds = {listener.fileno(), death_r}
+    all_fds = set(listeners) | {death_r}
 
     def _close_pair(fd):
         partner = pairs.pop(fd, None)
@@ -90,10 +105,10 @@ def _run_forwarder(listen_port, unix_socket_path, death_r):
                 # Parent died or signalled shutdown.
                 return
 
-            listener_ready = False
+            accept_ready = []
             for fd in readable:
-                if fd == listener.fileno():
-                    listener_ready = True
+                if fd in listeners:
+                    accept_ready.append(fd)
                     continue
 
                 # `readable` is a snapshot: an entry whose relay was
@@ -130,7 +145,8 @@ def _run_forwarder(listen_port, unix_socket_path, death_r):
             # the accept until every relay entry from this snapshot is
             # processed means no stale `readable` entry can alias a
             # fresh connection's fd number.
-            if listener_ready:
+            for lfd in accept_ready:
+                listener, unix_socket_path = listeners[lfd]
                 try:
                     client_sock, _ = listener.accept()
                 except OSError:

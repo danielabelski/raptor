@@ -246,6 +246,13 @@ def run_sandboxed(cmd: list[str], *,
                   # signature parity.
                   proxy_unix_socket=None,
                   proxy_forwarder_port=None,
+                  # extra_unix_bridges: Linux-only — additional
+                  # (port, unix_path) relays inside the child's netns
+                  # (LLM-dispatcher bridge for credential-proxy CLI
+                  # children). No netns on macOS; accepted + ignored
+                  # for signature parity. context.py only passes it on
+                  # the netns tier, which never engages on darwin.
+                  extra_unix_bridges=None,
                   # exec_pid_callback: Linux-only — the fork-based spawn
                   # backend delivers the live grandchild pid to this
                   # callable mid-run (used for /proc/<pid>/maps

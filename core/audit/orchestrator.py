@@ -15605,7 +15605,7 @@ def _iterative_re_review(
                     "re-review failed for %s:%s: %s",
                     gap["file"],
                     gap["name"],
-                    exc,
+                    type(exc).__name__,
                 )
                 outcome = _error_outcome(gap, exc)
 

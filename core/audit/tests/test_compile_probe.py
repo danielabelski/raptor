@@ -700,3 +700,44 @@ class TestDetermineGateDefaultOff:
         from core.audit.pipeline import AuditPipelineOpts
 
         assert AuditPipelineOpts().probe_determine_value is False
+
+
+# ------------------------------------------------------------------
+# Include-path splice safety
+# ------------------------------------------------------------------
+
+
+class TestIncludePathSpliceSafety:
+    """Target file names are attacker-controlled; a quote or newline
+    in the name would break out of the probe TU's `#include "..."`
+    line. Unsafe names make the probe unavailable — never spliced."""
+
+    def test_safe_names_pass(self) -> None:
+        assert cp.include_path_is_safe(Path("/repo/inc/limits.h"))
+        assert cp.include_path_is_safe(Path("/repo/weird name (v2).h"))
+
+    @pytest.mark.parametrize("bad", [
+        'inc/e"vil.h',
+        "inc/back\\slash.h",
+        "inc/ctrl\x01.h",
+    ])
+    def test_unsafe_names_rejected(self, bad: str) -> None:
+        assert not cp.include_path_is_safe(Path("/repo") / bad)
+
+    def test_hostile_filename_probe_unavailable(
+        self, monkeypatch, repo,
+    ) -> None:
+        fake = FakeCompiler()
+        _install(monkeypatch, fake)
+        hostile = 'inc/e"vil.h'
+        (repo / hostile).write_text("#define MAX_BUF 4096\n")
+        items = [{
+            "name": "MAX_BUF", "kind": "macro", "file": hostile,
+            "line": 1, "definition": "#define MAX_BUF 4096",
+        }]
+        r = compile_probe_question("Is MAX_BUF 4096?", items, repo)
+        assert r is not None
+        assert r.status == "unavailable"
+        assert "#include" in (r.reason or "")
+        # No TU was ever generated with the hostile path.
+        assert not fake.sources

@@ -2971,6 +2971,35 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     _persist_proxy_events(
                         _block_only, output=output, target=target,
                     )
+        if use_egress_proxy and _engaging_audit:
+            # Clear the audit bit BEFORE unbind/close pops the lane
+            # from the registry: set_lane_audit resolves the key
+            # through the registry and returns False once the lane is
+            # popped, so a clear placed after unbind/close was a
+            # silent no-op — in-flight connections (handlers hold the
+            # lane object) kept log-and-allow leniency until they
+            # finished. Clearing first flips the shared lane object's
+            # bit while it is still resolvable, so in-flight handlers
+            # revert to enforcing immediately.
+            try:
+                _lane_key = (
+                    _proxy_unix_path if _use_proxy_netns
+                    else _proxy_tcp_lane_port
+                )
+                if _lane_key is not None:
+                    proxy_instance.set_lane_audit(_lane_key, False)
+            except Exception:
+                # WARNING-level (not debug): a failed clear leaves
+                # connections in flight on this context's lane in
+                # audit-log mode until they finish — the operator
+                # should see it, because a recurring failure here
+                # means the teardown path is broken.
+                logger.warning(
+                    "audit lane clear failed — in-flight connections "
+                    "on this context's lane may keep audit-log mode "
+                    "until they finish.",
+                    exc_info=True,
+                )
         if _use_proxy_netns and _proxy_unix_path and proxy_instance is not None:
             try:
                 proxy_instance.unbind_unix(_proxy_unix_path)
@@ -2984,30 +3013,6 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             except Exception:
                 logger.debug(
                     "proxy tcp lane cleanup failed", exc_info=True,
-                )
-        if use_egress_proxy and _engaging_audit:
-            # The lane object died with unbind/close above; clearing
-            # the bit is belt-and-braces for the in-flight-connection
-            # window (handlers hold the lane object).
-            try:
-                _lane_key = (
-                    _proxy_unix_path if _use_proxy_netns
-                    else _proxy_tcp_lane_port
-                )
-                if _lane_key is not None:
-                    proxy_instance.set_lane_audit(_lane_key, False)
-            except Exception:
-                # WARNING-level (not debug): the lane object is gone
-                # with unbind/close above, so a failed clear only
-                # matters for connections already in flight on this
-                # context's lane — but the operator should still see
-                # it, because a recurring failure here means the
-                # teardown path is broken.
-                logger.warning(
-                    "audit lane clear failed — in-flight connections "
-                    "on this context's lane may keep audit-log mode "
-                    "until they finish.",
-                    exc_info=True,
                 )
         # Persona tmpdir lifecycle: created in build_persona above; the
         # source files were bind-mounted into the sandbox children but

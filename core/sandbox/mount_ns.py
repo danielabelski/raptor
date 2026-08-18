@@ -40,6 +40,7 @@ skipped — the per-ns mount already serves them.
 
 import ctypes
 import os
+import stat as stat_module
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Optional
 
@@ -180,25 +181,42 @@ def _shadows_per_ns(path: str) -> bool:
     return norm in _SHADOW_PATHS
 
 
-def _copy_dir_shallow(src: str, dst: str) -> None:
-    """Recursively copy *src* into *dst*, preserving directory structure.
+def _copy_etc_tree(src: str, dst: str) -> None:
+    """Recursively copy *src* into *dst*, preserving directory
+    structure and permission MODE BITS.
 
-    Files are hard-linked when possible (same filesystem), otherwise copied
-    byte-for-byte via sendfile.  Symlinks are recreated as symlinks.
-    Permissions and ownership are NOT preserved — every entry is owned by
-    the caller's uid/gid with mode 0o644 (files) / 0o755 (dirs).
+    (Renamed from ``_copy_dir_shallow`` — the old name claimed a
+    shallow copy while the implementation always walked the whole
+    tree.)
 
-    This is intentionally lightweight: it runs post-fork / pre-exec in the
-    sandbox child, where no allocator-heavy stdlib (shutil.copytree) should
-    be used.  Errors on individual entries are silently skipped — the host
-    /etc may contain entries readable only by host-root (shadow, gshadow).
+    Files are hard-linked when possible (same filesystem — preserves
+    the source inode's mode/owner exactly), otherwise copied
+    byte-for-byte with the source's mode bits re-applied.  Symlinks
+    are recreated as symlinks.  Ownership is NOT preserved and cannot
+    be: the copy runs inside an unprivileged user-ns whose uid map
+    contains only the caller's uid, so every new inode is owned by
+    ns-root regardless.  Preserving the mode bits keeps
+    group/other-restricted host files (e.g. a 0640 config) from
+    flattening to world-readable 0644 copies that an in-sandbox
+    process which later drops groups could still read.
+
+    This is intentionally lightweight: it runs post-fork / pre-exec in
+    the sandbox child, where no allocator-heavy stdlib
+    (shutil.copytree) should be used.  Errors on individual entries
+    are silently skipped — the host /etc may contain entries readable
+    only by host-root (shadow, gshadow).
     """
     for dirpath, dirnames, filenames in os.walk(src):
         rel = os.path.relpath(dirpath, src)
         dst_dir = os.path.join(dst, rel) if rel != "." else dst
         for dn in dirnames:
+            src_sub = os.path.join(dirpath, dn)
             try:
-                os.makedirs(os.path.join(dst_dir, dn), 0o755, exist_ok=True)
+                mode = stat_module.S_IMODE(os.lstat(src_sub).st_mode)
+            except OSError:
+                mode = 0o755
+            try:
+                os.makedirs(os.path.join(dst_dir, dn), mode, exist_ok=True)
             except OSError:
                 pass
         for fn in filenames:
@@ -209,20 +227,25 @@ def _copy_dir_shallow(src: str, dst: str) -> None:
                     link_target = os.readlink(src_file)
                     os.symlink(link_target, dst_file)
                     continue
-                # Try hard-link first (fast, no copy).
+                # Try hard-link first (fast, no copy; shares the
+                # source inode so mode/owner carry over exactly).
                 try:
                     os.link(src_file, dst_file)
                     continue
                 except OSError:
                     pass
-                # Byte copy via sendfile.
+                # Byte copy, then re-apply the source's mode bits.
                 with open(src_file, "rb") as sf, open(dst_file, "wb") as df:
                     while True:
                         chunk = sf.read(65536)
                         if not chunk:
                             break
                         df.write(chunk)
-                os.chmod(dst_file, 0o644)
+                try:
+                    mode = stat_module.S_IMODE(os.lstat(src_file).st_mode)
+                except OSError:
+                    mode = 0o644
+                os.chmod(dst_file, mode)
             except OSError:
                 pass  # skip unreadable entries (shadow, etc.)
 
@@ -339,7 +362,7 @@ def setup_mount_ns(target: str | None, output: str | None,
         inside = f"{root}/{d}"
         if d == "etc" and _etc_has_missing_targets:
             _mount("tmpfs", inside, "tmpfs", 0, "mode=755")
-            _copy_dir_shallow(host_dir, inside)
+            _copy_etc_tree(host_dir, inside)
             # Pre-create mount-point stubs for overlay targets that
             # don't exist on the host.
             for ns_target in etc_overlay:
@@ -724,9 +747,15 @@ def setup_mount_ns(target: str | None, output: str | None,
             try:
                 _mount(host_source, inside, None, MS_BIND)
             except OSError:
+                # Accurate in BOTH /etc branches: on the plain-bind
+                # path the target sees the host file at this path; on
+                # the tmpfs+copy path it sees the copied (un-overlaid)
+                # /etc view — never "host /etc" as the old message
+                # claimed.
                 warn_post_fork(
                     b"RAPTOR: mount_ns: etc_overlay bind failed; "
-                    b"target will see host /etc\n"
+                    b"overlay entry absent - target sees the "
+                    b"un-overlaid view of this path\n"
                 )
 
     # 8e. Caller-supplied stage_files — materialise arbitrary files in

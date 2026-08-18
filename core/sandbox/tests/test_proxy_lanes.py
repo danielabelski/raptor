@@ -248,6 +248,29 @@ class TestContextWiring:
         assert ("set_lane_audit", 18081, False) in fake.calls
         assert ("close_tcp_lane", 18081) in fake.calls
 
+    def test_audit_clear_precedes_lane_close(self, tmp_path,
+                                             monkeypatch):
+        """The clear must run BEFORE close_tcp_lane / unbind pops the
+        lane from the registry: the real set_lane_audit resolves the
+        key through the registry and returns False once the lane is
+        popped, so a clear ordered after the pop was a silent no-op —
+        connections in flight on the lane (handlers hold the lane
+        object) kept log-and-allow leniency until they finished."""
+        import core.sandbox.context as ctx
+        fake = self._fake_proxy()
+        monkeypatch.setattr(proxy_mod, "get_proxy",
+                            lambda *a, **k: fake)
+        monkeypatch.setattr(ctx, "check_net_available", lambda: False)
+        with ctx.sandbox(use_egress_proxy=True,
+                         proxy_hosts=["allowed.example"],
+                         audit=True, output=str(tmp_path)):
+            pass
+        clear_idx = fake.calls.index(("set_lane_audit", 18081, False))
+        close_idx = fake.calls.index(("close_tcp_lane", 18081))
+        assert clear_idx < close_idx, (
+            "audit bit cleared after the lane was popped — no-op clear"
+        )
+
 
 class TestLaneScopedEventBuffers:
     """Event buffers subscribe by lane. Pre-fix every event fanned

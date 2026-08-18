@@ -256,6 +256,25 @@ def _assert_stmt(expr: str, rhs: str, lang: str) -> str:
     return f'{kw}(({expr}) == ({rhs}), "{_ASSERT_MARKER}");'
 
 
+# The include path is target-derived (repo file names are attacker-
+# controlled). A name carrying a double quote or newline breaks out of
+# the `#include "..."` line and splices attacker text into the probe
+# TU (diagnostic shaping at worst — probes run -fsyntax-only in the
+# sandbox — but the TU must stay attacker-inert). There is no portable
+# escape sequence inside a quoted include, so unsafe names are
+# rejected, not quoted. Backslashes are implementation-defined inside
+# an include (and a `\` + `"` pair is an escape on some
+# preprocessors); control characters have no legitimate use in a
+# source path.
+_UNSAFE_INCLUDE_PATH_RE = re.compile(r'["\\\x00-\x1f\x7f]')
+
+
+def include_path_is_safe(include_path: Path) -> bool:
+    """True when *include_path* can be spliced into ``#include "..."``
+    without altering the line's structure."""
+    return _UNSAFE_INCLUDE_PATH_RE.search(str(include_path)) is None
+
+
 def generate_probe_source(
     include_path: Path,
     expr: str | None,
@@ -436,6 +455,11 @@ def compile_probe_question(
         return _unavailable("defining file escapes the source root")
     if not include_path.is_file():
         return _unavailable("defining file not found under source root")
+    if not include_path_is_safe(include_path):
+        return _unavailable(
+            "defining file name contains characters unsafe for "
+            "#include splicing"
+        )
 
     try:
         from core.audit.compiler_sweep import _derive_include_dirs
@@ -582,6 +606,11 @@ def determine_probe_question(
         return _unavailable("defining file escapes the source root")
     if not include_path.is_file():
         return _unavailable("defining file not found under source root")
+    if not include_path_is_safe(include_path):
+        return _unavailable(
+            "defining file name contains characters unsafe for "
+            "#include splicing"
+        )
 
     try:
         from core.audit.compiler_sweep import _derive_include_dirs

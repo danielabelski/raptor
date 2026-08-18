@@ -23,7 +23,11 @@ demonstrable facts:
 
 Attacker reachability (leg 3) is an **escalator, not a gate**: it runs
 only after legs 1+2 confirm, and its absence never blocks the core
-verdict (phase 1 ships the cheap entry-reachability form only).
+verdict. Two forms: cheap entry-point reachability (always attempted
+on confirm) and the Joern flow escalator (phase 2 — a confirmed flow
+from a hypothesis-named tainted parameter to the fallible callee
+stamps the receipt ``tainted``/``joern:flow``: the attacker can
+provoke the swallowed error).
 
 CWE-252 premise split (shared-evidence family with the consistency
 programme): **role-bound + hypothesis-driven** adjudications are this
@@ -65,6 +69,7 @@ from .fail_open_lang import (
     c_function_span,
     c_ignored_return_sites,
     c_tristate_sites,
+    function_parameters,
     go_discard_sites,
     go_function_returns_error,
     go_function_span,
@@ -710,9 +715,9 @@ def _run_java_check(
 # ── C legs: ignored return + tri-state ──────────────────────────────
 
 
-def _candidate_callees(hypothesis: str, segment: str) -> list[str]:
-    """Callee candidates: identifiers the hypothesis names that appear
-    as calls inside the function under review."""
+def _hypothesis_identifiers(hypothesis: str) -> list[str]:
+    """Identifiers the hypothesis names, backticked ones first,
+    stopwords dropped, order preserved."""
     ordered: list[str] = []
     seen: set[str] = set()
     for m in _BACKTICK_IDENT_RE.finditer(hypothesis):
@@ -726,8 +731,14 @@ def _candidate_callees(hypothesis: str, segment: str) -> list[str]:
             continue
         seen.add(name)
         ordered.append(name)
+    return ordered
+
+
+def _candidate_callees(hypothesis: str, segment: str) -> list[str]:
+    """Callee candidates: identifiers the hypothesis names that appear
+    as calls inside the function under review."""
     return [
-        n for n in ordered
+        n for n in _hypothesis_identifiers(hypothesis)
         if re.search(rf"\b{re.escape(_function_tail(n))}\s*\(", segment)
     ]
 
@@ -1253,6 +1264,85 @@ def _run_go_check(
     )
 
 
+# ── leg 3: Joern flow escalator (outcome-gated) ─────────────────────
+
+
+def _joern_flow_escalation(
+    result: FailOpenResult,
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    hypothesis: str,
+    source: str,
+    language: str,
+    joern_server: Any,
+    budget_s: float | None,
+) -> None:
+    """Leg 3, flow form: runs only after legs 1+2 confirmed
+    (outcome-gated, the dark_verify discipline). A confirmed dataflow
+    from a hypothesis-named tainted parameter to the fallible callee
+    means the attacker can *provoke* the very error the handler
+    swallows — the receipt upgrades to ``tainted`` with the
+    ``joern:flow`` stamp and the flow rule-id joins ``corroboration``.
+
+    Every other outcome (refuted / inconclusive / error / no source
+    binding) leaves the core verdict and the cheap entry-reachability
+    receipt untouched — the escalator can only escalate.
+    """
+    fallible = result.fallible or {}
+    sink_call = _function_tail(str(fallible.get("callee") or ""))
+    if not sink_call or sink_call.startswith("<"):
+        return
+    params = function_parameters(source, function_name, language)
+    if not params:
+        return
+    param_set = set(params)
+    source_id = next(
+        (n for n in _hypothesis_identifiers(hypothesis)
+         if n in param_set),
+        None,
+    )
+    if source_id is None or source_id == sink_call:
+        # No tainted-parameter binding — the leg does not run;
+        # absence of a flow receipt is meaningful, never blocking.
+        return
+    try:
+        from .joern_verify import run_flow_reachability_check
+        jv = run_flow_reachability_check(
+            target_path=target_path,
+            file_path=file_path,
+            function_name=_function_tail(function_name),
+            source_id=source_id,
+            sink_call=sink_call,
+            server=joern_server,
+            timeout=int(budget_s) if budget_s else None,
+        )
+    except Exception:
+        logger.debug("fail_open: joern flow escalator errored",
+                     exc_info=True)
+        return
+    if jv.outcome == "confirmed":
+        result.reachability = {
+            "status": "tainted",
+            "source_id": source_id,
+            "stamp": jv.rule_id or "joern:flow",
+            "detail": (
+                f"{source_id} flows to an argument of {sink_call} "
+                f"({len(jv.matches)} path(s)) — the attacker can "
+                "provoke the swallowed error"
+            ),
+        }
+        result.corroboration.append(jv.rule_id or "joern:flow")
+    elif result.reachability is None:
+        detail = ((jv.details or {}).get("reason")
+                  or "; ".join(jv.errors) or jv.outcome)
+        result.reachability = {
+            "status": "unknown",
+            "detail": f"joern flow {jv.outcome}: {detail}"[:300],
+        }
+
+
 # ── channel entry point ─────────────────────────────────────────────
 
 
@@ -1270,11 +1360,12 @@ def run_fail_open_check(
     """Adjudicate one fail-open hypothesis. See module docstring for
     verdict semantics.
 
-    ``joern_server`` / ``budget_s`` are accepted for signature
-    stability: the leg-3 Joern flow escalator lands in phase 2 —
-    phase 1 runs the cheap entry-reachability escalator only.
+    ``joern_server`` + ``budget_s`` drive the leg-3 flow escalator:
+    it runs only on a confirmed verdict, only with a live server, and
+    is skipped outright on a zero budget (the orchestrator's
+    remaining-run-budget clamp). Its absence or failure never changes
+    the core verdict.
     """
-    del joern_server, budget_s  # phase-2 escalator parameters
     ctx = role_context or RoleContext()
     if ctx.inventory is None and inventory is not None:
         ctx.inventory = inventory
@@ -1297,19 +1388,34 @@ def run_fail_open_check(
         )
 
     if language == "python":
-        return _run_python_check(
+        result = _run_python_check(
             source, file_path, function_name, ctx, inventory,
         )
-    if language == "java":
-        return _run_java_check(
+    elif language == "java":
+        result = _run_java_check(
             source, file_path, function_name, ctx, inventory,
         )
-    if language == "go":
-        return _run_go_check(
+    elif language == "go":
+        result = _run_go_check(
             source, file_path, function_name, hypothesis, ctx,
             inventory,
         )
-    return _run_c_check(
-        source, file_path, function_name, hypothesis, language, ctx,
-        inventory,
-    )
+    else:
+        result = _run_c_check(
+            source, file_path, function_name, hypothesis, language,
+            ctx, inventory,
+        )
+    if result.outcome == "confirmed" and joern_server is not None \
+            and budget_s != 0:
+        _joern_flow_escalation(
+            result,
+            target_path=Path(target_path),
+            file_path=file_path,
+            function_name=function_name,
+            hypothesis=hypothesis,
+            source=source,
+            language=language,
+            joern_server=joern_server,
+            budget_s=budget_s,
+        )
+    return result

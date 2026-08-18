@@ -1570,3 +1570,104 @@ def go_function_span(
                 and _go_function_name(node, src) == tail:
             return (node.start_point[0] + 1, node.end_point[0] + 1)
     return None
+
+
+def function_parameters(
+    source: str, function_name: str, language: str,
+) -> list[str]:
+    """Parameter names of a same-file function — the leg-3 escalator's
+    source-identifier candidates.
+
+    Python uses stdlib ast (exact); tree-sitter languages extract the
+    identifier nodes of the function's parameter list (coarse for C
+    declarators, but the flow check's own identifier-consistency
+    control rejects a mis-bound source downstream). Empty list when
+    unresolvable — the escalator then simply does not run.
+    """
+    tail = function_name.rsplit(".", 1)[-1] if function_name else ""
+    if not tail:
+        return []
+    if language == "python":
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name == tail:
+                args = node.args
+                names = [
+                    a.arg
+                    for a in (args.posonlyargs + args.args
+                              + args.kwonlyargs)
+                ]
+                if args.vararg:
+                    names.append(args.vararg.arg)
+                if args.kwarg:
+                    names.append(args.kwarg.arg)
+                return [n for n in names if n not in ("self", "cls")]
+        return []
+
+    parser = _ts_parser(language)
+    if parser is None:
+        return []
+    try:
+        from core.audit.condition_extraction import _FUNCTION_TYPES
+        func_types = _FUNCTION_TYPES.get(language, ())
+    except ImportError:
+        func_types = ()
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        return []
+
+    def _name_of(node) -> str:
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            return _ts_node_text(name_node, src)
+        # C: the identifier lives inside the declarator chain.
+        return _function_name_c(node, src)
+
+    def _function_name_c(node, src_bytes: bytes) -> str:
+        for child in node.children:
+            if child.type in ("function_declarator", "declarator",
+                              "pointer_declarator"):
+                inner = _function_name_c(child, src_bytes)
+                if inner:
+                    return inner
+            if child.type in ("identifier", "field_identifier"):
+                return _ts_node_text(child, src_bytes)
+        return ""
+
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type not in func_types or _name_of(node) != tail:
+            continue
+        params: list[str] = []
+        # The grammar's parameters field when present (Go methods:
+        # skips the receiver list); else the first parameters node not
+        # inside the body (C nests it in the declarator chain).
+        param_node = node.child_by_field_name("parameters")
+        search = [] if param_node is not None else [
+            c for c in node.children
+            if c.type not in ("block", "compound_statement", "body")
+        ]
+        while search and param_node is None:
+            cur = search.pop(0)
+            if cur.type in ("parameters", "parameter_list",
+                            "formal_parameters"):
+                param_node = cur
+                break
+            search.extend(cur.children)
+        param_stack = [param_node] if param_node is not None else []
+        while param_stack:
+            cur = param_stack.pop()
+            if cur.type == "identifier":
+                params.append(_ts_node_text(cur, src))
+                continue
+            param_stack.extend(cur.children)
+        return params
+    return []

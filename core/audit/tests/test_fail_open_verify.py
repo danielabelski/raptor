@@ -1674,6 +1674,166 @@ class TestReceiptShape:
         assert res.reachability is None
 
 
+class TestJoernFlowEscalator:
+    """Leg 3, flow form — outcome-gated, hermetic (the flow check is
+    monkeypatched; no server, no subprocess)."""
+
+    def _stub(self, monkeypatch, outcome, calls):
+        from core.audit.sweep import SweepResult
+
+        def _fake(**kw):
+            calls.append(kw)
+            return SweepResult(
+                tool="joern", file_path=kw["file_path"],
+                function_name=kw["function_name"], outcome=outcome,
+                matches=[{"steps": []}] if outcome == "confirmed"
+                else [],
+                rule_id="joern:flow",
+                details={"reason": "no dataflow"}
+                if outcome == "refuted" else None,
+            )
+
+        import core.audit.joern_verify as jv
+        monkeypatch.setattr(jv, "run_flow_reachability_check", _fake)
+
+    JWT_HYP = (
+        "token verification fails open: the broad except swallows "
+        "jwt.decode signature errors for the attacker-controlled "
+        "token parameter and the request proceeds"
+    )
+
+    def _confirm(self, tmp_path, **kw):
+        _write(tmp_path, "src/auth.py", TestVerdictsPython.JWT_VULN)
+        out = _out_dir_with_spec(tmp_path, "decode", tier="xref_backed")
+        return run_fail_open_check(
+            tmp_path, "src/auth.py", "current_user", self.JWT_HYP,
+            role_context=RoleContext(out_dir=out), **kw,
+        )
+
+    def test_confirmed_flow_stamps_tainted(self, tmp_path, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, "confirmed", calls)
+        res = self._confirm(tmp_path, joern_server=object())
+        assert res.outcome == "confirmed"
+        assert calls and calls[0]["source_id"] == "token"
+        assert calls[0]["sink_call"] == "decode"
+        assert res.reachability is not None
+        assert res.reachability["status"] == "tainted"
+        assert res.reachability["stamp"] == "joern:flow"
+        assert res.reachability["source_id"] == "token"
+        assert "joern:flow" in res.corroboration
+        d = res.to_dict()
+        assert d["reachability"]["status"] == "tainted"
+        assert "joern:flow" in d["corroboration"]
+
+    def test_refuted_flow_never_blocks_the_verdict(
+        self, tmp_path, monkeypatch,
+    ):
+        calls = []
+        self._stub(monkeypatch, "refuted", calls)
+        res = self._confirm(tmp_path, joern_server=object())
+        assert res.outcome == "confirmed"
+        assert calls
+        assert "joern:flow" not in res.corroboration
+        assert res.reachability is not None
+        assert res.reachability["status"] == "unknown"
+        assert "joern flow refuted" in res.reachability["detail"]
+
+    def test_zero_budget_skips_the_leg(self, tmp_path, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, "confirmed", calls)
+        res = self._confirm(
+            tmp_path, joern_server=object(), budget_s=0,
+        )
+        assert res.outcome == "confirmed"
+        assert calls == []
+
+    def test_no_server_skips_the_leg(self, tmp_path, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, "confirmed", calls)
+        res = self._confirm(tmp_path)
+        assert res.outcome == "confirmed"
+        assert calls == []
+        assert res.reachability is None
+
+    def test_no_parameter_binding_skips_the_leg(
+        self, tmp_path, monkeypatch,
+    ):
+        calls = []
+        self._stub(monkeypatch, "confirmed", calls)
+        _write(tmp_path, "src/auth.py", TestVerdictsPython.JWT_VULN)
+        out = _out_dir_with_spec(tmp_path, "decode", tier="xref_backed")
+        res = run_fail_open_check(
+            tmp_path, "src/auth.py", "current_user",
+            "verification errors are swallowed and the request "
+            "proceeds silently",
+            role_context=RoleContext(out_dir=out),
+            joern_server=object(),
+        )
+        assert res.outcome == "confirmed"
+        assert calls == []
+
+    def test_refuted_verdict_never_escalates(
+        self, tmp_path, monkeypatch,
+    ):
+        calls = []
+        self._stub(monkeypatch, "confirmed", calls)
+        _write(tmp_path, "src/auth.py", TestVerdictsPython.JWT_SAFE)
+        out = _out_dir_with_spec(tmp_path, "decode", tier="xref_backed")
+        res = run_fail_open_check(
+            tmp_path, "src/auth.py", "current_user", self.JWT_HYP,
+            role_context=RoleContext(out_dir=out),
+            joern_server=object(),
+        )
+        assert res.outcome == "refuted"
+        assert calls == []
+
+    def test_escalator_error_never_blocks(self, tmp_path, monkeypatch):
+        import core.audit.joern_verify as jv
+
+        def _boom(**kw):
+            raise RuntimeError("server went away")
+
+        monkeypatch.setattr(jv, "run_flow_reachability_check", _boom)
+        res = self._confirm(tmp_path, joern_server=object())
+        assert res.outcome == "confirmed"
+
+    def test_run_tool_chain_passes_server_and_persists_stamp(
+        self, tmp_path, monkeypatch,
+    ):
+        from core.audit.orchestrator import (
+            TierCounters,
+            _run_tool_chain,
+        )
+        calls = []
+        self._stub(monkeypatch, "confirmed", calls)
+        _write(tmp_path, "src/auth.py", TestVerdictsPython.JWT_VULN)
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "iris-taint-specs.json").write_text(json.dumps([{
+            "function": "decode", "file": "", "role": "sanitiser",
+            "evidence_tier": "xref_backed",
+        }]))
+        confirmed = _run_tool_chain(
+            [{"type": "fail_open", "config": {}}],
+            config=_Cfg(tmp_path, out_dir=out),
+            file_path="src/auth.py",
+            function_name="current_user",
+            source="",
+            hypothesis=self.JWT_HYP,
+            tier_counters={"fail_open": TierCounters()},
+            joern_server=object(),
+        )
+        assert RULE_HANDLER_OUTCOME in confirmed
+        assert calls, "escalator did not run through the tool chain"
+        record = json.loads(
+            (out / ".audit-log.jsonl").read_text().splitlines()[-1],
+        )
+        assert record["reachability"]["status"] == "tainted"
+        assert "joern:flow" in record["corroboration"]
+
+
+
 # ── dispatch wiring ─────────────────────────────────────────────────
 
 

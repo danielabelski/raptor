@@ -12234,6 +12234,10 @@ def _run_tool_chain(
                     ),
                     inventory=getattr(config, "inventory", None),
                 )
+                # Leg-3 flow escalator: live server + the same
+                # remaining-run-budget clamp as the joern_guard /
+                # joern_flow steps (0 -> the channel skips the leg).
+                fo_budget = _joern_budget_timeout_s(config)
                 fo_res = run_fail_open_check(
                     effective_target,
                     file_path,
@@ -12241,6 +12245,8 @@ def _run_tool_chain(
                     hypothesis,
                     inventory=getattr(config, "inventory", None),
                     role_context=fo_ctx,
+                    joern_server=joern_server,
+                    budget_s=fo_budget,
                 )
                 # Corroborating receipts already earned by earlier
                 # chain steps (e.g. the CWE-252 compiler family's

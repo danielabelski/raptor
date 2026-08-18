@@ -18,8 +18,7 @@ import sys
 from pathlib import Path
 
 # Add repo root to path
-REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 try:
     import httpx
@@ -33,6 +32,8 @@ except ImportError:
     sys.exit(1)
 
 from core.sage.scripts._common import async_memory_exists
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Parallelism cap — see register_agents.py for rationale.
 _PROPOSE_CONCURRENCY = 8
@@ -142,9 +143,10 @@ def extract_personas() -> list[dict]:
         # SAGE — wallclock + memory penalty for what's almost
         # certainly bad data. 5 MB cap leaves headroom for unusually
         # rich personas while refusing pathological input.
-        if not _read_capped(persona_file, max_bytes=5 * 1024 * 1024):
+        capped = _read_capped(persona_file, max_bytes=5 * 1024 * 1024)
+        if not capped:
             continue
-        content = _read_capped(persona_file, max_bytes=5 * 1024 * 1024).strip()
+        content = capped.strip()
 
         # Chunk long personas into ~1500 char segments
         if len(content) > 1500:
@@ -281,7 +283,7 @@ def _read_capped(path: Path, *, max_bytes: int) -> str:
         return ""
     try:
         return path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ""
 
 
@@ -459,10 +461,10 @@ async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
     # first exception, leaving the rest of the all_memories list
     # un-seeded — operator had to re-run, again hitting the same
     # failure and again losing visibility into the rest. Now each
-    # failed task surfaces as an Exception in `results`; the
-    # downstream classifier (status == "stored" / "skipped" /
-    # starts-with "failed") needs a None-or-Exception handling
-    # branch.
+    # failed task surfaces as a BaseException in `raw_results`; the
+    # loop below converts those into ("<label>", "failed: ...")
+    # tuples so the downstream tallies (status == "stored" /
+    # "skipped" / starts-with "failed") see a uniform shape.
     raw_results = await asyncio.gather(
         *(_seed_one(client, mem, force, sem) for mem in all_memories),
         return_exceptions=True,

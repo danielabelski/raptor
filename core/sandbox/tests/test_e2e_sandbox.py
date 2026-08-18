@@ -1511,7 +1511,15 @@ class TestE2ELandlockReadRestriction(unittest.TestCase):
                                     "read of /dev/shm file should have failed")
                 self.assertNotIn("SECRET-IN-DEV-SHM", r.stdout,
                                  "dev/shm leaked past restrict_reads")
-                self.assertIn("Permission denied", r.stderr)
+                # Denial mode depends on the engaged layer: Landlock-
+                # only hosts report EACCES; with mount-ns the sandbox
+                # serves a fresh /dev, so the host file simply does
+                # not exist (ENOENT) — same non-leak guarantee.
+                self.assertTrue(
+                    "Permission denied" in r.stderr
+                    or "No such file" in r.stderr,
+                    f"expected EACCES or ENOENT; got {r.stderr!r}",
+                )
         finally:
             try:
                 os.unlink(restricted_shm)

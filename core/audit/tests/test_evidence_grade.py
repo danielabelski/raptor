@@ -376,6 +376,69 @@ class TestIsToolEvidence:
         assert not is_tool_evidence("none")
 
 
+class TestDetectionVariantFirewall:
+    """Detection-grade rule-id variants are corroboration, never full
+    tool evidence — for EVERY channel, as classified by the channel's
+    own is_detection_rule_id."""
+
+    def test_naming_variants_are_not_tool_evidence(self):
+        # fail_open / ptr_lifecycle / lock_region previously slipped
+        # the firewall: a lone -naming stamp passed as full evidence.
+        for stamp in (
+            "fail_open:handler-outcome-naming",
+            "fail_open:ignored-return-naming",
+            "ptr_lifecycle:stale-alias-naming",
+            "lock_region:callback-under-lock-naming",
+            "resource_bounds:unbounded-accumulation-naming",
+            "release_order:release-before-verify-naming",
+        ):
+            assert not is_tool_evidence(stamp), stamp
+
+    def test_majority_and_unreceipted_variants_rejected(self):
+        for stamp in (
+            "consistency:return-check-majority",
+            "protocol_state:invariant-violated-unreceipted",
+            "protocol_state:dead-state-field",
+            "protocol_state:unvalidated-peer-write",
+        ):
+            assert not is_tool_evidence(stamp), stamp
+
+    def test_full_grade_channel_stamps_still_qualify(self):
+        for stamp in (
+            "fail_open:handler-outcome",
+            "ptr_lifecycle:stale-alias",
+            "lock_region:callback-under-lock",
+            "consistency:return-check",
+            "release_order:release-before-verify",
+            "protocol_state:invariant-violated",
+        ):
+            assert is_tool_evidence(stamp), stamp
+
+    def test_variant_riding_a_receipt_composite_qualifies(self):
+        assert is_tool_evidence("smt+ptr_lifecycle:stale-alias-naming")
+        assert is_tool_evidence("fail_open:handler-outcome-naming+coccinelle")
+
+    def test_matches_each_channel_classifier(self):
+        """The firewall must agree with every channel's own contract."""
+        import importlib
+
+        from core.audit.evidence_grade import _is_detection_variant
+        for namespace, mod_name in (
+            ("consistency", "core.audit.peer_evidence"),
+            ("fail_open", "core.audit.fail_open_verify"),
+            ("lock_region", "core.audit.lock_region"),
+            ("ptr_lifecycle", "core.audit.ptr_lifecycle"),
+            ("release_order", "core.audit.release_order"),
+            ("resource_bounds", "core.audit.resource_bounds"),
+            ("protocol_state", "core.audit.protocol_state"),
+        ):
+            mod = importlib.import_module(mod_name)
+            suffix = mod.DETECTION_VARIANT_SUFFIX
+            variant = f"{namespace}:x{suffix}"
+            assert _is_detection_variant(variant) == \
+                mod.is_detection_rule_id(variant), variant
+
+
 class TestSanitizeLlmEvidenceTool:
     """LLM-supplied evidence_tool values must not pass is_tool_evidence."""
 

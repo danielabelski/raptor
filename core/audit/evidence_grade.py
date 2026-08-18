@@ -16,6 +16,8 @@ Grading happens at two levels:
 from __future__ import annotations
 
 import enum
+import functools
+import importlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -105,9 +107,42 @@ _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
 })
 
 
+# Channel namespaces whose modules own the detection-grade rule-id
+# classification (each exports ``is_detection_rule_id``). The channel
+# is the single authority for which of its stamps "may not promote
+# alone" — consulting it here keeps this firewall from drifting when a
+# channel adds a variant (the fail_open/ptr_lifecycle/lock_region
+# ``-naming`` stamps passed as full tool evidence for exactly that
+# reason).
+_DETECTION_CLASSIFIER_MODULES: dict[str, str] = {
+    "consistency": "core.audit.peer_evidence",
+    "fail_open": "core.audit.fail_open_verify",
+    "lock_region": "core.audit.lock_region",
+    "ptr_lifecycle": "core.audit.ptr_lifecycle",
+    "release_order": "core.audit.release_order",
+    "resource_bounds": "core.audit.resource_bounds",
+    "protocol_state": "core.audit.protocol_state",
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _channel_detection_classifier(namespace: str):
+    """The channel's own ``is_detection_rule_id``, or None when the
+    channel module is unavailable (fall back to the string heuristics
+    below)."""
+    mod_name = _DETECTION_CLASSIFIER_MODULES.get(namespace)
+    if not mod_name:
+        return None
+    try:
+        mod = importlib.import_module(mod_name)
+    except ImportError:
+        return None
+    return getattr(mod, "is_detection_rule_id", None)
+
+
 def _is_detection_variant(part: str) -> bool:
     """Detection-role channel stamps (``consistency:*-majority``,
-    ``resource_bounds:*-naming``).
+    ``fail_open:*-naming``, ``ptr_lifecycle:*-naming``, ...).
 
     A majority statistic / uncorroborated-vocabulary premise
     corroborates; it does not convict (the ``git_history``
@@ -116,11 +151,22 @@ def _is_detection_variant(part: str) -> bool:
     ``finding`` carrying only a detection variant trips the promotion
     alarm.
     """
+    namespace = part.split(":", 1)[0] if ":" in part else part
+    classify = _channel_detection_classifier(namespace)
+    if classify is not None:
+        try:
+            return bool(classify(part))
+        except Exception:  # noqa: BLE001 — fall back to string heuristics
+            pass
+    # String-heuristic fallback for hosts where a channel module is
+    # unavailable — mirrors each channel's DETECTION_VARIANT_SUFFIX
+    # contract.
     if part.startswith("consistency:") and part.endswith("-majority"):
         return True
-    if part.startswith("resource_bounds:") and part.endswith("-naming"):
-        return True
-    if part.startswith("release_order:") and part.endswith("-naming"):
+    if part.startswith((
+        "fail_open:", "ptr_lifecycle:", "lock_region:",
+        "resource_bounds:", "release_order:",
+    )) and part.endswith("-naming"):
         return True
     # protocol_state: the -unreceipted invariant variant plus the two
     # PERMANENTLY detection-grade lead rule-ids (CWE-563-adjacent /

@@ -252,6 +252,68 @@ def journal_spend_usd(out_dir: Path) -> float:
     return total
 
 
+SPEND_FLOOR_FILENAME = "spend-floor.json"
+
+
+def persist_spend_floor(
+    out_dir: Path,
+    spend_usd: float,
+    segment: int | None = None,
+) -> None:
+    """Atomically persist an incremental whole-run spend floor.
+
+    ``cost-breakdown.json`` is only written at reconciliation/salvage,
+    so a segment killed hard (SIGKILL, OOM) booked $0 and the next
+    segment's remaining budget overspent the cap by the dead segment's
+    whole spend. This sidecar is updated cheaply during the run; the
+    resume budget math takes ``max(reconciled ledger, journal floor,
+    spend floor)``.
+
+    Monotonic: never lowers the recorded figure (a resumed segment's
+    ledger starts below the whole-run floor until it re-books the
+    prior segments).
+    """
+    out_dir = Path(out_dir)
+    if not out_dir.is_dir():
+        return
+    spend_usd = max(0.0, float(spend_usd))
+    if spend_usd <= spend_floor_usd(out_dir):
+        return
+    payload: dict[str, Any] = {"spend_usd": round(spend_usd, 6)}
+    if segment is not None:
+        payload["segment"] = segment
+    path = out_dir / SPEND_FLOOR_FILENAME
+    fd, tmp = tempfile.mkstemp(
+        dir=str(out_dir), prefix=".spend-floor-", suffix=".json",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def spend_floor_usd(out_dir: Path) -> float:
+    """The persisted incremental spend floor, $0 when absent/corrupt."""
+    path = Path(out_dir) / SPEND_FLOOR_FILENAME
+    if not path.is_file():
+        return 0.0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.debug("could not read %s", path, exc_info=True)
+        return 0.0
+    if not isinstance(data, dict):
+        return 0.0
+    spend = data.get("spend_usd")
+    if isinstance(spend, (int, float)) and not isinstance(spend, bool):
+        return max(0.0, float(spend))
+    return 0.0
+
+
 #: Effective cap handed to the pipeline when the remaining budget is
 #: zero or negative: small enough that the reservation gate refuses
 #: every LLM call, while the $0 verdict re-import, the mechanical

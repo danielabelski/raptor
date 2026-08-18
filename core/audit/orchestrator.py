@@ -9079,17 +9079,75 @@ def _run_llm_client(config: OrchestratorConfig) -> Any:
     return LLMClient(pinned_model=model) if model else LLMClient()
 
 
+#: Seconds between incremental spend-floor writes from the budget
+#: poll. Cheap (one small atomic file) but there is no reason to
+#: write it on every poll.
+_SPEND_FLOOR_INTERVAL_S = 5.0
+
+
+def _persist_spend_floor(
+    config: OrchestratorConfig,
+    result: OrchestratorResult,
+    *,
+    force: bool = False,
+) -> None:
+    """Throttled incremental persist of the whole-run spend floor.
+
+    cost-breakdown.json is only written at reconciliation/salvage, so
+    a hard-killed segment (SIGKILL, OOM) booked $0 and the next
+    resume segment overspent the cap by the dead segment's spend.
+    Riding the budget poll keeps the floor at most a few seconds
+    stale. Never raises.
+    """
+    out_dir = getattr(config, "out_dir", None)
+    if not out_dir:
+        return
+    try:
+        now = time.monotonic()
+        with result._lock:
+            last = getattr(result, "_spend_floor_written_at", 0.0)
+            if not force and now - last < _SPEND_FLOOR_INTERVAL_S:
+                return
+            result._spend_floor_written_at = now
+            spend = float(result.total_cost_usd or 0.0)
+        client = getattr(config, "llm_budget_client", None)
+        if client is not None:
+            spend = max(
+                spend,
+                float(getattr(client, "total_cost", 0.0) or 0.0),
+                float(getattr(client, "provider_spend_usd", 0.0) or 0.0),
+            )
+        # Whole-run figure: a resume segment's ledgers are segment-
+        # local; add the prior segments' reconciled spend.
+        prior = getattr(config, "prior_cost_breakdown", None)
+        if prior:
+            from .resume import booked_spend_usd
+            spend += booked_spend_usd(prior)
+        from .resume import persist_spend_floor
+        persist_spend_floor(
+            out_dir, spend,
+            segment=getattr(config, "resume_segment", None),
+        )
+    except Exception:
+        logger.debug("spend floor persist failed", exc_info=True)
+
+
 def _check_budget(
     config: OrchestratorConfig,
     start_time: float,
     result: OrchestratorResult,
 ) -> bool:
     """Return True when budget is exhausted."""
+    # Keep the on-disk spend floor fresh while any loop polls the
+    # rails — this is what books a hard-killed segment's spend for
+    # the next resume segment.
+    _persist_spend_floor(config, result)
     # SIGTERM rides the budget-exhaustion rails: every loop and
     # post-loop pass that polls this stops dispatching, and the study
     # consumer's state-aware drain sees "exhausted" and stops too.
     if is_sigterm_requested():
         result.terminated_by = "sigterm"
+        _persist_spend_floor(config, result, force=True)
         return True
     if config.max_seconds and time.monotonic() - start_time >= config.max_seconds:
         result.terminated_by = "max_seconds"

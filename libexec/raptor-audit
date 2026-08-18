@@ -1676,6 +1676,19 @@ def cmd_resume(args: argparse.Namespace) -> int:
             "journal per-entry floor — the run died before its first "
             "ledger reconciliation"
         )
+    # A hard-killed segment (SIGKILL/OOM) never reconciled its ledger,
+    # but the orchestrator persists an incremental spend floor while
+    # it runs — take the max so the dead segment's spend is booked and
+    # this segment's remaining budget reflects it.
+    from core.audit.resume import spend_floor_usd
+
+    floor = spend_floor_usd(out_dir)
+    if floor > booked:
+        booked = floor
+        ledger_note = (
+            "incremental spend floor — the prior segment died before "
+            "its ledger reconciliation"
+        )
     original_cap = run_cfg.get("max_cost_usd")
     from core.audit.resume import (
         EXHAUSTED_BUDGET_EPSILON_USD,

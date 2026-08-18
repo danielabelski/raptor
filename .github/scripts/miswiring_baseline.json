@@ -590,9 +590,6 @@
   "plumbing:orphan_config_field:core/audit/fail_open_roles.py:SecurityFlag.safe_when": {
    "note": "pending wiring: safe_when is the fail-open channel's planned per-flag suppression predicate"
   },
-  "plumbing:orphan_config_field:core/audit/struct_accessor_index.py:AccessorRecord.access_type": {
-   "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
-  },
   "plumbing:orphan_config_field:core/audit/type_confusion.py:TypeConfusionFinding.deser_function": {
    "note": "re-triaged 2026-08-16 with the serialization-aware pass: owning class never flows through wholesale serialization and the field has no direct or string-key reference \u2014 genuinely unconsumed; reserved plumbing pending wiring or removal"
   },

@@ -29,7 +29,6 @@ class AccessorRecord:
     function: str
     file: str
     field: str
-    access_type: str = ""  # "read", "write", or ""
     lock_held: str = ""    # lock name/type if any, or ""
     line: int = 0
 

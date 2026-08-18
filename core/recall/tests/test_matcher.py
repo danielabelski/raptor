@@ -89,6 +89,14 @@ class TestCweMatching:
         [r] = match_findings([_exp()], [_prod(cwe_id="CWE-77")], TOL)
         assert r.matched
 
+    def test_weak_cipher_family_bridges_326_327(self):
+        # Producers tag DES/RC4 findings CWE-326 or CWE-327
+        # interchangeably (measured live: the registry des-is-deprecated
+        # rule is 326, the OWASP Benchmark labels the cases 327).
+        exp = _exp(cwe="CWE-327")
+        [r] = match_findings([exp], [_prod(cwe_id="CWE-326")], TOL)
+        assert r.matched
+
     def test_family_sibling_rejected_when_disabled(self):
         exp = _exp(line_start=102, line_end=102)
         [r] = match_findings([exp], [_prod(cwe_id="CWE-77")], STRICT)

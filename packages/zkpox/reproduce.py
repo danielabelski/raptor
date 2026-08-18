@@ -136,8 +136,8 @@ def reproduce_witness(
             target binary to feed the witness to. Its sha256 is
             verified against ``bundle.target_binary_hash`` before
             use. Ignored for LLM_EMIT_RUN (recompile) sources.
-        n: number of consecutive runs (default 3). The recorded
-            outcome must reproduce in ALL of them for
+        n: number of consecutive runs (default 3, must be >= 1).
+            The recorded outcome must reproduce in ALL of them for
             ``reproduced=True``.
         sandbox_timeout: per-run timeout in seconds.
         logger_: optional logger.
@@ -152,6 +152,16 @@ def reproduce_witness(
     ``reproduced=False`` with a reason.
     """
     log = logger_ if logger_ is not None else logger
+
+    # Zero runs can't confirm anything — without this guard both
+    # dispatch paths would skip their loops and report a misleading
+    # "non-deterministic" reason over an empty outcome list.
+    if n < 1:
+        return ReproductionResult(
+            attempted=False, runs=0,
+            expected_outcome=bundle.observed_outcome,
+            reason=f"n must be >= 1 (got {n}); nothing to reproduce",
+        )
 
     # Verify we're reproducing the RIGHT witness — the bytes the
     # bundle was assembled from — before running anything. Mirrors
@@ -283,7 +293,7 @@ def _reproduce_replay(
 
     try:
         from core.config import RaptorConfig
-        from core.sandbox import run as sandbox_run
+        from core.sandbox import run_untrusted as sandbox_run_untrusted
         from core.witness import outcome_from_sandbox_info
     except ImportError as e:
         return ReproductionResult(
@@ -294,9 +304,14 @@ def _reproduce_replay(
     observed: list[str] = []
     for _i in range(n):
         try:
-            result = sandbox_run(
+            # run_untrusted, not run: the target binary is untrusted
+            # and the witness is attacker data, so reads must be
+            # pinned to system dirs + the binary's own dir
+            # (restrict_reads) with a credential-free fake $HOME —
+            # a compromised target can't read ~/.ssh or ~/.aws.
+            # block_network + strict_env are forced by the helper.
+            result = sandbox_run_untrusted(
                 [str(binary_path)],
-                block_network=True,
                 target=str(binary_path.parent),
                 output=str(binary_path.parent),
                 capture_output=True,
@@ -304,7 +319,6 @@ def _reproduce_replay(
                 input=witness_bytes,
                 timeout=sandbox_timeout,
                 env=RaptorConfig.get_safe_env(),
-                strict_env=True,
             )
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result

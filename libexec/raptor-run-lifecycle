@@ -43,6 +43,50 @@ from core.run.metadata import complete_run, fail_run, start_run  # noqa: E402
 from core.run.output import TargetMismatchError, get_output_dir  # noqa: E402
 
 
+def _journal_project_dir(out_dir: Path) -> Path | None:
+    """Project-level directory a run's journal should merge into.
+
+    ``.active`` is a symlink to the project's ``<name>.json`` FILE
+    (``ProjectManager.set_active``), so the project directory is the
+    JSON's ``output_dir`` field — the same derivation
+    ``_setup_checklist_symlink`` uses. Pre-fix this resolved the
+    symlink and required ``is_dir()``, which is always False for a
+    file target: the merge was dead code and the project index was
+    never updated.
+
+    Only returns the active project's dir when *out_dir* actually
+    lives under it — a standalone run completed while some project is
+    active must not pollute that project's index. Falls back to the
+    run's parent when it carries the project store markers (matches
+    ``_snapshot_run_coverage``'s ``proj = run_dir.parent``, which is
+    where the coverage snapshot reads the index back from).
+    """
+    try:
+        out_res = out_dir.resolve()
+    except OSError:
+        return None
+    try:
+        from core.json import load_json
+        from core.startup import PROJECTS_DIR, get_active_name
+        name = get_active_name()
+        if name:
+            data = load_json(PROJECTS_DIR / f"{name}.json")
+            if isinstance(data, dict) and data.get("output_dir"):
+                candidate = Path(data["output_dir"])
+                if candidate.is_dir():
+                    proj_res = candidate.resolve()
+                    if proj_res in out_res.parents:
+                        return proj_res
+    except Exception:  # noqa: BLE001 — fall through to the marker probe
+        pass
+    parent = out_res.parent
+    if (parent / "checklist.json").exists() or (
+        parent / "coverage.json"
+    ).exists():
+        return parent
+    return None
+
+
 def _merge_journal_index(out_dir: Path) -> None:
     """Merge per-run review journal into project-level index.
 
@@ -52,14 +96,8 @@ def _merge_journal_index(out_dir: Path) -> None:
     journal_path = out_dir / "review-journal.jsonl"
     if not journal_path.is_file():
         return
-    active = Path.home() / ".raptor" / "projects" / ".active"
-    if not active.is_symlink() and not active.exists():
-        return
-    try:
-        project_dir = active.resolve()
-    except OSError:
-        return
-    if not project_dir.is_dir():
+    project_dir = _journal_project_dir(out_dir)
+    if project_dir is None:
         return
     try:
         from core.audit.journal import merge_into_index

@@ -518,6 +518,17 @@ Off by default: TCP head-of-line blocking stalls every multiplexed
 stream on one lost packet, and some middleboxes misbehave on
 long-lived multiplexed tunnels — enable per-deployment and verify.
 
+`RAPTOR_LLM_STREAM_TRANSPORT=1` carries non-streaming Anthropic calls
+over the SDK's streaming transport (`messages.stream` +
+`get_final_message()` — the identical response object, so parsing is
+unchanged). Use it behind corporate proxies that idle-kill tunnels
+carrying no bytes: a thinking model is silent for minutes on a
+non-streamed call, while SSE keeps bytes flowing for the whole
+generation. TCP keepalive does not cover this case (probes are not
+tunnel payload). Off by default so proxied hosts don't silently
+exercise different code paths than direct hosts; the task-budget
+beta endpoint always stays on plain `create`.
+
 ## Environment Variables Summary
 
 | Variable | Purpose |
@@ -544,3 +555,4 @@ long-lived multiplexed tunnels — enable per-deployment and verify.
 | `RAPTOR_HTTP_MAX_KEEPALIVE` | SDK transport pooled idle connections (default 20) |
 | `RAPTOR_HTTP_MAX_CONNECTIONS` | SDK transport total connections (default 100) |
 | `RAPTOR_HTTP2` | `1` opts SDK transports into HTTP/2 (needs `h2`) |
+| `RAPTOR_LLM_STREAM_TRANSPORT` | `1` carries Anthropic calls over the streaming transport |

@@ -2043,6 +2043,32 @@ def _message_to_openai_wire(m: Message) -> list[dict[str, Any]]:
     return out_msgs
 
 
+_STREAM_TRANSPORT_ENV = "RAPTOR_LLM_STREAM_TRANSPORT"
+
+
+def _stream_transport_enabled() -> bool:
+    """Opt-in: carry non-streaming Anthropic calls over the SDK's
+    streaming transport (``messages.stream`` +
+    ``get_final_message()`` — the identical ``Message`` object a
+    plain ``create`` returns, so downstream parsing is unchanged).
+
+    Why an operator would want it: a corporate proxy that applies an
+    idle timer to relayed bytes kills tunnels that go quiet, and a
+    thinking model is silent for minutes on a non-streamed call. SSE
+    keeps bytes flowing for the whole generation, so the tunnel never
+    looks idle — the fix TCP keepalive cannot provide (probes are not
+    tunnel payload).
+
+    Off by default, deliberately: flipping transports based on
+    detected network topology would make proxied hosts silently
+    exercise different code paths than direct hosts. The operator
+    opts in per-deployment.
+    """
+    return os.environ.get(_STREAM_TRANSPORT_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 class AnthropicProvider(LLMProvider):
     """
     LLM provider using the Anthropic SDK.
@@ -2116,7 +2142,11 @@ class AnthropicProvider(LLMProvider):
 
         try:
             t_start = time.monotonic()
-            response = self.client.messages.create(**create_kwargs)
+            if _stream_transport_enabled():
+                with self.client.messages.stream(**create_kwargs) as _stream:
+                    response = _stream.get_final_message()
+            else:
+                response = self.client.messages.create(**create_kwargs)
             duration = time.monotonic() - t_start
 
             # Extract text from response (guard against empty/non-text
@@ -2462,10 +2492,22 @@ class AnthropicProvider(LLMProvider):
             APIError,
             APIStatusError,
         )
+        # Stream-transport opt-in never applies to the task-budget
+        # beta — the beta endpoint is create-only (see turn_stream's
+        # docstring for the same constraint on real streaming).
+        use_stream_transport = (
+            _stream_transport_enabled() and not anthropic_task_budget_beta
+        )
         t_start = time.monotonic()
         for attempt in range(max_retries + 1):
             try:
-                resp = create_fn(**send_kwargs)
+                if use_stream_transport:
+                    with self.client.messages.stream(
+                        **send_kwargs,
+                    ) as _stream:
+                        resp = _stream.get_final_message()
+                else:
+                    resp = create_fn(**send_kwargs)
                 break
             except (APIConnectionError, APIStatusError, APIError) as exc:
                 if is_credit_exhausted(exc):

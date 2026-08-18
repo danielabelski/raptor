@@ -506,6 +506,13 @@ proxy), the RAPTOR proxy forwards its `CONNECT` tunnels through that
 upstream. `NO_PROXY` / `no_proxy` are honoured for the upstream
 decision. This is transparent to callers.
 
+The upstream leg (TCP connect + CONNECT negotiation) has its own
+budget, default 10 s. Slow, authenticated, or loaded corporate
+proxies that legitimately need more can be accommodated with
+`RAPTOR_PROXY_UPSTREAM_HANDSHAKE_TIMEOUT_S` (seconds, read once at
+proxy construction). Only the handshake budget widens — the per-IO
+read budget keeps failing fast on dead targets.
+
 ### Proxy events
 
 When `use_egress_proxy=True`, every CONNECT attempt is recorded:

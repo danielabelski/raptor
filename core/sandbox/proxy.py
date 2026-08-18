@@ -75,6 +75,7 @@ import contextlib
 import ipaddress
 import itertools
 import logging
+import os
 import socket
 import threading
 import time
@@ -385,6 +386,42 @@ def _host_in_no_proxy(host: str, patterns: list) -> bool:
     return False
 
 
+# Env knob for the upstream-proxy handshake budget (see
+# _upstream_handshake_timeout). Distinct from the per-IO read budget:
+# widening THAT would also slow failure detection on dead targets.
+_UPSTREAM_HANDSHAKE_TIMEOUT_ENV = "RAPTOR_PROXY_UPSTREAM_HANDSHAKE_TIMEOUT_S"
+
+
+def _upstream_handshake_timeout() -> float:
+    """Budget for connecting to + CONNECT-negotiating with the
+    operator's upstream proxy.
+
+    Defaults to the per-IO budget (``_PROXY_READ_TIMEOUT_S``). Slow /
+    authenticated / loaded corporate proxies can legitimately need
+    more; a too-small budget turns a working-but-slow proxy into a
+    502 + full SDK retry cycle. Invalid or non-positive values fall
+    back to the default.
+    """
+    raw = os.environ.get(_UPSTREAM_HANDSHAKE_TIMEOUT_ENV)
+    if raw is None:
+        return _PROXY_READ_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number — using default %ss",
+            _UPSTREAM_HANDSHAKE_TIMEOUT_ENV, raw, _PROXY_READ_TIMEOUT_S,
+        )
+        return _PROXY_READ_TIMEOUT_S
+    if value <= 0:
+        logger.warning(
+            "%s=%r must be positive — using default %ss",
+            _UPSTREAM_HANDSHAKE_TIMEOUT_ENV, raw, _PROXY_READ_TIMEOUT_S,
+        )
+        return _PROXY_READ_TIMEOUT_S
+    return value
+
+
 def _enable_tcp_keepalive(writer: asyncio.StreamWriter) -> None:
     """Turn on TCP keepalive for one tunnel leg.
 
@@ -534,6 +571,15 @@ class EgressProxy:
         # upstream host is trusted to resolve to any IP (private
         # corporate addresses are expected), unlike target hostnames.
         self._upstream: tuple | None = _parse_proxy_url(upstream_proxy)
+        # Budget for the upstream-proxy leg: TCP connect to the
+        # corporate proxy plus the CONNECT negotiation round-trip.
+        # Slow, authenticated, or loaded corporate proxies can
+        # legitimately exceed the 10s per-IO default — and each 502
+        # this side returns costs the caller a full SDK retry cycle.
+        # Read once at construction (the proxy is a long-lived
+        # singleton); the default stays at the per-IO budget so a
+        # genuinely dead upstream keeps failing fast.
+        self._upstream_handshake_timeout = _upstream_handshake_timeout()
         # NO_PROXY honoured when an upstream is configured: any host
         # matching a pattern bypasses the upstream and connects directly
         # (so internal services like git-server.corp remain reachable).
@@ -1650,7 +1696,7 @@ class EgressProxy:
             try:
                 up_reader, up_writer = await asyncio.wait_for(
                     asyncio.open_connection(host=up_host, port=up_port),
-                    timeout=_PROXY_READ_TIMEOUT_S,
+                    timeout=self._upstream_handshake_timeout,
                 )
             except (OSError, asyncio.TimeoutError) as e:
                 logger.warning(
@@ -1671,9 +1717,13 @@ class EgressProxy:
                    f"Host: {host}:{port}\r\n\r\n").encode("latin-1")
             up_writer.write(req)
             try:
-                await asyncio.wait_for(up_writer.drain(), timeout=_PROXY_READ_TIMEOUT_S)
+                await asyncio.wait_for(
+                    up_writer.drain(),
+                    timeout=self._upstream_handshake_timeout,
+                )
                 resp_line = await asyncio.wait_for(
-                    up_reader.readuntil(b"\r\n"), timeout=_PROXY_READ_TIMEOUT_S,
+                    up_reader.readuntil(b"\r\n"),
+                    timeout=self._upstream_handshake_timeout,
                 )
             except (asyncio.TimeoutError, asyncio.IncompleteReadError,
                     ConnectionError) as e:

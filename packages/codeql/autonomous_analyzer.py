@@ -1191,7 +1191,16 @@ class AutonomousCodeQLAnalyzer:
                 except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
                     self.logger.warning("Failed to generate visualizations: %s", e)
 
-            if dataflow_validation and not dataflow_validation.is_exploitable:
+            if dataflow_validation and getattr(dataflow_validation, "error", None):
+                # Validation errored: is_exploitable=False is a default,
+                # not a verdict. Fall through to deep analysis instead
+                # of silently dropping the finding.
+                self.logger.warning(
+                    "Dataflow validation errored (%s) — proceeding to "
+                    "deep analysis, not treating as non-exploitable",
+                    dataflow_validation.error,
+                )
+            elif dataflow_validation and not dataflow_validation.is_exploitable:
                 self.logger.info("✗ Dataflow not exploitable - skipping exploit generation")
                 return AutonomousAnalysisResult(
                     finding=finding,

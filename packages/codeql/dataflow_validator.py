@@ -187,7 +187,13 @@ class DataflowPath:
 
 @dataclass
 class DataflowValidation:
-    """Result of dataflow validation."""
+    """Result of dataflow validation.
+
+    ``error`` is set when validation itself failed (LLM error, schema
+    failure) — consumers must treat such a result as an error state,
+    NOT as a not-exploitable verdict: ``is_exploitable=False`` with
+    ``error`` set carries no evidential weight.
+    """
     is_exploitable: bool
     confidence: float  # 0.0-1.0
     sanitizers_effective: bool
@@ -197,6 +203,7 @@ class DataflowValidation:
     reasoning: str
     barriers: list[str]
     prerequisites: list[str]
+    error: str | None = None
 
 
 PATH_CONDITIONS_SCHEMA = {
@@ -888,8 +895,11 @@ class DataflowValidator:
             )
 
             # Parse response — filter to declared fields so extra
-            # keys returned by the LLM don't cause TypeError.
-            _valid_keys = {f.name for f in _dataclass_fields(DataflowValidation)}
+            # keys returned by the LLM don't cause TypeError. "error"
+            # is validator-owned state, never an LLM-settable field.
+            _valid_keys = {
+                f.name for f in _dataclass_fields(DataflowValidation)
+            } - {"error"}
             validation = DataflowValidation(**{
                 k: v for k, v in response_dict.items() if k in _valid_keys
             })
@@ -920,7 +930,9 @@ class DataflowValidator:
         except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
             self.logger.error("Dataflow validation failed: %s", e)
 
-            # Return conservative default
+            # Explicit error state: an LLM/transport failure is not a
+            # not-exploitable verdict — consumers must not gate exploit
+            # analysis off is_exploitable when error is set.
             return DataflowValidation(
                 is_exploitable=False,
                 confidence=0.0,
@@ -930,7 +942,8 @@ class DataflowValidator:
                 attack_complexity="high",
                 reasoning=f"Validation failed: {e!s}",
                 barriers=["Analysis failed"],
-                prerequisites=[]
+                prerequisites=[],
+                error=str(e) or type(e).__name__,
             )
 
     def validate_finding(

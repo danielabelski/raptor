@@ -290,6 +290,32 @@ def _parse_invariant(invariant: str) -> tuple[tuple, str, tuple]:
     )
 
 
+_NEGATED_OP = {
+    "<=": ">", "<": ">=", ">=": "<", ">": "<=", "==": "!=", "!=": "==",
+}
+
+
+def negate_comparison(text: str) -> str | None:
+    """Negate a linear comparison string (``a <= b`` → ``a > b``).
+
+    Returns ``None`` when the text is not a comparison in the
+    supported fragment — callers must then drop the condition rather
+    than guess (the declared-scope discipline). Used by census-driven
+    consumers to encode false-branch dominators."""
+    try:
+        _lhs, op, _rhs = _parse_invariant(text)
+    except _ParseError:
+        return None
+    m = _OP_RE.search(text)
+    if m is None:  # pragma: no cover — _parse_invariant just matched
+        return None
+    return (
+        text[:m.start()].strip()
+        + f" {_NEGATED_OP[op]} "
+        + text[m.end():].strip()
+    )
+
+
 # ── mutation-site discovery ─────────────────────────────────────────
 
 _ASSIGN_OPS = ("+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "|=", "^=", "=")
@@ -488,8 +514,16 @@ def _check_one_site(
     aop: str,
     rhs_text: str,
     timeout_ms: int,
+    pre_conditions: tuple = (),
 ) -> SiteResult:
-    """Encode one mutation site's transition and query preservation."""
+    """Encode one mutation site's transition and query preservation.
+
+    ``pre_conditions`` (census-driven multi-site harness) are
+    comparison strings that dominate the site — polarity already
+    resolved by the caller. Each is conjoined with the pre-state; an
+    unparseable pre-condition makes the site ``out_of_scope`` (a guard
+    we cannot encode must not be silently dropped: dropping would
+    over-report violability, keeping it wrong would fake safety)."""
     # Build the post-state expression for the mutated variable.
     if aop in ("++", "--"):
         delta = ("int", 1)
@@ -518,13 +552,33 @@ def _check_one_site(
             reason=f"operator {aop!r} outside the linear fragment",
         )
 
+    parsed_pres: list[tuple[tuple, str, tuple]] = []
+    for cond in pre_conditions:
+        try:
+            parsed_pres.append(_parse_invariant(cond))
+        except _ParseError as exc:
+            return SiteResult(
+                line=line_no, code=code, verdict="out_of_scope",
+                reason=(
+                    f"dominating condition {cond!r} outside the "
+                    f"linear fragment ({exc})"
+                ),
+            )
+
     solver = z3.Solver()
     solver.set("timeout", timeout_ms)
     env: dict[str, Any] = {}
     for node in (lhs, rhs, new_expr):
         _collect_symbols(node, env, z3, solver)
+    for p_lhs, _p_op, p_rhs in parsed_pres:
+        _collect_symbols(p_lhs, env, z3, solver)
+        _collect_symbols(p_rhs, env, z3, solver)
 
     pre = _cmp_z3(_to_z3(lhs, env, z3), op, _to_z3(rhs, env, z3), z3)
+    for p_lhs, p_op, p_rhs in parsed_pres:
+        solver.add(_cmp_z3(
+            _to_z3(p_lhs, env, z3), p_op, _to_z3(p_rhs, env, z3), z3,
+        ))
 
     # Post-state: substitute the mutated variable with a primed symbol
     # defined by the transition.
@@ -603,3 +657,49 @@ def _check_one_site(
         line=line_no, code=code, verdict="unknown",
         reason="solver returned unknown (timeout or undecidable)",
     )
+
+
+def check_site_preservation(
+    invariant: str,
+    code: str,
+    *,
+    line: int = 0,
+    pre_conditions: tuple = (),
+    timeout_ms: int = 5000,
+) -> SiteResult:
+    """One inductive preservation step for ONE mutation site — the
+    census-driven multi-site entry point (protocol_state channel).
+
+    ``code`` is the site's statement text (the caller has already
+    normalised struct-member chains to the invariant's variable
+    names); ``pre_conditions`` are polarity-resolved dominating
+    comparisons. Verdict semantics and the two-regime nonneg handling
+    are identical to :func:`check_invariant_preservation`; the
+    ``out_of_scope`` discipline applies to both the invariant and the
+    dominating conditions."""
+    try:
+        lhs, op, rhs = _parse_invariant(invariant)
+    except _ParseError as exc:
+        return SiteResult(
+            line=line, code=code, verdict="out_of_scope",
+            reason=f"invariant outside the linear fragment: {exc}",
+        )
+    variables = _expr_vars(lhs) | _expr_vars(rhs)
+    sites = find_mutation_sites(code or "", variables)
+    if not sites:
+        return SiteResult(
+            line=line, code=code.strip(), verdict="preserved",
+            reason="no mutation of an invariant variable at this site",
+        )
+    if not _z3_available():
+        return SiteResult(
+            line=line, code=code.strip(), verdict="unknown",
+            reason="z3 unavailable",
+        )
+    import z3
+    _ln, site_code, var, aop, rhs_text = sites[0]
+    result = _check_one_site(
+        z3, lhs, op, rhs, variables, line or _ln, site_code, var, aop,
+        rhs_text, timeout_ms, pre_conditions=tuple(pre_conditions),
+    )
+    return result

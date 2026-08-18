@@ -157,16 +157,6 @@ class ReadingList:
     def by_command(self, command: str) -> list[ReadingListItem]:
         return [i for i in self.items if i.source_command == command]
 
-    def merge_from(self, other: ReadingList) -> int:
-        """Merge items from another reading list. Returns count of new items added."""
-        added = 0
-        for item in other.items:
-            before = len(self.items)
-            self.queue(item)
-            if len(self.items) > before:
-                added += 1
-        return added
-
     def __len__(self) -> int:
         return len(self.items)
 

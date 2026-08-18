@@ -470,9 +470,6 @@
   "dead:dead_method:core/audit/tests/test_return_census.py:TestCpgUsage._fake_server_rows": {
    "note": "test scaffolding kept for the planned CPG-backed census cases; harmless"
   },
-  "dead:dead_method:core/concepts/reading_list.py:ReadingList.merge_from": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.generate_mutated_seed": {
    "note": "kept: pending work \u2014 autonomous fuzzing loop feature seed (operator decision 2026-08-16); unwired since introduction"
   },

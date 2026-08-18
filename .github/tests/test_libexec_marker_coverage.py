@@ -168,6 +168,10 @@ SYSPATH_VARIANTS = {
         # child's repo root arrives via the trusted spec argument (the
         # harness also pins the child's RAPTOR_DIR from the same spec).
         'sys.path.insert(0, spec["raptor_dir"])',
+        # embedded egress-deny harness child snippet — hard lookup of
+        # RAPTOR_DIR (KeyError if unset), the sanctioned sys.path form;
+        # the parent case pins RAPTOR_DIR before spawning it.
+        'sys.path.insert(0, os.environ["RAPTOR_DIR"])',
     ),
     "raptor-run-sandboxed": ("sys.path.insert(0, raptor_dir)",),
     "raptor-sca-refit-calibration": ("sys.path.insert(0, str(_REPO_ROOT))",),

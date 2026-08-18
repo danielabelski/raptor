@@ -14,16 +14,17 @@ os.environ["RAPTOR_DIR"] = str(RAPTOR_DIR)
 if str(RAPTOR_DIR) not in sys.path:
     sys.path.insert(0, str(RAPTOR_DIR))
 
-from packages.checker_synthesis.cwe_families import (
+from packages.checker_synthesis.cwe_families import (  # noqa: E402  (import after sys.path setup)
     cwe_family,
     cwe_siblings,
 )
-from packages.checker_synthesis.library import (
+from packages.checker_synthesis.library import (  # noqa: E402  (import after sys.path setup)
+    LibraryEntry,
     RuleLibrary,
     _body_hash,
     _compute_rates,
 )
-from packages.checker_synthesis.models import (
+from packages.checker_synthesis.models import (  # noqa: E402  (import after sys.path setup)
     CheckerSynthesisResult,
     Match,
     MatchTriage,
@@ -373,6 +374,112 @@ class TestRuleLibraryPersistence:
         assert lib.find_replayable("CWE-89", "semgrep") == []
 
 
+def _entry_dict(**overrides) -> dict:
+    d = {
+        "rule_id": "r1",
+        "engine": "semgrep",
+        "cwe": "CWE-89",
+        "body_hash": "abc123",
+        "rule_path": "semgrep/r1.yml",
+        "rationale": "",
+        "seed_file": "",
+        "seed_function": "",
+        "dual_control": True,
+        "promoted_at": "",
+        "tp_rate": 1.0,
+        "fp_rate": 0.0,
+        "total_variants": 5,
+        "total_matches": 0,
+        "targets": [],
+        "archived": False,
+    }
+    d.update(overrides)
+    return d
+
+
+class TestFromDictTotalMatches:
+    """``from_dict`` preserves an explicitly persisted ``total_matches: 0``
+    instead of substituting ``total_variants`` — the legacy fallback
+    applies only when the key is absent."""
+
+    def test_explicit_zero_preserved(self):
+        entry = LibraryEntry.from_dict(_entry_dict(total_matches=0))
+        assert entry.total_matches == 0
+
+    def test_round_trip_preserves_zero(self):
+        entry = LibraryEntry.from_dict(_entry_dict(total_matches=0))
+        again = LibraryEntry.from_dict(entry.to_dict())
+        assert again.total_matches == 0
+
+    def test_legacy_manifest_falls_back_to_total_variants(self):
+        d = _entry_dict()
+        del d["total_matches"]
+        entry = LibraryEntry.from_dict(d)
+        assert entry.total_matches == 5
+
+    def test_nonzero_value_kept(self):
+        entry = LibraryEntry.from_dict(_entry_dict(total_matches=7))
+        assert entry.total_matches == 7
+
+
+class TestPipelineMaintainsTotalMatches:
+    """The promote / update pipeline maintains ``total_matches`` alongside
+    ``total_variants`` so ``record_match`` derives ``tp_rate`` from a
+    truthful denominator after a save/reload round-trip."""
+
+    def test_promote_sets_total_matches(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        entry = lib.promote(_result(matches=3), target_hash="t1")
+        assert entry is not None
+        assert entry.total_matches == 3
+
+    def test_promote_survives_reload(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.promote(_result(matches=3), target_hash="t1")
+        reloaded = RuleLibrary(tmp_path / "lib").all_entries()
+        assert len(reloaded) == 1
+        assert reloaded[0].total_matches == 3
+
+    def test_repromote_increments_total_matches(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.promote(_result(matches=3), target_hash="t1")
+        entry = lib.promote(_result(matches=2), target_hash="t2")
+        assert entry is not None
+        assert entry.total_matches == 5
+
+    def test_update_increments_total_matches(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.promote(_result(matches=3), target_hash="t1")
+        replay = _result(matches=2)
+        entry = lib.update("r1", "t2", replay.matches, replay.triage)
+        assert entry is not None
+        assert entry.total_matches == 5
+
+    def test_record_match_uses_true_denominator(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.promote(_result(matches=3), target_hash="t1")
+        # Reload to prove the denominator survives serialisation.
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.record_match("r1", is_tp=True)
+        lib.record_match("r1", is_tp=False)
+        entry = lib.all_entries()[0]
+        assert entry.total_matches == 5
+        assert entry.total_variants == 4
+        assert entry.tp_rate == 4 / 5
+
+    def test_record_match_on_fresh_add_rule_entry(self, tmp_path):
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.add_rule("r2", "semgrep", "rules:\n  - id: r2\n")
+        # Reload: total_matches must come back as the persisted 0, not
+        # be silently replaced by total_variants.
+        lib = RuleLibrary(tmp_path / "lib")
+        lib.record_match("r2", is_tp=False)
+        entry = lib.all_entries()[0]
+        assert entry.total_matches == 1
+        assert entry.total_variants == 0
+        assert entry.tp_rate == 0.0
+
+
 class TestRuleLibraryStats:
     def test_stats_empty(self, tmp_path):
         lib = RuleLibrary(tmp_path / "lib")
@@ -557,3 +664,62 @@ class TestPromoteStoresSageMetadata:
             assert lib.promote(result) is None
 
         mock_store.assert_not_called()
+
+
+class TestAtomicRuleWrites:
+    """Module contract: manifest AND rule files are written atomically.
+
+    Both file-copy paths (promote-from-rule_path and graduate) must go
+    through ``core.atomic_fs`` — a concurrent /scan or /agentic reader
+    must never observe a half-copied rule file."""
+
+    @staticmethod
+    def _spy_atomic_writes(monkeypatch):
+        import packages.checker_synthesis.library as lib_mod
+
+        calls: list[Path] = []
+        real = lib_mod.write_bytes_atomically
+
+        def spy(path, content, **kwargs):
+            calls.append(Path(path))
+            real(path, content, **kwargs)
+
+        monkeypatch.setattr(lib_mod, "write_bytes_atomically", spy)
+        return calls
+
+    def test_promote_copies_rule_file_atomically(self, tmp_path, monkeypatch):
+        calls = self._spy_atomic_writes(monkeypatch)
+        lib = RuleLibrary(tmp_path / "lib")
+        result = _result()
+        rule_file = tmp_path / "r1.yml"
+        rule_file.write_text(result.rule.body)
+        result.rule_path = rule_file
+
+        entry = lib.promote(result, target_hash="t1", timestamp="ts")
+
+        assert entry is not None
+        dest = tmp_path / "lib" / "semgrep" / "r1.yml"
+        assert dest in calls
+        assert dest.read_text() == result.rule.body
+        # No orphaned tempfiles left next to the rule.
+        leftovers = [p for p in dest.parent.iterdir() if p.name != dest.name]
+        assert leftovers == []
+
+    def test_graduate_copies_rule_file_atomically(self, tmp_path, monkeypatch):
+        lib = RuleLibrary(tmp_path / "lib")
+        result = _result(matches=3)  # tp_rate 1.0, 3 variants, 3 matches
+        rule_file = tmp_path / "r1.yml"
+        rule_file.write_text(result.rule.body)
+        result.rule_path = rule_file
+        assert lib.promote(result, target_hash="t1", timestamp="ts") is not None
+
+        calls = self._spy_atomic_writes(monkeypatch)
+        engine_dir = tmp_path / "engine"
+        graduated = lib.graduate(engine_dir)
+
+        assert graduated == ["r1"]
+        dest = engine_dir / "semgrep" / "rules" / "r1.yaml"
+        assert dest in calls
+        assert dest.read_text() == result.rule.body
+        leftovers = [p for p in dest.parent.iterdir() if p.name != dest.name]
+        assert leftovers == []

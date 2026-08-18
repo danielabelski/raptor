@@ -27,13 +27,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.atomic_fs import write_text_atomically
+from core.atomic_fs import write_bytes_atomically, write_text_atomically
 
 from .cwe_families import cwe_siblings
 from .models import CheckerSynthesisResult, Match, MatchTriage
@@ -147,7 +146,7 @@ class LibraryEntry:
             tp_rate=d.get("tp_rate", 0.0),
             fp_rate=d.get("fp_rate", 0.0),
             total_variants=d.get("total_variants", 0),
-            total_matches=d.get("total_matches") or d.get("total_variants", 0),
+            total_matches=d.get("total_matches", d.get("total_variants", 0)),
             targets=[TargetRecord.from_dict(t) for t in d.get("targets", [])],
             archived=d.get("archived", False),
             source=d.get("source", ""),
@@ -347,7 +346,12 @@ class RuleLibrary:
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         if result.rule_path and Path(result.rule_path).exists():
-            shutil.copy2(str(result.rule_path), str(dest))
+            # Tempfile + rename so concurrent runs never see a
+            # partially-copied rule file (module contract: manifest
+            # AND rule files are written atomically).
+            write_bytes_atomically(
+                dest, Path(result.rule_path).read_bytes(), tmp_prefix=".rule-",
+            )
         else:
             write_text_atomically(dest, rule.body, tmp_prefix=".rule-")
 
@@ -377,6 +381,7 @@ class RuleLibrary:
             tp_rate=tp_rate,
             fp_rate=fp_rate,
             total_variants=variant_count,
+            total_matches=len(result.matches),
             targets=targets,
             source=source,
         )
@@ -408,6 +413,7 @@ class RuleLibrary:
                     tp_rate=tp_rate if result.triage else None,
                 ))
         entry.total_variants += variant_count
+        entry.total_matches += len(result.matches)
         self._recompute_aggregate(entry)
 
     def update(
@@ -435,6 +441,7 @@ class RuleLibrary:
                 tp_rate=tp_rate if triage else None,
             ))
         entry.total_variants += variant_count
+        entry.total_matches += len(matches)
         self._recompute_aggregate(entry)
         self._auto_archive(entry)
         self._save()
@@ -604,7 +611,12 @@ class RuleLibrary:
 
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(src), str(dest))
+                # Same atomicity contract as promote: /scan and
+                # /agentic may load engine rules while a graduate
+                # runs — they must never read a partial rule file.
+                write_bytes_atomically(
+                    dest, src.read_bytes(), tmp_prefix=".rule-",
+                )
                 graduated.append(entry.rule_id)
                 logger.info(
                     "graduated rule %s → %s (tp=%.0f%%, %d variants)",

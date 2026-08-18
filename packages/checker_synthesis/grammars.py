@@ -97,7 +97,7 @@ position pos;
 Remove lines with - prefix, add with + prefix:
 
 ```
-@@
+@ rule @
 expression E;
 @@
 - kfree(E);
@@ -110,7 +110,7 @@ expression E;
 code points:
 
 ```
-@@
+@ rule @
 expression E;
 @@
   E = malloc(...);
@@ -160,7 +160,7 @@ Group alternatives with ( ... | ... ) — opening paren, pipe, and
 closing paren must be in column 0 or preceded by backslash:
 
 ```
-@@
+@ rule @
 expression E;
 position pos;
 @@

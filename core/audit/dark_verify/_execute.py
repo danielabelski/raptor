@@ -632,13 +632,42 @@ def _run_native_binary(
     return _classify_native_output(spec, proc, sandbox_info, lang)
 
 
+def _sanitizer_matches(expected: str, detail: dict) -> bool:
+    """True when the observed sanitizer report matches the witness's
+    stated expectation.
+
+    ``expected`` is the LLM-predicted error type (e.g.
+    ``"heap-buffer-overflow"``) or a sanitizer family name
+    (``"asan"``). The sandbox classifier reports the family in
+    ``detail["sanitizer"]`` and the report's bug type inside
+    ``detail["evidence"]`` (``"AddressSanitizer: heap-buffer-overflow"``).
+    """
+    exp = (expected or "").strip().lower()
+    if not exp:
+        return False
+    family = str(detail.get("sanitizer", "")).strip().lower()
+    if exp == family:
+        return True
+    evidence = str(detail.get("evidence", "")).lower()
+    return bool(evidence) and exp in evidence
+
+
 def _classify_native_output(
     spec: DarkWitnessSpec,
     proc: subprocess.CompletedProcess,
     sandbox_info: dict | None,
     lang: str,
 ) -> DarkVerifyResult:
-    """Classify output from a native binary execution."""
+    """Classify output from a native binary execution.
+
+    Confirmation is bound to the witness's stated expectation: a
+    sanitizer report must match ``expected_sanitizer`` when one was
+    predicted, and a crash only confirms when the witness predicted a
+    crash. An unpredicted crash/report proves the *witness* is wrong
+    about the mechanism, not that the hypothesis is right — it never
+    confirms (a harness bug, a bad argument expression, or an
+    unrelated defect all crash too).
+    """
     from core.witness.sandbox_outcome import outcome_from_sandbox_info
     from core.witness.types import WitnessOutcome
 
@@ -646,24 +675,74 @@ def _classify_native_output(
 
     if outcome == WitnessOutcome.SANITIZER_REPORT:
         sanitizer_type = detail.get("sanitizer", "")
+        if spec.expected_sanitizer:
+            if _sanitizer_matches(spec.expected_sanitizer, detail):
+                return DarkVerifyResult(
+                    finding_key=spec.finding_key,
+                    verdict="confirmed",
+                    language=lang,
+                    actual_exception=f"sanitizer: {sanitizer_type}",
+                    match_detail=(
+                        f"sanitizer report matches prediction "
+                        f"({spec.expected_sanitizer})"
+                    ),
+                )
+            return DarkVerifyResult(
+                finding_key=spec.finding_key,
+                verdict="inconclusive",
+                language=lang,
+                actual_exception=f"sanitizer: {sanitizer_type}",
+                match_detail=(
+                    f"sanitizer fired ({sanitizer_type}) but does not "
+                    f"match expected {spec.expected_sanitizer}"
+                ),
+            )
+        if spec.expected_crash:
+            return DarkVerifyResult(
+                finding_key=spec.finding_key,
+                verdict="confirmed",
+                language=lang,
+                actual_exception=f"sanitizer: {sanitizer_type}",
+                match_detail=f"ASan/UBSan fired: {sanitizer_type}",
+            )
         return DarkVerifyResult(
             finding_key=spec.finding_key,
-            verdict="confirmed",
+            verdict="inconclusive",
             language=lang,
             actual_exception=f"sanitizer: {sanitizer_type}",
-            match_detail=f"ASan/UBSan fired: {sanitizer_type}",
+            match_detail=(
+                f"unexpected sanitizer report ({sanitizer_type}) — "
+                f"witness predicted no crash; not accepted as "
+                f"confirmation"
+            ),
         )
 
     if outcome == WitnessOutcome.EXIT_SIGNAL:
         signal = detail.get("signal", "unknown")
+        if detail.get("resource_exceeded") or detail.get("seccomp_killed"):
+            return DarkVerifyResult(
+                finding_key=spec.finding_key, verdict="inconclusive",
+                language=lang,
+                actual_exception=f"signal: {signal}",
+                match_detail=(
+                    f"process killed by {signal} (resource limit / "
+                    f"seccomp), not a target crash"
+                ),
+            )
+        if spec.expected_crash:
+            return DarkVerifyResult(
+                finding_key=spec.finding_key, verdict="confirmed",
+                language=lang,
+                actual_exception=f"signal: {signal}",
+                match_detail=f"crash signal {signal} matches prediction",
+            )
         return DarkVerifyResult(
-            finding_key=spec.finding_key, verdict="confirmed",
+            finding_key=spec.finding_key, verdict="inconclusive",
             language=lang,
             actual_exception=f"signal: {signal}",
             match_detail=(
-                f"crash signal {signal} confirms bug"
-                if spec.expected_crash
-                else f"unexpected crash ({signal}) confirms bug"
+                f"unexpected crash ({signal}) — witness predicted "
+                f"normal completion; not accepted as confirmation"
             ),
         )
 

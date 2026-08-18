@@ -389,6 +389,104 @@ class TestClassifyOutput:
         assert r.verdict == "inconclusive"
 
 
+# -- _classify_native_output --------------------------------------------------
+
+
+def _native_proc(stdout="", returncode=0):
+    import subprocess as sp
+    return sp.CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr="",
+    )
+
+
+def _native_spec(**kwargs):
+    return DarkWitnessSpec(
+        finding_key="f1", file="a.c", function="f", language="c", **kwargs,
+    )
+
+
+class TestClassifyNativeOutput:
+    """The native oracle is bound to the witness's stated expectation —
+    an arbitrary crash/sanitizer report never confirms an arbitrary
+    hypothesis."""
+
+    def test_sanitizer_matching_expected_type_confirms(self):
+        spec = _native_spec(
+            expected_crash=True, expected_sanitizer="heap-buffer-overflow",
+        )
+        info = {
+            "sanitizer": "asan",
+            "evidence": "AddressSanitizer: heap-buffer-overflow",
+        }
+        r = ex._classify_native_output(spec, _native_proc(returncode=1), info, "c")
+        assert r.verdict == "confirmed"
+        assert "heap-buffer-overflow" in r.match_detail
+
+    def test_sanitizer_matching_family_confirms(self):
+        spec = _native_spec(expected_crash=True, expected_sanitizer="asan")
+        info = {"sanitizer": "asan", "evidence": "AddressSanitizer: unknown"}
+        r = ex._classify_native_output(spec, _native_proc(returncode=1), info, "c")
+        assert r.verdict == "confirmed"
+
+    def test_sanitizer_mismatch_is_inconclusive(self):
+        spec = _native_spec(
+            expected_crash=True, expected_sanitizer="heap-buffer-overflow",
+        )
+        info = {
+            "sanitizer": "ubsan",
+            "evidence": "UndefinedBehaviorSanitizer triggered",
+        }
+        r = ex._classify_native_output(spec, _native_proc(returncode=1), info, "c")
+        assert r.verdict == "inconclusive"
+        assert "does not match" in r.match_detail
+
+    def test_sanitizer_with_expected_crash_only_confirms(self):
+        spec = _native_spec(expected_crash=True)
+        info = {"sanitizer": "asan", "evidence": "AddressSanitizer: sega"}
+        r = ex._classify_native_output(spec, _native_proc(returncode=1), info, "c")
+        assert r.verdict == "confirmed"
+
+    def test_unexpected_sanitizer_never_confirms(self):
+        """expected_crash=False: a sanitizer report is NOT confirmation."""
+        spec = _native_spec(expected_return="7")
+        info = {"sanitizer": "asan", "evidence": "AddressSanitizer: sega"}
+        r = ex._classify_native_output(spec, _native_proc(returncode=1), info, "c")
+        assert r.verdict == "inconclusive"
+
+    def test_expected_crash_signal_confirms(self):
+        spec = _native_spec(expected_crash=True)
+        info = {"signal": "SIGSEGV", "signal_num": 11, "crashed": True}
+        r = ex._classify_native_output(spec, _native_proc(returncode=-11), info, "c")
+        assert r.verdict == "confirmed"
+        assert "SIGSEGV" in r.actual_exception
+
+    def test_unexpected_crash_never_confirms(self):
+        """expected_crash=False: a crash proves the witness wrong, not
+        the hypothesis right."""
+        spec = _native_spec(expected_return="7")
+        info = {"signal": "SIGSEGV", "signal_num": 11, "crashed": True}
+        r = ex._classify_native_output(spec, _native_proc(returncode=-11), info, "c")
+        assert r.verdict == "inconclusive"
+        assert "not accepted as confirmation" in r.match_detail
+
+    def test_resource_kill_never_confirms(self):
+        spec = _native_spec(expected_crash=True)
+        info = {"signal": "SIGXCPU", "resource_exceeded": True}
+        r = ex._classify_native_output(spec, _native_proc(returncode=-24), info, "c")
+        assert r.verdict == "inconclusive"
+
+    def test_seccomp_kill_never_confirms(self):
+        spec = _native_spec(expected_crash=True)
+        info = {"signal": "SIGSYS", "seccomp_killed": True}
+        r = ex._classify_native_output(spec, _native_proc(returncode=-31), info, "c")
+        assert r.verdict == "inconclusive"
+
+    def test_expected_crash_normal_exit_refutes(self):
+        spec = _native_spec(expected_crash=True)
+        r = ex._classify_native_output(spec, _native_proc(stdout="{}"), None, "c")
+        assert r.verdict == "refuted"
+
+
 # -- validate_spec -----------------------------------------------------------
 
 

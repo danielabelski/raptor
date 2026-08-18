@@ -1135,6 +1135,11 @@
   "count": 10,
   "kind": "literal"
  },
+ "core/recall/score.py::to_dict": {
+  "count": 16,
+  "kind": "literal",
+  "note": "recall-report field names (counts/percentages/lists of the recall measurement JSON), not name vocabulary \u2014 same class as the finding-dict field-name entries"
+ },
  "core/reporting/findings.py::counts": {
   "count": 10,
   "kind": "literal"

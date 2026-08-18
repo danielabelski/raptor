@@ -5,6 +5,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from core.coverage.record import (
     READS_MANIFEST,
@@ -53,6 +54,99 @@ class TestBuildFromManifest(unittest.TestCase):
             self.assertIn("b.py", record["files_examined"])
 
 
+class TestManifestSharedLock(unittest.TestCase):
+    """``build_from_manifest`` takes LOCK_SH like ``build_from_findings``
+    — the two manifest readers coordinate with the writer via the same
+    shared flock."""
+
+    def test_build_from_manifest_takes_shared_flock(self):
+        import fcntl
+        calls = []
+        real_flock = fcntl.flock
+
+        def recording_flock(fd, op):
+            calls.append(op)
+            return real_flock(fd, op)
+
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / READS_MANIFEST
+            manifest.write_text("src/a.py\n")
+            with patch("fcntl.flock", side_effect=recording_flock):
+                record = build_from_manifest(Path(d), "test")
+            self.assertEqual(record["files_examined"], ["src/a.py"])
+            self.assertIn(fcntl.LOCK_SH, calls)
+
+    def test_build_from_findings_takes_shared_flock(self):
+        import fcntl
+        calls = []
+        real_flock = fcntl.flock
+
+        def recording_flock(fd, op):
+            calls.append(op)
+            return real_flock(fd, op)
+
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / READS_MANIFEST
+            manifest.write_text("src/a.py\n")
+            findings = Path(d) / "findings.json"
+            findings.write_text(json.dumps({"findings": []}))
+            with patch("fcntl.flock", side_effect=recording_flock):
+                record = build_from_findings(findings, manifest)
+            self.assertEqual(record["files_examined"], ["src/a.py"])
+            self.assertIn(fcntl.LOCK_SH, calls)
+
+    def test_flock_failure_falls_back_to_unlocked_read(self):
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / READS_MANIFEST
+            manifest.write_text("src/a.py\n")
+            with patch("fcntl.flock", side_effect=OSError("no locks")):
+                record = build_from_manifest(Path(d), "test")
+            self.assertEqual(record["files_examined"], ["src/a.py"])
+
+
+class TestManifestCapAndDecoding(unittest.TestCase):
+    """``build_from_manifest`` gets the same size cap + tolerant decode
+    as ``build_from_findings``."""
+
+    def test_build_from_manifest_honours_cap(self):
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / READS_MANIFEST
+            manifest.write_text("a.py\nb.py\nc.py\n")
+            with patch("core.coverage.record._MANIFEST_CAP", 8):
+                record = build_from_manifest(Path(d), "test")
+            # a.py\n (5 bytes) fits; b.py\n pushes past the 8-byte cap.
+            self.assertEqual(record["files_examined"], ["a.py"])
+
+    def test_build_from_findings_honours_cap(self):
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / READS_MANIFEST
+            manifest.write_text("a.py\nb.py\nc.py\n")
+            findings = Path(d) / "findings.json"
+            findings.write_text(json.dumps({"findings": []}))
+            with patch("core.coverage.record._MANIFEST_CAP", 8):
+                record = build_from_findings(findings, manifest)
+            self.assertEqual(record["files_examined"], ["a.py"])
+
+    def test_invalid_utf8_does_not_raise(self):
+        # Pre-fix build_from_manifest used strict utf-8 decoding;
+        # a UnicodeDecodeError escaped the OSError handler and
+        # crashed the caller. Now decoded with errors="replace".
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / READS_MANIFEST
+            manifest.write_bytes(b"good.py\n\xff\xfe-bad\ngood2.py\n")
+            record = build_from_manifest(Path(d), "test")
+            self.assertIn("good.py", record["files_examined"])
+            self.assertIn("good2.py", record["files_examined"])
+
+    def test_trailing_space_filename_preserved(self):
+        # rstrip("\r\n") only — POSIX filenames may end with a space.
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / READS_MANIFEST
+            manifest.write_text("src/odd name .py\r\n")
+            record = build_from_manifest(Path(d), "test")
+            self.assertEqual(record["files_examined"], ["src/odd name .py"])
+
+
 class TestBuildFromSemgrep(unittest.TestCase):
 
     def test_builds_from_semgrep_json(self):
@@ -82,6 +176,18 @@ class TestBuildFromSemgrep(unittest.TestCase):
             record = build_from_semgrep(Path(d), semgrep_json)
             self.assertEqual(len(record["files_failed"]), 1)
             self.assertEqual(record["files_failed"][0]["path"], "src/bad.js")
+
+    def test_all_pathless_errors_omit_files_failed(self):
+        """When every error lacks a path, no phantom empty
+        files_failed list is emitted."""
+        with TemporaryDirectory() as d:
+            semgrep_json = Path(d) / "semgrep.json"
+            semgrep_json.write_text(json.dumps({
+                "paths": {"scanned": ["src/a.py"]},
+                "errors": [{"message": "timeout"}, {"path": "", "message": "x"}],
+            }))
+            record = build_from_semgrep(Path(d), semgrep_json)
+            self.assertNotIn("files_failed", record)
 
     def test_returns_none_without_scanned(self):
         with TemporaryDirectory() as d:
@@ -138,6 +244,26 @@ class TestBuildFromCodeQL(unittest.TestCase):
             record = build_from_codeql(sarif)
             self.assertEqual(len(record["files_failed"]), 1)
             self.assertEqual(record["files_failed"][0]["path"], "src/bad.c")
+
+    def test_all_pathless_failures_omit_files_failed(self):
+        """Notifications with no file location (e.g. a global
+        extraction error) don't produce an empty files_failed list."""
+        with TemporaryDirectory() as d:
+            sarif = Path(d) / "results.sarif"
+            sarif.write_text(json.dumps({
+                "runs": [{
+                    "artifacts": [{"location": {"uri": "src/a.c"}}],
+                    "tool": {"driver": {"name": "codeql"}},
+                    "invocations": [{
+                        "toolExecutionNotifications": [
+                            {"level": "error",
+                             "message": {"text": "global extraction error"}},
+                        ],
+                    }],
+                }],
+            }))
+            record = build_from_codeql(sarif)
+            self.assertNotIn("files_failed", record)
 
     def test_returns_none_without_artifacts(self):
         with TemporaryDirectory() as d:
@@ -213,6 +339,29 @@ class TestBuildFromCocci(unittest.TestCase):
         self.assertEqual(record["files_failed"][0]["path"], "broken_rule")
         self.assertIn("unbound metavariable",
                       record["files_failed"][0]["reason"])
+
+    def test_error_without_rule_name_not_in_files_failed(self):
+        """An error on a result with no rule name is dropped —
+        ``build_from_cocci`` filters empty-path failures like its
+        semgrep/codeql siblings."""
+        results = [_StubSpatchResult(rule="", files_examined=["a.c"],
+                                     errors=["spatch exploded"])]
+        record = build_from_cocci(results)
+        self.assertNotIn("files_failed", record)
+        self.assertEqual(record["files_examined"], ["a.c"])
+
+    def test_named_rule_failure_kept_alongside_unnamed(self):
+        """Filtering unnamed-rule errors must not drop failures that
+        DO carry a rule name."""
+        results = [
+            _StubSpatchResult(rule="", files_examined=["a.c"],
+                              errors=["anonymous failure"]),
+            _StubSpatchResult(rule="good_rule", files_examined=["b.c"],
+                              errors=["parse error"]),
+        ]
+        record = build_from_cocci(results)
+        self.assertEqual(len(record["files_failed"]), 1)
+        self.assertEqual(record["files_failed"][0]["path"], "good_rule")
 
     def test_dedupes_files_across_rules(self):
         """Two rules examining the same files → ``files_examined``

@@ -14,6 +14,76 @@ from core.json import load_json, save_json
 COVERAGE_RECORD_FILE = "coverage-record.json"  # legacy single-file name
 READS_MANIFEST = ".reads-manifest"
 
+# Ceiling on how much of the reads manifest a single reader ingests.
+# Legitimate /agentic runs produce manifests under 5 MB even on large
+# monorepos; 64 MB is a generous ceiling. In adversarial cases (the
+# PostToolUse hook fires on every Read, an LLM in a tight loop reads
+# thousands of small files) the manifest can reach hundreds of MB —
+# better a partial coverage record than an OOM.
+_MANIFEST_CAP = 64 * 1024 * 1024
+
+
+def _read_manifest_lines(manifest_path: Path) -> set[str]:
+    """Read reads-manifest paths under a shared flock with a size cap.
+
+    Single reader for the hook-written ``.reads-manifest`` so every
+    consumer (``build_from_manifest``, ``build_from_findings``) gets
+    the same reader-writer coordination and memory ceiling.
+
+    Hold a shared flock during the read so an in-flight writer (the
+    PostToolUse hook in plugins/coverage/) can't interleave a partial
+    line into our buffered iteration — the hook side serialises
+    appends via flock LOCK_EX on the same path; taking LOCK_SH here
+    completes the coordination. fcntl.flock is non-fatal: on platforms
+    without flock (Windows; raptor doesn't really support them but the
+    import is best-effort) we fall back to an unlocked read.
+
+    Use ``rstrip("\\r\\n")`` not ``strip()`` — the latter also trims
+    leading/trailing spaces, but POSIX permits filenames that
+    legitimately START or END with a space. ``track_read`` already
+    rejects NUL/CR/LF in the path itself, so a manifest line carrying
+    a filename with a trailing space made it in legitimately. Only
+    newline-style line terminators need removing.
+
+    Best-effort: returns an empty set when the manifest is missing or
+    unreadable.
+    """
+    files: set[str] = set()
+    if not manifest_path.exists():
+        return files
+    try:
+        try:
+            import fcntl as _fcntl
+        except ImportError:
+            _fcntl = None
+        with open(manifest_path, "r", encoding="utf-8",
+                  errors="replace") as f:
+            if _fcntl is not None:
+                try:
+                    _fcntl.flock(f, _fcntl.LOCK_SH)
+                except OSError:
+                    pass
+            bytes_read = 0
+            for line in f:
+                bytes_read += len(line)
+                if bytes_read > _MANIFEST_CAP:
+                    # Cap hit — log and stop. The remaining entries
+                    # don't make it into the coverage record.
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "coverage manifest %s exceeded %d-byte cap; "
+                        "truncating coverage record (read %d files)",
+                        manifest_path, _MANIFEST_CAP, len(files),
+                    )
+                    break
+                line = line.rstrip("\r\n")
+                if line:
+                    files.add(line)
+            # The flock releases when the file is closed.
+    except OSError:
+        pass
+    return files
+
 
 def build_from_manifest(run_dir: Path, tool: str,
                         rules_applied: list[str] | None = None,
@@ -21,7 +91,9 @@ def build_from_manifest(run_dir: Path, tool: str,
     """Build a coverage record from the reads manifest.
 
     The manifest is populated by the PostToolUse hook on Read.
-    Deduplicates and normalises paths relative to the target.
+    Deduplicates the raw manifest lines; path normalisation against the
+    target happens downstream when the record is imported
+    (:mod:`core.coverage.importer`).
 
     Args:
         run_dir: Run output directory containing .reads-manifest.
@@ -35,24 +107,10 @@ def build_from_manifest(run_dir: Path, tool: str,
     run_dir = Path(run_dir)
     manifest = run_dir / READS_MANIFEST
 
-    files = set()
-
-    # Read manifest. Use `rstrip("\r\n")` not `strip()` — the latter
-    # also trims leading/trailing spaces, but POSIX permits filenames
-    # that legitimately START or END with a space. `track_read`
-    # already rejects NUL/CR/LF in the path itself (batch 207), so
-    # a manifest line carrying a filename with a trailing space
-    # made it in legitimately and was then silently mangled by
-    # `strip()` here. Only newline-style line terminators need
-    # removing.
-    if manifest.exists():
-        try:
-            for line in manifest.read_text(encoding="utf-8").splitlines():
-                line = line.rstrip("\r\n")
-                if line:
-                    files.add(line)
-        except OSError:
-            pass
+    # Locked, capped, streaming read — the manifest is appended to by
+    # the PostToolUse hook (LOCK_EX side), so this reader needs the
+    # same LOCK_SH coordination as ``build_from_findings``.
+    files = _read_manifest_lines(manifest)
 
     # Add extra files from tool-specific sources
     if extra_files:
@@ -120,11 +178,12 @@ def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
         record["version"] = version
     if rules_applied:
         record["rules_applied"] = rules_applied
-    if errors:
-        record["files_failed"] = [
-            {"path": e.get("path", ""), "reason": e.get("message", "error")}
-            for e in errors if e.get("path")
-        ]
+    failed = [
+        {"path": e.get("path", ""), "reason": e.get("message", "error")}
+        for e in errors if e.get("path")
+    ]
+    if failed:
+        record["files_failed"] = failed
 
     return record
 
@@ -194,6 +253,10 @@ def build_from_cocci(spatch_results: list[Any],
         record["version"] = spatch_version
     if rules_applied:
         record["rules_applied"] = sorted(set(rules_applied))
+    # Match the sibling builders (semgrep, codeql): drop failures with
+    # an empty path — a SpatchResult with errors but no rule name
+    # would otherwise emit a phantom empty-path files_failed entry.
+    failures = [f for f in failures if f["path"]]
     if failures:
         record["files_failed"] = failures
 
@@ -260,8 +323,9 @@ def build_from_codeql(sarif_path: Path) -> dict[str, Any] | None:
         record["packs"] = packs
     if rules:
         record["rules_applied"] = sorted(set(rules))
+    failures = [f for f in failures if f["path"]]
     if failures:
-        record["files_failed"] = [f for f in failures if f["path"]]
+        record["files_failed"] = failures
 
     return record
 
@@ -290,72 +354,11 @@ def build_from_findings(findings_path: Path, reads_manifest_path: Path | None = 
             functions.append({"file": file_path, "function": func})
             finding_files.add(file_path)
 
-    # Files examined (from reads manifest).
-    #
-    # Pre-fix `read_text().splitlines()` materialised the entire
-    # manifest into memory in two passes — once as a single
-    # string, then split into a list of lines. For a long-running
-    # /agentic session that read tens of thousands of files, the
-    # manifest can grow to multi-MB; in adversarial cases (a
-    # PostToolUse hook fires on every Read, an LLM in a tight
-    # loop reads thousands of small files), the manifest can
-    # reach hundreds of MB. The double-buffering then took
-    # 2x peak RSS just for the read.
-    #
-    # Cap the read at 64 MB. Legitimate /agentic runs produce
-    # manifests under 5 MB even on large monorepos; 64 MB is a
-    # generous ceiling. Stream line-by-line so the manifest
-    # isn't fully buffered. On read failure (OSError), the cap
-    # is irrelevant — we just skip.
-    _MANIFEST_CAP = 64 * 1024 * 1024
+    # Files examined (from reads manifest) — locked, capped,
+    # streaming read shared with ``build_from_manifest``.
     read_files = set()
-    if reads_manifest_path and reads_manifest_path.exists():
-        try:
-            # Hold a shared flock during the read so an in-flight
-            # writer (the PostToolUse hook in plugins/coverage/) can't
-            # interleave a partial line into our buffered iteration.
-            # Pre-fix the reader iterated line-by-line without any
-            # lock — a writer's append occurring between the kernel
-            # buffer-fill and our newline-split would surface as a
-            # torn final line in the iteration. The hook side already
-            # serialises appends via flock LOCK_EX on the same path;
-            # taking LOCK_SH here completes the reader-writer
-            # coordination. fcntl.flock is non-fatal: on platforms
-            # without flock (Windows; raptor doesn't really support
-            # them but the import is best-effort) we fall back to
-            # unlocked read.
-            try:
-                import fcntl as _fcntl
-            except ImportError:
-                _fcntl = None
-            with open(reads_manifest_path, "r", encoding="utf-8",
-                      errors="replace") as f:
-                if _fcntl is not None:
-                    try:
-                        _fcntl.flock(f, _fcntl.LOCK_SH)
-                    except OSError:
-                        pass
-                bytes_read = 0
-                for line in f:
-                    bytes_read += len(line)
-                    if bytes_read > _MANIFEST_CAP:
-                        # Cap hit — log and stop. The remaining
-                        # entries don't make it into the
-                        # coverage record. Better partial than
-                        # OOM.
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            "coverage manifest %s exceeded %d-byte cap; "
-                            "truncating coverage record (read %d files)",
-                            reads_manifest_path, _MANIFEST_CAP, len(read_files),
-                        )
-                        break
-                    line = line.rstrip("\r\n")
-                    if line:
-                        read_files.add(line)
-                # The flock releases when the file is closed.
-        except OSError:
-            pass
+    if reads_manifest_path:
+        read_files = _read_manifest_lines(reads_manifest_path)
 
     all_files = sorted(read_files | finding_files)
 

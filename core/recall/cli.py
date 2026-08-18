@@ -60,11 +60,20 @@ def _cmd_run(args: argparse.Namespace) -> int:
     out_dir = args.out or _default_out()
     out_dir.mkdir(parents=True, exist_ok=True)
     repo_root = _repo_root()
+    pipeline_dir = (args.pipeline_dir.resolve()
+                    if args.pipeline_dir else repo_root)
+    if not (pipeline_dir / "raptor.py").is_file():
+        print(f"error: --pipeline-dir {pipeline_dir} does not contain "
+              "raptor.py", file=sys.stderr)
+        return 2
 
     try:
+        # Manifest-relative paths resolve against the HARNESS tree; the
+        # pipeline dir only selects which detector build runs, so two
+        # builds can be measured against one manifest.
         target = verify_pinned_clone(manifest, repo_root)
         pipeline_out = run_pipeline(
-            manifest, target, repo_root, out_dir / "pipeline.log",
+            manifest, target, pipeline_dir, out_dir / "pipeline.log",
             timeout_s=args.timeout)
         produced = collect_findings(pipeline_out, source_root=target)
     except RunnerError as exc:
@@ -123,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
                        help="override the manifest's detection profile")
     run_p.add_argument("--allow-llm", action="store_true",
                        help="required for LLM-tier profiles (agentic)")
+    run_p.add_argument("--pipeline-dir", type=Path, default=None,
+                       help="RAPTOR checkout whose raptor.py runs the "
+                            "profile (default: this tree) — lets two "
+                            "detector builds be measured against one "
+                            "manifest for before/after deltas")
     run_p.add_argument("--timeout", type=int, default=4 * 3600,
                        help="pipeline timeout in seconds")
     run_p.set_defaults(func=_cmd_run)

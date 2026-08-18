@@ -422,3 +422,171 @@ def _synthesis_patches():
             }
 
     return _ctx()
+
+
+class _ReserveClient:
+    """Budget-client stand-in recording reserve traffic."""
+
+    def __init__(self, cap):
+        self.config = SimpleNamespace(max_cost_per_scan=cap)
+        self.held = 0.0
+        self.hold_calls = []
+        self.release_calls = 0
+
+    def hold_budget_reserve(self, amount):
+        self.hold_calls.append(amount)
+        self.held = amount
+        return amount
+
+    def release_budget_reserve(self):
+        self.release_calls += 1
+        released, self.held = self.held, 0.0
+        return released
+
+
+class TestReviewReserve:
+    def test_hold_takes_fraction_of_cap(self, tmp_path, caplog):
+        from core.audit.orchestrator import _hold_review_reserve
+
+        client = _ReserveClient(cap=100.0)
+        config = _config(
+            tmp_path, review_reserve_fraction=0.35,
+            llm_budget_client=client,
+        )
+        with caplog.at_level(logging.INFO, logger="core.audit.orchestrator"):
+            held = _hold_review_reserve(config)
+        assert held == 35.0
+        assert client.hold_calls == [35.0]
+        assert any("review: holding" in r.message for r in caplog.records)
+
+    def test_zero_fraction_is_default_off(self, tmp_path):
+        from core.audit.orchestrator import _hold_review_reserve
+
+        client = _ReserveClient(cap=100.0)
+        config = _config(tmp_path, llm_budget_client=client)
+        assert _hold_review_reserve(config) == 0.0
+        assert client.hold_calls == []
+
+    def test_infinite_or_missing_cap_holds_nothing(self, tmp_path):
+        from core.audit.orchestrator import _hold_review_reserve
+
+        client = _ReserveClient(cap=float("inf"))
+        config = _config(
+            tmp_path, review_reserve_fraction=0.35,
+            llm_budget_client=client,
+        )
+        assert _hold_review_reserve(config) == 0.0
+        config.llm_budget_client = None
+        assert _hold_review_reserve(config) == 0.0
+
+    def test_release_returns_reserve(self, tmp_path, caplog):
+        from core.audit.orchestrator import (
+            _hold_review_reserve,
+            _release_review_reserve,
+        )
+
+        client = _ReserveClient(cap=200.0)
+        config = _config(
+            tmp_path, review_reserve_fraction=0.5,
+            llm_budget_client=client,
+        )
+        _hold_review_reserve(config)
+        with caplog.at_level(logging.INFO, logger="core.audit.orchestrator"):
+            _release_review_reserve(config)
+        assert client.release_calls == 1
+        assert client.held == 0.0
+        assert any("review: released" in r.message for r in caplog.records)
+
+    def test_fraction_clamped_below_whole_cap(self, tmp_path):
+        from core.audit.orchestrator import _hold_review_reserve
+
+        client = _ReserveClient(cap=100.0)
+        config = _config(
+            tmp_path, review_reserve_fraction=1.5,
+            llm_budget_client=client,
+        )
+        assert _hold_review_reserve(config) == 90.0
+
+    def test_opts_thread_review_reserve_fraction(self, tmp_path):
+        from core.audit.pipeline import ReviewMode
+
+        opts = AuditPipelineOpts(
+            target_path=tmp_path, out_dir=tmp_path,
+            review_reserve_fraction=0.35,
+        )
+        config = _build_orchestrator_config(
+            opts, _StubClient(), ["default"], ReviewMode.SECURITY,
+        )
+        assert config.review_reserve_fraction == 0.35
+        # None (default) leaves the orchestrator default (off).
+        opts = AuditPipelineOpts(target_path=tmp_path, out_dir=tmp_path)
+        config = _build_orchestrator_config(
+            opts, _StubClient(), ["default"], ReviewMode.SECURITY,
+        )
+        assert config.review_reserve_fraction == 0.0
+
+
+class TestGroupBudgetFormula:
+    def test_scales_with_label_weight(self):
+        from core.audit.corpus.run_corpus import (
+            GROUP_BUDGET_BASE_USD,
+            GROUP_BUDGET_PER_LABEL_USD,
+            _group_max_cost,
+        )
+
+        assert _group_max_cost(1) == (
+            GROUP_BUDGET_BASE_USD + GROUP_BUDGET_PER_LABEL_USD
+        )
+        assert _group_max_cost(2) > _group_max_cost(1)
+
+    def test_fifteen_label_anchor_matches_old_flat_cap(self):
+        """30 + 8 * 15 = 150 — the historical flat per-group cap."""
+        from core.audit.corpus.run_corpus import _group_max_cost
+
+        assert _group_max_cost(15) == 150.0
+
+    def test_cap_bounds_large_groups(self):
+        from core.audit.corpus.run_corpus import (
+            GROUP_BUDGET_CAP_USD,
+            _group_max_cost,
+        )
+
+        assert _group_max_cost(80) == GROUP_BUDGET_CAP_USD
+        assert _group_max_cost(10_000) == GROUP_BUDGET_CAP_USD
+
+    def test_target_opts_use_formula_and_reserve(self, tmp_path, monkeypatch):
+        import core.audit.corpus.run_corpus as run_corpus
+        import core.audit.pipeline as pipeline
+
+        captured = []
+        monkeypatch.setattr(
+            pipeline, "run_audit_pipeline", captured.append,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_build_checklist", lambda t, o: True,
+        )
+        src = tmp_path / "repo"
+        src.mkdir()
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+        labels = [
+            SimpleNamespace(
+                function_id=f"a.c:f{i}",
+                bug_class="auth",
+                expected_status="clean",
+                expected_mechanism="",
+                expected_mode_results={},
+                source=SimpleNamespace(
+                    repo="test", sha="x", file="a.c",
+                    line_start=1, line_end=6,
+                ),
+            )
+            for i in range(3)
+        ]
+        run_corpus._run_audit_on_target(
+            src, labels, out_dir=tmp_path / "out", mode="security",
+        )
+        opts = captured[0]
+        assert opts.max_cost_usd == run_corpus._group_max_cost(3)
+        assert opts.review_reserve_fraction == (
+            run_corpus.GROUP_REVIEW_RESERVE_FRACTION
+        )

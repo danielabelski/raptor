@@ -158,6 +158,10 @@ class AuditPipelineOpts:
     # Slice of --max-cost held back for the deepen phase so announced
     # re-reviews can execute (None = orchestrator default).
     deepen_reserve_fraction: float | None = None
+    # Slice of --max-cost held back from the pre-review bulk passes
+    # so the review loop is guaranteed headroom (None = orchestrator
+    # default, off). The corpus runner sets it per group.
+    review_reserve_fraction: float | None = None
     # Same-run resume (raptor-audit resume): re-import this run's own
     # journal verdicts at $0 and re-review only the remaining gaps.
     same_run_reuse: bool = False
@@ -313,6 +317,8 @@ def _build_orchestrator_config(
         probe_determine_value=opts.probe_determine_value,
         **({"deepen_reserve_fraction": opts.deepen_reserve_fraction}
            if opts.deepen_reserve_fraction is not None else {}),
+        **({"review_reserve_fraction": opts.review_reserve_fraction}
+           if opts.review_reserve_fraction is not None else {}),
         same_run_reuse=opts.same_run_reuse,
         prior_cost_breakdown=opts.prior_cost_breakdown,
         resume_segment=opts.resume_segment,

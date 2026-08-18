@@ -413,6 +413,16 @@ class OrchestratorConfig:
     # the deepen phase starts (or immediately when deepen has nothing
     # to do). 0 disables the reserve.
     deepen_reserve_fraction: float = 0.15
+    # Slice of the LLM cost cap held back from the PRE-review bulk
+    # passes (prep, study, synthesis, summaries) so the per-function
+    # review loop is guaranteed headroom. Held on the budget client at
+    # run start, released when the review executor takes over (the
+    # deepen reserve then takes its own slice for re-reviews). Same
+    # mechanism as deepen_reserve_fraction — the client holds one
+    # reserve at a time, and the two phases hand it over. 0 (default)
+    # disables it; the corpus runner sets it so label reviews are
+    # never starved by a hungry prep phase.
+    review_reserve_fraction: float = 0.0
     enable_session_context: bool = True
     review_passes: int = 1
     max_propagation_depth: int | None = None
@@ -5088,6 +5098,14 @@ def _run_audit_body(
     global _active_target_path
     _active_target_path = config.target_path
 
+    # --- Review budget reserve ---
+    # Held before ANY bulk pass spends (prep, study, synthesis,
+    # summaries): they gate against cap - reserve, guaranteeing the
+    # per-function review loop its slice. Released right before the
+    # executor starts; the deepen reserve then takes over for the
+    # announced re-reviews.
+    review_reserve_held = _hold_review_reserve(config)
+
     if joern_server is not None:
         from core.analysis.reach_audit import set_joern_server
 
@@ -5869,6 +5887,8 @@ def _run_audit_body(
     # execute the re-reviews it announces; the discovery loop (and the
     # study/synthesis passes that run before deepen) gate against
     # cap - reserve. Released right before the deepen phase.
+    if review_reserve_held:
+        _release_review_reserve(config)
     deepen_reserve_held = _hold_deepen_reserve(config)
 
     executor_stats = run_executor_sync(
@@ -9223,6 +9243,56 @@ def _record_executor_stop(result: OrchestratorResult, executor_stats: Any) -> No
     """
     if executor_stats.budget_stopped and result.terminated_by == "complete":
         result.terminated_by = "shutdown"
+
+
+def _hold_review_reserve(config: OrchestratorConfig) -> float:
+    """Hold the review loop's budget slice on the run's budget client.
+
+    Mirrors :func:`_hold_deepen_reserve` for the phase boundary one
+    step earlier: the pre-review bulk passes gate against
+    ``cap - reserve`` so the per-function reviews (and the deepen
+    re-reviews after them) can always execute. Returns the amount
+    held (0.0 when no reserve was taken)."""
+    fraction = getattr(config, "review_reserve_fraction", 0.0) or 0.0
+    if fraction <= 0:
+        return 0.0
+    client = getattr(config, "llm_budget_client", None)
+    if client is None or not hasattr(client, "hold_budget_reserve"):
+        return 0.0
+    try:
+        cap = getattr(
+            getattr(client, "config", None), "max_cost_per_scan", 0,
+        ) or 0
+        if not cap or cap == float("inf"):
+            return 0.0
+        held = client.hold_budget_reserve(cap * min(fraction, 0.9))
+        if held:
+            logger.info(
+                "review: holding $%.2f (%.0f%% of the $%.2f cap) in "
+                "reserve so the review loop cannot be starved by the "
+                "prep passes",
+                held, 100.0 * min(fraction, 0.9), cap,
+            )
+        return held
+    except Exception:  # reserve is an optimisation, never fatal
+        logger.debug("review reserve hold failed", exc_info=True)
+        return 0.0
+
+
+def _release_review_reserve(config: OrchestratorConfig) -> None:
+    """Release the review reserve back to dispatch (idempotent)."""
+    client = getattr(config, "llm_budget_client", None)
+    if client is None or not hasattr(client, "release_budget_reserve"):
+        return
+    try:
+        released = client.release_budget_reserve()
+        if released:
+            logger.info(
+                "review: released the $%.2f reserve to the review "
+                "loop", released,
+            )
+    except Exception:
+        logger.debug("review reserve release failed", exc_info=True)
 
 
 def _hold_deepen_reserve(config: OrchestratorConfig) -> float:

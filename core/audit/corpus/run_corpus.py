@@ -52,6 +52,36 @@ EXIT_GATE_FAIL = 2
 CORPUS_DIR = Path(__file__).parent
 LABELS_DIR = CORPUS_DIR / "labels"
 
+# Per-group audit budget: scales with the group's label weight
+# instead of the old flat $150 cap that gave a 2-label group the same
+# spend ceiling as an 80-label kernel excerpt. The base covers the
+# target-level prep the orchestrator runs once per group (checklist,
+# mechanical passes, study, summaries); each pinned label adds
+# headroom for its review chain (review + refinement + possible
+# deepen re-review); the cap bounds the worst case. Anchor: at 15
+# labels the formula reproduces the historical flat cap
+# (30 + 8 * 15 = 150), so small groups now spend less and only the
+# largest groups may spend up to 1.6x the old ceiling.
+GROUP_BUDGET_BASE_USD = 30.0
+GROUP_BUDGET_PER_LABEL_USD = 8.0
+GROUP_BUDGET_CAP_USD = 240.0
+# Fraction of the group budget fenced off from the pre-review bulk
+# passes so label review / re-review spend can always execute (the
+# orchestrator's review-reserve, released when the review loop
+# starts; the deepen reserve then guards re-reviews). Labels are the
+# entire point of a corpus run — a hungry prep phase must never
+# starve them.
+GROUP_REVIEW_RESERVE_FRACTION = 0.35
+
+
+def _group_max_cost(n_labels: int) -> float:
+    """Per-group cost cap: base + per-label increment, capped."""
+    return min(
+        GROUP_BUDGET_BASE_USD + GROUP_BUDGET_PER_LABEL_USD * n_labels,
+        GROUP_BUDGET_CAP_USD,
+    )
+
+
 # Pipeline gates the cold profile turns OFF (--profile cold, the
 # default). Membership test: "would a first-time user, default flags,
 # cold caches, get this input?" — anything accumulated across runs or
@@ -943,7 +973,11 @@ def _run_audit_on_target(
             profile=profile,
             **(COLD_PROFILE_GATES if profile == "cold" else {}),
             models=[model] if model else None,
-            max_cost_usd=150.0,
+            # Group budget scales with label weight (see the
+            # GROUP_BUDGET_* constants); a slice is reserved for the
+            # review loop so prep can never starve the labels.
+            max_cost_usd=_group_max_cost(len(labels)),
+            review_reserve_fraction=GROUP_REVIEW_RESERVE_FRACTION,
             no_binary_oracle=True,
             joern_server=joern_server,
             on_progress=on_progress,

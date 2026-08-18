@@ -118,7 +118,6 @@ class ValidatorSpec:
     var_name: str                   # the variable the validator constrains
     charset: str = ""               # kind=="charset": whole-string allowed chars
     source_line: str = ""           # the literal diff `+` line for diagnostics
-    diff_line_offset: int = 0       # position within the diff hunk (for tests)
     forbidden: str = ""             # kind=="charset_sub": stripped-out chars
 
 
@@ -345,7 +344,7 @@ def _unescape_charclass(chars: str) -> str:
     return _re.sub(r"\\([^-])", r"\1", chars)
 
 
-def _try_charset_validator(line: str, offset: int) -> ValidatorSpec | None:
+def _try_charset_validator(line: str) -> ValidatorSpec | None:
     """Match the whole-string `re.match`/`re.fullmatch` over `^[chars]+$`
     pattern.  Returns ``None`` on no match so the caller can try other
     extractors."""
@@ -362,11 +361,11 @@ def _try_charset_validator(line: str, offset: int) -> ValidatorSpec | None:
         return None
     return ValidatorSpec(
         kind="charset", var_name=var_name, charset=cs.group(1),
-        source_line=line.strip(), diff_line_offset=offset,
+        source_line=line.strip(),
     )
 
 
-def _try_charset_sub_validator(line: str, offset: int) -> ValidatorSpec | None:
+def _try_charset_sub_validator(line: str) -> ValidatorSpec | None:
     """Match the ``x = re.sub('[forbidden]+', '', x)`` rebind pattern.
     Returns ``None`` on no match."""
     m = _RE_SUB_REBIND.search(line)
@@ -380,11 +379,10 @@ def _try_charset_sub_validator(line: str, offset: int) -> ValidatorSpec | None:
     return ValidatorSpec(
         kind="charset_sub", var_name=m.group("var"),
         forbidden=forbidden, source_line=line.strip(),
-        diff_line_offset=offset,
     )
 
 
-def _try_jsts_validator(line: str, offset: int) -> ValidatorSpec | None:
+def _try_jsts_validator(line: str) -> ValidatorSpec | None:
     """JS / TS guard-and-exit shapes.  Single regex match implies both
     the validator and its exit-on-fail are on the line — dominance is
     established by the diff itself."""
@@ -393,29 +391,29 @@ def _try_jsts_validator(line: str, offset: int) -> ValidatorSpec | None:
         return None
     return ValidatorSpec(
         kind="charset", var_name=m.group("var"), charset=m.group("chars"),
-        source_line=line.strip(), diff_line_offset=offset,
+        source_line=line.strip(),
     )
 
 
-def _try_java_validator(line: str, offset: int) -> ValidatorSpec | None:
+def _try_java_validator(line: str) -> ValidatorSpec | None:
     """Java ``String.matches`` guard-and-exit shape."""
     m = _JAVA_GUARD.search(line)
     if m is None or not _charset_body_is_safe(m.group("chars")):
         return None
     return ValidatorSpec(
         kind="charset", var_name=m.group("var"), charset=m.group("chars"),
-        source_line=line.strip(), diff_line_offset=offset,
+        source_line=line.strip(),
     )
 
 
-def _try_ruby_validator(line: str, offset: int) -> ValidatorSpec | None:
+def _try_ruby_validator(line: str) -> ValidatorSpec | None:
     """Ruby ``unless x =~ /…/`` and ``if x !~ /…/`` guard shapes."""
     m = _RUBY_GUARD_UNLESS.search(line) or _RUBY_GUARD_IF_NOT_MATCH.search(line)
     if m is None or not _charset_body_is_safe(m.group("chars")):
         return None
     return ValidatorSpec(
         kind="charset", var_name=m.group("var"), charset=m.group("chars"),
-        source_line=line.strip(), diff_line_offset=offset,
+        source_line=line.strip(),
     )
 
 
@@ -453,12 +451,12 @@ def extract_validator(fix_diff: str, language: str = "python") -> ValidatorSpec 
     extractors = _LANG_EXTRACTORS.get(language)
     if not extractors:
         return None
-    for offset, raw in enumerate(fix_diff.splitlines()):
+    for raw in fix_diff.splitlines():
         if not raw.startswith("+") or raw.startswith("+++"):
             continue
         line = raw[1:]
         for try_fn in extractors:
-            spec = try_fn(line, offset)
+            spec = try_fn(line)
             if spec is not None:
                 return spec
     return None

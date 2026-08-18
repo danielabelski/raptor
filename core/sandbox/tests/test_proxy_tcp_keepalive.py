@@ -51,7 +51,10 @@ def test_enables_so_keepalive_on_tcp(tcp_pair):
     client, _ = tcp_pair
     assert client.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 0
     _enable_tcp_keepalive(_FakeWriter(client))
-    assert client.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+    # POSIX only promises a non-zero value for an enabled boolean
+    # option — macOS getsockopt returns the internal flag bit (8),
+    # not 1, so assert truthiness rather than the literal.
+    assert client.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
 
 
 @pytest.mark.skipif(

@@ -1390,6 +1390,27 @@ class TestCalleeContractsContext:
         result = format_context_for_prompt(ctx)
         assert "Callee contracts" not in result
 
+    def test_contract_violations_rendered(self):
+        from core.audit.contracts import ContractViolation
+        v = ContractViolation(
+            caller_file="app.c",
+            caller_function="handle_request",
+            callee_function="ssl_read",
+            violated_precondition="ctx != NULL",
+            evidence="no null check on `ctx` before the call",
+            cwe="CWE-476",
+        )
+        ctx = self._base_ctx(contract_violations=[v])
+        result = format_context_for_prompt(ctx)
+        assert "Contract violations" in result
+        assert "ctx != NULL" in result
+        assert "CWE-476" in result
+
+    def test_no_contract_violations_no_section(self):
+        ctx = self._base_ctx()
+        result = format_context_for_prompt(ctx)
+        assert "Contract violations" not in result
+
 
 class TestRefinementContext:
     """Tests for refinement prompt injected into context."""

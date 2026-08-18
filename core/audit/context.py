@@ -673,6 +673,16 @@ def format_context_for_prompt(
         if cc_text:
             sections.append(PromptSection("callee_contracts", "\n" + cc_text, 1))
 
+    if ctx.get("contract_violations"):
+        from .contracts import format_contract_violations_for_prompt
+        cv_text = format_contract_violations_for_prompt(
+            ctx["contract_violations"]
+        )
+        if cv_text:
+            sections.append(
+                PromptSection("contract_violations", "\n" + cv_text, 0)
+            )
+
     if ctx.get("inferred_spec"):
         from .spec_inference import format_spec_for_context
         spec_text = format_spec_for_context(ctx["inferred_spec"])

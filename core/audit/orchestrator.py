@@ -4117,6 +4117,26 @@ def _attach_bypass_evidence(
             finding["iris_bypass_evidence"] = plf["evidence"]
 
 
+def _demotion_log_entry(d) -> dict:
+    """Audit-log record for one confidence-propagation demotion.
+
+    ``source_functions`` carries the full evidentiary basis for the
+    verdict flip — ``d.reason`` truncates the caller list at 5.
+    """
+    return {
+        "action": "sweep_promotion",
+        "key": f"{d.file}:{d.function}:0",
+        "status": "clean",
+        "prior_status": "suspicious",
+        "evidence_tool": "confidence_propagation",
+        "model": "",
+        "cost_usd": 0.0,
+        "duration_s": 0.0,
+        "hypothesis": d.reason,
+        "source_functions": d.source_functions,
+    }
+
+
 def _run_audit_body(
     config,
     review_fn,
@@ -5443,18 +5463,7 @@ def _run_audit_body(
             result.outcomes, edge_index, check_index,
         )
         for d in conf_demotions:
-            entry = {
-                "action": "sweep_promotion",
-                "key": f"{d.file}:{d.function}:0",
-                "status": "clean",
-                "prior_status": "suspicious",
-                "evidence_tool": "confidence_propagation",
-                "model": "",
-                "cost_usd": 0.0,
-                "duration_s": 0.0,
-                "hypothesis": d.reason,
-            }
-            append_audit_log(config.out_dir, entry)
+            append_audit_log(config.out_dir, _demotion_log_entry(d))
         if conf_demotions:
             logger.info(
                 "confidence propagation: %d demotions", len(conf_demotions),

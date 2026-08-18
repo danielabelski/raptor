@@ -493,6 +493,27 @@ class TestConfidencePropagation:
         assert demotions[0].file == "b.c"
         assert demotions[0].function == "target"
 
+    def test_demotion_log_entry_carries_source_functions(self):
+        """The audit-log record must carry the full evidentiary basis
+        for the verdict flip, not just the (truncated) prose reason."""
+        from core.audit.orchestrator import _demotion_log_entry
+        from core.audit.propagation import ConfidenceDemotion
+
+        d = ConfidenceDemotion(
+            file="b.c",
+            function="target",
+            reason="all 7 callers verified clean: c1, c2, c3, c4, c5",
+            source_functions=["c1", "c2", "c3", "c4", "c5", "c6", "c7"],
+        )
+        entry = _demotion_log_entry(d)
+        assert entry["action"] == "sweep_promotion"
+        assert entry["key"] == "b.c:target:0"
+        assert entry["evidence_tool"] == "confidence_propagation"
+        assert entry["hypothesis"] == d.reason
+        assert entry["source_functions"] == [
+            "c1", "c2", "c3", "c4", "c5", "c6", "c7",
+        ]
+
     def test_one_caller_not_clean_keeps(self):
         from core.audit.propagation import propagate_confidence
 

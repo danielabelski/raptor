@@ -163,6 +163,19 @@ Examples:
     ap.add_argument("--timeout", type=int, default=1000, help="Timeout per execution in ms (default: 1000)")
     ap.add_argument("--out", help="Output directory (default: fuzz_<binary>_<timestamp>_pid<N>_<tail> under the configured output root)")
     ap.add_argument("--dict", help="Path to AFL dictionary file for structured input fuzzing")
+    ap.add_argument(
+        "--from-smt-witness",
+        metavar="DIR",
+        help=(
+            "Scan a /validate or /agentic run output directory for SMT "
+            "sat witnesses (attack-paths.json smt_model, "
+            "autonomous_analysis_report.json smt_witness) and synthesize "
+            "AFL seeds + dictionary tokens from them. Without --corpus, "
+            "the built-in seed corpus plus the witness seeds become the "
+            "run corpus; with --corpus, witness seeds land in "
+            "<out>/smt-seeds and only the dictionary merge applies."
+        ),
+    )
     ap.add_argument("--input-mode", choices=["stdin", "file"], default="stdin", help="Input mode: stdin (default) or file (uses @@)")
     ap.add_argument("--check-sanitizers", action="store_true", help="Check if binary is compiled with sanitizers (ASAN, etc.)")
     ap.add_argument("--recompile-guide", action="store_true", help="Show guide for recompiling binary with AFL instrumentation and sanitizers")
@@ -348,6 +361,49 @@ Examples:
         out_dir = RaptorConfig.get_out_dir() / f"fuzz_{binary_path.stem}_{unique_run_suffix()}"
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     safe_run_mkdir(out_dir)
+
+    if args.from_smt_witness:
+        from packages.fuzzing.smt_seed import (
+            SEED_DIR_NAME,
+            synthesize_from_run_dir,
+        )
+        source_dir = Path(args.from_smt_witness)
+        if not source_dir.is_dir():
+            logger.error("--from-smt-witness dir not found: %s", source_dir)
+            sys.exit(1)
+        seed_dir = out_dir / SEED_DIR_NAME
+        builtin_ok = False
+        if corpus_dir is None:
+            # Baseline variety first, witness seeds on top, and the
+            # combined directory becomes the run corpus. With an
+            # operator --corpus we never mutate their directory —
+            # witness seeds stay in <out>/smt-seeds and reach AFL
+            # via the merged dictionary only.
+            try:
+                from packages.fuzzing.seed_corpus import prepare_builtin_seed_corpus
+                prepare_builtin_seed_corpus(seed_dir, profile=args.seed_profile)
+                builtin_ok = True
+            except Exception as e:  # noqa: BLE001 — witness seeds alone still work
+                logger.warning("built-in corpus materialisation failed: %s", e)
+        manifest = synthesize_from_run_dir(source_dir, out_dir)
+        print(
+            f"SMT witness seeds: {manifest['witnesses']} witnesses -> "
+            f"{manifest['seed_count']} seeds, {manifest['dict_entries']} "
+            f"dict entries, {len(manifest['skipped'])} skipped"
+        )
+        if manifest["seed_count"] == 0 and manifest["dict_entries"] == 0:
+            logger.warning(
+                "--from-smt-witness produced nothing usable from %s "
+                "(see %s/%s)", source_dir, seed_dir, "smt-seeds-manifest.json",
+            )
+        if corpus_dir is None and (builtin_ok or manifest["seed_count"]):
+            corpus_dir = seed_dir
+        if args.dict and manifest["dict_entries"]:
+            logger.warning(
+                "operator --dict wins over the merged fuzz.dict; witness "
+                "tokens are in %s/smt-witness.dict if you want to merge them",
+                seed_dir,
+            )
 
     # ========================================================================
     # ORCHESTRATOR PATH (new): capability detection + libFuzzer/AFL++ + telemetry

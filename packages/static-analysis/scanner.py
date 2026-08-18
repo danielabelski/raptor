@@ -655,7 +655,11 @@ def _resolve_rules_applied(
     # names so the coverage record still has SOME identity
     # (preserves pre-fix shape for the genuinely-empty case).
     _ = groups  # accepted for API symmetry; unused — see docstring.
-    return [str(Path(r).name) for r in rules_dirs]
+    # Single-file groups record by stem ("ssrf"), dirs by name.
+    return [
+        Path(r).stem if Path(r).is_file() else Path(r).name
+        for r in rules_dirs
+    ]
 
 
 def _sanitize_pack_name(name: str) -> str:
@@ -1204,7 +1208,10 @@ def semgrep_scan_parallel(
     for rd in rules_dirs:
         rd_path = Path(rd)
         if rd_path.exists():
-            category_name = rd_path.name
+            # Files (single-file policy groups like ssrf) name the
+            # category by stem so the pack name is 'category_ssrf',
+            # not 'category_ssrf.yaml'.
+            category_name = rd_path.stem if rd_path.is_file() else rd_path.name
 
             # Add local rules for this category
             configs.append((f"category_{category_name}", str(rd_path)))
@@ -1391,7 +1398,10 @@ def semgrep_scan_sequential(
     for rd in rules_dirs:
         rd_path = Path(rd)
         if rd_path.exists():
-            category_name = rd_path.name
+            # Files (single-file policy groups like ssrf) name the
+            # category by stem so the pack name is 'category_ssrf',
+            # not 'category_ssrf.yaml'.
+            category_name = rd_path.stem if rd_path.is_file() else rd_path.name
 
             # Add local rules for this category
             configs.append((f"category_{category_name}", str(rd_path)))
@@ -1891,7 +1901,8 @@ def run_expanded_semgrep_stage(
         for rd in rules_dirs:
             rd_path = Path(rd)
             if rd_path.exists():
-                configs.append((f"category_{rd_path.name}", str(rd_path)))
+                _cat = rd_path.stem if rd_path.is_file() else rd_path.name
+                configs.append((f"category_{_cat}", str(rd_path)))
         for pack_name, pack_id in baseline_packs:
             if pack_id not in added_packs:
                 configs.append(
@@ -2664,10 +2675,15 @@ def main():
             valid, unknown = [], []
             for g in groups:
                 p = rules_base / g
+                rule_file = RaptorConfig.POLICY_GROUP_RULE_FILES.get(g)
                 if g in _EXCLUDED_RULE_DIRS:
                     logger.warning("Policy group '%s' is reserved and cannot be used directly", g)
                 elif p.is_dir():
                     valid.append(str(p))
+                elif rule_file is not None and rule_file.is_file():
+                    # Single-file group (e.g. ssrf → sinks/ssrf.yaml) —
+                    # the rules live inside another group's directory.
+                    valid.append(str(rule_file))
                 else:
                     unknown.append(g)
             if unknown:

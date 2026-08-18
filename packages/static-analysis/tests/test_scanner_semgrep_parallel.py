@@ -633,3 +633,31 @@ class TestDropUnreachableRegistryPacks:
         assert _scanner_mod._drop_unreachable_registry_packs(
             list(local),
         ) == local
+
+
+# ---------------------------------------------------------------------------
+# Single-file policy groups (rules entry is a file, not a directory)
+# ---------------------------------------------------------------------------
+
+
+class TestSingleFileRulesEntry:
+    @patch.object(_scanner_mod, "run_single_semgrep", side_effect=_stub_run_single)
+    def test_rule_file_dispatches_with_stem_category(self, mock_single, tmp_path):
+        rule_file = tmp_path / "ssrf.yaml"
+        rule_file.write_text("rules: []\n")
+        semgrep_scan_parallel(
+            tmp_path, [str(rule_file)], tmp_path, timeout=10,
+        )
+        called = {c.args[0]: c.args[1] for c in mock_single.call_args_list}
+        assert "category_ssrf" in called
+        assert called["category_ssrf"] == str(rule_file)
+
+    @patch.object(_scanner_mod, "run_single_semgrep", side_effect=_stub_run_single)
+    def test_rule_file_dispatches_sequential(self, mock_single, tmp_path):
+        rule_file = tmp_path / "ssrf.yaml"
+        rule_file.write_text("rules: []\n")
+        semgrep_scan_sequential(
+            tmp_path, [str(rule_file)], tmp_path, timeout=10,
+        )
+        called_names = [c.args[0] for c in mock_single.call_args_list]
+        assert "category_ssrf" in called_names

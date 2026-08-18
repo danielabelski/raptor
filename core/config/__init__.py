@@ -249,13 +249,23 @@ class RaptorConfig:
         # Only packs that exist on semgrep.dev and are cached in registry-cache/
         # deserialisation, filesystem, logging: no registry pack exists, local rules only
         # crypto: p/crypto and category/crypto both 404 — local rules only
-        # ssrf: p/ssrf 404 and no local rules dir — no coverage until custom rules are added
+        # ssrf: p/ssrf 404; local coverage via POLICY_GROUP_RULE_FILES
         "secrets": ("semgrep_secrets", "p/secrets"),
         "injection": ("semgrep_injection", "p/command-injection"),
         "auth": ("semgrep_auth", "p/jwt"),
         "flows": ("semgrep_dataflow", "p/default"),
         "sinks": ("semgrep_sinks", "p/xss"),
         "best-practices": ("semgrep_best_practices", "p/default"),
+    }
+
+    # Policy groups whose in-repo rules live in a single file inside
+    # another group's directory rather than a directory of their own.
+    # Selecting the group scans exactly that file; the emitted rule ids
+    # are identical to a directory scan of the parent group (semgrep
+    # derives ids from the rule FILE's path), so `--policy-groups
+    # ssrf,sinks` dedups cleanly. No registry pack exists for these.
+    POLICY_GROUP_RULE_FILES: ClassVar[dict[str, Path]] = {
+        "ssrf": SEMGREP_RULES_DIR / "sinks" / "ssrf.yaml",
     }
 
     # Default Policy Configuration

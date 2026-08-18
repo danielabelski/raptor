@@ -1,14 +1,14 @@
 """pip resolver wrapper.
 
-Uses ``pip-compile`` (from pip-tools) when available, falling back to
-``pip install --dry-run`` otherwise. ``pip-compile`` is the canonical
-way to deterministically resolve a ``requirements.in``-style spec into
-a fully-pinned ``requirements.txt`` without actually installing
-anything; ``pip install --dry-run`` (pip 23.0+) is the lighter
-alternative when pip-tools isn't installed.
+Uses ``pip-compile`` (from pip-tools): the system install when
+available, otherwise pip-tools installed into an ephemeral venv and
+pip-compile retried from there (see the PEP 668 section below).
+``pip-compile`` is the canonical way to deterministically resolve a
+``requirements.in``-style spec into a fully-pinned
+``requirements.txt`` without actually installing anything.
 
-Neither path executes install hooks — pip doesn't run them on
-``--dry-run`` for wheel-only deps, and source-dist fallback is
+Neither path executes install hooks — pip-compile resolves from
+wheel metadata without installing, and source-dist fallback is
 disabled: ``PIP_ONLY_BINARY=:all:`` is set in the child environment
 at every invocation site (system pip-compile, venv pipeline, batch
 script), so pip never downloads an sdist and never runs a package's
@@ -25,13 +25,15 @@ Most modern Linux distros ship the system Python marked
 "externally-managed" (``/usr/lib/python*/EXTERNALLY-MANAGED``). When
 pip detects that marker it refuses operations to protect distro state
 — even ``--dry-run`` is blocked. raptor-sca scans run on operator
-systems; if the system pip refuses, we fall back to creating an
-ephemeral venv under the project tree and re-running the resolver
-with the venv's pip (which doesn't have the marker). Per-run cost is
-~3-5s for venv create + pip-tools install. The venv lives at
-``<project>/.raptor-sca-venv-{pid}/`` and is removed after the run.
-Sandbox writes are confined to the project tree already so this lands
-in the only writeable surface available to us.
+systems; if the system pip-compile refuses (or is missing), we fall
+back to creating an ephemeral venv, installing pip-tools into it,
+and re-running pip-compile with the venv's pip (which doesn't have
+the marker). Per-run cost is ~3-5s for venv create + pip-tools
+install. The venv lives at ``/tmp/raptor-sca-venv-<pid>-<hash>/``
+— the sandbox mounts most of the project tree read-only, so the
+per-call tmpfs at ``/tmp`` is the writeable surface — and vanishes
+with that tmpfs when the sandbox call ends. See
+:meth:`PipResolver._venv_dir` for the path rationale.
 """
 
 from __future__ import annotations
@@ -277,22 +279,19 @@ class PipResolver:
     def _create_venv(
         self, project_dir: Path, timeout: int,
     ) -> tuple[Path | None, str | None]:
-        """Create an ephemeral venv + bootstrap pip in a single sandbox call.
+        """Compute the ephemeral venv path; creates nothing itself.
 
         Each ``_run`` call gets a fresh mount-ns with its own tmpfs at
         ``/tmp`` — venv state created in one call does NOT persist into
-        a follow-up call. So we have to combine venv-create, ensurepip,
-        and (in the caller) the pip install + resolver invocation into
-        a single shell pipeline that runs end-to-end inside one
-        sandbox.
-
-        This helper does just the venv+ensurepip steps; the caller
-        chains its own work on top via :meth:`_run_combined_pip_compile`
-        or :meth:`_run_combined_pip_dry`. We return ``(venv_dir,
-        sentinel_path)`` so callers can locate the venv by path inside
-        their own sandbox call. The actual filesystem state from this
-        method is intentionally NOT inspected here (it's gone with the
-        sandbox tmpfs).
+        a follow-up call. So venv-create, ensurepip, the pip-tools
+        install and the resolver invocation all have to run as a single
+        shell pipeline inside one sandbox call. The sole caller,
+        :meth:`_run_pip_compile_in_venv`, builds that pipeline with
+        :meth:`_venv_setup_script` as its prefix; this helper only
+        returns ``(venv_dir, None)`` so the caller can locate the venv
+        by path inside its own sandbox call. Filesystem state is
+        intentionally NOT created or inspected here (it would be gone
+        with the sandbox tmpfs anyway).
         """
         return self._venv_dir(project_dir), None
 
@@ -660,9 +659,17 @@ def _find_pip_manifest(project_dir: Path) -> Path | None:
     Preference order:
       1. ``pyproject.toml`` — fully self-describing project metadata.
       2. ``requirements.txt`` (the canonical name).
-      3. Any other ``requirements*.txt`` (covers ``requirements-dev``,
+      3. ``requirements.in`` — pip-tools input.
+      4. Any other ``requirements*.txt`` (covers ``requirements-dev``,
          ``requirements-all-optional``, ``requirements-prod``, etc.).
-      4. ``requirements.in`` — pip-tools input.
+
+    Every declared ``MANIFEST_FILES`` entry outranks the glob fallback
+    — the resolver cache hashes only declared files, so selecting a
+    glob-matched file while a declared one exists would key the cache
+    on a file that isn't the one being resolved (edits to the resolved
+    file would then miss invalidation). With this order, whenever the
+    cache is keyed at all, the resolved manifest is one of the hashed
+    files; glob-only projects hash to ``None`` and bypass the cache.
     """
     pyproject = project_dir / "pyproject.toml"
     if pyproject.exists():
@@ -670,13 +677,13 @@ def _find_pip_manifest(project_dir: Path) -> Path | None:
     canonical = project_dir / "requirements.txt"
     if canonical.exists():
         return canonical
+    req_in = project_dir / "requirements.in"
+    if req_in.exists():
+        return req_in
     # Fall through to any other requirements*.txt — sorted for
     # determinism so the same manifest is picked across runs.
     for c in sorted(project_dir.glob("requirements*.txt")):
         return c
-    req_in = project_dir / "requirements.in"
-    if req_in.exists():
-        return req_in
     return None
 
 

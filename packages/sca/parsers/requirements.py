@@ -430,9 +430,6 @@ def _parse_requirement_line(
         else:
             pin_style = PinStyle.PATH
 
-    if editable and pin_style is PinStyle.UNKNOWN:
-        pin_style = PinStyle.PATH
-
     return Dependency(
         ecosystem=ECOSYSTEM,
         name=_normalise_name(name),
@@ -483,8 +480,6 @@ def _from_url_spec(
         name = f"<url:{Path(spec).name or spec}>"
 
     pin_style = PinStyle.GIT if spec.startswith(_VCS_PREFIXES) else PinStyle.PATH
-    if editable and pin_style is PinStyle.UNKNOWN:
-        pin_style = PinStyle.PATH
 
     return Dependency(
         ecosystem=ECOSYSTEM,
@@ -540,9 +535,12 @@ def _spec_bounds(spec) -> tuple[str | None, str | None]:
     None when absent.
 
     harden records these so a future bounded *downgrade* knows how far
-    down is acceptable (floor) and an upgrade knows its ceiling. ``==`` /
-    ``~=`` / ``!=`` clauses pin or exclude — they don't bound the
-    corridor — so they're ignored here.
+    down is acceptable (floor) and an upgrade knows its ceiling. ``==``
+    and ``!=`` clauses pin or exclude — they don't bound the corridor —
+    and ``~=`` is treated the same way: although PEP 440 gives it an
+    implied upper bound (``~=1.4.2`` means ``>=1.4.2, <1.5``), we do
+    not derive that ceiling here; only explicit ``>=`` / ``>`` / ``<``
+    / ``<=`` clauses count.
     """
     if spec is None or Version is None:
         return None, None

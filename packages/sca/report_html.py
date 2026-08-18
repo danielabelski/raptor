@@ -38,14 +38,6 @@ _SEV_LABEL = {
     "none": "None (CVSS 0.0)",
 }
 
-# Severity-keyed colours. Permissive palette — readable on light
-# AND dark backgrounds via OS preference (the embedded CSS uses
-# ``prefers-color-scheme`` to adapt).
-_SEV_BG = {
-    "critical": "#7f1d1d", "high": "#9a3412", "medium": "#854d0e",
-    "low": "#1e40af", "info": "#374151",
-}
-
 # Schemes allowed to render as clickable anchors. Anything else
 # (javascript:, data:, file:, vbscript:) renders as inert code text —
 # html.escape neutralises markup but does nothing about a hostile
@@ -226,7 +218,8 @@ def _summary_section(
             severity_counts[f.severity] += 1
 
     rows = []
-    for sev in ("critical", "high", "medium", "low", "info"):
+    # ``none`` last — it ranks below info (see _FILTER_SCRIPT ranks).
+    for sev in ("critical", "high", "medium", "low", "info", "none"):
         if severity_counts.get(sev):
             rows.append(
                 f"<tr><td><span class=\"sev sev-{sev}\">"

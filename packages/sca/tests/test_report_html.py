@@ -52,6 +52,13 @@ def _hygiene(severity: str = "medium") -> HygieneFinding:
     )
 
 
+def _summary_rows(html: str) -> str:
+    """The severity table body (between <tbody> and </tbody>)."""
+    start = html.index("<tbody>")
+    end = html.index("</tbody>", start)
+    return html[start:end]
+
+
 # ---------------------------------------------------------------------------
 # Document scaffolding
 # ---------------------------------------------------------------------------
@@ -368,6 +375,39 @@ def test_severity_none_rendered_with_styled_label() -> None:
     assert "none: 0" in html
     # Distinguishing label.
     assert "None (CVSS 0.0)" in html
+
+
+def test_none_severity_gets_summary_row() -> None:
+    """The summary severity table includes a row for tallied
+    ``none``-severity findings, not just the five named severities."""
+    html = render_html_report(
+        target=Path("/repo"), deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[_hygiene("none"), _hygiene("medium")],
+    )
+    rows = _summary_rows(html)
+    assert "None (CVSS 0.0)" in rows
+    assert "sev-none" in rows
+    assert "Medium" in rows
+
+
+def test_none_row_ordered_after_info() -> None:
+    html = render_html_report(
+        target=Path("/repo"), deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[_hygiene("none"), _hygiene("info")],
+    )
+    rows = _summary_rows(html)
+    assert rows.index("Info") < rows.index("None (CVSS 0.0)")
+
+
+def test_no_none_row_when_no_none_findings() -> None:
+    html = render_html_report(
+        target=Path("/repo"), deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[_hygiene("high")],
+    )
+    assert "None (CVSS 0.0)" not in _summary_rows(html)
 
 
 def test_filter_bar_omitted_section_header_handling() -> None:

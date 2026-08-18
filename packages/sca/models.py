@@ -1,8 +1,9 @@
 """Data model for the /sca pipeline.
 
 Every signal in the pipeline carries a Confidence; every finding has a single
-canonical schema; risk is surfaced as components only (no composite score
-yet
+canonical schema; risk is surfaced both as per-signal components
+(``risk_components``) and as a composite score
+(``VulnFinding.raptor_risk_estimate``, computed in :mod:`.risk`).
 
 All dataclasses are JSON-serialisable via dataclasses.asdict; the report and
 findings.json layers handle that wrapping.
@@ -145,6 +146,14 @@ class Dependency:
     version_ceiling: str | None = None   # tightest upper bound
                                             # (``<`` / ``<=``) — the
                                             # upgrade ceiling.
+
+    def __post_init__(self) -> None:
+        # Provenance correction: lockfile-parsed rows that don't set an
+        # explicit source_kind would otherwise carry the "manifest"
+        # default and misreport their origin in findings.json / SBOM.
+        # Explicit non-default source_kinds are always preserved.
+        if self.is_lockfile and self.source_kind == "manifest":
+            self.source_kind = "lockfile"
 
     def key(self) -> str:
         """Stable identity for dedup / cross-reference."""

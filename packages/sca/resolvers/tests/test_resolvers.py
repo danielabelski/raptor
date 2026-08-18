@@ -19,9 +19,10 @@ from pathlib import Path
 import pytest
 
 from packages.sca.resolvers import get_resolver
+from packages.sca.resolvers._cache import manifest_hash
 from packages.sca.resolvers.gomod import GoResolver
 from packages.sca.resolvers.npm import NpmResolver
-from packages.sca.resolvers.pip import PipResolver
+from packages.sca.resolvers.pip import PipResolver, _find_pip_manifest
 
 
 @pytest.fixture(autouse=True)
@@ -232,6 +233,69 @@ def test_pip_no_manifest(monkeypatch, tmp_path: Path) -> None:
     res = PipResolver().dry_run(tmp_path)
     assert res.success is False
     assert "no requirements" in (res.error or "")
+
+
+def test_pip_requirements_in_preferred_over_glob_variant(
+    tmp_path: Path,
+) -> None:
+    """The stale-cache trigger scenario: requirements.in + a glob
+    variant, no pyproject / requirements.txt. The declared (hashed)
+    file must be the one resolved."""
+    (tmp_path / "requirements.in").write_text("django\n", encoding="utf-8")
+    (tmp_path / "requirements-dev.txt").write_text("pytest\n",
+                                                   encoding="utf-8")
+    selected = _find_pip_manifest(tmp_path)
+    assert selected == tmp_path / "requirements.in"
+
+
+def test_pip_pyproject_and_canonical_still_win(tmp_path: Path) -> None:
+    (tmp_path / "requirements.in").write_text("a\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("b\n", encoding="utf-8")
+    assert _find_pip_manifest(tmp_path) == tmp_path / "requirements.txt"
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    assert _find_pip_manifest(tmp_path) == tmp_path / "pyproject.toml"
+
+
+def test_pip_glob_fallback_still_engages_when_only_variant(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "requirements-dev.txt").write_text("pytest\n",
+                                                   encoding="utf-8")
+    assert _find_pip_manifest(tmp_path) == tmp_path / "requirements-dev.txt"
+
+
+def test_pip_manifest_nothing_found(tmp_path: Path) -> None:
+    assert _find_pip_manifest(tmp_path) is None
+
+
+def test_pip_selected_manifest_is_hashed_whenever_cache_keyed(
+    tmp_path: Path,
+) -> None:
+    """Invariant that closes the staleness window: if manifest_hash
+    is non-None, the selected manifest is one of the hashed files;
+    if the selected manifest is glob-only, the hash is None (cache
+    bypass)."""
+    resolver = PipResolver()
+
+    # Declared file present → hash keyed AND selected file declared.
+    (tmp_path / "requirements.in").write_text("django\n", encoding="utf-8")
+    (tmp_path / "requirements-dev.txt").write_text("pytest\n",
+                                                   encoding="utf-8")
+    assert manifest_hash(resolver, tmp_path) is not None
+    assert _find_pip_manifest(tmp_path).name in PipResolver.MANIFEST_FILES
+
+    # Edits to the resolved file must change the hash.
+    before = manifest_hash(resolver, tmp_path)
+    (tmp_path / "requirements.in").write_text("django==5.0\n",
+                                              encoding="utf-8")
+    assert manifest_hash(resolver, tmp_path) != before
+
+
+def test_pip_glob_only_project_bypasses_cache(tmp_path: Path) -> None:
+    (tmp_path / "requirements-dev.txt").write_text("pytest\n",
+                                                   encoding="utf-8")
+    assert _find_pip_manifest(tmp_path) is not None
+    assert manifest_hash(PipResolver(), tmp_path) is None
 
 
 def test_pip_compile_path(monkeypatch, tmp_path: Path) -> None:

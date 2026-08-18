@@ -1,11 +1,12 @@
-"""Typosquat-denylist curation: candidate generation (Stages 1–2).
+"""Typosquat-denylist curation: candidate generation (Stages 1–2) +
+opt-in operator-side triage (Stage 3 evidence → Stage A LLM verdicts).
 
 The denylist (`data/typosquat_denylist.json`) is the sound fix for typosquats
 that ride the popularity feeds into the trusted list (npm ``loadash``), but it
 is hand-curated — so it needs a *discovery* loop to stay current without
 sacrificing the property that makes it sound (every entry is confirmed → zero
-false positives). This module is the mechanical, **LLM-free** half of that loop
-:
+false positives). This module's default path is the mechanical, **LLM-free**
+half of that loop:
 
   Stage 1 — generate near-name candidates from the rank-ordered feeds (a name
             one edit from a *much-higher-ranked* name is a candidate). This is
@@ -17,13 +18,15 @@ false positives). This module is the mechanical, **LLM-free** half of that loop
             so the recurring delta de-noises to ~empty and a genuinely-new
             near-name stands out.
 
-Runs in two homes, both LLM-free:
-  - the weekly ``refresh-sca-data`` workflow, which has the live rank-ordered
-    feeds and emits the pending delta as a nudge in the refresh PR body;
+Runs in two homes:
+  - the weekly ``refresh-sca-data`` workflow (always LLM-free — it never
+    passes ``--llm``), which has the live rank-ordered feeds and emits the
+    pending delta as a nudge in the refresh PR body;
   - the operator command ``raptor-sca triage``, run when reviewing that PR.
 
-The judgement step (Stage 3 evidence + Stage A LLM triage + the gate) is the
-*next* build and runs operator-side where an LLM is available — never in CI.
+The judgement step (Stage 3 evidence + Stage A LLM triage) also lives here —
+``run_llm_triage``, reached via ``raptor-sca triage --llm`` — and runs
+operator-side where an LLM is available, never in CI.
 """
 
 from __future__ import annotations
@@ -278,7 +281,7 @@ def _registry_clients(http, cache) -> dict[str, object]:
 def run_llm_triage(
     results: dict[str, list[Candidate]],
     *,
-    reviewed_legit_path,
+    reviewed_legit_path: Path,
 ) -> str:
     """Stage 3→A→4 over the pending candidates (operator-side, needs an LLM).
     Auto-files legit verdicts to reviewed-legit; renders the squat-confirm +
@@ -376,7 +379,7 @@ def _render_reaudit_llm(enriched: dict[str, list]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def run_reaudit(reviewed_legit_path, *, use_llm: bool = False) -> str:
+def run_reaudit(reviewed_legit_path: Path, *, use_llm: bool = False) -> str:
     """Step-3 re-audit. Tier 1 (mechanical, no LLM): re-check every
     reviewed-legit entry's current registry state and flag contradictions.
     Tier 2 (``use_llm``, operator-side): re-examine the flagged entries with the
@@ -472,8 +475,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "without --llm this just lists the candidates.")
     p.add_argument("--format", choices=("text", "markdown"), default="text")
     p.add_argument("--out", type=Path,
-                   help="write the report here instead of stdout "
-                        "(nothing written when there are no candidates)")
+                   help="write the report here instead of stdout (markdown "
+                        "format writes an empty file when there are no "
+                        "candidates; text writes a short no-candidates note)")
     p.add_argument("-v", "--verbose", action="count", default=0)
     args = p.parse_args(argv if argv is not None else sys.argv[1:])
 

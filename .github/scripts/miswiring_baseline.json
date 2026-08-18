@@ -62,6 +62,9 @@
   "artifacts:orphan_reader::database-create-*.log": {
    "note": "externally produced input: the CodeQL CLI writes log/database-create-*.log; database_manager salvages it on creation failure"
   },
+  "artifacts:orphan_reader::diagram-stdout.log": {
+   "note": "self-test harness log: ctx.run() writes per-case logs dynamically as f\"{name}.log\"; case_diagram_stdout reads its own log back to assert diagram output — write side invisible to the static pass"
+  },
   "artifacts:orphan_reader::exploit-context.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -185,6 +188,12 @@
   "artifacts:write_only_artifact::cascade.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:write_only_artifact::cc-prompt.txt": {
+   "note": "not write-only: written then immediately re-opened as the CLI child's stdin (open(path,'rb') on the same variable, fed to fd 0 by the spawn backend) — the consumer is the child process, which the read-attribution window cannot see. core/orchestration/skill_dispatch.py + libexec/raptor-cred-proxy-proof."
+  },
+  "artifacts:write_only_artifact::cc-proxy-spend.json": {
+   "note": "operator-facing per-run settlement record (reconciled credential-proxy token spend vs budget), same class as suppressions.jsonl: consumed by humans/jq from the run dir, deliberately not by production code."
+  },
   "artifacts:write_only_artifact::changes.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -232,6 +241,9 @@
   },
   "artifacts:write_only_artifact::exploitation-report.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:write_only_artifact::extra-rule.yml": {
+   "note": "self-test scratch fixture: case_scan_extra_config writes the rule file and passes it to a spawned raptor.py scan --extra-config subprocess — the read happens in the child process via CLI arg, not a static in-repo read"
   },
   "artifacts:write_only_artifact::findings.jsonl": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -595,12 +607,6 @@
   },
   "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
    "note": "kept: autonomous fuzzing loop feature seed (operator decision 2026-08-16; re-affirmed 2026-08-17 config-orphan pass — goal_progress and strategies_tried deleted as shadowed by Goal.progress / successful_strategies). This is the natural input the wired loop derives coverage_plateau_duration from."
-  },
-  "artifacts:orphan_reader::diagram-stdout.log": {
-   "note": "self-test harness log: ctx.run() writes per-case logs dynamically as f\"{name}.log\"; case_diagram_stdout reads its own log back to assert diagram output — write side invisible to the static pass"
-  },
-  "artifacts:write_only_artifact::extra-rule.yml": {
-   "note": "self-test scratch fixture: case_scan_extra_config writes the rule file and passes it to a spawned raptor.py scan --extra-config subprocess — the read happens in the child process via CLI arg, not a static in-repo read"
   },
   "artifacts:write_only_artifact::study-stale.json": {
    "note": "operator-facing mirror of the staleness quarantine; the machine-consumed re-derive signal rides the reading list (pending items drained on the next study pass)"

@@ -69,16 +69,27 @@ def _load_cached(path: str) -> dict[str, Any] | None:
 _per_run_warned: set[str] = set()
 
 
-def _warn_per_run_once(path: str) -> None:
+def _warn_per_run_once(path: str, *, in_project: bool) -> None:
     if path in _per_run_warned:
         return
     _per_run_warned.add(path)
-    logger.warning(
-        "domain-model.json found at per-run location %s — cross-run "
-        "staleness is disabled. Move to <project>/concepts/domain-"
-        "model.json for cross-run hash comparison.",
-        path,
-    )
+    if in_project:
+        logger.warning(
+            "domain-model.json found at per-run location %s — cross-run "
+            "staleness is disabled. Move to <project>/concepts/domain-"
+            "model.json for cross-run hash comparison.",
+            path,
+        )
+    else:
+        # Standalone run (no project container): the per-run location
+        # IS the documented fallback and there is no <project>/concepts/
+        # to move it to — the "move it" advice is inapplicable, so
+        # don't page the operator about working-as-designed behaviour.
+        logger.info(
+            "domain-model.json at per-run location %s (standalone run "
+            "— cross-run staleness not applicable)",
+            path,
+        )
 
 
 def _find_domain_model(out_dir: Path) -> dict[str, Any] | None:
@@ -107,7 +118,14 @@ def _find_domain_model(out_dir: Path) -> dict[str, Any] | None:
     if project_root.is_file():
         return _load_cached(str(project_root.resolve()))
     if per_run.is_file():
-        _warn_per_run_once(str(per_run))
+        # Project detection matches cmd_run's legacy-state check: a
+        # project container carries raptor-project.json alongside its
+        # runs. Standalone out/ dirs don't — for those the per-run
+        # location is the documented fallback, not operator error.
+        _warn_per_run_once(
+            str(per_run),
+            in_project=(out_dir.parent / "raptor-project.json").is_file(),
+        )
         return _load_cached(str(per_run.resolve()))
     return None
 

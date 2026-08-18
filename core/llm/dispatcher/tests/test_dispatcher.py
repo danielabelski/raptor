@@ -264,6 +264,11 @@ class TestLayer4TokenLifecycle:
                            headers={_TOKEN_HEADER: token})
                 assert r.status_code == 401
                 assert "expired" in r.text
+                # The rejection carries the token age vs configured
+                # TTL so an operator can tell a worker that outlived
+                # its TTL from a clock/config anomaly.
+                assert "age " in r.text
+                assert "ttl 0s" in r.text
         finally:
             d.shutdown()
 

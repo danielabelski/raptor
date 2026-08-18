@@ -689,7 +689,13 @@ class LLMDispatcher:
             if now >= rec.expires_at:
                 rec.status = "expired"
                 self._tokens.pop(raw, None)
-                return None, "token expired"
+                # Token age distinguishes "worker outlived its TTL"
+                # from a clock/config anomaly without cross-referencing
+                # the token.issue event.
+                return None, (
+                    f"token expired (age {now - rec.issued_at:.1f}s, "
+                    f"ttl {self._token_ttl_s}s)"
+                )
             if rec.requests_made >= rec.request_budget:
                 rec.status = "exhausted"
                 self._tokens.pop(raw, None)

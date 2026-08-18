@@ -102,6 +102,60 @@ class TestProbe(unittest.TestCase):
             self.assertTrue(_check_macos_afl_shmem("/x/afl-fuzz"))
 
 
+def _probe_on(system: str, machine: str):
+    """Run probe() with the host pinned to (system, machine).
+
+    Tool discovery and the per-sanitiser compile probes are stubbed at
+    the same seams as the probe tests above: clang is "found" and
+    every sanitiser probe reports supported, so has_memory_sanitizer
+    starts True and only the platform-policy downgrade can clear it.
+    """
+    with patch("packages.fuzzing.capability.platform.system",
+               return_value=system), \
+         patch("packages.fuzzing.capability.platform.machine",
+               return_value=machine), \
+         patch("packages.fuzzing.capability.shutil.which",
+               side_effect=lambda name: "/x/clang" if name == "clang" else None), \
+         patch("packages.fuzzing.capability._probe_clang_sanitiser",
+               return_value=True), \
+         patch("packages.fuzzing.capability._probe_version",
+               return_value=""), \
+         patch("packages.fuzzing.capability._probe_radare2_capability",
+               return_value={}):
+        return probe()
+
+
+class TestMemorySanitizerPlatformPolicy(unittest.TestCase):
+    """The downgrade guard must enforce the stated "Linux x86_64 only"
+    rule via is_linux, not merely via is_macos, so exotic hosts (e.g.
+    FreeBSD x86_64) are downgraded too."""
+
+    def test_linux_x86_64_keeps_msan(self):
+        report = _probe_on("Linux", "x86_64")
+        self.assertTrue(report.has_memory_sanitizer)
+
+    def test_linux_amd64_keeps_msan(self):
+        report = _probe_on("Linux", "amd64")
+        self.assertTrue(report.has_memory_sanitizer)
+
+    def test_linux_aarch64_downgrades_msan(self):
+        report = _probe_on("Linux", "aarch64")
+        self.assertFalse(report.has_memory_sanitizer)
+        self.assertTrue(any("MemorySanitizer" in i for i in report.issues))
+
+    def test_macos_downgrades_msan(self):
+        report = _probe_on("Darwin", "x86_64")
+        self.assertFalse(report.has_memory_sanitizer)
+        self.assertTrue(any("MemorySanitizer" in i for i in report.issues))
+
+    def test_non_linux_non_macos_x86_64_downgrades_msan(self):
+        # is_macos alone let e.g. FreeBSD x86_64 keep
+        # has_memory_sanitizer=True against the Linux-x86_64-only policy.
+        report = _probe_on("FreeBSD", "x86_64")
+        self.assertFalse(report.has_memory_sanitizer)
+        self.assertTrue(any("MemorySanitizer" in i for i in report.issues))
+
+
 class TestSelectFuzzer(unittest.TestCase):
     def _report_with(self, **kwargs):
         defaults = {

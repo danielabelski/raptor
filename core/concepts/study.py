@@ -42,6 +42,94 @@ logger = logging.getLogger(__name__)
 # Multi-pass merge
 # ------------------------------------------------------------------
 
+def _quarantine_stale_prior(
+    prior: DomainModel,
+    source_root: Path | None,
+    output_dir: Path,
+    on_progress=None,
+    reading_list: Any = None,
+) -> None:
+    """Quarantine prior-run concepts whose evidence drifted on disk.
+
+    ``check_evidence_staleness`` existed with zero production callers —
+    prior-run concepts merged into this run carried drifted evidence
+    with their original (possibly ``verbatim``) provenance intact.
+    Wire it into the load path: any concept with stale evidence is
+    moved to lifecycle state ``stale`` and its provenance demoted to
+    ``llm_summarized`` (the receipt no longer matches the source, so
+    tier-gated consumers must treat the claim as an unverified hint).
+    The re-derive signal is machine-consumed via the reading list
+    (one pending re-derive question per stale concept — the loop
+    drains pending items on its next pass) and mirrored to
+    ``study-stale.json`` for the operator.
+
+    Fail-soft: a staleness-check error never blocks the study run.
+    """
+    if source_root is None:
+        return
+    try:
+        stale = check_evidence_staleness(prior, source_root)
+    except Exception:
+        logger.debug("staleness check on prior model failed",
+                     exc_info=True)
+        return
+    if not stale:
+        return
+    from .receipts import TIER_LLM_SUMMARIZED
+    stale_ids = {s["concept_id"] for s in stale}
+    for concept in prior.concepts:
+        if concept.id in stale_ids:
+            concept.state = "stale"
+            concept.provenance = TIER_LLM_SUMMARIZED
+    try:
+        stale_path = output_dir / "study-stale.json"
+        stale_path.write_text(
+            json.dumps({"stale_evidence": stale}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.debug("could not write study-stale.json", exc_info=True)
+    if reading_list is not None:
+        try:
+            from .reading_list import (
+                Priority,
+                ReadingListItem,
+                Resolution,
+            )
+            by_concept: dict[str, dict[str, Any]] = {}
+            for s in stale:
+                by_concept.setdefault(s["concept_id"], s)
+            for cid, s in sorted(by_concept.items()):
+                reading_list.queue(ReadingListItem(
+                    id=f"stale-{cid}",
+                    question=(
+                        f"re-derive concept {cid} — its evidence at "
+                        f"{s.get('evidence_file', '?')}:"
+                        f"{s.get('evidence_line', '?')} has "
+                        f"{s.get('status', 'drifted')}"
+                    ),
+                    source_command="/understand --study",
+                    source_file=str(s.get("evidence_file") or ""),
+                    priority=Priority.HIGH.value,
+                    resolution=Resolution.CONCEPT.value,
+                    context="staleness quarantine",
+                ))
+        except Exception:
+            logger.debug("stale re-derive queueing failed",
+                         exc_info=True)
+    logger.warning(
+        "study: %d prior concept(s) have drifted evidence — "
+        "quarantined as stale (provenance demoted; re-derive signal "
+        "in study-stale.json): %s",
+        len(stale_ids), ", ".join(sorted(stale_ids)),
+    )
+    if on_progress:
+        on_progress(
+            "staleness",
+            f"{len(stale_ids)} prior concept(s) quarantined as stale",
+        )
+
+
 def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
     """Merge *new* pass output into *prior*, keyed by ID. New wins on collision."""
     concept_map: dict[str, Concept] = {c.id: c for c in prior.concepts}
@@ -1751,8 +1839,10 @@ def _apply_receipts(
     - An entry with no quotes at all is kept but demoted to
       ``llm_summarized`` — tier-gated consumers treat it as an
       unverified hint only.
-    - Contracts whose function matches a mechanically extracted focus
-      item are tier ``mechanical`` (receipt = the item's own snippet).
+    - Contracts keep tier ``llm_summarized`` even when their function
+      matches a mechanically extracted focus item — the name match
+      locates the function but does not verify the contract's semantic
+      claims. The item's snippet is attached as a locating receipt.
     """
     from .receipts import (
         TIER_LLM_SUMMARIZED,
@@ -1823,12 +1913,21 @@ def _apply_receipts(
     for ct in contracts:
         item = item_by_name.get(ct.function)
         if item is not None and item.definition:
-            from .receipts import TIER_MECHANICAL
+            # A name match against a mechanically extracted focus item
+            # locates the function — it does NOT verify the contract's
+            # semantic claims (output_semantics / security_note are
+            # unverified LLM output; see the tier definitions in
+            # receipts.py: mechanical = derived WITHOUT an LLM). The
+            # snippet receipt is attached as locating context only,
+            # and the tier stays llm_summarized so tier-gated
+            # consumers treat the contract as an unverified hint
+            # rather than letting it resolve reading-list items or
+            # trigger verdict-affecting re-reviews.
             r = mechanical_receipt(
                 item.file, item.line,
                 "\n".join(item.definition.splitlines()[:6]),
             )
-            ct.provenance = TIER_MECHANICAL
+            ct.provenance = TIER_LLM_SUMMARIZED
             ct.receipt = r.to_dict()
         elif not ct.provenance:
             ct.provenance = TIER_LLM_SUMMARIZED
@@ -3426,6 +3525,10 @@ def run_study(
     out_path = output_dir / "domain-model.json"
     if out_path.is_file():
         prior = DomainModel.load(out_path)
+        _quarantine_stale_prior(
+            prior, source_root, output_dir, on_progress=on_progress,
+            reading_list=reading_list,
+        )
         model = _merge_domain_models(prior, model)
     model.save(out_path)
 

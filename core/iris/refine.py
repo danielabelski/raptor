@@ -187,6 +187,11 @@ def refine_loop(
             n_refuted=feedback.n_refuted,
             n_errors=len(feedback.tool_errors),
             n_bypass=len(all_bypass_findings),
+            # Key lists ride the round record so the store's merge
+            # step can drop refuted specs instead of resurrecting
+            # them from the add/upgrade-only merge next run.
+            confirmed_keys=list(feedback.confirmed_keys),
+            refuted_keys=list(feedback.refuted_keys),
         )
         history.append(record)
 

@@ -114,9 +114,14 @@ class TestQuoteOrAbstain:
         assert invariants == []
         assert sink and sink[0]["kind"] == "invariant"
 
-    def test_contract_matching_focus_item_is_mechanical(
+    def test_contract_matching_focus_item_stays_llm_tier(
         self, src: Path,
     ) -> None:
+        """A name match locates the function; it does NOT verify the
+        contract's semantic claims (output_semantics / security_note
+        are unverified LLM output). The tier must stay
+        llm_summarized — mechanical means derived without an LLM —
+        with the snippet receipt attached as locating context only."""
         focus = [StudyItem(
             id="i", kind="function", name="parse_config",
             file="pkg/mod.py", line=1,
@@ -129,7 +134,9 @@ class TestQuoteOrAbstain:
         *_head, contracts, _bp, _sa = _parse_batch_response(
             raw, source_root=src, focus_items=focus,
         )
-        assert contracts[0].provenance == TIER_MECHANICAL
+        assert contracts[0].provenance == TIER_LLM_SUMMARIZED
+        assert contracts[0].provenance != TIER_MECHANICAL
+        # Locating receipt still attached for prompt context.
         assert contracts[0].receipt["verified"]
 
     def test_contract_without_focus_item_is_summary(self, src: Path) -> None:

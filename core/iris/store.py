@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,7 +42,13 @@ _STORE_FILE = "specs.json"
 
 @dataclass
 class RoundRecord:
-    """Summary of one synthesis/refinement round."""
+    """Summary of one synthesis/refinement round.
+
+    ``confirmed_keys`` / ``refuted_keys`` carry the per-round spec
+    keys (``_spec_key`` format) so the store's merge step can drop
+    refuted specs instead of resurrecting them from the add/upgrade-
+    only merge on the next run.
+    """
 
     round: int
     n_specs: int
@@ -50,6 +56,8 @@ class RoundRecord:
     n_refuted: int = 0
     n_errors: int = 0
     n_bypass: int = 0
+    confirmed_keys: list[str] = field(default_factory=list)
+    refuted_keys: list[str] = field(default_factory=list)
 
 
 def _spec_key(spec: TaintSpec) -> str:
@@ -281,6 +289,15 @@ def persist_refined_specs(
     existing = _specs_from_list(meta.get("specs", []))
     merged = merge_specs(existing, refined)
 
+    # Drop refuted specs at merge. The refine loop demotes refuted
+    # specs in-run, but the merge above is add/upgrade-only — store
+    # copies of refuted specs used to resurrect as prior_specs on the
+    # next run, polluting prompts and burning tool cycles forever.
+    # Same floor as refine's _demote_refuted: tool-confirmed
+    # (>= XREF_BACKED) and operator-confirmed specs survive a
+    # refuted round; a later confirmation clears the refutation.
+    merged = _drop_refuted(merged, history or [])
+
     prior_history = [
         h for h in (meta.get("history") or []) if isinstance(h, dict)
     ]
@@ -306,6 +323,18 @@ def persist_refined_specs(
     elif stored_target:
         resolved_target = Path(stored_target)
 
+    # Evict specs whose file vanished from the target tree. Like the
+    # refuted drop above this used to exist with zero persistence-path
+    # callers, so deleted-file specs accumulated in the store
+    # indefinitely. Existence-derived file set: cheap (one stat per
+    # distinct spec file) and exactly what evict_stale needs.
+    if resolved_target is not None and resolved_target.is_dir():
+        current_files = {
+            s.file for s in merged
+            if s.file and (resolved_target / s.file).is_file()
+        }
+        merged = evict_stale(merged, current_files)
+
     return save_specs(
         out_dir,
         merged,
@@ -315,6 +344,49 @@ def persist_refined_specs(
         target_path=resolved_target,
         assumptions=merged_assumptions or None,
     )
+
+
+def _drop_refuted(
+    specs: list[TaintSpec],
+    history: list[dict[str, Any]],
+) -> list[TaintSpec]:
+    """Remove specs the refine rounds refuted (net of re-confirmation).
+
+    ``history`` rows are RoundRecord dicts for THIS persist call, in
+    round order; a key refuted in one round but confirmed in a later
+    one is not dropped. Tool-confirmed (>= XREF_BACKED) and
+    operator-confirmed specs are always kept — mirroring
+    ``core.iris.refine._demote_refuted``'s floor.
+    """
+    refuted: set = set()
+    for rec in history:
+        if not isinstance(rec, dict):
+            continue
+        refuted.update(
+            k for k in (rec.get("refuted_keys") or []) if isinstance(k, str)
+        )
+        refuted.difference_update(
+            k for k in (rec.get("confirmed_keys") or []) if isinstance(k, str)
+        )
+    if not refuted:
+        return specs
+    kept: list[TaintSpec] = []
+    dropped = 0
+    for spec in specs:
+        if (
+            _spec_key(spec) in refuted
+            and spec.source != "operator_confirmed"
+            and TIER_RANK.get(spec.evidence_tier, 0)
+                < TIER_RANK.get(EvidenceTier.XREF_BACKED, 0)
+        ):
+            dropped += 1
+            continue
+        kept.append(spec)
+    if dropped:
+        logger.info(
+            "iris.store: dropped %d refuted spec(s) at merge", dropped,
+        )
+    return kept
 
 
 def merge_specs(

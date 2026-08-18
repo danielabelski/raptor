@@ -463,3 +463,138 @@ class TestPersistRefinedSpecs:
         run_dir.mkdir(parents=True)
         assert persist_refined_specs(run_dir, []) is None
         assert load_specs(run_dir) == []
+
+
+class TestRefutedDropAtMerge:
+    """Refuted specs must not resurrect from the add/upgrade-only
+    store merge on the next run."""
+
+    @staticmethod
+    def _history(refuted=(), confirmed=(), rnd=0):
+        return [{
+            "round": rnd, "n_specs": 1,
+            "refuted_keys": list(refuted),
+            "confirmed_keys": list(confirmed),
+        }]
+
+    @staticmethod
+    def _key(spec):
+        from core.iris.store import _spec_key
+        return _spec_key(spec)
+
+    def test_refuted_heuristic_store_spec_dropped(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        ghost = _make_spec(fn="hallucinated_sink", role="sink",
+                           evidence_tier=EvidenceTier.HEURISTIC)
+        save_specs(run_dir, [ghost])
+        persist_refined_specs(
+            run_dir,
+            [_make_spec(fn="other", role="sanitiser")],
+            history=self._history(refuted=[self._key(ghost)]),
+        )
+        loaded = load_specs(run_dir)
+        assert "hallucinated_sink" not in {s.function for s in loaded}
+        assert "other" in {s.function for s in loaded}
+
+    def test_refuted_tool_confirmed_spec_kept(self, tmp_path):
+        """>= XREF_BACKED survives one refuted round — mirrors
+        refine's _demote_refuted floor."""
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        confirmed = _make_spec(fn="real_sink", role="sink",
+                               evidence_tier=EvidenceTier.XREF_BACKED)
+        save_specs(run_dir, [confirmed])
+        persist_refined_specs(
+            run_dir,
+            [_make_spec(fn="other", role="sanitiser")],
+            history=self._history(refuted=[self._key(confirmed)]),
+        )
+        loaded = load_specs(run_dir)
+        assert "real_sink" in {s.function for s in loaded}
+
+    def test_later_confirmation_clears_refutation(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        spec = _make_spec(fn="flaky", role="sink",
+                          evidence_tier=EvidenceTier.HEURISTIC)
+        save_specs(run_dir, [spec])
+        history = (
+            self._history(refuted=[self._key(spec)], rnd=0)
+            + self._history(confirmed=[self._key(spec)], rnd=1)
+        )
+        persist_refined_specs(
+            run_dir, [_make_spec(fn="other", role="sanitiser")],
+            history=history,
+        )
+        loaded = load_specs(run_dir)
+        assert "flaky" in {s.function for s in loaded}
+
+    def test_operator_confirmed_never_dropped(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        op = _make_spec(fn="op_sink", role="sink",
+                        evidence_tier=EvidenceTier.HEURISTIC,
+                        source="operator_confirmed")
+        save_specs(run_dir, [op])
+        persist_refined_specs(
+            run_dir, [_make_spec(fn="other", role="sanitiser")],
+            history=self._history(refuted=[self._key(op)]),
+        )
+        loaded = load_specs(run_dir)
+        assert "op_sink" in {s.function for s in loaded}
+
+
+class TestPersistEvictsStale:
+    """persist_refined_specs evicts specs whose file vanished from
+    the target tree (evict_stale finally has a persistence caller)."""
+
+    def test_vanished_file_spec_evicted(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        target = tmp_path / "repo"
+        (target / "src").mkdir(parents=True)
+        (target / "src" / "auth.py").write_text("def f(): pass\n")
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            _make_spec(fn="gone", file="src/deleted.py", role="sink",
+                       evidence_tier=EvidenceTier.HEURISTIC),
+        ], target_path=target)
+        persist_refined_specs(
+            run_dir,
+            [_make_spec(fn="live", file="src/auth.py", role="sanitiser")],
+            target_path=target,
+        )
+        loaded = load_specs(run_dir)
+        names = {s.function for s in loaded}
+        assert "live" in names
+        assert "gone" not in names
+
+    def test_vanished_but_tool_confirmed_kept(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        target = tmp_path / "repo"
+        (target / "src").mkdir(parents=True)
+        (target / "src" / "auth.py").write_text("def f(): pass\n")
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        save_specs(run_dir, [
+            _make_spec(fn="renamed", file="src/old_name.py", role="sink",
+                       evidence_tier=EvidenceTier.XREF_BACKED),
+        ], target_path=target)
+        persist_refined_specs(
+            run_dir,
+            [_make_spec(fn="live", file="src/auth.py", role="sanitiser")],
+            target_path=target,
+        )
+        loaded = load_specs(run_dir)
+        assert "renamed" in {s.function for s in loaded}

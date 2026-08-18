@@ -1811,3 +1811,86 @@ class TestLoadDocContext:
         out = _load_doc_context([{"file": "notes.md"}], tmp_path)
         assert "Useful line." in out
         assert "Ignore all previous" not in out
+
+
+# ------------------------------------------------------------------
+# Staleness quarantine on the prior-model load path
+# ------------------------------------------------------------------
+
+class TestQuarantineStalePrior:
+    """check_evidence_staleness is wired into the load path: prior
+    concepts with drifted evidence are quarantined (state=stale,
+    provenance demoted) and study-stale.json carries the re-derive
+    signal."""
+
+    @staticmethod
+    def _model_with_hash(src: Path, tier: str) -> DomainModel:
+        from core.staleness import hash_span
+        return DomainModel(
+            concepts=[Concept(
+                id="c1", description="d", provenance=tier,
+                state="validated",
+                evidence=[Evidence(
+                    type="code_path", file="a.c",
+                    observation="obs", line=1,
+                    hash=hash_span(src, 1, 1),
+                )],
+            )],
+        )
+
+    def test_stale_concept_quarantined(self, tmp_path: Path) -> None:
+        from core.concepts.study import _quarantine_stale_prior
+
+        src = tmp_path / "a.c"
+        src.write_text("int x = 1;\n", encoding="utf-8")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        prior = self._model_with_hash(src, "verbatim")
+        src.write_text("int x = 99;\n", encoding="utf-8")
+
+        from core.concepts.reading_list import ReadingList
+
+        events: list = []
+        rl = ReadingList()
+        _quarantine_stale_prior(
+            prior, tmp_path, out_dir,
+            on_progress=lambda k, m: events.append((k, m)),
+            reading_list=rl,
+        )
+        c = prior.concepts[0]
+        assert c.state == "stale"
+        assert c.provenance == "llm_summarized"
+        stale_path = out_dir / "study-stale.json"
+        assert stale_path.is_file()
+        data = json.loads(stale_path.read_text(encoding="utf-8"))
+        assert data["stale_evidence"][0]["concept_id"] == "c1"
+        assert events and events[0][0] == "staleness"
+        # Machine-consumed re-derive signal: one pending reading-list
+        # item per stale concept, drained on the next study pass.
+        pending = rl.pending()
+        assert len(pending) == 1
+        assert "re-derive concept c1" in pending[0].question
+
+    def test_current_concept_untouched(self, tmp_path: Path) -> None:
+        from core.concepts.study import _quarantine_stale_prior
+
+        src = tmp_path / "a.c"
+        src.write_text("int x = 1;\n", encoding="utf-8")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        prior = self._model_with_hash(src, "verbatim")
+
+        _quarantine_stale_prior(prior, tmp_path, out_dir)
+        c = prior.concepts[0]
+        assert c.state == "validated"
+        assert c.provenance == "verbatim"
+        assert not (out_dir / "study-stale.json").exists()
+
+    def test_no_source_root_is_noop(self, tmp_path: Path) -> None:
+        from core.concepts.study import _quarantine_stale_prior
+
+        src = tmp_path / "a.c"
+        src.write_text("int x = 1;\n", encoding="utf-8")
+        prior = self._model_with_hash(src, "verbatim")
+        _quarantine_stale_prior(prior, None, tmp_path)
+        assert prior.concepts[0].state == "validated"

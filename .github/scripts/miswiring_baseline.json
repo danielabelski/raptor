@@ -601,6 +601,9 @@
   },
   "artifacts:write_only_artifact::extra-rule.yml": {
    "note": "self-test scratch fixture: case_scan_extra_config writes the rule file and passes it to a spawned raptor.py scan --extra-config subprocess — the read happens in the child process via CLI arg, not a static in-repo read"
+  },
+  "artifacts:write_only_artifact::study-stale.json": {
+   "note": "operator-facing mirror of the staleness quarantine; the machine-consumed re-derive signal rides the reading list (pending items drained on the next study pass)"
   }
  }
 }

@@ -340,6 +340,25 @@ def _guard_in_scope(inv: dict[str, Any], file_path: str) -> bool:
     return any(_paths_match(file_path, s) for s in scopes)
 
 
+
+def _tier_tag(entry: dict) -> str:
+    """Render an entry's provenance tier for prompt injection.
+
+    ``verbatim`` / ``mechanical`` carry verified receipts; everything
+    else — including entries with no provenance stamp at all (fail
+    closed) — is an unverified LLM summary and must read as a hint to
+    check, never as established fact.
+    """
+    if str(entry.get("state") or "") == "stale":
+        # Quarantined by the staleness check — evidence drifted since
+        # the receipt was stamped.
+        return "[stale-unverified]"
+    tier = str(entry.get("provenance") or "")
+    if tier in ("verbatim", "mechanical"):
+        return f"[{tier}]"
+    return "[unverified]"
+
+
 def domain_model_context(
     out_dir: Path,
     file_path: str,
@@ -397,18 +416,30 @@ def domain_model_context(
         return None
 
     parts: list[str] = ["## Domain Knowledge (from /understand --study)\n"]
+    parts.append(
+        "Provenance: entries tagged [verbatim] or [mechanical] carry "
+        "receipts verified against the source. Entries tagged "
+        "[unverified] are LLM summaries WITHOUT verified receipts — "
+        "treat them as context to check against the code, never as "
+        "established fact, and never as the basis for a verdict.\n",
+    )
     parts.extend(_security_context_lines(model))
 
     if relevant_concepts:
         parts.append("### Semantic Concepts\n")
         for c in relevant_concepts:
             conf = c.get("confidence", "inferred")
-            parts.append(f"- **{c['id']}** [{conf}]: {c.get('description', '')}")
+            parts.append(
+                f"- **{c['id']}** {_tier_tag(c)} [{conf}]: "
+                f"{c.get('description', '')}"
+            )
 
     if relevant_invariants:
         parts.append("\n### Invariants\n")
         for i in relevant_invariants:
-            parts.append(f"- **{i['id']}**: {i.get('statement', '')}")
+            parts.append(
+                f"- **{i['id']}** {_tier_tag(i)}: {i.get('statement', '')}"
+            )
             neg = i.get("negation", "")
             if neg:
                 parts.append(f"  - Violation: {neg}")
@@ -419,7 +450,9 @@ def domain_model_context(
     if relevant_contracts:
         parts.append("\n### Contracts\n")
         for c in relevant_contracts:
-            parts.append(f"- **{c['function']}** ({c.get('file', '')})")
+            parts.append(
+                f"- **{c['function']}** {_tier_tag(c)} ({c.get('file', '')})"
+            )
             if c.get("when"):
                 parts.append(f"  - When: {c['when']}")
             if c.get("input_semantics"):

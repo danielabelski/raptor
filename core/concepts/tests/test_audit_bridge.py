@@ -720,3 +720,45 @@ class TestGuardInScope:
     def test_prose_evidence_does_not_scope(self):
         inv = {"id": "g", "evidence": ["documented in the manpage"]}
         assert _guard_in_scope(inv, "any/file.c")
+
+
+class TestProvenanceTierTags:
+    """Injected domain knowledge must carry provenance tiers —
+    llm_summarized entries read as untrusted context, not fact."""
+
+    def test_untiered_entries_tagged_unverified(self, dm_dir):
+        block = domain_model_context(
+            dm_dir, "crypto/algif_aead.c", "_aead_recvmsg",
+        )
+        assert block is not None
+        # Fixture entries carry no provenance → fail-closed tag.
+        assert "[unverified]" in block
+
+    def test_framing_note_present(self, dm_dir):
+        block = domain_model_context(
+            dm_dir, "crypto/algif_aead.c", "_aead_recvmsg",
+        )
+        assert block is not None
+        assert "WITHOUT verified receipts" in block
+        assert "never as established fact" in block
+
+    def test_verbatim_entry_tagged(self, domain_model, tmp_path):
+        domain_model["concepts"][0]["provenance"] = "verbatim"
+        dm_path = tmp_path / "domain-model.json"
+        dm_path.write_text(json.dumps(domain_model), encoding="utf-8")
+        block = domain_model_context(
+            tmp_path, "crypto/algif_aead.c", "_aead_recvmsg",
+        )
+        assert block is not None
+        assert "**sg_page_ownership** [verbatim]" in block
+
+    def test_stale_entry_tagged(self, domain_model, tmp_path):
+        domain_model["concepts"][0]["provenance"] = "verbatim"
+        domain_model["concepts"][0]["state"] = "stale"
+        dm_path = tmp_path / "domain-model.json"
+        dm_path.write_text(json.dumps(domain_model), encoding="utf-8")
+        block = domain_model_context(
+            tmp_path, "crypto/algif_aead.c", "_aead_recvmsg",
+        )
+        assert block is not None
+        assert "**sg_page_ownership** [stale-unverified]" in block

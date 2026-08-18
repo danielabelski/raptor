@@ -606,7 +606,11 @@ def _local_post_event_reads(
     pattern = re.compile(rf"\b{re.escape(edge.name)}\b")
     assign = re.compile(rf"\b{re.escape(edge.name)}\s*=(?!=)")
     out: list[dict[str, Any]] = []
-    for offset in range(event_line - function_span.start + 1,
+    # Clamped like _local_alias_escapes: an out-of-span event line
+    # would start the walk at a negative offset (wrap-around reads
+    # from the segment tail — wrong lines, not a crash, but still
+    # garbage receipts).
+    for offset in range(max(event_line - function_span.start + 1, 0),
                         len(lines)):
         text = lines[offset]
         if pattern.search(text) and not assign.search(text):
@@ -632,10 +636,16 @@ def _local_alias_escapes(
     call_re = re.compile(
         rf"\b([A-Za-z_]\w*)\s*\([^)]*\b{re.escape(edge.name)}\b",
     )
-    for offset in range(edge.line - function_span.start + 1,
-                        event_line - function_span.start):
-        if offset >= len(lines):
-            break
+    # Clamp both ends: an alias edge recorded OUTSIDE this function's
+    # span (the census matches edges to events by field name, so a
+    # cross-function pairing is possible) yields a NEGATIVE start
+    # offset — Python then indexes from the END of the segment and,
+    # past -len(lines), raises IndexError. That single IndexError
+    # aborted the whole census/prepass block in production (silently,
+    # at debug level), taking the lock_region prepass down with it.
+    start_off = max(edge.line - function_span.start + 1, 0)
+    end_off = min(event_line - function_span.start, len(lines))
+    for offset in range(start_off, end_off):
         m = call_re.search(lines[offset])
         if m and m.group(1) not in known_functions and \
                 _event_vocab_source(m.group(1)) is None:

@@ -3676,15 +3676,34 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 inventory=getattr(config, "inventory", None),
                 context_map=context_map,
             )
-            pl_prepass = run_ptr_lifecycle_prepass(
-                census_texts,
+            # Per-channel isolation: one channel's crash must not take
+            # its sibling down. In production a ptr_lifecycle
+            # IndexError aborted this whole block BEFORE lock_region
+            # ran — the callback-under-lock sweep never happened and
+            # the only trace was a debug-level line. Degradation is
+            # loud (WARNING): a standing channel that silently stops
+            # covering its claim class is the failure mode the
+            # channels exist to prevent.
+            def _census_prepass(label, fn, /, **kw):
+                try:
+                    return fn(census_texts, **kw)
+                except Exception:
+                    logger.warning(
+                        "%s prepass failed — channel degraded for "
+                        "this run (no %s coverage)",
+                        label, label, exc_info=True,
+                    )
+                    return {}
+
+            pl_prepass = _census_prepass(
+                "ptr_lifecycle", run_ptr_lifecycle_prepass,
                 census=field_census,
                 domain_vocab=channel_vocab,
                 inventory=getattr(config, "inventory", None),
                 context=census_ctx,
             )
-            lr_prepass = run_lock_region_prepass(
-                census_texts,
+            lr_prepass = _census_prepass(
+                "lock_region", run_lock_region_prepass,
                 domain_vocab=channel_vocab,
                 inventory=getattr(config, "inventory", None),
                 context=census_ctx,
@@ -3716,7 +3735,11 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                     n_channel_seeded,
                 )
     except Exception:
-        logger.debug("lifecycle channel prepass failed", exc_info=True)
+        logger.warning(
+            "lifecycle channel prepass block failed — ptr_lifecycle "
+            "and lock_region coverage degraded for this run",
+            exc_info=True,
+        )
 
     # Five-channel standing prepasses (adjacent to — and independent
     # of — the consistency prepass block above): each channel sweeps
@@ -3799,7 +3822,10 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                         **(_ch_out.get("telemetry") or {}),
                     })
         except Exception:
-            logger.debug("%s prepass failed", _ch_name, exc_info=True)
+            logger.warning(
+                "%s prepass failed — channel degraded for this run",
+                _ch_name, exc_info=True,
+            )
 
     if mechanical_findings and config.out_dir:
         try:

@@ -373,3 +373,101 @@ class TestPrepass:
             budget_s=0.0,
         )
         assert out["telemetry"]["budget_exceeded"] is True
+
+
+# v4 head-to-head shape: OpenSSL's DEFINE_LIST_OF_IMPL generates the
+# insert function (ossl_list_<name>_insert_tail) — it has no definition
+# anywhere for the study loop to index, and the verb is word-internal
+# so exact-name vocabulary can never match. The naming-stem tier binds
+# it structurally at detection grade.
+MACRO_LIST_INSERT = """\
+static void port_bind_channel(struct port *port, struct conn *ch)
+{
+    ossl_list_incoming_ch_insert_tail(&port->incoming_channel_list, ch);
+    port->have_incoming = 1;
+}
+"""
+
+MACRO_LIST_INSERT_TWIN = """\
+static void port_bind_channel(struct port *port, struct conn *ch)
+{
+    if (port->incoming_count >= MAX_INCOMING)
+        return;
+    ossl_list_incoming_ch_insert_tail(&port->incoming_channel_list, ch);
+    port->incoming_count++;
+}
+"""
+
+ARITHMETIC_ADD = """\
+static int bn_sum(struct bn *r, struct bn *a, struct bn *b)
+{
+    BN_add(r, a, b);
+    BN_mod_add(r, r, b, r, 0);
+    return 1;
+}
+"""
+
+
+class TestNamingStemBinding:
+    def test_macro_generated_insert_binds_at_detection_grade(
+        self, tmp_path,
+    ):
+        _write(tmp_path, "src/quic_port.c", MACRO_LIST_INSERT)
+        res = run_resource_bounds_check(
+            tmp_path, "src/quic_port.c", "port_bind_channel",
+            "incoming channels accumulate in incoming_channel_list "
+            "with no bound",
+        )
+        assert res.outcome == "confirmed"
+        # Detection grade ONLY: naming evidence never earns the
+        # registry rule-id.
+        assert res.rule_id == RULE_UNBOUNDED + DETECTION_VARIANT_SUFFIX
+        assert is_detection_rule_id(res.rule_id)
+        assert res.resource["verb"] == "ossl_list_incoming_ch_insert_tail"
+        assert res.resource["vocab_source"] == "naming"
+
+    def test_twin_with_bound_witness_refutes(self, tmp_path):
+        _write(tmp_path, "src/quic_port.c", MACRO_LIST_INSERT_TWIN)
+        res = run_resource_bounds_check(
+            tmp_path, "src/quic_port.c", "port_bind_channel",
+            "incoming channels accumulate in incoming_channel_list "
+            "with no bound",
+        )
+        assert res.outcome == "refuted"
+        assert "MAX_INCOMING" in res.reason
+
+    def test_arithmetic_add_does_not_bind(self, tmp_path):
+        # BN_add-style arithmetic must not become an accumulation
+        # site: weak verbs (add/push/append) bind only when the
+        # identifier also names a collection.
+        _write(tmp_path, "src/bn_add.c", ARITHMETIC_ADD)
+        res = run_resource_bounds_check(
+            tmp_path, "src/bn_add.c", "bn_sum",
+            "the sum list grows without limit",
+        )
+        assert res.outcome == "inconclusive"
+        assert res.reason.startswith(REASON_HYPOTHESIS_UNBINDABLE)
+
+    def test_exact_vocabulary_still_wins_over_stem(self, tmp_path):
+        # A seed-vocabulary verb keeps its seed provenance — the stem
+        # tier only picks up what exact matching cannot see.
+        _write(tmp_path, "src/ssl_sess.c", CVE_2024_2511)
+        res = run_resource_bounds_check(
+            tmp_path, "src/ssl_sess.c", "ssl_session_cache_add", HYP,
+        )
+        assert res.outcome == "confirmed"
+        assert res.resource["vocab_source"] == "seed"
+
+    def test_prepass_discovers_stem_only_candidates(self, tmp_path):
+        # The prepass candidate filter must see stem-only files too —
+        # exact vocabulary alone skipped them before enumeration.
+        res = run_resource_bounds_prepass(
+            {"src/quic_port.c": MACRO_LIST_INSERT},
+            target_path=tmp_path,
+        )
+        assert res["telemetry"]["candidates"] == 1
+        assert res["telemetry"]["confirmed"] == 1
+        leads = res.get("leads", [])
+        assert leads and "ossl_list_incoming_ch_insert_tail" in (
+            leads[0]["mechanism"]
+        )

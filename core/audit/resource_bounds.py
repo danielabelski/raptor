@@ -379,6 +379,35 @@ def _call_re(names: tuple[str, ...] | frozenset[str]) -> re.Pattern:
     return re.compile(r"\b(" + alts + r")\s*\(")
 
 
+# Naming-stem insert matching (detection grade only). Project
+# collection APIs routinely embed the insert verb inside a longer
+# identifier — OpenSSL's macro-generated
+# ``ossl_list_<name>_insert_tail`` (DEFINE_LIST_OF_IMPL: the function
+# has NO definition anywhere, so the study loop can never index it),
+# glib's ``g_queue_push_tail``, etc. The exact-name vocabulary match
+# cannot see these (the verb is word-internal), which left a real
+# unbounded-accumulation site unbindable ("no accumulation site
+# found") even though the channel dispatched fine. Same policy as
+# lock_region's ``_STEM_LOCK_RE``: structural naming evidence binds a
+# site at detection grade — ``_apply_grade`` routes non-registry
+# sources to the ``-naming`` variant — never at registry grade. No
+# target-specific names.
+#
+# Two tiers: strong verbs (insert/enqueue) bind on the verb alone;
+# weak verbs (add/push/append) bind only when the identifier also
+# names a collection — ``BN_add``-style arithmetic must not bind.
+_STEM_INSERT_RE = re.compile(
+    r"\b("
+    r"\w+_(?:insert|enqueue)(?:_\w+)?"
+    r"|\w*(?:list|queue|stack|ring|table|hash|set|vec|array|buf|heap|sk)"
+    r"\w*_(?:add|push|append)(?:_\w+)?"
+    r")\s*\(",
+)
+
+_STEM_VOCAB_SOURCE = "naming"
+_STEM_PROVENANCE = "naming-stem"
+
+
 def _loop_lines(lines: list[str], start: int) -> set[int]:
     """1-based (relative to *start*) line numbers inside a loop body —
     a brace-depth scan sufficient for the alloc-in-loop candidate
@@ -430,6 +459,15 @@ def _enumerate_sites(
                     vocab_source=src, provenance=prov,
                 ))
                 continue
+        sm = _STEM_INSERT_RE.search(code)
+        if sm:
+            sites.append(_Site(
+                line=line_no, code=raw.strip()[:200],
+                verb=sm.group(1), kind="insert",
+                vocab_source=_STEM_VOCAB_SOURCE,
+                provenance=_STEM_PROVENANCE,
+            ))
+            continue
         if alloc_re is not None and line_no in loop_set:
             m = alloc_re.search(code)
             if m:
@@ -1145,15 +1183,23 @@ def run_resource_bounds_prepass(
     collection_pairs = learned_collection_pairs(domain_model)
     insert_re = _call_re(tuple(insert_vocab)) if insert_vocab else None
 
+    def _has_insert(text: str) -> bool:
+        # Exact vocabulary OR naming-stem structural match — the stem
+        # tier is what binds macro-generated project insert APIs the
+        # study loop can never learn (no definition to index).
+        if insert_re is not None and insert_re.search(text):
+            return True
+        return bool(_STEM_INSERT_RE.search(text))
+
     candidates: list[tuple[str, str, int, int]] = []
     for fp, source in sorted(source_texts.items()):
         if not fp.endswith(_SOURCE_SUFFIXES):
             continue
-        if insert_re is None or not insert_re.search(source):
+        if not _has_insert(source):
             continue
         for name, start, end in _c_function_spans(source):
             segment = "\n".join(source.splitlines()[start - 1:end])
-            if insert_re.search(segment):
+            if _has_insert(segment):
                 candidates.append((fp, name, start, end))
             if len(candidates) >= MAX_PREPASS_CANDIDATES:
                 break

@@ -414,3 +414,89 @@ class TestPrepass:
 class TestSeedPolicy:
     def test_seed_set_stays_seed_sized(self):
         assert len(pl._SEED_DEALLOCATORS) <= 9
+
+
+class TestOutOfSpanOffsetsClamped:
+    """Production failure shape: an alias edge recorded OUTSIDE the
+    adjudicated function's span produced a negative segment offset;
+    past -len(segment) Python raised IndexError, which aborted the
+    whole census/prepass block in the orchestrator (and took the
+    lock_region prepass down with it)."""
+
+    def _span(self, name="f", start=800, end=830):
+        from types import SimpleNamespace
+        return SimpleNamespace(name=name, start=start, end=end)
+
+    def _edge(self, line):
+        from core.audit.ptr_lifecycle import _AliasEdge
+        return _AliasEdge(
+            kind="local", name="alias", owner="obj",
+            owner_field="ptr", file="a.c", line=line,
+        )
+
+    def test_edge_before_span_does_not_raise(self):
+        from core.audit.ptr_lifecycle import _local_alias_escapes
+
+        segment = ["int f(void)", "{", "    use(alias);", "}"]
+        # edge.line=10 with span.start=800 → offset -789, far past
+        # -len(segment): pre-fix IndexError. Post-fix the walk clamps
+        # to the segment and may legitimately report an in-span
+        # escape — the contract under test is "never raises, never
+        # reads outside the span".
+        result = _local_alias_escapes(
+            self._edge(10), segment, self._span(), 820, set(),
+        )
+        assert result is None or "line 80" in result
+
+    def test_event_before_span_reads_nothing(self):
+        from core.audit.ptr_lifecycle import _local_post_event_reads
+
+        segment = ["int f(void)", "{", "    use(alias);", "}"]
+        reads = _local_post_event_reads(
+            self._edge(10), segment, self._span(), 10,
+        )
+        # Clamped to offset 0: scans the whole segment forward, never
+        # wraps around from the tail.
+        assert all(r["line"] >= 800 for r in reads)
+
+    def test_in_span_escape_still_detected(self):
+        from core.audit.ptr_lifecycle import _local_alias_escapes
+
+        segment = [
+            "int f(void)",
+            "{",
+            "    alias = obj->ptr;",
+            "    hand_off(alias);",
+            "    free(obj->ptr);",
+            "}",
+        ]
+        result = _local_alias_escapes(
+            self._edge(802), segment, self._span(start=800, end=805),
+            804, set(),
+        )
+        assert result is not None
+        assert "hand_off" in result
+
+
+class TestCensusBlockIsolationWiring:
+    """The orchestrator's census/prepass block must isolate channels
+    (ptr_lifecycle crash ≠ lock_region outage) and degrade LOUDLY.
+    Source-level wiring check, the TestReviewOneFunctionTimeoutPath
+    pattern."""
+
+    def test_channels_isolated_and_loud(self):
+        from pathlib import Path
+
+        import core.audit.orchestrator as orch_mod
+
+        src = Path(orch_mod.__file__).read_text()
+        idx = src.find("def _census_prepass")
+        assert idx != -1, "per-channel isolation wrapper missing"
+        window = src[idx:idx + 2500]
+        assert "logger.warning" in window[:800]
+        assert '_census_prepass(\n                "ptr_lifecycle"' in src
+        assert '_census_prepass(\n                "lock_region"' in src
+        # The block-level swallow is loud too.
+        assert (
+            "lifecycle channel prepass block failed" in src
+        )

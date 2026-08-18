@@ -59,6 +59,7 @@ from core.audit.fail_open_verify import (
     is_fail_open_hypothesis,
     run_fail_open_check,
 )
+from core.testing import requires_ts
 
 # ── fixture helpers ─────────────────────────────────────────────────
 
@@ -502,11 +503,28 @@ class TestCAnalyzers:
         sites = c_ignored_return_sites(self.CHECKED, "a.c", "setuid")
         assert [s.verdict for s in sites] == ["guarded"]
 
-    def test_void_cast_still_unguarded_with_receipt(self):
+    @pytest.mark.parametrize("tier", ["tree-sitter", "regex-fallback"])
+    def test_void_cast_still_unguarded_with_receipt(
+        self, tier, monkeypatch,
+    ):
+        # The C leg HAS a line-regex fallback — pin both tiers: the
+        # verdict survives without a tree, only the receipt coarsens
+        # (the cast text is a tree-level observation).
+        if tier == "tree-sitter":
+            from core.testing import ts_parser_available
+            if not ts_parser_available("c"):
+                pytest.skip("no tree-sitter c grammar installed")
+        else:
+            import core.audit.fail_open_lang as lang
+            monkeypatch.setattr(lang, "_ts_parser", lambda language: None)
         src = "void f(uid_t u) {\n    (void)setuid(u);\n}\n"
         sites = c_ignored_return_sites(src, "a.c", "setuid")
         assert sites[0].verdict == "unguarded"
-        assert "(void)" in sites[0].evidence
+        if tier == "tree-sitter":
+            assert "(void)" in sites[0].evidence
+        else:
+            assert sites[0].parser == "regex"
+            assert "fallback" in sites[0].evidence
 
     def test_tristate_truth_test_accepts_error(self):
         src = (
@@ -845,6 +863,7 @@ class TestVerdictsC:
 
 
 
+@requires_ts("java")
 class TestJavaHandlerAnalyzer:
     def test_empty_catch_classified(self):
         src = (
@@ -964,6 +983,7 @@ class TestJavaHandlerAnalyzer:
         assert java_handlers("class A {}", "A.java") is None
 
 
+@requires_ts("java")
 class TestVerdictsJava:
     """Fixture pairs 5 (trust-manager) and 6 (filter catch-and-
     continue) from the design, plus the swallowed-checked-exception
@@ -1142,6 +1162,7 @@ class TestVerdictsJava:
 
 
 
+@requires_ts("go")
 class TestGoAnalyzers:
     DISCARD = (
         "package main\n"
@@ -1271,6 +1292,7 @@ class TestGoAnalyzers:
             is None
 
 
+@requires_ts("go")
 class TestVerdictsGo:
     """Fixture pairs 7 (discarded session-store error) and 8
     (recover-to-continue in auth middleware) from the design."""

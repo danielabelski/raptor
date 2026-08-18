@@ -43,16 +43,15 @@ def _response(*blocks, stop_reason="end_turn"):
 
 
 def _generate_with(response):
-    from core.llm.config import ModelConfig
-    from core.llm.providers import AnthropicProvider
+    # Hermetic provider (core.testing): the SDK client is fully faked,
+    # so construction must not require the optional anthropic SDK —
+    # these are RAPTOR response-shape/taxonomy tests, and they run
+    # unchanged on bare CI where the SDK is absent.
+    from core.testing import make_anthropic_provider
 
-    provider = AnthropicProvider(ModelConfig(
-        provider="anthropic", model_name="claude-sonnet-5", api_key="k",
-    ))
-    provider._caching_warning_emitted = True
-    provider.client = SimpleNamespace(
+    provider = make_anthropic_provider(SimpleNamespace(
         messages=SimpleNamespace(create=lambda **kw: response),
-    )
+    ))
     return provider.generate("ping")
 
 

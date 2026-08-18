@@ -140,9 +140,75 @@ class FakeModel:
     model_name: str
 
 
+def make_anthropic_provider(
+    client: Any = None,
+    *,
+    model_name: str = "claude-sonnet-5",
+) -> Any:
+    """Build an ``AnthropicProvider`` without the anthropic SDK.
+
+    Response-shape and transport-selection suites fake the SDK client
+    entirely; going through ``__init__`` would demand the real SDK
+    (an optional dependency, absent on bare CI) only to construct a
+    client the test immediately replaces. Mirrors
+    :func:`make_test_client`'s ``__new__`` pattern: base-provider
+    state, instructor wiring pinned off, caching warning silenced.
+    """
+    from core.llm.config import ModelConfig
+    from core.llm.providers import AnthropicProvider, LLMProvider
+
+    provider = AnthropicProvider.__new__(AnthropicProvider)
+    LLMProvider.__init__(provider, ModelConfig(
+        provider="anthropic", model_name=model_name, api_key="k",
+    ))
+    provider.instructor_client = None
+    provider._instructor_consec_failures = 0
+    provider._instructor_lock = threading.Lock()
+    provider._caching_warning_emitted = True
+    if client is not None:
+        provider.client = client
+    return provider
+
+
+def ensure_anthropic_error_types(monkeypatch) -> None:
+    """Make ``from anthropic import APIError, ...`` importable.
+
+    The provider's retry taxonomy imports the SDK exception classes
+    even when the client is a fake that never raises them. On hosts
+    without the optional SDK, install a stub module carrying
+    structurally-compatible exception types; where the real SDK is
+    installed this is a no-op, so the genuine classes stay in play.
+    """
+    try:
+        import anthropic  # noqa: F401 — availability probe
+        return
+    except ImportError:
+        pass
+    import sys
+    import types
+
+    stub = types.ModuleType("anthropic")
+
+    class APIError(Exception):
+        pass
+
+    class APIConnectionError(APIError):
+        pass
+
+    class APIStatusError(APIError):
+        status_code: int | None = None
+
+    stub.APIError = APIError
+    stub.APIConnectionError = APIConnectionError
+    stub.APIStatusError = APIStatusError
+    monkeypatch.setitem(sys.modules, "anthropic", stub)
+
+
 __all__ = [
     "FakeModel",
     "FakeStructuredProvider",
+    "ensure_anthropic_error_types",
     "install_provider",
+    "make_anthropic_provider",
     "make_test_client",
 ]

@@ -29,7 +29,9 @@ rather than deleting-and-reinventing.
 from core.testing.fake_llm import (
     FakeModel,
     FakeStructuredProvider,
+    ensure_anthropic_error_types,
     install_provider,
+    make_anthropic_provider,
     make_test_client,
 )
 from core.testing.gitrepo import git_run, init_scratch_repo
@@ -49,10 +51,12 @@ __all__ = [
     "PROXY_ENV_VARS",
     "FakeModel",
     "FakeStructuredProvider",
+    "ensure_anthropic_error_types",
     "force_census_regex_fallback",
     "git_run",
     "init_scratch_repo",
     "install_provider",
+    "make_anthropic_provider",
     "make_test_client",
     "requires_ts",
     "reset_llm_egress_state",

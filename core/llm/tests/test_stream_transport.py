@@ -74,15 +74,18 @@ class _FakeClient:
 def provider(monkeypatch):
     monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
     monkeypatch.delenv("RAPTOR_LLM_STREAM_TRANSPORT", raising=False)
-    from core.llm.config import ModelConfig
-    from core.llm.providers import AnthropicProvider
+    # Hermetic provider (core.testing): the transports are exercised
+    # against _FakeClient, so construction must not require the
+    # optional anthropic SDK; the error-type stub keeps the retry
+    # taxonomy's `from anthropic import ...` satisfied on SDK-less
+    # hosts.
+    from core.testing import (
+        ensure_anthropic_error_types,
+        make_anthropic_provider,
+    )
 
-    p = AnthropicProvider(ModelConfig(
-        provider="anthropic", model_name="claude-sonnet-5", api_key="k",
-    ))
-    p._caching_warning_emitted = True
-    p.client = _FakeClient(_response())
-    return p
+    ensure_anthropic_error_types(monkeypatch)
+    return make_anthropic_provider(_FakeClient(_response()))
 
 
 def _fake(p) -> _FakeClient:

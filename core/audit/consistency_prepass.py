@@ -56,6 +56,11 @@ MAX_FINDINGS = 100
 MAX_DEVIANTS_PER_CALLEE = 5
 MAX_VERDICT_CALLEES = 200
 PREPASS_BUDGET_S = 60.0
+# Joern-flow escalator budget (§2.3 "Joern flow only budget-
+# permitting"): at most this many CPG caller-closure queries per run;
+# only promote-capable confirmations whose cheap reachability leg
+# answered unknown spend from it.
+MAX_JOERN_ESCALATIONS = 16
 
 # CWE per cleanup pair kind (lock-shaped kinds are deadlock territory,
 # everything else is leak territory).
@@ -180,6 +185,23 @@ def run_consistency_prepass(
             return True
         return False
 
+    # Joern-flow escalator accounting: pass the server to a verdict
+    # only while queries remain; charge the budget when the returned
+    # receipt shows the flow leg actually ran.
+    joern_state = {"spent": 0}
+
+    def _joern_arg() -> Any:
+        if joern_server is None \
+                or joern_state["spent"] >= MAX_JOERN_ESCALATIONS:
+            return None
+        return joern_server
+
+    def _charge_joern(res: Any) -> None:
+        r = getattr(res, "reachability", None) or {}
+        if r.get("via") == "joern_flow" or "joern_flow" in r:
+            joern_state["spent"] += 1
+            telemetry["joern_escalations"] = joern_state["spent"]
+
     findings: list[dict[str, Any]] = []
     leads: list[dict[str, Any]] = []
     mechanical: list[dict[str, Any]] = []
@@ -231,7 +253,9 @@ def run_consistency_prepass(
                 res = census_verdict(
                     entry, site, context=ctx, inventory=inventory,
                     source_texts=source_texts,
+                    joern_server=_joern_arg(),
                 )
+                _charge_joern(res)
             except Exception:
                 logger.debug(
                     "consistency prepass: verdict failed for %s",
@@ -387,7 +411,9 @@ def run_consistency_prepass(
                 try:
                     res = argument_shape_verdict(
                         dev, context=ctx, inventory=inventory,
+                        joern_server=_joern_arg(),
                     )
+                    _charge_joern(res)
                 except Exception:
                     logger.debug("consistency prepass: argument-shape "
                                  "verdict failed", exc_info=True)
@@ -482,7 +508,9 @@ def run_consistency_prepass(
             try:
                 res = cleanup_verdict(
                     dev, context=ctx, inventory=inventory,
+                    joern_server=_joern_arg(),
                 )
+                _charge_joern(res)
             except Exception:
                 logger.debug("consistency prepass: cleanup verdict "
                              "failed", exc_info=True)
@@ -696,7 +724,9 @@ def run_consistency_prepass(
             try:
                 res = clone_drift_verdict(
                     dev, context=ctx, inventory=inventory,
+                    joern_server=_joern_arg(),
                 )
+                _charge_joern(res)
             except Exception:
                 logger.debug("consistency prepass: clone-drift "
                              "verdict failed", exc_info=True)

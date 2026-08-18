@@ -298,6 +298,96 @@ def _entry_reachability(
         return None
 
 
+# Joern-flow leg of the escalator (§2.3 "Joern flow only
+# budget-permitting"): bounded caller-closure query, consulted only
+# when the cheap leg answers unknown AND the verdict is a
+# promote-capable confirmation. Depth mirrors the cheap leg's reverse
+# BFS; the name cap keeps the response bounded.
+_JOERN_FLOW_MAX_DEPTH = 6
+_JOERN_FLOW_NAME_CAP = 500
+
+
+def _joern_flow_reachability(
+    joern_server: Any,
+    context: RoleContext,
+    function_name: str,
+) -> dict[str, Any] | None:
+    """Caller-closure reachability on the CPG. Fail-open: any error
+    or missing input degrades to ``unknown`` — the escalator never
+    blocks or flips a verdict."""
+    context_map = context.context_map or {}
+    entry_names = {
+        str(ep.get("function") or ep.get("name") or "")
+        for ep in context_map.get("entry_points") or []
+        if isinstance(ep, dict)
+    } - {""}
+    if not entry_names:
+        return None
+    from . import cross_function_verify as _cfv
+    safe = _cfv._safe_name(function_name.rsplit(".", 1)[-1])
+    if safe is None:
+        return None
+    query = (
+        f'cpg.method.nameExact("{safe}")'
+        f".repeat(_.caller)(_.emit.maxDepth({_JOERN_FLOW_MAX_DEPTH}))"
+        f".name.dedup.take({_JOERN_FLOW_NAME_CAP}).l"
+    )
+    try:
+        raw = _cfv._run_query(joern_server, query)
+    except Exception:
+        logger.debug("consistency: joern flow escalator failed",
+                     exc_info=True)
+        return {"status": "unknown", "via": "joern_flow",
+                "detail": "joern flow query errored"}
+    if raw is None:
+        return {"status": "unknown", "via": "joern_flow",
+                "detail": "joern flow query returned nothing"}
+    callers = {str(item) for item in raw}
+    hit = sorted(callers & entry_names)
+    if hit:
+        return {
+            "status": "entry_reachable",
+            "via": "joern_flow",
+            "detail": (
+                f"joern caller closure reaches entry point {hit[0]} "
+                f"(≤ {_JOERN_FLOW_MAX_DEPTH} hops)"
+            ),
+        }
+    return {
+        "status": "unknown",
+        "via": "joern_flow",
+        "detail": (
+            f"joern caller closure ({len(callers)} callers) contains "
+            f"no known entry point"
+        ),
+    }
+
+
+def _escalate_reachability(
+    context: RoleContext,
+    inventory: dict[str, Any] | None,
+    file_path: str,
+    function_name: str,
+    joern_server: Any = None,
+) -> dict[str, Any] | None:
+    """Cheap leg first; the Joern flow leg only when the cheap leg
+    answers unknown and a server was budgeted (the fail-open escalator
+    seam, extended)."""
+    cheap = _entry_reachability(
+        context, inventory, file_path, function_name,
+    )
+    if cheap is not None and cheap.get("status") == "entry_reachable":
+        return cheap
+    if joern_server is None:
+        return cheap
+    flow = _joern_flow_reachability(joern_server, context, function_name)
+    if flow is None:
+        return cheap
+    if flow.get("status") == "entry_reachable" or cheap is None:
+        return flow
+    return {**cheap, "joern_flow": flow.get("detail", "")}
+
+
 def _build_peer_evidence(
     entry: CalleeCensus,
     deviant: CallSite,
@@ -328,6 +418,7 @@ def census_verdict(
     context: RoleContext | None = None,
     inventory: dict[str, Any] | None = None,
     source_texts: dict[str, str] | None = None,
+    joern_server: Any = None,
 ) -> ConsistencyResult:
     """Adjudicate one deviant site against its callee census (§2.3)."""
     ctx = context or RoleContext()
@@ -420,8 +511,9 @@ def census_verdict(
             peer_evidence=pe,
             contract=contract.to_dict(),
         )
-        result.reachability = _entry_reachability(
+        result.reachability = _escalate_reachability(
             ctx, inventory, deviant.file, deviant.enclosing_function,
+            joern_server,
         )
         return result
 
@@ -474,6 +566,8 @@ def census_verdict(
         peer_evidence=pe,
         contract=contract.to_dict() if contract else None,
     )
+    # Detection-grade can never reach `finding`, so the Joern flow
+    # leg is deliberately not consulted here — cheap leg only.
     result.reachability = _entry_reachability(
         ctx, inventory, deviant.file, deviant.enclosing_function,
     )
@@ -485,6 +579,7 @@ def cleanup_verdict(
     *,
     context: RoleContext | None = None,
     inventory: dict[str, Any] | None = None,
+    joern_server: Any = None,
 ) -> ConsistencyResult:
     """Adjudicate one cleanup deviation (§3.2).
 
@@ -527,8 +622,9 @@ def cleanup_verdict(
             "grade": "registry",
         },
     )
-    result.reachability = _entry_reachability(
+    result.reachability = _escalate_reachability(
         ctx, inventory, deviation.file, deviation.enclosing_function,
+        joern_server,
     )
     return result
 
@@ -538,6 +634,7 @@ def argument_shape_verdict(
     *,
     context: RoleContext | None = None,
     inventory: dict[str, Any] | None = None,
+    joern_server: Any = None,
 ) -> ConsistencyResult:
     """Adjudicate one argument-shape deviation (§3.6).
 
@@ -567,9 +664,9 @@ def argument_shape_verdict(
                 "grade": "registry",
             },
         )
-        result.reachability = _entry_reachability(
+        result.reachability = _escalate_reachability(
             ctx, inventory, deviation.file,
-            deviation.enclosing_function,
+            deviation.enclosing_function, joern_server,
         )
         return result
     return ConsistencyResult(
@@ -590,6 +687,7 @@ def clone_drift_verdict(
     *,
     context: RoleContext | None = None,
     inventory: dict[str, Any] | None = None,
+    joern_server: Any = None,
 ) -> ConsistencyResult:
     """Adjudicate one clone-drift deviation (§3.9).
 
@@ -616,9 +714,9 @@ def clone_drift_verdict(
                 "grade": "registry",
             },
         )
-        result.reachability = _entry_reachability(
+        result.reachability = _escalate_reachability(
             ctx, inventory, deviation.file,
-            deviation.enclosing_function,
+            deviation.enclosing_function, joern_server,
         )
         return result
     return ConsistencyResult(
@@ -704,6 +802,7 @@ def run_consistency_check(
     context: RoleContext | None = None,
     source_texts: dict[str, str] | None = None,
     census: dict[str, CalleeCensus] | None = None,
+    joern_server: Any = None,
 ) -> ConsistencyResult:
     """Adjudicate one consistency hypothesis.
 
@@ -799,4 +898,5 @@ def run_consistency_check(
         context=ctx,
         inventory=inventory,
         source_texts=source_texts,
+        joern_server=joern_server,
     )

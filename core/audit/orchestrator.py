@@ -12431,6 +12431,10 @@ def _run_tool_chain(
                     hypothesis,
                     inventory=getattr(config, "inventory", None),
                     context=cs_ctx,
+                    # Joern-flow escalator (outcome-gated inside the
+                    # verdict): one bounded caller-closure query when
+                    # the cheap reachability leg answers unknown.
+                    joern_server=joern_server,
                 )
                 # Receipts already earned by earlier chain steps
                 # corroborate (compiler -Wunused-result, cocci,

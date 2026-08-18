@@ -623,6 +623,40 @@ def _flush_axffj(
         index.callees.add(callee_name)
 
 
+def load_cached_edge_index(binary_path: Path) -> Optional[BinaryEdgeIndex]:
+    """Cache-only edge-index lookup — NEVER invokes r2.
+
+    Consults the two persisted edge sources in order:
+
+      1. an existing binary graph store (``/understand --map`` output,
+         matched by content sha256), then
+      2. the per-build-id edge cache written by
+         ``extract_direct_call_edges`` (populated by ``/agentic`` /
+         ``/codeql`` ``--binary-edges`` runs — Inc 2b).
+
+    Returns ``None`` on any miss. Consumers that must stay fast (audit
+    prep) use this instead of ``extract_direct_call_edges`` so a cold
+    cache costs one build-id read, not a 10-30s r2 ``aaa`` run.
+    """
+    binary_path = Path(binary_path)
+    if not binary_path.is_file():
+        return None
+    from_graph = _try_graph_store(binary_path)
+    if from_graph is not None:
+        return from_graph
+    cache_key = read_build_id(binary_path) or _content_hash(binary_path)
+    cache_file = _cache_path_for(cache_key) if cache_key else None
+    if cache_file is None:
+        return None
+    cached = _load_cached_index(cache_file, str(binary_path))
+    if cached is not None:
+        logger.debug(
+            "binary_oracle_edges: cache-only hit for %s (%d edges)",
+            binary_path.name, len(cached.edges),
+        )
+    return cached
+
+
 def annotate_inventory_with_edges(
     inventory: Dict,
     indices: List[BinaryEdgeIndex],
@@ -681,5 +715,6 @@ __all__ = [
     "BinaryCallEdge",
     "BinaryEdgeIndex",
     "extract_direct_call_edges",
+    "load_cached_edge_index",
     "annotate_inventory_with_edges",
 ]

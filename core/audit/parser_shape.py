@@ -56,10 +56,10 @@ _INT_LEN_TYPE_RE = re.compile(
     r"\b(?:size_t|ssize_t|u?int(?:8|16|32|64)?(?:_t)?|unsigned(?:\s+int|"
     r"\s+long|\s+short)?|long|short|int)\b",
 )
-_LEN_NAME_RE = re.compile(
-    r"len|length|size|sz\b|cnt|count|nbytes|bytes|off|offset|remaining|avail",
-    re.IGNORECASE,
-)
+# One seed morpheme set (<= 9 entries, vocab-list policy) shared by
+# the parameter-name check and the arithmetic-site scan.
+_LEN_MORPHS = r"len|length|size|sz|cnt|count|nbytes|off|offset"
+_LEN_NAME_RE = re.compile(_LEN_MORPHS, re.IGNORECASE)
 
 _CURSOR_ADVANCE_RE = re.compile(
     r"\*?\s*\b[A-Za-z_]\w*\s*\+\+"          # p++ / *p++
@@ -67,7 +67,7 @@ _CURSOR_ADVANCE_RE = re.compile(
     r"|\b[A-Za-z_]\w*\s*\[\s*\w+\s*\+\+\s*\]",  # buf[i++]
 )
 
-_LEN_ID = r"[A-Za-z_]\w*(?:len|length|size|sz|cnt|count|nbytes|off|offset)\w*"
+_LEN_ID = rf"[A-Za-z_]\w*(?:{_LEN_MORPHS})\w*"
 _LEN_ARITH_RE = re.compile(
     rf"\b(?:{_LEN_ID})\s*(?:[-+*]|<<|>>|[<>]=?|==|!=)"
     rf"|(?:[-+*]|<<|>>)\s*\b(?:{_LEN_ID})\b",

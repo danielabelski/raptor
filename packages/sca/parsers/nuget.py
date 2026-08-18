@@ -207,6 +207,9 @@ def parse_msbuild_project(path: Path) -> list[Dependency]:
             skipped_no_version.append(name)
             continue
         pin_style, normalised = _classify_version_spec(version)
+        # Corridor bounds come from the raw spec — capture them before
+        # the bare-version normalisation below discards the range.
+        floor, ceiling = _spec_corridor(version)
         if normalised is not None:
             version = normalised
         scope = _scope_from_msbuild(el)
@@ -219,6 +222,8 @@ def parse_msbuild_project(path: Path) -> list[Dependency]:
             source_origin=source_origin,
             pin_style=pin_style,
             resolved_in=cpm_resolved_in,
+            version_floor=floor,
+            version_ceiling=ceiling,
         )
         if dep.key() in seen_keys:
             continue
@@ -263,6 +268,8 @@ def _build_msbuild_dep(
     source_origin: str = "inline_version",
     pin_style: PinStyle = PinStyle.EXACT,
     resolved_in: Path | None = None,
+    version_floor: str | None = None,
+    version_ceiling: str | None = None,
 ) -> Dependency:
     """Construct a Dependency carrying the MSBuild source-origin
     annotation. ``source_origin`` records where the version came
@@ -308,15 +315,18 @@ def _build_msbuild_dep(
         ),
         source_kind="manifest",
         source_extra=extra,
+        version_floor=version_floor,
+        version_ceiling=version_ceiling,
     )
 
 
 def _resolve_cpm_chain(start_dir: Path):
     """Walk MSBuild auto-import files (``Directory.Packages.props``
-    + ``Directory.Build.props``) from ``start_dir`` upward and
-    return ``(merged_version_map, global_packages)``.
+    + ``Directory.Build.props`` + ``Directory.Build.targets``) from
+    ``start_dir`` upward and return
+    ``(merged_version_map, global_packages)``.
 
-    Two file types contribute:
+    Three file types contribute:
 
       * ``Directory.Packages.props`` — CPM (NuGet 6.2+). Primary
         version source for modern .NET. PackageVersion entries
@@ -327,14 +337,22 @@ def _resolve_cpm_chain(start_dir: Path):
         ``version_map`` (treated as non-global central
         declarations). No GlobalPackageReference shape in this
         file type.
+      * ``Directory.Build.targets`` — the post-project MSBuild
+        auto-import. Same ``<Project>``/PackageReference shape as
+        Directory.Build.props (read with the same parser); pre-CPM
+        monorepos often centralise their version table here.
+        Feeds ``version_map`` only.
 
     Merge semantics:
       * version_map merges OUTER → INNER (innermost wins).
-        Within the same directory, CPM (Directory.Packages.props)
-        outranks Directory.Build.props.
-      * global_packages from ALL CPM files in the chain are
-        concatenated; the rule "GlobalPackageReference applies
-        to every csproj" doesn't care about hierarchy.
+        Within the same directory the precedence is
+        Directory.Build.props < Directory.Build.targets < CPM
+        (Directory.Packages.props).
+      * global_packages are collected per package name across the
+        CPM files, outer-to-inner: an inner CPM file's
+        GlobalPackageReference replaces an outer one's, and an
+        inner CPM file that redeclares the package as a plain
+        (non-global) PackageVersion removes the global entirely.
       * When ANY CPM file in the chain disables CPM
         (``<ManagePackageVersionsCentrally>false</>``), the
         CPM-version-map becomes ineffective and we fall through
@@ -508,6 +526,7 @@ def parse_packages_config(path: Path) -> list[Dependency]:
         if not (name and version):
             continue
         pin_style, normalised = _classify_version_spec(version)
+        floor, ceiling = _spec_corridor(version)
         if normalised is not None:
             version = normalised
         purl = _build_purl(name, version)
@@ -526,6 +545,8 @@ def parse_packages_config(path: Path) -> list[Dependency]:
                 reason="packages.config XML — deterministic structure",
             ),
             source_kind="manifest",
+            version_floor=floor,
+            version_ceiling=ceiling,
         )
         if dep.key() in seen_keys:
             continue
@@ -681,6 +702,35 @@ def _classify_version_spec(spec: str | None) -> tuple[PinStyle, str | None]:
     if re.match(r"^\d[\w.\-+]*$", s):
         return PinStyle.RANGE, s
     return PinStyle.UNKNOWN, None
+
+
+def _spec_corridor(spec: str | None) -> tuple[str | None, str | None]:
+    """Return ``(floor, ceiling)`` corridor bounds from a NuGet version
+    spec, or ``(None, None)`` when unbounded or unparseable.
+
+    ``"[1.0,2.0)"`` → ``("1.0", "2.0")``; plain ``"1.2.3"`` (NuGet's
+    implicit minimum) → ``("1.2.3", None)``. Exact pins (``[1.2.3]``)
+    and pathological single-value forms carry no corridor — mirrors
+    ``requirements._spec_bounds`` ignoring ``==`` clauses. harden's
+    candidate clamp treats the ceiling strictly (``< ceiling``), which
+    is conservative for inclusive ``]`` upper bounds.
+    """
+    if spec is None or len(spec) > _MAX_VERSION_SPEC_LEN:
+        return None, None
+    s = spec.strip()
+    if not s:
+        return None, None
+    m = _BRACKET_RE.match(s)
+    if m:
+        lv, uv = m.group(2).strip(), m.group(3)
+        if uv is None:
+            # Single-value form — exact pin or empty interval.
+            return None, None
+        uv = uv.strip()
+        return (lv or None), (uv or None)
+    if re.match(r"^\d[\w.\-+]*$", s):
+        return s, None
+    return None, None
 
 
 def _build_purl(name: str, version: str | None) -> str:

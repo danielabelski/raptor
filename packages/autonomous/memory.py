@@ -253,6 +253,13 @@ class FuzzingMemory:
         """
         Record that a fuzzing strategy was successful.
 
+        The stored ``value`` dict is a snapshot of the most recent run —
+        each call overwrites the previous crash counts rather than
+        accumulating them. Cumulative history lives in the entry's
+        success/failure counters (``update_success`` / ``update_failure``),
+        unlike ``record_crash_pattern`` which accumulates counts inside
+        ``value`` itself.
+
         Args:
             strategy_name: Name of the strategy
             binary_hash: Hash of the binary fuzzed
@@ -294,6 +301,10 @@ class FuzzingMemory:
                             binary_hash: str, exploitable: bool):
         """
         Record a crash pattern for learning.
+
+        Unlike ``record_strategy_success`` (latest-run snapshot), the
+        stored ``value`` dict accumulates: each call increments
+        ``total_count`` and, when exploitable, ``exploitable_count``.
 
         Args:
             signal: Crash signal (e.g., "SIGSEGV")
@@ -444,7 +455,13 @@ class FuzzingMemory:
         campaign_data["date"] = datetime.now(timezone.utc).isoformat()
 
         self.campaigns.append(campaign_data)
+        # save() serialises the entire knowledge dict too, so any pending
+        # dirty entries are persisted here — reset the batch counters like
+        # flush() does, or the next remember()/flush() rewrites the same
+        # data redundantly.
         self.save()
+        self._dirty_count = 0
+        self._last_save_time = time.time()
 
         logger.info("Recorded campaign: %s", campaign_data.get('binary_name', 'unknown'))
 
@@ -489,4 +506,7 @@ class FuzzingMemory:
         pruned = before_count - len(self.knowledge)
         if pruned > 0:
             logger.info("Pruned %s low-confidence knowledge entries", pruned)
+            # Full-state save — reset the batch counters (see record_campaign).
             self.save()
+            self._dirty_count = 0
+            self._last_save_time = time.time()

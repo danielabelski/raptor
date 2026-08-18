@@ -725,11 +725,35 @@ Examples:
             from core.witness import WitnessStore
             from packages.fuzzing.witness_adapter import witness_from_crash
             witness_store = WitnessStore(out_dir / "witnesses")
+
+            # When this run was seeded from SMT witnesses, attribute
+            # crashes back to the producing findings via the recorded
+            # AFL mutation lineage (exact chains only — see
+            # crash_attribution). Attribution failure is never fatal:
+            # crashes record without a finding_id.
+            attribution = None
+            try:
+                from packages.fuzzing.crash_attribution import (
+                    attribute_crashes,
+                    manifest_path_for_run,
+                )
+                smt_manifest = manifest_path_for_run(out_dir)
+                if smt_manifest.is_file():
+                    attribution = attribute_crashes(crashes, smt_manifest)
+            except Exception as e:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    f"SMT crash attribution failed: {type(e).__name__}: {e}"
+                )
+
             recorded = 0
             for crash in crashes:
                 try:
                     witness, data = witness_from_crash(
                         crash, target_binary_path=binary_path,
+                        smt_attribution=(
+                            attribution.attributed.get(crash.crash_id)
+                            if attribution else None
+                        ),
                     )
                     witness_store.put(witness, data)
                     recorded += 1
@@ -743,6 +767,17 @@ Examples:
                     f"   Recorded {recorded}/{len(crashes)} crashes "
                     f"as Witnesses → {out_dir / 'witnesses'}"
                 )
+            if attribution is not None:
+                print(
+                    f"   SMT-seed attribution: "
+                    f"{len(attribution.attributed)}/{attribution.total_crashes} "
+                    f"crashes trace to SMT-witness seeds"
+                )
+                for origin_id, crash_ids in attribution.by_finding().items():
+                    print(
+                        f"     finding {origin_id}: crash(es) "
+                        f"{', '.join(crash_ids)}"
+                    )
         except Exception as e:  # noqa: BLE001 — best-effort
             logger.warning(
                 f"Witness-store setup failed: {type(e).__name__}: {e}; "

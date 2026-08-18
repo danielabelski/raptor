@@ -128,4 +128,8 @@ class JoernResult:
             "flows": [f.to_dict() for f in self.flows],
             "errors": self.errors,
             "elapsed_ms": self.elapsed_ms,
+            # Methods invisible to taint analysis (lost reaching-def
+            # coverage) — the first thing to check when a sweep comes
+            # back thin.
+            "dark_methods": self.dark_methods,
         }

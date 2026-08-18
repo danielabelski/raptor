@@ -113,6 +113,34 @@ class TestEscapeScalaString:
 
 # ── Output parsing ──────────────────────────────────────────────────
 
+class TestParseDarkMethods:
+    def test_joern_dark_lines(self):
+        from packages.joern.runner import _parse_dark_methods
+
+        out = "JOERN_DARK:parse_hdr\nnoise\nJOERN_DARK:decode\n"
+        assert _parse_dark_methods(out) == ["parse_hdr", "decode"]
+
+    def test_joern_diag_line_from_tiered_taint(self):
+        """tiered_taint.sc emits JOERN_DIAG:dark_methods:<count>:<sample>
+        — the parser must pick up the sample names (pre-fix, nothing
+        emitted the JOERN_DARK shape at all, so dark_methods was
+        always empty)."""
+        from packages.joern.runner import _parse_dark_methods
+
+        out = (
+            "JOERN_TIER:sinks:12 sink arguments across 4 call sites\n"
+            "JOERN_DIAG:dark_methods:3:parse_hdr,decode,init_tbl\n"
+        )
+        assert _parse_dark_methods(out) == [
+            "parse_hdr", "decode", "init_tbl",
+        ]
+
+    def test_no_markers(self):
+        from packages.joern.runner import _parse_dark_methods
+
+        assert _parse_dark_methods("plain output\n") == []
+
+
 class TestParseOutput:
     def test_empty(self):
         flows, errors = _parse_output("")

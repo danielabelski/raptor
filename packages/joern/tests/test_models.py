@@ -128,3 +128,12 @@ class TestJoernResult:
         assert d["query"] == "q"
         assert d["errors"] == ["e"]
         assert d["elapsed_ms"] == 100
+        assert d["dark_methods"] == []
+
+    def test_to_dict_carries_dark_methods(self):
+        """dark_methods must survive serialisation — methods with lost
+        taint coverage are the first thing to check when a sweep comes
+        back thin."""
+        r = JoernResult(query="q", dark_methods=["parse_hdr", "decode"])
+        d = r.to_dict()
+        assert d["dark_methods"] == ["parse_hdr", "decode"]

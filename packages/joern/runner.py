@@ -899,7 +899,15 @@ def _parse_output(stdout: str) -> tuple:
 
 
 def _parse_dark_methods(stdout: str) -> list[str]:
-    """Extract JOERN_DARK: markers — methods with uncertain reachability."""
+    """Extract dark-method markers — methods invisible to taint analysis.
+
+    Two marker shapes:
+
+    * ``JOERN_DARK:<name>`` — one method per line.
+    * ``JOERN_DIAG:dark_methods:<count>:<name,name,...>`` — the tiered
+      taint script's diagnostic line (sample capped at 10 names, so
+      the parsed list may undercount the emitted total).
+    """
     dark: list[str] = []
     for line in stdout.splitlines():
         line = line.strip()
@@ -907,6 +915,12 @@ def _parse_dark_methods(stdout: str) -> list[str]:
             name = line[len("JOERN_DARK:"):].strip()
             if name:
                 dark.append(name)
+        elif line.startswith("JOERN_DIAG:dark_methods:"):
+            payload = line[len("JOERN_DIAG:dark_methods:"):]
+            _count, _, sample = payload.partition(":")
+            dark.extend(
+                n for n in (s.strip() for s in sample.split(",")) if n
+            )
     return dark
 
 

@@ -462,6 +462,11 @@
   "count": 24,
   "kind": "literal"
  },
+ "core/audit/lock_region.py::run_lock_region_prepass": {
+  "count": 10,
+  "kind": "literal",
+  "note": "framework-internal lead-dict keys (not target API names)"
+ },
  "core/audit/measurement.py::d": {
   "count": 10,
   "kind": "literal"

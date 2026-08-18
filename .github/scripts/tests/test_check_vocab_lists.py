@@ -166,9 +166,17 @@ class TestBaselineSemantics:
 
 
 class TestRepoBaseline:
+    @pytest.mark.slow
     def test_checked_in_baseline_is_current(self, det):
         """The committed baseline matches the tree (fails on regressions
-        AND on unrecorded cleanups — regenerate with --write-baseline)."""
+        AND on unrecorded cleanups — regenerate with --write-baseline).
+
+        Full-tree scan — genuine I/O over the whole checkout that only
+        grows with the repo, so it rides the nightly tier alongside the
+        env-docs repo-tree test. The default-tier signal is the detector
+        script itself, which the miswiring-scan workflow runs directly
+        against the repo.
+        """
         root = Path(_SCRIPT).resolve().parents[2]
         findings = {f.key for f in det.scan_tree(root)}
         baseline = set(det.load_baseline(det.DEFAULT_BASELINE))

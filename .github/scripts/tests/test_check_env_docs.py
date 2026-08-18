@@ -276,7 +276,14 @@ class TestDocsComparison:
                                    "--baseline", str(baseline)])
         assert rc == 0
 
+    @pytest.mark.slow
     def test_repo_tree_is_clean(self, det):
-        """The checked-in tree itself must pass (docs complete)."""
+        """The checked-in tree itself must pass (docs complete).
+
+        Full-tree scan (~30s) — genuine I/O over the whole checkout, so
+        it rides the nightly tier. The default-tier signal is the
+        detector script itself, which the miswiring-scan workflow runs
+        directly against the repo.
+        """
         rc = self._run(det, None, [])
         assert rc == 0

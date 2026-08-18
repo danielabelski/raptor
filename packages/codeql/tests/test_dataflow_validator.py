@@ -342,3 +342,190 @@ class TestLlmFailureIsErrorState:
         v = validator.validate_dataflow_path(self._dataflow(dv), tmp_path)
         assert v.error is None
         assert v.is_exploitable is True
+# ---------------------------------------------------------------------
+# Multi-path SMT pre-check
+# ---------------------------------------------------------------------
+
+
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from packages.codeql.dataflow_validator import (  # noqa: E402
+    MAX_SMT_PATHS,
+    SMT_INFEASIBLE_CONFIDENCE,
+    DataflowValidator,
+)
+
+
+def _loc(uri: str, line: int, label: str) -> dict:
+    return {
+        "location": {
+            "physicalLocation": {
+                "artifactLocation": {"uri": uri},
+                "region": {
+                    "startLine": line,
+                    "startColumn": 1,
+                    "snippet": {"text": "s"},
+                },
+            },
+            "message": {"text": label},
+        }
+    }
+
+
+def _sarif_two_flows() -> dict:
+    return {
+        "ruleId": "cpp/example-flow",
+        "message": {"text": "tainted flow"},
+        "codeFlows": [
+            {"threadFlows": [{"locations": [
+                _loc("a.c", 1, "source"), _loc("a.c", 9, "sink"),
+            ]}]},
+            {"threadFlows": [{"locations": [
+                _loc("b.c", 2, "source"), _loc("b.c", 8, "sink"),
+            ]}]},
+        ],
+    }
+
+
+def _smt(feasible, reasoning="r", unsatisfied=()):
+    return SimpleNamespace(
+        feasible=feasible,
+        reasoning=reasoning,
+        unsatisfied=list(unsatisfied),
+        model={},
+        smt_available=True,
+    )
+
+
+_FULL_RESPONSE = {
+    "is_exploitable": True,
+    "confidence": 0.9,
+    "sanitizers_effective": False,
+    "bypass_possible": True,
+    "bypass_strategy": "",
+    "attack_complexity": "low",
+    "reasoning": "tainted end to end",
+    "barriers": [],
+    "prerequisites": [],
+}
+
+
+def _validator() -> DataflowValidator:
+    llm = MagicMock()
+    llm.scorecard = None
+    llm.generate_structured.return_value = (dict(_FULL_RESPONSE), "raw")
+    v = DataflowValidator(llm_client=llm)
+    v.read_source_context = MagicMock(return_value="ctx")
+    v._extract_path_conditions = MagicMock(return_value=([], {}))
+    v._cheap_dataflow_fp_check = MagicMock(return_value=None)
+    v._fast_tier_model_name = MagicMock(return_value="stub-fast")
+    return v
+
+
+class TestExtractAlternativePaths:
+    def test_primary_carries_alternatives(self):
+        v = _validator()
+        dp = v.extract_dataflow_from_sarif(_sarif_two_flows())
+        assert dp is not None
+        assert dp.source.file_path == "a.c"
+        assert len(dp.alternatives) == 1
+        assert dp.alternatives[0].source.file_path == "b.c"
+        assert dp.alternatives[0].alternatives == []
+
+    def test_single_flow_has_no_alternatives(self):
+        v = _validator()
+        sarif = _sarif_two_flows()
+        sarif["codeFlows"] = sarif["codeFlows"][:1]
+        dp = v.extract_dataflow_from_sarif(sarif)
+        assert dp is not None
+        assert dp.alternatives == []
+
+    def test_unusable_first_flow_falls_through_to_next(self):
+        v = _validator()
+        sarif = _sarif_two_flows()
+        sarif["codeFlows"][0]["threadFlows"][0]["locations"] = [
+            _loc("a.c", 1, "lonely"),
+        ]
+        dp = v.extract_dataflow_from_sarif(sarif)
+        assert dp is not None
+        assert dp.source.file_path == "b.c"
+        assert dp.alternatives == []
+
+
+class TestMultiPathSMT:
+    def _validate(self, v, smt_side_effects):
+        dp = v.extract_dataflow_from_sarif(_sarif_two_flows())
+        with patch(
+            "packages.codeql.dataflow_validator.check_path_feasibility",
+            side_effect=smt_side_effects,
+        ), patch(
+            "core.llm.scorecard.prefilter_decision",
+            return_value=SimpleNamespace(short_circuit=False),
+        ), patch("core.llm.scorecard.record_prefilter_outcome"), patch(
+            "packages.codeql.dataflow_validator.load_methodology",
+            return_value="",
+        ):
+            return v.validate_dataflow_path(dp, _Path("/nonexistent-repo"))
+
+    def test_first_unsat_second_sat_proceeds(self):
+        v = _validator()
+        result = self._validate(v, [
+            _smt(False, "contradiction", ["x > 1", "x < 0"]),
+            _smt(True, "sat"),
+        ])
+        # The alternative path rescued the finding — full LLM analysis ran.
+        assert result.is_exploitable is True
+        assert result.smt_path_index == 1
+        assert result.smt_paths_checked == 2
+        # Condition extraction ran once per checked path (lazy).
+        assert v._extract_path_conditions.call_count == 2
+
+    def test_all_paths_unsat_refutes_with_bookkeeping(self):
+        v = _validator()
+        result = self._validate(v, [
+            _smt(False, "c1", ["a == 1", "a == 2"]),
+            _smt(False, "c2", ["b != b"]),
+        ])
+        assert result.is_exploitable is False
+        assert result.confidence == SMT_INFEASIBLE_CONFIDENCE
+        assert result.smt_paths_checked == 2
+        assert "all 2 dataflow paths refuted" in result.reasoning
+        assert "path 1: a == 1" in result.barriers
+        assert "path 2: b != b" in result.barriers
+        # No full LLM analysis happened.
+        assert v.llm.generate_structured.call_count == 0
+
+    def test_first_sat_checks_only_one_path(self):
+        v = _validator()
+        result = self._validate(v, [_smt(True, "sat")])
+        assert result.smt_path_index == 0
+        assert result.smt_paths_checked == 1
+        assert v._extract_path_conditions.call_count == 1
+
+    def test_single_path_unsat_keeps_legacy_shape(self):
+        v = _validator()
+        dp = v.extract_dataflow_from_sarif(_sarif_two_flows())
+        dp.alternatives = []
+        with patch(
+            "packages.codeql.dataflow_validator.check_path_feasibility",
+            return_value=_smt(False, "contradiction", ["x > 1", "x < 0"]),
+        ):
+            result = v.validate_dataflow_path(dp, _Path("/nonexistent-repo"))
+        assert result.is_exploitable is False
+        assert result.barriers == ["x > 1", "x < 0"]
+        assert "Path conditions are mutually exclusive" in result.reasoning
+        assert result.smt_paths_checked == 1
+
+    def test_alternatives_capped_at_max_smt_paths(self):
+        v = _validator()
+        dp = v.extract_dataflow_from_sarif(_sarif_two_flows())
+        extra = v.extract_dataflow_from_sarif(_sarif_two_flows())
+        dp.alternatives = [extra, extra, extra, extra]
+        with patch(
+            "packages.codeql.dataflow_validator.check_path_feasibility",
+            return_value=_smt(False, "c", ["u"]),
+        ):
+            result = v.validate_dataflow_path(dp, _Path("/nonexistent-repo"))
+        assert result.smt_paths_checked == MAX_SMT_PATHS
+        assert v._extract_path_conditions.call_count == MAX_SMT_PATHS

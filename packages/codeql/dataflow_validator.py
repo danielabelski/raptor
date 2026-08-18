@@ -8,7 +8,7 @@ if dataflow paths are truly exploitable beyond theoretical detection.
 import re
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 
@@ -183,6 +183,11 @@ class DataflowPath:
     sanitizers: list[str]
     rule_id: str
     message: str
+    # Other (codeFlow, threadFlow) paths from the same SARIF result.
+    # Populated by extract_dataflow_from_sarif; empty for callers that
+    # build a DataflowPath directly. Alternatives never carry their
+    # own alternatives.
+    alternatives: list["DataflowPath"] = field(default_factory=list)
 
 
 @dataclass
@@ -204,6 +209,11 @@ class DataflowValidation:
     barriers: list[str]
     prerequisites: list[str]
     error: str | None = None
+    # Which path (0-based, primary first) the verdict is grounded on,
+    # and how many of the result's paths were SMT-checked. Additive —
+    # consumers that predate multi-path checking can ignore these.
+    smt_path_index: int = 0
+    smt_paths_checked: int = 1
 
 
 PATH_CONDITIONS_SCHEMA = {
@@ -259,6 +269,15 @@ _OVERFLOW_MARKERS_RE = __import__("re").compile(
 # reference (or, if absent, treat this constant as the source
 # of truth that doc should match).
 SMT_INFEASIBLE_CONFIDENCE = 0.7
+
+# Upper bound on how many (codeFlow, threadFlow) paths of one SARIF
+# result get the SMT feasibility treatment. A result's paths are
+# checked in order and checking stops at the first sat/indeterminate
+# path, so the cap only bites when earlier paths keep coming back
+# unsat — the case where the extra LLM condition-extraction calls buy
+# soundness (declaring a finding infeasible on path 1 alone while
+# path 2 is live is a false suppression).
+MAX_SMT_PATHS = 3
 
 
 def _is_overflow_rule(rule_id: str) -> bool:
@@ -460,9 +479,63 @@ class DataflowValidator:
             prerequisites=[],
         )
 
+    def _path_from_locations(
+        self,
+        locations: list[dict],
+        rule_id: str,
+        message: str,
+    ) -> DataflowPath | None:
+        """Parse one threadFlow's locations into a DataflowPath."""
+        if len(locations) < 2:
+            return None
+
+        # Parse locations into steps
+        steps = []
+        for loc_wrapper in locations:
+            loc = loc_wrapper.get("location", {})
+            physical_loc = loc.get("physicalLocation", {})
+
+            region = physical_loc.get("region", {})
+            artifact = physical_loc.get("artifactLocation", {})
+
+            step = DataflowStep(
+                file_path=artifact.get("uri", ""),
+                line=region.get("startLine", 0),
+                column=region.get("startColumn", 0),
+                snippet=(region.get("snippet") or {}).get("text", ""),
+                label=(loc.get("message") or {}).get("text", "")
+            )
+            steps.append(step)
+
+        # First is source, last is sink, rest are intermediate
+        source = steps[0]
+        sink = steps[-1]
+        intermediate = steps[1:-1] if len(steps) > 2 else []
+
+        # Look for sanitizers mentioned in the flow
+        sanitizers = []
+        for step in intermediate:
+            if re.search(r'\bsanitiz|\bvalidat', step.label, re.IGNORECASE):
+                sanitizers.append(step.label)
+
+        return DataflowPath(
+            source=source,
+            sink=sink,
+            intermediate_steps=intermediate,
+            sanitizers=sanitizers,
+            rule_id=rule_id,
+            message=message,
+        )
+
     def extract_dataflow_from_sarif(self, result: dict) -> DataflowPath | None:
         """
         Extract dataflow path from SARIF result.
+
+        Every (codeFlow, threadFlow) combination is parsed — the first
+        usable path is returned as the primary DataflowPath with the
+        rest attached as ``alternatives``, so the SMT pre-check can
+        refute a finding only when every path is infeasible rather
+        than declaring it dead on path 1 alone.
 
         Args:
             result: SARIF result object
@@ -476,53 +549,24 @@ class DataflowValidator:
             if not code_flows:
                 return None
 
-            # Extract the first code flow (typically the most relevant)
-            flow = code_flows[0]
-            thread_flows = flow.get("threadFlows", [])
-            if not thread_flows:
+            rule_id = result.get("ruleId", "")
+            message = (result.get("message") or {}).get("text", "")
+
+            paths: list[DataflowPath] = []
+            for flow in code_flows:
+                for thread_flow in (flow.get("threadFlows") or []):
+                    path = self._path_from_locations(
+                        thread_flow.get("locations", []), rule_id, message,
+                    )
+                    if path is not None:
+                        paths.append(path)
+
+            if not paths:
                 return None
 
-            locations = thread_flows[0].get("locations", [])
-            if len(locations) < 2:
-                return None
-
-            # Parse locations into steps
-            steps = []
-            for loc_wrapper in locations:
-                loc = loc_wrapper.get("location", {})
-                physical_loc = loc.get("physicalLocation", {})
-
-                region = physical_loc.get("region", {})
-                artifact = physical_loc.get("artifactLocation", {})
-
-                step = DataflowStep(
-                    file_path=artifact.get("uri", ""),
-                    line=region.get("startLine", 0),
-                    column=region.get("startColumn", 0),
-                    snippet=(region.get("snippet") or {}).get("text", ""),
-                    label=(loc.get("message") or {}).get("text", "")
-                )
-                steps.append(step)
-
-            # First is source, last is sink, rest are intermediate
-            source = steps[0]
-            sink = steps[-1]
-            intermediate = steps[1:-1] if len(steps) > 2 else []
-
-            # Look for sanitizers mentioned in the flow
-            sanitizers = []
-            for step in intermediate:
-                if re.search(r'\bsanitiz|\bvalidat', step.label, re.IGNORECASE):
-                    sanitizers.append(step.label)
-
-            return DataflowPath(
-                source=source,
-                sink=sink,
-                intermediate_steps=intermediate,
-                sanitizers=sanitizers,
-                rule_id=result.get("ruleId", ""),
-                message=(result.get("message") or {}).get("text", "")
-            )
+            primary = paths[0]
+            primary.alternatives = paths[1:]
+            return primary
 
         except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the pipeline
             self.logger.warning("Failed to extract dataflow path: %s", e)
@@ -706,6 +750,11 @@ class DataflowValidator:
         """
         Validate dataflow path exploitability using LLM.
 
+        When ``dataflow.alternatives`` is populated (SARIF results with
+        multiple codeFlows), the SMT pre-check refutes the finding only
+        if every checked path (up to MAX_SMT_PATHS) is unsat; the first
+        sat/indeterminate path carries the downstream LLM analysis.
+
         Args:
             dataflow: DataflowPath object
             repo_path: Repository root path
@@ -717,14 +766,54 @@ class DataflowValidator:
         self.logger.info("Validating dataflow path: %s", display_rule_id(dataflow.rule_id))
 
         # SMT pre-check: extract path conditions (plus a bitvector type
-        # hint from the LLM) and test joint satisfiability.  If unsat,
-        # the path is provably unreachable — skip the expensive LLM call.
-        conditions, profile_hint = self._extract_path_conditions(dataflow, repo_path)
-        profile = _infer_bv_profile(dataflow.rule_id, profile_hint)
-        smt_result = check_path_feasibility(conditions, profile=profile)
-
-        if smt_result.feasible is False:
-            self.logger.info("SMT: path infeasible — %s", smt_result.reasoning)
+        # hint from the LLM) and test joint satisfiability.  A finding
+        # is provably unreachable only when EVERY checked path is unsat
+        # — alternative codeFlows are consulted (up to MAX_SMT_PATHS
+        # total) before the expensive LLM call is skipped. The per-path
+        # LLM condition extraction runs lazily: an alternative is only
+        # extracted after all earlier paths came back unsat.
+        candidate_paths = [dataflow, *dataflow.alternatives[:MAX_SMT_PATHS - 1]]
+        refuted: list = []
+        smt_result = None
+        active_index = 0
+        for path_index, candidate in enumerate(candidate_paths):
+            conditions, profile_hint = self._extract_path_conditions(candidate, repo_path)
+            profile = _infer_bv_profile(candidate.rule_id, profile_hint)
+            smt_result = check_path_feasibility(conditions, profile=profile)
+            if smt_result.feasible is False:
+                self.logger.info(
+                    "SMT: path %d/%d infeasible — %s",
+                    path_index + 1, len(candidate_paths), smt_result.reasoning,
+                )
+                refuted.append(smt_result)
+                continue
+            # sat or indeterminate — this path carries the analysis.
+            active_index = path_index
+            dataflow = candidate
+            break
+        else:
+            paths_checked = len(candidate_paths)
+            if paths_checked == 1:
+                reasoning = (
+                    f"SMT analysis: {smt_result.reasoning}. Path conditions are mutually exclusive. "
+                    f"Confidence is capped at {SMT_INFEASIBLE_CONFIDENCE} because this formal verdict depends on "
+                    "LLM-extracted predicates which may have parsing or coverage limitations."
+                )
+                barriers = smt_result.unsatisfied
+            else:
+                per_path = "; ".join(
+                    f"path {i + 1}: {r.reasoning}" for i, r in enumerate(refuted)
+                )
+                reasoning = (
+                    f"SMT analysis: all {paths_checked} dataflow paths refuted ({per_path}). "
+                    f"Confidence is capped at {SMT_INFEASIBLE_CONFIDENCE} because this formal verdict depends on "
+                    "LLM-extracted predicates which may have parsing or coverage limitations."
+                )
+                barriers = [
+                    f"path {i + 1}: {cond}"
+                    for i, r in enumerate(refuted)
+                    for cond in r.unsatisfied
+                ]
             return DataflowValidation(
                 is_exploitable=False,
                 confidence=SMT_INFEASIBLE_CONFIDENCE,
@@ -732,13 +821,11 @@ class DataflowValidator:
                 bypass_possible=False,
                 bypass_strategy=None,
                 attack_complexity="high",
-                reasoning=(
-                    f"SMT analysis: {smt_result.reasoning}. Path conditions are mutually exclusive. "
-                    f"Confidence is capped at {SMT_INFEASIBLE_CONFIDENCE} because this formal verdict depends on "
-                    "LLM-extracted predicates which may have parsing or coverage limitations."
-                ),
-                barriers=smt_result.unsatisfied,
+                reasoning=reasoning,
+                barriers=barriers,
                 prerequisites=[],
+                smt_path_index=paths_checked - 1,
+                smt_paths_checked=paths_checked,
             )
 
         # Fast-tier FP prefilter. Runs after SMT (a definitive
@@ -770,7 +857,10 @@ class DataflowValidator:
                 decision_class
             )
             self.llm.record_short_circuit()
-            return self._short_circuit_fp_dataflow_result(cheap_reasoning)
+            result = self._short_circuit_fp_dataflow_result(cheap_reasoning)
+            result.smt_path_index = active_index
+            result.smt_paths_checked = active_index + 1
+            return result
 
         # Path is sat or indeterminate — run full LLM analysis.
         # Pass the SMT model (concrete variable values) as 
@@ -903,6 +993,10 @@ class DataflowValidator:
             validation = DataflowValidation(**{
                 k: v for k, v in response_dict.items() if k in _valid_keys
             })
+            # Path bookkeeping is ours, not the LLM's — overwrite
+            # anything the response happened to carry.
+            validation.smt_path_index = active_index
+            validation.smt_paths_checked = active_index + 1
 
             self.logger.info(
                 "Dataflow validation: exploitable=%s, confidence=%.2f",
@@ -944,6 +1038,8 @@ class DataflowValidator:
                 barriers=["Analysis failed"],
                 prerequisites=[],
                 error=str(e) or type(e).__name__,
+                smt_path_index=active_index,
+                smt_paths_checked=active_index + 1,
             )
 
     def validate_finding(

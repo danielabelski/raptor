@@ -29,7 +29,6 @@ class AuditCapabilities:
     cxxfilt: bool = False
     objdump: bool = False
     readelf: bool = False
-    nm: bool = False
     binary_available: bool = False
     dwarf_available: bool = False
     joern_issues: tuple = ()
@@ -84,7 +83,6 @@ def probe_capabilities(
         cxxfilt=shutil.which("c++filt") is not None,
         objdump=shutil.which("objdump") is not None,
         readelf=shutil.which("readelf") is not None,
-        nm=shutil.which("nm") is not None,
         binary_available=binary_path is not None and binary_path.is_file(),
         dwarf_available=_has_dwarf(binary_path),
     )

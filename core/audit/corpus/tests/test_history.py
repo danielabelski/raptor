@@ -672,3 +672,113 @@ class TestWriterHook:
         rc = run_corpus.main(["--output", str(out)])
         assert rc == 0
         assert "not recorded" in capsys.readouterr().err
+
+
+class TestProfileField:
+    """RUN records carry the knowledge profile; pre-profile records
+    read as deployed everywhere."""
+
+    def test_build_run_record_stamps_profile(self):
+        rec = history.build_run_record(
+            [_row()], {},
+            run_id="r", timestamp="", tree_sha="t",
+            config={}, labels_hash="", profile="cold",
+        )
+        assert rec["profile"] == "cold"
+
+    def test_default_profile_is_deployed(self):
+        rec = history.build_run_record(
+            [_row()], {},
+            run_id="r", timestamp="", tree_sha="t",
+            config={}, labels_hash="",
+        )
+        assert rec["profile"] == "deployed"
+
+    def test_old_records_read_as_deployed(self):
+        rec = _run_rec("old")
+        rec.pop("profile", None)
+        assert history.run_profile(rec) == "deployed"
+        assert history.run_profile({"profile": ""}) == "deployed"
+        assert history.run_profile({"profile": "cold"}) == "cold"
+
+    def test_record_run_threads_profile(self, tmp_path):
+        store = tmp_path / "s.jsonl"
+        out = tmp_path / "results.json"
+        out.write_text("{}")
+        assert history.record_run(
+            [_row()], {}, output_path=out, labels=[_label()],
+            config={"mode": "ensemble"}, store=store, profile="cold",
+        )
+        runs, _ = history.load_store(store)
+        assert runs[0]["profile"] == "cold"
+
+    def test_stability_never_mixes_profiles(self):
+        config = {"mode": "ensemble"}
+        runs = [
+            _run_rec("c1", tree="t" * 40, config=config, profile="cold"),
+            _run_rec("c2", tree="t" * 40, config=config, profile="cold"),
+            _run_rec("d1", tree="t" * 40, config=config,
+                     profile="deployed"),
+            _run_rec("old", tree="t" * 40, config=config),
+        ]
+        runs[3].pop("profile", None)
+        labels_by_run = {
+            rid: [_label_rec("a.c:f", "clean", run_id=rid)]
+            for rid in ("c1", "c2", "d1", "old")
+        }
+        groups = history.stability_groups(runs, labels_by_run)
+        by_profile = {g["profile"]: g["run_ids"] for g in groups}
+        assert by_profile["cold"] == ["c1", "c2"]
+        # The pre-profile record groups with deployed runs.
+        assert by_profile["deployed"] == ["d1", "old"]
+        report = history.format_stability(groups)
+        assert "profile cold" in report
+        assert "profile deployed" in report
+
+    def test_format_runs_shows_profile_column(self):
+        rec = _run_rec("r1", tree="t" * 40, config={"mode": "ensemble"},
+                       profile="cold")
+        old = _run_rec("r0", tree="t" * 40, config={"mode": "ensemble"})
+        old.pop("profile", None)
+        out = history.format_runs([rec, old])
+        assert "Profile" in out
+        assert "cold" in out
+        assert "deployed" in out
+
+    def test_import_reads_profile_from_meta(self, tmp_path):
+        store = tmp_path / "s.jsonl"
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps({
+            "meta": {"model": "m", "profile": "cold"},
+            "results": [_row()],
+        }))
+        history.import_results(results, store)
+        runs, _ = history.load_store(store)
+        assert runs[0]["profile"] == "cold"
+
+    def test_import_without_profile_reads_deployed(self, tmp_path):
+        store = tmp_path / "s.jsonl"
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps({
+            "meta": {"model": "m"},
+            "results": [_row()],
+        }))
+        history.import_results(results, store)
+        runs, _ = history.load_store(store)
+        assert runs[0]["profile"] == "deployed"
+
+    def test_compare_flags_profile_mismatch(self):
+        a = _run_rec("cold-run", profile="cold")
+        b = _run_rec("dep-run", profile="deployed")
+        diff = history.compare_runs(a, b, {}, {})
+        out = history.format_compare(diff)
+        assert "Profiles: cold -> deployed" in out
+        assert "PROFILES DIFFER" in out
+
+    def test_compare_silent_for_deployed_pair(self):
+        a = _run_rec("r1")
+        b = _run_rec("r2")
+        a.pop("profile", None)
+        b.pop("profile", None)
+        out = history.format_compare(history.compare_runs(a, b, {}, {}))
+        assert "Profiles:" not in out

@@ -163,14 +163,22 @@ def build_run_record(
     config: Dict[str, Any],
     labels_hash: str,
     imported: bool = False,
+    profile: str = "deployed",
 ) -> Dict[str, Any]:
-    """Build the RUN header record for one corpus run."""
+    """Build the RUN header record for one corpus run.
+
+    ``profile`` records which knowledge profile produced the run
+    (``cold`` = raw first-time-user capability, ``deployed`` = all
+    accumulated-knowledge channels on). Records written before the
+    field existed are read as ``deployed`` (see :func:`run_profile`).
+    """
     reviewed = [r for r in results if not r.get("skipped")]
     return {
         "record": "run",
         "run_id": run_id,
         "timestamp": timestamp,
         "pipeline_tree_sha": tree_sha,
+        "profile": profile or "deployed",
         "config": dict(config),
         "label_set_hash": labels_hash,
         "gates": _gate_outcomes(results),
@@ -191,6 +199,15 @@ def build_run_record(
         ),
         "imported": imported,
     }
+
+
+def run_profile(run_rec: Dict[str, Any]) -> str:
+    """The run header's profile, tolerant of pre-profile records.
+
+    Every run recorded before the profile field existed ran with all
+    accumulated-knowledge channels on — today's ``deployed``.
+    """
+    return run_rec.get("profile") or "deployed"
 
 
 def build_label_records(
@@ -253,6 +270,7 @@ def record_run(
     labels: Optional[List[Any]] = None,
     config: Optional[Dict[str, Any]] = None,
     store: Optional[Path] = None,
+    profile: str = "deployed",
 ) -> bool:
     """Append one run to the history store.  Never raises.
 
@@ -272,6 +290,7 @@ def record_run(
             tree_sha=pipeline_tree_sha(),
             config=config or {},
             labels_hash=label_set_hash(labels) if labels else "",
+            profile=profile,
         )
         span_shas = {
             lb.function_id: getattr(lb.source, "span_sha", "") or ""
@@ -470,6 +489,14 @@ def format_compare(diff: Dict[str, Any]) -> str:
         f"Compare {a.get('run_id')} ({a.get('timestamp') or '?'}) -> "
         f"{b.get('run_id')} ({b.get('timestamp') or '?'})"
     )
+    prof_a, prof_b = run_profile(a), run_profile(b)
+    if (prof_a, prof_b) != ("deployed", "deployed"):
+        note = (
+            " — PROFILES DIFFER (cold measures raw first-run "
+            "capability; deployed folds accumulated knowledge)"
+            if prof_a != prof_b else ""
+        )
+        lines.append(f"  Profiles: {prof_a} -> {prof_b}{note}")
     lines.append(
         f"  Labels: {diff['common']} common"
         + (f", {len(diff['only_in_a'])} only in {a.get('run_id')}"
@@ -543,9 +570,10 @@ def format_runs(runs: List[Dict[str, Any]]) -> str:
     if not runs:
         return "No runs recorded."
     lines = [
-        f"{'Run':<28} {'Timestamp':<26} {'Tree':<12} {'Mode':<10} "
+        f"{'Run':<28} {'Timestamp':<26} {'Tree':<12} {'Profile':<9} "
+        f"{'Mode':<10} "
         f"{'Labels':>6} {'Match':>6} {'Cost':>9} {'Gates':<9} Imported",
-        "-" * 118,
+        "-" * 128,
     ]
     for r in runs:
         totals = r.get("totals") or {}
@@ -561,6 +589,7 @@ def format_runs(runs: List[Dict[str, Any]]) -> str:
             f"{r.get('run_id', '')[:27]:<28} "
             f"{(r.get('timestamp') or '')[:25]:<26} "
             f"{(r.get('pipeline_tree_sha') or '')[:12]:<12} "
+            f"{run_profile(r)[:9]:<9} "
             f"{str(config.get('mode') or ''):<10} "
             f"{totals.get('labels', 0):>6} "
             f"{totals.get('matched', 0):>6} "
@@ -610,23 +639,27 @@ def stability_groups(
     runs: List[Dict[str, Any]],
     labels_by_run: Dict[str, List[Dict[str, Any]]],
 ) -> List[Dict[str, Any]]:
-    """Group runs by (pipeline tree sha, config) and measure variance.
+    """Group runs by (pipeline tree sha, profile, config), measure variance.
 
     Runs without a recorded tree sha (imports) cannot assert
     same-tree and are excluded.  Within each group of two or more
     runs, a label is unstable when the same tree and config produced
     different verdicts — the nondeterminism measure.
     """
-    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
     for run in runs:
         tree = run.get("pipeline_tree_sha") or ""
         if not tree:
             continue
-        key = (tree, json.dumps(run.get("config") or {}, sort_keys=True))
+        key = (
+            tree,
+            run_profile(run),
+            json.dumps(run.get("config") or {}, sort_keys=True),
+        )
         grouped.setdefault(key, []).append(run)
 
     out = []
-    for (tree, config_json), group in sorted(grouped.items()):
+    for (tree, profile, config_json), group in sorted(grouped.items()):
         if len(group) < 2:
             continue
         verdicts: Dict[str, Dict[str, str]] = {}
@@ -644,6 +677,7 @@ def stability_groups(
         )
         out.append({
             "tree_sha": tree,
+            "profile": profile,
             "config": json.loads(config_json),
             "run_ids": [r.get("run_id", "") for r in group],
             "comparable_labels": comparable,
@@ -666,8 +700,8 @@ def format_stability(groups: List[Dict[str, Any]]) -> str:
             if v is not None
         )
         lines.append(
-            f"Tree {g['tree_sha'][:12]} config [{config}] — "
-            f"runs: {', '.join(g['run_ids'])}"
+            f"Tree {g['tree_sha'][:12]} profile {g.get('profile', 'deployed')} "
+            f"config [{config}] — runs: {', '.join(g['run_ids'])}"
         )
         n_unstable = len(g["unstable"])
         lines.append(
@@ -731,6 +765,7 @@ def import_results(results_path: Path, store: Path) -> str:
         config=config,
         labels_hash="",
         imported=True,
+        profile=meta.get("profile") or "deployed",
     )
     label_recs = build_label_records(rows, run_id=run_id)
     append_records(store, [run_rec] + label_recs)

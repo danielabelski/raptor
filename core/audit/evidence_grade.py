@@ -277,6 +277,14 @@ _RECEIPT_MAP: dict[str, tuple] = {
             "call sites (declared-type witness receipts)"
         ),
     ),
+    "consistency:sanitize-sink": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "an operator-annotated sink's call site lacks the "
+            "dominating sanitizer its sibling sites apply (annotation "
+            "convention witness + sanitizing-exhibit receipts)"
+        ),
+    ),
     "consistency:clone-drift": (
         EvidenceSource.TREE_SITTER,
         (

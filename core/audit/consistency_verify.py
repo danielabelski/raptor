@@ -54,12 +54,14 @@ DIMENSION_RETURN_CHECK = "return-check"
 DIMENSION_CLEANUP = "cleanup"
 DIMENSION_ARGUMENT_SHAPE = "argument-shape"
 DIMENSION_CLONE_DRIFT = "clone-drift"
+DIMENSION_SANITIZE_SINK = "sanitize-sink"
 
 RULE_RETURN_CHECK = rule_id(DIMENSION_RETURN_CHECK, detection=False)
 RULE_RETURN_CHECK_MAJORITY = rule_id(DIMENSION_RETURN_CHECK, detection=True)
 RULE_CLEANUP = rule_id(DIMENSION_CLEANUP, detection=False)
 RULE_ARGUMENT_SHAPE = rule_id(DIMENSION_ARGUMENT_SHAPE, detection=False)
 RULE_CLONE_DRIFT = rule_id(DIMENSION_CLONE_DRIFT, detection=False)
+RULE_SANITIZE_SINK = rule_id(DIMENSION_SANITIZE_SINK, detection=False)
 
 # Mechanical-path thresholds (§2.3 — stricter than the lead path).
 VERDICT_MIN_SITES = 4
@@ -678,6 +680,69 @@ def argument_shape_verdict(
         rule_id=rule_id(DIMENSION_ARGUMENT_SHAPE, detection=True),
         dimension=DIMENSION_ARGUMENT_SHAPE,
         callee=deviation.callee,
+        peer_evidence=deviation.peer_evidence,
+    )
+
+
+def sanitize_sink_verdict(
+    deviation: Any,
+    *,
+    context: RoleContext | None = None,
+    inventory: dict[str, Any] | None = None,
+    joern_server: Any = None,
+) -> ConsistencyResult:
+    """Adjudicate one sanitize-before-sink deviation (§3.3).
+
+    Escalation-only by default — context may sanitize upstream and
+    strength differences can be deliberate, so a majority-only
+    deviation is detection-grade
+    (``consistency:sanitize-sink-majority``) and promotes only
+    through cross-namespace aggregation. The single promote-capable
+    shape: the sink convention is operator-annotated (human-grade
+    ``status: sink`` annotation — a registry-grade convention
+    witness) and the majority meets the promote-adjacent floor.
+
+    Premise split (§5.1): this verdict adjudicates sanitizer-call
+    *presence* only. It never binds a security role and never sets
+    ``fail_open_handoff`` — failure-handling premises (an ignored
+    sanitizer return, a fall-open handler) are fail_open /
+    return-check territory, and the orchestrator's
+    fail_open-adjudicated (file, line) dedup keeps the two channels
+    off each other's sites.
+    """
+    ctx = context or RoleContext()
+    if deviation.registry_grade:
+        result = ConsistencyResult(
+            outcome="confirmed",
+            reason=(
+                f"{deviation.description} — the sink convention is an "
+                f"operator annotation (registry-grade convention "
+                f"witness); the sanitizing siblings are the exhibits"
+            ),
+            rule_id=RULE_SANITIZE_SINK,
+            dimension=DIMENSION_SANITIZE_SINK,
+            callee=deviation.sink,
+            peer_evidence=deviation.peer_evidence,
+            contract={
+                "source": "annotation",
+                "provenance": f"annotation:sink:{deviation.sink}",
+                "grade": "registry",
+            },
+        )
+        result.reachability = _escalate_reachability(
+            ctx, inventory, deviation.file,
+            deviation.enclosing_function, joern_server,
+        )
+        return result
+    return ConsistencyResult(
+        outcome="confirmed",
+        reason=(
+            f"{deviation.description} (majority evidence only — "
+            f"detection grade; upstream sanitization not ruled out)"
+        ),
+        rule_id=rule_id(DIMENSION_SANITIZE_SINK, detection=True),
+        dimension=DIMENSION_SANITIZE_SINK,
+        callee=deviation.sink,
         peer_evidence=deviation.peer_evidence,
     )
 

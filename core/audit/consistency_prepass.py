@@ -74,6 +74,111 @@ def _cleanup_cwe(kind: str) -> str:
     return "CWE-667" if kind in _LOCK_KINDS else "CWE-401"
 
 
+# Sink-class → CWE grading for the sanitize-before-sink dimension
+# (§3.3 "CWE per sink class"). Structural category stems only — the
+# sink names themselves come from the learned surfaces.
+_SINK_CLASS_CWES = (
+    (("sql", "query", "database"), "CWE-89"),
+    (("command", "exec", "shell", "process"), "CWE-78"),
+    (("path", "file", "directory"), "CWE-22"),
+    (("html", "xss", "template", "render"), "CWE-79"),
+)
+
+
+def _sink_cwe(entry: dict[str, Any]) -> str:
+    explicit = str(entry.get("cwe") or "")
+    if explicit:
+        return explicit if explicit.startswith("CWE-") \
+            else f"CWE-{explicit}"
+    category = str(
+        entry.get("category") or entry.get("sink_type") or "",
+    ).lower()
+    for stems, cwe in _SINK_CLASS_CWES:
+        if any(s in category for s in stems):
+            return cwe
+    return ""
+
+
+def _collect_sink_vocabulary(
+    source_texts: dict[str, str],
+    *,
+    out_dir: Path | None,
+    annotations_dir: Path | None,
+    context_map: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Sink names from the landed vocab machinery (§3.3): human-grade
+    operator ``status: sink`` annotations (the registry-grade
+    convention source), learned IRIS ``sink`` specs, and the
+    context-map sink catalog (taxonomy + discovered wrapper sinks).
+    No hardcoded sink list exists here or in the comparator."""
+    sinks: dict[str, dict[str, Any]] = {}
+
+    ann_base = annotations_dir
+    if ann_base is None and out_dir is not None:
+        candidate = Path(out_dir) / "annotations"
+        ann_base = candidate if candidate.is_dir() else None
+    if ann_base is not None:
+        try:
+            from core.annotations.provenance import is_human_grade
+            from core.annotations.storage import read_file_annotations
+            for fp in source_texts:
+                for ann in read_file_annotations(Path(ann_base), fp):
+                    meta = ann.metadata or {}
+                    if meta.get("status") != "sink":
+                        continue
+                    sinks[ann.function] = {
+                        "source": "annotation",
+                        "cwe": _sink_cwe(meta),
+                        "registry": is_human_grade(meta),
+                    }
+        except Exception:
+            logger.debug("sanitize-sink: annotation sink read failed",
+                         exc_info=True)
+
+    if out_dir is not None:
+        try:
+            from core.iris.api import load_project_specs
+            for spec in load_project_specs(
+                    out_dir=Path(out_dir), roles={"sink"}):
+                sinks.setdefault(spec.function, {
+                    "source": "iris_spec",
+                    "cwe": "",
+                    "registry": False,
+                })
+        except Exception:
+            logger.debug("sanitize-sink: IRIS sink load failed",
+                         exc_info=True)
+
+    for entry in (context_map or {}).get("sinks") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("function") or entry.get("name") or "")
+        if not name:
+            continue
+        sinks.setdefault(name, {
+            "source": "context_map",
+            "cwe": _sink_cwe(entry),
+            "registry": False,
+        })
+    return sinks
+
+
+def _collect_sanitizer_vocabulary(out_dir: Path | None) -> frozenset[str]:
+    """Learned sanitizer names: the IRIS ``sanitiser`` role through
+    the tool-corroborated (suppression-gated) reader — recognising a
+    sanitizer at a peer site is exactly the direction a hallucinated
+    spec must not steer."""
+    if out_dir is None:
+        return frozenset()
+    try:
+        from core.iris.api import get_project_sanitisers
+        return get_project_sanitisers(out_dir=Path(out_dir))
+    except Exception:
+        logger.debug("sanitize-sink: sanitiser load failed",
+                     exc_info=True)
+        return frozenset()
+
+
 def _lead_from_result(res: Any, *, file: str, function: str,
                       line: int, security_relevant: bool) -> dict[str, Any]:
     pe = res.peer_evidence
@@ -827,6 +932,96 @@ def run_consistency_prepass(
                     )
                 ],
             })
+
+    # ── sanitize-before-sink dimension (§3.3) ───────────────────────
+    if not _over_budget():
+        try:
+            from .consistency_dimensions import (
+                DIMENSION_SANITIZE_SINK,
+                detect_sanitize_sink_deviations,
+            )
+            from .consistency_verify import sanitize_sink_verdict
+            sink_vocab = _collect_sink_vocabulary(
+                source_texts,
+                out_dir=out_dir,
+                annotations_dir=annotations_dir,
+                context_map=context_map,
+            )
+            sanitizer_vocab = _collect_sanitizer_vocabulary(out_dir)
+            sanitize_devs = (
+                detect_sanitize_sink_deviations(
+                    source_texts, sink_vocab, sanitizer_vocab,
+                )
+                if sink_vocab and sanitizer_vocab else []
+            )
+        except Exception:
+            logger.debug("consistency prepass: sanitize-sink failed",
+                         exc_info=True)
+            sanitize_devs = []
+        if sanitize_devs:
+            counts = _dim(DIMENSION_SANITIZE_SINK)
+            for dev in sanitize_devs:
+                try:
+                    res = sanitize_sink_verdict(
+                        dev, context=ctx, inventory=inventory,
+                        joern_server=_joern_arg(),
+                    )
+                    _charge_joern(res)
+                except Exception:
+                    logger.debug("consistency prepass: sanitize-sink "
+                                 "verdict failed", exc_info=True)
+                    continue
+                counts[res.outcome] = counts.get(res.outcome, 0) + 1
+                mechanical.append({
+                    "file": dev.file,
+                    "function": dev.enclosing_function,
+                    "detector": "sanitize_sink_deviation",
+                    "line": dev.line,
+                    "description": dev.description,
+                    "callee": dev.sink,
+                    "rule_id": res.rule_id,
+                    "cwe": dev.cwe,
+                })
+                if dev.registry_grade and res.outcome == "confirmed":
+                    pe = res.peer_evidence
+                    source_key = pe.contract_source if pe else "none"
+                    telemetry["contract_sources"][source_key] = (
+                        telemetry["contract_sources"].get(source_key, 0)
+                        + 1
+                    )
+                    status = _status_for(res, detection=False)
+                    if status == "finding":
+                        telemetry["promotions"] += 1
+                    if len(findings) < MAX_FINDINGS:
+                        findings.append({
+                            "file": dev.file,
+                            "function": dev.enclosing_function,
+                            "line": dev.line,
+                            "callee": dev.sink,
+                            "dimension": DIMENSION_SANITIZE_SINK,
+                            "rule_id": res.rule_id,
+                            "evidence_tool": res.rule_id,
+                            "status": status,
+                            "detection_grade": False,
+                            "cwe": dev.cwe,
+                            "hypothesis": (
+                                f"{dev.conforming}/{dev.n} call sites "
+                                f"of the operator-annotated sink "
+                                f"{dev.sink}() sanitize the argument "
+                                f"first; {dev.enclosing_function} "
+                                f"passes it unsanitized at "
+                                f"{dev.file}:{dev.line}"
+                            ),
+                            "description": res.reason,
+                            "receipts": res.to_dict(),
+                        })
+                leads.append(_lead_from_result(
+                    res,
+                    file=dev.file,
+                    function=dev.enclosing_function,
+                    line=dev.line,
+                    security_relevant=True,
+                ))
 
     capped_leads = _rank_leads(leads)
     telemetry["leads_seeded"] = len(capped_leads)

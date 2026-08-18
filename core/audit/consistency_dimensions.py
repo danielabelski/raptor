@@ -1717,3 +1717,232 @@ def detect_ordering_deviations(
                 return deviations
     deviations.sort(key=lambda d: (d.file, d.line))
     return deviations
+
+# ── sanitize-before-sink (§3.3) ─────────────────────────────────────
+#
+# "n call sites sanitize before the sink, 1 doesn't." Peer group:
+# call sites of the same sink, cross-file — the same-sink former the
+# design's shared-machinery section plans. The sink and sanitizer
+# vocabulary is NEVER hardcoded here: the comparator receives both as
+# parameters, assembled by the prepass from the landed vocab
+# machinery (operator ``status: sink`` annotations, learned IRIS
+# ``sink``/``sanitiser`` specs — the sanitiser reader is the
+# suppression-gated tool-corroborated one — and the context-map sink
+# catalog, which already merges the taxonomy and the discovered
+# wrapper sinks). No vocabulary in → no deviations out.
+#
+# "Sanitizes-first" per site, on the census's call-event view (the
+# ``_extract_call_events`` pass the ordering dimension already
+# built): a census-visible sanitizer call dominates the sink arg's
+# flow when either
+#
+# * the sanitizer is applied inline to the sink argument
+#   (``sink(escape(x))`` — the sanitizer identifier appears inside
+#   the sink's argument list), or
+# * an earlier call event in the same enclosing function invokes a
+#   sanitizer and shares flow with the sink's arguments (the
+#   sanitizer's result binding, or its own argument, appears among
+#   the sink's argument identifiers) — the preceding-in-function
+#   window approximation the ``api_boundary`` dominating-guard
+#   precedent established.
+#
+# Statistic (§3.3): n ≥ ``MIN_GROUP_SITES`` sites of the same sink,
+# sanitize-first ratio ≥ ``CONSISTENCY_RATIO``, minority strictly
+# smaller. Escalation-only by default: context may sanitize upstream
+# and strength differences can be deliberate, so every receipt is
+# detection-grade (``consistency:sanitize-sink-majority``) — EXCEPT
+# when the sink convention is operator-annotated (a human-grade
+# ``status: sink`` annotation is a registry-grade convention witness)
+# AND the majority meets the promote-adjacent floor
+# (``RATIO_PROMOTE``): then the deviant carries ``contract_source:
+# annotation`` and is promote-capable through the verdict layer.
+#
+# Premise split with the fail-open channel (§5.1, composition note):
+# this dimension's premise is sanitizer-call *presence* dominating
+# the sink argument (a contract/majority sweep). Failure-*handling*
+# premises — "the sanitizer's return is ignored / its failure falls
+# open" — are role machinery and stay fail_open / return-check
+# territory: a site that calls the sanitizer but discards its result
+# is CONFORMING here (presence is satisfied), and the census's
+# acknowledged-discard handoff plus the orchestrator's
+# fail_open-adjudicated (file, line) dedup own that case end to end.
+# This comparator never binds a security role and never emits a
+# fail-open handoff.
+
+DIMENSION_SANITIZE_SINK = "sanitize-sink"
+
+# Promote-adjacent majority floor shared by the §3 dimensions ("≥ 0.9
+# for anything promote-adjacent" — stricter than the 0.75 lead floor).
+RATIO_PROMOTE = 0.9
+
+
+@dataclass
+class SanitizeSinkDeviation:
+    """One same-sink call site lacking the majority's sanitizer."""
+
+    sink: str
+    sink_source: str       # "annotation" | "iris_spec" | "context_map"
+    file: str
+    line: int
+    enclosing_function: str
+    n: int
+    conforming: int
+    cwe: str = ""          # per sink class, from the sink catalog
+    annotated: bool = False   # human-grade operator-annotated sink
+    peer_evidence: PeerEvidence | None = None
+
+    @property
+    def ratio(self) -> float:
+        return self.conforming / self.n if self.n else 0.0
+
+    @property
+    def registry_grade(self) -> bool:
+        """Operator-annotated convention at the promote-adjacent
+        majority floor (§3.3's only promote-capable shape)."""
+        return self.annotated and self.ratio >= RATIO_PROMOTE
+
+    @property
+    def description(self) -> str:
+        graded = f" [{self.cwe}]" if self.cwe else ""
+        witness = (
+            " [operator-annotated sink convention]" if self.annotated
+            else ""
+        )
+        return (
+            f"{self.conforming}/{self.n} call sites of {self.sink}() "
+            f"sanitize the argument first; this site passes it "
+            f"unsanitized{graded}{witness}"
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "sink": self.sink,
+            "sink_source": self.sink_source,
+            "file": self.file,
+            "line": self.line,
+            "enclosing_function": self.enclosing_function,
+            "n": self.n,
+            "conforming": self.conforming,
+            "ratio": round(self.ratio, 3),
+        }
+        d["cwe"] = self.cwe
+        d["annotated"] = self.annotated
+        if self.peer_evidence is not None:
+            d["peer_evidence"] = self.peer_evidence.to_dict()
+        return d
+
+
+def _dominating_sanitizer(
+    events: list[_CallEvent],
+    sink_ev: _CallEvent,
+    sanitizers: frozenset[str] | set[str],
+) -> tuple[str, int] | None:
+    """(sanitizer, line) dominating *sink_ev*'s argument flow, or
+    None. See the section docstring for the two accepted shapes."""
+    inline = sink_ev.arg_idents & set(sanitizers)
+    if inline:
+        return sorted(inline)[0], sink_ev.line
+    for ev in events:
+        if ev.line > sink_ev.line or ev is sink_ev:
+            continue
+        if ev.callee not in sanitizers:
+            continue
+        if (ev.lhs_names & sink_ev.arg_idents) \
+                or (ev.arg_idents & sink_ev.arg_idents):
+            return ev.callee, ev.line
+    return None
+
+
+def detect_sanitize_sink_deviations(
+    source_texts: dict[str, str],
+    sinks: dict[str, dict[str, Any]],
+    sanitizers: frozenset[str] | set[str],
+    *,
+    min_sites: int = MIN_GROUP_SITES,
+    ratio: float = CONSISTENCY_RATIO,
+) -> list[SanitizeSinkDeviation]:
+    """Sanitize-before-sink comparator (§3.3).
+
+    *sinks*: ``{name: {"source": ..., "cwe": ..., "registry": bool}}``
+    — assembled by the prepass from the learned surfaces;
+    ``registry`` is True only for human-grade operator annotations.
+    *sanitizers*: learned sanitizer names (IRIS ``sanitiser`` role,
+    tool-corroborated reader). Both empty ⇒ no deviations — the
+    comparator carries no vocabulary of its own.
+    """
+    if not sinks or not sanitizers:
+        return []
+    events = _extract_call_events(source_texts)
+    if not events:
+        return []
+    sanitizer_set = frozenset(sanitizers)
+
+    # Same-sink peer groups across every function's event stream.
+    by_sink: dict[str, list[tuple[tuple[str, str], _CallEvent,
+                                  tuple[str, int] | None]]] = {}
+    for key, evs in events.items():
+        for ev in evs:
+            if ev.callee not in sinks or ev.callee in sanitizer_set:
+                continue
+            dom = _dominating_sanitizer(evs, ev, sanitizer_set)
+            by_sink.setdefault(ev.callee, []).append((key, ev, dom))
+
+    deviations: list[SanitizeSinkDeviation] = []
+    for sink_name, sites in sorted(by_sink.items()):
+        n = len(sites)
+        if n < min_sites:
+            continue
+        conforming = [s for s in sites if s[2] is not None]
+        deviants = [s for s in sites if s[2] is None]
+        if not deviants or len(conforming) < n * ratio \
+                or len(deviants) >= len(conforming):
+            continue
+        meta = sinks[sink_name]
+        annotated = bool(meta.get("registry"))
+        exhibits = []
+        for (fp, _fn), _ev, dom in conforming[:3]:
+            san_name, san_line = dom
+            lines = source_texts.get(fp, "").splitlines()
+            snippet = (
+                lines[san_line - 1].strip()[:200]
+                if 1 <= san_line <= len(lines) else ""
+            )
+            exhibits.append(PeerExhibit(
+                fp, san_line,
+                snippet or f"{san_name}() dominates {sink_name}()",
+            ))
+        promote = annotated and (len(conforming) / n) >= RATIO_PROMOTE
+        for (fp, fn), ev, _dom in deviants:
+            deviations.append(SanitizeSinkDeviation(
+                sink=sink_name,
+                sink_source=str(meta.get("source") or ""),
+                file=fp,
+                line=ev.line,
+                enclosing_function=fn,
+                n=n,
+                conforming=len(conforming),
+                cwe=str(meta.get("cwe") or ""),
+                annotated=annotated,
+                peer_evidence=PeerEvidence(
+                    dimension=DIMENSION_SANITIZE_SINK,
+                    formation="same_sink",
+                    group_key=sink_name,
+                    n=n,
+                    conforming=len(conforming),
+                    ratio=len(conforming) / n,
+                    deviant=PeerExhibit(fp, ev.line, ev.snippet),
+                    exhibits=exhibits,
+                    contract_source=(
+                        "annotation" if promote else "majority"
+                    ),
+                    provenance=(
+                        f"sink:{meta.get('source') or ''}"
+                    ),
+                ),
+            ))
+            if len(deviations) >= _MAX_DEVIATIONS:
+                break
+        if len(deviations) >= _MAX_DEVIATIONS:
+            break
+    deviations.sort(key=lambda d: (not d.annotated, d.file, d.line))
+    return deviations

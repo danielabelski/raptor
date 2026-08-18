@@ -50,6 +50,11 @@ logger = logging.getLogger("raptor.security")
 # vendor-specific names that tooling sometimes sets without `CI`
 # (notably Jenkins, TeamCity, Bamboo, Azure Pipelines).
 _CI_ENV_VARS: tuple[str, ...] = (
+    # RAPTOR's own verdict marker: get_safe_env() sets RAPTOR_CI=1 in
+    # child envs whenever the PARENT judged itself in CI, so the gate
+    # keeps working in children whose scrubbed env lost the vendor
+    # markers. Listed first — it is authoritative when present.
+    "RAPTOR_CI",
     "CI",
     "CONTINUOUS_INTEGRATION",
     "GITHUB_ACTIONS",
@@ -67,6 +72,20 @@ _CI_ENV_VARS: tuple[str, ...] = (
     "CIRRUS_CI",
     "WOODPECKER",
 )
+
+
+# Public aliases for consumers outside this module (core.config's
+# env scrubbing keeps the markers allowlisted and re-stamps the
+# parent's verdict; keeping one source of truth here prevents the
+# lists drifting apart).
+def is_ci() -> bool:
+    """Public wrapper — see _is_ci."""
+    return _is_ci()
+
+
+def ci_env_vars() -> tuple[str, ...]:
+    """The CI marker names, for env-allowlist composition."""
+    return _CI_ENV_VARS
 
 
 def _is_ci() -> bool:

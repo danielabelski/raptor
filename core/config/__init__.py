@@ -264,8 +264,6 @@ class RaptorConfig:
 
     # Environment Variables
     ENV_OUT_DIR = "RAPTOR_OUT_DIR"
-    ENV_JOB_ID = "RAPTOR_JOB_ID"
-    ENV_LLM_CMD = "RAPTOR_LLM_CMD"
     # Operator override for target classification
     # (auto|library|hybrid|application) consulted by
     # core.inventory.library_detection.resolve_library_mode when the
@@ -434,6 +432,19 @@ class RaptorConfig:
         #                    injection surface.
         "RAPTOR_TARGET_KIND",
     })
+
+    # CI markers ride the allowlist: RAPTOR's own interactivity gate
+    # (core.security.rule_of_two.is_interactive) runs inside children
+    # whose env this scrub produced — stripping every CI marker made
+    # the gate judge a pseudo-TTY CI runner as a human, silently
+    # opening the weakened-defenses consent path in CI. Pure boolean
+    # flags, no injection surface; one source of truth in
+    # rule_of_two so the lists cannot drift. (Deferred import: keeps
+    # the class body free of a module-level core.security dependency
+    # while still evaluating exactly once at class-definition time.)
+    from core.security.rule_of_two import ci_env_vars as _ci_env_vars
+    SAFE_ENV_ALLOWLIST = SAFE_ENV_ALLOWLIST | frozenset(_ci_env_vars())
+    del _ci_env_vars
 
     # Name prefixes — any variable whose name starts with one of these is
     # kept, treated as a family allowlist. Keep the list minimal.
@@ -813,6 +824,14 @@ class RaptorConfig:
         # Belt + braces: strip anything dangerous that somehow made it
         # through (either allowlisted explicitly or matching a prefix).
         env = strip_env_vars(env, RaptorConfig.DANGEROUS_ENV_VARS)
+        # Stamp the parent's CI verdict so the interactivity gate in
+        # children never depends on which vendor markers survived the
+        # scrub (allowlist churn must not be able to reopen the
+        # CI-with-pseudo-TTY bypass). RAPTOR_CI is itself a recognised
+        # marker in core.security.rule_of_two.
+        from core.security.rule_of_two import is_ci
+        if is_ci():
+            env["RAPTOR_CI"] = "1"
         if preserve_proxy:
             from core.security.env_sanitisation import normalise_proxy_url
             for pv in RaptorConfig.PROXY_ENV_VARS:

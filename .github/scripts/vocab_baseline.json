@@ -810,6 +810,11 @@
   "count": 28,
   "kind": "literal"
  },
+ "core/config/__init__.py::TOOL_DEPS": {
+  "count": 10,
+  "kind": "literal",
+  "note": "tool-dependency registry keys (doctor/banner); crossed the seed threshold when the perl entry (perlasm generated-asm inventory) was added - not a name vocabulary"
+ },
  "core/coverage/registry.py::_REGISTRY": {
   "count": 23,
   "kind": "literal"

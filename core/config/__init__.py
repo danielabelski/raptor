@@ -111,6 +111,10 @@ class RaptorConfig:
         "frida":        {"binary": "frida",       "severity": "degrades", "affects": "/frida, dynamic analysis, /fuzz harness probe"},
         "frida-trace":  {"binary": "frida-trace", "severity": "degrades", "affects": "dynamic tracing"},
         "jadx":         {"binary": "jadx",        "severity": "degrades", "affects": "Android/APK reverse engineering"},
+        # Perlasm generated-asm inventory (core/inventory/perlasm.py):
+        # without perl, detected generators become loud coverage gaps
+        # instead of enumerable generated kernels.
+        "perl":         {"binary": "perl",        "severity": "degrades", "affects": "/scan, /agentic, /audit (perlasm generated-asm inventory)"},
         # SMT feasibility engine — a Python module, not a binary
         # (checked via importlib.util.find_spec). Consumers guard the
         # import and degrade: /audit path-feasibility, /codeql dataflow
@@ -300,6 +304,16 @@ class RaptorConfig:
     # typical sizes); operators turn it on when they care about
     # source-graph false-deads on indirect / fn-pointer call sites.
     BINARY_ORACLE_EDGES: bool = False
+
+    # Perlasm generated-asm inventory (core/inventory/perlasm.py):
+    # detect perlasm generators structurally, run them under the
+    # strict sandbox profile (fail-closed), and inventory the emitted
+    # assembly as ``asm-generated`` records. Default-on because the
+    # pass is zero-cost on repos without perlasm generators and
+    # fail-closed everywhere else (no strict sandbox => loud coverage
+    # gap, no execution). ``RAPTOR_NO_PERLASM=1`` is the env
+    # kill-switch for a single run.
+    PERLASM_INVENTORY: bool = True
 
     # LLM Provider Configuration.
     #

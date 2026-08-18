@@ -6,6 +6,7 @@ sandbox-first, injectable runner for testing.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -569,6 +570,8 @@ def build_cpg(
                 if len(parts) == 2:
                     detected_langs.add(parts[1].strip().lower())
 
+    _reject_empty_cpg(cpg_path, languages or detected_langs)
+
     return JoernCPG(
         path=cpg_path,
         target=target,
@@ -668,6 +671,8 @@ def _build_cpg_with_stall_monitor(
                 parts = line.split(":", 1)
                 if len(parts) == 2:
                     detected_langs.add(parts[1].strip().lower())
+
+    _reject_empty_cpg(cpg_path, languages or detected_langs)
 
     return JoernCPG(
         path=cpg_path,
@@ -963,10 +968,80 @@ def _target_content_hash(target: Path) -> str:
     return h.hexdigest()[:16]
 
 
+# Flatgraph serialises a JSON manifest as the final bytes of cpg.bin,
+# opening with {"version" and carrying a per-kind node count table.
+# Reading that tail is the cheapest possible method-count probe — no
+# JVM boot. The string pool precedes the manifest, so even a source
+# file containing the literal anchor cannot shadow it: rfind always
+# lands on the real manifest.
+_CPG_MANIFEST_ANCHOR = b'{"version"'
+_CPG_MANIFEST_TAIL_BYTES = 8 * 1024 * 1024
+
+
+def cpg_method_count(cpg_path: Path) -> int | None:
+    """METHOD node count from the flatgraph tail manifest.
+
+    Returns None when the file or its manifest cannot be read — the
+    caller must treat None as "unknown", never as "empty": only a
+    positively-parsed zero may reject a CPG.
+    """
+    try:
+        size = cpg_path.stat().st_size
+        with open(cpg_path, "rb") as f:
+            if size > _CPG_MANIFEST_TAIL_BYTES:
+                f.seek(size - _CPG_MANIFEST_TAIL_BYTES)
+            data = f.read()
+    except OSError:
+        return None
+    start = data.rfind(_CPG_MANIFEST_ANCHOR)
+    if start < 0:
+        return None
+    try:
+        manifest = json.loads(data[start:].decode("utf-8"))
+        for node in manifest.get("nodes", []):
+            if node.get("nodeLabel") == "METHOD":
+                return int(node.get("nnodes", 0))
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return None
+    # Schema table present but no METHOD row: unexpected shape —
+    # unknown, not empty.
+    return None
+
+
+def _reject_empty_cpg(cpg_path: Path, languages: set[str] | None) -> bool:
+    """Delete a structurally-empty CPG so callers see a parse failure.
+
+    joern-parse can exit 0 while writing a CPG with zero METHOD nodes
+    (observed: rubysrc's embedded parser gem failing to load — the
+    frontend dies after the writer opened the file). Exit codes cannot
+    catch this class; the manifest probe can. Only a parsed zero
+    rejects; an unreadable manifest passes through.
+    """
+    if not cpg_path.exists():
+        return False
+    count = cpg_method_count(cpg_path)
+    if count == 0:
+        logger.error(
+            "joern-parse exited successfully but the CPG at %s contains "
+            "zero METHOD nodes — the %s frontend produced an empty "
+            "graph (broken frontend helper, unsupported dialect, or "
+            "partial write). Treating as a parse failure.",
+            cpg_path,
+            ",".join(sorted(languages)) if languages else "auto-detected",
+        )
+        with contextlib.suppress(OSError):
+            cpg_path.unlink()
+        return True
+    if count is None:
+        logger.debug("CPG manifest at %s unreadable; skipping empty check", cpg_path)
+    return False
+
+
 def _write_cpg_manifest(
     cpg_dir: Path, target: Path, content_hash: str,
     languages: set[str] | None = None, build_time_ms: int = 0,
     frontend_args_fingerprint: str = "",
+    method_count: int | None = None,
 ) -> None:
     """Write manifest.json alongside the cached CPG."""
     manifest = {
@@ -975,6 +1050,7 @@ def _write_cpg_manifest(
         "build_time_ms": build_time_ms,
         "languages": sorted(languages or []),
         "frontend_args_fingerprint": frontend_args_fingerprint,
+        "method_count": method_count,
     }
     manifest_path = cpg_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -1037,6 +1113,17 @@ def load_cached_cpg(
         )
         return None
 
+    # Refuse structurally-empty cached CPGs (including ones written
+    # before the empty check existed — the probe reads the file, not
+    # the manifest field, so legacy caches are covered).
+    if cpg_method_count(cpg_path) == 0:
+        logger.info(
+            "CPG cache at %s contains zero METHOD nodes — refusing the "
+            "cached graph; this cache will be rebuilt",
+            cpg_dir,
+        )
+        return None
+
     langs = set(manifest.get("languages", []))
     logger.info("CPG cache hit for %s (cache: %s)", target, cpg_dir)
     return JoernCPG(
@@ -1095,6 +1182,7 @@ def build_cpg_cached(
             languages=cpg.languages,
             build_time_ms=cpg.build_time_ms,
             frontend_args_fingerprint=frontend_args.fingerprint(),
+            method_count=cpg_method_count(cpg.path),
         )
 
     return cpg

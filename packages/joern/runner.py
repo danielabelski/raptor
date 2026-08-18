@@ -6,14 +6,17 @@ sandbox-first, injectable runner for testing.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import shlex
 import subprocess
 import tempfile
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from .models import FlowStep, JoernCPG, JoernMethodSummary, JoernResult, TaintFlow
@@ -197,6 +200,243 @@ class _StallMonitor:
         return "\n".join(self._stderr_lines)
 
 
+# ─── compile_commands.json → c2cpg frontend args ─────────────────────
+#
+# The c2cpg frontend resolves #include and macros from what it is told
+# on the command line; without the build's -I/-D flags it silently
+# misses build-configured code. A target's compile_commands.json (when
+# the operator built the target) carries those flags — but the file
+# ships with the SCANNED REPO, so its contents are untrusted: only
+# -D/-U and -I tokens are extracted, values are charset-allowlisted,
+# include dirs must resolve to existing directories inside the target
+# root, and counts are capped. c2cpg's own --compilation-database mode
+# is deliberately not used — it would hand the untrusted file to the
+# frontend wholesale (file lists, arbitrary flags).
+#
+# c2cpg exposes only --define and --include (no -U / -std equivalents,
+# verified against c2cpg --help), so -U participates in the
+# config-dependent conflict rule (a name both defined and undefined
+# across TUs is dropped, mirroring core/build/macro_config.py) but is
+# never emitted.
+
+_CC_DB_NAME = "compile_commands.json"
+# Search order mirrors the binary-oracle auto-detect build dirs that
+# plausibly hold a cmake/bear-generated database. First match wins.
+_CC_SEARCH_SUBDIRS = ("", "build", "builddir", "out", "Debug", "Release")
+_CC_MAX_BYTES = 32 * 1024 * 1024
+_CC_MAX_ENTRIES = 2000
+_CC_MAX_TOKENS_PER_ENTRY = 512
+_CC_MAX_DEFINES = 64
+_CC_MAX_INCLUDES = 32
+
+_CC_DEFINE_NAME_RE = re.compile(r"^\w{1,128}$")
+# No quotes, spaces, or shell metacharacters — argv is list-based so
+# nothing is shell-evaluated, but a hostile value must not be able to
+# smuggle option-shaped or log-forging content into the frontend argv.
+_CC_DEFINE_VALUE_RE = re.compile(r"^[\w.\-+/:@,]{1,128}$")
+
+
+@dataclass(frozen=True)
+class FrontendArgs:
+    """Sanitized c2cpg frontend flags recovered from compile_commands.json.
+
+    ``defines`` holds ``NAME`` / ``NAME=VALUE`` strings, ``includes``
+    absolute directory paths inside the target root. Both are emitted
+    verbatim after joern-parse's ``--frontend-args`` separator.
+    """
+
+    defines: tuple = ()
+    includes: tuple = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.defines or self.includes)
+
+    def to_argv(self) -> list:
+        """joern-parse argv tail (empty when there is nothing to pass)."""
+        if not self:
+            return []
+        argv = ["--frontend-args"]
+        for d in self.defines:
+            argv.extend(["--define", d])
+        for i in self.includes:
+            argv.extend(["--include", i])
+        return argv
+
+    def fingerprint(self) -> str:
+        """Deterministic short hash for cache keying; empty when empty."""
+        if not self:
+            return ""
+        payload = repr((self.defines, self.includes))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+_EMPTY_FRONTEND_ARGS = FrontendArgs()
+
+
+def find_compile_commands(target: Path) -> Path | None:
+    """First compile_commands.json under the target's build dirs, or None."""
+    target = Path(target)
+    candidates = [target / sub / _CC_DB_NAME if sub else target / _CC_DB_NAME
+                  for sub in _CC_SEARCH_SUBDIRS]
+    candidates.extend(sorted(target.glob(f"cmake-build-*/{_CC_DB_NAME}")))
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _cc_entry_tokens(entry: dict) -> list:
+    """Command tokens for one entry (``arguments`` array preferred,
+    ``command`` string shlex-split) — mirrors core/build/macro_config."""
+    if isinstance(entry.get("arguments"), list):
+        toks = [str(a) for a in entry["arguments"]]
+    else:
+        cmd = entry.get("command")
+        if not isinstance(cmd, str):
+            return []
+        try:
+            toks = shlex.split(cmd)
+        except ValueError:
+            toks = cmd.split()
+    return toks[:_CC_MAX_TOKENS_PER_ENTRY]
+
+
+def _cc_resolve_include(raw: str, entry_dir: str | None,
+                        target_root: Path) -> str | None:
+    """Resolve one -I operand to an existing directory inside the target
+    root (realpath containment — symlink escapes rejected), else None."""
+    if not raw or "\x00" in raw:
+        return None
+    p = Path(raw)
+    if not p.is_absolute():
+        base = None
+        if isinstance(entry_dir, str) and entry_dir:
+            base = Path(entry_dir)
+            if not base.is_absolute():
+                base = target_root / base
+        p = (base or target_root) / p
+    try:
+        resolved = p.resolve()
+        root = target_root.resolve()
+        if not resolved.is_dir():
+            return None
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return str(resolved)
+
+
+def discover_frontend_args(target: Path) -> FrontendArgs:
+    """Extract sanitized -D/-I flags from the target's compile_commands.json.
+
+    Returns empty FrontendArgs when the database is absent, malformed,
+    oversized, or yields nothing that survives sanitization. Never raises.
+    """
+    target = Path(target)
+    db = find_compile_commands(target)
+    if db is None:
+        return _EMPTY_FRONTEND_ARGS
+    try:
+        if db.stat().st_size > _CC_MAX_BYTES:
+            logger.warning("%s exceeds %d bytes — ignored for frontend args",
+                           db, _CC_MAX_BYTES)
+            return _EMPTY_FRONTEND_ARGS
+        entries = json.loads(db.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        logger.debug("compile_commands parse failed at %s: %s", db, exc)
+        return _EMPTY_FRONTEND_ARGS
+    if not isinstance(entries, list):
+        return _EMPTY_FRONTEND_ARGS
+    if len(entries) > _CC_MAX_ENTRIES:
+        logger.info("compile_commands at %s has %d entries; scanning first %d",
+                    db, len(entries), _CC_MAX_ENTRIES)
+        entries = entries[:_CC_MAX_ENTRIES]
+
+    defines: dict = {}
+    undefined: set = set()
+    conflict: set = set()
+    includes: list = []
+    seen_includes: set = set()
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_dir = entry.get("directory")
+        tokens = _cc_entry_tokens(entry)
+        i = 0
+        n = len(tokens)
+        while i < n:
+            tok = tokens[i]
+            name = val = inc = None
+            is_undef = False
+            if tok in ("-D", "-U", "-I", "-isystem") and i + 1 < n:
+                i += 1
+                operand = tokens[i]
+                if tok == "-D":
+                    name, _, val = operand.partition("=")
+                elif tok == "-U":
+                    name, is_undef = operand, True
+                else:
+                    inc = operand
+            elif tok.startswith("-D") and len(tok) > 2:
+                name, _, val = tok[2:].partition("=")
+            elif tok.startswith("-U") and len(tok) > 2:
+                name, is_undef = tok[2:], True
+            elif tok.startswith("-I") and len(tok) > 2:
+                inc = tok[2:]
+            elif tok.startswith("-isystem") and len(tok) > 8:
+                inc = tok[8:]
+            i += 1
+
+            if inc is not None:
+                resolved = _cc_resolve_include(inc, entry_dir, target)
+                if resolved and resolved not in seen_includes:
+                    seen_includes.add(resolved)
+                    includes.append(resolved)
+                continue
+            if name is None or not _CC_DEFINE_NAME_RE.match(name):
+                continue
+            if is_undef:
+                if name in defines:
+                    conflict.add(name)
+                undefined.add(name)
+                continue
+            if val and not _CC_DEFINE_VALUE_RE.match(val):
+                continue
+            if name in undefined:
+                conflict.add(name)
+            defines[name] = val or ""
+
+    # A name both defined and undefined across TUs is config-dependent
+    # project-wide — drop it rather than pick a side.
+    for name in conflict:
+        defines.pop(name, None)
+
+    define_strs = sorted(
+        name if not val else f"{name}={val}"
+        for name, val in defines.items()
+    )
+    if len(define_strs) > _CC_MAX_DEFINES:
+        logger.info("compile_commands at %s: capping defines %d → %d",
+                    db, len(define_strs), _CC_MAX_DEFINES)
+        define_strs = define_strs[:_CC_MAX_DEFINES]
+    if len(includes) > _CC_MAX_INCLUDES:
+        logger.info("compile_commands at %s: capping includes %d → %d",
+                    db, len(includes), _CC_MAX_INCLUDES)
+        includes = includes[:_CC_MAX_INCLUDES]
+
+    fa = FrontendArgs(defines=tuple(define_strs), includes=tuple(includes))
+    if fa:
+        logger.info(
+            "joern c2cpg frontend args from %s: %d defines, %d includes",
+            db, len(fa.defines), len(fa.includes),
+        )
+    return fa
+
+
 def build_cpg(
     target: Path,
     *,
@@ -206,6 +446,7 @@ def build_cpg(
     subprocess_runner=None,
     on_progress: Callable | None = None,
     heap_mb: int | None = None,
+    frontend_args: FrontendArgs | None = None,
 ) -> JoernCPG:
     """Parse target directory into a Code Property Graph.
 
@@ -213,6 +454,10 @@ def build_cpg(
     (default: tempdir) as a binary file. ``heap_mb`` sets the JVM
     ``-Xms``/``-Xmx`` via the launcher's ``-J`` passthrough, matching
     JoernServer's heap flags; ``None`` keeps the JVM default.
+
+    ``frontend_args``: sanitized c2cpg flags. ``None`` auto-discovers
+    from the target's compile_commands.json when the pinned language
+    set includes the C frontend; pass ``FrontendArgs()`` to disable.
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -249,6 +494,13 @@ def build_cpg(
 
     if languages:
         cmd.extend(["--language", ",".join(sorted(languages))])
+
+    if frontend_args is None and languages and "c" in languages:
+        frontend_args = discover_frontend_args(target)
+    if frontend_args:
+        # Everything after --frontend-args is passed verbatim to the
+        # frontend, so this must be the argv tail.
+        cmd.extend(frontend_args.to_argv())
 
     runner = subprocess_runner or _default_sandbox_runner()
 
@@ -714,6 +966,7 @@ def _target_content_hash(target: Path) -> str:
 def _write_cpg_manifest(
     cpg_dir: Path, target: Path, content_hash: str,
     languages: set[str] | None = None, build_time_ms: int = 0,
+    frontend_args_fingerprint: str = "",
 ) -> None:
     """Write manifest.json alongside the cached CPG."""
     manifest = {
@@ -721,6 +974,7 @@ def _write_cpg_manifest(
         "content_hash": content_hash,
         "build_time_ms": build_time_ms,
         "languages": sorted(languages or []),
+        "frontend_args_fingerprint": frontend_args_fingerprint,
     }
     manifest_path = cpg_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -740,8 +994,16 @@ def _read_cpg_manifest(cpg_dir: Path) -> dict | None:
 def load_cached_cpg(
     target: Path,
     cache_dir: Path,
+    *,
+    expected_frontend_fingerprint: str | None = None,
 ) -> JoernCPG | None:
-    """Return a cached CPG if fresh, None if stale or missing."""
+    """Return a cached CPG if fresh, None if stale or missing.
+
+    ``expected_frontend_fingerprint``: when given, the manifest's
+    recorded c2cpg frontend-args fingerprint must match it — a
+    compile_commands.json change then invalidates the cache. ``None``
+    (read-only consumers that never rebuild) skips the check.
+    """
     cpg_dir = cache_dir / "joern-cpg"
     cpg_path = cpg_dir / "cpg.bin"
     if not cpg_path.exists():
@@ -750,6 +1012,17 @@ def load_cached_cpg(
     manifest = _read_cpg_manifest(cpg_dir)
     if manifest is None:
         return None
+
+    if expected_frontend_fingerprint is not None:
+        recorded = manifest.get("frontend_args_fingerprint", "")
+        if recorded != expected_frontend_fingerprint:
+            logger.info(
+                "CPG cache at %s stale (frontend args %s → %s) — this "
+                "cache will be rebuilt",
+                cpg_dir, recorded or "(none)",
+                expected_frontend_fingerprint or "(none)",
+            )
+            return None
 
     current_hash = _target_content_hash(target)
     if manifest.get("content_hash") != current_hash:
@@ -788,8 +1061,18 @@ def build_cpg_cached(
 
     cache_dir is typically the project directory. The CPG is stored
     in cache_dir/joern-cpg/cpg.bin with a manifest for freshness.
+    Frontend args discovered from compile_commands.json join the
+    freshness contract: a flags change rebuilds even when source
+    contents are unchanged.
     """
-    cached = load_cached_cpg(target, cache_dir)
+    frontend_args = _EMPTY_FRONTEND_ARGS
+    if languages and "c" in languages:
+        frontend_args = discover_frontend_args(Path(target))
+
+    cached = load_cached_cpg(
+        target, cache_dir,
+        expected_frontend_fingerprint=frontend_args.fingerprint(),
+    )
     if cached is not None:
         return cached
 
@@ -802,6 +1085,7 @@ def build_cpg_cached(
         subprocess_runner=subprocess_runner,
         on_progress=on_progress,
         heap_mb=heap_mb,
+        frontend_args=frontend_args,
     )
 
     if cpg.exists():
@@ -810,6 +1094,7 @@ def build_cpg_cached(
             cpg_dir, target, content_hash,
             languages=cpg.languages,
             build_time_ms=cpg.build_time_ms,
+            frontend_args_fingerprint=frontend_args.fingerprint(),
         )
 
     return cpg

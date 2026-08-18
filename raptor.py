@@ -241,7 +241,9 @@ def _rewrite_target_arg(args: list, old: str, new: str) -> list:
 # the same cache so /describe + /scan don't re-extract the
 # same archive). Re-exported here under the old private name
 # for backward compatibility with anything in this module that
-# still references _safe_cache_name.
+# still references _safe_cache_name. Mid-file by necessity:
+# raptor.py's top-of-file import order is load-bearing
+# (core.startup.process_init must run before core.* imports).
 from core.archive import safe_cache_name as _safe_cache_name  # noqa: E402
 
 
@@ -641,6 +643,21 @@ def _get_or_start_dispatcher():
         return None
 
 
+def _worker_keyless_enabled() -> bool:
+    """RAPTOR_LLM_WORKER_KEYLESS=1: spawn analysis workers WITHOUT
+    provider keys in env, relying on the dispatcher alone.
+
+    The env-direct key fallback exists for a live reason — workers
+    fall back to direct SDK calls when the dispatcher route is
+    unusable, and some providers aren't dispatcher-routed — so the
+    keyless posture is opt-in. When flipped, a worker whose provider
+    isn't dispatcher-routed fails its LLM calls with a missing-key
+    error rather than silently leaking credentials into env.
+    """
+    raw = (os.environ.get("RAPTOR_LLM_WORKER_KEYLESS") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def _run_script(script_path: Path, args: list) -> int:
     """
     Run a RAPTOR script with given arguments.
@@ -675,11 +692,29 @@ def _run_script(script_path: Path, args: list) -> int:
         dispatcher = _get_or_start_dispatcher()
         if dispatcher is not None:
             from core.llm.dispatcher.spawn import spawn_worker
+            # Worker credential posture. Default: provider keys still
+            # ride the env as a fallback for the env-direct transport
+            # paths (dispatcher-down resilience mid-run, and providers
+            # the dispatcher doesn't route). RAPTOR_LLM_WORKER_KEYLESS=1
+            # enforces the designed keyless posture: the worker gets
+            # the safe baseline + routing NAMES only and relies on the
+            # dispatcher alone for provider auth. Opt-in — flip it once
+            # the install's providers are all dispatcher-routed.
+            if _worker_keyless_enabled():
+                worker_env = RaptorConfig.get_safe_env(
+                    preserve_proxy=True,
+                    include_python_user_base=True,
+                )
+                worker_env.update(RaptorConfig.llm_routing_env())
+            else:
+                worker_env = RaptorConfig.get_llm_env(
+                    include_python_user_base=True,
+                )
             proc = spawn_worker(
                 dispatcher,
                 cmd=cmd,
                 label=script_path.name,
-                env=RaptorConfig.get_llm_env(include_python_user_base=True),
+                env=worker_env,
             )
             return proc.wait()
         # Fallback: env-direct (no dispatcher available).

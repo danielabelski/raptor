@@ -31,13 +31,16 @@ Two paths for namespace setup:
   A. Direct unshare from this script. Works on hosts where the operator
      has disabled the LSM restriction
      (``kernel.apparmor_restrict_unprivileged_userns=0`` on Ubuntu, or the
-     distro's equivalent). Tried first.
+     distro's equivalent). Used only when no launcher binary is built.
 
   B. Via the privileged launcher binary at
      ``core/sandbox/helpers/raptor-coord-launcher``. The launcher creates
      the namespaces in a brief privileged window, drops every capability,
      and execs THIS script with ``RAPTOR_COORD_FROM_LAUNCHER=1`` set. The
-     script then proceeds as if it had done the unshare itself.
+     script then proceeds as if it had done the unshare itself. Tried
+     first whenever the launcher exists — a failed direct attempt on an
+     LSM-hardened host would poison the launcher fallback (see
+     _setup_namespaces for the AppArmor-confinement rationale).
 
 If both paths fail, the script writes a structured error to stdout and
 exits non-zero. The caller surfaces the message to the operator.
@@ -76,6 +79,14 @@ CLONE_NEWNET = 0x40000000
 HELPER_PATH = (
     Path(__file__).resolve().parent / "helpers" / "raptor-coord-launcher"
 )
+
+# Shared child-timeout default. ``_run_child`` uses it as the sandbox.run
+# timeout when a spec omits ``timeout_s``; ``main()`` uses it for the
+# post-exploit join bound on the target thread. They MUST be the same
+# value: the leaked-subprocess window is bounded by ``timeout_s + 1.0s``
+# only when the join waits at least as long as the sandbox timeout that
+# SIGKILLs the child.
+_DEFAULT_CHILD_TIMEOUT_S = 10.0
 
 
 # ----------------------------------------------------------------------
@@ -313,12 +324,27 @@ def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
         cmd = spec["cmd"]
         env = spec.get("env", {})
         try:
-            timeout = float(spec.get("timeout_s", 10.0))
+            timeout = float(spec.get("timeout_s", _DEFAULT_CHILD_TIMEOUT_S))
         except (TypeError, ValueError):
-            timeout = 10.0
+            timeout = _DEFAULT_CHILD_TIMEOUT_S
         profile = spec.get("profile", "target_run")
         block_network = bool(spec.get("block_network", True))
         allowed_tcp_ports = spec.get("allowed_tcp_ports") or None
+        # Same boundary narrowing as the path/overlay fields below:
+        # ``list("80")`` yields ``['8', '0']`` — two bogus one-char
+        # "ports" — instead of failing. Must be a list/tuple of ints.
+        if allowed_tcp_ports is not None:
+            if not isinstance(allowed_tcp_ports, (list, tuple)):
+                raise TypeError(
+                    f"spec['allowed_tcp_ports'] must be list or tuple of "
+                    f"ints, got {type(allowed_tcp_ports).__name__}",
+                )
+            for port in allowed_tcp_ports:
+                if not isinstance(port, int) or isinstance(port, bool):
+                    raise TypeError(
+                        f"spec['allowed_tcp_ports'] entries must be ints, "
+                        f"got {type(port).__name__}",
+                    )
         restrict_reads = bool(spec.get("restrict_reads", False))
         stdin_b64 = spec.get("stdin_b64")
         stdin_bytes = base64.b64decode(stdin_b64) if stdin_b64 else None
@@ -515,7 +541,9 @@ def main() -> None:
     try:
         wait_port = int(request.get("wait_listen_port", 0))
         wait_timeout = float(request.get("wait_listen_timeout_s", 5.0))
-        target_timeout = float(target_spec.get("timeout_s", 5.0))
+        target_timeout = float(
+            target_spec.get("timeout_s", _DEFAULT_CHILD_TIMEOUT_S)
+        )
     except (TypeError, ValueError) as exc:
         _emit_error(
             "bad_request",

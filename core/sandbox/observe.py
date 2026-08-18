@@ -213,6 +213,8 @@ def _interpret_result(result: subprocess.CompletedProcess, cmd_display: str) -> 
         elif "UndefinedBehaviorSanitizer" in stderr_text:
             info["sanitizer"] = "ubsan"
             evidence_items.append("UndefinedBehaviorSanitizer triggered")
+            if died_abnormally:
+                info["crashed"] = True
             logger.info("Sandbox: %s — UBSAN triggered", cmd_display)
         elif "MemorySanitizer" in stderr_text:
             info["sanitizer"] = "msan"
@@ -223,6 +225,8 @@ def _interpret_result(result: subprocess.CompletedProcess, cmd_display: str) -> 
         elif "ThreadSanitizer" in stderr_text:
             info["sanitizer"] = "tsan"
             evidence_items.append("ThreadSanitizer: data race detected")
+            if died_abnormally:
+                info["crashed"] = True
             logger.info("Sandbox: %s — TSAN triggered", cmd_display)
 
     # Build evidence: flat string for simple consumers, list for structured access

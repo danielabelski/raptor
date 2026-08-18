@@ -148,6 +148,11 @@
   "count": 13,
   "kind": "alternation"
  },
+ "core/audit/asm_zero_len_loop.py::check_zero_length_loop_entry": {
+  "count": 11,
+  "kind": "literal",
+  "note": "structured finding-dict field names (line refs, counter reg, CWE) for the asm zero-length-loop check - not a name vocabulary"
+ },
  "core/audit/binary_layer0.py::_CHECKED_RETURN_CALLS": {
   "count": 24,
   "kind": "literal"

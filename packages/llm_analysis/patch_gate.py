@@ -701,12 +701,29 @@ def _compile_annotation(
 
 
 def _env_scope_slack() -> int:
+    """Read the hunk-slack override from the env var, fall back to
+    the default. Malformed values (non-integer / negative) warn and
+    fall back — same posture as the scan-threshold sibling
+    (``RAPTOR_SCAN_THIN_COVERAGE_THRESHOLD``) — so a typo doesn't
+    silently re-widen the gate's scope check."""
     raw = os.environ.get(_SCOPE_SLACK_ENV, "")
+    if not raw:
+        return _DEFAULT_SCOPE_SLACK
     try:
         value = int(raw)
     except ValueError:
+        logger.warning(
+            "%s=%r is not an int; using default %d",
+            _SCOPE_SLACK_ENV, raw, _DEFAULT_SCOPE_SLACK,
+        )
         return _DEFAULT_SCOPE_SLACK
-    return value if value >= 0 else _DEFAULT_SCOPE_SLACK
+    if value < 0:
+        logger.warning(
+            "%s=%d must be >= 0; using default %d",
+            _SCOPE_SLACK_ENV, value, _DEFAULT_SCOPE_SLACK,
+        )
+        return _DEFAULT_SCOPE_SLACK
+    return value
 
 
 def run_patch_gate(

@@ -37,8 +37,8 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from packages.llm_analysis import patch_gate
-from packages.llm_analysis.patch_gate import (
+from packages.llm_analysis import patch_gate  # noqa: E402
+from packages.llm_analysis.patch_gate import (  # noqa: E402
     GateResult,
     extract_unified_diff,
     render_gate_block,
@@ -333,6 +333,35 @@ class TestScopeCheck:
             _fenced_response(_make_diff(VULN_C, FIXED_C)), fixture_repo,
         )
         assert result.scope == "in-bounds"
+
+    def test_garbage_env_slack_warns(self, monkeypatch, caplog):
+        """Malformed / negative overrides warn — same posture as the
+        scan-threshold sibling — instead of silently using 40."""
+        import logging
+
+        monkeypatch.setenv("RAPTOR_PATCH_GATE_SCOPE_SLACK", "banana")
+        with caplog.at_level(logging.WARNING):
+            assert patch_gate._env_scope_slack() == 40
+        assert any("RAPTOR_PATCH_GATE_SCOPE_SLACK" in r.getMessage()
+                   and "not an int" in r.getMessage()
+                   for r in caplog.records)
+
+        caplog.clear()
+        monkeypatch.setenv("RAPTOR_PATCH_GATE_SCOPE_SLACK", "-3")
+        with caplog.at_level(logging.WARNING):
+            assert patch_gate._env_scope_slack() == 40
+        assert any("must be >= 0" in r.getMessage() for r in caplog.records)
+
+    def test_valid_and_unset_env_slack_do_not_warn(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.delenv("RAPTOR_PATCH_GATE_SCOPE_SLACK", raising=False)
+        with caplog.at_level(logging.WARNING):
+            assert patch_gate._env_scope_slack() == 40
+            monkeypatch.setenv("RAPTOR_PATCH_GATE_SCOPE_SLACK", "7")
+            assert patch_gate._env_scope_slack() == 7
+        assert not [r for r in caplog.records
+                    if "RAPTOR_PATCH_GATE_SCOPE_SLACK" in r.getMessage()]
 
 
 # ---------------------------------------------------------------------------

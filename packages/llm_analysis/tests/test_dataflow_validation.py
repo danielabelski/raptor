@@ -1424,14 +1424,26 @@ class TestFindingLanguageInference:
 
 
 class TestMatchAtFindingLocation:
-    def test_unknown_match_line_still_accepted(self):
+    def test_unknown_match_line_not_at_location(self):
+        # No line evidence is not at-location evidence: an unlocalized
+        # Tier-2 template match must grade inconclusive, not confirmed.
         matches = [{"file": "vuln.c", "line": None}]
+        finding = {"file_path": "vuln.c", "start_line": 100}
+        assert not _any_match_at_finding_location(matches, finding)
+
+    def test_unknown_match_line_zero_not_at_location(self):
+        matches = [{"file": "vuln.c", "line": 0}]
+        finding = {"file_path": "vuln.c", "start_line": 100}
+        assert not _any_match_at_finding_location(matches, finding)
+
+    def test_nearby_match_line_accepted(self):
+        matches = [{"file": "vuln.c", "line": 97}]
         finding = {"file_path": "vuln.c", "start_line": 100}
         assert _any_match_at_finding_location(matches, finding)
 
-    def test_unknown_match_line_zero_accepted(self):
-        matches = [{"file": "vuln.c", "line": 0}]
-        finding = {"file_path": "vuln.c", "start_line": 100}
+    def test_unknown_target_line_accepts_localized_match(self):
+        matches = [{"file": "vuln.c", "line": 42}]
+        finding = {"file_path": "vuln.c", "start_line": 0}
         assert _any_match_at_finding_location(matches, finding)
 
 

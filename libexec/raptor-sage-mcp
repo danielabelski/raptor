@@ -3,8 +3,16 @@
 # raptor-sage-mcp — stdio MCP transport wrapper for the SAGE sidecar.
 #
 # Claude Code invokes this as the command in .mcp.json. It execs into
-# the SAGE container's `sage-gui mcp` process with stdin/stdout wired
-# directly (no pipes, no buffering layers).
+# the boot-payload enforcement shim (libexec/raptor-sage-mcp-guard),
+# which spawns the SAGE container's `sage-gui mcp` process and pumps
+# stdio through it. The shim verifies the server-emitted instruction
+# surfaces (MCP initialize.instructions + the sage_inception message)
+# against the operator-authorized record in
+# .sage/boot-payload.authorized ON the real session — a compromised
+# server can no longer serve clean text to the setup-time capture
+# probe and injected directives to live sessions. Unauthorized
+# surfaces are stripped and replaced with a loud warning; the session
+# itself stays up.
 #
 # Not a user-facing script — invoked by Claude Code via .mcp.json only.
 # Claude Code sets CLAUDECODE=1 when spawning MCP server processes,
@@ -52,7 +60,10 @@ if ! docker info >/dev/null 2>&1; then
     exit 3
 fi
 
-exec docker compose \
+exec python3 "$RAPTOR_DIR/libexec/raptor-sage-mcp-guard" \
+    --authorized "$RAPTOR_DIR/.sage/boot-payload.authorized" \
+    -- \
+    docker compose \
     -f "$RAPTOR_DIR/core/sage/docker-compose.yml" \
     exec -T \
     -e "SAGE_HOME=/root/.sage" \

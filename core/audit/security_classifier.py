@@ -268,13 +268,21 @@ def classify_security_impact(
                 }
         except Exception:
             logger.warning(
-                "security classification failed for %s — defaulting to quality",
+                "security classification failed for %s — recording error",
                 key, exc_info=True,
             )
+            # FAIL CLOSED: a transport/auth failure is an error cell,
+            # not a quality ruling. Downstream consumers that demote
+            # on ``classification == "quality_finding"`` must never
+            # act on a call that did not happen. (The preflight and
+            # envelope-echo defaults above are different: those are
+            # deliberate fail-safe RULINGS on suspect inputs, and can
+            # only prevent promotion, so they keep the quality
+            # default.)
             result = {
                 "is_security": False,
-                "classification": "quality_finding",
-                "rationale": "classification failed — defaulted to quality",
+                "classification": "error",
+                "rationale": "classification call failed — not a ruling",
             }
 
         results[key] = result

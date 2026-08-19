@@ -257,6 +257,25 @@ REVIEW_SCHEMA = {
                 "a plausible counter-argument, say why."
             ),
         },
+        "counter_direction": {
+            "type": "string",
+            "enum": ["supports_vuln", "refutes_vuln"],
+            "description": (
+                "Which way your counter_hypothesis cuts relative to "
+                "the VULNERABILITY CLAIM (not relative to your "
+                "verdict). supports_vuln: the counter argues a "
+                "vulnerability is or may be real — an attack, input, "
+                "or precondition that would make the code "
+                "exploitable. refutes_vuln: the counter argues the "
+                "vulnerability is not real or is prevented — a "
+                "guarantee, contract, serialisation, validation, or "
+                "lifecycle rule that defeats it. Conditional "
+                "phrasings count by their conclusion: 'if the driver "
+                "could invoke the callback twice this would be a "
+                "double-free, but the API contract prevents it' is "
+                "refutes_vuln."
+            ),
+        },
         "observations": {
             "type": "array",
             "description": (
@@ -647,8 +666,8 @@ REVIEW_SCHEMA = {
         "status": _STATUS_FULL,
     },
     "required": [
-        "hypothesis", "counter_hypothesis", "hypotheses",
-        "body", "cwe", "verdict_rationale", "status",
+        "hypothesis", "counter_hypothesis", "counter_direction",
+        "hypotheses", "body", "cwe", "verdict_rationale", "status",
     ],
 }
 
@@ -660,6 +679,7 @@ REVIEW_SCHEMA_BLIND = {
         "body": {"type": "string"},
         "cwe": REVIEW_SCHEMA["properties"]["cwe"],
         "counter_hypothesis": REVIEW_SCHEMA["properties"]["counter_hypothesis"],
+        "counter_direction": REVIEW_SCHEMA["properties"]["counter_direction"],
         "observations": REVIEW_SCHEMA["properties"]["observations"],
         "constraints": REVIEW_SCHEMA["properties"]["constraints"],
         "reading_list": REVIEW_SCHEMA["properties"]["reading_list"],
@@ -668,8 +688,8 @@ REVIEW_SCHEMA_BLIND = {
         "status": _STATUS_NO_DORMANT,
     },
     "required": [
-        "hypothesis", "counter_hypothesis", "hypotheses",
-        "body", "cwe", "verdict_rationale", "status",
+        "hypothesis", "counter_hypothesis", "counter_direction",
+        "hypotheses", "body", "cwe", "verdict_rationale", "status",
     ],
 }
 
@@ -963,6 +983,26 @@ def _is_contract_delegation(lower: str) -> bool:
     return False
 
 
+def _clean_counter_escalates(result: dict) -> bool:
+    """Should a clean verdict escalate to suspicious off its counter?
+
+    Structural direction beats prose re-derivation: the model states
+    at generation time which way its counter cuts. A refutes_vuln
+    counter argues FOR the clean verdict — escalating off it re-armed
+    the verdict from its own refutation (the keyword classifier only
+    caught past-tense refutation phrasing; subjunctive-conditional
+    refutations — "if X could happen ... but Y prevents it" — sailed
+    through as compelling). When the field is absent the prose
+    classifier remains the fallback.
+    """
+    direction = str(result.get("counter_direction") or "").strip().lower()
+    if direction == "refutes_vuln":
+        return False
+    return _counter_hypothesis_is_compelling(
+        result.get("counter_hypothesis", ""),
+    )
+
+
 def _counter_hypothesis_is_compelling(counter: str) -> bool:
     """Return True if the counter-hypothesis names a specific attack.
 
@@ -1198,7 +1238,7 @@ def make_review_fn(
         counter_escalated = False
         if status == "clean" and escalate_clean:
             counter = result.get("counter_hypothesis", "")
-            if _counter_hypothesis_is_compelling(counter):
+            if _clean_counter_escalates(result):
                 status = "suspicious"
                 result["status"] = status
                 counter_escalated = True

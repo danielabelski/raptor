@@ -915,6 +915,17 @@ def counter_refutes_vulnerability(counter: str) -> bool:
     return any(kw in lower for kw in COUNTER_REFUTATION_KW)
 
 
+def _get_counter_direction(item) -> str:
+    """Structured ``counter_direction`` emitted by the review model
+    (``supports_vuln`` / ``refutes_vuln``), or "" when absent."""
+    if isinstance(item, dict):
+        raw = item.get("counter_direction", "") or ""
+    else:
+        rr = getattr(item, "review_result", None) or {}
+        raw = rr.get("counter_direction", "") or ""
+    return str(raw).strip().lower()
+
+
 def counter_hypothesis_vetoes(item) -> bool:
     """True when a strong counter-hypothesis should veto a speculative finding.
 
@@ -923,6 +934,11 @@ def counter_hypothesis_vetoes(item) -> bool:
     substantial and names a concrete protection mechanism,
     (3) hypothesis does not name a security-primitive pattern that
     counter-hypotheses are unreliable for.
+
+    The structured ``counter_direction`` field, when present, replaces
+    the prose re-derivation: refutes_vuln vetoes, supports_vuln never
+    does. The keyword paths remain as the fallback for responses
+    predating the field.
     """
     ev = _get_evidence(item)
     if ev and not ev.startswith(NON_MECHANICAL):
@@ -931,13 +947,24 @@ def counter_hypothesis_vetoes(item) -> bool:
     counter = _get_counter(item)
     hyp = _get_hypothesis(item)
 
-    if not counter or len(counter) < 40:
-        return False
-    if len(counter) < len(hyp) * 0.6:
+    if not counter:
         return False
 
     hyp_lower = hyp.lower()
     if any(kw in hyp_lower for kw in COUNTER_VETO_EXEMPT_KW):
+        return False
+
+    direction = _get_counter_direction(item)
+    if direction == "supports_vuln":
+        # The counter argues FOR the vulnerability — it corroborates
+        # rather than refutes; there is nothing to veto with.
+        return False
+    if direction == "refutes_vuln":
+        return True
+
+    if len(counter) < 40:
+        return False
+    if len(counter) < len(hyp) * 0.6:
         return False
 
     lower = counter.lower()

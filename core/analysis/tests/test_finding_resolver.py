@@ -25,7 +25,7 @@ from core.analysis.sanitizer_cut import (
     VERDICT_SUPPRESS,
     evaluate_finding,
 )
-
+from core.testing.treesitter import requires_ts
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -514,6 +514,7 @@ def _java_native(path, source_line, sink_line):
             "language": "java", "rule_id": "test", "tool": "test"}
 
 
+@requires_ts("java")
 class TestJavaSinkForwardingAndReceiverHop:
     def test_assignment_sink_forwards_to_consuming_call(self, tmp_path):
         f = _write(tmp_path, "T.java", _JAVA_PS_SAFE)
@@ -589,6 +590,7 @@ _JAVA_B41 = (
 )
 
 
+@requires_ts("java")
 class TestJavaB41SinkShapes:
     def test_deep_multi_name_concat_binds_value_name(self, tmp_path):
         # println(pre + x): no bare-name argument, two deep names —

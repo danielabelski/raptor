@@ -2020,6 +2020,26 @@ def record_sanitizer_cut_suppression(
 
     from core.analysis.reach_chokepoint import record_suppression
 
+    # The record MUST carry the sink line (b45, post-b44 stop-ship):
+    # a record with line=null blinded the warm damage matcher — six
+    # real Juliet findings were enforced away while damage read 0.
+    # The single writer hardens every caller: derive line from the
+    # finding's sink_line when the caller didn't set line, and warn
+    # loudly when neither exists (the matcher treats such records as
+    # damage against labeled files — a record that cannot prove where
+    # it is cannot prove it is harmless).
+    if finding.get("line") is None:
+        sink_line = finding.get("sink_line")
+        if sink_line is not None:
+            finding = dict(finding)
+            finding["line"] = int(sink_line)
+        else:
+            logger.warning(
+                "sanitizer-cut record without a sink line (%s) — it "
+                "will read as recall damage against any labeled file",
+                finding.get("file_path") or finding.get("file") or "?",
+            )
+
     catalog_matches = sorted(
         result.all_matched_bindings, key=lambda b: (b.lineno, b.callable),
     )

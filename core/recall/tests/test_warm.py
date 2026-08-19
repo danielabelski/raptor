@@ -170,3 +170,44 @@ class TestMissingLineConservatism:
             matched_expected=[entry],
         )
         assert warm["true_finding_damage_count"] == 1
+
+
+class TestB44DamageBlindness:
+    """The exact b44 stop-ship miss as fixtures (b45, composed with
+    the landed b42 missing-line conservatism): enforced drops on real
+    findings must READ as damage — with the true sink line, and
+    (refusal direction) without any line at all."""
+
+    def test_record_on_real_sink_line_is_damage(self):
+        matched = [{"id": "CWE36_Environment_01", "cwe": "CWE-36",
+                    "file": "src/CWE36_Environment_01.java",
+                    "line_start": 39, "line_end": 39}]
+        rec = _record(file_path="/w/src/CWE36_Environment_01.java",
+                      line=39, cwe="CWE-22", rule_id="")
+        warm = apply_would_suppress(
+            _report([]), [rec], matched_expected=matched)
+        assert warm["true_finding_damage_count"] == 1
+        assert warm["true_finding_would_suppress"][0]["null_line"] is False
+
+    def test_null_line_record_is_damage_with_provenance(self):
+        # b44's failure mode; b42's missing_line_matches counts it and
+        # b45's marker records HOW it matched for per-finding review.
+        matched = [{"id": "CWE36_Environment_01", "cwe": "CWE-36",
+                    "file": "src/CWE36_Environment_01.java",
+                    "line_start": 39, "line_end": 39}]
+        rec = _record(file_path="/w/src/CWE36_Environment_01.java",
+                      line=None, cwe="CWE-22", rule_id="")
+        warm = apply_would_suppress(
+            _report([]), [rec], matched_expected=matched)
+        assert warm["true_finding_damage_count"] == 1
+        assert warm["true_finding_would_suppress"][0]["null_line"] is True
+
+    def test_lined_record_off_target_is_not_damage(self):
+        matched = [{"id": "T", "cwe": "CWE-36",
+                    "file": "src/CWE36_Environment_01.java",
+                    "line_start": 39, "line_end": 39}]
+        rec = _record(file_path="/w/src/CWE36_Environment_01.java",
+                      line=90, cwe="CWE-22", rule_id="")
+        warm = apply_would_suppress(
+            _report([]), [rec], matched_expected=matched)
+        assert warm["true_finding_damage_count"] == 0

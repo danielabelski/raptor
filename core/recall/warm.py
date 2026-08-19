@@ -179,6 +179,10 @@ def apply_would_suppress(
                 "id": entry.get("id"),
                 "cwe": entry.get("cwe"),
                 "verdict": hit.get("verdict"),
+                # Review provenance (b45): True when the match came
+                # from the refusal-direction missing-line rule rather
+                # than a placed record.
+                "null_line": not isinstance(hit.get("line"), int),
             })
 
     raw_fp = len(report.get("clean_region_fps", []))

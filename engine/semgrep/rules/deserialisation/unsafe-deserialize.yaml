@@ -204,9 +204,18 @@ rules:
           - pattern: $CONN.Read(...)
           - pattern: os.Getenv(...)
     pattern-sinks:
-      - pattern-either:
-          - pattern: gob.NewDecoder($R).Decode(...)
+      # Anchored to gob decoders only: a bare $DEC.Decode(...) sink
+      # flagged every json.NewDecoder(r.Body).Decode(&v) handler.
+      - pattern: gob.NewDecoder($R).Decode(...)
+      - patterns:
           - pattern: $DEC.Decode(...)
+          - pattern-either:
+              - pattern-inside: |
+                  $DEC := gob.NewDecoder(...)
+                  ...
+              - pattern-inside: |
+                  $DEC = gob.NewDecoder(...)
+                  ...
     metadata:
       cwe: ["CWE-502"]
       owasp_top_10: ["A8:2021-Software and Data Integrity Failures"]

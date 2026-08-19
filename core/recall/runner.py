@@ -9,10 +9,12 @@ would get is what gets scored.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -171,21 +173,133 @@ def run_pipeline(manifest: RecallManifest, target: Path, repo_root: Path,
     return out_dir
 
 
+#: Mirror of core.sarif.parser.load_sarif's size guard. Per-tool files
+#: above this were dropped from combined.sarif by the merge (with a
+#: pipeline ERROR); a ground-truth measurement must not silently
+#: inherit that loss, so they are re-read here via chunking.
+_SARIF_CHUNK_THRESHOLD = 100 * 1024 * 1024
+#: Absolute ceiling for the chunker itself. A measurement artifact
+#: above this is refused loudly rather than parsed — the recall run
+#: fails visibly instead of consuming unbounded memory.
+_SARIF_CHUNK_CAP = 512 * 1024 * 1024
+#: Target chunk size, safely under the parser's guard.
+_SARIF_CHUNK_TARGET = 80 * 1024 * 1024
+
+
+def _chunk_oversized_sarif(path: Path, tmpdir: Path) -> list[Path]:
+    """Split an over-guard SARIF into valid parseable chunk files.
+
+    Each chunk copies the run header (tool/driver/rules, URI bases)
+    and carries an even slice of ``results``, so the unmodified
+    parser — with its size guard intact — reads every finding. The
+    input is this harness's own pipeline artifact, not repo content;
+    files above the hard cap are refused with an error.
+    """
+    size = path.stat().st_size
+    if size > _SARIF_CHUNK_CAP:
+        logger.error(
+            "SARIF %s is %d MiB — above the %d MiB measurement cap; "
+            "its findings are NOT collected (recall will undercount)",
+            path, size // (1024 * 1024),
+            _SARIF_CHUNK_CAP // (1024 * 1024))
+        return []
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    runs = doc.get("runs")
+    if not isinstance(runs, list):
+        return []
+    chunks: list[Path] = []
+    for ri, run in enumerate(runs):
+        results = run.get("results")
+        if not isinstance(results, list) or not results:
+            continue
+        header = {k: v for k, v in run.items() if k != "results"}
+        # The header rides in EVERY chunk and can itself be huge —
+        # CodeQL's rules metadata plus the per-file artifacts index
+        # reached ~53 MiB live. Budget for it explicitly, and shed the
+        # artifacts index when it starves the budget: results carry
+        # inline artifactLocation.uri values, which is what the parser
+        # reads, so the run-level index is droppable for chunking.
+        def _base_bytes() -> int:
+            probe = dict(doc)
+            probe["runs"] = [dict(header, results=[])]
+            return len(json.dumps(probe))
+
+        slack = max(1024, _SARIF_CHUNK_TARGET // 16)
+        budget = _SARIF_CHUNK_TARGET - _base_bytes() - slack
+        if budget <= 0 and "artifacts" in header:
+            logger.warning(
+                "SARIF %s: run %d header alone exceeds the chunk "
+                "target; dropping the run-level artifacts index "
+                "(results carry inline URIs)", path.name, ri)
+            header.pop("artifacts")
+            budget = _SARIF_CHUNK_TARGET - _base_bytes() - slack
+        if budget <= 0:
+            logger.error(
+                "SARIF %s: run %d header cannot fit under the parser "
+                "guard even without artifacts; findings from this run "
+                "are NOT collected", path, ri)
+            continue
+        # Slice by SERIALIZED size, not by count: result sizes vary by
+        # orders of magnitude (path-problem results carry codeFlows),
+        # so an even count split can still produce an over-guard chunk
+        # — observed live: 1 of 3 count-sliced chunks at 153 MiB.
+        batch: list[Any] = []
+        batch_bytes = 0
+        ci = 0
+
+        def _flush() -> None:
+            nonlocal batch, batch_bytes, ci
+            if not batch:
+                return
+            chunk_doc = dict(doc)
+            chunk_doc["runs"] = [dict(header, results=batch)]
+            out = tmpdir / f"{path.stem}.run{ri}.{ci:03d}.sarif"
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(chunk_doc, f)
+            chunks.append(out)
+            batch, batch_bytes, ci = [], 0, ci + 1
+
+        for res in results:
+            res_bytes = len(json.dumps(res))
+            if batch and batch_bytes + res_bytes > budget:
+                _flush()
+            batch.append(res)
+            batch_bytes += res_bytes
+        _flush()
+    logger.warning(
+        "SARIF %s (%d MiB) exceeded the parser guard; re-read as %d "
+        "chunk(s) so the measurement does not inherit the merge's drop",
+        path.name, size // (1024 * 1024), len(chunks))
+    return chunks
+
+
 def collect_findings(out_dir: Path,
                      source_root: Path | None = None) -> list[dict[str, Any]]:
     """Parse every produced finding from a pipeline output dir.
 
     Prefers ``combined.sarif`` (already tool-merged); otherwise parses
-    every per-tool ``*.sarif``. Deduplicates on
+    every per-tool ``*.sarif``. Per-tool files above the parser's size
+    guard were dropped from the merged view (pipeline ERROR) — those
+    are additionally re-read via chunking so the measurement never
+    silently undercounts a tool. Deduplicates on
     (tool, rule, file, startLine) so a finding present in both a
     per-tool file and a merged view counts once.
     """
     combined = out_dir / "combined.sarif"
-    sarifs = ([combined] if combined.is_file()
-              else sorted(out_dir.glob("*.sarif")))
+    per_tool = sorted(p for p in out_dir.glob("*.sarif") if p != combined)
+    sarifs = [combined] if combined.is_file() else list(per_tool)
+    oversized = [p for p in per_tool
+                 if p.stat().st_size > _SARIF_CHUNK_THRESHOLD]
     findings: list[dict[str, Any]] = []
-    for path in sarifs:
-        findings.extend(parse_sarif_findings(path, source_root=source_root))
+    with tempfile.TemporaryDirectory(prefix="recall-sarif-chunks-") as td:
+        for path in oversized:
+            if path in sarifs:
+                sarifs.remove(path)
+            sarifs.extend(_chunk_oversized_sarif(path, Path(td)))
+        for path in sarifs:
+            findings.extend(
+                parse_sarif_findings(path, source_root=source_root))
 
     seen: set[tuple] = set()
     deduped: list[dict[str, Any]] = []

@@ -97,6 +97,14 @@ _DANGER_CHARS = {
 }
 
 
+def danger_chars_for(sink_class: str):
+    """Public read of the per-class danger model (None for unknown
+    classes). Finite-set consumers (the collection-membership guard)
+    decide per element with the same chars the regex-intersection
+    proof uses — the finite-language specialisation of one model."""
+    return _DANGER_CHARS.get(sink_class)
+
+
 # --------------------------------------------------------------------------
 # ValidatorSpec: what we extract from the fix diff.
 # --------------------------------------------------------------------------

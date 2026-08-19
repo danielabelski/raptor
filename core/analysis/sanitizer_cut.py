@@ -763,6 +763,42 @@ def evaluate_finding(
                 sink_arg=sink_arg,
             )
 
+    # Collection-membership guard pre-check (Java only, needs the file
+    # text): a dominating contains-guard over a provably-constant
+    # literal set bounds the sink value to a finite language whose
+    # intersection with the class danger model is decided per element
+    # (the finite specialisation of the smt_barrier charset proof).
+    # Runs BEFORE the catalog-empty return — allowlist guards are the
+    # canonical safe idiom for classes with no call-shaped sanitizers
+    # (sqli / cmdi / pathtrav in Java). Cross-file collections resolve
+    # under repo_root (b22's kwarg — one root serves the config
+    # resolver and this guard).
+    if (
+        language == "java"
+        and java_source_text
+        and sink_arg
+    ):
+        try:
+            from core.analysis.collection_guard_java import (
+                collection_guard_reason,
+            )
+            sink_line = getattr(sink, "lineno", None)
+            guard_reason = collection_guard_reason(
+                java_source_text, int(sink_line), sink_arg, cwe,
+                source_root=repo_root,
+            ) if sink_line else None
+        except Exception:  # noqa: BLE001 — arbitrary scanned source
+            guard_reason = None
+        if guard_reason is not None:
+            return SanitizerCutResult(
+                suppress=True,
+                reason=guard_reason,
+                cut_set=frozenset(),
+                candidate_callables=frozenset(),
+                verdict=VERDICT_SUPPRESS,
+                sink_arg=sink_arg,
+            )
+
     candidate_callables = sanitizer_callables_for_cwe(cwe, language)
     if not candidate_callables:
         return SanitizerCutResult(

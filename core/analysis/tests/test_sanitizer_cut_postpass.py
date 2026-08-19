@@ -180,15 +180,18 @@ class TestSourceLocator:
 
 
 class TestGating:
-    def test_catalog_empty_class_skipped(self, tmp_path):
-        # CWE-89 java: PreparedStatement is structural, the catalog is
-        # deliberately empty — the finding is not examined at all.
+    def test_catalog_empty_java_class_examined(self, tmp_path):
+        # b21 reverses the old skip: CWE-89 java has an empty catalog
+        # (PreparedStatement is structural), but the constant-definers
+        # and collection-guard pre-checks suppress WITHOUT call-shaped
+        # sanitizers — java findings are examined regardless of
+        # catalog coverage. Non-java catalog-empty classes still skip
+        # (test_unsupported_language_skipped pins the language gate).
         repo, _, sarif_path, out = _write(
             tmp_path, _SAFE_JAVA, {"cwe": "cwe-89", "rule_id": "sqli"},
         )
         stats = run_postpass([sarif_path], repo, out)
-        assert stats["examined"] == 0
-        assert not (out / "suppressions.jsonl").exists()
+        assert stats["examined"] == 1
 
     def test_unsupported_language_skipped(self, tmp_path):
         repo = tmp_path / "repo"

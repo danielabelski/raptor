@@ -292,8 +292,15 @@ def run_postpass(
             continue
 
         try:
-            if not sanitizer_callables_for_cwe(cwe, language):
-                continue  # no catalog coverage for this class/language
+            if not sanitizer_callables_for_cwe(cwe, language) \
+                    and language != "java":
+                # No catalog coverage for this class/language. Java
+                # proceeds regardless: the constant-definers and
+                # collection-guard pre-checks suppress without any
+                # call-shaped sanitizer, and sqli/cmdi/pathtrav — the
+                # classes with EMPTY Java catalogs — are exactly where
+                # the allowlist-guard idiom lives.
+                continue
         except Exception:  # noqa: BLE001
             continue
 
@@ -378,8 +385,11 @@ def run_postpass(
                 break
             for note in getattr(resolved.cfg, "build_notes", ()) or ():
                 stats.mechanism(note)
-            if "constant-table load" in (getattr(result, "reason", "") or ""):
+            reason_text = getattr(result, "reason", "") or ""
+            if "constant-table load" in reason_text:
                 stats.mechanism("constant:table-load")
+            if reason_text.startswith("collection-membership guard"):
+                stats.mechanism("collection:membership-guard")
             verdicts.append(result.verdict)
 
         if verdicts == ["resolver-refused"]:

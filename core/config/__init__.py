@@ -91,6 +91,20 @@ class RaptorConfig:
     # Tool dependencies for startup checks
     # severity: "required" = feature unavailable, "degrades" = feature limited
     # group: tools in same group need at least one present
+    #
+    # Version-display convention (startup banner + doctor): a tool's
+    # version is shown IF AND ONLY IF RAPTOR gates behaviour on that
+    # version; presence-only otherwise. The version-gated set today:
+    #   * python  — 3.10+ floor (PEP 604 unions at import time)
+    #   * z3      — SMT feature coverage varies by release
+    #   * semgrep — rule semantics vary across releases; CI pins one
+    #   * joern   — MIN_JOERN_VERSION floor (packages/joern/prereqs.py)
+    #   * gcc     — -fanalyzer corroboration needs gcc >= 10
+    # Do NOT add versions for anything else — the probes cost startup
+    # time and the number carries no decision weight without a gate.
+    # Probe implementations live in core/startup/init.py
+    # (check_tools / _check_analyzer_capabilities); keep that module
+    # and this list in sync when a new version gate lands.
     TOOL_DEPS: ClassVar[dict] = {
         "afl++":        {"binary": "afl-fuzz",  "severity": "required", "affects": "/fuzz"},
         "codeql":       {"binary": "codeql",    "group": "scanner",     "affects": "/codeql, /agentic"},

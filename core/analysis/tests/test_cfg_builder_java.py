@@ -32,10 +32,6 @@ def _cfg(body: str, *, imports: str = "import org.owasp.encoder.Encode;\n",
     return build_java_intraproc_cfg(src, name), src
 
 
-def _node_lines(cfg):
-    return {n.lineno: n for n in cfg.nodes() if n.kind == "stmt"}
-
-
 class TestImportMap:
     def test_type_and_static_imports(self):
         import tree_sitter_java as tsj

@@ -114,19 +114,15 @@ class JavaConstIndex:
         return self._defs.get((lineno, name))
 
 
-def fold_expr(node, resolve_name) -> Any:
+REFUSE = _REFUSE
+
+
+def _fold(node, resolve_name, depth: int) -> Any:
     """Fold a tree-sitter Java expression node to a constant.
 
     ``resolve_name(name, depth)`` returns the name's constant value or
     ``_REFUSE``. Returns the folded value or ``_REFUSE``.
     """
-    return _fold(node, resolve_name, 0)
-
-
-REFUSE = _REFUSE
-
-
-def _fold(node, resolve_name, depth: int) -> Any:
     if node is None or depth > _MAX_DEPTH:
         return _REFUSE
     t = node.type

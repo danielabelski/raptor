@@ -571,3 +571,81 @@ class TestJavaSinkForwardingAndReceiverHop:
         f = _write(tmp_path, "T.java", src)
         r = resolve_finding(_java_native(f, 3, 12))
         assert not isinstance(r, ResolvedFinding)
+
+
+_JAVA_B41 = (
+    "import javax.servlet.http.HttpServletRequest;\n"           # 1
+    "public class T {\n"                                        # 2
+    "    public void handle(HttpServletRequest request,"
+    " java.io.PrintWriter out) {\n"                             # 3
+    "        String x = request.getParameter(\"q\");\n"         # 4
+    "        String pre = \"Result: \";\n"                      # 5
+    "        out.println(pre + x);\n"                           # 6
+    "        out.format(java.util.Locale.US, \"%s\", x);\n"     # 7
+    "        out.println(\n"                                    # 8
+    "                x); // continuation\n"                     # 9
+    "    }\n"                                                   # 10
+    "}\n"                                                       # 11
+)
+
+
+class TestJavaB41SinkShapes:
+    def test_deep_multi_name_concat_binds_value_name(self, tmp_path):
+        # println(pre + x): no bare-name argument, two deep names —
+        # the historical refusal; b41 binds one deterministically and
+        # the gate's sibling guards adjudicate the other.
+        f = _write(tmp_path, "T.java", _JAVA_B41)
+        r = resolve_finding(_java_native(f, 4, 6))
+        assert isinstance(r, ResolvedFinding)
+        assert r.sink_arg in ("pre", "x")
+
+    def test_package_chain_pick_prefers_value_carrying_name(self, tmp_path):
+        # format(java.util.Locale.US, "%s", x): "java" rides the
+        # argument surfaces as a package-root leftover; the pick must
+        # land on the value-carrying name.
+        f = _write(tmp_path, "T.java", _JAVA_B41)
+        r = resolve_finding(_java_native(f, 4, 7))
+        assert isinstance(r, ResolvedFinding)
+        assert r.sink_arg == "x"
+
+    def test_multiline_continuation_line_retargets_to_statement(
+            self, tmp_path):
+        # The finding flags the continuation line of a multi-line
+        # statement; resolution retargets to the statement start,
+        # whose node carries the call.
+        f = _write(tmp_path, "T.java", _JAVA_B41)
+        r = resolve_finding(_java_native(f, 4, 9))
+        assert isinstance(r, ResolvedFinding)
+        assert r.sink_node.lineno == 8
+        assert r.sink_arg == "x"
+
+    def test_statement_start_line_helper(self):
+        from core.analysis.finding_resolver import (
+            _java_statement_start_line,
+        )
+        assert _java_statement_start_line(_JAVA_B41, 9) == 8
+        # A line that is its own statement start returns itself.
+        assert _java_statement_start_line(_JAVA_B41, 6) == 6
+        # A line outside any leaf statement returns None.
+        assert _java_statement_start_line(_JAVA_B41, 2) is None
+
+    def test_pick_value_name_prefers_defined_over_namespace(self):
+        from core.analysis.finding_resolver import _pick_value_name
+
+        class _N:
+            def __init__(self, defs):
+                self.defs = frozenset(defs)
+
+        class _Cfg:
+            params = ("request", "out")
+
+            def nodes(self):
+                return [_N({"x"}), _N({"pre"})]
+
+        cfg = _Cfg()
+        # "java" sorts first lexicographically but carries no value.
+        assert _pick_value_name({"java", "x"}, cfg) == "x"
+        # Within the carrying class, lexicographic keeps determinism.
+        assert _pick_value_name({"x", "pre"}, cfg) == "pre"
+        # All-namespace surfaces fall back to plain lexicographic.
+        assert _pick_value_name({"java", "javax"}, cfg) == "java"

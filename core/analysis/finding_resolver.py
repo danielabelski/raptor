@@ -797,6 +797,77 @@ def _node_at_lineno(cfg: PythonCFG, lineno: int) -> Optional[PyCFGNode]:
 # ---------------------------------------------------------------------------
 
 
+_JAVA_STMT_TYPES = frozenset({
+    "local_variable_declaration",
+    "expression_statement",
+    "return_statement",
+    "throw_statement",
+})
+
+
+def _java_statement_start_line(
+    source_text: str, lineno: int,
+) -> Optional[int]:
+    """Start line of the smallest Java STATEMENT spanning ``lineno``.
+
+    Findings frequently flag a continuation line of a multi-line
+    statement (``new java.io.FileWriter(\\n    fileTarget, true);``
+    flagged on the constructor line) — the CFG's statement node lives
+    at the statement's start line, so an exact-line lookup lands on
+    nothing. Returns ``None`` when the grammar is missing or no
+    statement spans the line; returns the start line otherwise (which
+    may equal ``lineno`` — the caller treats that as "no retarget").
+    Only leaf statement kinds are considered: retargeting to a
+    compound statement (if/try/block) would bind a different
+    computation than the finding flagged.
+    """
+    from core.analysis.cfg_builder_java import _get_parser
+
+    parser = _get_parser()
+    if parser is None:
+        return None
+    tree = parser.parse(source_text.encode("utf-8", errors="replace"))
+    best: Optional[Tuple[int, int]] = None      # (span, start_line)
+    stack = [tree.root_node]
+    while stack:
+        cur = stack.pop()
+        start = cur.start_point[0] + 1
+        end = cur.end_point[0] + 1
+        if start > lineno or end < lineno:
+            continue
+        if cur.type in _JAVA_STMT_TYPES:
+            span = end - start
+            if best is None or span < best[0]:
+                best = (span, start)
+        for c in cur.children:
+            if c.is_named:
+                stack.append(c)
+    return best[1] if best is not None else None
+
+
+def _pick_value_name(names, cfg) -> str:
+    """Deterministic sink-arg pick from a multi-name argument surface.
+
+    Prefers names that carry values in this CFG — parameters or names
+    some node defines — over namespace-shaped leftovers the argument
+    walkers cannot distinguish syntactically (``java`` from a
+    ``java.util.Locale.US`` chain, unimported ``String`` receivers):
+    binding those asks the gate a question about a name with no
+    definitions, wasting the adjudication. Lexicographic within each
+    preference class keeps the pick deterministic. Soundness is
+    unchanged by the pick: every non-picked argument name is
+    adjudicated by the gate's sibling guards regardless
+    (``_sibling_args_tainted`` / ``_siblings_fold_or_refuse``), so the
+    pick only selects which name gets the primary value question.
+    """
+    ranked = sorted(names)
+    defined = set(getattr(cfg, "params", ()) or ())
+    for n in cfg.nodes():
+        defined |= set(getattr(n, "defs", ()) or ())
+    carrying = [n for n in ranked if n in defined]
+    return (carrying or ranked)[0]
+
+
 def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
     """Java branch of the resolver.
 
@@ -855,10 +926,32 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
                 return n
         return None
 
+    def node_at_or_statement_start(lineno: int) -> Optional[JavaCFGNode]:
+        """Exact-line node, retargeted to the enclosing statement's
+        start line when the flagged line is a continuation line of a
+        multi-line statement (exact node missing, or present but
+        empty — the builder emits content-free nodes for some
+        continuation lines). The retargeted node carries the whole
+        statement's calls/defs, which is the computation the finding
+        flagged."""
+        node = node_at(lineno)
+        if node is not None and (
+                node.call_sites or node.defs or node.uses):
+            return node
+        start = _java_statement_start_line(source_text, lineno)
+        if start is None or start == lineno:
+            return node
+        retargeted = node_at(start)
+        if retargeted is not None and (
+                retargeted.call_sites or retargeted.defs
+                or retargeted.uses):
+            return retargeted
+        return node
+
     if parsed.source_lineno == fn_start:
         source_node, source_symbols = cfg.entry_node, frozenset(cfg.params)
     else:
-        source_node = node_at(parsed.source_lineno)
+        source_node = node_at_or_statement_start(parsed.source_lineno)
         if source_node is None:
             return ResolutionFailure(
                 reason=(
@@ -869,7 +962,7 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
         source_symbols = source_node.defs \
             if source_node.defs else source_node.uses
 
-    sink_node = node_at(parsed.sink_lineno)
+    sink_node = node_at_or_statement_start(parsed.sink_lineno)
     if sink_node is None or not sink_node.call_sites:
         # Assignment-located finding (``sql = "..." + bar + "...";`` —
         # the concatenated-sql / assignment-shaped rule class): no call
@@ -913,16 +1006,20 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
     if not sink_arg:
         outermost = sink_node.call_sites[-1]
         if outermost.arg_names:
-            sink_arg = sorted(outermost.arg_names)[0]
-        elif len(outermost.arg_deep_names) == 1:
+            sink_arg = _pick_value_name(outermost.arg_names, cfg)
+        elif outermost.arg_deep_names:
             # No bare-name argument, but the argument subtrees
-            # reference exactly ONE variable
-            # (``print(bar.toCharArray())``, ``println("x: " + bar)``)
-            # — the sink consumes that variable's value, so binding
-            # sink_arg to it asks the gate exactly the right
-            # exclusivity question. Two or more referenced names stay
-            # a refusal: picking one would under-constrain the others.
-            sink_arg = next(iter(outermost.arg_deep_names))
+            # reference variables (``print(bar.toCharArray())``,
+            # ``exec(cmd + bar)``) — the sink consumes their values,
+            # so binding sink_arg to one asks the gate the primary
+            # value question, and EVERY other referenced name is
+            # adjudicated by the gate's sibling-argument guards
+            # (fold-or-refuse on the constant/whole-array paths,
+            # taint-front plus per-path value conditions elsewhere) —
+            # the same division of labor multi-bare-name calls have
+            # always had. The historical two-or-more refusal predates
+            # those guards.
+            sink_arg = _pick_value_name(outermost.arg_deep_names, cfg)
     if not sink_arg:
         # Zero-argument sink call on a receiver (``statement.execute()``
         # — the prepared-statement execute shape): the sink data is the

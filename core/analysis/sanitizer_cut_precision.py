@@ -1230,7 +1230,131 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_b34_positional_fixtures()
     fixtures += _java_b37_fixtures()
     fixtures += _java_b36_fixtures()
+    fixtures += _java_b41_fixtures()
     return fixtures
+
+
+def _java_b41_fixtures() -> List[CutFixture]:
+    """The b41 battery: multi-deep-name sink binding, value-carrying
+    pick preference, and multi-line statement retargeting.
+
+    The load-bearing must-not is the b34 incident shape restated on
+    the newly opened deep-name surface: ``println(pre + bar)`` with
+    the picked name catalog-sanitized while the sibling carries taint
+    through a same-file helper the local taint front cannot see. The
+    resolution extension may only ever hand the gate MORE visible
+    shapes — it must never let this one suppress."""
+    imp = ("import org.owasp.encoder.Encode;\n"
+           "import javax.servlet.http.HttpServletRequest;\n")
+
+    def cls_t(body: str) -> str:
+        return imp + "public class T {\n" + body + "}\n"
+
+    handle = ("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out) {\n"
+              "        String x = request.getParameter(\"q\");\n")
+    j: List[CutFixture] = []
+
+    # ---- must-not-suppress ----
+    # Deep-multi surface, helper-fed sibling taint (b34 incident shape).
+    j.append(_marked(
+        "java_b41_concat_sibling_helper_taint", "xss", "CWE-79",
+        "deep_multi_sibling_helper_taint", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = Encode.forHtml(x);\n"
+              + "        String pre = fetch(request);\n"
+              + "        out.println(pre + bar);\n    }\n"
+              + "    private static String fetch("
+              "HttpServletRequest r) {\n"
+              + "        return r.getParameter(\"h\");\n    }\n"),
+        "request.getParameter(\"q\")", "out.println(pre + bar)"))
+    # Deep-multi surface, sibling tainted in plain sight.
+    j.append(_marked(
+        "java_b41_concat_sibling_direct_taint", "xss", "CWE-79",
+        "deep_multi_sibling_direct_taint", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = Encode.forHtml(x);\n"
+              + "        String pre = x;\n"
+              + "        out.println(pre + bar);\n    }\n"),
+        "request.getParameter(\"q\")", "out.println(pre + bar)"))
+    # Multi-line retargeting must not manufacture suppression: the
+    # retargeted statement consumes the raw tainted value.
+    j.append(_marked(
+        "java_b41_multiline_tainted", "xss", "CWE-79",
+        "multiline_sink_retarget_tainted", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = x;\n"
+              + "        out.println(\n"
+              + "                bar); // sink continuation line\n"
+              + "    }\n"),
+        "request.getParameter(\"q\")", "bar); // sink continuation"))
+    # Positional simulation: remove inside a loop body breaks the
+    # single-block linearity token — the read must stay governed by
+    # every write (the tainted one included).
+    j.append(_marked(
+        "java_b41_pos_remove_in_loop", "xss", "CWE-79",
+        "pos_remove_in_loop", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        java.util.ArrayList<String> l = "
+              "new java.util.ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.add(\"moresafe\");\n"
+              + "        for (int i = 0; i < 1; i++) {\n"
+              + "            l.remove(0);\n"
+              + "        }\n"
+              + "        String bar = l.get(1);\n"
+              + "        out.println(bar);\n    }\n"),
+        "request.getParameter(\"q\")", "out.println(bar)"))
+    # Positional simulation: remove(variable) is not simulatable; the
+    # leftover scan must untrack the list entirely.
+    j.append(_marked(
+        "java_b41_pos_remove_variable", "xss", "CWE-79",
+        "pos_remove_variable_index", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        java.util.ArrayList<String> l = "
+              "new java.util.ArrayList<String>();\n"
+              + "        int k = 0;\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.add(\"moresafe\");\n"
+              + "        l.remove(k);\n"
+              + "        String bar = l.get(1);\n"
+              + "        out.println(bar);\n    }\n"),
+        "request.getParameter(\"q\")", "out.println(bar)"))
+
+    # ---- may-suppress: the shapes the extensions unlock ----
+    # Deep-multi surface: constant prefix + catalog-sanitized value
+    # (the Benchmark's decorated-println shape).
+    j.append(_marked(
+        "java_b41_concat_const_prefix_sanitized", "xss", "CWE-79",
+        "deep_multi_const_prefix", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = Encode.forHtml(x);\n"
+              + "        String pre = \"Result: \";\n"
+              + "        out.println(pre + bar);\n    }\n"),
+        "request.getParameter(\"q\")", "out.println(pre + bar)"))
+    # Package-chain argument (Locale-first format): the pick must land
+    # on a value-carrying name, not the package root.
+    j.append(_marked(
+        "java_b41_locale_first_format", "xss", "CWE-79",
+        "package_chain_pick", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = Encode.forHtml(x);\n"
+              + "        out.format(java.util.Locale.US, "
+              "\"%s\", bar);\n    }\n"),
+        "request.getParameter(\"q\")", "out.format(java.util.Locale.US"))
+    # Multi-line statement: the finding flags the continuation line.
+    j.append(_marked(
+        "java_b41_multiline_sanitized", "xss", "CWE-79",
+        "multiline_sink_retarget", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = Encode.forHtml(x);\n"
+              + "        out.println(\n"
+              + "                bar); // sink continuation line\n"
+              + "    }\n"),
+        "request.getParameter(\"q\")", "bar); // sink continuation"))
+    return j
 
 
 def _java_b27_fixtures() -> List[CutFixture]:

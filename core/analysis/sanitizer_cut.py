@@ -875,6 +875,56 @@ def _element_exclusive_reason(
     )
 
 
+def _vertex_cut_siblings_clean(
+    graph, rd, sink, sink_arg: str,
+    matched_bindings, candidate_callables,
+    *,
+    java_source_text=None,
+    java_file_path=None,
+    repo_root=None,
+) -> bool:
+    """Sibling-argument guard for the value-bound vertex-cut path.
+
+    Java findings only — the guard was evidence-forced when b41's
+    resolution widening exposed the path as sibling-blind (a
+    catalog-sanitized pick suppressed while taint rode the sibling of
+    the same call, front-visibly AND helper-fed). Delegates to
+    :func:`_siblings_fold_or_refuse` with a resolver kit built from
+    the finding's own file; the table/config/conduit hooks are
+    deliberately ``None`` — fewer folds only ever REFUSE more, never
+    suppress more. Non-Java callers return ``True`` unchanged: their
+    resolution surface did not widen and no failing fixture exists
+    (the latent single-language question is noted, not guessed at).
+    """
+    if not java_source_text:
+        return True
+    try:
+        from core.analysis.const_fold_java import JavaConstIndex
+        linenos = [
+            n.lineno for n in graph.nodes()
+            if getattr(n, "lineno", 0) > 0
+        ]
+        if not linenos:
+            return False
+        # java_file_path/repo_root activate the cross-file resolver so
+        # JDK-chain and static-final sibling segments get the same
+        # taint-free coverage the constant pre-check grants (b36/b37);
+        # without them, package-chain siblings like ``java`` from a
+        # ``java.util.Locale.US`` argument would refuse forever.
+        index = JavaConstIndex(
+            java_source_text, (min(linenos), max(linenos)),
+            java_file_path=java_file_path, repo_root=repo_root,
+        )
+        return _siblings_fold_or_refuse(
+            graph, rd, sink, sink_arg,
+            index, None, None, None,
+            candidate_callables,
+            java_source_text=java_source_text,
+        )
+    except Exception:  # noqa: BLE001 — guard failure reads as refuse
+        return False
+
+
 def _siblings_fold_or_refuse(
     graph, rd, sink, sink_arg: str,
     index, table_resolver, config_resolver, invocation_hook,
@@ -1715,6 +1765,39 @@ def evaluate_finding(
                     "without alias analysis"
                 ),
                 cut_set=frozenset(),
+                candidate_callables=frozenset(candidate_callables),
+                verdict=VERDICT_CANDIDATE_ONLY,
+                value_bound_bindings=value_bound_bindings,
+                all_matched_bindings=matched_bindings,
+                sink_arg=sink_arg,
+            )
+        # Sibling-argument guard (b41 — a live false suppression
+        # exposed this path as sibling-blind the moment resolution
+        # widened to multi-name argument surfaces): proving sink_arg
+        # sanitized says nothing about taint riding another argument
+        # of the same call. Every other argument name must fold to a
+        # constant or be a catalog-sanitizer output — the same
+        # fold-or-refuse polarity the constant and whole-array paths
+        # adopted after b34's incident (the local taint front alone
+        # is blind to helper-fed siblings). Downgrade, never drop:
+        # the value-bound cut held, only the sibling proof is missing.
+        if not _vertex_cut_siblings_clean(
+                graph, rd, sink, sink_arg,
+                matched_bindings, candidate_callables,
+                java_source_text=java_source_text,
+                java_file_path=java_file_path,
+                repo_root=repo_root,
+        ):
+            return SanitizerCutResult(
+                suppress=False,
+                reason=(
+                    "candidate_only: value-bound vertex-cut held but "
+                    "a sibling argument of the sink call is neither "
+                    "constant-foldable nor a catalog-sanitizer "
+                    "output; taint could ride it past the proven "
+                    "argument"
+                ),
+                cut_set=frozenset(value_bound_nodes),
                 candidate_callables=frozenset(candidate_callables),
                 verdict=VERDICT_CANDIDATE_ONLY,
                 value_bound_bindings=value_bound_bindings,

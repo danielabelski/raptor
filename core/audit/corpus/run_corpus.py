@@ -2015,25 +2015,7 @@ def _run_ensemble_audit(
             logger.exception("Phase 2 classification failed")
             print("  Phase 2 classification failed (continuing)", flush=True)
 
-        # Phase 2 quality-finding suppression: demote non-security quality
-        # findings to clean — they are real defects but not exploitable.
-        # Exception: findings backed by mechanical evidence (SMT, sarif,
-        # prefilter) are not suppressed — the tool confirmed the defect.
-        suppressed = 0
-        for r in merged_results:
-            if (
-                r.get("phase2_classification") == "quality_finding"
-                and not r.get("phase2_is_security")
-                and r["actual"] in ("finding", "suspicious")
-                and r.get("phase2_primitive", "none") == "none"
-            ):
-                ev = r.get("evidence_tool", "")
-                if _is_verification_evidence(ev):
-                    continue
-                r["actual"] = "clean"
-                r["phase2_suppressed"] = True
-                r["match"] = _status_matches(r["expected"], r["actual"])
-                suppressed += 1
+        suppressed = _suppress_quality_findings(merged_results)
         if suppressed:
             print(f"  Phase 2 suppressed: {suppressed} quality finding(s) "
                   f"demoted to clean", flush=True)
@@ -2072,12 +2054,54 @@ def _run_ensemble_audit(
     return merged_results, run_dirs
 
 
+# Consecutive Phase-2 call failures after which the remaining
+# classifications are marked "error" without further LLM calls —
+# the route is dead (expired token / revoked creds / partition),
+# not the individual findings.
+_PHASE2_FAILURE_ABORT = 3
+
+
+def _suppress_quality_findings(merged_results: list[dict[str, Any]]) -> int:
+    """Phase 2 quality-finding suppression: demote non-security quality
+    findings to clean — they are real defects but not exploitable.
+
+    Exception: findings backed by mechanical evidence (SMT, sarif,
+    prefilter) are not suppressed — the tool confirmed the defect.
+    Errored classifications (``phase2_classification == "error"``) are
+    never suppression inputs: only a POSITIVE quality_finding ruling
+    from a live call may demote. Returns the number demoted.
+    """
+    suppressed = 0
+    for r in merged_results:
+        if (
+            r.get("phase2_classification") == "quality_finding"
+            and not r.get("phase2_error")
+            and not r.get("phase2_is_security")
+            and r["actual"] in ("finding", "suspicious")
+            and r.get("phase2_primitive", "none") == "none"
+        ):
+            ev = r.get("evidence_tool", "")
+            if _is_verification_evidence(ev):
+                continue
+            r["actual"] = "clean"
+            r["phase2_suppressed"] = True
+            r["match"] = _status_matches(r["expected"], r["actual"])
+            suppressed += 1
+    return suppressed
+
+
 def _run_phase2_classify(
     findings: list[dict[str, Any]],
     *,
     model: str = "",
 ) -> float:
-    """Run Phase 2 security classification on merged findings."""
+    """Run Phase 2 security classification on merged findings.
+
+    Fail-closed contract: a finding whose classification call fails
+    gets ``phase2_classification="error"`` (+ ``phase2_error=True``)
+    and is thereby ineligible for the quality-finding suppression —
+    an auth/transport failure must never become a demotion input.
+    """
     from core.audit.security_classifier import CLASSIFICATION_SCHEMA
     from core.llm.client import LLMClient
 
@@ -2091,17 +2115,38 @@ def _run_phase2_classify(
             pass
 
     total_cost = 0.0
+    consecutive_failures = 0
     for r in findings:
         fid = r["function_id"]
         hyp = r.get("hypothesis", "")
+        counter = r.get("counter_hypothesis", "")
+        evidence = r.get("evidence_tool", "")
         prompt = (
             f"Given this verified defect:\n"
             f"  Function: {fid}\n"
             f"  Bug: {hyp}\n"
-            f"  Status: {r['actual']}\n\n"
-            f"Is this defect security-impacting? Consider trust boundaries, "
-            f"attacker reachability, and CIA impact."
+            f"  Status: {r['actual']}\n"
         )
+        if counter:
+            prompt += f"  Strongest counter-argument: {counter}\n"
+        if evidence:
+            prompt += f"  Tool evidence: {evidence}\n"
+        prompt += (
+            "\nIs this defect security-impacting? Consider trust boundaries, "
+            "attacker reachability, and CIA impact."
+        )
+        if consecutive_failures >= _PHASE2_FAILURE_ABORT:
+            # Circuit breaker: a run of consecutive transport-level
+            # failures means the LLM route itself is dead (expired
+            # token, revoked credentials, network partition) — every
+            # further call would fail identically. Stop calling and
+            # mark the remainder as errored instead of hammering a
+            # dead route.
+            r["phase2_classification"] = "error"
+            r["phase2_is_security"] = False
+            r["phase2_primitive"] = "none"
+            r["phase2_error"] = True
+            continue
         try:
             response = client.generate_structured(
                 prompt,
@@ -2116,9 +2161,20 @@ def _run_phase2_classify(
             result = structured_result(response, default={})
             cost = response.cost if hasattr(response, "cost") else 0.0
             total_cost += cost
+            consecutive_failures = 0
         except Exception:
             logger.warning("Phase 2 failed for %s", fid, exc_info=True)
-            result = {"classification": "quality_finding", "is_security": False}
+            # FAIL CLOSED: an errored classification is an "error"
+            # cell, never a verdict input. Defaulting to
+            # quality_finding here fed the suppression loop and
+            # demoted true positives to clean whenever the LLM route
+            # died mid-run (expired auth ≠ "not a security bug").
+            consecutive_failures += 1
+            r["phase2_classification"] = "error"
+            r["phase2_is_security"] = False
+            r["phase2_primitive"] = "none"
+            r["phase2_error"] = True
+            continue
 
         r["phase2_classification"] = result.get("classification", "quality_finding")
         r["phase2_is_security"] = result.get("is_security", False)
@@ -2126,6 +2182,10 @@ def _run_phase2_classify(
         cls_tag = result.get("classification", "?")
         print(f"  {fid} -> {cls_tag}", flush=True)
 
+    errored = sum(1 for r in findings if r.get("phase2_error"))
+    if errored:
+        print(f"  Phase 2 errors: {errored} classification(s) failed — "
+              f"kept out of suppression", flush=True)
     return total_cost
 
 

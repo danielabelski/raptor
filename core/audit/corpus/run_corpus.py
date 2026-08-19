@@ -3161,4 +3161,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Hard exit on the CLI path: results and summary are already on
+    # disk/stdout by the time main() returns, but stray non-daemon
+    # worker threads (executor workers or library threads wedged in
+    # network polls after transport errors) can keep the interpreter
+    # alive indefinitely in threading._shutdown — observed repeatedly
+    # as a post-results hang that stalls serial refire chains. main()
+    # keeps normal return semantics for in-process callers (tests).
+    _rc = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_rc)

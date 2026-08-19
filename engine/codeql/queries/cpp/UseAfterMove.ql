@@ -15,6 +15,7 @@
  */
 
 import cpp
+import semmle.code.cpp.controlflow.Dominance
 
 /**
  * A call to `std::move(x)` where `x` is a local variable or parameter.
@@ -65,10 +66,14 @@ where
     reassign.getLocation().getStartLine() > moveCall.getLocation().getStartLine() and
     reassign.getLocation().getStartLine() < useAccess.getLocation().getStartLine()
   ) and
-  // Exclude move in a branch where the use is in a different branch
-  // (conservative: require same enclosing block or nested)
-  moveCall.getEnclosingStmt().getParentStmt*() =
-    useAccess.getEnclosingStmt().getParentStmt*()
+  // The move must execute before the use on every path reaching the
+  // use. This replaces a getParentStmt*() equality between the two
+  // statements' ancestor sets, which always shares the function body
+  // block and so held for ANY two statements in one function —
+  // including a move in one branch of an if/else and a use in the
+  // other. Dominance also rejects that branch case: neither branch
+  // dominates the other.
+  strictlyDominates(moveCall, useAccess)
 select useAccess,
   "Variable '" + v.getName() + "' is accessed after being moved at $@. " +
     "The object is in a valid-but-unspecified state (CWE-416).",

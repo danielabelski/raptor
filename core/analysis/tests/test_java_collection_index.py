@@ -227,12 +227,26 @@ class TestFoldRefusals:
         # untracked → not ours → None (fall through), never a value
         assert resolver(_FakeNode(), _refold_literals, 0) is None
 
-    def test_list_mixed_adds_refuse(self):
+    def test_list_mixed_adds_positional(self):
+        # Graduated by b34's positional simulation: get(0) provably
+        # reads the constant slot in straight-line code. The tainted
+        # slot (get(1)) is the standing refusal twin below.
         idx, src = _index(
             "        ArrayList<String> l = new ArrayList<>();\n"
             '        l.add("a");\n'
             "        l.add(x);\n"
             "        String bar = l.get(0); // READ\n"
+        )
+        assert idx.tracked("l")
+        val, _ = self._resolve_get(idx, src, "// READ")
+        assert val == "a"
+
+    def test_list_mixed_adds_tainted_slot_refuses(self):
+        idx, src = _index(
+            "        ArrayList<String> l = new ArrayList<>();\n"
+            '        l.add("a");\n'
+            "        l.add(x);\n"
+            "        String bar = l.get(1); // READ\n"
         )
         from core.analysis.const_fold_java import REFUSE
         assert idx.tracked("l")

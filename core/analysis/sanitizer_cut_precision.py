@@ -1117,6 +1117,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_b27_fixtures()
     fixtures += _java_b28_collection_fixtures()
     fixtures += _java_b33_sink_shape_fixtures()
+    fixtures += _java_b34_positional_fixtures()
     return fixtures
 
 
@@ -1846,12 +1847,27 @@ def _java_b28_collection_fixtures() -> List[CutFixture]:
         "public void handle", "out.println(bar)"))
     j.append(_marked(
         "java_list_mixed_adds", "xss", "CWE-79",
-        "list_positional_order_unprovable", LABEL_MUST_NOT_SUPPRESS,
+        # Graduated by b34's positional simulation (b21 precedent):
+        # get(0) provably reads the sanitized element in straight-line
+        # code — b28's must-not label encoded its one-synthetic-key
+        # model's limitation, not a hazard. The inverse twin below
+        # (get(1) reads the tainted slot) is the standing pin.
+        "list_positional_sanitized_slot", LABEL_MAY_SUPPRESS,
         cls_t(handle
               + "        ArrayList<String> l = new ArrayList<>();\n"
               + "        l.add(Encode.forHtml(x));\n"
               + "        l.add(x);\n"
               + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_list_mixed_adds_tainted_slot", "xss", "CWE-79",
+        "list_positional_tainted_slot", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<>();\n"
+              + "        l.add(Encode.forHtml(x));\n"
+              + "        l.add(x);\n"
+              + "        String bar = l.get(1);\n"
               + "        out.println(bar);\n    }\n"),
         "public void handle", "out.println(bar)"))
     j.append(_marked(
@@ -1962,3 +1978,160 @@ def _java_b33_sink_shape_fixtures() -> List[CutFixture]:
             "receiver_hop_sink", LABEL_MUST_NOT_SUPPRESS,
             _B33_DECOY_JAVA, 3, 12, language="java", suffix=".java"),
     ]
+
+
+def _java_b34_positional_fixtures() -> List[CutFixture]:
+    """b34 battery: positional list simulation. The Benchmark's clean
+    siblings select a safe element by index after order-shifting ops
+    (``remove(0)`` then ``get(1)``); the vulnerable twins read the
+    shifted tainted slot (``get(0)``). Adversarial shapes pin every
+    refusal: shifted-tainted reads, branch-split ops, non-literal and
+    Object-overload removes, out-of-range reads, insert/set shifting
+    onto the read slot, loop-carried adds."""
+    imp = ("import java.util.ArrayList;\n"
+           "import org.owasp.encoder.Encode;\n"
+           "import javax.servlet.http.HttpServletRequest;\n")
+
+    def cls_t(body: str) -> str:
+        return imp + "public class T {\n" + body + "}\n"
+
+    handle = ("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out) {\n"
+              "        String x = request.getParameter(\"q\");\n")
+    j: List[CutFixture] = []
+
+    # ---- must-not-suppress: adversarial shapes ----
+    j.append(_marked(
+        "java_pos_remove_shift_tainted", "xss", "CWE-79",
+        "pos_remove_shift_tainted_read", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.add(\"moresafe\");\n"
+              + "        l.remove(0);\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_branch_split_ops", "xss", "CWE-79",
+        "pos_ops_split_across_blocks", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(x);\n"
+              + "        if (x != null) {\n"
+              + "            l.add(\"safe\");\n"
+              + "        }\n"
+              + "        String bar = l.get(1);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_nonliteral_remove", "xss", "CWE-79",
+        "pos_nonliteral_remove_index", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        int k = x.length() % 2;\n"
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.remove(k);\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_remove_object_overload", "xss", "CWE-79",
+        "pos_remove_object_overload", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.remove(\"safe\");\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_out_of_range_get", "xss", "CWE-79",
+        "pos_out_of_range_read", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(x);\n"
+              + "        String bar = l.get(3);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_insert_shift_tainted", "xss", "CWE-79",
+        "pos_insert_shifts_taint_onto_slot", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(1, x);\n"
+              + "        String bar = l.get(1);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_set_replace_tainted", "xss", "CWE-79",
+        "pos_set_replaces_safe_with_taint", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.set(0, x);\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_loop_add", "xss", "CWE-79",
+        "pos_loop_carried_adds", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        for (int i = 0; i < 2; i++) {\n"
+              + "            l.add(x);\n"
+              + "        }\n"
+              + "        l.add(\"safe\");\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+
+    # ---- may-suppress: the Benchmark clean-sibling shapes ----
+    j.append(_marked(
+        "java_pos_remove_shift_safe", "xss", "CWE-79",
+        "pos_remove_shift_safe_read", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.add(\"moresafe\");\n"
+              + "        l.remove(0);\n"
+              + "        String bar = l.get(1);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_plain_index_safe", "xss", "CWE-79",
+        "pos_plain_safe_index_read", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.add(\"moresafe\");\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_insert_shift_safe", "xss", "CWE-79",
+        "pos_insert_shifts_safe_onto_slot", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(x);\n"
+              + "        l.add(0, \"safe\");\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_pos_set_replace_sanitized", "xss", "CWE-79",
+        "pos_set_replaces_taint_with_sanitized", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(x);\n"
+              + "        l.set(0, Encode.forHtml(x));\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    return j

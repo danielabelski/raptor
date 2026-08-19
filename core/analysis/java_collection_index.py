@@ -74,6 +74,9 @@ _MAP_WRITE = frozenset({"put"})
 _MAP_READ = frozenset({"get"})
 _LIST_WRITE = frozenset({"add", "set"})
 _LIST_READ = frozenset({"get"})
+_LIST_REMOVE = frozenset({"remove"})
+# Positional simulation cap: ops beyond this refuse (never mis-simulate).
+_MAX_POSITIONAL_OPS = 32
 
 _IDENT = "identifier"
 _METHOD_INVOCATION = "method_invocation"
@@ -113,6 +116,29 @@ def _decoded_string_literal(n) -> Optional[str]:
 class _ElementWrite:
     lineno: int
     rhs: Any                      # tree-sitter node (may be None)
+
+
+def _int_literal(n) -> Optional[int]:
+    """Decimal int literal value, else None."""
+    u = _unwrap(n)
+    if u is None or u.type != "decimal_integer_literal":
+        return None
+    try:
+        return int(_text(u))
+    except ValueError:
+        return None
+
+
+def _block_id(n) -> Optional[int]:
+    """Start byte of the nearest enclosing block statement — the
+    linearity token: positional simulation demands every op share
+    one block, so recorded order IS execution order."""
+    cur = n.parent
+    while cur is not None:
+        if cur.type == "block":
+            return cur.start_byte
+        cur = cur.parent
+    return None
 
 
 @dataclass
@@ -228,6 +254,8 @@ def build_local_collection_index(
         return None
 
     idx = LocalCollectionIndex(ok=True)
+    idx._list_ops = {}
+    idx._decl_block = {}
     types, statics = build_import_map(tree.root_node)
     idx._resolver = _NameResolver(types, statics)
     lo, hi = line_span
@@ -281,14 +309,39 @@ def build_local_collection_index(
         if kind == "list" and method in _LIST_WRITE and len(args) in (1, 2):
             # add(v) / add(i, v) / set(i, v): the VALUE is the last
             # argument; position is order-dependent, so every write
-            # lands on the synthetic all-elements key.
+            # lands on the synthetic all-elements key. The op log
+            # feeds the positional post-pass, which upgrades reads
+            # when the whole op sequence is provably linear.
             idx._writes.setdefault((recv, ALL_ELEMENTS), []).append(
                 _ElementWrite(lineno=ln, rhs=args[-1]))
+            if method == "add" and len(args) == 1:
+                op = ("add", None, args[0])
+            elif method == "add":
+                op = ("add_at", _int_literal(args[0]), args[1])
+            else:
+                op = ("set", _int_literal(args[0]), args[1])
+            idx._list_ops.setdefault(recv, []).append(
+                (ln, col, _block_id(call)) + op)
+            consumed.add((obj.start_byte, obj.end_byte))
+            return True
+        if kind == "list" and method in _LIST_REMOVE and len(args) == 1:
+            # remove(int-literal) is positionally simulatable; the
+            # Object overload (remove("x")) and non-literal indices
+            # are not — leave the receiver unconsumed so the leftover
+            # scan untracks it (today's conservative behavior).
+            i = _int_literal(args[0])
+            if i is None:
+                return False
+            idx._list_ops.setdefault(recv, []).append(
+                (ln, col, _block_id(call), "remove", i, None))
             consumed.add((obj.start_byte, obj.end_byte))
             return True
         if kind == "list" and method in _LIST_READ and len(args) == 1:
             idx._reads_at.setdefault((ln, recv), set()).add(ALL_ELEMENTS)
             idx._get_sites[(ln, col)] = (recv, ALL_ELEMENTS)
+            idx._list_ops.setdefault(recv, []).append(
+                (ln, col, _block_id(call), "get", _int_literal(args[0]),
+                 None))
             consumed.add((obj.start_byte, obj.end_byte))
             return True
         # Non-allowlisted method on a tracked name: leave the
@@ -338,6 +391,8 @@ def build_local_collection_index(
                     if lhs in idx._kind:
                         idx._violated.add(lhs)
                     idx._kind[lhs] = kind
+                    if kind == "list":
+                        idx._decl_block[lhs] = _block_id(n)
                     consumed.add((name_node.start_byte, name_node.end_byte))
                     return           # fresh init consumed whole
                 if value is not None:
@@ -392,7 +447,86 @@ def build_local_collection_index(
             for c in cur.children:
                 if c.is_named:
                     stack.append(c)
+
+    _bind_positional(idx)
     return idx
+
+
+def _bind_positional(idx: "LocalCollectionIndex") -> None:
+    """Upgrade list reads to positional single-write keys when the
+    whole op sequence is provably linear.
+
+    Soundness conditions (any failure refuses the WHOLE receiver —
+    partial bindings never commit): the receiver is a tracked,
+    unviolated list; every op and the declaration share one enclosing
+    block (recorded order is execution order); every shifting op
+    carries a literal in-range index; the op count is bounded. The
+    simulation replays add/insert/set/remove and resolves each
+    ``get(i)`` to the single element write occupying slot ``i`` at
+    that point — ``remove(0); get(0)`` lands on the shifted (possibly
+    tainted) element, so the vulnerable twin of the safe-selection
+    idiom keeps its taint by construction."""
+    for recv, ops in list(getattr(idx, "_list_ops", {}).items()):
+        if recv in idx._violated or idx._kind.get(recv) != "list":
+            continue
+        if not ops or len(ops) > _MAX_POSITIONAL_OPS:
+            continue
+        decl_block = idx._decl_block.get(recv)
+        if decl_block is None:
+            continue
+        if any(op[2] != decl_block for op in ops):
+            continue
+        ops = sorted(ops, key=lambda op: (op[0], op[1]))
+        seq: list = []                     # slot -> _ElementWrite
+        gets: dict = {}                    # (ln, col) -> _ElementWrite
+        ok = True
+        for ln, col, _blk, name, i, rhs in ops:
+            if name == "add":
+                seq.append(_ElementWrite(lineno=ln, rhs=rhs))
+            elif name == "add_at":
+                if i is None or not (0 <= i <= len(seq)):
+                    ok = False
+                    break
+                seq.insert(i, _ElementWrite(lineno=ln, rhs=rhs))
+            elif name == "set":
+                if i is None or not (0 <= i < len(seq)):
+                    ok = False
+                    break
+                seq[i] = _ElementWrite(lineno=ln, rhs=rhs)
+            elif name == "remove":
+                if i is None or not (0 <= i < len(seq)):
+                    ok = False
+                    break
+                del seq[i]
+            elif name == "get":
+                if i is None or not (0 <= i < len(seq)):
+                    ok = False
+                    break
+                gets[(ln, col)] = seq[i]
+            else:                          # pragma: no cover — walker owns names
+                ok = False
+                break
+        if not ok or not gets:
+            continue
+        # Commit: every get on a line must have resolved before the
+        # line's read-set drops ALL_ELEMENTS (it did — any in-range
+        # failure aborted the receiver above).
+        lines_done: dict = {}
+        for (ln, col), write in gets.items():
+            key = f"pos@{ln}:{col}"
+            idx._writes[(recv, key)] = [write]
+            idx._get_sites[(ln, col)] = (recv, key)
+            lines_done.setdefault(ln, set()).add(key)
+        for ln, keys in lines_done.items():
+            idx._reads_at[(ln, recv)] = set(keys)
+        # Re-point scalar copies (bar = l.get(i)) to the positional
+        # key when the line carries exactly one resolved get.
+        for (ln, lhs), (r, key) in list(idx._scalar_copies.items()):
+            if r != recv or key != ALL_ELEMENTS:
+                continue
+            keys = lines_done.get(ln)
+            if keys is not None and len(keys) == 1:
+                idx._scalar_copies[(ln, lhs)] = (recv, next(iter(keys)))
 
 
 class CollectionFoldResolver:

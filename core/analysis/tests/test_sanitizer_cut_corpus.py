@@ -228,6 +228,36 @@ def test_java_corpus_fixture_verdict(
     )
 
 
+_JAVA_B34_CASES = [
+    # b34 positional simulation through the full production path:
+    # remove(0) shifts, get(1) provably reads the trailing constant —
+    # the clean OWASP twin suppresses; the tainted twin (get(0)) is
+    # pinned must-not in the precision corpus.
+    ("positional_list_java.java", "CWE-79", 12, 19, "suppress"),
+]
+
+
+@pytest.mark.parametrize(
+    "fixture,cwe,source_line,sink_line,expected_verdict",
+    _JAVA_B34_CASES,
+)
+def test_java_b34_positional_verdict(
+    fixture, cwe, source_line, sink_line, expected_verdict,
+):
+    """b34 pin — positional list resolution through the exact
+    production entry point."""
+    pytest.importorskip("tree_sitter_java")
+    from core.dataflow.sanitizer_cut_parity import value_bound_verdict_for
+    verdict = value_bound_verdict_for({
+        "cwe": cwe,
+        "file_path": str(_CORPUS_DIR / fixture),
+        "source_line": source_line,
+        "sink_line": sink_line,
+        "language": "java",
+    })
+    assert verdict == expected_verdict
+
+
 @pytest.mark.parametrize(
     "fixture,cwe,source_line,sink_line,expected_verdict",
     _JAVA_B19_CASES,

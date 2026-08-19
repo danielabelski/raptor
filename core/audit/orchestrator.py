@@ -10037,10 +10037,53 @@ def _mark_unsupported_unresolvable(
         )
 
 
+def _resolve_c_scoped(
+    root: Path,
+    all_idents: list[str],
+    ident_reqs: list[StudyRequest],
+    resolve_identifiers,
+):
+    """Directory-scoped C identifier resolution.
+
+    A kernel-sized tree defeats the resolver's flat file cap, so each
+    request's subsystem directory is searched first — premise questions
+    overwhelmingly name identifiers defined near the reviewed code.
+    Identifiers still unresolved after the scoped passes get one
+    root-scoped pass (which fully covers small trees).
+    """
+    merged_items: list = []
+    remaining = list(all_idents)
+    scopes: list[Path] = []
+    seen_scopes: set[str] = set()
+    for req in ident_reqs:
+        sf = (req.source_file or "").strip()
+        if not sf:
+            continue
+        d = root / Path(sf).parent
+        key = str(d)
+        if key not in seen_scopes and d.is_dir() and d != root:
+            seen_scopes.add(key)
+            scopes.append(d)
+    for scope in scopes:
+        if not remaining:
+            break
+        res = resolve_identifiers(
+            root, remaining, scope=scope, include_c=True,
+        )
+        merged_items.extend(res.items)
+        unres = {u["name"] for u in res.unresolved}
+        remaining = [n for n in remaining if n in unres]
+    final = resolve_identifiers(root, remaining, include_c=True)
+    final.items = merged_items + final.items
+    return final
+
+
 def _resolve_multilang_requests(
     config: OrchestratorConfig,
     ml_reqs: list[StudyRequest],
     study_list_path: Path | None,
+    *,
+    include_c: bool = False,
 ) -> dict[str, str]:
     """Per-batch in-process resolution for non-C study requests.
 
@@ -10049,6 +10092,14 @@ def _resolve_multilang_requests(
     Returns ``{question: reason}`` for questions whose identifiers
     could not be statically resolved — the caller marks those
     reading-list items unresolvable instead of resolved-clean.
+
+    With ``include_c`` True this is the C per-batch definition splice:
+    study-prep runs once, so C questions raised in later batches never
+    gain corpus definitions through it. Resolution is scoped to each
+    request's subsystem directory first (bounded on huge trees), then
+    the tree root for leftovers. The caller must not treat C misses as
+    authoritative failures — the one-shot prep corpus may already
+    carry the concept.
     """
     failures: dict[str, str] = {}
     try:
@@ -10085,7 +10136,12 @@ def _resolve_multilang_requests(
 
     unresolved_by_name: dict[str, str] = {}
     if all_idents:
-        res = resolve_identifiers(root, all_idents)
+        if include_c:
+            res = _resolve_c_scoped(
+                root, all_idents, ident_reqs, resolve_identifiers,
+            )
+        else:
+            res = resolve_identifiers(root, all_idents)
         unresolved_by_name = {
             u["name"]: u["reason"] for u in res.unresolved
         }
@@ -10100,8 +10156,9 @@ def _resolve_multilang_requests(
                     exc_info=True,
                 )
         logger.info(
-            "study-consumer: multilang batch: %d identifiers → "
+            "study-consumer: %s batch: %d identifiers → "
             "%d items, %d unresolvable",
+            "C splice" if include_c else "multilang",
             len(all_idents), len(res.items), len(res.unresolved),
         )
 
@@ -11190,6 +11247,18 @@ def _study_consumer_loop(
         if ml_reqs:
             ml_failures = _resolve_multilang_requests(
                 config, ml_reqs, study_list_path,
+            )
+
+        # C per-batch definition splice: prep runs once, so C questions
+        # raised after it (premise questions, re-review assumptions)
+        # otherwise never gain corpus definitions and stall pending.
+        # Failures are NOT propagated — the prep corpus may already
+        # carry the concept; a splice miss must not mark a question
+        # unresolvable that run_study can still answer.
+        _c_ident_reqs = [r for r in c_reqs if r.resolution != "concept"]
+        if _c_ident_reqs:
+            _resolve_multilang_requests(
+                config, _c_ident_reqs, study_list_path, include_c=True,
             )
 
         # Study-run: in-process, scoped to this batch's reading-list.

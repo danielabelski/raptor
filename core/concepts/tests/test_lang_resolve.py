@@ -521,3 +521,56 @@ class TestMergeIntoStudyList:
         data = json.loads(p.read_text())
         assert len(data["related_docs"]) == 1
         assert len(data["unresolved_identifiers"]) == 1
+
+
+# ------------------------------------------------------------------
+# C (opt-in per-batch splice; default resolution still excludes C)
+# ------------------------------------------------------------------
+
+class TestCResolution:
+    @pytest.fixture()
+    def tree(self, tmp_path: Path) -> Path:
+        _write(tmp_path, "net/proto/sock.c", '''\
+/* proto_set_level validates and stores the security level.
+ * Levels above PROTO_LEVEL_MAX are rejected with -EINVAL.
+ */
+int proto_set_level(struct proto_sock *ps, unsigned int level)
+{
+	if (level > PROTO_LEVEL_MAX)
+		return -EINVAL;
+	ps->level = level;
+	return 0;
+}
+''')
+        _write(tmp_path, "lib/other.py", "def unrelated():\n    return 1\n")
+        return tmp_path
+
+    def test_default_excludes_c(self, tree: Path) -> None:
+        res = resolve_identifiers(tree, ["proto_set_level"])
+        assert not res.items
+        assert res.unresolved
+
+    def test_include_c_resolves_definition(self, tree: Path) -> None:
+        res = resolve_identifiers(
+            tree, ["proto_set_level"], include_c=True,
+        )
+        assert len(res.items) == 1
+        it = res.items[0]
+        assert it.kind == "function"
+        assert it.file == "net/proto/sock.c"
+        assert "level > PROTO_LEVEL_MAX" in it.definition
+        assert "rejected with -EINVAL" in it.doc_comment
+
+    def test_include_c_scope_limits_search(self, tree: Path) -> None:
+        res = resolve_identifiers(
+            tree, ["proto_set_level"],
+            scope=tree / "lib", include_c=True,
+        )
+        assert not res.items
+
+    def test_include_c_still_resolves_non_c(self, tree: Path) -> None:
+        res = resolve_identifiers(
+            tree, ["unrelated"], include_c=True,
+        )
+        assert len(res.items) == 1
+        assert res.items[0].file == "lib/other.py"

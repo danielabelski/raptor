@@ -180,8 +180,10 @@ def has_study_sources(root: Path) -> bool:
 
 def _iter_source_files(
     root: Path, *, max_files: int = 4000,
+    suffixes: frozenset[str] | None = None,
 ) -> list[Path]:
     """Supported-language source files under *root*, vendor dirs skipped."""
+    wanted = STUDY_SUFFIXES if suffixes is None else suffixes
     out: list[Path] = []
     stack = [root]
     while stack and len(out) < max_files:
@@ -200,7 +202,7 @@ def _iter_source_files(
                     if entry.name not in _SKIP_DIRS and not entry.name.startswith("."):
                         stack.append(entry)
                     continue
-                if entry.suffix.lower() in STUDY_SUFFIXES and entry.is_file():
+                if entry.suffix.lower() in wanted and entry.is_file():
                     out.append(entry)
             except OSError:
                 continue
@@ -443,9 +445,15 @@ def resolve_identifiers(
     *,
     scope: Path | None = None,
     max_files: int = 4000,
+    include_c: bool = False,
 ) -> LangResolution:
     """Resolve *identifiers* against non-C sources under *scope*
     (default: *source_root*).
+
+    With ``include_c`` True, C/C++ sources are resolved too — the
+    study consumer's per-batch splice for questions raised after the
+    one-shot C study-prep (which never re-runs, so the study corpus
+    otherwise never gains definitions for them).
 
     Returns study items for every definition found, plus an
     ``unresolved`` record (with reason) for each identifier that has no
@@ -456,7 +464,14 @@ def resolve_identifiers(
         return result
 
     root = Path(source_root)
-    files = _iter_source_files(Path(scope) if scope else root, max_files=max_files)
+    suffixes = (
+        frozenset(STUDY_SUFFIXES | _C_SUFFIXES) if include_c else None
+    )
+    files = _iter_source_files(
+        Path(scope) if scope else root,
+        max_files=max_files,
+        suffixes=suffixes,
+    )
     if not files:
         for name in identifiers:
             result.unresolved.append({
@@ -468,11 +483,19 @@ def resolve_identifiers(
 
     tails = {identifier_tail(n): n for n in identifiers}
 
+    def _lang_for(path: Path) -> str | None:
+        lang = language_for_path(path)
+        if lang is None and include_c:
+            candidate = LANGUAGE_MAP.get(path.suffix.lower())
+            if candidate in ("c", "cpp"):
+                return candidate
+        return lang
+
     # Read + language-tag every candidate file once; grep-scope to
     # files that mention at least one identifier tail.
     contents: dict[Path, tuple[str, str]] = {}
     for f in files:
-        lang = language_for_path(f)
+        lang = _lang_for(f)
         if lang is None:
             continue
         try:

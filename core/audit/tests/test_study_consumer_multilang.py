@@ -112,10 +112,8 @@ class TestPartitionStudyBatch:
 # Reading-list marking semantics (pinned)
 # ------------------------------------------------------------------
 
-import pytest as _pytest
 
-
-@_pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)
 def _scorecard_events(monkeypatch):
     """Capture scorecard events; never write the real sidecar."""
     events: list[tuple] = []
@@ -710,3 +708,93 @@ class TestStudyGateSuffixes:
     def test_supported_path(self, path, expected) -> None:
         from core.concepts.lang_resolve import is_study_supported_path
         assert is_study_supported_path(path) is expected
+
+
+# ------------------------------------------------------------------
+# C per-batch definition splice (one-shot prep gains no later corpus)
+# ------------------------------------------------------------------
+
+class TestCPerBatchSplice:
+    def _tree(self, tmp_path):
+        target = tmp_path / "target"
+        (target / "net" / "proto").mkdir(parents=True)
+        (target / "net" / "proto" / "sock.c").write_text(
+            "/* proto_set_level rejects levels above PROTO_LEVEL_MAX. */\n"
+            "int proto_set_level(struct proto_sock *ps, unsigned int lv)\n"
+            "{\n"
+            "\tif (lv > PROTO_LEVEL_MAX)\n"
+            "\t\treturn -EINVAL;\n"
+            "\tps->level = lv;\n"
+            "\treturn 0;\n"
+            "}\n",
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        return target, out
+
+    def test_c_question_splices_definition(self, tmp_path) -> None:
+        from core.audit.orchestrator import _resolve_multilang_requests
+
+        target, out = self._tree(tmp_path)
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        study_list = out / "study-list.json"
+        req = StudyRequest(
+            question=(
+                "Does this hold: proto_set_level validates the level "
+                "before this function runs?"
+            ),
+            source_file="net/proto/rx.c",
+            source_function="rx_init",
+        )
+        _resolve_multilang_requests(
+            config, [req], study_list, include_c=True,
+        )
+        data = json.loads(study_list.read_text())
+        names = {i["name"] for i in data["items"]}
+        assert "proto_set_level" in names
+        item = next(
+            i for i in data["items"] if i["name"] == "proto_set_level"
+        )
+        assert "PROTO_LEVEL_MAX" in item["definition"]
+
+    def test_default_path_still_excludes_c(self, tmp_path) -> None:
+        from core.audit.orchestrator import _resolve_multilang_requests
+
+        target, out = self._tree(tmp_path)
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        study_list = out / "study-list.json"
+        req = StudyRequest(
+            question="Does `proto_set_level` validate the level?",
+            source_file="net/proto/rx.c",
+            source_function="rx_init",
+        )
+        failures = _resolve_multilang_requests(config, [req], study_list)
+        assert failures  # C identifier is unresolvable on the ml path
+        if study_list.is_file():
+            data = json.loads(study_list.read_text())
+            names = {i["name"] for i in data.get("items", [])}
+            assert "proto_set_level" not in names
+
+    def test_scoped_before_root(self, tmp_path) -> None:
+        # A same-named decoy outside the request's subsystem must not
+        # shadow the subsystem definition.
+        from core.audit.orchestrator import (
+            _resolve_c_scoped,
+        )
+        from core.concepts.lang_resolve import resolve_identifiers
+
+        target, _out = self._tree(tmp_path)
+        (target / "vendorpkg").mkdir()
+        (target / "vendorpkg" / "decoy.c").write_text(
+            "int proto_set_level(int x) { return x; }\n",
+        )
+        req = StudyRequest(
+            question="Does proto_set_level validate?",
+            source_file="net/proto/rx.c",
+            source_function="rx_init",
+        )
+        res = _resolve_c_scoped(
+            target, ["proto_set_level"], [req], resolve_identifiers,
+        )
+        files = [i.file for i in res.items]
+        assert "net/proto/sock.c" in files

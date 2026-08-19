@@ -15572,16 +15572,43 @@ def _deepen_suspicious(
         # clean genuinely supersedes a clean formed with stripped
         # context (and clears the context_reduced tag).
         _rr = outcome.review_result or {}
+        _structured_demotion = bool(
+            _rr.get("all_refuted_demotion")
+            or _rr.get("rationale_consistency_demotion")
+        )
+        _referee_holds = _deepen_demotion_refereed(prior_outcome, outcome)
         _deepen_dominated = (
             outcome.status == "clean"
             and not prior_outcome.context_reduced
-            and not (
-                _rr.get("all_refuted_demotion")
-                or _rr.get("rationale_consistency_demotion")
-            )
+            and not _structured_demotion
         )
 
-        if _deepen_dominated:
+        if _referee_holds:
+            # The rejected deepen call still spent real money.
+            with result._lock:
+                result.total_cost_usd += outcome.cost_usd
+            if prior_outcome.review_result is None:
+                prior_outcome.review_result = {}
+            prior_outcome.review_result["demotion_referee"] = (
+                "probe-backed suspicious retained — deepen refutation "
+                "was LLM-only"
+            )
+            prior_outcome.body = (
+                "[demotion referee: the deepen re-review concluded "
+                "clean on LLM argument alone, but this suspicious is "
+                "backed by a fired probe — retained pending a "
+                "verification-role refuter]\n\n"
+                + (prior_outcome.body or "")
+            )
+            logger.info(
+                "deepen [%d/%d] %s:%s: demotion referee — stays "
+                "suspicious (probe-backed; LLM-only refutation)",
+                idx,
+                len(targets),
+                gap["file"],
+                gap["name"],
+            )
+        elif _deepen_dominated:
             # The discarded deepen call still spent real money; the
             # accepted path books it via _tally_outcome below.
             with result._lock:
@@ -18840,6 +18867,23 @@ def _resolve_gate_demoted(
                     outcome.function,
                 )
                 continue
+        elif _probe_backed_suspicious(outcome):
+            # Demotion referee: no fresh corroboration turned up, but
+            # the verdict is backed by a probe that FIRED during the
+            # review (mid-loop SMT/cocci receipt, possibly recorded
+            # under llm-claimed: with the dispatch record as witness).
+            # Silence elsewhere is not a verification-role refuter —
+            # resolving this to clean/dark would let an LLM-only
+            # argument erase a tool observation. The trusted-provenance
+            # override above is unaffected: it only fires WITH
+            # corroboration.
+            logger.info(
+                "demotion referee: %s:%s stays suspicious — "
+                "probe-backed, no verification-role refuter",
+                outcome.file,
+                outcome.function,
+            )
+            continue
 
         # Determine if a tool covering the vulnerability class actually
         # RAN for this function. The dispatch record comes from
@@ -19344,6 +19388,85 @@ def _is_verification_evidence_for_gate(outcome: ReviewOutcome) -> bool:
     from .pipeline import _is_verification_evidence
     for part in ev.split("+"):
         if _is_verification_evidence(part.strip()):
+            return True
+    return False
+
+
+def _deepen_demotion_refereed(
+    prior_outcome: ReviewOutcome,
+    outcome: ReviewOutcome,
+) -> bool:
+    """Demotion referee for the deepen pass.
+
+    True when a deepen re-review's clean may NOT supersede the prior
+    suspicious: the clean's only basis is the LLM's own refutation
+    (all-refuted / rationale-consistency structured demotion), the
+    prior verdict is backed by a fired probe, and the deepen outcome
+    carries no verification-role refuter. A fired probe's receipt is
+    a tool observation; overriding it takes a verification-role
+    receipt (an unsat counter-witness, a consistency counter-example),
+    not an argument — the same principle as the dark-verify
+    tool-backed floor.
+    """
+    _rr = outcome.review_result or {}
+    structured = bool(
+        _rr.get("all_refuted_demotion")
+        or _rr.get("rationale_consistency_demotion")
+    )
+    return (
+        outcome.status == "clean"
+        and structured
+        and prior_outcome.status == "suspicious"
+        and _probe_backed_suspicious(prior_outcome)
+        and not _is_verification_evidence_for_gate(outcome)
+    )
+
+
+def _probe_backed_suspicious(outcome: ReviewOutcome) -> bool:
+    """True when a suspicious verdict is backed by a fired probe/tool.
+
+    Detection-role receipts count here, unlike the verification-role
+    gate: a fired probe that flagged the mechanism is a tool
+    observation, and an LLM argument alone must not erase it (it may
+    only be answered by a verification-role refuter). ``llm-claimed:``
+    probe references qualify only when the orchestrator's own dispatch
+    record shows that tool family actually ran for this outcome — the
+    claim is then corroborated by the run's own records, not taken on
+    faith. ``prefilter:`` stamps never qualify: a pattern-scan prior
+    is not a fired probe.
+    """
+    from .evidence_grade import LLM_CLAIM_PREFIX, is_tool_evidence
+
+    ev = outcome.evidence_tool or ""
+    if not ev:
+        review = outcome.review_result or {}
+        raw = str(review.get("evidence_tool", "") or "")
+        ev = "+".join(
+            p
+            for p in (_sanitize_llm_et(part.strip()) for part in raw.split("+"))
+            if p
+        )
+    if not ev:
+        return False
+    dispatched = {
+        str(t).strip().lower()
+        for t in (outcome.tools_dispatched or set())
+        if str(t).strip()
+    }
+    for part in (p.strip() for p in ev.split("+")):
+        if not part:
+            continue
+        if part.lower().startswith(LLM_CLAIM_PREFIX):
+            claimed = part[len(LLM_CLAIM_PREFIX):].strip().lower()
+            fam = claimed.split(":", 1)[0].strip()
+            if fam and any(
+                d == fam or d.startswith(fam) for d in dispatched
+            ):
+                return True
+            continue
+        if part.startswith("prefilter:"):
+            continue
+        if is_tool_evidence(part):
             return True
     return False
 

@@ -484,7 +484,7 @@ def main():
         results = scanner.scan()
 
         print("\n" + "=" * 70)
-        print("SCAN COMPLETE")
+        print("Scan Complete")
         print("=" * 70)
         print(f"✓ Pages crawled: {results['discovery'].get('total_pages', 0)}")
         print(f"✓ Parameters found: {results['discovery'].get('total_parameters', 0)}")

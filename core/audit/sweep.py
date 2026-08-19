@@ -1003,6 +1003,24 @@ def run_coccinelle_sweep(
             if _rendered_tmp is not None:
                 _rendered_tmp.unlink(missing_ok=True)
 
+        # spatch failure / parse errors / timeout (runner reports
+        # returncode=-1) → error, never refuted: a rule that failed to
+        # run produced no matches for a reason that says NOTHING about
+        # the code (mirrors the landed per-hypothesis semgrep semantics
+        # and cocci_flow's flow-channel handling).
+        spatch_errors = list(getattr(result, "errors", []) or [])
+        returncode = getattr(result, "returncode", 0)
+        if returncode != 0 or spatch_errors:
+            return SweepResult(
+                tool="coccinelle",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=spatch_errors
+                or [f"spatch exited with code {returncode}"],
+                rule_id=cocci_rule,
+            )
+
         matches = []
         for f in result.matches:
             if hasattr(f, "to_dict"):
@@ -1024,7 +1042,6 @@ def run_coccinelle_sweep(
             outcome=outcome,
             matches=matches,
             rule_id=cocci_rule,
-            errors=result.errors if hasattr(result, "errors") else [],
         )
     except Exception as exc:  # noqa: BLE001
         return SweepResult(
@@ -2284,6 +2301,22 @@ def run_consistency_check(
         finally:
             if _rendered_tmp is not None:
                 _rendered_tmp.unlink(missing_ok=True)
+
+        # Same policy as run_coccinelle_sweep: a failed / timed-out
+        # spatch run (returncode=-1 from the runner) is an error, not a
+        # refutation — no-match means nothing when the tool never ran.
+        spatch_errors = list(getattr(result, "errors", []) or [])
+        returncode = getattr(result, "returncode", 0)
+        if returncode != 0 or spatch_errors:
+            return SweepResult(
+                tool="coccinelle_consistency",
+                file_path="<codebase>",
+                function_name=function_name,
+                outcome="error",
+                errors=spatch_errors
+                or [f"spatch exited with code {returncode}"],
+                rule_id=cocci_rule,
+            )
 
         matches = []
         for match in result.matches:

@@ -454,6 +454,113 @@ class TestConsistencyCheck:
         assert captured_defines.get("func") == "process_buf"
 
 
+class TestCoccinelleErrorSemantics:
+    """spatch failures and timeouts must record ``error``, never
+    ``refuted`` — a rule that never ran says nothing about the code
+    (same policy as the per-hypothesis semgrep path and cocci_flow)."""
+
+    @staticmethod
+    def _install_runner(monkeypatch, result):
+        import sys
+        import types
+
+        def fake_run_rule(*args, **kwargs):
+            return result
+
+        fake_mod = types.ModuleType("packages.coccinelle.runner")
+        fake_mod.run_rule = fake_run_rule
+        fake_mod.is_available = lambda: True
+        monkeypatch.setitem(
+            sys.modules, "packages.coccinelle.runner", fake_mod,
+        )
+
+    @staticmethod
+    def _spatch_result(**kwargs):
+        from packages.coccinelle.models import SpatchResult
+        return SpatchResult(rule="r", **kwargs)
+
+    def test_sweep_timeout_is_error_not_refuted(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        from core.audit.sweep import run_coccinelle_sweep
+
+        (tmp_path / "a.c").write_text("int f(void) { return 0; }\n")
+        self._install_runner(monkeypatch, self._spatch_result(
+            returncode=-1, errors=["spatch timed out after 120s"],
+        ))
+        result = run_coccinelle_sweep(
+            target_path=tmp_path,
+            file_path="a.c",
+            function_name="f",
+            cocci_rule="check.cocci",
+        )
+        assert result.outcome == "error"
+        assert result.errors == ["spatch timed out after 120s"]
+
+    def test_sweep_nonzero_exit_without_errors_is_error(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        from core.audit.sweep import run_coccinelle_sweep
+
+        (tmp_path / "a.c").write_text("int f(void) { return 0; }\n")
+        self._install_runner(
+            monkeypatch, self._spatch_result(returncode=2),
+        )
+        result = run_coccinelle_sweep(
+            target_path=tmp_path,
+            file_path="a.c",
+            function_name="f",
+            cocci_rule="check.cocci",
+        )
+        assert result.outcome == "error"
+        assert any("exited with code 2" in e for e in result.errors)
+
+    def test_sweep_clean_no_match_still_refuted(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        from core.audit.sweep import run_coccinelle_sweep
+
+        (tmp_path / "a.c").write_text("int f(void) { return 0; }\n")
+        self._install_runner(
+            monkeypatch, self._spatch_result(returncode=0),
+        )
+        result = run_coccinelle_sweep(
+            target_path=tmp_path,
+            file_path="a.c",
+            function_name="f",
+            cocci_rule="check.cocci",
+        )
+        assert result.outcome == "refuted"
+
+    def test_consistency_timeout_is_error_not_refuted(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        self._install_runner(monkeypatch, self._spatch_result(
+            returncode=-1, errors=["spatch timed out after 300s"],
+        ))
+        result = run_consistency_check(
+            target_path=tmp_path,
+            function_name="parse_input",
+            cocci_rule="check_return.cocci",
+        )
+        assert result.outcome == "error"
+        assert result.errors == ["spatch timed out after 300s"]
+
+    def test_consistency_nonzero_exit_is_error(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        self._install_runner(
+            monkeypatch, self._spatch_result(returncode=127),
+        )
+        result = run_consistency_check(
+            target_path=tmp_path,
+            function_name="parse_input",
+            cocci_rule="check_return.cocci",
+        )
+        assert result.outcome == "error"
+        assert any("exited with code 127" in e for e in result.errors)
+
+
 class TestSarifCache:
     def _write_sarif(self, scan_dir: Path, name: str, results: list):
         import json

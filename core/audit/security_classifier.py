@@ -89,7 +89,20 @@ _CLASSIFICATION_SYSTEM = with_audit_framing(
     "A defect that only affects correctness (wrong output, "
     "resource leak with no security consequence, cosmetic error) "
     "is a quality_finding.  A defect that an attacker can use "
-    "to violate a security property is a security_finding.",
+    "to violate a security property is a security_finding.\n\n"
+    "Two calibration rules:\n"
+    "- Data races and unsynchronized concurrent writes that can "
+    "interleave or corrupt a stream another component parses "
+    "(wire protocols, API/progress streams, structured logs) are "
+    "integrity/availability defects for that stream's consumers "
+    "— security_finding, not cosmetic output error. The trigger "
+    "is ordinary concurrent operation, not a contrived input.\n"
+    "- Do not infer impact from the bug class or CWE alone. A "
+    "security_finding needs a concrete mechanism connecting a "
+    "reachable trigger to the violated property. A hypothesis of "
+    "the form 'could mishandle X' or 'might produce invalid "
+    "output', with no stated path from attacker-influenced or "
+    "concurrent execution to that failure, is a quality_finding.",
 )
 
 

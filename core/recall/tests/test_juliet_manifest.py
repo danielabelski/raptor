@@ -12,6 +12,8 @@ from core.recall.juliet_manifest import (
     JULIET_PINNED_SHA,
     JulietManifestError,
     generate_manifest,
+    generate_manifest_b,
+    main as jm_main,
     split_bad_good_spans,
 )
 from core.recall.manifest import parse_manifest
@@ -136,3 +138,167 @@ class TestGenerate:
 def test_pinned_sha_is_full_hex():
     assert len(JULIET_PINNED_SHA) == 40
     int(JULIET_PINNED_SHA, 16)
+
+
+# ---------------------------------------------------------------------------
+# Juliet-B (multi-file variants)
+# ---------------------------------------------------------------------------
+
+_CHAIN_A = """class A {
+    public void bad() throws Throwable {
+        (new B()).badSink("x");
+    }
+    public void good() throws Throwable { goodG2B(); }
+    private void goodG2B() throws Throwable {
+        (new B()).goodG2BSink("c");
+    }
+}
+"""
+
+_CHAIN_B_TERMINAL = """class B {
+    public void badSink(String data) throws Throwable {
+        sink(data);
+    }
+    public void goodG2BSink(String data) throws Throwable {
+        sink(data);
+    }
+}
+"""
+
+_CHAIN_B_FORWARDING = """class B {
+    public void badSink(String data) throws Throwable {
+        (new C()).badSink(data);
+    }
+    public void goodG2BSink(String data) throws Throwable {
+        (new C()).goodG2BSink(data);
+    }
+}
+"""
+
+_SOURCE_SPLIT_A = """class A {
+    public void bad() throws Throwable {
+        String data = (new B()).badSource();
+        sink(data);
+    }
+    public void good() throws Throwable { }
+    private void goodG2B() throws Throwable {
+        String data = (new B()).goodG2BSource();
+        sink(data);
+    }
+}
+"""
+
+_SOURCE_SPLIT_B = """class B {
+    public String badSource() throws Throwable { return src(); }
+    public String goodG2BSource() throws Throwable { return "c"; }
+}
+"""
+
+_POLAR_BAD = """class X_bad extends X_base {
+    public void action(String data) throws Throwable { sink(data); }
+}
+"""
+
+_POLAR_GOOD = """class X_goodG2B extends X_base {
+    public void action(String data) throws Throwable { safe(data); }
+}
+"""
+
+
+def _make_clone_b(tmp_path: Path) -> Path:
+    clone = tmp_path / "juliet-b"
+    d = clone / "src/testcases/CWE89_SQL_Injection/s01"
+    d.mkdir(parents=True)
+    base = "CWE89_SQL_Injection__t"
+    # terminal chain: sink file is b
+    (d / f"{base}_51a.java").write_text(_CHAIN_A, encoding="utf-8")
+    (d / f"{base}_51b.java").write_text(
+        _CHAIN_B_TERMINAL, encoding="utf-8")
+    # forwarding-terminal chain must refuse
+    (d / f"{base}_53a.java").write_text(_CHAIN_A, encoding="utf-8")
+    (d / f"{base}_53b.java").write_text(
+        _CHAIN_B_FORWARDING, encoding="utf-8")
+    # source-split chain: sink file is a
+    (d / f"{base}_61a.java").write_text(
+        _SOURCE_SPLIT_A, encoding="utf-8")
+    (d / f"{base}_61b.java").write_text(
+        _SOURCE_SPLIT_B, encoding="utf-8")
+    # polarity split
+    (d / f"{base}_81_bad.java").write_text(_POLAR_BAD, encoding="utf-8")
+    (d / f"{base}_81_base.java").write_text(
+        "abstract class X_base { }", encoding="utf-8")
+    (d / f"{base}_81_goodG2B.java").write_text(
+        _POLAR_GOOD, encoding="utf-8")
+    # polarity split missing its good twin must refuse
+    (d / f"{base}_82_bad.java").write_text(_POLAR_BAD, encoding="utf-8")
+    (d / f"{base}_82_base.java").write_text(
+        "abstract class X_base { }", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(clone), "-c", "user.email=t@example.org",
+         "-c", "user.name=t", "commit", "-qm", "fixture"], check=True)
+    return clone
+
+
+class TestGenerateB:
+    def _manifest(self, tmp_path, monkeypatch):
+        clone = _make_clone_b(tmp_path)
+        head = subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        monkeypatch.setattr("core.recall.juliet_manifest."
+                            "JULIET_PINNED_SHA", head)
+        return generate_manifest_b(clone), head
+
+    def test_layouts_anchor_at_the_sink_file(self, tmp_path,
+                                             monkeypatch):
+        manifest, head = self._manifest(tmp_path, monkeypatch)
+        by_id = {e["id"]: e for e in manifest["expected"]}
+        assert by_id["CWE89_SQL_Injection__t_51"]["file"].endswith(
+            "_51b.java")
+        assert by_id["CWE89_SQL_Injection__t_61"]["file"].endswith(
+            "_61a.java")
+        assert by_id["CWE89_SQL_Injection__t_81"]["file"].endswith(
+            "_81_bad.java")
+        assert len(manifest["expected"]) == 3
+
+    def test_refusals_counted_by_reason(self, tmp_path, monkeypatch):
+        manifest, _ = self._manifest(tmp_path, monkeypatch)
+        refused = manifest["notes"]["refused"]
+        assert refused["chain_sink_ambiguous"] == 1  # forwarding 53
+        assert refused["polarity_missing_good_twin"] == 1  # 82
+        ids = {e["id"] for e in manifest["expected"]}
+        assert "CWE89_SQL_Injection__t_53" not in ids
+        assert "CWE89_SQL_Injection__t_82" not in ids
+
+    def test_polarity_good_files_are_clean_regions(self, tmp_path,
+                                                   monkeypatch):
+        manifest, _ = self._manifest(tmp_path, monkeypatch)
+        goods = [c for c in manifest["clean_regions"]
+                 if c["id"].startswith("CWE89_SQL_Injection__t_81")]
+        assert len(goods) == 1
+        assert goods[0]["file"].endswith("_81_goodG2B.java")
+
+    def test_manifest_parses_and_declares_ledger(self, tmp_path,
+                                                 monkeypatch):
+        manifest, head = self._manifest(tmp_path, monkeypatch)
+        assert "LEDGER-FRESH" in manifest["notes"]["ledger"]
+        assert manifest["profile"] == "scan-codeql"
+        manifest["target"]["pinned_sha"] = head
+        parsed = parse_manifest(json.loads(json.dumps(manifest)))
+        assert parsed.name == "juliet-b-multifile"
+
+    def test_cli_variant_b(self, tmp_path, monkeypatch, capsys):
+        clone = _make_clone_b(tmp_path)
+        head = subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        monkeypatch.setattr("core.recall.juliet_manifest."
+                            "JULIET_PINNED_SHA", head)
+        out = tmp_path / "b.json"
+        rc = jm_main(["--clone-dir", str(clone), "--out", str(out),
+                      "--variant-b"])
+        assert rc == 0
+        assert "refused" in capsys.readouterr().out
+        assert json.loads(out.read_text())["name"] == "juliet-b-multifile"

@@ -430,7 +430,9 @@ def _cleanup_abandoned(project_dir: Path, command: str, session_pid: int) -> Non
         except OSError:
             # Per-child stat may fail even after iterdir succeeded.
             continue
-        if not meta:
+        if not isinstance(meta, dict) or not meta:
+            # Corrupt or non-object metadata (torn write, hostile or
+            # malformed run dir): not sweepable — never crash the sweep.
             continue
         if meta.get("status") != STATUS_RUNNING:
             continue

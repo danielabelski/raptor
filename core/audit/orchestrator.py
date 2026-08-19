@@ -10359,8 +10359,14 @@ def _resolve_scoped(
     question unresolvable for a function that exists in the tree), so
     each request's subsystem directory is searched first — premise
     questions overwhelmingly name identifiers defined near the
-    reviewed code. Identifiers still unresolved after the scoped
-    passes get one root-scoped pass (which fully covers small trees).
+    reviewed code. Identifiers the subsystem passes leave unresolved
+    get an include-chase pass over each request source file's
+    ``#include`` graph — definitions in shared header roots
+    (``include/linux/...``) are reachable from the reviewed code but
+    sit in neither its directory nor the capped root scan (observed
+    live: a static-inline helper under ``include/`` reported as
+    not-found for a driver-subsystem request). Leftovers after that
+    get one root-scoped pass (which fully covers small trees).
     """
     merged_items: list = []
     remaining = list(all_idents)
@@ -10384,6 +10390,32 @@ def _resolve_scoped(
         merged_items.extend(res.items)
         unres = {u["name"] for u in res.unresolved}
         remaining = [n for n in remaining if n in unres]
+    if remaining:
+        chase_files: list = []
+        chase_seen: set = set()
+        chased: set[str] = set()
+        try:
+            from core.concepts.lang_resolve import include_scope_files
+            for req in ident_reqs:
+                sf = (req.source_file or "").strip()
+                if not sf or sf in chased:
+                    continue
+                chased.add(sf)
+                for p in include_scope_files(root, sf):
+                    if p not in chase_seen:
+                        chase_seen.add(p)
+                        chase_files.append(p)
+        except Exception:
+            logger.debug(
+                "study-consumer: include chase failed", exc_info=True,
+            )
+        if chase_files:
+            res = resolve_identifiers(
+                root, remaining, files=chase_files, include_c=include_c,
+            )
+            merged_items.extend(res.items)
+            unres = {u["name"] for u in res.unresolved}
+            remaining = [n for n in remaining if n in unres]
     final = resolve_identifiers(root, remaining, include_c=include_c)
     final.items = merged_items + final.items
     return final

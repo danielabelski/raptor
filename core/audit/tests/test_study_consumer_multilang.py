@@ -825,3 +825,98 @@ class TestCPerBatchSplice:
             target, ["advanceFrame"], [req], resolve_identifiers,
         )
         assert [i.name for i in res.items] == ["advanceFrame"]
+
+
+class TestIncludeChasePass:
+    """_resolve_scoped: identifiers the subsystem passes miss resolve
+    through the request source file's #include graph before the run
+    falls back to (and gives up at) the capped root scan."""
+
+    def _tree(self, tmp_path):
+        target = tmp_path / "tree"
+        (target / "drivers" / "widget").mkdir(parents=True)
+        (target / "include" / "linux" / "widget").mkdir(parents=True)
+        (target / "drivers" / "widget" / "main.c").write_text(
+            '#include <linux/widget.h>\n\n'
+            "int widget_prepare(void) { return widget_ref_get(); }\n",
+        )
+        (target / "include" / "linux" / "widget.h").write_text(
+            "/* umbrella */\n",
+        )
+        (target / "include" / "linux" / "widget" / "core.h").write_text(
+            "/* widget_ref_get grabs a runtime PM reference. */\n"
+            "static inline int widget_ref_get(void) { return 0; }\n",
+        )
+        return target
+
+    def test_chase_rescues_shared_header_definition(self, tmp_path) -> None:
+        from core.audit.orchestrator import _resolve_scoped
+        from core.concepts.lang_resolve import resolve_identifiers
+
+        target = self._tree(tmp_path)
+
+        calls = []
+
+        def capped(root, idents, scope=None, files=None, include_c=False):
+            # A kernel-sized tree: any pass without an explicit scope
+            # or file set stops at the flat cap before reaching
+            # include/ (simulated as an empty scan).
+            calls.append({"scope": scope, "files": files})
+            if scope is None and files is None:
+                return resolve_identifiers(
+                    root, idents, scope=root / "drivers",
+                    include_c=include_c,
+                )
+            return resolve_identifiers(
+                root, idents, scope=scope, files=files,
+                include_c=include_c,
+            )
+
+        req = StudyRequest(
+            question="Does widget_ref_get leave the count incremented on error?",
+            source_file="drivers/widget/main.c",
+            source_function="widget_prepare",
+        )
+        res = _resolve_scoped(
+            target, ["widget_ref_get"], [req], capped, include_c=True,
+        )
+        assert [i.name for i in res.items] == ["widget_ref_get"]
+        item = next(i for i in res.items if i.name == "widget_ref_get")
+        assert item.file == "include/linux/widget/core.h"
+        # The rescue came from the include-chase file set, not a
+        # lucky scope/root pass.
+        chase = [c for c in calls if c["files"] is not None]
+        assert chase and any(
+            "core.h" in str(p) for p in chase[0]["files"]
+        )
+
+    def test_no_chase_when_subsystem_pass_resolves(self, tmp_path) -> None:
+        from core.audit.orchestrator import _resolve_scoped
+        from core.concepts.lang_resolve import resolve_identifiers
+
+        target = self._tree(tmp_path)
+        (target / "drivers" / "widget" / "local.h").write_text(
+            "static inline int widget_ref_get(void) { return 1; }\n",
+        )
+
+        calls = []
+
+        def spy(root, idents, scope=None, files=None, include_c=False):
+            calls.append({"files": files})
+            return resolve_identifiers(
+                root, idents, scope=scope, files=files,
+                include_c=include_c,
+            )
+
+        req = StudyRequest(
+            question="Does widget_ref_get leave the count incremented on error?",
+            source_file="drivers/widget/main.c",
+            source_function="widget_prepare",
+        )
+        res = _resolve_scoped(
+            target, ["widget_ref_get"], [req], spy, include_c=True,
+        )
+        assert [i.name for i in res.items] == ["widget_ref_get"]
+        assert all(c["files"] is None for c in calls), (
+            "include chase must only run for leftovers"
+        )

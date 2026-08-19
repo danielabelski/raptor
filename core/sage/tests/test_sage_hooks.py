@@ -612,15 +612,20 @@ class TestFindingVerdictHooks(unittest.TestCase):
             "/repo", "CWE-89", "src/db.py", "run_query", ""))
 
     @staticmethod
-    def _stamped_verdict_row(verdict="false_positive", src="deadbeef1234"):
+    def _stamped_verdict_row(
+        verdict="false_positive", src="deadbeef1234", ts=None,
+    ):
         """Build a finding-verdict row the way store_finding_verdict does."""
+        import time as _time
+
         from core.sage.hooks import _finding_fingerprint, _repo_key
 
+        ts = str(int(_time.time())) if ts is None else str(ts)
         fp = _finding_fingerprint("CWE-89", "src/db.py", "run_query")
         content = (
             f"Finding verdict: fp={fp} rule=CWE-89 "
             f"file=src/db.py fn=run_query "
-            f"||src={src}|| ||verdict={verdict}||"
+            f"||src={src}|| ||verdict={verdict}|| ||ts={ts}||"
         )
         fields = {
             "kind": "finding_verdict",
@@ -628,6 +633,7 @@ class TestFindingVerdictHooks(unittest.TestCase):
             "fp": fp,
             "verdict": verdict,
             "src": src,
+            "ts": ts,
         }
         return {"content": rowmac.stamp(content, fields), "confidence": 0.95}
 
@@ -643,6 +649,75 @@ class TestFindingVerdictHooks(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["verdict"], "false_positive")
         self.assertEqual(result["source_hash"], "deadbeef1234")
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_rejects_expired_ttl(self, mock_get_client):
+        """A suppressible verdict older than the TTL re-tests."""
+        import time as _time
+
+        from core.sage import hooks
+        old_ts = int(_time.time()) - hooks._SUPPRESS_TTL_S - 3600
+        mock_client = MagicMock()
+        mock_client.query.return_value = [self._stamped_verdict_row(ts=old_ts)]
+        mock_get_client.return_value = mock_client
+
+        from core.sage.hooks import recall_prior_finding_verdict
+        with self.assertLogs("raptor", level="DEBUG") as logs:
+            result = recall_prior_finding_verdict(
+                "/repo", "CWE-89", "src/db.py", "run_query", "deadbeef1234")
+        self.assertIsNone(result)
+        self.assertTrue(any("re-testing" in line for line in logs.output))
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_rejects_row_without_timestamp(self, mock_get_client):
+        """Pre-TTL rows (no ts in the MAC'd set) demote to hint."""
+        from core.sage.hooks import _finding_fingerprint, _repo_key
+        fp = _finding_fingerprint("CWE-89", "src/db.py", "run_query")
+        content = (
+            f"Finding verdict: fp={fp} rule=CWE-89 "
+            f"file=src/db.py fn=run_query "
+            f"||src=deadbeef1234|| ||verdict=false_positive||"
+        )
+        fields = {
+            "kind": "finding_verdict",
+            "repo": _repo_key("/repo"),
+            "fp": fp,
+            "verdict": "false_positive",
+            "src": "deadbeef1234",
+        }
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"content": rowmac.stamp(content, fields), "confidence": 0.95},
+        ]
+        mock_get_client.return_value = mock_client
+
+        from core.sage.hooks import recall_prior_finding_verdict
+        result = recall_prior_finding_verdict(
+            "/repo", "CWE-89", "src/db.py", "run_query", "deadbeef1234")
+        self.assertIsNone(result)
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_rejects_forged_fresh_timestamp(self, mock_get_client):
+        """Refreshing an expired row's ts in the prose breaks the MAC."""
+        import re as _re
+        import time as _time
+
+        from core.sage import hooks
+        old_ts = int(_time.time()) - hooks._SUPPRESS_TTL_S - 3600
+        row = self._stamped_verdict_row(ts=old_ts)
+        row["content"] = _re.sub(
+            r"\|\|ts=\d+\|\|", f"||ts={int(_time.time())}||", row["content"],
+        )
+        mock_client = MagicMock()
+        mock_client.query.return_value = [row]
+        mock_get_client.return_value = mock_client
+
+        from core.sage.hooks import recall_prior_finding_verdict
+        with self.assertLogs("raptor", level="DEBUG") as logs:
+            result = recall_prior_finding_verdict(
+                "/repo", "CWE-89", "src/db.py", "run_query", "deadbeef1234")
+        self.assertIsNone(result)
+        self.assertTrue(any("demoted" in line for line in logs.output))
 
     @patch("core.sage.hooks._get_client")
     def test_recall_rejects_unstamped_row(self, mock_get_client):
@@ -1404,15 +1479,19 @@ class TestAuditHypothesisVerdict(unittest.TestCase):
         status,
         tool="semgrep",
         confidence=0.90,
+        ts=None,
     ):
         """Build an audit-verdict row the way the store hook does."""
+        import time as _time
+
         from core.sage.hooks import _repo_key
 
+        ts = str(int(_time.time())) if ts is None else str(ts)
         content = (
             f"Audit hypothesis verdict: "
             f"||file={file_path}|| ||fn={function}|| "
             f"||hyp={hyp_hash}|| ||src={src}|| "
-            f"||status={status}|| ||tool={tool}||"
+            f"||status={status}|| ||tool={tool}|| ||ts={ts}||"
         )
         fields = {
             "kind": "audit_hypothesis",
@@ -1422,6 +1501,7 @@ class TestAuditHypothesisVerdict(unittest.TestCase):
             "hyp": hyp_hash,
             "src": src,
             "status": status,
+            "ts": ts,
         }
         return {"content": rowmac.stamp(content, fields), "confidence": confidence}
 
@@ -1615,6 +1695,60 @@ class TestAuditHypothesisVerdict(unittest.TestCase):
         self.assertTrue(any("demoted" in line for line in logs.output))
 
     @patch("core.sage.hooks._get_client")
+    def test_recall_rejects_expired_ttl(self, mock_gc):
+        """A clean/dormant verdict older than the TTL re-reviews."""
+        import time as _time
+
+        from core.hash import sha256_string
+        from core.sage import hooks
+        from core.sage.hooks import recall_audit_hypothesis_verdict
+        hyp = "unchecked return value"
+        hyp_hash = sha256_string(hyp)[:16]
+        old_ts = int(_time.time()) - hooks._SUPPRESS_TTL_S - 3600
+        mock_client = MagicMock()
+        mock_client.query.return_value = [self._stamped_audit_row(
+            "f.c", "fn", hyp_hash, "h1", "clean", ts=old_ts,
+        )]
+        mock_gc.return_value = mock_client
+        with self.assertLogs("raptor", level="DEBUG") as logs:
+            result = recall_audit_hypothesis_verdict(
+                repo_path="/repo", file_path="f.c", function="fn",
+                hypothesis=hyp, source_hash="h1",
+            )
+        self.assertIsNone(result)
+        self.assertTrue(any("re-testing" in line for line in logs.output))
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_rejects_row_without_timestamp(self, mock_gc):
+        """Pre-TTL audit rows (no ts in the MAC'd set) demote to hint."""
+        from core.sage.hooks import _repo_key, recall_audit_hypothesis_verdict
+        content = (
+            "Audit hypothesis verdict: "
+            "||file=f.c|| ||fn=fn|| "
+            "||hyp=abcd1234|| ||src=h1|| "
+            "||status=clean|| ||tool=semgrep||"
+        )
+        fields = {
+            "kind": "audit_hypothesis",
+            "repo": _repo_key("/repo"),
+            "file": "f.c",
+            "fn": "fn",
+            "hyp": "abcd1234",
+            "src": "h1",
+            "status": "clean",
+        }
+        mock_client = MagicMock()
+        mock_client.query.return_value = [
+            {"content": rowmac.stamp(content, fields), "confidence": 0.9},
+        ]
+        mock_gc.return_value = mock_client
+        result = recall_audit_hypothesis_verdict(
+            repo_path="/repo", file_path="f.c", function="fn",
+            source_hash="h1",
+        )
+        self.assertIsNone(result)
+
+    @patch("core.sage.hooks._get_client")
     def test_recall_without_hypothesis_rejects_stale(self, mock_gc):
         """Pre-review recall (no hypothesis) rejects stale hash."""
         from core.sage.hooks import recall_audit_hypothesis_verdict
@@ -1633,6 +1767,77 @@ class TestAuditHypothesisVerdict(unittest.TestCase):
             source_hash="new",
         )
         self.assertIsNone(result)
+
+
+class TestComputeFindingSourceHash(unittest.TestCase):
+    """Staleness key: span hash folded with the full file content."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "src.c"
+        self.lines = [f"line {i}" for i in range(1, 81)]
+        self._write(self.lines)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, lines):
+        self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_stable_when_unchanged(self):
+        from core.sage.hooks import compute_finding_source_hash
+        h1 = compute_finding_source_hash(self.path, 30)
+        h2 = compute_finding_source_hash(self.path, 30)
+        self.assertTrue(h1)
+        self.assertEqual(h1, h2)
+
+    def test_change_outside_window_invalidates(self):
+        """A same-file change far from the finding line re-tests.
+
+        Pre-fix, only line ±10 was hashed — a gutted callee 30 lines
+        away kept suppressing the regressed finding.
+        """
+        from core.sage.hooks import compute_finding_source_hash
+        before = compute_finding_source_hash(self.path, 30)
+        changed = list(self.lines)
+        changed[69] = "gutted_callee();"  # line 70 — far outside 30±10
+        self._write(changed)
+        after = compute_finding_source_hash(self.path, 30)
+        self.assertTrue(after)
+        self.assertNotEqual(before, after)
+
+    def test_whole_function_bounds_used(self):
+        """With line_end, a change inside the function (but outside the
+        ±10 window) changes the span itself."""
+        from core.sage.hooks import compute_finding_source_hash
+        before = compute_finding_source_hash(self.path, 10, line_end=60)
+        changed = list(self.lines)
+        changed[49] = "  changed_statement;"  # line 50, inside 10..60
+        self._write(changed)
+        after = compute_finding_source_hash(self.path, 10, line_end=60)
+        self.assertNotEqual(before, after)
+
+    def test_line_end_changes_key(self):
+        from core.sage.hooks import compute_finding_source_hash
+        windowed = compute_finding_source_hash(self.path, 30)
+        function_wide = compute_finding_source_hash(
+            self.path, 30, line_end=60,
+        )
+        self.assertNotEqual(windowed, function_wide)
+
+    def test_invalid_line_end_falls_back_to_window(self):
+        from core.sage.hooks import compute_finding_source_hash
+        self.assertEqual(
+            compute_finding_source_hash(self.path, 30, line_end=0),
+            compute_finding_source_hash(self.path, 30),
+        )
+
+    def test_unreadable_file_returns_empty(self):
+        from core.sage.hooks import compute_finding_source_hash
+        self.assertEqual(
+            compute_finding_source_hash(Path(self.tmp.name) / "gone.c", 5),
+            "",
+        )
 
 
 class TestAuditObservation(unittest.TestCase):

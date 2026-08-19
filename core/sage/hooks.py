@@ -681,16 +681,65 @@ def compute_finding_source_hash(
     file_path: Path,
     line: int,
     window: int = 10,
+    line_end: int | None = None,
 ) -> str:
-    """Hash the source lines around a finding for staleness detection.
+    """Hash a finding's source context for staleness detection.
 
-    Returns SHA-256[:12] via ``core.staleness.hash_span``, or ``""``
-    if the file is unreadable or ``line`` is invalid.
+    The span is the whole enclosing function when the caller knows its
+    bounds (pass ``line_end``; the audit path has line_start/line_end),
+    else ``line`` ±``window``. The span hash is folded together with a
+    hash of the FULL file content: a change that alters exploitability
+    outside the local window — a gutted callee, a changed macro, a
+    caller newly passing attacker data — invalidates prior verdicts
+    even when the span itself is byte-identical. Coarse by design: the
+    fail direction is re-test, never stale suppression.
+
+    Returns SHA-256[:12], or ``""`` if the file is unreadable or the
+    range is invalid. Rows stored under the previous span-only format
+    can no longer match — they demote to hint (re-test), which is the
+    intended migration.
     """
     from core.staleness import hash_span
-    start = max(1, line - window)
-    end = line + window
-    return hash_span(file_path, start, end)
+    if line_end is not None and 0 < line <= line_end:
+        start, end = line, line_end
+    else:
+        start = max(1, line - window)
+        end = line + window
+    span_hash = hash_span(file_path, start, end)
+    if not span_hash:
+        return ""
+    try:
+        file_text = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    file_hash = sha256_string(file_text)[:12]
+    return sha256_string(f"{span_hash}:{file_hash}")[:12]
+
+
+# Client-side lifetime bound on suppressible verdicts. Even a verdict
+# whose source hash still matches goes stale eventually (build flags,
+# dependencies, and reachability drift without touching the file);
+# SAGE confidence decay alone keeps rows above the recall floor for
+# ~50-60 days. The store side stamps a ``ts`` field into the MAC'd
+# field set (so it cannot be forged fresh); the recall side rejects
+# rows older than the TTL — the finding simply re-tests.
+_SUPPRESS_TTL_DAYS = 30
+_SUPPRESS_TTL_S = _SUPPRESS_TTL_DAYS * 86400
+
+
+def _row_ts_fresh(hook: str, ts: str) -> bool:
+    """Whether a MAC-verified row timestamp is within the suppression TTL."""
+    try:
+        age = time.time() - int(ts)
+    except (TypeError, ValueError):
+        return False
+    if age > _SUPPRESS_TTL_S:
+        logger.debug(
+            "SAGE %s: prior verdict older than %d days — re-testing",
+            hook, _SUPPRESS_TTL_DAYS,
+        )
+        return False
+    return True
 
 
 def recall_prior_finding_verdict(
@@ -727,6 +776,13 @@ def recall_prior_finding_verdict(
             content, token = rowmac.strip(str(row.get("content") or ""))
             if f"||src={source_hash}||" not in content:
                 continue
+            ts_match = re.search(r"\|\|ts=(\d+)\|\|", content)
+            if not ts_match:
+                # Pre-TTL row (no timestamp in the MAC'd set): demote
+                # to hint — the finding re-tests and re-earns a fresh,
+                # TTL-bounded verdict.
+                continue
+            ts = ts_match.group(1)
             for v in _SUPPRESS_VERDICTS:
                 if f"||verdict={v}||" in content:
                     fields = {
@@ -735,8 +791,11 @@ def recall_prior_finding_verdict(
                         "fp": _finding_fingerprint(rule_id, file_path, function),
                         "verdict": v,
                         "src": source_hash,
+                        "ts": ts,
                     }
                     if not _row_mac_ok("finding_verdict", fields, token):
+                        break
+                    if not _row_ts_fresh("finding_verdict", ts):
                         break
                     _metric_inc("recall_hits")
                     return {
@@ -772,10 +831,12 @@ def store_finding_verdict(
     try:
         fp = _finding_fingerprint(rule_id, file_path, function)
         _s = _sanitise_delim
+        ts = str(int(time.time()))
         content = (
             f"Finding verdict: fp={fp} rule={_s(rule_id)} "
             f"file={_s(file_path)} fn={_s(function)} "
-            f"||src={_s(source_hash)}|| ||verdict={_s(verdict)}||"
+            f"||src={_s(source_hash)}|| ||verdict={_s(verdict)}|| "
+            f"||ts={ts}||"
         )
         content = _stamp_row(
             "finding_verdict",
@@ -786,6 +847,7 @@ def store_finding_verdict(
                 "fp": fp,
                 "verdict": verdict,
                 "src": source_hash,
+                "ts": ts,
             },
         )
         return _propose_redacted(
@@ -1040,11 +1102,13 @@ def store_audit_hypothesis_verdict(
         hyp_hash = sha256_string(hypothesis)[:16]
         _s = _sanitise_delim
         confidence = 0.90 if evidence_tool else 0.75
+        ts = str(int(time.time()))
         content = (
             f"Audit hypothesis verdict: "
             f"||file={_s(file_path)}|| ||fn={_s(function)}|| "
             f"||hyp={_s(hyp_hash)}|| ||src={_s(source_hash)}|| "
             f"||status={_s(status)}|| ||tool={_s(evidence_tool)}|| "
+            f"||ts={ts}|| "
             f"hypothesis: {hypothesis[:300]}"
         )
         content = _stamp_row(
@@ -1058,6 +1122,7 @@ def store_audit_hypothesis_verdict(
                 "hyp": hyp_hash,
                 "src": source_hash,
                 "status": status,
+                "ts": ts,
             },
         )
         return _propose_redacted(
@@ -1117,6 +1182,13 @@ def recall_audit_hypothesis_verdict(
                 continue
             if hyp_hash and f"||hyp={hyp_hash}||" not in content:
                 continue
+            ts_match = re.search(r"\|\|ts=(\d+)\|\|", content)
+            if not ts_match:
+                # Pre-TTL row (no timestamp in the MAC'd set): demote
+                # to hint — the function re-reviews and re-earns a
+                # fresh, TTL-bounded verdict.
+                continue
+            ts = ts_match.group(1)
             for s in _AUDIT_SKIP_STATUSES:
                 if f"||status={s}||" in content:
                     row_hyp = re.search(r"\|\|hyp=([^|]*)\|\|", content)
@@ -1128,8 +1200,11 @@ def recall_audit_hypothesis_verdict(
                         "hyp": row_hyp.group(1) if row_hyp else "",
                         "src": source_hash,
                         "status": s,
+                        "ts": ts,
                     }
                     if not _row_mac_ok("audit_hypothesis", fields, token):
+                        break
+                    if not _row_ts_fresh("audit_hypothesis", ts):
                         break
                     tool = ""
                     tool_match = re.search(r"\|\|tool=([^|]*)\|\|", content)

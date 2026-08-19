@@ -1428,9 +1428,15 @@ def review_one_function(
 
         line_start = gap.get("line_start", 0)
         if line_start:
+            # Whole-function span: the gap carries the function bounds,
+            # so hash line_start..line_end rather than a ±10 window —
+            # a change anywhere in the function invalidates the prior
+            # verdict (compute_finding_source_hash also folds in the
+            # full file content).
             src_hash = compute_finding_source_hash(
                 config.target_path / gap["file"],
                 line_start,
+                line_end=gap.get("line_end") or None,
             )
             if src_hash:
                 gap["_sage_source_hash"] = src_hash

@@ -4127,9 +4127,12 @@ class TestSageHypothesisPathway:
 
         orig_hash = None
 
-        def track_hash(file_path, line, window=10):
-            h = orig_hash(file_path, line, window)
-            hash_calls.append({"file": str(file_path), "line": line, "hash": h})
+        def track_hash(file_path, line, window=10, line_end=None):
+            h = orig_hash(file_path, line, window, line_end=line_end)
+            hash_calls.append({
+                "file": str(file_path), "line": line,
+                "line_end": line_end, "hash": h,
+            })
             return h
 
         def review_fn(ctx, config):

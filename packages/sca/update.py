@@ -1335,12 +1335,18 @@ def _rewrite_inline_install(
     for raw in text.splitlines(keepends=True):
         m = cmd_re.search(raw)
         if m is not None:
-            # Install command on this physical line: rewrite same-line args.
-            prefix = raw[: m.end()]
-            new_rest, hit = sub_fn(raw[m.end():], plan.name, plan.target)
+            # Install command(s) on this physical line: rewrite each
+            # command's own argument segment, bounded at shell
+            # separators (see ``_rewrite_inline_cmd_line``).
+            new_line, hit, still_open = _rewrite_inline_cmd_line(
+                raw, cmd_re, sub_fn, plan.name, plan.target)
             rewrote = rewrote or hit
-            out_lines.append(prefix + new_rest)
-            in_args = _inline_line_continues(raw)
+            out_lines.append(new_line)
+            # A ``\`` continuation only extends the install's args when
+            # the line's LAST install command runs to end-of-line — a
+            # separator after it means the continuation belongs to the
+            # post-separator command, not the install.
+            in_args = still_open and _inline_line_continues(raw)
             continue
         if in_args:
             if raw.lstrip().startswith("#"):
@@ -1372,6 +1378,49 @@ def _rewrite_inline_install(
             f"name {plan.name!r} not found in inline {eco} installs"
         )
     return "".join(out_lines), True, None
+
+
+def _rewrite_inline_cmd_line(
+    raw: str, cmd_re: re.Pattern, sub_fn: Any,
+    name: str, new_version: str,
+) -> tuple[str, bool, bool]:
+    """Rewrite every matching install command's OWN argument segment
+    on one physical line.
+
+    Each command's args end at the first shell separator after it.
+    Substituting into the whole remainder (the old behaviour) let a
+    bare-name match rewrite a LATER command on the same line
+    (``apt-get install -y curl && curl … | bash`` turning the second
+    ``curl`` — a command invocation — into ``curl=<ver>``) and let
+    ``_inline_sub_versioned_flag`` find a ``--version`` flag belonging
+    to a different install (``cargo install a --version X && cargo
+    install b``). Scanning segment-by-segment also covers a second
+    install command after the separator, which the single-prefix
+    rewrite handled only by that same over-broad substitution.
+
+    Returns ``(new_line, any_hit, still_in_args)``; ``still_in_args``
+    is True when the final install command's args run to end-of-line,
+    so a ``\\`` continuation extends THEM rather than a post-separator
+    command.
+    """
+    out: list[str] = []
+    pos = 0
+    hit_any = False
+    last_seg_open = False
+    while True:
+        m = cmd_re.search(raw, pos)
+        if m is None:
+            out.append(raw[pos:])
+            break
+        sep = _INLINE_SHELL_SEP_RE.search(raw, m.end())
+        seg_end = sep.start() if sep is not None else len(raw)
+        new_seg, hit = sub_fn(raw[m.end():seg_end], name, new_version)
+        hit_any = hit_any or hit
+        out.append(raw[pos:m.end()])
+        out.append(new_seg)
+        pos = seg_end
+        last_seg_open = sep is None
+    return "".join(out), hit_any, last_seg_open
 
 
 _PYPI_CLAUSE_RE = re.compile(r"^\s*(===|==|>=|<=|~=|!=|>|<)\s*(.+?)\s*$")
@@ -1447,11 +1496,14 @@ def _inline_sub_pypi(
     if n > 0:
         return new_text, True
     # 2. Bare name (not part of another identifier or version-separated).
+    #    ``count=1`` — pin the first occurrence only, so a repeat of the
+    #    name later in the segment (e.g. inside a trailing comment) is
+    #    left alone.
     bare = re.compile(
         rf"(?<![A-Za-z0-9._-])({name_re})(?![A-Za-z0-9._@/-])",
         re.IGNORECASE,
     )
-    new_text, n = bare.subn(rf"\1=={new_version}", text)
+    new_text, n = bare.subn(rf"\1=={new_version}", text, count=1)
     return (new_text, True) if n > 0 else (text, False)
 
 
@@ -1471,7 +1523,7 @@ def _inline_sub_eq_separated(
         rf"(?<![A-Za-z0-9._-])({name_re})(?![A-Za-z0-9._@/=-])",
         re.IGNORECASE,
     )
-    new_text, n = bare.subn(rf"\1={new_version}", text)
+    new_text, n = bare.subn(rf"\1={new_version}", text, count=1)
     return (new_text, True) if n > 0 else (text, False)
 
 
@@ -1491,7 +1543,7 @@ def _inline_sub_yum(
         rf"(?<![A-Za-z0-9._-])({name_re})(?![A-Za-z0-9._@/=-])",
         re.IGNORECASE,
     )
-    new_text, n = bare.subn(rf"\1-{new_version}", text)
+    new_text, n = bare.subn(rf"\1-{new_version}", text, count=1)
     return (new_text, True) if n > 0 else (text, False)
 
 
@@ -1514,7 +1566,7 @@ def _inline_sub_at_separated(
     bare = re.compile(
         rf"(?<![A-Za-z0-9._-])({name_re})(?![A-Za-z0-9._@/=-])",
     )
-    new_text, n = bare.subn(rf"\1@{new_version}", text)
+    new_text, n = bare.subn(rf"\1@{new_version}", text, count=1)
     return (new_text, True) if n > 0 else (text, False)
 
 
@@ -1610,7 +1662,7 @@ def _inline_sub_composer(
     bare = re.compile(
         rf"(?<![A-Za-z0-9._-])({name_re})(?![A-Za-z0-9._@/=:-])",
     )
-    new_text, n = bare.subn(rf"\1:{new_version}", text)
+    new_text, n = bare.subn(rf"\1:{new_version}", text, count=1)
     return (new_text, True) if n > 0 else (text, False)
 
 

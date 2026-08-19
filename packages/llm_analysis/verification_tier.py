@@ -23,7 +23,10 @@ actually carries; tier assignment is pure dict inspection, no LLM):
   the finding's path conditions (``analysis.smt_witness.model``), or a
   dataflow validation verdict produced by a mechanical method
   (``method`` of ``codeql-iris`` / ``structural-treesitter``, or the
-  IRIS Tier 1 pre-flight's ``tier: iris_tier1`` record). A mechanical
+  IRIS Tier 1 pre-flight's ``tier: iris_tier1`` record), or a
+  fail-open channel receipt whose role evidence is registry-grade
+  (``fail_open`` outcome ``confirmed``/``refuted`` without the
+  ``-naming`` detection-variant rule id). A mechanical
   ``refuted`` also earns ``tool_backed`` — the tier grades the
   evidence, not the verdict's sign.
 * ``llm_only`` — the LLM affirmed (or denied) and nothing mechanical
@@ -84,6 +87,18 @@ def derive_verification_tier(finding: dict[str, Any]) -> str:
     smt = analysis.get("smt_witness") or finding.get("smt_witness") or {}
     if isinstance(smt, dict) and smt.get("model"):
         return VerificationTier.TOOL_BACKED.value
+
+    # Fail-open channel receipt (core.orchestration.fail_open_channel):
+    # a mechanical confirmed/refuted adjudication with role + handler +
+    # fallibility receipts. Detection-grade role variants (the
+    # ``-naming`` rule-id suffix) stay llm_only — an uncorroborated
+    # naming-stem role must not launder the verdict into tool_backed.
+    fo = analysis.get("fail_open") or finding.get("fail_open") or {}
+    if isinstance(fo, dict) and fo.get("outcome") in (
+            "confirmed", "refuted"):
+        rule = fo.get("rule_id") or ""
+        if not rule.endswith("-naming"):
+            return VerificationTier.TOOL_BACKED.value
 
     dv = (
         analysis.get("dataflow_validation")

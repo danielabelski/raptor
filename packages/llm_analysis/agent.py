@@ -1890,6 +1890,23 @@ class AutonomousSecurityAgentV2:
         self._gd_server = None
         self._gd_server_probed = False
 
+    def _fail_open_adjudicate(self, finding: dict) -> dict | None:
+        """Fail-open channel receipt for one finding, or ``None``.
+
+        The channel adjudicates role × handler outcome × fallibility
+        mechanically (no server, no subprocess) and returns a receipt
+        dict only for a ``refuted`` or ``confirmed`` verdict; the
+        caller decides skip-vs-corroborate. Claim-shape binding and
+        the per-run cap are the caller's (they gate whether this is
+        called at all).
+        """
+        from core.orchestration.fail_open_channel import (
+            adjudicate_finding,
+        )
+        return adjudicate_finding(
+            finding, Path(self.repo_path), out_dir=self.out_dir,
+        )
+
     _SYNTHESIZED_RULE_PREFIX = "synthesized:"
 
     def _record_graduated_rule_feedback(self, vuln) -> None:
@@ -2564,6 +2581,12 @@ class AutonomousSecurityAgentV2:
         sage_fp_skipped_llm_calls = 0
         # Guard-dominance chokepoint (P23) LLM-call skips.
         guard_dominance_skipped_llm_calls = 0
+        # Fail-open channel chokepoint: refutation skips + confirmed
+        # corroboration receipts attached, and the dispatch count that
+        # enforces the per-run cap.
+        fail_open_skipped_llm_calls = 0
+        fail_open_corroborated = 0
+        fail_open_checked = 0
         sage_fp_stored = 0
         idx = 0  # prevent UnboundLocalError when empty
 
@@ -2913,6 +2936,82 @@ class AutonomousSecurityAgentV2:
                         journal_entries_emitted += 1
                     continue  # skip LLM analyze + exploit + patch
 
+                # 0e. Fail-open channel chokepoint — for findings whose
+                # claim reads as a fail-open / swallowed-error shape:
+                # the mechanical channel adjudicates role x handler
+                # outcome x fallibility with receipts (no server, no
+                # subprocess — one parse per checked finding). A
+                # refuted claim skips the LLM call with the receipt in
+                # the analysis record (explicit disqualifier, never a
+                # silent drop); a confirmed one rides onto the finding
+                # as tool corroboration — evidence, never a verdict.
+                # Mirrors the guard-dominance (P23) consumption shape.
+                fo_skipped_this = False
+                if not finding.get("manual_override"):
+                    try:
+                        from core.orchestration.fail_open_channel import (
+                            FAIL_OPEN_CHANNEL_CAP,
+                            fail_open_binding,
+                        )
+                        fo_receipt = None
+                        if fail_open_binding(finding) is not None \
+                                and fail_open_checked \
+                                < FAIL_OPEN_CHANNEL_CAP:
+                            fail_open_checked += 1
+                            fo_receipt = self._fail_open_adjudicate(
+                                finding,
+                            )
+                        if fo_receipt \
+                                and fo_receipt.get("outcome") == "refuted":
+                            vuln.analysis = {
+                                "is_true_positive": False,
+                                "is_exploitable": False,
+                                "reasoning": (
+                                    "Fail-open channel refutation: "
+                                    + fo_receipt.get("reason", "")
+                                    + " (mechanical handler/site "
+                                    "receipts — see fail_open). To "
+                                    "override, set ``manual_override:"
+                                    " true`` on the finding and "
+                                    "re-run."
+                                ),
+                                "fail_open_refutation": True,
+                                "fail_open": fo_receipt,
+                            }
+                            fo_skipped_this = True
+                            # Best-effort on IO only; the callee
+                            # already swallows its own OSErrors.
+                            with contextlib.suppress(OSError):
+                                from core.analysis.reach_chokepoint import (
+                                    record_suppression,
+                                )
+                                record_suppression(
+                                    self.out_dir,
+                                    finding=finding,
+                                    verdict="fail_open_refuted",
+                                    reason=fo_receipt.get("reason", ""),
+                                )
+                        elif fo_receipt and fo_receipt.get(
+                                "outcome") == "confirmed":
+                            # Corroboration receipt: the LLM still
+                            # rules; verification_tier grades the
+                            # reported verdict tool_backed.
+                            finding["fail_open"] = fo_receipt
+                            fail_open_corroborated += 1
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(
+                            "fail-open pre-flight failed on %s: %s",
+                            finding.get("finding_id") or finding.get("id"),
+                            e,
+                        )
+
+                if fo_skipped_this:
+                    analyzed += 1
+                    fail_open_skipped_llm_calls += 1
+                    if emit_journal and self._emit_journal_entry(vuln, checklist):
+                        journal_entries_emitted += 1
+                    continue  # skip LLM analyze + exploit + patch
+
                 # 1. Autonomous analysis (LLM-powered, or prep-only)
                 if self.analyze_vulnerability(vuln):
                     analyzed += 1
@@ -3131,6 +3230,11 @@ class AutonomousSecurityAgentV2:
             "guard_dominance": {
                 "skipped_llm_calls": guard_dominance_skipped_llm_calls,
             },
+            "fail_open_channel": {
+                "checked": fail_open_checked,
+                "skipped_llm_calls": fail_open_skipped_llm_calls,
+                "corroborated": fail_open_corroborated,
+            },
             "verification_tiers": verification_tiers,
             "execution_time": execution_time,
             "llm_stats": llm_stats,
@@ -3217,6 +3321,14 @@ class AutonomousSecurityAgentV2:
                     "✓ Guard-dominance refutation: "
                     "%d LLM call(s) skipped (dominating check found)",
                     guard_dominance_skipped_llm_calls,
+                )
+            if fail_open_skipped_llm_calls > 0 or fail_open_corroborated > 0:
+                logger.info(
+                    "✓ Fail-open channel: %d LLM call(s) skipped "
+                    "(claim mechanically refuted), %d finding(s) "
+                    "corroborated with receipts",
+                    fail_open_skipped_llm_calls,
+                    fail_open_corroborated,
                 )
             logger.info("")
             if dataflow_validated > 0:

@@ -1198,10 +1198,15 @@ def _run_self_test(
               file=sys.stderr)
         return 4
 
-    import tempfile
+    import contextlib
 
+    from core.run.scratch import scratch_dir
     from core.sandbox.context import run_untrusted
-    tmp_root = Path(tempfile.mkdtemp(prefix="raptor-sca-self-test-"))
+    # ``scratch_dir`` registers its prefix with the tmp reaper, so a
+    # dir orphaned by SIGTERM/OOM (which skips this function's
+    # ``finally``) is reclaimed by the next run's sweep.
+    _scratch = contextlib.ExitStack()
+    tmp_root = _scratch.enter_context(scratch_dir("raptor-sca-self-test-"))
     worktree = tmp_root / "wt"
     # The target's ``.git/config`` is attacker-controllable on an
     # untrusted clone — git evaluates ``core.fsmonitor`` /
@@ -1356,8 +1361,7 @@ def _run_self_test(
                     "harden self-test: git worktree remove failed for "
                     "%s (leak candidate): %s", worktree, e,
                 )
-        import shutil
-        shutil.rmtree(tmp_root, ignore_errors=True)
+        _scratch.close()
 
 
 def _count_actionable(

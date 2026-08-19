@@ -71,7 +71,7 @@ When a `/command` fires:
 
 ## PROJECTS
 
-Projects are opt-in named workspaces that corral analysis runs into a shared directory. Commands with `--project <name>` or after `/project use <name>` write output to the project directory. Without a project, commands behave as before (timestamped dirs under `out/`).
+Projects are opt-in named workspaces that corral analysis runs into a shared directory. Activate a project with `/project use <name>` in-session, or at launch with the launcher's `-p <name>` / `--project <name>` flag (`bin/raptor` routes it through `libexec/raptor-startup-check`, which also auto-activates a project whose target matches the caller's directory). While a project is active, analysis commands write output to the project directory — no analysis command takes a `--project` flag itself. Without a project, commands behave as before (timestamped dirs under `out/`).
 
 ```
 /project create myapp --target /path/to/code -d "Description"

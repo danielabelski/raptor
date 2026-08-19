@@ -307,3 +307,45 @@ def test_telemetry_sink_installed_during_pipeline(tmp_path, monkeypatch):
     # Uninstalled after the run — no leak into the next command.
     from core.llm.telemetry import current_sink
     assert current_sink() is None
+
+
+def test_model_flag_reaches_pipeline_and_default_resolves(
+    tmp_path, monkeypatch,
+):
+    """--model passes through to Pipeline(model_id=...); without the
+    flag the shim resolves the operator's configured primary via
+    cve_diff.llm.auth.default_model_id."""
+    out_dir = tmp_path / "run"
+    calls: list = []
+    seen_kw = {}
+
+    class _KwProbePipeline:
+        def __init__(self, **kw):
+            seen_kw.update(kw)
+            self.agent = type("A", (), {"last_telemetry": None})()
+
+        def run(self, cve_id, work_dir):
+            calls.append(("pipeline", cve_id))
+            from cve_diff.core.exceptions import UnsupportedSource
+            raise UnsupportedSource("test stub")
+
+    rc = _run_shim(
+        ["run", "CVE-2024-77777", "--output-dir", str(out_dir),
+         "--model", "gemini-2.5-pro"],
+        _KwProbePipeline, calls, monkeypatch,
+    )
+    assert rc == 4
+    assert seen_kw["model_id"] == "gemini-2.5-pro"
+
+    # No flag → registry default.
+    seen_kw.clear()
+    calls.clear()
+    monkeypatch.setattr(
+        "cve_diff.llm.auth.default_model_id", lambda: "registry-default-model",
+    )
+    rc = _run_shim(
+        ["run", "CVE-2024-88888", "--output-dir", str(out_dir / "b")],
+        _KwProbePipeline, calls, monkeypatch,
+    )
+    assert rc == 4
+    assert seen_kw["model_id"] == "registry-default-model"

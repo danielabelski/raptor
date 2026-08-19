@@ -301,9 +301,14 @@ def run(
         ),
     ] = False,
     model_id: Annotated[
-        str,
-        typer.Option("--model", help="Model for root-cause analysis.", show_default=False),
-    ] = "claude-opus-4-7",
+        str | None,
+        typer.Option(
+            "--model",
+            help="Model for the discovery agent and root-cause analysis "
+                 "(default: RAPTOR's configured primary model).",
+            show_default=False,
+        ),
+    ] = None,
     disk_limit_pct: Annotated[
         float,
         typer.Option("--disk-limit", help="Max filesystem usage %.", show_default=False),
@@ -323,6 +328,11 @@ def run(
     """Discover, acquire, diff, and report the fix commit for a CVE."""
     warn_if_token_missing()
     cve_id = validate_cve_id(cve_id)
+    # Resolve the model at the entry point (operator pin > models.json
+    # > env autodetect > historical fallback) so the pipeline and
+    # analyzer stay config-free — see cve_diff.llm.auth.default_model_id.
+    from cve_diff.llm.auth import default_model_id
+    model_id = model_id or default_model_id()
     # Both the agent loop and the optional root-cause analyzer now go
     # direct to the Anthropic SDK (no LiteLLM proxy). The legacy
     # `require_alive()` proxy gate was removed 2026-05-01 along with
@@ -381,6 +391,7 @@ def run(
                         max_file_bytes=max_file_bytes,
                         progress_callback=progress_cb,
                         agent_budget_multiplier=budget_multiplier,
+                        model_id=model_id,
                     )
                     result = pipeline_slot[0].run(cve_id, work)
                     break

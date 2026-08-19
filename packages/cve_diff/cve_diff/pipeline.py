@@ -125,6 +125,13 @@ class Pipeline:
     # the first attempt hits a budget cap (interactive extend-on-cap
     # flow). Default 1.0 = use the AgentConfig defaults as shipped.
     agent_budget_multiplier: float = 1.0
+    # Model for the discovery agent (primary run, focused retries,
+    # post-submit retries). None = the AgentConfig default. Entry
+    # points resolve the operator's configured primary via
+    # cve_diff.llm.auth.default_model_id and pass it here — the
+    # pipeline itself never reads env/config so library callers and
+    # tests stay hermetic.
+    model_id: str | None = None
     # When set, called at each stage transition with
     # (stage_name: str, status: str, info: dict). The CLI's --verbose
     # flag wires this to a stderr-printer; bench leaves it None.
@@ -417,6 +424,7 @@ class Pipeline:
             user_message=build_user_message(cve_id),
             tools=TOOLS,
             validator=discover_validator,
+            **self._model_kw(),
         )
         config = self._scale_budgets(config)
         ctx = AgentContext(cve_id=cve_id)
@@ -426,6 +434,10 @@ class Pipeline:
             self._last_meta_retry_attempted = True
             return retry
         return result
+
+    def _model_kw(self) -> dict[str, str]:
+        """AgentConfig override for the pipeline's model, when set."""
+        return {"model_id": self.model_id} if self.model_id else {}
 
     def _scale_budgets(self, config: AgentConfig) -> AgentConfig:
         """Apply ``agent_budget_multiplier`` to the AgentConfig budgets.
@@ -471,6 +483,7 @@ class Pipeline:
             budget_tokens=600_000,
             budget_s=720.0,
             max_iterations=44,
+            **self._model_kw(),
         )
         retry_config = self._scale_budgets(retry_config)
         return self.agent.run(retry_config, AgentContext(cve_id=cve_id))

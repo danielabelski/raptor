@@ -61,6 +61,7 @@ import json
 import logging
 import re
 import time
+from bisect import bisect_right
 # `field` is a receipt attribute name on StateEvidence (§4.2), so the
 # dataclasses helper is imported under an alias.
 from dataclasses import dataclass
@@ -322,10 +323,16 @@ def build_state_field_index(
     for fp, source in sorted(source_texts.items()):
         if not fp.endswith(_SOURCE_SUFFIXES):
             continue
+        # Spans are emitted in ascending start order and do not
+        # overlap, so a bisect on start lines replaces the linear
+        # scan the index used to run per field access.
         spans = _c_function_spans(source)
+        span_starts = [start for _name, start, _end in spans]
 
         def _function_at(line: int) -> tuple[str, tuple[str, ...]]:
-            for name, start, end in spans:
+            i = bisect_right(span_starts, line) - 1
+            if i >= 0:
+                name, start, end = spans[i]
                 if start <= line <= end:
                     return name, ()
             return "", ()

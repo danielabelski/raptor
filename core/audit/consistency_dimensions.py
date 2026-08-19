@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -2085,6 +2086,48 @@ _FIELD_SUBSCRIPT_RE = re.compile(
     r"([A-Za-z_]\w*)\s*\]",
 )
 
+# Lookahead window (lines) for the null leg's capture→dereference
+# scan. Unbounded scans made the leg quadratic in function-body
+# length; a deref further than this from its capture is skipped
+# (fewer candidates — never a wrong verdict).
+_GUARD_SCAN_WINDOW = 400
+
+# Both sides of a relational/equality comparison — the precomputed,
+# per-body form of _bounds_guard_re (which was re-run over every
+# earlier line per subscript site: quadratic in body length).
+_CMP_LEFT_RE = re.compile(r"\b([A-Za-z_]\w*)\s*(?:[<>]=?|[!=]=)")
+_CMP_RIGHT_RE = re.compile(r"(?:[<>]=?|[!=]=)\s*([A-Za-z_]\w*)\b")
+
+
+def _comparison_table(
+    body: list[str],
+) -> dict[str, list[tuple[int, int]]]:
+    """ident → ordered [(line offset, match end)] where the ident sits
+    on either side of a comparison operator. Maximal-identifier
+    capture gives the same matches as ``_bounds_guard_re(ident)``."""
+    table: dict[str, list[tuple[int, int]]] = {}
+    for j, line in enumerate(body):
+        for m in _CMP_LEFT_RE.finditer(line):
+            table.setdefault(m.group(1), []).append((j, m.end()))
+        for m in _CMP_RIGHT_RE.finditer(line):
+            table.setdefault(m.group(1), []).append((j, m.end()))
+    return table
+
+
+def _first_comparison_before(
+    entries: list[tuple[int, int]],
+    idx: int,
+    cutoff: int,
+) -> int | None:
+    """First line offset (ascending) with a comparison strictly before
+    line *idx*, or on *idx* ending at or before column *cutoff*."""
+    for j, end in entries:
+        if j > idx:
+            return None
+        if j < idx or end <= cutoff:
+            return j
+    return None
+
 
 def _null_guard_re(name: str) -> re.Pattern[str]:
     """Identifier-bound null-check shapes (C-family + Python/Go)."""
@@ -2233,10 +2276,18 @@ def _dominating_guards_for_line(
 
 def _null_leg_sites(
     spans: list[tuple[str, str, int, list[str]]],
+    deadline: float | None = None,
 ) -> dict[str, list[_AccessSite]]:
-    """Same-callee capture-then-dereference sites."""
+    """Same-callee capture-then-dereference sites.
+
+    The capture→deref scan is capped at ``_GUARD_SCAN_WINDOW`` lines
+    (the unbounded scan was quadratic in body length); *deadline*
+    (``time.monotonic()`` epoch) stops the walk early with whatever
+    was collected."""
     by_callee: dict[str, list[_AccessSite]] = {}
     for file_path, name, start, body in spans:
+        if deadline is not None and time.monotonic() > deadline:
+            break
         for idx, line in enumerate(body):
             for m in _CAPTURE_CALL_RE.finditer(line):
                 binding, callee = m.group(1), m.group(2)
@@ -2248,7 +2299,10 @@ def _null_leg_sites(
                 )
                 guard_re = _null_guard_re(binding)
                 deref_idx = -1
-                for j in range(idx + 1, len(body)):
+                lookahead_end = min(
+                    len(body), idx + 1 + _GUARD_SCAN_WINDOW,
+                )
+                for j in range(idx + 1, lookahead_end):
                     if deref_re.search(body[j]):
                         deref_idx = j
                         break
@@ -2276,12 +2330,22 @@ def _null_leg_sites(
 
 def _bounds_leg_sites(
     spans: list[tuple[str, str, int, list[str]]],
+    deadline: float | None = None,
 ) -> dict[str, list[_AccessSite]]:
-    """Same-field subscripted-access sites."""
+    """Same-field subscripted-access sites.
+
+    Guard lookup rides a per-body comparison table instead of
+    re-scanning every earlier line per site (the re-scan was quadratic
+    in body length); *deadline* stops the walk early with whatever was
+    collected. Same-line comparisons count only when they precede the
+    access (a for-header bound), not the subscript expression itself."""
     by_field: dict[str, list[_AccessSite]] = {}
     for file_path, name, start, body in spans:
+        if deadline is not None and time.monotonic() > deadline:
+            break
         params = _params_of(body)
         seen_lines: set[tuple[str, int]] = set()
+        cmp_table = _comparison_table(body)
         for idx, line in enumerate(body):
             for m in _FIELD_SUBSCRIPT_RE.finditer(line):
                 base, fld, index = m.group(1), m.group(2), m.group(3)
@@ -2290,18 +2354,11 @@ def _bounds_leg_sites(
                 if (fld, start + idx) in seen_lines:
                     continue
                 seen_lines.add((fld, start + idx))
-                guard_re = _bounds_guard_re(index)
-                guarded, guard_line = False, 0
-                for j in range(idx + 1):
-                    text = body[j]
-                    if j == idx:
-                        # Same-line check only when it precedes the
-                        # access (a for-header bound), not the
-                        # subscript expression itself.
-                        text = text[:m.start()]
-                    if guard_re.search(text):
-                        guarded, guard_line = True, start + j
-                        break
+                guard_j = _first_comparison_before(
+                    cmp_table.get(index, []), idx, m.start(),
+                )
+                guarded = guard_j is not None
+                guard_line = start + guard_j if guarded else 0
                 by_field.setdefault(fld, []).append(_AccessSite(
                     file=file_path,
                     line=start + idx,
@@ -2322,9 +2379,18 @@ def detect_guard_presence_deviations(
     *,
     min_sites: int = MIN_GROUP_SITES,
     ratio: float = CONSISTENCY_RATIO,
+    budget_s: float | None = None,
 ) -> list[GuardPresenceDeviation]:
     """Bounds/null-guard presence comparator (§3.4). See the section
-    docstring for legs, dominance approximation and bounds."""
+    docstring for legs, dominance approximation and bounds.
+
+    *budget_s* (wall seconds, ``None`` = unbounded) is checked per
+    function span inside the site extraction and per peer group here
+    — on overrun the comparator returns what it has instead of
+    stalling the prepass."""
+    deadline = (
+        time.monotonic() + budget_s if budget_s is not None else None
+    )
     spans = _function_spans(source_texts)
     if not spans:
         return []
@@ -2332,12 +2398,14 @@ def detect_guard_presence_deviations(
 
     legs = (
         (GUARD_KIND_NULL, "CWE-476", "same_callee",
-         _null_leg_sites(spans)),
+         _null_leg_sites(spans, deadline)),
         (GUARD_KIND_BOUNDS, "CWE-125", "same_field",
-         _bounds_leg_sites(spans)),
+         _bounds_leg_sites(spans, deadline)),
     )
     for kind, cwe, formation, groups in legs:
         for group_key, sites in sorted(groups.items()):
+            if deadline is not None and time.monotonic() > deadline:
+                return deviations
             n = len(sites)
             if n < min_sites:
                 continue

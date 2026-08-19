@@ -1063,7 +1063,12 @@ def run_consistency_prepass(
                 detect_guard_presence_deviations,
             )
             from .consistency_verify import guard_presence_verdict
-            guard_devs = detect_guard_presence_deviations(source_texts)
+            guard_devs = detect_guard_presence_deviations(
+                source_texts,
+                budget_s=max(
+                    0.0, budget_s - (time.monotonic() - t0),
+                ),
+            )
         except Exception:
             _dim_failed("guard-presence")
             logger.debug("consistency prepass: guard presence failed",

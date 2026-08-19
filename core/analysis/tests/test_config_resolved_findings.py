@@ -51,6 +51,15 @@ class TestEmission:
         assert f["cwe"] == "cwe-328"
         assert stats["emitted"] == 1
 
+    def test_md2_file_value_emits(self, tmp_path):
+        # Cross-surface consistency: MD2 is in the channel's weak set
+        # and in the semgrep java rule — both must fire on it.
+        (tmp_path / "app.properties").write_text("hashAlg=MD2\n")
+        findings, stats = _scan(tmp_path, _src("app.properties", '"hashAlg"'))
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "raptor.config-resolved.weak-hash"
+        assert stats["emitted"] == 1
+
     def test_weak_file_value_with_safe_default_emits(self, tmp_path):
         # The runtime value is the FILE value whenever the named
         # resource loads — a safe call-site default must not mask it.

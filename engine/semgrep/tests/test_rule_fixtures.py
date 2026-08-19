@@ -45,6 +45,10 @@ _CASES = {
         ["xss_java_pos.java"],
         ["xss_java_encoder_neg.java"],
     ),
+    "crypto/weak-hash.yaml": (
+        ["weakhash_java_pos.java"],
+        ["weakhash_java_neg.java"],
+    ),
 }
 
 pytestmark = pytest.mark.skipif(

@@ -639,6 +639,12 @@ class ReviewOutcome:
             return VerificationTier.CONFIRMED.value
 
         first_tool = et_lower.split("+")[0].strip()
+        from .evidence_grade import _PROVENANCE_WRAPPERS
+        for _wrapper in _PROVENANCE_WRAPPERS:
+            if first_tool.startswith(_wrapper):
+                # Provenance wrapper (e.g. ``clean-refuted:smt``): the
+                # wrapped stamp names the tool that actually ran.
+                first_tool = first_tool[len(_wrapper):]
         tool_name = first_tool.split(":")[0].strip()
         if tool_name in dispatched or any(
             tool_name in t for t in dispatched

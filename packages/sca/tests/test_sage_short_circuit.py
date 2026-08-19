@@ -143,3 +143,57 @@ def test_unstamped_confirmed_row_does_not_short_circuit(tmp_path):
     mock_llm = _run([finding], [row], tmp_path)
     assert not finding.evidence.get("sage_short_circuit")
     mock_llm.assert_called_once()
+
+
+def test_short_circuited_verdict_is_not_re_stored(tmp_path):
+    """A SAGE-recalled verdict must not feed back into SAGE as a fresh
+    malicious_confirmed fact (self-reinforcing loop)."""
+    from unittest.mock import MagicMock
+
+    from packages.sca.pipeline import _run_llm_stages
+
+    recalled = _suspect_finding("evil-pkg")
+    recalled.evidence = dict(
+        recalled.evidence,
+        llm_verdict="malicious",
+        llm_confidence=0.98,
+        llm_summary="Previously confirmed malicious (recalled from SAGE memory).",
+        sage_short_circuit=True,
+    )
+    fresh = _suspect_finding("other-pkg")
+    fresh.evidence = dict(
+        fresh.evidence,
+        llm_verdict="malicious",
+        llm_confidence=0.9,
+        llm_summary="fresh review",
+    )
+
+    stored: list = []
+
+    def _capture(repo_path, outcomes):
+        stored.extend(outcomes)
+        return len(outcomes)
+
+    with patch(
+        "packages.sca.llm.get_llm_client", return_value=MagicMock(),
+    ), patch(
+        "packages.sca.llm.install_hook_review.review_install_hooks",
+    ), patch(
+        "packages.sca.llm.binary_in_tests_review.review_binary_in_tests",
+    ), patch(
+        "core.sage.hooks.store_sca_outcomes", side_effect=_capture,
+    ):
+        _run_llm_stages(
+            supply_chain_findings=[recalled, fresh],
+            vuln_findings=[],
+            hygiene_findings=[],
+            canonical=[],
+            http=None,
+            options=RunOptions(offline=True, cache_root=tmp_path),
+            output_dir=tmp_path,
+            target=tmp_path,
+        )
+
+    names = {o["package_name"] for o in stored}
+    assert "other-pkg" in names
+    assert "evil-pkg" not in names

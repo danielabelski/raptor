@@ -1190,6 +1190,13 @@ def _run_llm_stages(
         for f in supply_chain_findings:
             if not f.evidence.get("llm_verdict"):
                 continue
+            if f.evidence.get("sage_short_circuit"):
+                # This verdict came FROM SAGE recall, not from a fresh
+                # review — re-storing it as a new malicious_confirmed
+                # fact would corroborate the row with itself, making
+                # the recalled verdict durable and self-reinforcing.
+                # The originating row already exists; skip the re-store.
+                continue
             sca_outcomes.append({
                 "package_name": f.dependency.name,
                 "ecosystem": f.dependency.ecosystem,

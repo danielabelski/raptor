@@ -1401,7 +1401,15 @@ class TestGateEnforcement:
     """Test G1/G2 gate enforcement in _commit_outcome."""
 
     def test_finding_without_hypothesis_demoted_by_gate(self, tmp_path: Path):
-        """G1: finding without hypothesis gets demoted to suspicious."""
+        """G1: finding without hypothesis gets demoted to suspicious.
+
+        The stub claims a bare tool receipt (``semgrep:...``), so the
+        demotion referee keeps the demoted outcomes suspicious at
+        end-of-run: a probe-backed suspicious may only be resolved by a
+        verification-role refuter, never by silence (see
+        test_demotion_referee.py). The gate's own contract — no finding
+        survives without a testable hypothesis — still holds.
+        """
         target, out = _setup_target(tmp_path)
 
         def review_fn(ctx, config):
@@ -1421,7 +1429,7 @@ class TestGateEnforcement:
         )
         result = run_orchestrator(config, review_fn)
         assert result.findings == 0
-        assert result.suspicious == 0
+        assert result.suspicious == 2
 
     def test_finding_without_evidence_demoted_by_gate(self, tmp_path: Path):
         """G2: finding without evidence_tool gets demoted to suspicious."""

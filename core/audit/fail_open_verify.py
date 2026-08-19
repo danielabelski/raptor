@@ -87,6 +87,9 @@ from .fail_open_lang import (
     language_for_path,
     python_function_raises,
     python_handlers,
+    rust_discard_sites,
+    rust_function_returns_result,
+    rust_function_span,
 )
 from .fail_open_roles import (
     GRADE_DETECTION,
@@ -1685,6 +1688,191 @@ def _run_js_check(
     )
 
 
+# ── Rust leg: ignored Result ────────────────────────────────────────
+
+
+def _rust_fallibility(
+    callee: str,
+    role: RoleEvidence,
+    source: str,
+    inventory: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Leg 2b for Rust: the callee's return type is a ``Result``
+    (same-file signature, then inventory extractor metadata), or a
+    learned contract records fallibility."""
+    tail = _function_tail(callee)
+    if rust_function_returns_result(source, tail):
+        return {
+            "callee": callee,
+            "evidence": "returns-result (same-file signature)",
+            "types": ["Result"],
+        }
+    sig = _inventory_signature(inventory, tail)
+    if sig and re.search(r"\bResult\b", sig):
+        return {
+            "callee": callee,
+            "evidence": "returns-result (inventory signature)",
+            "types": ["Result"],
+        }
+    if role.contract:
+        return {
+            "callee": callee,
+            "evidence": f"contract:{role.contract}",
+            "types": [],
+        }
+    return None
+
+
+def _run_rust_check(
+    source: str,
+    file_path: str,
+    function_name: str,
+    hypothesis: str,
+    role_context: RoleContext,
+    inventory: dict[str, Any] | None,
+) -> FailOpenResult:
+    # Parser-absent is the documented degradation contract — report
+    # it as such rather than as a span failure (the Go rule).
+    from .fail_open_lang import _ts_parser
+    if _ts_parser("rust") is None:
+        return _inconclusive(
+            REASON_LANGUAGE_UNSUPPORTED,
+            "rust grammar unavailable — cannot resolve function spans",
+            language="rust", rule_id=RULE_IGNORED_RETURN,
+        )
+    span = rust_function_span(source, function_name)
+    if span is None:
+        return _inconclusive(
+            REASON_SPAN_UNRESOLVED,
+            f"cannot resolve the span of {function_name} — refusing "
+            "the whole-file scan (a match elsewhere in the file is "
+            "not evidence about this function)",
+            language="rust", rule_id=RULE_IGNORED_RETURN,
+        )
+    lines = source.splitlines()
+    segment = "\n".join(lines[span[0] - 1:span[1]])
+
+    candidates = _candidate_callees(hypothesis, segment)
+    if not candidates:
+        return _inconclusive(
+            REASON_HYPOTHESIS_UNBINDABLE,
+            f"hypothesis names no call present in {function_name}",
+            language="rust", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    role: RoleEvidence | None = None
+    callee = ""
+    for candidate in candidates:
+        role = bind_role(
+            [candidate],
+            "",  # per-callee binding: the enclosing name must not
+                 # smuggle a role onto an unrelated callee
+            file_path,
+            language="rust",
+            context=role_context,
+            enclosing_source=segment,
+        )
+        if role is not None:
+            callee = candidate
+            break
+    if role is None:
+        return _inconclusive(
+            REASON_ROLE_UNBOUND,
+            "could not bind a security role to any hypothesis callee "
+            f"({', '.join(candidates)})",
+            language="rust", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    tail = _function_tail(callee)
+    fallible = _rust_fallibility(callee, role, source, inventory)
+    if fallible is None:
+        return _inconclusive(
+            REASON_FALLIBILITY_UNRESOLVED,
+            f"no Result-bearing signature resolvable for {callee} "
+            "(same-file, inventory) and no learned contract — cannot "
+            "demonstrate the discarded result can fail",
+            language="rust", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    sites = rust_discard_sites(
+        source, file_path, tail, function_span=span,
+    )
+    if sites is None:
+        return _inconclusive(
+            REASON_LANGUAGE_UNSUPPORTED,
+            "no tree-sitter rust parser available — binding "
+            "consumption and `?`/match shapes are not honestly "
+            "decidable from line shapes",
+            language="rust", rule_id=RULE_IGNORED_RETURN,
+        )
+    if not sites:
+        return _inconclusive(
+            REASON_HYPOTHESIS_UNBINDABLE,
+            f"no call sites of {callee} located in {function_name}",
+            language="rust", rule_id=RULE_IGNORED_RETURN,
+        )
+
+    unguarded = [s for s in sites if s.verdict == "unguarded"]
+    undecided = [s for s in sites if s.verdict == "undecided"]
+    rule_id = _apply_role_grade(RULE_IGNORED_RETURN, role)
+
+    if unguarded:
+        first = unguarded[0]
+        result = FailOpenResult(
+            outcome="confirmed",
+            reason=(
+                f"{first.code} at {file_path}:{first.line} — "
+                f"{first.evidence} ({role.kind}-role callee "
+                f"{callee}, {fallible['evidence']})"
+            ),
+            rule_id=rule_id,
+            language="rust",
+            role=role.to_dict(),
+            handler={
+                "idiom": "ignored_return",
+                "line": first.line,
+                "caught": [callee],
+                "broad": False,
+                "outcome_kind": "ignored_return",
+                "permissive_value": first.shape,
+                "code": first.code,
+                "parser": first.parser,
+            },
+            fallible=fallible,
+            sites=sites,
+        )
+        result.reachability = _entry_reachability(
+            role_context, inventory, file_path, function_name,
+        )
+        return result
+    if not undecided:
+        return FailOpenResult(
+            outcome="refuted",
+            reason=(
+                f"all {len(sites)} site(s) of {callee} in "
+                f"{function_name} consume the Result fail-closed "
+                f"(receipts per site)"
+            ),
+            rule_id=RULE_IGNORED_RETURN,
+            language="rust",
+            role=role.to_dict(),
+            fallible=fallible,
+            sites=sites,
+        )
+    return FailOpenResult(
+        outcome="inconclusive",
+        reason=(
+            f"{REASON_HANDLER_UNDECIDED}: {len(undecided)} of "
+            f"{len(sites)} site(s) could not be structurally decided"
+        ),
+        rule_id=RULE_IGNORED_RETURN,
+        language="rust",
+        role=role.to_dict(),
+        fallible=fallible,
+        sites=sites,
+    )
+
+
 # ── leg 3: Joern flow escalator (outcome-gated) ─────────────────────
 
 
@@ -1825,6 +2013,11 @@ def run_fail_open_check(
         result = _run_js_check(
             source, file_path, function_name, hypothesis, language,
             ctx, inventory,
+        )
+    elif language == "rust":
+        result = _run_rust_check(
+            source, file_path, function_name, hypothesis, ctx,
+            inventory,
         )
     else:
         result = _run_c_check(

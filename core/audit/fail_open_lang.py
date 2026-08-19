@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 # Languages with an analyzer. Phase 3 added JS/TS and Rust.
 SUPPORTED_LANGUAGES = frozenset({
     "python", "c", "cpp", "java", "go",
-    "javascript", "typescript", "tsx",
+    "javascript", "typescript", "tsx", "rust",
 })
 
 # The JS analyzer family shares one grammar-node vocabulary; the
@@ -2143,6 +2143,336 @@ def js_unawaited_sites(
         site.file = file_path
         sites.append(site)
     return sites
+
+
+# ── Rust leg: ignored Result shapes ─────────────────────────────────
+# Rust's idiom for "ignored error" differs from Go's: `unwrap()` /
+# `expect()` / `?` all CONSUME the Result fail-closed (panic or
+# propagate), while `let _ =`, a bare statement, `.ok()` dropped on
+# the floor, and `unwrap_or_default()` erase the error branch — the
+# failure becomes indistinguishable from success. The census sweep
+# over ALL callees stays with the consistency programme (CWE-252
+# premise split); this leg adjudicates role-bound hypotheses only.
+
+_RUST_FUNC_TYPES = ("function_item",)
+# Result-consuming method vocabulary (each set stays under the seed
+# cap; these are stdlib method names — properties of the platform).
+_RUST_PANIC_METHODS = frozenset({"unwrap", "expect"})
+_RUST_DEFAULT_METHODS = frozenset({
+    "unwrap_or", "unwrap_or_default", "unwrap_or_else",
+})
+_RUST_TEST_METHODS = frozenset({"is_ok", "is_err"})
+_RUST_PASSTHROUGH_METHODS = frozenset({
+    "ok", "err", "map", "map_err", "inspect_err", "and_then",
+})
+
+
+def _rust_call_tail(name: str) -> str:
+    return name.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+
+
+def _iter_rust_calls(tree, src: bytes, callee: str,
+                     span: tuple[int, int] | None):
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type != "call_expression":
+            continue
+        fn = node.child_by_field_name("function")
+        if fn is None:
+            continue
+        name = _ts_node_text(fn, src)
+        if "(" in name:            # method on a chained receiver
+            continue
+        if _rust_call_tail(name) != callee:
+            continue
+        line = _line_of(node)
+        if span is None or span[0] <= line <= span[1]:
+            yield node
+
+
+def _rust_enclosing_function(node):
+    cur = node.parent
+    while cur is not None:
+        if cur.type in _RUST_FUNC_TYPES:
+            return cur
+        cur = cur.parent
+    return None
+
+
+def _rust_next_use(func_node, src: bytes, var: str, after_byte: int):
+    if func_node is None:
+        return None
+    best = None
+    stack = [func_node]
+    while stack:
+        cur = stack.pop()
+        if cur.type == "identifier" and cur.start_byte > after_byte \
+                and _ts_node_text(cur, src) == var:
+            if best is None or cur.start_byte < best.start_byte:
+                best = cur
+        stack.extend(cur.children)
+    return best
+
+
+def _classify_rust_let(cur, node, src: bytes, site, line: int,
+                       through: list[str]):
+    """Classify a ``let`` binding of the call result."""
+    pattern = cur.child_by_field_name("pattern")
+    if pattern is None:
+        pattern = next(
+            (c for c in cur.children if c.is_named
+             or c.type == "_"), None,
+        )
+    ptype = pattern.type if pattern is not None else ""
+    if ptype == "_":
+        site.verdict = "unguarded"
+        site.shape = "let-underscore-discard"
+        site.evidence = (
+            "Result explicitly discarded with `let _ =` — the author "
+            "saw the return but the error branch cannot alter control"
+        )
+        return site
+    if ptype == "identifier":
+        var = _ts_node_text(pattern, src)
+        if var.startswith("_"):
+            site.verdict = "unguarded"
+            site.shape = "let-underscore-discard"
+            site.evidence = (
+                f"Result bound to the deliberately-unused `{var}` — "
+                "the error branch cannot alter control"
+            )
+            return site
+        func_node = _rust_enclosing_function(cur)
+        use = _rust_next_use(func_node, src, var, cur.end_byte)
+        if use is None:
+            site.verdict = "unguarded"
+            site.shape = "result-never-checked"
+            site.evidence = (
+                f"`{var}` bound at line {line} is never read "
+                "afterwards in this function"
+            )
+            return site
+        site.verdict = "guarded"
+        site.shape = "captured"
+        site.evidence = f"`{var}` consumed at line {_line_of(use)}"
+        return site
+    # Destructuring patterns (let-else, tuple structs) consume the
+    # variants explicitly.
+    site.verdict = "guarded"
+    site.shape = "destructured"
+    site.evidence = "Result destructured by a pattern"
+    return site
+
+
+def _classify_rust_call_site(
+    node, src: bytes, lines: list[str],
+) -> CallSiteOutcome:
+    """One Rust call node → guarded/unguarded/undecided for the
+    ignored-Result leg."""
+    line = _line_of(node)
+    code = lines[line - 1].strip() if line <= len(lines) else ""
+    site = CallSiteOutcome(
+        file="", line=line, code=code, verdict="undecided",
+        parser="tree-sitter",
+    )
+    cur = node.parent
+    prev = node
+    through: list[str] = []
+    while cur is not None:
+        t = cur.type
+        if t == "field_expression" \
+                and cur.child_by_field_name("value") == prev:
+            field = cur.child_by_field_name("field")
+            method = _ts_node_text(field, src) if field else ""
+            outer = cur.parent
+            if outer is None or outer.type != "call_expression":
+                # Plain field access on the result — not a Result
+                # consumption we can classify.
+                site.evidence = (
+                    f"field `{method}` accessed on the result; "
+                    "consumption shape unrecognised"
+                )
+                return site
+            if method in _RUST_PANIC_METHODS:
+                site.verdict = "guarded"
+                site.shape = f".{method}()-panics-on-error"
+                site.evidence = (
+                    f".{method}() aborts on the error branch — "
+                    "fail-closed at this site"
+                )
+                return site
+            if method in _RUST_TEST_METHODS:
+                site.verdict = "guarded"
+                site.shape = "tested"
+                site.evidence = (
+                    f".{method}() result consumed as a condition"
+                )
+                return site
+            if method in _RUST_DEFAULT_METHODS:
+                site.verdict = "unguarded"
+                site.shape = f".{method}()-erases-error"
+                site.evidence = (
+                    f".{method}() replaces the error branch with a "
+                    "default — failure is indistinguishable from "
+                    "success"
+                )
+                return site
+            if method in _RUST_PASSTHROUGH_METHODS:
+                through.append(method)
+                prev, cur = outer, outer.parent
+                continue
+            site.evidence = (
+                f"method `.{method}()` applied to the result; its "
+                "contract is not traced"
+            )
+            return site
+        if t == "try_expression":
+            site.verdict = "guarded"
+            site.shape = "propagated"
+            site.evidence = "`?` propagates the error to the caller"
+            return site
+        if t == "await_expression":
+            prev, cur = cur, cur.parent
+            continue
+        if t == "let_declaration":
+            return _classify_rust_let(cur, node, src, site, line, through)
+        if t == "let_condition" or t in (
+                "if_expression", "while_expression", "match_expression",
+                "binary_expression", "unary_expression",
+                "parenthesized_expression"):
+            site.verdict = "guarded"
+            site.shape = "tested"
+            site.evidence = "call result consumed by a control condition"
+            return site
+        if t == "return_expression":
+            site.verdict = "guarded"
+            site.shape = "propagated"
+            site.evidence = "call result propagated to the caller"
+            return site
+        if t == "arguments":
+            site.verdict = "guarded"
+            site.shape = "consumed-as-argument"
+            site.evidence = "call result consumed by an enclosing call"
+            return site
+        if t == "expression_statement":
+            site.verdict = "unguarded"
+            if "ok" in through:
+                site.shape = "ok-discarded"
+                site.evidence = (
+                    ".ok() converts the Result and the Option is "
+                    "dropped on the floor — the error branch cannot "
+                    "alter control"
+                )
+            else:
+                site.shape = "bare-statement"
+                site.evidence = (
+                    "call result neither bound nor tested"
+                )
+            return site
+        if t == "block":
+            site.verdict = "guarded"
+            site.shape = "propagated"
+            site.evidence = (
+                "trailing expression — the result is the block's value"
+            )
+            return site
+        prev, cur = cur, cur.parent
+    site.evidence = "could not classify the call's consumption context"
+    return site
+
+
+def rust_discard_sites(
+    source: str,
+    file_path: str,
+    callee: str,
+    *,
+    function_span: tuple[int, int] | None = None,
+) -> list[CallSiteOutcome] | None:
+    """Call sites of ``callee`` classified for the Rust ignored-Result
+    leg. ``None`` when no tree-sitter rust parser is available
+    (binding consumption and `?`/match shapes are not honestly
+    decidable from line shapes)."""
+    parser = _ts_parser("rust")
+    if parser is None:
+        return None
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+        lines = source.splitlines()
+    except Exception:
+        logger.debug("fail_open_lang: rust discard scan failed for %s",
+                     file_path, exc_info=True)
+        return None
+    sites = []
+    for node in _iter_rust_calls(tree, src, callee, function_span):
+        site = _classify_rust_call_site(node, src, lines)
+        site.file = file_path
+        sites.append(site)
+    return sites
+
+
+def _rust_function_node(tree, src: bytes, function_name: str):
+    tail = function_name.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type not in _RUST_FUNC_TYPES:
+            continue
+        name_node = node.child_by_field_name("name")
+        if name_node is not None and _ts_node_text(name_node, src) == tail:
+            return node
+    return None
+
+
+def rust_function_returns_result(
+    source: str, function_name: str,
+) -> bool:
+    """True when a same-file Rust function's return type is a
+    ``Result`` — the leg-2b fallibility witness for the discard leg."""
+    parser = _ts_parser("rust")
+    tail = function_name.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+    if parser is not None:
+        try:
+            src = source.encode("utf-8", errors="replace")
+            tree = parser.parse(src)
+            node = _rust_function_node(tree, src, tail)
+            if node is None:
+                return False
+            ret = node.child_by_field_name("return_type")
+            if ret is None:
+                return False
+            return bool(re.search(r"\bResult\b", _ts_node_text(ret, src)))
+        except Exception:
+            logger.debug("fail_open_lang: rust signature scan failed",
+                         exc_info=True)
+    # Line-regex fallback: signature shapes only (never handler
+    # bodies): `fn name(...) -> Result<...>`.
+    return bool(re.search(
+        rf"fn\s+{re.escape(tail)}\s*(?:<[^>]*>)?\s*\([^)]*\)\s*->\s*"
+        rf"[\w:]*Result\b",
+        source,
+    ))
+
+
+def rust_function_span(
+    source: str, function_name: str,
+) -> tuple[int, int] | None:
+    """(start_line, end_line) of a Rust function, or None."""
+    parser = _ts_parser("rust")
+    if parser is None:
+        return None
+    try:
+        src = source.encode("utf-8", errors="replace")
+        tree = parser.parse(src)
+    except Exception:
+        return None
+    node = _rust_function_node(tree, src, function_name)
+    if node is None:
+        return None
+    return (node.start_point[0] + 1, node.end_point[0] + 1)
 
 
 def function_parameters(

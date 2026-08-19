@@ -67,6 +67,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import (
+    Any,
     Dict,
     FrozenSet,
     Iterable,
@@ -709,6 +710,10 @@ class _JavaCFGBuilder:
         #  join_node) per modelled switch — consumed by the post-build
         # constant-discriminant refinement.
         self._switch_records: List[Tuple] = []
+        # (cond_node, cond_ts_node, catch_succ_snapshot,
+        #  then_entries, else_entries, has_alt) per modelled if —
+        # consumed by the post-build constant-condition refinement.
+        self._if_records: List[Tuple] = []
         self.build_notes: List[str] = []
 
     # ----- plumbing -----
@@ -868,12 +873,26 @@ class _JavaCFGBuilder:
         cond_node = self._cond_node(stmt, "if")
         self._link_many(incoming, cond_node)
         self._ambient_catch_link(cond_node)
+        # Successor snapshots bracket each branch build so the
+        # refinement can tell branch-entry edges apart from the
+        # ambient catch edges (never prunable — the condition itself
+        # may throw) and the caller-added fall-through edge.
+        base_succ = tuple(self._adjacency.get(cond_node, ()))
         conseq = stmt.child_by_field_name("consequence")
         alt = stmt.child_by_field_name("alternative")
         then_out = self._build_stmts(conseq, [cond_node]) \
             if conseq is not None else [cond_node]
+        after_then = tuple(self._adjacency.get(cond_node, ()))
         else_out = self._build_stmts(alt, [cond_node]) \
             if alt is not None else [cond_node]
+        after_else = tuple(self._adjacency.get(cond_node, ()))
+        then_entries = frozenset(after_then) - frozenset(base_succ)
+        else_entries = frozenset(after_else) - frozenset(after_then)
+        self._if_records.append((
+            cond_node, stmt.child_by_field_name("condition"),
+            frozenset(base_succ), then_entries, else_entries,
+            alt is not None,
+        ))
         return then_out + else_out
 
     def _build_while(self, stmt, incoming):
@@ -1244,10 +1263,20 @@ def build_java_intraproc_cfg(
 
     pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
     notes: List[str] = list(builder.build_notes)
-    if builder._switch_records:
+    substrate = None
+    if builder._switch_records or builder._if_records:
+        try:
+            substrate = _refinement_substrate(
+                builder, source_text, _method_params(decl),
+            )
+        except Exception:  # noqa: BLE001 — refinement is an optimisation;
+            logger.debug("refinement substrate failed for %s",
+                         function_name, exc_info=True)
+            substrate = None
+    if builder._switch_records and substrate is not None:
         try:
             pruned, refine_notes = _refine_constant_switches(
-                builder, source_text, _method_params(decl),
+                builder, substrate,
             )
             notes.extend(refine_notes)
         except Exception:  # noqa: BLE001 — refinement is an optimisation;
@@ -1256,6 +1285,19 @@ def build_java_intraproc_cfg(
                          function_name, exc_info=True)
             pruned = set()
             notes.append("switch:refine-error")
+    if builder._if_records and substrate is not None:
+        try:
+            if_pruned, if_notes = _refine_constant_ifs(
+                builder, substrate, pruned,
+            )
+            pruned = pruned | if_pruned
+            notes.extend(if_notes)
+        except Exception:  # noqa: BLE001 — same posture as switches:
+            # an if-refinement failure keeps the if edges (sound)
+            # without disturbing any switch pruning already proven.
+            logger.debug("if refinement failed for %s",
+                         function_name, exc_info=True)
+            notes.append("if:refine-error")
 
     adjacency = {
         n: tuple(d for d in dsts if (n, d) not in pruned)
@@ -1274,31 +1316,19 @@ def build_java_intraproc_cfg(
     )
 
 
-def _refine_constant_switches(
+def _refinement_substrate(
     builder: _JavaCFGBuilder,
     source_text: str,
     params: Tuple[str, ...],
-) -> Tuple[Set[Tuple[JavaCFGNode, JavaCFGNode]], List[str]]:
-    """Prune condition→group edges of switches whose discriminant and
-    every case label fold to compile-time constants.
-
-    The proof runs over the UNPRUNED graph's reaching definitions (more
-    reaching defs = more chances to refuse — conservative) using the
-    same definition oracle as the constant-definers gate. Anything
-    short of a full proof — an unresolvable label, a discriminant that
-    refuses, a duplicate match, a non int/string discriminant value —
-    keeps every edge and records ``switch:all-branches``.
-    """
-    from core.analysis.const_fold_java import (
-        REFUSE,
-        JavaConstIndex,
-        fold_expr,
-        fold_expr_at,
-    )
+) -> Tuple[Any, Any, Any, Any]:
+    """Shared proof substrate for the post-build branch refinements:
+    (interim unpruned CFG, its reaching defs, the constant index, the
+    optional table resolver). Computed once — the switch and if
+    refiners must read the SAME unpruned-graph oracle (more reaching
+    defs = more chances to refuse — conservative)."""
+    from core.analysis.const_fold_java import JavaConstIndex
     from core.analysis.dataflow import reaching_defs
 
-    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
-    notes: List[str] = []
     n_lines = source_text.count("\n") + 1
     index = JavaConstIndex(source_text, (1, n_lines))
     try:
@@ -1317,6 +1347,32 @@ def _refine_constant_switches(
         params=params,
     )
     rd = reaching_defs(interim)
+    return interim, rd, index, table_resolver
+
+
+def _refine_constant_switches(
+    builder: _JavaCFGBuilder,
+    substrate: Tuple[Any, Any, Any, Any],
+) -> Tuple[Set[Tuple[JavaCFGNode, JavaCFGNode]], List[str]]:
+    """Prune condition→group edges of switches whose discriminant and
+    every case label fold to compile-time constants.
+
+    The proof runs over the UNPRUNED graph's reaching definitions (more
+    reaching defs = more chances to refuse — conservative) using the
+    same definition oracle as the constant-definers gate. Anything
+    short of a full proof — an unresolvable label, a discriminant that
+    refuses, a duplicate match, a non int/string discriminant value —
+    keeps every edge and records ``switch:all-branches``.
+    """
+    from core.analysis.const_fold_java import (
+        REFUSE,
+        fold_expr,
+        fold_expr_at,
+    )
+
+    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
+    notes: List[str] = []
+    _interim, rd, index, table_resolver = substrate
 
     def _refuse_names(_name: str, _depth: int):
         return REFUSE
@@ -1369,6 +1425,92 @@ def _refine_constant_switches(
         # No match and no default: control falls straight to the join —
         # the cond→join edge already exists (has_default is False).
         notes.append("switch:constant-resolved")
+    return pruned, notes
+
+
+def _refine_constant_ifs(
+    builder: _JavaCFGBuilder,
+    substrate: Tuple[Any, Any, Any, Any],
+    already_pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]],
+) -> Tuple[Set[Tuple[JavaCFGNode, JavaCFGNode]], List[str]]:
+    """Prune the dead branch of ``if`` statements whose condition
+    folds to a compile-time BOOLEAN — the statement-level analog of
+    the dead-branch ternary and of ``switch`` constant resolution.
+
+    Same edge-removal semantics as the switch refiner: pruning only
+    deletes condition→branch edges in the final adjacency, and the
+    reaching-defs reachability restriction (core.analysis.dataflow)
+    then excludes the whole dead region from the fixpoint, so its
+    definitions cannot leak back through residual join edges.
+
+    Full-proof rules (anything less keeps every edge, note
+    ``if:all-branches``):
+
+    * the condition must fold to a strict :class:`bool` under the
+      VALUE-ONLY contract — the TAINT_FREE tier is not enabled, so a
+      taint-free-but-unknown-valued condition reads as REFUSE and can
+      never prune (an unknown value selects an unknown branch);
+    * ambient catch edges (snapshotted before the branches were
+      built) are never pruning candidates — condition evaluation may
+      itself throw;
+    * the no-else / empty-else skip edge (condition → join) is pruned
+      on a True condition only when the then-branch has entry edges
+      of its own AND the join target keeps at least one other
+      predecessor under the pruning decided so far — a then-branch
+      that never rejoins (return/throw tails) keeps the skip edge as
+      a sound over-approximation rather than disconnecting the
+      region downstream.
+    """
+    from core.analysis.const_fold_java import REFUSE, fold_expr_at
+
+    _interim, rd, index, table_resolver = substrate
+    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
+    notes: List[str] = []
+
+    # Predecessor map over the adjacency as pruned SO FAR (switch
+    # refinement first): the join guard must not count an edge that
+    # an earlier proof already removed.
+    preds: Dict[JavaCFGNode, Set[JavaCFGNode]] = {}
+    for n, dsts in builder._adjacency.items():
+        for d in dsts:
+            if (n, d) in already_pruned:
+                continue
+            preds.setdefault(d, set()).add(n)
+
+    for (cond_node, cond_expr, base_succ, then_entries,
+         else_entries, has_alt) in builder._if_records:
+        if cond_expr is None:
+            notes.append("if:all-branches")
+            continue
+        val = fold_expr_at(rd, cond_node, cond_expr, index,
+                           array_resolver=table_resolver)
+        if val is REFUSE or not isinstance(val, bool):
+            notes.append("if:all-branches")
+            continue
+        local: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
+        if val:
+            for e in else_entries:
+                local.add((cond_node, e))
+            if then_entries and (not has_alt or not else_entries):
+                succ_now = [
+                    d for d in builder._adjacency.get(cond_node, ())
+                    if (cond_node, d) not in already_pruned
+                ]
+                skip_edges = (
+                    set(succ_now) - set(base_succ)
+                    - set(then_entries) - set(else_entries)
+                )
+                for f in skip_edges:
+                    if preds.get(f, set()) - {cond_node}:
+                        local.add((cond_node, f))
+        else:
+            for t in then_entries:
+                local.add((cond_node, t))
+        if local:
+            pruned |= local
+            notes.append("if:constant-resolved")
+        else:
+            notes.append("if:all-branches")
     return pruned, notes
 
 

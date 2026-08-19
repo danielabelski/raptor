@@ -211,3 +211,45 @@ class TestB44DamageBlindness:
         warm = apply_would_suppress(
             _report([]), [rec], matched_expected=matched)
         assert warm["true_finding_damage_count"] == 0
+
+
+class TestManifestlessDamageUnknown:
+    """No manifest => damage is UNKNOWN, never a silent zero.
+
+    The round-twelve close found `warm` without --manifest silently
+    skipping damage matching — the same vacuous-zero blindness class
+    that masked the b44 enforcement counterexample. matched_expected
+    None (no manifest) must be structurally distinct from a measured
+    empty list (manifest present, nothing matched).
+    """
+
+    _REPORT = {"clean_region_fps": []}
+    _REC = {"verdict": "sanitizer_dominated", "rule_id": "r",
+            "file_path": "/repo/src/T1.java", "line": 10,
+            "dropped": False}
+
+    def test_no_manifest_damage_is_none_not_zero(self):
+        warm = apply_would_suppress(self._REPORT, [self._REC],
+                                    matched_expected=None)
+        assert warm["damage_measured"] is False
+        assert warm["true_finding_damage_count"] is None
+        assert warm["true_finding_damage_count"] != 0
+
+    def test_measured_empty_stays_genuine_zero(self):
+        warm = apply_would_suppress(self._REPORT, [self._REC],
+                                    matched_expected=[])
+        assert warm["damage_measured"] is True
+        assert warm["true_finding_damage_count"] == 0
+
+    def test_markdown_marks_unknown_loudly(self):
+        warm = apply_would_suppress(self._REPORT, [self._REC],
+                                    matched_expected=None)
+        md = render_warm_markdown(warm)
+        assert "DAMAGE NOT MEASURED" in md
+        assert "UNKNOWN" in md
+
+    def test_markdown_measured_zero_renders_count(self):
+        warm = apply_would_suppress(self._REPORT, [self._REC],
+                                    matched_expected=[])
+        md = render_warm_markdown(warm)
+        assert "**0** (recall damage if" in md

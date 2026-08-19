@@ -221,7 +221,10 @@ def _cmd_warm(args: argparse.Namespace) -> int:
         print(f"error: cannot read report: {exc}", file=sys.stderr)
         return 2
     records = load_suppression_records(args.suppressions)
-    matched: list[dict] = []
+    # No manifest => damage is UNKNOWN, never zero. matched stays None
+    # so apply_would_suppress marks the section damage_measured=False
+    # (the vacuous-zero blindness class from the b44 stop-ship).
+    matched: list[dict] | None = None
     if args.manifest:
         try:
             manifest = load_manifest(args.manifest)
@@ -230,6 +233,13 @@ def _cmd_warm(args: argparse.Namespace) -> int:
             return 2
         matched = matched_expected_entries(
             report, [e.to_dict() for e in manifest.expected])
+    else:
+        print(
+            "warning: no --manifest — true-finding damage is UNKNOWN "
+            "(not zero); enforcement decisions require a manifest-backed "
+            "damage measurement",
+            file=sys.stderr,
+        )
     warm = apply_would_suppress(report, records, matched_expected=matched)
     md = render_warm_markdown(warm)
     out_dir = args.out or args.report.parent

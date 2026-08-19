@@ -167,7 +167,13 @@ def apply_would_suppress(
             })
 
     # Recall-damage check: records that map onto FOUND expected
-    # findings (see matched_expected_entries).
+    # findings (see matched_expected_entries). None means NO MANIFEST
+    # was supplied — damage is then UNKNOWN, never zero: a silent
+    # vacuous 0 here is exactly the blindness class that masked the
+    # b44 enforcement counterexample (round-twelve close finding). A
+    # measured empty list (manifest present, nothing matched) remains
+    # a genuine zero.
+    damage_measured = matched_expected is not None
     true_suppressed: list[dict[str, Any]] = []
     for entry in matched_expected or []:
         hit = next((r for r in live
@@ -207,9 +213,13 @@ def apply_would_suppress(
         "warm_clean_region_fps": warm_fp,
         "per_cwe": per_cwe,
         "fp_suppressions": fp_suppressed,
-        # would-suppressed TRUE findings = recall damage if enforced
+        # would-suppressed TRUE findings = recall damage if enforced.
+        # damage_measured False => no manifest: count is None (UNKNOWN),
+        # structurally distinct from a measured zero.
+        "damage_measured": damage_measured,
         "true_finding_would_suppress": true_suppressed,
-        "true_finding_damage_count": len(true_suppressed),
+        "true_finding_damage_count": (
+            len(true_suppressed) if damage_measured else None),
     }
 
 
@@ -222,9 +232,15 @@ def render_warm_markdown(warm: dict[str, Any]) -> str:
         f"- clean-region FPs: raw **{warm['raw_clean_region_fps']}** → "
         f"warm **{warm['warm_clean_region_fps']}** "
         f"({warm['would_suppress_fps']} would-suppress)",
-        f"- TRUE findings a suppressor would hit: "
-        f"**{warm['true_finding_damage_count']}** (recall damage if "
-        "enforced — must be zero before any enforcement flip)",
+        (
+            f"- TRUE findings a suppressor would hit: "
+            f"**{warm['true_finding_damage_count']}** (recall damage if "
+            "enforced — must be zero before any enforcement flip)"
+            if warm.get("damage_measured", True)
+            else "- TRUE findings a suppressor would hit: **UNKNOWN — "
+                 "DAMAGE NOT MEASURED** (no manifest supplied; treat as "
+                 "dangerous, never as zero)"
+        ),
         "",
         "| CWE | raw FPs | would-suppress | warm FPs |",
         "|-----|---------|----------------|----------|",

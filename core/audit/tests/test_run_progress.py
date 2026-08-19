@@ -48,3 +48,29 @@ class TestUpdateRunProgress:
         meta_path.write_text("[1, 2, 3]", encoding="utf-8")
         _update_run_progress(tmp_path, SimpleNamespace(reviewed=1))
         assert json.loads(meta_path.read_text(encoding="utf-8")) == [1, 2, 3]
+
+
+class TestResetShutdownState:
+    def test_second_run_not_poisoned(self) -> None:
+        import core.audit.orchestrator as orch
+
+        orch.request_shutdown()
+        orch._sigterm_event.set()
+        orch._sigterm_state["count"] = 1
+        try:
+            assert orch.is_shutdown_requested()
+            orch._reset_shutdown_state()
+            assert not orch.is_shutdown_requested()
+            assert not orch.is_sigterm_requested()
+            assert orch._sigterm_state["count"] == 0
+        finally:
+            orch._shutdown_event.clear()
+            orch._sigterm_event.clear()
+            orch._sigterm_state["count"] = 0
+
+    def test_installed_flag_preserved(self) -> None:
+        import core.audit.orchestrator as orch
+
+        prior = orch._sigterm_state["installed"]
+        orch._reset_shutdown_state()
+        assert orch._sigterm_state["installed"] == prior

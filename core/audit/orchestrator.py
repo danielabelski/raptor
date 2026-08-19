@@ -326,6 +326,24 @@ def install_sigterm_grace() -> bool:
     return True
 
 
+def _reset_shutdown_state() -> None:
+    """Reset per-run shutdown/SIGTERM request state at run start.
+
+    The events and the TERM count are module globals: a prior
+    in-process run that was stopped (SIGTERM drain, request_shutdown)
+    left them set, so a second run in the same process stopped
+    immediately at its first ``is_shutdown_requested()`` check, and
+    its first real SIGTERM was miscounted as the second (immediate
+    exit 130 instead of the graceful drain). Reset at run start like
+    the per-run caches. The handler-installed flag persists — the
+    signal disposition is process-global and installing is
+    idempotent-guarded.
+    """
+    _shutdown_event.clear()
+    _sigterm_event.clear()
+    _sigterm_state["count"] = 0
+
+
 def _update_run_progress(out_dir: Path, result: Any) -> None:
     """Update run metadata with progress checkpoint.
 
@@ -1054,6 +1072,12 @@ def run_orchestrator(
     # INFO line per disabled gate; clears annotations_dir when
     # annotation reads are off).
     _apply_profile_gates(config)
+
+    # Reset per-run shutdown state BEFORE installing the handler (see
+    # _reset_shutdown_state): a prior in-process run's stop request or
+    # first-TERM count must not poison this run.
+    if prep_cache is None or not prep_cache.get("_caches_cleared"):
+        _reset_shutdown_state()
 
     # Graceful SIGTERM (main thread, once): drain + salvage instead of
     # dying mid-write when an external supervisor stops the run.

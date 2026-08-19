@@ -150,18 +150,18 @@ class TestOpsStructReceiptRouting:
         from core.audit.orchestrator import _route_ops_struct_receipts
 
         gaps = [
-            {"file": "fs/timerfd.c", "name": "timerfd_release",
+            {"file": "drv/tick.c", "name": "tick_release",
              "line_start": 230},
-            {"file": "fs/timerfd.c", "name": "helper", "line_start": 10},
+            {"file": "drv/tick.c", "name": "helper", "line_start": 10},
         ]
         mf: dict = {}
         n = _route_ops_struct_receipts(
-            gaps, {"fs/timerfd.c:timerfd_release"}, mf,
+            gaps, {"drv/tick.c:tick_release"}, mf,
         )
         assert n == 1
-        rec = mf["fs/timerfd.c:timerfd_release"][0]
+        rec = mf["drv/tick.c:tick_release"][0]
         assert rec["detector"] == "ops_struct"
-        assert "fs/timerfd.c:helper" not in mf
+        assert "drv/tick.c:helper" not in mf
 
     def test_no_ops_eps_no_receipts(self):
         from core.audit.orchestrator import _route_ops_struct_receipts

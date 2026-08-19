@@ -18,7 +18,7 @@ from core.audit.orchestrator import (
 )
 
 
-def _outcome(file="starlette/datastructures.py", function="__eq__", **kw):
+def _outcome(file="webapp/models.py", function="__eq__", **kw):
     return ReviewOutcome(
         file=file, function=function, status="suspicious",
         body="b", hypothesis="h", **kw,
@@ -28,20 +28,20 @@ def _outcome(file="starlette/datastructures.py", function="__eq__", **kw):
 class TestSelfMatchReceipt:
     def test_seed_function_is_self_match(self):
         assert is_self_match_synth_receipt(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-697.0",
-            "starlette/datastructures.py", "__eq__",
+            "semgrep:synth-webapp_models.py.eq.CWE-697.0",
+            "webapp/models.py", "__eq__",
         )
 
     def test_other_function_is_variant(self):
         assert not is_self_match_synth_receipt(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-697.0",
-            "starlette/datastructures.py", "__hash__",
+            "semgrep:synth-webapp_models.py.eq.CWE-697.0",
+            "webapp/models.py", "__hash__",
         )
 
     def test_other_file_is_variant(self):
         assert not is_self_match_synth_receipt(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-697.0",
-            "starlette/responses.py", "__eq__",
+            "semgrep:synth-webapp_models.py.eq.CWE-697.0",
+            "webapp/render.py", "__eq__",
         )
 
     def test_non_synth_receipt_ignored(self):
@@ -62,7 +62,7 @@ class TestPromotionBlockReason:
     def test_self_match_blocked(self, tmp_path):
         config = self._config(tmp_path)
         reason = _synth_receipt_promotion_block_reason(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-697.0",
+            "semgrep:synth-webapp_models.py.eq.CWE-697.0",
             _outcome(), "CWE-697", config,
         )
         assert "self-match" in reason
@@ -70,7 +70,7 @@ class TestPromotionBlockReason:
     def test_design_pattern_cwe_needs_trust_boundary(self, tmp_path):
         config = self._config(tmp_path)
         reason = _synth_receipt_promotion_block_reason(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-697.0",
+            "semgrep:synth-webapp_models.py.eq.CWE-697.0",
             _outcome(function="__hash__"), "CWE-697", config,
         )
         assert "trust-boundary" in reason
@@ -78,12 +78,12 @@ class TestPromotionBlockReason:
     def test_design_pattern_cwe_allowed_on_entry_point(self, tmp_path):
         config = self._config(tmp_path, context_map={
             "entry_points": [
-                {"file": "starlette/datastructures.py",
+                {"file": "webapp/models.py",
                  "name": "__hash__"},
             ],
         })
         reason = _synth_receipt_promotion_block_reason(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-697.0",
+            "semgrep:synth-webapp_models.py.eq.CWE-697.0",
             _outcome(function="__hash__"), "CWE-697", config,
         )
         assert reason == ""
@@ -91,14 +91,14 @@ class TestPromotionBlockReason:
     def test_trusted_provenance_blocks_design_pattern(self, tmp_path):
         config = self._config(tmp_path, context_map={
             "entry_points": [
-                {"file": "starlette/datastructures.py",
+                {"file": "webapp/models.py",
                  "name": "__hash__"},
             ],
         })
         o = _outcome(function="__hash__")
         o.provenance_all_trusted = True
         reason = _synth_receipt_promotion_block_reason(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-697.0",
+            "semgrep:synth-webapp_models.py.eq.CWE-697.0",
             o, "CWE-697", config,
         )
         assert "all-trusted" in reason
@@ -106,7 +106,7 @@ class TestPromotionBlockReason:
     def test_non_pattern_cwe_variant_promotes(self, tmp_path):
         config = self._config(tmp_path)
         reason = _synth_receipt_promotion_block_reason(
-            "semgrep:synth-starlette_datastructures.py.eq.CWE-89.0",
+            "semgrep:synth-webapp_models.py.eq.CWE-89.0",
             _outcome(function="__hash__"), "CWE-89", config,
         )
         assert reason == ""

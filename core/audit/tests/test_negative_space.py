@@ -1058,30 +1058,30 @@ class TestProtocolEvidenceGate:
 class TestAuthModeRegistration:
     """Registrations reachable regardless of the auth mode."""
 
-    def _gap(self, source, name="register_views", file="sec/manager.py"):
+    def _gap(self, source, name="setup_views", file="app/registry.py"):
         return {"name": name, "file": file, "source": source}
 
     _GATED_SOURCE = (
-        "def register_views(self):\n"
-        "    self.appbuilder.add_view(ResetPasswordView, 'x')\n"
-        "    self.appbuilder.add_view(ResetMyPasswordView, 'y')\n"
-        "    if self.auth_type == AUTH_DB:\n"
-        "        self.appbuilder.add_view(LoginDBView, 'l')\n"
-        "        self.appbuilder.add_view(RegisterUserDBView, 'r')\n"
-        "    elif self.auth_type == AUTH_OAUTH:\n"
-        "        self.appbuilder.add_view(LoginOAuthView, 'l')\n"
-        "        self.appbuilder.add_view(RegisterUserOAuthView, 'r')\n"
-        "    self.appbuilder.add_view_no_menu(UserInfoView)\n"
+        "def setup_views(self):\n"
+        "    self.registry.mount_view(PwResetView, 'x')\n"
+        "    self.registry.mount_view(PwResetSelfView, 'y')\n"
+        "    if self.auth_mode == MODE_LOCAL:\n"
+        "        self.registry.mount_view(LoginLocalView, 'l')\n"
+        "        self.registry.mount_view(SignupLocalView, 'r')\n"
+        "    elif self.auth_mode == MODE_SSO:\n"
+        "        self.registry.mount_view(LoginSSOView, 'l')\n"
+        "        self.registry.mount_view(SignupSSOView, 'r')\n"
+        "    self.registry.mount_hidden(ProfileView)\n"
     )
 
     def test_ungated_peer_of_gated_registrations_flagged(self):
         from core.audit.negative_space import check_auth_mode_registration
 
         findings = check_auth_mode_registration(self._gap(self._GATED_SOURCE))
-        assert findings, "expected the ungated add_view calls flagged"
+        assert findings, "expected the ungated mount_view calls flagged"
         f = findings[0]
         assert f.check_type == "auth_mode_registration"
-        assert "add_view" in f.title
+        assert "mount_view" in f.title
         assert "REGARDLESS" in f.evidence
         assert f.strategy == "protocol_checklist"
 
@@ -1089,12 +1089,12 @@ class TestAuthModeRegistration:
         from core.audit.negative_space import check_auth_mode_registration
 
         src = (
-            "def register_views(self):\n"
-            "    if self.auth_type == AUTH_DB:\n"
-            "        self.add_view(LoginDBView)\n"
-            "        self.add_view(RegisterUserDBView)\n"
-            "    elif self.auth_type == AUTH_LDAP:\n"
-            "        self.add_view(LoginLDAPView)\n"
+            "def setup_views(self):\n"
+            "    if self.auth_mode == MODE_LOCAL:\n"
+            "        self.mount_view(LoginLocalView)\n"
+            "        self.mount_view(SignupLocalView)\n"
+            "    elif self.auth_mode == MODE_DIR:\n"
+            "        self.mount_view(LoginDirView)\n"
         )
         assert check_auth_mode_registration(self._gap(src)) == []
 
@@ -1102,11 +1102,11 @@ class TestAuthModeRegistration:
         from core.audit.negative_space import check_auth_mode_registration
 
         src = (
-            "def register_views(self):\n"
+            "def setup_views(self):\n"
             "    if self.debug_mode:\n"
-            "        self.add_view(DebugView)\n"
-            "        self.add_view(TraceView)\n"
-            "    self.add_view(HomeView)\n"
+            "        self.mount_view(DebugView)\n"
+            "        self.mount_view(TraceView)\n"
+            "    self.mount_view(HomeView)\n"
         )
         assert check_auth_mode_registration(self._gap(src)) == []
 
@@ -1134,9 +1134,9 @@ class TestAuthModeRegistration:
 
         src = (
             "def register(self):\n"
-            "    if self.auth_type == AUTH_DB:\n"
-            "        self.add_view(LoginDBView)\n"
-            "    self.add_view(HomeView)\n"
+            "    if self.auth_mode == MODE_LOCAL:\n"
+            "        self.mount_view(LoginLocalView)\n"
+            "    self.mount_view(HomeView)\n"
         )
         assert check_auth_mode_registration(self._gap(src)) == []
 
@@ -1146,27 +1146,27 @@ class TestSharedWriterRace:
 
     _SRC = (
         "package streamformatter\n"
-        "type progressOutput struct {\n"
-        "\tsf formatProgress\n"
+        "type statusOutput struct {\n"
+        "\tsf formatDetail\n"
         "\tout io.Writer\n"
         "\tnewLines bool\n"
         "}\n"
-        "func (out *progressOutput) WriteProgress(prog progress.Progress) error {\n"
-        "\tformatted := out.sf.formatStatus(prog.ID, prog.Message)\n"
+        "func (out *statusOutput) WriteStatus(st status.Status) error {\n"
+        "\tformatted := out.sf.formatLine(st.ID, st.Message)\n"
         "\t_, err := out.out.Write(formatted)\n"
         "\tif err != nil {\n"
         "\t\treturn err\n"
         "\t}\n"
-        "\tif out.newLines && prog.LastUpdate {\n"
-        "\t\t_, err = out.out.Write(out.sf.formatStatus(\"\", \"\"))\n"
+        "\tif out.newLines && st.LastUpdate {\n"
+        "\t\t_, err = out.out.Write(out.sf.formatLine(\"\", \"\"))\n"
         "\t\treturn err\n"
         "\t}\n"
         "\treturn nil\n"
         "}\n"
-        "type AuxFormatter struct {\n"
+        "type MetaFormatter struct {\n"
         "\tio.Writer\n"
         "}\n"
-        "func (sf *AuxFormatter) Emit(id string, aux interface{}) error {\n"
+        "func (sf *MetaFormatter) Emit(id string, aux interface{}) error {\n"
         "\tmsgJSON, err := json.Marshal(aux)\n"
         "\t_, err = sf.Writer.Write(msgJSON)\n"
         "\treturn err\n"
@@ -1175,7 +1175,7 @@ class TestSharedWriterRace:
 
     def _gap(self, name, source=None):
         return {
-            "file": "pkg/streamformatter/streamformatter.go",
+            "file": "pkg/statusfmt/statusfmt.go",
             "name": name,
             "source": source or self._SRC,
         }
@@ -1183,7 +1183,7 @@ class TestSharedWriterRace:
     def test_multi_write_no_lock_flagged(self):
         from core.audit.negative_space import check_shared_writer_race
 
-        f = check_shared_writer_race(self._gap("WriteProgress"))
+        f = check_shared_writer_race(self._gap("WriteStatus"))
         assert f and f[0].check_type == "shared_writer_race"
         assert "caller set" in f[0].evidence
 
@@ -1196,29 +1196,29 @@ class TestSharedWriterRace:
         from core.audit.negative_space import check_shared_writer_race
 
         src = self._SRC.replace(
-            "\tsf formatProgress\n",
-            "\tsf formatProgress\n\tmu sync.Mutex\n",
+            "\tsf formatDetail\n",
+            "\tsf formatDetail\n\tmu sync.Mutex\n",
         )
         assert check_shared_writer_race(
-            self._gap("WriteProgress", src),
+            self._gap("WriteStatus", src),
         ) == []
 
     def test_lock_in_body_silences(self):
         from core.audit.negative_space import check_shared_writer_race
 
         src = self._SRC.replace(
-            "\tformatted := out.sf.formatStatus",
+            "\tformatted := out.sf.formatLine",
             "\tout.mu.Lock()\n\tdefer out.mu.Unlock()\n"
-            "\tformatted := out.sf.formatStatus",
+            "\tformatted := out.sf.formatLine",
         )
         assert check_shared_writer_race(
-            self._gap("WriteProgress", src),
+            self._gap("WriteStatus", src),
         ) == []
 
     def test_non_go_file_silent(self):
         from core.audit.negative_space import check_shared_writer_race
 
-        gap = self._gap("WriteProgress")
+        gap = self._gap("WriteStatus")
         gap["file"] = "a.c"
         assert check_shared_writer_race(gap) == []
 
@@ -1239,9 +1239,9 @@ class TestUrlBoundaryComposition:
         "    self._components = urlsplit(self._url)\n"
     )
 
-    def _gap(self, source, name="URL.__init__"):
+    def _gap(self, source, name="Link.__init__"):
         return {
-            "file": "starlette/datastructures.py",
+            "file": "web/urlobj.py",
             "name": name,
             "source": source,
         }

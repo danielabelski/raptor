@@ -1453,24 +1453,32 @@ def store_sca_outcomes(
             cve_ids = outcome.get("cve_ids") or []
             llm_summary = outcome.get("llm_summary", "")
 
-            parts = [f"SCA: {pkg}"]
-            if eco:
-                parts.append(f"({eco})")
-            if version:
-                parts.append(f"v{version}")
-            parts.append(f"in {repo_name} — verdict: {verdict}.")
-            if kind:
-                parts.append(f"Kind: {kind}.")
-            if cve_ids:
-                parts.append(f"CVEs: {', '.join(cve_ids[:5])}.")
-            if severity:
-                parts.append(f"Severity: {severity}.")
-            if detail:
-                parts.append(detail[:200])
-            if llm_summary:
-                parts.append(f"LLM: {llm_summary[:150]}")
-
             _s = _sanitise_delim
+            # Sanitise EVERY prose component, not just the trailing
+            # decision fields: detail and llm_summary embed registry
+            # metadata and LLM output (injectable via a hostile package
+            # README), and a '|' smuggled into the prose could plant
+            # counterfeit ||key=value|| markers ahead of the genuine
+            # ones for any parser that regex-scans the content.
+            parts = [f"SCA: {_s(pkg)}"]
+            if eco:
+                parts.append(f"({_s(eco)})")
+            if version:
+                parts.append(f"v{_s(version)}")
+            parts.append(f"in {_s(repo_name)} — verdict: {_s(verdict)}.")
+            if kind:
+                parts.append(f"Kind: {_s(kind)}.")
+            if cve_ids:
+                parts.append(
+                    f"CVEs: {', '.join(_s(c) for c in cve_ids[:5])}.",
+                )
+            if severity:
+                parts.append(f"Severity: {_s(severity)}.")
+            if detail:
+                parts.append(_s(detail[:200]))
+            if llm_summary:
+                parts.append(f"LLM: {_s(llm_summary[:150])}")
+
             parts.append(
                 f"||sca_eco={_s(eco)}|| ||sca_name={_s(pkg)}|| "
                 f"||sca_ver={_s(version)}|| ||sca_verdict={_s(verdict)}||"

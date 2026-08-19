@@ -71,7 +71,6 @@ class CveFixRecord:
     files: tuple[CveFixFile, ...]
     cwe: str = ""          # root_cause.cwe_id when --with-root-cause ran
     summary: str = ""      # root_cause.summary when present
-    osv_path: str = ""
 
     @property
     def provenance(self) -> str:
@@ -173,7 +172,6 @@ def load_cve_run(output_dir: Path | str) -> CveFixRecord:
         files=tuple(files),
         cwe=str(root_cause.get("cwe_id", "") or ""),
         summary=str(root_cause.get("summary", "") or ""),
-        osv_path=str(osv_path),
     )
 
 

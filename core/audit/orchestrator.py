@@ -10037,19 +10037,24 @@ def _mark_unsupported_unresolvable(
         )
 
 
-def _resolve_c_scoped(
+def _resolve_scoped(
     root: Path,
     all_idents: list[str],
     ident_reqs: list[StudyRequest],
     resolve_identifiers,
+    *,
+    include_c: bool = False,
 ):
-    """Directory-scoped C identifier resolution.
+    """Directory-scoped identifier resolution, any study language.
 
-    A kernel-sized tree defeats the resolver's flat file cap, so each
-    request's subsystem directory is searched first — premise questions
-    overwhelmingly name identifiers defined near the reviewed code.
-    Identifiers still unresolved after the scoped passes get one
-    root-scoped pass (which fully covers small trees).
+    A stdlib- or kernel-sized tree defeats the resolver's flat file
+    cap (a root scan stops after the cap and reports resolvable
+    identifiers as not-found — observed marking a critical premise
+    question unresolvable for a function that exists in the tree), so
+    each request's subsystem directory is searched first — premise
+    questions overwhelmingly name identifiers defined near the
+    reviewed code. Identifiers still unresolved after the scoped
+    passes get one root-scoped pass (which fully covers small trees).
     """
     merged_items: list = []
     remaining = list(all_idents)
@@ -10068,12 +10073,12 @@ def _resolve_c_scoped(
         if not remaining:
             break
         res = resolve_identifiers(
-            root, remaining, scope=scope, include_c=True,
+            root, remaining, scope=scope, include_c=include_c,
         )
         merged_items.extend(res.items)
         unres = {u["name"] for u in res.unresolved}
         remaining = [n for n in remaining if n in unres]
-    final = resolve_identifiers(root, remaining, include_c=True)
+    final = resolve_identifiers(root, remaining, include_c=include_c)
     final.items = merged_items + final.items
     return final
 
@@ -10136,12 +10141,10 @@ def _resolve_multilang_requests(
 
     unresolved_by_name: dict[str, str] = {}
     if all_idents:
-        if include_c:
-            res = _resolve_c_scoped(
-                root, all_idents, ident_reqs, resolve_identifiers,
-            )
-        else:
-            res = resolve_identifiers(root, all_idents)
+        res = _resolve_scoped(
+            root, all_idents, ident_reqs, resolve_identifiers,
+            include_c=include_c,
+        )
         unresolved_by_name = {
             u["name"]: u["reason"] for u in res.unresolved
         }
@@ -15538,9 +15541,23 @@ def _collect_reviews_until_budget(
     collected = []
     stopped = False
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_to_item = {
-            pool.submit(do_review, item): item for item in prepared
-        }
+        future_to_item = {}
+        try:
+            for item in prepared:
+                future_to_item[pool.submit(do_review, item)] = item
+        except RuntimeError:
+            # Interpreter shutdown between the budget check and
+            # dispatch: the run is tearing down while a background
+            # consumer thread is still queueing re-reviews. Observed
+            # live as an unhandled crash that hung the run after
+            # results were written. Anything already dispatched is
+            # still harvested below; the rest was never sent and
+            # nothing was spent on it.
+            logger.info(
+                "%s: executor rejected dispatch (shutdown in "
+                "progress) — %d re-review(s) skipped",
+                phase_label, len(prepared) - len(future_to_item),
+            )
         for fut in as_completed(future_to_item):
             # Harvest first: a future yielded here has finished (or
             # was cancelled while pending). Cancelled == never

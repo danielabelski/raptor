@@ -779,7 +779,7 @@ class TestCPerBatchSplice:
         # A same-named decoy outside the request's subsystem must not
         # shadow the subsystem definition.
         from core.audit.orchestrator import (
-            _resolve_c_scoped,
+            _resolve_scoped,
         )
         from core.concepts.lang_resolve import resolve_identifiers
 
@@ -793,8 +793,35 @@ class TestCPerBatchSplice:
             source_file="net/proto/rx.c",
             source_function="rx_init",
         )
-        res = _resolve_c_scoped(
+        res = _resolve_scoped(
             target, ["proto_set_level"], [req], resolve_identifiers,
+            include_c=True,
         )
         files = [i.file for i in res.items]
         assert "net/proto/sock.c" in files
+
+    def test_scoped_resolution_for_multilang(self, tmp_path) -> None:
+        # The scoped-first strategy applies to non-C study languages
+        # too: a Go identifier in the request's subsystem resolves
+        # even when the tree is larger than a flat scan would cover.
+        from core.audit.orchestrator import _resolve_scoped
+        from core.concepts.lang_resolve import resolve_identifiers
+
+        target = tmp_path / "t"
+        (target / "pkg" / "wire").mkdir(parents=True)
+        (target / "pkg" / "wire" / "frame.go").write_text(
+            "package wire\n\n"
+            "// advanceFrame records a frame boundary.\n"
+            "func advanceFrame(n int) int {\n"
+            "\treturn n + 1\n"
+            "}\n",
+        )
+        req = StudyRequest(
+            question="Does advanceFrame validate the parsed number?",
+            source_file="pkg/wire/decode.go",
+            source_function="decodeHeader",
+        )
+        res = _resolve_scoped(
+            target, ["advanceFrame"], [req], resolve_identifiers,
+        )
+        assert [i.name for i in res.items] == ["advanceFrame"]

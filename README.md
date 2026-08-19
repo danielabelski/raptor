@@ -159,17 +159,24 @@ Environment variables that could inject code into the launcher chain are strippe
 | `/binary` | Black-box binary investigation, runtime evidence, graph queries and handoff | Beta |
 | `/audit` | Hypothesis-driven, tool-grounded systematic code review | Beta |
 | `/review` | Query audit state: findings, gaps, coverage, operator notes | Stable |
+| `/annotate` | Attach free-form per-function prose annotations (operator review notes) | Stable |
 | `/validate` | Multi-stage exploitability validation pipeline (Stages 0-F) | Stable |
+| `/diagram` | Mermaid visual maps from `/understand` and `/validate` JSON outputs | Beta |
 | `/codeql` | CodeQL-only deep analysis with SMT dataflow pre-screening | Stable |
+| `/analyze` | Analyse existing SARIF findings with LLM, without re-scanning | Stable |
 | `/sca` | Software composition analysis: dependencies, advisories, supply-chain signals, SBOMs, and fixes | Beta |
 | `/exploit` | Generate proof-of-concept exploit code | Beta |
 | `/patch` | Generate secure patches for confirmed vulnerabilities | Beta |
+| `/cve-diff` | Discover, acquire, and diff the fix commit for a CVE | Stable |
 | `/fuzz` | Binary fuzzing with AFL++ and crash analysis | Stable |
 | `/crash-analysis` | Autonomous root-cause analysis for C/C++ crashes | Stable |
 | `/oss-forensics` | Evidence-backed forensic investigation for GitHub repositories | Stable |
 | `/project` | Named workspaces to organise runs and track findings over time | Stable |
+| `/describe` | Describe a target: language mix, build system, tool gaps, cost estimate (read-only) | Stable |
 | `/threat-model` | Create, inspect, and maintain per-project threat models | Stable |
 | `/sage` | Persistent memory layer (store, recall, link, corroborate) | Stable |
+| `/ask` | Send a free-form prompt to any configured LLM model | Stable |
+| `/scorecard` | Inspect per-model reliability across decision classes | Stable |
 | `/frida` | Dynamic instrumentation via Frida | Alpha |
 | `/web` | Web application scanning | Alpha/stub |
 

@@ -238,4 +238,55 @@ def build_table_resolver(source_text: str,
     return resolver
 
 
-__all__ = ["ArrayTableIndex", "build_table_resolver", "make_array_resolver"]
+
+
+def finite_constant_value_set(
+    rd,
+    at_node,
+    name: str,
+    index,
+    array_resolver=None,
+    config_resolver=None,
+    conduit_resolver=None,
+    max_values: int = 8,
+):
+    """The bounded value-set of ``name`` at ``at_node`` as a frozenset
+    of compile-time constants, or None.
+
+    This is the if-equals-chain recognizer generalised to the
+    reaching-definitions level (b40): the canonical shape
+
+        String y;
+        if (x.equals("a"))      { y = "v1"; }
+        else if (x.equals("b")) { y = "v2"; }
+        else                    { y = "d";  }
+        sink(y);
+
+    binds ``y``'s value to the finite set {"v1", "v2", "d"} regardless
+    of ``x`` — every reaching definer at the sink is one of the
+    chain's constant assignments. Anchoring on reaching definitions
+    (rather than on the chain's syntax) is strictly MORE demanding:
+    any path that leaves a non-constant definition live at the sink —
+    a missing else over a tainted pre-initialisation, a branch that
+    assigns from a call — surfaces that definer, which refuses the
+    fold, and the whole set reads as None. Chain length is bounded by
+    ``max_values`` definers; TAINT_FREE definers refuse (no value to
+    run through a danger model — the caller's per-element check needs
+    members, not tiers).
+    """
+    from core.analysis.const_fold_java import definer_fold_values
+
+    values = definer_fold_values(
+        rd, at_node, name, index,
+        array_resolver=array_resolver,
+        config_resolver=config_resolver,
+        conduit_resolver=conduit_resolver,
+        max_definers=max_values,
+    )
+    if values is None:
+        return None
+    return frozenset(values)
+
+
+__all__ = ["ArrayTableIndex", "build_table_resolver",
+           "finite_constant_value_set", "make_array_resolver"]

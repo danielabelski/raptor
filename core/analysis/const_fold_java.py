@@ -792,6 +792,64 @@ def definers_all_fold(
     return True
 
 
+def definer_fold_values(
+    rd,
+    at_node,
+    name: str,
+    index: JavaConstIndex,
+    array_resolver=None,
+    config_resolver=None,
+    conduit_resolver=None,
+    max_definers: int = 8,
+) -> Optional[Tuple[Any, ...]]:
+    """The folded VALUE of every reaching definer of ``name`` at
+    ``at_node``, or None when any definer refuses. Values need not
+    agree — this is the finite-value-set consumer (b40): a variable
+    provably one of several compile-time constants carries no caller
+    taint, and the caller decides whether the SET itself is
+    acceptable (danger-model check per element).
+
+    Value-only by construction: the TAINT_FREE tier stays disabled —
+    a taint-free-but-unknown value has no member to run through a
+    danger model, so it must refuse here (the plain taint-freedom
+    conclusion without the set is :func:`definers_all_fold` /
+    :func:`all_definers_constant`'s job). Definer sets larger than
+    ``max_definers`` refuse (bounded recognizer).
+    """
+    if not index.ok:
+        return None
+    ext = _index_ext(index, allow_taint_free=False)
+    resolve_at = _make_point_resolver(rd, index, array_resolver,
+                                      config_resolver, conduit_resolver,
+                                      ext)
+    try:
+        defs = rd.at(at_node, name)
+    except Exception:  # noqa: BLE001 — oracle failure reads as refuse
+        return None
+    if not defs or len(defs) > max_definers:
+        return None
+    values = []
+    for d in defs:
+        rhs = index.rhs_at(getattr(d, "lineno", 0), name)
+        if rhs is None:
+            return None
+        val = _fold(
+            rhs,
+            lambda nm, dp, _d=d: resolve_at(_d, nm, dp, set()),
+            0,
+            array_resolver,
+            config_resolver,
+            conduit_resolver,
+            ext,
+        )
+        if val is _REFUSE or val is TAINT_FREE \
+                or not isinstance(val, (str, int)) \
+                or isinstance(val, bool):
+            return None
+        values.append(val)
+    return tuple(values)
+
+
 def all_definers_constant(
     rd,
     sink,

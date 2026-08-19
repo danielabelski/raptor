@@ -540,11 +540,52 @@ def _fold_stack(graph, java_source_text: str,
         return None
 
 
+def _finite_value_set_reason(
+    rd, sink, sink_arg: str, index, cwe: str,
+    table_resolver, config_resolver, invocation_hook,
+) -> Optional[str]:
+    """Reason string when ``sink_arg``'s reaching definers fold to a
+    FINITE SET of compile-time constants whose every string member
+    clears the CWE's danger models; None otherwise. The set semantics
+    (values need not agree) are what the all-agree point resolver
+    cannot express; the danger check is the finite specialisation of
+    the smt_barrier charset proof, same as the collection guard."""
+    try:
+        from core.analysis.collection_guard_java import (
+            _literals_clear_danger,
+        )
+        from core.analysis.value_set_java import finite_constant_value_set
+        values = finite_constant_value_set(
+            rd, sink, sink_arg, index,
+            array_resolver=table_resolver,
+            config_resolver=config_resolver,
+            conduit_resolver=invocation_hook,
+        )
+        if values is None or len(values) < 2:
+            # A singleton is the all-agree proof's territory (it
+            # already refused above — refusing here keeps the two
+            # paths from disagreeing on one shape).
+            return None
+        str_members = [v for v in values if isinstance(v, str)]
+        if str_members:
+            danger_ok = _literals_clear_danger(sorted(str_members), cwe)
+            if danger_ok is None:
+                return None
+        return (
+            f"every reaching definer of the sink argument folds to a "
+            f"compile-time constant in a finite set of {len(values)} "
+            f"values clearing the class danger model(s)"
+        )
+    except Exception:  # noqa: BLE001 — folding is best-effort, never fatal
+        return None
+
+
 def _sink_arg_constant_reason(
     graph, sources_set, sink, sink_arg: str,
     source_symbols, java_source_text: str,
     java_file_path: Optional[str] = None,
     repo_root: Optional[str] = None,
+    cwe: Optional[str] = None,
 ) -> Optional[str]:
     """Reason string when the Java constant-folder proves every
     reaching definer of ``sink_arg`` constant AND no other name in
@@ -635,6 +676,18 @@ def _sink_arg_constant_reason(
             config_resolver=config_resolver,
             conduit_resolver=invocation_hook,
         )
+        if reason is None and cwe:
+            # Finite value-set fallback (b40): the definers disagree
+            # on VALUE but every one folds to a compile-time constant
+            # — the if-equals-chain shape. Constancy alone is the
+            # taint-freedom conclusion; the per-element danger check
+            # on top keeps this pre-check honest for value-based
+            # finding classes (the b34 API caveat): a set containing
+            # a danger-bearing constant never suppresses here.
+            reason = _finite_value_set_reason(
+                rd, sink, sink_arg, index, cwe,
+                table_resolver, config_resolver, invocation_hook,
+            )
         if reason is None:
             return None
         if table_resolver is not None and table_resolver.hits:
@@ -1400,6 +1453,7 @@ def evaluate_finding(
             source_symbols, java_source_text,
             java_file_path=java_file_path,
             repo_root=repo_root,
+            cwe=cwe,
         )
         if const_reason is not None:
             return SanitizerCutResult(

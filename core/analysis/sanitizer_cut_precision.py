@@ -1069,6 +1069,108 @@ def _java_b21_fixtures() -> List[CutFixture]:
     return j
 
 
+def _java_b40_fixtures() -> List[CutFixture]:
+    """Dead-branch if-pruning + finite value-set battery (b40).
+
+    Both payoff directions ride the constant machinery, so every
+    fixture's must-not twin exercises the damage direction: a LIVE
+    tainted branch selected by the fold, an unfoldable / TAINT_FREE
+    condition that must keep every edge, a dangerous constant inside
+    an otherwise-finite set, and the tainted fall-through of a
+    missing else."""
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    j = []
+    # -- if-pruning: dead tainted branch → only the constant reaches.
+    j.append(_fx(
+        "java_if_deadbranch_folds", "xss", "CWE-79",
+        "if_deadbranch_folds", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int num = 106;',
+             'String bar = "safe";',
+             'if ((7 * 42) - num > 200) { bar = param; }',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    # -- recall safety: the fold selects the TAINTED branch — live.
+    j.append(_fx(
+        "java_if_livebranch_taint", "xss", "CWE-79",
+        "if_livebranch_taint", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int num = 106;',
+             'String bar = "safe";',
+             'if ((7 * 42) - num < 200) { bar = param; }',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    # -- unfoldable condition: both branches live, taint reaches.
+    j.append(_fx(
+        "java_if_unfoldable_kept", "xss", "CWE-79",
+        "if_unfoldable_kept", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = "safe";',
+             'if (param.length() > 3) { bar = param; }',
+             'out.println(bar);'), 4, 7,
+        language="java", suffix=".java"))
+    # -- TAINT_FREE condition has no VALUE: must not prune.
+    j.append(_fx(
+        "java_if_taintfree_cond_unpruned", "xss", "CWE-79",
+        "if_taintfree_cond", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String mode = System.getProperty("mode");',
+             'String bar = "safe";',
+             'if (mode == null) { bar = param; }',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    # -- finite value-set: the equals-chain, all members clear xss.
+    j.append(_fx(
+        "java_equals_chain_constants", "xss", "CWE-79",
+        "equals_chain_constants", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar;',
+             'if (param.equals("a")) { bar = "v1"; }',
+             'else if (param.equals("b")) { bar = "v2"; }',
+             'else { bar = "d"; }',
+             'out.println(bar);'), 4, 9,
+        language="java", suffix=".java"))
+    # -- one member carries a danger char: must not suppress.
+    j.append(_fx(
+        "java_equals_chain_danger_member", "xss", "CWE-79",
+        "equals_chain_danger", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar;',
+             'if (param.equals("a")) { bar = "v1"; }',
+             'else { bar = "<b>x</b>"; }',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    # -- one branch assigns the tainted value: must not suppress.
+    j.append(_fx(
+        "java_equals_chain_nonconst", "xss", "CWE-79",
+        "equals_chain_nonconst", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar;',
+             'if (param.equals("a")) { bar = "v1"; }',
+             'else { bar = param; }',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    # -- missing else over a tainted pre-init: the fall-through
+    #    definition reaches — must not suppress.
+    j.append(_fx(
+        "java_equals_chain_fallthrough_taint", "xss", "CWE-79",
+        "equals_chain_fallthrough", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = param;',
+             'if (param.equals("a")) { bar = "v1"; }',
+             'out.println(bar);'), 4, 7,
+        language="java", suffix=".java"))
+    return j
+
+
 def build_corpus() -> List[CutFixture]:
     """The labelled corpus: the adversarial battery instantiated per
     covered python sink class, plus interproc, catalog-empty-class,
@@ -1118,6 +1220,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_switch_fixtures()
     fixtures += _java_valueset_fixtures()
     fixtures += _java_constant_fixtures()
+    fixtures += _java_b40_fixtures()
     fixtures += _java_wrapper_fixtures()
     fixtures += _java_array_fixtures()
     fixtures += _java_config_fixtures()

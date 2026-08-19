@@ -277,3 +277,54 @@ public class Test {
         stats = run_postpass([sarif_path], repo, out)
         assert stats["recorded_suppress"] == 0
 
+
+class TestGrammarAbsentDegradation:
+    """Hermetic parser-absent contract (audit-suite degradation
+    doctrine): a missing java grammar must degrade LOUDLY — the
+    finding lands in the enumerated ``language-unsupported`` refusal
+    bucket and one warning names the missing capability. Silent
+    fold-in with ``resolver-refused`` would make degraded coverage
+    indistinguishable from full coverage."""
+
+    def test_java_grammar_absent_refuses_loudly(
+            self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        import core.analysis.cfg_builder_java as cbj
+
+        monkeypatch.setattr(cbj, "_get_parser", lambda: None)
+        repo, _, sarif_path, out = _write(tmp_path, _SAFE_JAVA)
+        with caplog.at_level(
+                logging.WARNING, logger="core.analysis.sanitizer_cut_postpass"):
+            stats = run_postpass([sarif_path], repo, out)
+        assert stats["examined"] == 1
+        assert stats["recorded_suppress"] == 0
+        assert stats["refused_reasons"].get("language-unsupported") == 1
+        assert not (out / "suppressions.jsonl").exists()
+        warnings = [r.message for r in caplog.records
+                    if "grammar not installed" in r.message]
+        assert len(warnings) == 1  # once per run, not per finding
+
+    def test_python_leg_needs_no_grammar(self, tmp_path, monkeypatch):
+        """The stdlib-ast python leg must be untouched by the probe."""
+        import core.analysis.cfg_builder_java as cbj
+
+        monkeypatch.setattr(cbj, "_get_parser", lambda: None)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        src = repo / "app.py"
+        src.write_text(
+            "def handle():\n"
+            "    x = request.args.get('q')\n"
+            "    y = html.escape(x)\n"
+            "    render(y)\n",
+            encoding="utf-8",
+        )
+        sarif_path = tmp_path / "scan.sarif"
+        sarif_path.write_text(json.dumps(_sarif(src, sink_line=4)))
+        out = tmp_path / "out"
+        out.mkdir()
+        stats = run_postpass([sarif_path], repo, out)
+        assert stats["examined"] == 1
+        assert stats["refused_reasons"].get("language-unsupported") is None
+        assert stats["recorded_suppress"] == 1

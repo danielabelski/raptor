@@ -107,6 +107,48 @@ def _language_for(file_path: str) -> Optional[str]:
     return None
 
 
+def _resolver_grammar_available(language: str) -> bool:
+    """True when the resolver leg for *language* has its parser.
+
+    Python needs only stdlib ``ast``; java and c need optional
+    tree-sitter grammar wheels. Probes the exact parser plumbing the
+    resolver uses so a broken grammar classifies the same way the
+    resolver would see it.
+    """
+    try:
+        if language == "java":
+            from core.analysis.cfg_builder_java import _get_parser
+            return _get_parser() is not None
+        if language == "c":
+            from core.analysis.cfg_builder_cpp import _get_parser
+            return _get_parser("c") is not None
+    except Exception:  # noqa: BLE001 — a broken grammar counts as absent
+        return False
+    return True
+
+
+def _grammar_ok(language: str, cache: Dict[str, bool]) -> bool:
+    """Once-per-run grammar probe with the loud degradation signal.
+
+    When the grammar for a supported language is missing, every one
+    of its findings degrades to a ``language-unsupported`` refusal
+    (the enumerated inconclusive the sibling channels use) instead of
+    being silently folded into ``resolver-refused``, and ONE warning
+    line names the missing capability — degraded coverage must never
+    be indistinguishable from full coverage.
+    """
+    if language not in cache:
+        cache[language] = _resolver_grammar_available(language)
+        if not cache[language]:
+            logger.warning(
+                "sanitizer-cut post-pass: tree-sitter %s grammar not "
+                "installed — %s findings degrade to language-unsupported "
+                "refusals (no suppression evidence recorded)",
+                language, language,
+            )
+    return cache[language]
+
+
 # A finding whose file has more source-shaped lines than this before
 # the sink is refused outright — evaluating the gate from each
 # candidate stays sound at any count, but the cost is per-candidate
@@ -199,6 +241,7 @@ def run_postpass(
     started = time.monotonic()
     source_cache: Dict[Path, Optional[List[int]]] = {}
     text_cache: Dict[Path, str] = {}
+    grammar_cache: Dict[str, bool] = {}
     repo_root = Path(repo_root).resolve()
 
     findings: List[Dict[str, Any]] = []
@@ -246,6 +289,10 @@ def run_postpass(
             continue
 
         stats.examined += 1
+
+        if not _grammar_ok(language, grammar_cache):
+            stats.refuse("language-unsupported")
+            continue
 
         trace_line = _dataflow_source_line(finding)
         if trace_line is not None:

@@ -583,9 +583,10 @@ def _current_content_hash(out_dir, target_path) -> str | None:
         try:
             with open(manifest_path, encoding="utf-8") as f:
                 own = json.load(f)
-            own_hash = own.get("content_hash", "")
-            if own_hash:
-                return own_hash
+            if isinstance(own, dict):
+                own_hash = own.get("content_hash", "")
+                if own_hash:
+                    return own_hash
         except (json.JSONDecodeError, OSError):
             pass
     if target_path is None or not Path(target_path).is_dir():
@@ -619,7 +620,10 @@ def import_sibling_joern_flows(
             try:
                 with open(manifest_path, encoding="utf-8") as f:
                     manifest = json.load(f)
-                sibling_hash = manifest.get("content_hash", "")
+                sibling_hash = (
+                    manifest.get("content_hash", "")
+                    if isinstance(manifest, dict) else ""
+                )
                 if sibling_hash:
                     # Staleness gate: a sibling run at a different
                     # commit carries taint flows for code that no
@@ -646,6 +650,12 @@ def import_sibling_joern_flows(
         try:
             with open(flows_path, encoding="utf-8") as f:
                 flows_data = json.load(f)
+            if not isinstance(flows_data, dict):
+                logger.debug(
+                    "malformed joern-flows in %s — skipped",
+                    sibling_dir.name,
+                )
+                continue
             for key, flows in flows_data.items():
                 imported.setdefault(key, []).extend(flows)
         except (json.JSONDecodeError, OSError):
@@ -678,6 +688,10 @@ def sibling_run_dirs(
                 try:
                     with open(manifest, encoding="utf-8") as f:
                         m = json.load(f)
+                    # Malformed metadata (valid JSON, wrong shape) is
+                    # as disqualifying as unparseable JSON.
+                    if not isinstance(m, dict):
+                        continue
                     sibling_target = m.get("target_path") or m.get("target", "")
                     if sibling_target and Path(sibling_target).resolve() != Path(target_path).resolve():
                         continue

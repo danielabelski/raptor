@@ -94,3 +94,48 @@ class TestSiblingStalenessGate:
         )
         imported = import_sibling_joern_flows(out_dir)
         assert imported == {"a.c:f": [{"sink": "system"}]}
+
+
+class TestMalformedSiblingArtifacts:
+    """Sibling run dirs are shared-directory neighbours — malformed
+    metadata or flow files must be skipped, not crash the import."""
+
+    def test_non_dict_manifest_skipped(self, tmp_path: Path) -> None:
+        project = tmp_path / "proj"
+        out_dir = _mk_run(project, "current", content_hash="aaaa1111")
+        bad = project / "weird"
+        bad.mkdir()
+        (bad / ".raptor-run.json").write_text("[1, 2, 3]", encoding="utf-8")
+        ok = _mk_run(
+            project, "older",
+            flows={"a.c:f": [{"sink": "system"}]},
+            content_hash="aaaa1111",
+        )
+        assert ok is not None
+        imported = import_sibling_joern_flows(out_dir)
+        assert imported == {"a.c:f": [{"sink": "system"}]}
+
+    def test_non_dict_manifest_skipped_with_target_filter(
+        self, tmp_path: Path,
+    ) -> None:
+        from core.audit.joern_backend import sibling_run_dirs
+
+        project = tmp_path / "proj"
+        out_dir = _mk_run(project, "current", target=str(tmp_path))
+        bad = project / "weird"
+        bad.mkdir()
+        (bad / ".raptor-run.json").write_text("[1, 2, 3]", encoding="utf-8")
+        _mk_run(project, "older", target=str(tmp_path))
+        dirs = sibling_run_dirs(out_dir, target_path=tmp_path)
+        assert [d.name for d in dirs] == ["older"]
+
+    def test_non_dict_flows_file_skipped(self, tmp_path: Path) -> None:
+        import json as _json
+
+        project = tmp_path / "proj"
+        out_dir = _mk_run(project, "current", content_hash="aaaa1111")
+        bad = _mk_run(project, "older", content_hash="aaaa1111")
+        (bad / "joern-flows.json").write_text(
+            _json.dumps([1, 2, 3]), encoding="utf-8",
+        )
+        assert import_sibling_joern_flows(out_dir) is None

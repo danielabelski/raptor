@@ -689,12 +689,31 @@ def check_env(unavailable_features: set) -> tuple[list, list]:
                 features.append("net")
             if mount_ok:
                 features.append("mount")
+            landlock_abi = 0
             if landlock_ok:
-                features.append("landlock")
+                # Surface the kernel's Landlock capability tier once
+                # at startup — the per-run sandbox warnings (egress
+                # allowlist advisory on ABI < 4, scoping absent on
+                # ABI < 6) otherwise repeat on every run with no
+                # single place to see the host tier. Reads the cache
+                # check_landlock_available() just populated — free.
+                from core.sandbox import _get_landlock_abi
+                landlock_abi = _get_landlock_abi()
+                features.append(
+                    f"landlock:abi{landlock_abi}" if landlock_abi
+                    else "landlock"
+                )
             if seccomp_ok:
                 features.append("seccomp")
             if features:
                 parts.append(f"sandbox ✓ ({'+'.join(features)})")
+                if landlock_ok and 0 < landlock_abi < 4:
+                    warnings.append(
+                        f"Landlock ABI {landlock_abi} < 4 — no kernel "
+                        f"TCP allowlist; on runs without a network-"
+                        f"namespace bridge the sandbox egress "
+                        f"allowlist is advisory only"
+                    )
                 # Partial-sandbox warnings — name what's missing so users
                 # can decide whether the gap matters for their use case.
                 # (The banner's feature list already shows what IS active.)

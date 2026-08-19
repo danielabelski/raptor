@@ -16,4 +16,15 @@ public class xss_java_pos extends HttpServlet {
         String p2 = request.getParameter("p2");
         response.getWriter().write(p2, 0, p2.length());
     }
+
+    public void enumHeaderToWriter(javax.servlet.http.HttpServletRequest request,
+                                   javax.servlet.http.HttpServletResponse response)
+            throws java.io.IOException {
+        String param = "";
+        java.util.Enumeration<String> headers = request.getHeaders("X-Custom");
+        if (headers != null && headers.hasMoreElements()) {
+            param = headers.nextElement();
+        }
+        response.getWriter().println(param);
+    }
 }

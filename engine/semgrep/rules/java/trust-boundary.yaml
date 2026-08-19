@@ -32,6 +32,11 @@ rules:
           - pattern: (HttpServletRequest $REQ).getHeader(...)
           - pattern: (HttpServletRequest $REQ).getCookies()
           - pattern: (HttpServletRequest $REQ).getQueryString()
+          # Header/parameter enumerations are request data; taint
+          # reaches values via nextElement(). Names are attacker-chosen.
+          - pattern: (HttpServletRequest $REQ).getHeaders(...)
+          - pattern: (HttpServletRequest $REQ).getHeaderNames()
+          - pattern: (HttpServletRequest $REQ).getParameterNames()
           # Spring MVC
           - pattern: (WebRequest $REQ).getParameter(...)
           - pattern: (WebRequest $REQ).getHeader(...)

@@ -49,6 +49,10 @@ _CASES = {
         ["weakhash_java_pos.java"],
         ["weakhash_java_neg.java"],
     ),
+    "injection/sql-taint.yaml": (
+        ["sqli_java_pos.java"],
+        ["sqli_java_param_neg.java"],
+    ),
 }
 
 pytestmark = pytest.mark.skipif(

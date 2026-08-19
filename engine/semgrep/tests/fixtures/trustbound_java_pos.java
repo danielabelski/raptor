@@ -26,4 +26,10 @@ public class trustbound_java_pos extends HttpServlet {
         // application scope
         getServletContext().setAttribute("appWide", request.getHeader("X-Custom"));
     }
+
+    public void paramNamesToSession(javax.servlet.http.HttpServletRequest request) {
+        java.util.Enumeration<String> names = request.getParameterNames();
+        String name = (String) names.nextElement();
+        request.getSession().setAttribute("stored", name);
+    }
 }

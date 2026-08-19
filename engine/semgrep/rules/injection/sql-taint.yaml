@@ -61,6 +61,12 @@ rules:
           - pattern: (HttpServletRequest $REQ).getPathInfo()
           - pattern: (HttpServletRequest $REQ).getQueryString()
           - pattern: (HttpServletRequest $REQ).getRequestURI()
+          # Header/parameter enumerations are request data too: the
+          # Enumeration itself is the source; taint reaches values via
+          # nextElement(). Parameter/header NAMES are attacker-chosen.
+          - pattern: (HttpServletRequest $REQ).getHeaders(...)
+          - pattern: (HttpServletRequest $REQ).getHeaderNames()
+          - pattern: (HttpServletRequest $REQ).getParameterNames()
           # Spring MVC
           - pattern: (WebRequest $REQ).getParameter(...)
           - pattern: (WebRequest $REQ).getHeader(...)
@@ -87,15 +93,49 @@ rules:
           - pattern: (Statement $STMT).executeQuery($Q + $X)
           - pattern: (Statement $STMT).executeUpdate($Q + $X)
           - pattern: (Statement $STMT).execute($Q + $X)
+      # Tainted SQL text handed to prepare — a constant '?' query is
+      # the safe form and carries no taint; concatenated SQL prepared
+      # then executed is injectable despite the PreparedStatement type.
+      - patterns:
+          - pattern-either:
+              - pattern: (Connection $C).prepareStatement($Q, ...)
+              - pattern: (Connection $C).prepareCall($Q, ...)
+              # FQN-declared locals: semgrep type matching is syntactic
+              - pattern: (java.sql.Connection $C).prepareStatement($Q, ...)
+              - pattern: (java.sql.Connection $C).prepareCall($Q, ...)
+          - focus-metavariable: $Q
       # JdbcTemplate — focus on $Q prevents FPs on parameterised bind args
       - patterns:
           - pattern-either:
               - pattern: (JdbcTemplate $JT).queryForObject($Q, ...)
               - pattern: (JdbcTemplate $JT).queryForList($Q, ...)
+              - pattern: (JdbcTemplate $JT).queryForMap($Q, ...)
               - pattern: (JdbcTemplate $JT).query($Q, ...)
               - pattern: (JdbcTemplate $JT).update($Q, ...)
               - pattern: (JdbcTemplate $JT).execute($Q)
           - focus-metavariable: $Q
+      # Distinctive Spring-JDBC method names, untyped receiver: the
+      # receiver is often a cross-file static field whose type
+      # semgrep cannot resolve syntactically; these names are unique
+      # enough to stand alone. Generic names (query/update/execute)
+      # deliberately stay type-gated above.
+      - patterns:
+          - pattern-either:
+              - pattern: $RECV.queryForObject($Q, ...)
+              - pattern: $RECV.queryForList($Q, ...)
+              - pattern: $RECV.queryForMap($Q, ...)
+              - pattern: $RECV.queryForRowSet($Q, ...)
+              - pattern: $RECV.batchUpdate($Q, ...)
+          - focus-metavariable: $Q
+      # Untrusted data concatenated onto SQL-shaped text is the
+      # CWE-89 anti-pattern regardless of the executing API's type —
+      # anchors on the SQL grammar, not the receiver.
+      - patterns:
+          - pattern: '"$SQL" + $X'
+          - metavariable-regex:
+              metavariable: $SQL
+              regex: (?i)^(select|insert|update|delete)\b.*
+          - focus-metavariable: $X
     metadata:
       cwe: ["CWE-89"]
       owasp_top_10: ["A3:2021-Injection"]

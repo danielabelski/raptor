@@ -2513,10 +2513,15 @@ _DANGEROUS_API_RE = {
 }
 _DANGEROUS_APIS_LOWER = frozenset(api.lower() for api in _DANGEROUS_APIS)
 
+# Detection vocabulary matched against SCANNED third-party code —
+# the legacy whitelist token stays (older codebases use it) and the
+# allowlist/blocklist spellings are recognised alongside; this is
+# exempt from the house allowlist/blocklist terminology rule.
 _SANITIZER_PATTERNS = frozenset({
     "validate", "sanitize", "escape", "encode", "normalize",
     "check", "verify", "is_valid", "assert", "guard",
     "clean", "strip", "filter", "whitelist",
+    "allowlist", "allow_list", "blocklist", "denylist",
 })
 
 

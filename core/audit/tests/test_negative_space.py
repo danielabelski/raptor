@@ -785,6 +785,24 @@ class TestCheckDeploymentAssumptions:
                  "source": "x = 1 + 2\nreturn x"}]
         assert check_deployment_assumptions(gaps) == []
 
+    def test_allowlist_spelling_recognised(self):
+        # The matcher vocabulary must recognise the allowlist
+        # spelling, not just the legacy whitelist token.
+        gaps = [{"name": "gate", "file": "a.py",
+                 "source": 'ip_allowlist = ["127.0.0.1"]'}]
+        results = check_deployment_assumptions(gaps)
+        assert any(
+            r.check_type == "deployment_assumption" for r in results
+        )
+
+    def test_blocklist_spelling_recognised(self):
+        gaps = [{"name": "gate", "file": "a.py",
+                 "source": 'blocklist_skip = host == "localhost"'}]
+        results = check_deployment_assumptions(gaps)
+        assert any(
+            r.check_type == "deployment_assumption" for r in results
+        )
+
 
 class TestCheckLockOrdering:
     def test_detects_multiple_locks(self):

@@ -1475,9 +1475,17 @@ def check_multi_process(
 
 # ── Deployment assumption patterns ────────────────────────────────────
 
+# Detection vocabulary matched against SCANNED third-party code —
+# the legacy whitelist token stays (older codebases use it) and the
+# allowlist/blocklist spellings are listed alongside; this is exempt
+# from the house allowlist/blocklist terminology rule.
 _HARDCODED_LOCALHOST = re.compile(
-    r"""(?:127\.0\.0\.1|localhost|0\.0\.0\.0).*(?:auth|secur|allow|trust|permit|acl|whitelist)"""
-    r"""|(?:auth|secur|allow|trust|permit|acl|whitelist).*(?:127\.0\.0\.1|localhost|0\.0\.0\.0)""",
+    r"""(?:127\.0\.0\.1|localhost|0\.0\.0\.0).*"""
+    r"""(?:auth|secur|allow|trust|permit|acl|whitelist|allowlist"""
+    r"""|allow_list|blocklist|denylist)"""
+    r"""|(?:auth|secur|allow|trust|permit|acl|whitelist|allowlist"""
+    r"""|allow_list|blocklist|denylist).*"""
+    r"""(?:127\.0\.0\.1|localhost|0\.0\.0\.0)""",
     re.IGNORECASE,
 )
 

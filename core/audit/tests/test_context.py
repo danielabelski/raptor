@@ -391,6 +391,19 @@ class TestSinkToCweHint:
         assert _sink_to_cwe_hint("os.system") == "CWE-78"
         assert _sink_to_cwe_hint("harmless_helper") is None
 
+class TestSanitizerNameVocabulary:
+    def test_allowlist_spellings_recognised(self):
+        from core.audit.context import _is_sanitizer_name
+
+        # Legacy spelling kept (matches scanned third-party code)…
+        assert _is_sanitizer_name("whitelist_hosts")
+        # …and the allowlist/blocklist spellings recognised too.
+        assert _is_sanitizer_name("allowlist_hosts")
+        assert _is_sanitizer_name("build_allow_list")
+        assert _is_sanitizer_name("blocklist_ip")
+        assert _is_sanitizer_name("denylist_check")
+
+
 
 class TestDangerousApiCaseFolding:
     """Mixed-case dangerous-API entries must match lowercased haystacks."""

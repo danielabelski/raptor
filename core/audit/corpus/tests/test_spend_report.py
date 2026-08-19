@@ -125,3 +125,30 @@ class TestSpendBlock:
         text, _gates = _format_summary(rows, 10.0, "m")
         assert "Label-attributed cost: $0.5000" in text
         assert "per-label review spend only" in text
+
+
+class TestRunHeader:
+    def test_header_states_config_and_tree(self, capsys):
+        from types import SimpleNamespace
+
+        from core.audit.corpus.run_corpus import _print_run_header
+
+        labels = [
+            SimpleNamespace(source=SimpleNamespace(repo="linux-kernel")),
+            SimpleNamespace(source=SimpleNamespace(repo="openssl")),
+        ]
+        args = SimpleNamespace(
+            profile="cold", mode="ensemble", triage="off",
+            prefilter="off", scope="excerpt",
+        )
+        _print_run_header(labels, args, [""])
+        out = capsys.readouterr().out
+        assert "Corpus run starting" in out
+        assert "profile=cold" in out
+        assert "mode=ensemble" in out
+        assert "model=default" in out
+        assert "pipeline-tree=" in out
+        assert "labels=2" in out and "groups=2" in out
+        # Timestamped banner.
+        import re
+        assert re.search(r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\]", out)

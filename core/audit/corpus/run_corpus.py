@@ -82,6 +82,46 @@ def _group_max_cost(n_labels: int) -> float:
     )
 
 
+def _ts() -> str:
+    """Local ISO timestamp for phase banners.
+
+    An 8.8-hour v5 log had no timestamps anywhere — intra-group stalls
+    (study timeouts, 429 storms) were invisible without external
+    clocks. Second precision is enough for phase forensics.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _print_run_header(
+    labels: list[Any],
+    args: Any,
+    models: list[str],
+) -> None:
+    """One header stating the run's configuration up front.
+
+    The v5 log never printed the profile, tree, or model — an operator
+    reading only the log could not state the config without forensics
+    (the profile was only inferable from 120 per-group gate lines).
+    """
+    from .history import pipeline_tree_sha
+
+    tree = pipeline_tree_sha() or "unknown"
+    groups = sorted({lb.source.repo for lb in labels})
+    print(f"[{_ts()}] Corpus run starting", flush=True)
+    print(
+        f"  profile={args.profile} mode={args.mode} "
+        f"model={', '.join(m or 'default' for m in models)} "
+        f"triage={args.triage} prefilter={args.prefilter} "
+        f"scope={args.scope}",
+        flush=True,
+    )
+    print(
+        f"  pipeline-tree={tree[:16]} labels={len(labels)} "
+        f"groups={len(groups)} ({', '.join(groups)})",
+        flush=True,
+    )
+
+
 # Pipeline gates the cold profile turns OFF (--profile cold, the
 # default). Membership test: "would a first-time user, default flags,
 # cold caches, get this input?" — anything accumulated across runs or
@@ -603,8 +643,17 @@ def _run_audit(
 
     results = []
     run_dirs: list[Path] = []
+    n_groups = len(by_repo)
     try:
-        for repo_key, repo_labels in by_repo.items():
+        for group_idx, (repo_key, repo_labels) in enumerate(
+            by_repo.items(), start=1,
+        ):
+            print(
+                f"\n[{_ts()}] Group {group_idx}/{n_groups}: {repo_key} "
+                f"({len(repo_labels)} label(s), mode "
+                f"{mode or 'security'})",
+                flush=True,
+            )
             src_dir = source_dirs.get(repo_key)
             if src_dir is None or not src_dir.is_dir():
                 for label in repo_labels:
@@ -974,6 +1023,12 @@ def _run_audit_on_target(
 
     from core.audit.pipeline import AuditPipelineOpts, run_audit_pipeline
 
+    # Monotonic progress counter — the callback's ``total`` is the
+    # live queue size (it grows with chain injection), so ``i/total``
+    # gives a real sense of progress where a bare static "[79]" did
+    # not.
+    progress_n = [0]
+
     def on_progress(idx, total, outcome):
         if idx < 0 or not outcome.file:
             return
@@ -988,9 +1043,14 @@ def _run_audit_on_target(
         ) else ""
         char = {"clean": ".", "suspicious": "?", "finding": "!",
                 "dormant": "~", "error": "x"}.get(status, ".")
-        print(f"  [{total}] {key} -> {status} {char}{marker}", flush=True)
+        progress_n[0] += 1
+        print(
+            f"  [{progress_n[0]}/{total}] {key} -> {status} "
+            f"{char}{marker}",
+            flush=True,
+        )
 
-    print(f"  Audit started: {target_dir}", flush=True)
+    print(f"  [{_ts()}] Audit started: {target_dir}", flush=True)
     t0 = time.monotonic()
 
     try:
@@ -1051,7 +1111,7 @@ def _run_audit_on_target(
         rc = 1
 
     wall_s = time.monotonic() - t0
-    print(f"  Audit finished in {wall_s:.0f}s (rc={rc})", flush=True)
+    print(f"  [{_ts()}] Audit finished in {wall_s:.0f}s (rc={rc})", flush=True)
 
     outcomes_by_id, bare_key_entries = _parse_audit_log_outcomes(
         out_dir / ".audit-log.jsonl",
@@ -1818,7 +1878,7 @@ def _format_summary(
 
     lines = []
     lines.append("=" * 70)
-    lines.append("Corpus run complete")
+    lines.append(f"Corpus run complete [{_ts()}]")
     lines.append(f"  Model: {model or 'default'}")
     lines.append(f"  Labels: {len(results)}")
     if skipped_count:
@@ -2079,7 +2139,7 @@ def _run_ensemble_audit(
             bf_dirs = [bf_out] if bf_out.is_dir() else []
         else:
             if sec_results is None:
-                print("\n--- Ensemble pass 1: security mode ---",
+                print(f"\n[{_ts()}] --- Ensemble pass 1: security mode ---",
                       flush=True)
                 sec_results, sec_dirs = _run_audit(
                     labels, source_dirs,
@@ -2134,7 +2194,7 @@ def _run_ensemble_audit(
                         lb for lb in labels
                         if lb.function_id in pass2_ids
                     ]
-                    print(f"\n--- Ensemble pass 2: bug_first mode "
+                    print(f"\n[{_ts()}] --- Ensemble pass 2: bug_first mode "
                           f"({len(pass2_labels)}/{len(labels)} functions) ---",
                           flush=True)
                     bf_results, bf_dirs = _run_audit(
@@ -2250,7 +2310,7 @@ def _run_ensemble_audit(
         sec_cost = sum(r.get("cost_usd", 0) for r in sec_results)
         bf_cost = sum(r.get("cost_usd", 0) for r in bf_results)
 
-        print("\n--- Ensemble merge ---", flush=True)
+        print(f"\n[{_ts()}] --- Ensemble merge ---", flush=True)
         print(f"  Security wins: {sec_only_wins}", flush=True)
         print(f"  Bug-first wins: {bf_only_wins}", flush=True)
         print(f"  Agree: {agree_count}", flush=True)
@@ -2264,7 +2324,7 @@ def _run_ensemble_audit(
     findings = [r for r in merged_results
                 if r["actual"] in ("finding", "suspicious")]
     if findings:
-        print(f"\n--- Phase 2: classifying {len(findings)} finding(s) ---",
+        print(f"\n[{_ts()}] --- Phase 2: classifying {len(findings)} finding(s) ---",
               flush=True)
         try:
             phase2_cost = _run_phase2_classify(findings, model=model)
@@ -2291,7 +2351,7 @@ def _run_ensemble_audit(
         and r.get("phase2_classification") == "quality_finding"
     ]
     if len(quality_findings) >= 2:
-        print(f"\n--- Phase 2b: chain detection on {len(quality_findings)} "
+        print(f"\n[{_ts()}] --- Phase 2b: chain detection on {len(quality_findings)} "
               f"quality finding(s) ---", flush=True)
         try:
             chains = _run_phase2b_chains(
@@ -2829,6 +2889,8 @@ def main(argv: list[str] | None = None) -> int:
               f"({len(skipped_repos)} repo(s) skipped)")
 
     models = args.model if args.model else [""]
+
+    _print_run_header(labels, args, models)
 
     run_tag = str(int(time.time()))
     excerpt_dirs = None

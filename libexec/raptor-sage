@@ -183,19 +183,66 @@ def _print_table(headers, rows, col_gap=2):
 
 # ── Subcommands ──────────────────────────────────────────────
 
+# Hard bounds on the paginate-everything walk. ``total`` is re-read
+# from every response and is entirely server-controlled, and the plain
+# HTTP transport authenticates nothing about the server (client→server
+# signing only; /health is spoofable) — an impostor bound to the SAGE
+# port while the container is down could otherwise stream pages until
+# the CLI OOMs. 50k rows is far beyond any legitimate store on this
+# surface; the page cap bounds iteration even when every page is tiny.
+_FETCH_MAX_ROWS = 50_000
+_FETCH_MAX_PAGES = 1_000
+
+
 def _fetch_all_memories(client, batch=200):
-    """Fetch all memories from SAGE, paginating if needed."""
+    """Fetch all memories from SAGE, paginating if needed.
+
+    Bounded (see the caps above). A ``total`` that exceeds the row cap
+    or changes between pages is treated as a protocol error and aborts
+    the fetch with a clear message; hitting the row/page cap ends the
+    walk with a truncation notice instead of looping forever.
+    """
     all_mems = []
     offset = 0
-    while True:
+    total = None
+    truncated = False
+    for _ in range(_FETCH_MAX_PAGES):
         resp = client.list_memories(limit=batch, offset=offset)
         memories = resp.memories if hasattr(resp, "memories") else []
         all_mems.extend(memories)
-        total = getattr(resp, "total", len(all_mems))
-        if len(all_mems) >= total or not memories:
+        page_total = getattr(resp, "total", None)
+        if page_total is not None:
+            page_total = int(page_total)
+            if page_total > _FETCH_MAX_ROWS:
+                raise RuntimeError(
+                    f"SAGE protocol error: server reports {page_total} "
+                    f"memories (cap {_FETCH_MAX_ROWS}) — refusing "
+                    "unbounded fetch"
+                )
+            if total is not None and page_total != total:
+                raise RuntimeError(
+                    "SAGE protocol error: reported total changed "
+                    f"between pages ({total} -> {page_total}) — "
+                    "aborting fetch"
+                )
+            total = page_total
+        if len(all_mems) >= _FETCH_MAX_ROWS:
+            truncated = True
+            break
+        if not memories or len(all_mems) >= (
+            total if total is not None else len(all_mems)
+        ):
             break
         offset += len(memories)
-    return all_mems, total
+    else:
+        truncated = True
+    if truncated:
+        del all_mems[_FETCH_MAX_ROWS:]
+        print(
+            f"  (truncated: fetch capped at {len(all_mems)} rows)",
+            file=sys.stderr,
+        )
+    return all_mems, (total if total is not None else len(all_mems))
 
 
 def cmd_status(client, args):

@@ -107,6 +107,12 @@
   "artifacts:orphan_reader::requirements*.txt": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:write_only_artifact::-postfix.json": {
+   "note": "raptor-recall-measure cvefix-manifest output: generated fp-only twin manifest ({cve}-postfix.json); same operator hand-off as the -prefix recall manifest — consumed via the --manifest path flag, no literal filename at the read site"
+  },
+  "artifacts:write_only_artifact::-prefix.json": {
+   "note": "raptor-recall-measure cvefix-manifest output: generated recall manifest ({cve}-prefix.json) for the operator to hand-verify, then feed back through the explicit --manifest path flag (reader carries no literal filename)"
+  },
   "artifacts:write_only_artifact::.line-check.json": {
    "note": "operator-facing sidecar next to a crash-analysis report (blamed_lines.check_report): the same summary dict is returned in-process and stamped into the report .md; the sidecar exists for humans/jq, same class as suppressions.jsonl"
   },
@@ -215,14 +221,14 @@
   "artifacts:write_only_artifact::cocci.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::codeql-pack.yml": {
-   "note": "pack manifest of the generated CodeQL extension pack (core/dataflow/extension_pack.py); consumed by the external codeql CLI (and scanned by core/security/codeql_trust.py when packs arrive in target repos), not read back by the writer"
-  },
   "artifacts:write_only_artifact::compiled-invariants.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:write_only_artifact::compiler.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:write_only_artifact::config-resolved.sarif": {
+   "note": "config-resolved stage SARIF: run_config_resolved_stage returns the path and the scan merges it into combined.sarif via merge_sarif (path argument, so the reader carries no literal filename)"
   },
   "artifacts:write_only_artifact::correlation.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -259,6 +265,12 @@
   },
   "artifacts:write_only_artifact::findings.jsonl": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:write_only_artifact::fn-census.json": {
+   "note": "raptor-recall-measure fn-census subcommand output: machine-readable dual of fn-census.md, for humans/jq; the rendered markdown is also printed to stdout, same class as the census.json entry"
+  },
+  "artifacts:write_only_artifact::fn-census.md": {
+   "note": "raptor-recall-measure fn-census subcommand output: operator-facing per-function miss census, also printed to stdout at the end of the run"
   },
   "artifacts:write_only_artifact::frida-report.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -344,6 +356,9 @@
   "artifacts:write_only_artifact::rule.yml": {
    "note": "generated Semgrep rule artifact for operator inspection / external semgrep invocation"
   },
+  "artifacts:write_only_artifact::rules.yaml": {
+   "note": "generated source-wrapper semgrep rules under the run output dir (scanner.run_source_wrapper_stage); consumed by the external semgrep process via the path handed to run_rule, not read back by repo python"
+  },
   "artifacts:write_only_artifact::run1-envelope.json": {
    "note": "live-proof evidence dump (raptor-cred-proxy-proof leg A/D): the CLI's exit envelope, written for human re-verification; the proof asserts on the parsed stdout directly."
   },
@@ -407,6 +422,9 @@
   "artifacts:write_only_artifact::tool-matrix.txt": {
    "note": "operator-facing output: raptor-self-test tool-sandbox matrix report"
   },
+  "artifacts:write_only_artifact::tool-versions.json": {
+   "note": "false positive: the startup version-probe cache is read AND written by _cached_cli_version (core/startup/init.py); the json.loads(cache_file.read_text()) sits three lines below the filename literal (outside the classifier window) and the tempfile+os.replace idiom promotes the occurrence to write"
+  },
   "artifacts:write_only_artifact::triage-summary.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -428,6 +446,12 @@
   "artifacts:write_only_artifact::verification.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:write_only_artifact::verify-enforced.json": {
+   "note": "raptor-recall-measure verify-enforced subcommand output: machine-readable dual of verify-enforced.md; the review verdict also rides the exit code (non-clean set exits 1)"
+  },
+  "artifacts:write_only_artifact::verify-enforced.md": {
+   "note": "raptor-recall-measure verify-enforced subcommand output: operator-facing enforced-suppression audit, also printed to stdout"
+  },
   "artifacts:write_only_artifact::warm.json": {
    "note": "raptor-recall-measure warm subcommand output: machine-readable dual of warm.md (would-suppress scoring of suppression evidence), for humans/jq"
   },
@@ -436,6 +460,9 @@
   },
   "artifacts:write_only_artifact::web_scan_report.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:write_only_artifact::wrappers.json": {
+   "note": "provenance sidecar of the source-wrapper stage: records the mechanically-derived wrapper vocabulary for the run; the in-run consumer receives the same names in-process via the stage's return value (extra_source_patterns), same class as suppressions.jsonl"
   },
   "dead:dead_class:core/logging/tests/test_security_event.py:MethodEmissionTest": {
    "note": "unittest.TestCase collected by the pytest unittest plugin regardless of python_classes naming; not dead"

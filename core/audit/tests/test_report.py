@@ -412,23 +412,25 @@ class TestFormatSummaryPublic:
 class TestEvidenceDistribution:
     def test_counts_tiers(self):
         findings = [
-            {"evidence_tier": "OBSERVED_RUNTIME"},
-            {"evidence_tier": "XREF_BACKED"},
-            {"evidence_tier": "XREF_BACKED"},
-            {"evidence_tier": "HEURISTIC"},
+            {"evidence_tier": "observed_runtime"},
+            {"evidence_tier": "xref_backed"},
+            {"evidence_tier": "xref_backed"},
+            {"evidence_tier": "heuristic"},
         ]
         dist = _evidence_distribution(findings)
-        assert dist["OBSERVED_RUNTIME"] == 1
-        assert dist["XREF_BACKED"] == 2
-        assert dist["HEURISTIC"] == 1
+        assert dist["observed_runtime"] == 1
+        assert dist["xref_backed"] == 2
+        assert dist["heuristic"] == 1
 
     def test_empty(self):
         assert _evidence_distribution([]) == {}
 
     def test_missing_tier_defaults_to_heuristic(self):
+        """Default key is the raw snake_case enum value — the old
+        ALL-CAPS default split the count from real (lowercase) tiers."""
         findings = [{"title": "no tier field"}]
         dist = _evidence_distribution(findings)
-        assert dist["HEURISTIC"] == 1
+        assert dist["heuristic"] == 1
 
 
 class TestWriteMarkdownReport:
@@ -445,7 +447,7 @@ class TestWriteMarkdownReport:
                     "file": "src/http.c",
                     "line": 87,
                     "depth": "L2",
-                    "evidence_tier": "OBSERVED_RUNTIME",
+                    "evidence_tier": "observed_runtime",
                     "severity": "high",
                 },
                 {
@@ -454,7 +456,7 @@ class TestWriteMarkdownReport:
                     "file": "src/db.c",
                     "line": 42,
                     "depth": "L1",
-                    "evidence_tier": "XREF_BACKED",
+                    "evidence_tier": "xref_backed",
                     "severity": "high",
                 },
             ],
@@ -479,8 +481,10 @@ class TestWriteMarkdownReport:
         assert "100 of 500" in content
         assert "FIND-001" in content
         assert "FIND-002" in content
-        assert "OBSERVED_RUNTIME" in content
-        assert "XREF_BACKED" in content
+        # Human output renders Title Case, never the raw enum casing.
+        assert "Observed Runtime" in content
+        assert "OBSERVED_RUNTIME" not in content
+        assert "Xref Backed" in content
         assert "| joern | Yes |" in content
         assert "| frida | No |" in content
         assert "12 findings suppressed" in content
@@ -500,15 +504,15 @@ class TestWriteMarkdownReport:
         report = {
             "stats": {},
             "findings": [
-                {"evidence_tier": "HEURISTIC", "id": "F1", "title": "a",
+                {"evidence_tier": "heuristic", "id": "F1", "title": "a",
                  "file": "a.c", "line": 1, "depth": "L0", "severity": "low"},
-                {"evidence_tier": "HEURISTIC", "id": "F2", "title": "b",
+                {"evidence_tier": "heuristic", "id": "F2", "title": "b",
                  "file": "b.c", "line": 2, "depth": "L0", "severity": "low"},
             ],
         }
         path = write_markdown_report(report, tmp_path)
         content = path.read_text()
-        assert "| HEURISTIC | 2 |" in content
+        assert "| Heuristic | 2 |" in content
 
 
 class TestDarkSurfacing:

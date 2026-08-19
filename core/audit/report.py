@@ -49,6 +49,18 @@ def _cell(value: Any, *, max_chars: int = 300) -> str:
     return _line(value, max_chars=max_chars).replace("|", "\\|")
 
 
+def _tier_title(value: Any) -> str:
+    """Render an evidence-tier enum value for human-readable output.
+
+    JSON keeps the raw snake_case enum (``xref_backed``); markdown and
+    prompt text render Title Case (``Xref Backed``) per the output
+    style rule — never ALL-CAPS. ``smt_proved`` keeps its acronym.
+    """
+    raw = getattr(value, "value", value)
+    title = str(raw or "").replace("_", " ").strip().title()
+    return title.replace("Smt", "SMT")
+
+
 def generate_report(
     out_dir: Path,
     *,
@@ -269,7 +281,10 @@ def write_markdown_report(
             # cannot break out of the heading or inject markup.
             fid = _line(f.get("id", "FIND-???"), max_chars=80)
             title = _line(f.get("title", "Untitled"))
-            tier = _line(f.get("evidence_tier", "HEURISTIC"), max_chars=40)
+            tier = _line(
+                _tier_title(f.get("evidence_tier", "heuristic")),
+                max_chars=40,
+            )
             lines.append(f"### {fid}: {title} ({tier})")
             file_loc = _line(f.get("file", "?"))
             line_no = _line(f.get("line", "?"), max_chars=20)
@@ -310,7 +325,9 @@ def write_markdown_report(
         lines.append("| Tier | Count |")
         lines.append("|---|---|")
         for tier, count in sorted(evidence_dist.items()):
-            lines.append(f"| {_cell(tier, max_chars=40)} | {count} |")
+            lines.append(
+                f"| {_cell(_tier_title(tier), max_chars=40)} | {count} |"
+            )
     else:
         lines.append("No evidence recorded.")
     lines.append("")
@@ -386,7 +403,9 @@ def _evidence_distribution(
     """Count findings per evidence tier."""
     dist: dict[str, int] = {}
     for f in findings:
-        tier = f.get("evidence_tier", "HEURISTIC")
+        # Raw snake_case enum key (matching EvidenceTier values) —
+        # the markdown renderer Title-Cases at display time.
+        tier = f.get("evidence_tier", "heuristic")
         dist[tier] = dist.get(tier, 0) + 1
     return dist
 

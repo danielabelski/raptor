@@ -2316,6 +2316,102 @@ class TestRejournalFinalStatuses:
         assert _rejournal_final_statuses(result, config) == 0
 
 
+class TestRelogFinalStatuses:
+    """Audit-log twin of the re-journal pass: ``orchestrator_review``
+    rows are written mid-loop, pre-resolution — the end-of-run pass
+    appends corrective rows so last-row-per-key consumers (corpus
+    scoring, resume dedup) read final statuses, not retracted ones."""
+
+    def _setup(self, tmp_path: Path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(int x) { return x + 1; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        return OrchestratorConfig(target_path=target, out_dir=out)
+
+    def _log_initial(self, config, status="suspicious"):
+        from core.audit.record import append_audit_log
+        append_audit_log(config.out_dir, {
+            "action": "orchestrator_review",
+            "key": "a.c:f:1",
+            "status": status,
+            "strategies": ["memory"],
+            "cost_usd": 0.25,
+        })
+
+    def test_drifted_status_relogged_last(self, tmp_path: Path):
+        from core.audit.orchestrator import _relog_final_statuses
+        from core.audit.record import load_audit_log
+
+        config = self._setup(tmp_path)
+        self._log_initial(config, status="suspicious")
+
+        final = ReviewOutcome(
+            file="a.c", function="f", status="clean",
+            body="[counter-escalation resolution: ...]",
+            hypothesis="auth bypass", line=1, cost_usd=0.25,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _relog_final_statuses(result, config) == 1
+        rows = [
+            e for e in load_audit_log(config.out_dir)
+            if e.get("action") == "orchestrator_review"
+        ]
+        assert rows[-1]["status"] == "clean"
+        assert rows[-1]["prior_status"] == "suspicious"
+        assert rows[-1]["final_status_correction"] is True
+        # strategy_stats must not double-count this function: the
+        # corrective row never carries ``strategies``.
+        assert "strategies" not in rows[-1]
+        # Per-label cost attribution survives last-row-wins scoring.
+        assert rows[-1]["cost_usd"] == 0.25
+
+    def test_unchanged_status_not_relogged(self, tmp_path: Path):
+        from core.audit.orchestrator import _relog_final_statuses
+
+        config = self._setup(tmp_path)
+        self._log_initial(config, status="suspicious")
+
+        final = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="still suspicious", hypothesis="auth bypass", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _relog_final_statuses(result, config) == 0
+
+    def test_never_logged_outcome_skipped(self, tmp_path: Path):
+        from core.audit.orchestrator import _relog_final_statuses
+
+        config = self._setup(tmp_path)
+        final = ReviewOutcome(
+            file="a.c", function="f", status="clean",
+            body="resolved", hypothesis="auth bypass", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _relog_final_statuses(result, config) == 0
+
+    def test_error_outcome_skipped(self, tmp_path: Path):
+        from core.audit.orchestrator import _relog_final_statuses
+
+        config = self._setup(tmp_path)
+        self._log_initial(config, status="suspicious")
+        final = ReviewOutcome(
+            file="a.c", function="f", status="error",
+            body="", hypothesis="", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _relog_final_statuses(result, config) == 0
+
+
 class TestRefutationGateWirePoint:
     """Refutation gates demote findings/suspicious via the orchestrator wire point."""
 

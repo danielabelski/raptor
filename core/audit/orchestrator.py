@@ -7187,6 +7187,10 @@ def _run_audit_body(
         _rejournal_final_statuses(result, config)
     except Exception:
         logger.debug("re-journal pass failed", exc_info=True)
+    try:
+        _relog_final_statuses(result, config)
+    except Exception:
+        logger.debug("re-log pass failed", exc_info=True)
 
     try:
         from .findings_export import export_findings, write_graded_findings
@@ -7365,6 +7369,10 @@ def _sigterm_salvage(
         _rejournal_final_statuses(result, config)
     except Exception:
         logger.debug("salvage: re-journal pass failed", exc_info=True)
+    try:
+        _relog_final_statuses(result, config)
+    except Exception:
+        logger.debug("salvage: re-log pass failed", exc_info=True)
 
     try:
         from .findings_export import export_findings, write_graded_findings
@@ -19553,6 +19561,85 @@ def _rejournal_final_statuses(
     if updated:
         logger.info(
             "re-journal: %d post-resolution final statuses appended",
+            updated,
+        )
+    return updated
+
+
+def _relog_final_statuses(
+    result: OrchestratorResult,
+    config: OrchestratorConfig,
+) -> int:
+    """Audit-log twin of ``_rejournal_final_statuses``.
+
+    ``orchestrator_review`` rows are written mid-loop, BEFORE the
+    post-loop passes (sweep promotion happens early enough to log its
+    own rows, but gate resolution, confidence propagation and dark
+    verification do not) — so the log's last review row said
+    "suspicious" for outcomes the run finally resolved to clean/dark.
+    The journal gets its corrective entries; every ``.audit-log.jsonl``
+    consumer that takes the last review row per key (corpus scoring,
+    resume dedup) kept reading the retracted verdict. Append one
+    corrective row per drifted outcome. Rows deliberately omit
+    ``strategies`` so strategy_stats never double-counts a function.
+    Must run AFTER the collector flush — the buffered mid-loop rows
+    have to land first for last-row-wins ordering to hold.
+    """
+    if not config.out_dir:
+        return 0
+    try:
+        last_status: dict[str, str] = {}
+        for entry in load_audit_log(config.out_dir):
+            if entry.get("action") not in (
+                "orchestrator_review", "sweep_promotion",
+            ):
+                continue
+            key = entry.get("key") or ""
+            if not key:
+                continue
+            head, _, tail = key.rpartition(":")
+            base = head if (head and tail.isdigit()) else key
+            last_status[base] = str(entry.get("status", ""))
+    except Exception:
+        logger.debug("re-log: audit log read failed", exc_info=True)
+        return 0
+
+    updated = 0
+    for outcome in result.outcomes:
+        if outcome.status == "error":
+            continue
+        base = f"{outcome.file}:{outcome.function}"
+        prior = last_status.get(base)
+        if prior is None or prior == outcome.status:
+            continue
+        entry = {
+            "action": "orchestrator_review",
+            "key": f"{outcome.file}:{outcome.function}:{outcome.line or 0}",
+            "status": outcome.status,
+            "prior_status": prior,
+            "final_status_correction": True,
+            "model": outcome.model or "",
+            "cost_usd": outcome.cost_usd,
+            "duration_s": outcome.duration_s,
+        }
+        if getattr(outcome, "function_qualified", ""):
+            entry["function_qualified"] = outcome.function_qualified
+        if outcome.hypothesis:
+            entry["hypothesis"] = outcome.hypothesis
+        if outcome.evidence_tool:
+            entry["evidence_tool"] = outcome.evidence_tool
+        try:
+            append_audit_log(config.out_dir, entry)
+            updated += 1
+        except Exception:
+            logger.debug(
+                "re-log failed for %s:%s",
+                outcome.file, outcome.function, exc_info=True,
+            )
+    if updated:
+        logger.info(
+            "re-log: %d post-resolution final statuses appended "
+            "to the audit log",
             updated,
         )
     return updated

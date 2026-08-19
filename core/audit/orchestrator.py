@@ -4996,6 +4996,58 @@ def _demotion_log_entry(d) -> dict:
     }
 
 
+def _cleanup_after_executor_failure(
+    throttle: Any,
+    study_queue: Any,
+    study_consumer_thread: Any,
+    collector: Any,
+) -> None:
+    """Best-effort teardown when the main review executor raises.
+
+    Runs the same drain/close/flush steps the success path performs
+    after the executor returns, so an executor crash cannot leak the
+    study consumer (blocked on its queue forever), the throttle's
+    cooldown thread, or the collector's buffered outcomes/audit log.
+    Every step is individually guarded — the caller re-raises the
+    original exception.
+    """
+    if study_queue is not None:
+        try:
+            study_queue.signal_producer_done()
+        except Exception:
+            logger.debug(
+                "study queue shutdown failed during executor-failure "
+                "cleanup", exc_info=True,
+            )
+    if study_consumer_thread is not None:
+        try:
+            _drain_study_consumer(
+                study_consumer_thread, study_queue, budget_exhausted=True,
+            )
+        except Exception:
+            logger.debug(
+                "study consumer drain failed during executor-failure "
+                "cleanup", exc_info=True,
+            )
+    try:
+        throttle.close()
+    except Exception:
+        logger.debug(
+            "throttle close failed during executor-failure cleanup",
+            exc_info=True,
+        )
+    if collector is not None:
+        try:
+            collector.flush()
+        except Exception:
+            logger.warning(
+                "collector flush failed during executor-failure cleanup "
+                "— buffered outcomes may be lost", exc_info=True,
+            )
+
+
+
+
 def _iris_refine_and_bypass(
     config: OrchestratorConfig,
     gaps: list[dict[str, Any]],
@@ -6026,28 +6078,40 @@ def _run_audit_body(
         _release_review_reserve(config)
     deepen_reserve_held = _hold_deepen_reserve(config)
 
-    executor_stats = run_executor_sync(
-        graph,
-        review_fn,
-        shared,
-        config,
-        result,
-        executor_config,
-        joern_server=joern_server,
-        audit_log=audit_log,
-        workqueue=workqueue,
-        reviewed_set=reviewed_set,
-        start_time=start_time,
-        layer_disagreements=layer_disagreements,
-        on_progress=on_progress,
-        collector=collector,
-        budget_check=lambda: _check_budget(config, start_time, result),
-        on_tick=_joern_tick,
-        reviewed_outcomes=reviewed_outcomes,
-        throttle=throttle,
-        study_queue=study_queue,
-        concept_index_ref=concept_index_ref,
-    )
+    try:
+        executor_stats = run_executor_sync(
+            graph,
+            review_fn,
+            shared,
+            config,
+            result,
+            executor_config,
+            joern_server=joern_server,
+            audit_log=audit_log,
+            workqueue=workqueue,
+            reviewed_set=reviewed_set,
+            start_time=start_time,
+            layer_disagreements=layer_disagreements,
+            on_progress=on_progress,
+            collector=collector,
+            budget_check=lambda: _check_budget(config, start_time, result),
+            on_tick=_joern_tick,
+            reviewed_outcomes=reviewed_outcomes,
+            throttle=throttle,
+            study_queue=study_queue,
+            concept_index_ref=concept_index_ref,
+        )
+    except BaseException:
+        # Exception-path cleanup mirroring the success path below:
+        # without it an executor crash left the study consumer blocked
+        # on its queue forever, leaked the throttle's cooldown thread,
+        # and discarded every outcome buffered in the collector. Each
+        # step is best-effort so the ORIGINAL exception always
+        # propagates.
+        _cleanup_after_executor_failure(
+            throttle, study_queue, study_consumer_thread, collector,
+        )
+        raise
     joern_future = joern_state["future"]
     _record_executor_stop(result, executor_stats)
     if executor_stats.budget_stopped:

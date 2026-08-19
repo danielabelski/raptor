@@ -73,6 +73,7 @@ Two qualifications:
 - `raptor-rule-library` — Proven checker rules (engine + CWE keyed, cross-target, shared by `/agentic` and `/audit`)
 - `raptor-concepts-{repo_key}` — Study/teach concept recall (repo-scoped)
 - `raptor-audit-{repo_key}` — Audit hypothesis verdicts (repo-scoped)
+- `raptor-cve` — Pipeline-verified CVE → fix-commit pointers (global, written by `/cve-diff`)
 
 ## Domain rationale
 
@@ -80,6 +81,7 @@ Two qualifications:
 - Keep `raptor-methodology` global because build/debug/analysis heuristics often generalise across repos and languages. Audit tool-confirmed observations go here for cross-target transfer.
 - Store fuzzing strategy outcomes in `raptor-fuzzing` to preserve semantic recall across similar binaries.
 - `raptor-rule-library` is global (not repo-scoped) because a proven checker rule should transfer to any target with the same CWE class.
+- `raptor-cve` is global for the same reason: a fix pointer is a public fact about the CVE, not about any one analysed project.
 
 ## Mechanical hooks (core/sage/hooks.py)
 
@@ -100,6 +102,7 @@ flag. No prompt injection (recalled text dropped into an LLM prompt).
 | `store_audit_observation` / `recall_audit_observations` | Store tool-confirmed/refuted observations for cross-target transfer | `raptor-methodology` |
 | `store_study_concepts` / `recall_concepts_for_study` | Cross-project concept skip: skip LLM when per-evidence hashes match current source | `raptor-concepts-{key}` |
 | `store_teach_concepts` / `recall_concepts_for_teach` | Teach caching: store structured concepts from teach, recall for TEACH-0 skip gate | `raptor-concepts-{key}` |
+| `store_cve_fix_pointer` / `recall_cve_fix_pointer` | `/cve-diff` discovery short-circuit: skip the agent loop when a MAC-verified fix pointer exists (pipeline re-verifies by clone+diff; stale rows fall back to the agent). Disable with `RAPTOR_SAGE_CVE_PRIOR=0` | `raptor-cve` |
 
 Rows written by these hooks are MAC-stamped (`core/sage/rowmac.py`, key at `$XDG_DATA_HOME/raptor/rowmac.key`, default `~/.local/share/raptor/rowmac.key` — kept outside every sandbox-readable tree); recall verifies the token over the decision fields before any mechanical effect — rows that fail verification (legacy pre-MAC, federated, or tampered) are hints only.
 

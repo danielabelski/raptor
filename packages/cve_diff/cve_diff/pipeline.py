@@ -138,6 +138,15 @@ class Pipeline:
     # unit tests must never write the operator's scorecard sidecar as
     # a side effect.
     scorecard_enabled: bool = False
+    # SAGE fix-pointer memory (core/sage/hooks.py): recall a
+    # MAC-verified pointer before spending the agent budget; store
+    # agent-discovered pointers after mechanical verification. Opt-in
+    # from the entry points only — the bench measures raw capability
+    # (cold profile) and must never consume or produce priors.
+    sage_enabled: bool = False
+    # Where the current pick came from: "agent" or "sage". Scorecard
+    # records and SAGE stores only apply to agent-discovered picks.
+    _last_pick_source: str = field(default="agent", init=False, repr=False)
     # When set, called at each stage transition with
     # (stage_name: str, status: str, info: dict). The CLI's --verbose
     # flag wires this to a stderr-printer; bench leaves it None.
@@ -185,11 +194,30 @@ class Pipeline:
 
         self._emit("agent_discover", "start", {})
         t0 = time.monotonic()
-        agent_result = self._run_agent(cve_id)
+        self._last_pick_source = "agent"
+        recalled = self._recall_fix_pointer(cve_id)
+        if recalled is not None:
+            # SAGE short-circuit: a MAC-verified pointer from a prior
+            # verified run replaces the agent loop. Stages 2-5 still
+            # re-verify by cloning and diffing; if they refute the
+            # pointer, the post-submit retry path falls back to the
+            # agent as usual.
+            self._last_pick_source = "sage"
+            agent_result: AgentResult = AgentOutput(
+                value=PatchTuple(
+                    repository_url=recalled["repository_url"],
+                    fix_commit=CommitSha(recalled["fix_commit"]),
+                    introduced=None,
+                ),
+                rationale="SAGE recall: MAC-verified fix pointer from a prior verified run",
+            )
+        else:
+            agent_result = self._run_agent(cve_id)
         patch: PatchTuple = self._require_rescued(cve_id, agent_result)
         ref = _patch_to_repo_ref(patch)
         self._emit("agent_discover", "ok",
                    {"slug": ref.repository_url, "fix_commit": ref.fix_commit[:12],
+                    "source": self._last_pick_source,
                     "elapsed_s": round(time.monotonic() - t0, 1)})
 
         # Post-submit agentic retry loop: on AcquisitionError /
@@ -238,8 +266,13 @@ class Pipeline:
                 # ambiguous (renamed repo, transient network, rate
                 # limit) — recording those as "incorrect" would poison
                 # the reliability cells with infrastructure noise.
-                if isinstance(exc, (AnalysisError, IdenticalCommitsError)) \
-                        or type(exc) is ValueError:
+                # A SAGE-recalled pointer failing re-verification says
+                # the memory went stale, not that the model erred — only
+                # agent picks feed the scorecard.
+                if self._last_pick_source == "agent" and (
+                    isinstance(exc, (AnalysisError, IdenticalCommitsError))
+                    or type(exc) is ValueError
+                ):
                     self._record_discovery_outcome(cve_id, verified=False)
                 if attempt == _MAX_POST_SUBMIT_RETRIES:
                     if isinstance(
@@ -277,7 +310,11 @@ class Pipeline:
             else:
                 # The pick survived acquire → resolve → diff → shape:
                 # mechanical confirmation of the discovery verdict.
-                self._record_discovery_outcome(cve_id, verified=True)
+                # SAGE-recalled picks record nothing (no model ran) and
+                # are not re-stored (no self-reinforcing memory loop).
+                if self._last_pick_source == "agent":
+                    self._record_discovery_outcome(cve_id, verified=True)
+                    self._store_fix_pointer(cve_id, result)
                 return result
         raise AssertionError("unreachable — loop must return or re-raise")
 
@@ -479,6 +516,39 @@ class Pipeline:
             self._effective_model(), cve_id, verified=verified,
         )
 
+    def _recall_fix_pointer(self, cve_id: str) -> dict[str, str] | None:
+        """SAGE fix-pointer recall (opt-in, never raises)."""
+        if not self.sage_enabled:
+            return None
+        try:
+            from core.sage.hooks import recall_cve_fix_pointer
+
+            return recall_cve_fix_pointer(cve_id)
+        except Exception:  # noqa: BLE001 — SAGE is best-effort
+            return None
+
+    def _store_fix_pointer(self, cve_id: str, result: PipelineResult) -> None:
+        """SAGE fix-pointer store after mechanical verification
+        (opt-in, never raises)."""
+        if not self.sage_enabled:
+            return
+        try:
+            from core.sage.hooks import store_cve_fix_pointer
+
+            bundle = result.bundle
+            store_cve_fix_pointer(
+                cve_id,
+                bundle.repo_ref.repository_url,
+                str(bundle.commit_after),
+                str(bundle.commit_before or ""),
+                consensus_count=int(
+                    (bundle.consensus or {}).get("agreement_count") or 0
+                ),
+                shape=bundle.shape,
+            )
+        except Exception:  # noqa: BLE001 — SAGE is best-effort
+            pass
+
     def _scale_budgets(self, config: AgentConfig) -> AgentConfig:
         """Apply ``agent_budget_multiplier`` to the AgentConfig budgets.
 
@@ -526,6 +596,9 @@ class Pipeline:
             **self._model_kw(),
         )
         retry_config = self._scale_budgets(retry_config)
+        # A focused retry always runs the real agent — from here on the
+        # pick is agent-sourced even if the primary came from SAGE.
+        self._last_pick_source = "agent"
         return self.agent.run(retry_config, AgentContext(cve_id=cve_id))
 
     def _maybe_retry(self, cve_id: str, result: AgentResult) -> AgentResult | None:

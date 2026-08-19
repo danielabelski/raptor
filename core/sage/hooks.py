@@ -2374,3 +2374,135 @@ def recall_context_for_validation(
     except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
         logger.debug("SAGE validation recall failed: %s", e)
         return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CVE fix pointers — /cve-diff discovery short-circuit
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Global domain (not repo-scoped): a fix pointer is a public fact about
+# the CVE itself, transferable to any project that meets it — same
+# rationale as raptor-rule-library.
+_CVE_DOMAIN = "raptor-cve"
+_CVE_HOOK = "cve_fix_pointer"
+
+
+def store_cve_fix_pointer(
+    cve_id: str,
+    repository_url: str,
+    fix_commit: str,
+    parent_commit: str = "",
+    *,
+    consensus_count: int = 0,
+    shape: str = "",
+) -> bool:
+    """Store a pipeline-verified CVE → fix-commit pointer.
+
+    Callers must only store pointers that survived /cve-diff's
+    mechanical verification (acquire → resolve → diff → shape check);
+    the row is MAC-stamped over the decision fields so recall can hand
+    it a mechanical effect.
+    """
+    client = _get_client()
+    if client is None or not (cve_id and repository_url and fix_commit):
+        return False
+    try:
+        _s = _sanitise_delim
+        cve = _s(cve_id.strip().upper())
+        repo = _s(repository_url.strip())
+        sha = _s(fix_commit.strip().lower())
+        parent = _s((parent_commit or "").strip().lower())
+
+        parts = [f"CVE fix pointer: {cve} is fixed by {repo} @ {sha}."]
+        if parent:
+            parts.append(f"Parent (pre-fix) commit: {parent}.")
+        if consensus_count >= 2:
+            parts.append("OSV+NVD pointer consensus agreed.")
+        if shape:
+            # Caller-supplied prose component: sanitise like every
+            # embedded value so it can't forge a ||key=value|| field.
+            parts.append(f"Diff shape: {_s(shape)}.")
+        parts.append(
+            f"||cve_id={cve}|| ||cve_repo={repo}|| "
+            f"||cve_fix={sha}|| ||cve_parent={parent}||"
+        )
+        content = _stamp_row(_CVE_HOOK, " ".join(parts), {
+            "kind": _CVE_HOOK,
+            "cve": cve,
+            "repo": repo,
+            "fix": sha,
+            "parent": parent,
+        })
+        # Consensus-confirmed pointers are double-verified (pipeline +
+        # OSV/NVD agreement); pipeline-only ones still earned their
+        # verdict mechanically.
+        confidence = 0.95 if consensus_count >= 2 else 0.9
+        return _propose_redacted(
+            client=client,
+            content=content,
+            memory_type="fact",
+            domain_tag=_CVE_DOMAIN,
+            confidence=confidence,
+            tags=["cve-diff", cve],
+        )
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE cve fix pointer store failed: %s", e)
+        return False
+
+
+def recall_cve_fix_pointer(cve_id: str) -> dict[str, str] | None:
+    """Recall a MAC-verified fix pointer for *cve_id*, or None.
+
+    Mechanical consumer: /cve-diff skips its discovery agent loop when
+    this returns a pointer — the pipeline still re-verifies the pointer
+    by actually cloning and diffing it, and falls back to the agent when
+    that verification fails, so a stale row costs one clone, not a wrong
+    answer. Because the effect is mechanical, the MAC gate is hard: rows
+    without a verifying token are ignored entirely, not demoted to
+    hints. Kill-switch: ``RAPTOR_SAGE_CVE_PRIOR=0``.
+    """
+    if not env_flag("RAPTOR_SAGE_CVE_PRIOR", default=True):
+        return None
+    client = _get_client()
+    if client is None or not cve_id:
+        return None
+    try:
+        _metric_inc("recall_attempted")
+        cve = cve_id.strip().upper()
+        rows = client.query(
+            text=f"CVE fix pointer for {cve}: repository and fix commit",
+            domain_tag=_CVE_DOMAIN,
+            top_k=5,
+            min_confidence=0.85,
+        )
+        for row in rows:
+            clean, token = rowmac.strip(str(row.get("content") or ""))
+
+            def _field(key: str, _clean: str = clean) -> str:
+                match = re.search(rf"\|\|{key}=([^|]*)\|\|", _clean)
+                return match.group(1) if match else ""
+
+            if _field("cve_id") != cve:
+                continue
+            fields = {
+                "kind": _CVE_HOOK,
+                "cve": cve,
+                "repo": _field("cve_repo"),
+                "fix": _field("cve_fix"),
+                "parent": _field("cve_parent"),
+            }
+            if not fields["repo"] or not fields["fix"]:
+                continue
+            if not _row_mac_ok(_CVE_HOOK, fields, token):
+                continue
+            _metric_inc("recall_hits")
+            return {
+                "cve_id": cve,
+                "repository_url": fields["repo"],
+                "fix_commit": fields["fix"],
+                "parent_commit": fields["parent"],
+            }
+        return None
+    except Exception as e:  # noqa: BLE001 — SAGE is best-effort; a hook failure must never break the pipeline
+        logger.debug("SAGE cve fix pointer recall failed: %s", e)
+        return None

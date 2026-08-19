@@ -1021,12 +1021,63 @@ def _execute_ts(
     )
 
 
+def _resolve_rustc() -> str | None:
+    """Resolve the real rustc binary, seeing through a rustup proxy.
+
+    rustup installs ``rustc`` as a proxy (a hardlink of the multi-call
+    ``rustup`` binary): at run time it reads the ``$RUSTUP_HOME``
+    (default ``~/.rustup``) settings and re-execs the selected
+    toolchain's compiler from ``toolchains/<tc>/bin/rustc``. The
+    witness compile runs under ``restrict_reads`` with only the
+    *invoked* binary's own directories granted
+    (:func:`_toolchain_read_paths`), so the proxy's settings read and
+    toolchain exec are denied and every Rust witness collapses to
+    ``verdict="error"`` ("compilation failed") on rustup-managed hosts
+    — while system installs under /usr keep working. Ask the proxy
+    for its sysroot on the host (the operator's own toolchain — the
+    same trust as ``shutil.which``) and invoke the real compiler
+    directly; the sysroot then IS the granted read root, covering the
+    sibling lib/ tree the compile needs.
+    """
+    rustc = shutil.which("rustc")
+    if not rustc:
+        return None
+    # System installs (/usr/bin/rustc etc.) are no rustup proxies and
+    # live inside the sandbox's default read allowlist — even a distro
+    # proxy under /usr can read its own settings there. Only probe when
+    # rustc resolves OUTSIDE the system prefixes (rustup's ~/.cargo/bin
+    # layout), keeping the host-side probe off the common path.
+    resolved = os.path.realpath(rustc)
+    if any(resolved.startswith(p) for p in _SYSTEM_TOOLCHAIN_PREFIXES):
+        return rustc
+    try:
+        proc = subprocess.run(
+            [rustc, "--print", "sysroot"],
+            capture_output=True, text=True, timeout=_COMPILE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return rustc
+    sysroot = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not sysroot:
+        return rustc
+    real = Path(sysroot) / "bin" / "rustc"
+    if real.is_file():
+        return str(real)
+    return rustc
+
+
 def _execute_rust(
     spec: DarkWitnessSpec,
     target_root: Path,
     timeout_s: int,
 ) -> DarkVerifyResult:
-    rustc = shutil.which("rustc")
+    # Fail closed BEFORE the host-side sysroot probe: with no sandbox
+    # nothing may execute — not even the trusted-toolchain probe.
+    sandbox_run = _import_sandbox_run()
+    if sandbox_run is None:
+        return _sandbox_refusal_result(spec, "rust")
+
+    rustc = _resolve_rustc()
     if not rustc:
         return DarkVerifyResult(
             finding_key=spec.finding_key, verdict="error", language="rust",
@@ -1080,10 +1131,7 @@ def _execute_rust(
             # rustc executes target-derived code paths at compile time
             # (include_str!/include_bytes! read any operator-readable
             # file into the binary) — sandbox the compile like the run
-            # step and fail closed without one.
-            sandbox_run = _import_sandbox_run()
-            if sandbox_run is None:
-                return _sandbox_refusal_result(spec, "rust")
+            # step; the fail-closed check already ran up top.
             comp = _sandboxed_compile(
                 sandbox_run, compile_cmd,
                 target_root=target_root, work_dir=work_dir,

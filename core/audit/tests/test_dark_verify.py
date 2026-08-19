@@ -1625,6 +1625,69 @@ class TestToDict:
         assert d["lang_config"]["param_types"] == ["int"]
 
 
+# -- _resolve_rustc: rustup-proxy indirection ---------------------------------
+
+
+class TestResolveRustc:
+    """The witness compile invokes the binary _toolchain_read_paths
+    grants; a rustup proxy re-execs the real compiler from
+    ``$RUSTUP_HOME`` — unreadable under restrict_reads. The resolver
+    must see through the proxy via ``--print sysroot``."""
+
+    @staticmethod
+    def _fake_proxy(tmp_path, sysroot_reply: str, rc: int = 0):
+        proxy_dir = tmp_path / "cargo-bin"
+        proxy_dir.mkdir()
+        proxy = proxy_dir / "rustc"
+        proxy.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--print" ] && [ "$2" = "sysroot" ]; then\n'
+            f"  echo '{sysroot_reply}'\n"
+            f"  exit {rc}\n"
+            "fi\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        proxy.chmod(0o755)
+        return proxy_dir, proxy
+
+    def test_resolves_through_proxy_to_sysroot_binary(
+        self, tmp_path, monkeypatch,
+    ):
+        sysroot = tmp_path / "rustup" / "toolchains" / "dev"
+        (sysroot / "bin").mkdir(parents=True)
+        real = sysroot / "bin" / "rustc"
+        real.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        real.chmod(0o755)
+        proxy_dir, _ = self._fake_proxy(tmp_path, str(sysroot))
+        monkeypatch.setenv("PATH", str(proxy_dir))
+        assert ex._resolve_rustc() == str(real)
+
+    def test_keeps_which_result_when_probe_fails(
+        self, tmp_path, monkeypatch,
+    ):
+        proxy_dir, proxy = self._fake_proxy(tmp_path, "", rc=1)
+        monkeypatch.setenv("PATH", str(proxy_dir))
+        assert ex._resolve_rustc() == str(proxy)
+
+    def test_keeps_which_result_when_sysroot_has_no_rustc(
+        self, tmp_path, monkeypatch,
+    ):
+        # A system rustc prints a sysroot too; when <sysroot>/bin/rustc
+        # is not a distinct real file (or missing), the which() result
+        # stands.
+        proxy_dir, proxy = self._fake_proxy(
+            tmp_path, str(tmp_path / "no-such-sysroot"))
+        monkeypatch.setenv("PATH", str(proxy_dir))
+        assert ex._resolve_rustc() == str(proxy)
+
+    def test_none_when_rustc_absent(self, tmp_path, monkeypatch):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        assert ex._resolve_rustc() is None
+
+
 # ============================================================================
 # Real execution tests per language — skip when runtime unavailable
 # ============================================================================
@@ -1778,6 +1841,55 @@ class TestRealExecutionRust:
         r = execute_witness(spec, tmp_path)
         assert r.verdict == "confirmed"
         assert r.actual_exception.startswith("signal: SIG")
+
+    def test_confirms_through_rustup_proxy_layout(self, tmp_path, monkeypatch):
+        """rustup-managed hosts reach rustc through a proxy that reads
+        $RUSTUP_HOME settings and re-execs the toolchain compiler —
+        both outside the sandbox's granted read roots, so invoking the
+        proxy inside the witness sandbox fails every compile. The
+        executor must resolve the real compiler via the sysroot probe
+        (_resolve_rustc) before entering the sandbox."""
+        rustup_home = tmp_path / "rustup"
+        tc_bin = rustup_home / "toolchains" / "dev" / "bin"
+        tc_bin.mkdir(parents=True)
+        real = tc_bin / "rustc"
+        real.symlink_to(shutil.which("rustc"))
+        (rustup_home / "settings.toml").write_text(
+            'default_toolchain = "dev"\n', encoding="utf-8")
+        proxy_dir = tmp_path / "cargo" / "bin"
+        proxy_dir.mkdir(parents=True)
+        proxy = proxy_dir / "rustc"
+        proxy.write_text(
+            "#!/bin/sh\n"
+            f"cat '{rustup_home}/settings.toml' >/dev/null 2>&1 || exit 3\n"
+            'if [ "$1" = "--print" ] && [ "$2" = "sysroot" ]; then\n'
+            f"  echo '{tc_bin.parent}'\n"
+            "  exit 0\n"
+            "fi\n"
+            f"exec '{real}' \"$@\"\n",
+            encoding="utf-8",
+        )
+        proxy.chmod(0o755)
+        import os as _os
+        monkeypatch.setenv(
+            "PATH", f"{proxy_dir}:{_os.environ.get('PATH', '')}")
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "lib.rs").write_text(
+            "pub fn double_it(x: i32) -> i32 { x * 2 }\n", encoding="utf-8",
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="lib.rs", function="double_it",
+            language="rust",
+            expected_return="84",
+            lang_config={
+                "arg_expressions": ["42"], "return_type": "i32",
+                "use_path": "", "setup_lines": [],
+            },
+        )
+        r = execute_witness(spec, target)
+        assert r.verdict == "confirmed", r.match_detail
 
     def test_target_with_own_main(self, tmp_path):
         """A bin-crate target's fn main is renamed before the include!

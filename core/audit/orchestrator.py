@@ -1721,19 +1721,35 @@ def review_one_function(
                 exc_info=True,
             )
 
-    # Auth-mode-conditional exposure: convention-independent (the
-    # asymmetry is intra-function), so it runs even when no project
-    # conventions were discovered. Findings ride the same
+    # Convention-independent structural checks (the asymmetry/race
+    # shape is intra-function or intra-file), so they run even when no
+    # project conventions were discovered. Findings ride the same
     # ctx["negative_space"] channel into the review prompt.
     auth_mode_findings: list = []
     try:
-        from .negative_space import check_auth_mode_registration
+        from .negative_space import (
+            check_auth_mode_registration,
+            check_shared_writer_race,
+        )
         auth_mode_findings = check_auth_mode_registration(
             gap_with_source, domain_model=shared.domain_model,
         )
+        if gap.get("file", "").endswith(".go"):
+            _swr_gap = dict(gap_with_source)
+            with contextlib.suppress(OSError):
+                _fp = config.target_path / gap.get("file", "")
+                if _fp.is_file():
+                    # Whole-file source: the receiver struct decl and
+                    # method bodies live outside the function span.
+                    _swr_gap["file_source"] = _fp.read_text(
+                        errors="replace",
+                    )
+            auth_mode_findings.extend(
+                check_shared_writer_race(_swr_gap),
+            )
     except Exception:
         logger.debug(
-            "auth-mode registration check failed for %s:%s",
+            "structural negative-space checks failed for %s:%s",
             gap.get("file"), gap.get("name"), exc_info=True,
         )
     if auth_mode_findings and not conventions:
@@ -6682,12 +6698,25 @@ def _run_audit_body(
             post_loop_findings.append(nf.to_dict())
         for nf in check_protocol_ambiguity(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
-        from .negative_space import check_auth_mode_registration
+        from .negative_space import (
+            check_auth_mode_registration,
+            check_shared_writer_race,
+        )
         for g in gaps:
             for nf in check_auth_mode_registration(
                 g, domain_model=domain_model, target_path=tp,
             ):
                 post_loop_findings.append(nf.to_dict())
+            if (g.get("file") or "").endswith(".go"):
+                _swr_g = dict(g)
+                with contextlib.suppress(OSError):
+                    _gfp = tp / (g.get("file") or "")
+                    if _gfp.is_file():
+                        _swr_g["file_source"] = _gfp.read_text(
+                            errors="replace",
+                        )
+                for nf in check_shared_writer_race(_swr_g):
+                    post_loop_findings.append(nf.to_dict())
         for nf in check_missing_app_features(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
         for nf in check_signal_safety(

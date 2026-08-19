@@ -1139,3 +1139,85 @@ class TestAuthModeRegistration:
             "    self.add_view(HomeView)\n"
         )
         assert check_auth_mode_registration(self._gap(src)) == []
+
+
+class TestSharedWriterRace:
+    """Go non-atomic multi-write to a shared writer field."""
+
+    _SRC = (
+        "package streamformatter\n"
+        "type progressOutput struct {\n"
+        "\tsf formatProgress\n"
+        "\tout io.Writer\n"
+        "\tnewLines bool\n"
+        "}\n"
+        "func (out *progressOutput) WriteProgress(prog progress.Progress) error {\n"
+        "\tformatted := out.sf.formatStatus(prog.ID, prog.Message)\n"
+        "\t_, err := out.out.Write(formatted)\n"
+        "\tif err != nil {\n"
+        "\t\treturn err\n"
+        "\t}\n"
+        "\tif out.newLines && prog.LastUpdate {\n"
+        "\t\t_, err = out.out.Write(out.sf.formatStatus(\"\", \"\"))\n"
+        "\t\treturn err\n"
+        "\t}\n"
+        "\treturn nil\n"
+        "}\n"
+        "type AuxFormatter struct {\n"
+        "\tio.Writer\n"
+        "}\n"
+        "func (sf *AuxFormatter) Emit(id string, aux interface{}) error {\n"
+        "\tmsgJSON, err := json.Marshal(aux)\n"
+        "\t_, err = sf.Writer.Write(msgJSON)\n"
+        "\treturn err\n"
+        "}\n"
+    )
+
+    def _gap(self, name, source=None):
+        return {
+            "file": "pkg/streamformatter/streamformatter.go",
+            "name": name,
+            "source": source or self._SRC,
+        }
+
+    def test_multi_write_no_lock_flagged(self):
+        from core.audit.negative_space import check_shared_writer_race
+
+        f = check_shared_writer_race(self._gap("WriteProgress"))
+        assert f and f[0].check_type == "shared_writer_race"
+        assert "caller set" in f[0].evidence
+
+    def test_single_write_peer_silent(self):
+        from core.audit.negative_space import check_shared_writer_race
+
+        assert check_shared_writer_race(self._gap("Emit")) == []
+
+    def test_mutex_on_receiver_silences(self):
+        from core.audit.negative_space import check_shared_writer_race
+
+        src = self._SRC.replace(
+            "\tsf formatProgress\n",
+            "\tsf formatProgress\n\tmu sync.Mutex\n",
+        )
+        assert check_shared_writer_race(
+            self._gap("WriteProgress", src),
+        ) == []
+
+    def test_lock_in_body_silences(self):
+        from core.audit.negative_space import check_shared_writer_race
+
+        src = self._SRC.replace(
+            "\tformatted := out.sf.formatStatus",
+            "\tout.mu.Lock()\n\tdefer out.mu.Unlock()\n"
+            "\tformatted := out.sf.formatStatus",
+        )
+        assert check_shared_writer_race(
+            self._gap("WriteProgress", src),
+        ) == []
+
+    def test_non_go_file_silent(self):
+        from core.audit.negative_space import check_shared_writer_race
+
+        gap = self._gap("WriteProgress")
+        gap["file"] = "a.c"
+        assert check_shared_writer_race(gap) == []

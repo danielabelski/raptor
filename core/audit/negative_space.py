@@ -1904,3 +1904,113 @@ def check_auth_mode_registration(
             title=f"auth-mode-unconditional {tail}() registration",
         ))
     return findings
+
+
+# ------------------------------------------------------------------
+# Go shared-writer race (peer-convention / non-atomic multi-write)
+# ------------------------------------------------------------------
+
+_GO_METHOD_RE = re.compile(
+    r"^func\s*\(\s*(\w+)\s+\*?(\w+)\s*\)\s*(\w+)\s*\(", re.MULTILINE,
+)
+_GO_STRUCT_RE_TMPL = r"type\s+{name}\s+struct\s*\{{([^}}]*)\}}"
+_GO_MUTEX_RE = re.compile(r"\bsync\.(?:RW)?Mutex\b")
+_GO_LOCK_CALL_RE = re.compile(r"\.(?:R)?Lock\s*\(")
+
+
+def _go_method_bodies(source: str) -> list[tuple[str, str, str, str]]:
+    """Yield ``(receiver_var, receiver_type, method, body)`` for each
+    Go method. Body extent = brace balance from the signature line."""
+    out = []
+    for m in _GO_METHOD_RE.finditer(source):
+        start = source.find("{", m.end() - 1)
+        sig_end = source.find("\n", m.end())
+        brace = source.find("{", sig_end - 1 if sig_end > 0 else m.end())
+        if brace < 0:
+            continue
+        depth = 0
+        end = brace
+        for i in range(brace, len(source)):
+            c = source[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        out.append((m.group(1), m.group(2), m.group(3),
+                    source[brace:end + 1]))
+        del start
+    return out
+
+
+def check_shared_writer_race(
+    gap: dict[str, Any],
+    *,
+    target_path: Path | None = None,
+) -> list[NegativeSpaceFinding]:
+    """Non-atomic multi-write to a shared writer field, no lock.
+
+    A Go method that performs TWO OR MORE separate ``recv.field.Write``
+    (or embedded-writer) calls per invocation is non-atomic even when
+    each write is: concurrent callers interleave the fragments. When
+    neither the method body locks anything nor the receiver struct
+    carries a mutex, concurrent use races. Whether callers actually
+    run concurrently is cross-file — the finding states exactly that,
+    so the reviewer tests the caller-set assumption instead of
+    assuming a single feeding goroutine.
+    """
+    file = gap.get("file", "")
+    if not file.endswith(".go"):
+        return []
+    func = gap.get("name", "")
+    source = gap.get("file_source", "") or gap.get("source", "") or (
+        read_gap_source(gap, target_path) if target_path else ""
+    )
+    if not source or "func" not in source:
+        return []
+
+    findings: list[NegativeSpaceFinding] = []
+    for recv_var, recv_type, method, body in _go_method_bodies(source):
+        if method != func and f"{recv_type}.{method}" != func:
+            continue
+        write_calls = re.findall(
+            rf"\b{re.escape(recv_var)}\.(?:\w+\.)?Write\s*\(", body,
+        )
+        if len(write_calls) < 2:
+            continue
+        if _GO_LOCK_CALL_RE.search(body):
+            continue
+        # Receiver struct: a mutex field means the AUTHOR considered
+        # concurrency; absence + multi-write is the race shape.
+        struct_m = re.search(
+            _GO_STRUCT_RE_TMPL.format(name=re.escape(recv_type)), source,
+        )
+        if struct_m and _GO_MUTEX_RE.search(struct_m.group(1)):
+            continue
+        findings.append(NegativeSpaceFinding(
+            check_type="shared_writer_race",
+            expected=(
+                f"{method}() writes to the shared writer atomically "
+                f"or under a lock"
+            ),
+            evidence=(
+                f"{method}() performs {len(write_calls)} separate "
+                f"Write() calls on {recv_var}'s writer field per "
+                f"invocation, holds no lock, and {recv_type} carries "
+                f"no mutex. Two concurrent callers interleave the "
+                f"fragments even on a thread-safe writer. Do NOT "
+                f"assume a single feeding goroutine: check the actual "
+                f"caller set — a receiver handed out through a "
+                f"constructor/interface escapes to arbitrary callers."
+            ),
+            cwe="CWE-362",
+            confidence="medium",
+            convention="",
+            strategy="sibling_asymmetry",
+            file=file,
+            function=func,
+            title=f"non-atomic multi-write in {method}() without lock",
+        ))
+    return findings

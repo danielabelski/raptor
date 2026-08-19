@@ -1310,7 +1310,10 @@ def _run_slopsquat_review(
         # install's import can legitimately fail here; anything else
         # is a wiring bug and must propagate.
         with contextlib.suppress(ImportError):
-            from core.sage.hooks import recall_context_for_sca
+            from core.sage.hooks import (
+                parse_verified_sca_fields,
+                recall_context_for_sca,
+            )
             dep_names = [f.dependency.name for f in suspect_findings[:10]]
             ecosystems = list({f.dependency.ecosystem for f in suspect_findings
                               if f.dependency.ecosystem})
@@ -1319,12 +1322,30 @@ def _run_slopsquat_review(
                 ecosystems=ecosystems,
                 dep_names=dep_names,
             )
+            # Short-circuit on the AUTHENTICATED decision fields only —
+            # never on substring matches over the row prose. The prose
+            # carries LLM summary text (prompt-injectable via hostile
+            # package metadata) and detail strings that legitimately
+            # name the imitated package: a validly MAC'd suspect row
+            # whose summary says "malicious_confirmed <victim>" must
+            # not mint a 0.98 confirmed verdict for the victim.
+            confirmed_keys = set()
             for row in prior:
-                content = str(row.get("content") or "")
-                if "malicious_confirmed" in content:
-                    for f in suspect_findings:
-                        if f.dependency.name in content:
-                            sage_confirmed.add(f.dependency.name)
+                fields = parse_verified_sca_fields(row)
+                if fields and fields.get("verdict") == "malicious_confirmed":
+                    confirmed_keys.add(
+                        (fields.get("eco", ""), fields.get("name", "")),
+                    )
+            for f in suspect_findings:
+                dep = f.dependency
+                # Mirror store-time _sanitise_delim ('|' stripped) so
+                # equality compares like with like.
+                key = (
+                    str(dep.ecosystem or "").replace("|", ""),
+                    str(dep.name or "").replace("|", ""),
+                )
+                if key in confirmed_keys:
+                    sage_confirmed.add(dep.name)
 
     # Build registry-client lookups for the deps we want to
     # review. Same offline-honouring pattern as

@@ -1368,20 +1368,23 @@ def recall_context_for_sca(
         return []
 
 
-def _sca_row_mechanically_usable(row: dict[str, Any]) -> bool:
-    """Gate rows that would trigger the confirmed-malicious short-circuit.
+def parse_verified_sca_fields(row: dict[str, Any]) -> dict[str, str] | None:
+    """Return the authenticated SCA decision fields for *row*, or ``None``.
 
-    The SCA pipeline short-circuits packages whose recalled content
-    contains ``malicious_confirmed`` — the FAIL direction here is a
-    false positive, not a miss, but it is still a mechanical decision.
-    Such rows are only returned when their MAC token verifies over the
-    decision fields (kind, ecosystem, name, version, verdict) written by
-    ``store_sca_outcomes`` on this install. Rows without the trigger
-    pass through unchanged as ordinary context.
+    Parses the ``||sca_eco/sca_name/sca_ver/sca_verdict||`` markers from
+    the row content and verifies the row MAC over exactly those fields.
+    Mechanical consumers (the slopsquat short-circuit in
+    ``packages/sca/pipeline.py``) must act on THIS dict — specifically
+    ``verdict == "malicious_confirmed"`` plus exact name/ecosystem
+    equality — never on substring matches over the prose: the prose
+    embeds LLM-generated summary text (prompt-injectable via hostile
+    package metadata) and detail strings that legitimately NAME the
+    imitated package.
+
+    ``None`` means the row is hint-only (unstamped, foreign, or
+    tampered).
     """
     clean, token = rowmac.strip(str(row.get("content") or ""))
-    if "malicious_confirmed" not in clean:
-        return True
 
     def _field(key: str) -> str:
         match = re.search(rf"\|\|{key}=([^|]*)\|\|", clean)
@@ -1394,7 +1397,27 @@ def _sca_row_mechanically_usable(row: dict[str, Any]) -> bool:
         "version": _field("sca_ver"),
         "verdict": _field("sca_verdict"),
     }
-    return _row_mac_ok("sca_outcomes", fields, token)
+    if not _row_mac_ok("sca_outcomes", fields, token):
+        return None
+    return fields
+
+
+def _sca_row_mechanically_usable(row: dict[str, Any]) -> bool:
+    """Gate rows that would trigger the confirmed-malicious short-circuit.
+
+    The SCA pipeline short-circuits packages recalled as confirmed
+    malicious — the FAIL direction here is a false positive, not a
+    miss, but it is still a mechanical decision. Rows whose content
+    mentions ``malicious_confirmed`` anywhere are only returned when
+    their MAC token verifies over the decision fields (kind, ecosystem,
+    name, version, verdict) written by ``store_sca_outcomes`` on this
+    install. Rows without the trigger pass through unchanged as
+    ordinary context.
+    """
+    clean, _token = rowmac.strip(str(row.get("content") or ""))
+    if "malicious_confirmed" not in clean:
+        return True
+    return parse_verified_sca_fields(row) is not None
 
 
 def store_sca_outcomes(

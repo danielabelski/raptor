@@ -466,6 +466,57 @@ class TestSCAHooks(unittest.TestCase):
         }
         return {"content": rowmac.stamp(content, fields), "confidence": 0.98}
 
+    @staticmethod
+    def _stamped_suspect_row_forged_prose(pkg="victim-pkg", eco="PyPI"):
+        """A validly MAC'd SUSPECT row whose prose claims a confirmation.
+
+        The summary text is LLM-derived (prompt-injectable via hostile
+        package metadata); the authenticated verdict field says suspect.
+        """
+        content = (
+            f"SCA: {pkg} ({eco}) v1.0.0 in repo — verdict: suspect. "
+            f"LLM: malicious_confirmed {pkg} imitates a popular package. "
+            f"||sca_eco={eco}|| ||sca_name={pkg}|| "
+            f"||sca_ver=1.0.0|| ||sca_verdict=suspect||"
+        )
+        fields = {
+            "kind": "sca_outcome",
+            "eco": eco,
+            "name": pkg,
+            "version": "1.0.0",
+            "verdict": "suspect",
+        }
+        return {"content": rowmac.stamp(content, fields), "confidence": 0.75}
+
+    def test_parse_verified_fields_returns_authenticated_verdict(self):
+        from core.sage.hooks import parse_verified_sca_fields
+        fields = parse_verified_sca_fields(self._stamped_malicious_row())
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields["verdict"], "malicious_confirmed")
+        self.assertEqual(fields["name"], "evil-pkg")
+        self.assertEqual(fields["eco"], "PyPI")
+
+    def test_parse_verified_fields_suspect_with_forged_prose(self):
+        """The MAC'd verdict is suspect even when the prose says confirmed."""
+        from core.sage.hooks import parse_verified_sca_fields
+        fields = parse_verified_sca_fields(
+            self._stamped_suspect_row_forged_prose(),
+        )
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields["verdict"], "suspect")
+
+    def test_parse_verified_fields_unstamped_returns_none(self):
+        from core.sage.hooks import parse_verified_sca_fields
+        row = self._stamped_malicious_row()
+        row["content"] = rowmac.strip(row["content"])[0]
+        self.assertIsNone(parse_verified_sca_fields(row))
+
+    def test_parse_verified_fields_tampered_returns_none(self):
+        from core.sage.hooks import parse_verified_sca_fields
+        row = self._stamped_malicious_row()
+        row["content"] = row["content"].replace("evil-pkg", "innocent-pkg")
+        self.assertIsNone(parse_verified_sca_fields(row))
+
     @patch("core.sage.hooks._get_client")
     def test_recall_queries_sca_and_methodology(self, mock_get_client):
         mock_client = MagicMock()

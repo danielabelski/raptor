@@ -626,6 +626,10 @@ def run_postpass(
                 stats.mechanism("collection:constant-roundtrip")
             if "tracked local collection" in reason_text:
                 stats.mechanism("collection:sanitizer-elements")
+            if "non-agreeing taint-free union" in reason_text:
+                stats.mechanism("taint-free:definer-union")
+            if "returns-taint-free helper union" in reason_text:
+                stats.mechanism("taint-free:helper-summary")
             verdicts.append(result.verdict)
 
         if verdicts == ["resolver-refused"]:

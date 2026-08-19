@@ -80,7 +80,8 @@ class _FoldExt:
     the taint-free tier and the cross-file resolver. ``None`` (the
     default everywhere) is byte-for-byte the pre-extension folder."""
 
-    __slots__ = ("allow_taint_free", "xfile", "receiver_type")
+    __slots__ = ("allow_taint_free", "xfile", "receiver_type",
+                 "union_hits")
 
     def __init__(self, allow_taint_free: bool = False, xfile=None,
                  receiver_type=None):
@@ -90,6 +91,10 @@ class _FoldExt:
         # Sound only when EVERY indexed definition of the local is a
         # creation of that same class (see JavaConstIndex).
         self.receiver_type = receiver_type
+        # b42: count of non-agreeing definer merges resolved by the
+        # taint-free union (audit attribution; empty when the tier is
+        # off or every merge agreed).
+        self.union_hits: list = []
 
 
 def _tf_or_refuse(val: Any, ext) -> Any:
@@ -117,6 +122,15 @@ class JavaConstIndex:
                  java_file_path: Optional[str] = None,
                  repo_root: Optional[str] = None) -> None:
         self._defs: Dict[Tuple[int, str], Any] = {}
+        # (lineno, name) keys that hold MORE THAN ONE write on the
+        # line (one-liner if/else arms, chained statements).  A
+        # line-keyed lookup cannot tell the reaching-defs oracle's
+        # per-definition nodes apart, so serving any single RHS would
+        # collapse distinct definers into one — measured as a live
+        # false suppression when a one-liner if/else discriminant
+        # folded to its first arm and pruned the tainted switch arm
+        # (b42 trap fixture).  Such keys refuse.
+        self._multi_write_lines: Set[Tuple[int, str]] = set()
         self._compound_writers: Set[str] = set()
         # name -> exact created class, poisoned to None on any
         # non-creation or differently-typed definition.
@@ -152,7 +166,10 @@ class JavaConstIndex:
                 if (name is not None and name.type == "identifier"
                         and value is not None):
                     nm = name.text.decode()
-                    self._defs[(n.start_point[0] + 1, nm)] = value
+                    key = (n.start_point[0] + 1, nm)
+                    if key in self._defs:
+                        self._multi_write_lines.add(key)
+                    self._defs[key] = value
                     self._note_creation(nm, value)
             elif n.type == "assignment_expression":
                 left = n.child_by_field_name("left")
@@ -165,7 +182,10 @@ class JavaConstIndex:
                         # model; every lookup of the name must refuse.
                         self._compound_writers.add(lname)
                     elif right is not None:
-                        self._defs[(n.start_point[0] + 1, lname)] = right
+                        akey = (n.start_point[0] + 1, lname)
+                        if akey in self._defs:
+                            self._multi_write_lines.add(akey)
+                        self._defs[akey] = right
                         self._note_creation(lname, right)
             elif n.type == "update_expression":
                 for ch in n.children:
@@ -197,6 +217,12 @@ class JavaConstIndex:
 
     def rhs_at(self, lineno: int, name: str):
         if name in self._compound_writers:
+            return None
+        if (lineno, name) in self._multi_write_lines:
+            # Two+ writes to the name on one line: a line-keyed lookup
+            # cannot disambiguate the oracle's definition nodes, and
+            # serving either RHS collapses distinct definers (the b42
+            # one-liner if/else trap).  Refuse.
             return None
         return self._defs.get((lineno, name))
 
@@ -699,15 +725,31 @@ def _make_point_resolver(rd, index: JavaConstIndex, array_resolver=None,
         for v in values[1:]:
             if v is TAINT_FREE or first is TAINT_FREE:
                 if v is not first:
-                    return _REFUSE
+                    return _tf_union(ext)
                 continue
             if v is not first and v != first:
-                return _REFUSE
+                return _tf_union(ext)
             if type(v) is not type(first):
-                return _REFUSE
+                return _tf_union(ext)
         return first
 
     return resolve_at
+
+
+def _tf_union(ext) -> Any:
+    """Merge verdict for non-agreeing definers that each folded.
+
+    Everything ``_fold`` produces is compile-time-known or proven
+    attacker-free by construction, so a disagreement between folded
+    values is still a union of attacker-free values — taint-free,
+    never a usable value.  Value consumers (tier off) keep the
+    historical refusal byte-for-byte; the union exists only for the
+    suppression question (b42).
+    """
+    if ext is not None and ext.allow_taint_free:
+        ext.union_hits.append(1)
+        return TAINT_FREE
+    return _REFUSE
 
 
 def fold_expr_at(rd, at_node, expr_node, index: JavaConstIndex,
@@ -881,6 +923,14 @@ def all_definers_constant(
     if value is _REFUSE:
         return None
     if value is TAINT_FREE:
+        if ext.union_hits:
+            # b42: the definers disagreed on the value but every one
+            # folded — the branch selector is irrelevant to the
+            # attacker-control question.
+            return (
+                "every reaching definer of the sink argument folds to "
+                "an attacker-free value (non-agreeing taint-free union)"
+            )
         return (
             "every reaching definer of the sink argument is provably "
             "attacker-uncontrolled (taint-free system/config reads)"

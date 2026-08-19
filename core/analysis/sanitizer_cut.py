@@ -666,10 +666,29 @@ def _sink_arg_constant_reason(
                 collection_resolver = CollectionFoldResolver(coll_index)
         except Exception:  # noqa: BLE001 — collection support is optional
             collection_resolver = None
+        # Returns-taint-free helper summaries (b42): claimed LAST so
+        # value-producing resolvers (conduits, collection round-trips)
+        # keep first claim on calls they can fold to actual values;
+        # this hook only ever yields the TAINT_FREE sentinel, which the
+        # boundary pin strips for every value consumer.
+        tf_helper_resolver = None
+        try:
+            from core.analysis.java_taint_freedom import (
+                make_tf_helper_resolver,
+            )
+            tf_helper_resolver = make_tf_helper_resolver(
+                java_source_text, (min(linenos), max(linenos)),
+            )
+        except Exception:  # noqa: BLE001 — summaries are optional
+            tf_helper_resolver = None
         invocation_hook = conduit_resolver
         if collection_resolver is not None:
             invocation_hook = compose_invocation_hooks(
-                conduit_resolver, collection_resolver,
+                invocation_hook, collection_resolver,
+            )
+        if tf_helper_resolver is not None:
+            invocation_hook = compose_invocation_hooks(
+                invocation_hook, tf_helper_resolver,
             )
         reason = all_definers_constant(
             rd, sink, sink_arg, index, array_resolver=table_resolver,
@@ -697,6 +716,10 @@ def _sink_arg_constant_reason(
         if collection_resolver is not None and collection_resolver.hits:
             reason += (
                 " (resolved through a constant-key collection round-trip)"
+            )
+        if tf_helper_resolver is not None and tf_helper_resolver.hits:
+            reason += (
+                " (resolved through a returns-taint-free helper union)"
             )
         call_sites = getattr(sink, "call_sites", ()) or ()
         if not call_sites:

@@ -1231,6 +1231,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_b37_fixtures()
     fixtures += _java_b36_fixtures()
     fixtures += _java_b41_fixtures()
+    fixtures += _java_b42_fixtures()
     return fixtures
 
 
@@ -1648,6 +1649,195 @@ def _java_b27_fixtures() -> List[CutFixture]:
               + "    }\n"),
         "public void handle", "out.println(bar)"))
     return j
+
+
+def _java_b42_fixtures() -> List[CutFixture]:
+    """b42 battery: the taint-free definer union and returns-taint-free
+    helper summaries — the measured blocker classes behind the
+    "guard-shaped" census labels (which sampling proved are NOT value
+    validators: selection guards pick WHICH tainted value flows, and
+    the flow-variant merges disagree on attacker-free values).  The
+    four hypothesized value-predicate guard classes (equality /
+    prefix / contains / matches on the VALUE) were deliberately NOT
+    built: zero population in three corpus samples (Juliet goodB2G,
+    OWASP replace_strip, OWASP unclassified); the selection-guard trap
+    below is the standing pin for that refusal."""
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) throws Exception {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    fx = []
+    # must NOT suppress -------------------------------------------------
+    # The trap that motivated refusing the value-predicate classes: a
+    # name-equality guard selects WHICH attacker value is read; the
+    # value itself stays fully tainted.
+    fx.append(_fx(
+        "java_b42_selection_guard_trap", "pathtrav", "CWE-22",
+        "name_selection_guard_on_tainted_value", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = "";',
+             'javax.servlet.http.Cookie[] cs = request.getCookies();',
+             'for (javax.servlet.http.Cookie c : cs) {',
+             '    if (c.getName().equals("target")) {',
+             '        param = c.getValue();',
+             '    }',
+             '}',
+             'new java.io.FileInputStream(param);'),
+        5, 8, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_union_mixed_taint", "pathtrav", "CWE-22",
+        "definer_union_with_tainted_branch", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getHeader("X");',
+             'String data;',
+             'if (param.length() > 2) {',
+             '    data = param;',
+             '} else {',
+             '    data = "foo";',
+             '}',
+             'new java.io.FileInputStream(data);'),
+        4, 11, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_helper_param_branch", "cmdi", "CWE-78",
+        "helper_returns_parameter_branch", LABEL_MUST_NOT_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    private boolean flag = false;\n"
+         "    private String pick(String p) {\n"
+         "        if (flag) { return p; }\n"
+         "        return \"x\";\n"
+         "    }\n"
+         "    public void handle(HttpServletRequest request) "
+         "throws Exception {\n"
+         "        String param = request.getHeader(\"X\");\n"
+         "        String data = pick(param);\n"
+         "        Runtime.getRuntime().exec(data);\n"
+         "    }\n}\n"),
+        9, 11, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_helper_field_value", "pathtrav", "CWE-22",
+        "helper_returns_field_value", LABEL_MUST_NOT_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    private boolean flag = false;\n"
+         "    private String stash = \"d\";\n"
+         "    private String src() {\n"
+         "        String d;\n"
+         "        if (flag) { d = stash; } else { d = \"foo\"; }\n"
+         "        return d;\n"
+         "    }\n"
+         "    public void handle(HttpServletRequest request) "
+         "throws Exception {\n"
+         "        String param = request.getHeader(\"X\");\n"
+         "        String data = src();\n"
+         "        new java.io.FileInputStream(data);\n"
+         "    }\n}\n"),
+        11, 13, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_helper_unknown_call", "pathtrav", "CWE-22",
+        "helper_returns_unknown_call", LABEL_MUST_NOT_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    private boolean flag = false;\n"
+         "    private String src() {\n"
+         "        String d;\n"
+         "        if (flag) { d = System.console().readLine(); }\n"
+         "        else { d = \"foo\"; }\n"
+         "        return d;\n"
+         "    }\n"
+         "    public void handle(HttpServletRequest request) "
+         "throws Exception {\n"
+         "        String param = request.getHeader(\"X\");\n"
+         "        String data = src();\n"
+         "        new java.io.FileInputStream(data);\n"
+         "    }\n}\n"),
+        11, 13, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_helper_compound_write", "pathtrav", "CWE-22",
+        "helper_compound_assignment_poisons", LABEL_MUST_NOT_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    private String src(String p) {\n"
+         "        String d = \"foo\";\n"
+         "        d += p;\n"
+         "        return d;\n"
+         "    }\n"
+         "    public void handle(HttpServletRequest request) "
+         "throws Exception {\n"
+         "        String param = request.getHeader(\"X\");\n"
+         "        String data = src(param);\n"
+         "        new java.io.FileInputStream(data);\n"
+         "    }\n}\n"),
+        9, 11, language="java", suffix=".java"))
+    # The union sentinel must never act as a value: a disagreeing
+    # discriminant must not prune the switch, so the tainted default
+    # arm keeps its definer and the finding stays live.
+    fx.append(_fx(
+        "java_b42_union_value_position_trap", "pathtrav", "CWE-22",
+        "union_never_prunes_value_consumers", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getHeader("X");',
+             'String s;',
+             'if (param.length() > 2) { s = "a"; } else { s = "b"; }',
+             'String bar;',
+             'switch (s) {',
+             '    case "a": bar = "safe"; break;',
+             '    default: bar = param; break;',
+             '}',
+             'new java.io.FileInputStream(bar);'),
+        4, 12, language="java", suffix=".java"))
+    # may suppress -------------------------------------------------------
+    fx.append(_fx(
+        "java_b42_union_null_const", "pathtrav", "CWE-22",
+        "definer_union_null_and_constant", LABEL_MAY_SUPPRESS,
+        body('String param = request.getHeader("X");',
+             'String data;',
+             'if (param.length() > 2) {',
+             '    data = null;',
+             '} else {',
+             '    data = "foo";',
+             '}',
+             'new java.io.FileInputStream(data);'),
+        4, 11, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_union_two_consts", "cmdi", "CWE-78",
+        "definer_union_two_constants", LABEL_MAY_SUPPRESS,
+        body('String param = request.getHeader("X");',
+             'String data;',
+             'if (param.length() > 2) { data = "ls"; }',
+             'else { data = "pwd"; }',
+             'Runtime.getRuntime().exec(data);'),
+        4, 8, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_helper_tf_union", "pathtrav", "CWE-22",
+        "helper_all_branches_literal", LABEL_MAY_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    private boolean flag = false;\n"
+         "    private String src() {\n"
+         "        String d;\n"
+         "        if (flag) { d = null; } else { d = \"foo\"; }\n"
+         "        return d;\n"
+         "    }\n"
+         "    public void handle(HttpServletRequest request) "
+         "throws Exception {\n"
+         "        String param = request.getHeader(\"X\");\n"
+         "        String data = src();\n"
+         "        new java.io.FileInputStream(data);\n"
+         "    }\n}\n"),
+        10, 12, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_union_tf_and_const", "pathtrav", "CWE-22",
+        "definer_union_system_read_and_constant", LABEL_MAY_SUPPRESS,
+        body('String param = request.getHeader("X");',
+             'String data;',
+             'if (param.length() > 2) { data = System.getenv("HOME"); }',
+             'else { data = "/opt/app"; }',
+             'new java.io.FileInputStream(data);'),
+        4, 8, language="java", suffix=".java"))
+    return fx
 
 
 def _java_b36_fixtures() -> List[CutFixture]:

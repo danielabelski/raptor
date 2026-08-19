@@ -364,6 +364,27 @@ Query audit state across all four layers:
 missing, it runs the map automatically.  The context map provides
 entry points, sinks, and trust boundaries that drive priority ordering.
 
+### /agentic → /audit
+
+`/agentic --gap-audit` runs the audit orchestrator over the coverage
+residual after the analysis phase, as a sibling audit run.  The
+composition is kind-aware: journal entries record their producer, and
+only function-grade entries (audit reviews) suppress gaps or qualify
+for verdict reuse.  A finding-grade entry (/agentic's analysis of one
+scanner finding) never counts as a function review — instead it
+reaches the audit reviewer as a prior claim in the context slice
+(`--prior-journal`, or the project index for prior runs), framed as a
+claim to verify, never a verdict to inherit.  The same semantics apply
+whether the audit runs standalone after an agentic run or via the
+post-pass flag.
+
+The post-pass inherits the agentic run's checklist, CodeQL database
+(single-language runs), binary-oracle inputs, and analysis models
+(two or more enable `--adversarial`).  With `--validate`, audit
+findings join the agentic validate selection and the verdicts feed
+back through `raptor-audit feedback`.  `--gap-audit-share` reserves a
+slice of `--max-cost-usd` for the audit up front.
+
 ### /audit → /validate
 
 Findings are written in standard format.  `/validate` runs automatically

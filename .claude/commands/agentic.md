@@ -33,18 +33,24 @@ and do NOT hand-summarise the flags from this doc when `--help` is requested.
 
 ## Optional enrichment flags
 
-By default, `/agentic` scans and analyses findings in isolation. Two optional flags add richer context for more thorough results. They are opt-in because they add time and cost, but if you are doing a proper security review rather than a quick scan, they are well worth it.
+By default, `/agentic` scans and analyses findings in isolation. Three optional flags add richer context and coverage for more thorough results. They are opt-in because they add time and cost, but if you are doing a proper security review rather than a quick scan, they are well worth it.
 
 | Flag | What it does |
 |------|-------------|
 | `--understand` | Runs `/understand --map` as a proper sibling run, producing `context-map.json` (entry points, trust boundaries, sinks). Two consumers: (a) the agentic checklist gets priority markers, so per-finding analysis prompts say things like *"Architectural role: entry_point"* — improving in-run analysis; (b) any `/validate` against the same target — including this run's `--validate` post-pass — picks the map up via the bridge. |
 | `--validate` | After the agentic pipeline completes, runs `/validate` on findings flagged `is_exploitable: true` or `confidence: "high"`. Creates a sibling validate run; the bridge auto-discovers any `/understand` sibling produced by `--understand`. |
+| `--gap-audit` | After analysis, runs the `/audit` orchestrator over the coverage residual — functions no phase reviewed — as a sibling audit run. Inherits the run's checklist, CodeQL database, binaries, and models (2+ models enable the adversarial reviewer); the run's own per-finding analyses ride in as prior claims, never as coverage. Requires an external LLM (`--model` or a configured API key). With `--validate`, audit findings join the same validate pass and the validation verdicts feed back into the audit journal; without it, the run ends with a loud UNVALIDATED warning. NOTE: `--audit` (no prefix) is the sandbox audit mode — a different feature. |
 
-You can use either flag on its own or combine them:
+Sub-flags for the gap audit: `--gap-audit-budget N` (max functions), `--gap-audit-strategy NAME`, `--gap-audit-scope DIR` (repeatable), `--gap-audit-share FRACTION` (slice of `--max-cost-usd` reserved up front for the audit, default 0.35).
+
+You can use the flags independently or combine them:
 
 ```
-# Recommended for thorough reviews — pair both flags
+# Recommended for thorough reviews — pair map + validate
 /agentic --understand --validate
+
+# Full-coverage review: map, analyse, audit the residual, validate everything once
+/agentic --understand --gap-audit --validate
 
 # Just enrich this run's analysis with architectural priority markers
 /agentic --understand
@@ -53,7 +59,7 @@ You can use either flag on its own or combine them:
 /agentic --validate
 ```
 
-Pass both flags straight through to `libexec/raptor-agentic`. The Python layer owns all orchestration and selection logic; you don't need to filter findings or invoke other skills yourself.
+Pass the flags straight through to `libexec/raptor-agentic`. The Python layer owns all orchestration and selection logic; you don't need to filter findings or invoke other skills yourself. `--gap-audit` enables the `/understand` pre-pass automatically when no fresh context map exists for the target.
 
 ## How analysis works
 

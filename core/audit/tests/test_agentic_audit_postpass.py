@@ -269,6 +269,58 @@ class TestRunAuditPostpass:
         assert phase["skipped_reason"] == "lifecycle start failed"
 
 
+class TestReportSection:
+    def test_completed_phase_renders_counts(self):
+        from raptor_agentic import _build_audit_report_section
+        section = _build_audit_report_section({
+            "enabled": True, "completed": True, "reviewed": 10,
+            "findings_count": 2, "suspicious": 1, "clean": 7,
+            "dormant": 0, "gaps_remaining": 5, "audit_dir": "/x/audit",
+        })
+        assert section.title == "Gap Audit Post-Pass"
+        assert "**10**" in section.content
+        assert "`/x/audit`" in section.content
+
+    def test_skipped_phase_names_reason(self):
+        from raptor_agentic import _build_audit_report_section
+        section = _build_audit_report_section({
+            "enabled": True, "completed": False,
+            "skipped_reason": "lifecycle start failed",
+        })
+        assert "Skipped" in section.content
+        assert "lifecycle start failed" in section.content
+
+
+class TestResidualEstimate:
+    def test_counts_unjournaled_functions(self, tmp_path):
+        from core.coverage.journal import (
+            ReviewJournalEntry,
+            append_entry,
+            now_iso,
+        )
+        from raptor_agentic import _estimate_review_residual
+        save_json(tmp_path / "checklist.json", {"files": [{
+            "path": "a.c",
+            "items": [
+                {"name": "f", "kind": "function", "line_start": 1},
+                {"name": "g", "kind": "function", "line_start": 5},
+                {"name": "MACRO", "kind": "macro", "line_start": 9},
+            ],
+        }]})
+        autonomous = tmp_path / "autonomous"
+        autonomous.mkdir()
+        append_entry(autonomous, ReviewJournalEntry(
+            ts=now_iso(), run_id="agentic_1", file="a.c", function="f",
+            verdict="clean", source_hash="", producer="agentic",
+        ))
+        # macro kind is outside the quick estimate; f journaled → 1 of 2
+        assert _estimate_review_residual(tmp_path) == (1, 2)
+
+    def test_no_checklist_returns_none(self, tmp_path):
+        from raptor_agentic import _estimate_review_residual
+        assert _estimate_review_residual(tmp_path) is None
+
+
 class TestJsonRoundTrip:
     def test_phase_dict_is_json_serialisable(self, tmp_path, _postpass_env):
         audit_dir, _calls, _fails = _postpass_env

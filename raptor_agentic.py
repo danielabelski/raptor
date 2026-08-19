@@ -3481,6 +3481,21 @@ Examples:
     print("🎉 RAPTOR AGENTIC WORKFLOW COMPLETE")
     print("=" * 70)
 
+    # Coverage nudge: /agentic reviews what the scanners flag; make the
+    # size of what it DIDN'T review visible instead of implying
+    # "scanned = reviewed". Estimate only — the audit's own gap
+    # computation is authoritative.
+    if not args.gap_audit:
+        residual = _estimate_review_residual(out_dir)
+        if residual and residual[0] > 0:
+            unreviewed, total_funcs = residual
+            print(
+                f"\n  Coverage: ~{unreviewed} of {total_funcs} inventory "
+                "functions have no review record — /agentic analyses "
+                "scanner findings only. Add --gap-audit (or run /audit) "
+                "to review the residual."
+            )
+
     final_report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "repository": str(original_repo_path),
@@ -4112,6 +4127,10 @@ Examples:
         output_files.append(outputs["aggregation_report"])
     if outputs.get("autonomous_report"):
         output_files.append(outputs["autonomous_report"])
+    if outputs.get("audit_report"):
+        output_files.append(outputs["audit_report"])
+    if outputs.get("audit_findings"):
+        output_files.append(outputs["audit_findings"])
     if outputs.get("threat_model_json"):
         output_files.append(outputs["threat_model_json"])
     if outputs.get("threat_model_markdown"):
@@ -4133,6 +4152,8 @@ Examples:
     output_files.append("agentic-report.md")
 
     extra_sections = []
+    if audit_postpass.get("enabled"):
+        extra_sections.append(_build_audit_report_section(audit_postpass))
     if threat_model_phase.get("completed"):
         extra_sections.append(_build_threat_model_report_section(threat_model_phase))
     if aggregation:
@@ -4194,6 +4215,72 @@ Examples:
             logger.debug("Cleaned up temp git dir: %s", _git_temp_dir)
         except Exception as e:  # noqa: BLE001
             logger.debug("Failed to clean temp git dir: %s", e)
+
+
+def _build_audit_report_section(audit_phase):
+    """Render the --gap-audit post-pass outcome for the final report."""
+    from core.reporting import ReportSection
+
+    if not audit_phase.get("completed"):
+        content = (
+            f"- Status: **Skipped** — "
+            f"{audit_phase.get('skipped_reason', 'unknown')}"
+        )
+        return ReportSection(title="Gap Audit Post-Pass", content=content)
+
+    lines = [
+        f"- Functions reviewed: **{audit_phase.get('reviewed', 0)}**",
+        f"- Findings: **{audit_phase.get('findings_count', 0)}**",
+        f"- Suspicious: **{audit_phase.get('suspicious', 0)}**",
+        f"- Clean: **{audit_phase.get('clean', 0)}**",
+        f"- Dormant: **{audit_phase.get('dormant', 0)}**",
+        f"- Gaps remaining: **{audit_phase.get('gaps_remaining', 0)}**",
+    ]
+    if audit_phase.get("audit_dir"):
+        lines.append(f"- Run directory: `{audit_phase['audit_dir']}`")
+    return ReportSection(
+        title="Gap Audit Post-Pass",
+        content="\n".join(lines),
+    )
+
+
+def _estimate_review_residual(out_dir: Path) -> tuple | None:
+    """Rough (unreviewed, total) function count for the end-of-run
+    coverage nudge.
+
+    Total = reviewable checklist items; reviewed = distinct
+    ``file:function`` keys journaled by this run (root + one-level tool
+    subdirs). An estimate, not the audit's gap computation — good
+    enough to say "most of the inventory was never reviewed".
+    """
+    checklist = load_json(out_dir / "checklist.json")
+    if not isinstance(checklist, dict):
+        return None
+    total = 0
+    for file_info in checklist.get("files", []) or []:
+        if not isinstance(file_info, dict):
+            continue
+        items = file_info.get("items", file_info.get("functions", []))
+        for item in items or []:
+            if isinstance(item, dict) and item.get("kind", "") in (
+                "function", "method", "",
+            ):
+                total += 1
+    if total == 0:
+        return None
+    try:
+        from core.coverage.journal import load_entries
+        reviewed: set = set()
+        candidates = [out_dir]
+        candidates += [d for d in out_dir.iterdir() if d.is_dir()]
+        for d in candidates:
+            reviewed.update(
+                e.key for e in load_entries(d) if e.verdict != "error"
+            )
+    except Exception:  # noqa: BLE001 — nudge is best-effort
+        logger.debug("residual estimate failed", exc_info=True)
+        return None
+    return (max(total - len(reviewed), 0), total)
 
 
 def _build_threat_model_report_section(summary):

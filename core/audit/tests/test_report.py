@@ -171,6 +171,22 @@ class TestCountRemainingGaps:
         remaining = _count_remaining_gaps(gaps_data, audit_data)
         assert remaining == 8
 
+    def test_mechanical_entries_not_counted_as_reviewed(self):
+        """One counting rule with _compute_stats: post-loop mechanical
+        journal echoes are not LLM reviews and leave the gap open."""
+        gaps_data = {"count": 10}
+        audit_data = {
+            "functions_analysed": [
+                {"file": "a.c", "function": "f1", "status": "clean"},
+                {"file": "a.c", "function": "f2", "status": "suspicious",
+                 "mechanical": True},
+                {"file": "a.c", "function": "f3", "status": "suspicious",
+                 "mechanical": True},
+            ],
+        }
+        remaining = _count_remaining_gaps(gaps_data, audit_data)
+        assert remaining == 9
+
 
 class TestFormatSummary:
     def test_basic_summary(self):

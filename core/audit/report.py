@@ -648,7 +648,14 @@ def _count_remaining_gaps(
     gaps_data: dict[str, Any],
     audit_data: dict[str, Any],
 ) -> int:
-    """Count gaps not covered by this audit run."""
+    """Count gaps not covered by this audit run.
+
+    One counting rule, shared with ``_compute_stats``: post-loop
+    mechanical journal echoes are not LLM reviews and must not count
+    as covered gaps — pre-fix each pattern-scan echo shrank
+    ``gaps_remaining`` by one while the reviewed count excluded it,
+    so the two headline numbers disagreed about the same journal.
+    """
     total_gaps = gaps_data.get("count", 0)
     if "files" in audit_data:
         reviewed = sum(
@@ -656,7 +663,10 @@ def _count_remaining_gaps(
             for fd in audit_data["files"].values()
         )
     elif "functions_analysed" in audit_data:
-        reviewed = len(audit_data["functions_analysed"])
+        reviewed = sum(
+            1 for func_data in audit_data["functions_analysed"]
+            if not func_data.get("mechanical")
+        )
     else:
         reviewed = 0
     return max(0, total_gaps - reviewed)

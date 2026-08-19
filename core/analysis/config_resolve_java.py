@@ -387,6 +387,42 @@ class ConfigResolver:
         return res.value
 
 
+def _getproperty_nodes_on_row(tree, row: int) -> List:
+    """All getProperty method_invocation nodes starting on 0-based *row*."""
+    out: List = []
+    stack = [tree.root_node]
+    while stack:
+        n = stack.pop()
+        if n.start_point[0] > row or n.end_point[0] < row:
+            continue
+        if n.type == "method_invocation" and n.start_point[0] == row:
+            meth = n.child_by_field_name("name")
+            if meth is not None and _text(meth) == "getProperty":
+                out.append(n)
+        stack.extend(n.children)
+    return out
+
+
+def resolve_line(resolver: "ConfigResolver", line: int,
+                 ) -> ConfigResolution:
+    """Resolve the single getProperty invocation on 1-based *line*.
+
+    Locator-facing entry: the postpass source locator asks "is this
+    read a proven config constant?" — a read whose every possible
+    runtime value is a file constant or a literal default is not
+    attacker-controlled, so ``allow_default=True`` here (unlike the
+    fold side, which needs THE value and refuses two-arg reads).
+    Multiple getProperty invocations on one line refuse (ambiguous).
+    """
+    if not resolver._ok:  # noqa: SLF001 — module-internal companion
+        return ConfigResolution(refusal="parser_unavailable")
+    nodes = _getproperty_nodes_on_row(resolver._tree, line - 1)  # noqa: SLF001
+    if len(nodes) != 1:
+        resolver.stats["line_ambiguous"] += 1
+        return ConfigResolution(refusal="line_ambiguous")
+    return resolver.resolve_call(nodes[0], allow_default=True)
+
+
 def make_config_resolver(source_text: str, file_path: str,
                          repo_root: Optional[str] = None
                          ) -> Optional[ConfigResolver]:

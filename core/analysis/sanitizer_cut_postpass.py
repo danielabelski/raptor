@@ -50,29 +50,97 @@ _EXT_LANGUAGE = {
     ".h": "c",
 }
 
-# Source-shaped call patterns per language — seed sets for the unique-
-# source locator (growth must come from learned vocabulary, not this
-# table). Java: the servlet-request getters the registry taint rules
-# themselves treat as sources. Python: the common web-request accessors.
-_SOURCE_PATTERNS: Dict[str, tuple] = {
-    "java": (
-        r"\.getParameter\s*\(",
-        r"\.getParameterValues\s*\(",
-        r"\.getParameterMap\s*\(",
-        r"\.getHeader\s*\(",
-        r"\.getHeaderNames\s*\(",
-        r"\.getHeaders\s*\(",
-        r"\.getIntHeader\s*\(",
-        r"\.getCookies\s*\(",
-        r"\.getQueryString\s*\(",
-    ),
-    "python": (
-        r"request\.args",
-        r"request\.form",
-        r"request\.values",
-        r"request\.get_json\s*\(",
-    ),
-    "c": (),
+# Source-shaped call patterns per language, grouped by SOURCE KIND —
+# the taxonomy mirrors the CodeQL threat-model kinds the programme
+# already trusts (remote/servlet, console, environment, file,
+# properties, database, socket). Seed sets <= 9 patterns per kind;
+# growth must come from learned vocabulary, never this table.
+#
+# Per-kind keys beyond "patterns":
+#   file_evidence — regexes of which at least one must appear ANYWHERE
+#       in the file for the kind to activate. Line-level matching
+#       cannot see receiver chains declared on earlier lines, so this
+#       is how readLine stays a console source only where System.in is
+#       actually in play — a StringReader-only file activates nothing.
+#   exclude_line — line-level negative guards (System.getProperty is
+#       the environment kind, not the properties kind).
+#   resolver_composed — the properties kind composes with b22's strict
+#       resolver, RESOLVER FIRST: a getProperty read proven to yield
+#       only file-constant/literal-default values is a CONSTANT, not a
+#       source; only unresolved reads are tainted-file candidates.
+#
+# Widening this table is safety-positive for the gate: candidates are
+# combined all-must-suppress, so extra candidates make suppression
+# strictly harder — the hazard of a MISSING pattern (the true source
+# unmatched while another line matches) shrinks as coverage grows.
+_SOURCE_KINDS: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "java": {
+        "servlet": {
+            "patterns": (
+                r"\.getParameter\s*\(",
+                r"\.getParameterValues\s*\(",
+                r"\.getParameterMap\s*\(",
+                r"\.getHeader\s*\(",
+                r"\.getHeaderNames\s*\(",
+                r"\.getHeaders\s*\(",
+                r"\.getIntHeader\s*\(",
+                r"\.getCookies\s*\(",
+                r"\.getQueryString\s*\(",
+            ),
+        },
+        "console": {
+            "patterns": (
+                r"\.readLine\s*\(",
+                r"\.nextLine\s*\(",
+                r"\.next\s*\(\s*\)",
+            ),
+            "file_evidence": (r"System\s*\.\s*in\b",),
+        },
+        "environment": {
+            "patterns": (
+                r"System\s*\.\s*getenv\s*\(",
+                r"System\s*\.\s*getProperty\s*\(",
+            ),
+        },
+        "file": {
+            "patterns": (
+                r"\.readLine\s*\(",
+                r"\.read\s*\(",
+            ),
+            "file_evidence": (
+                r"new\s+FileReader\b",
+                r"new\s+FileInputStream\b",
+            ),
+        },
+        "properties": {
+            "patterns": (r"\.getProperty\s*\(",),
+            "exclude_line": (r"System\s*\.\s*getProperty",),
+            "resolver_composed": True,
+        },
+        "database": {
+            "patterns": (
+                r"\.getString\s*\(",
+                r"\.getNString\s*\(",
+                r"\.getObject\s*\(",
+            ),
+            "file_evidence": (r"\bResultSet\b", r"\bexecuteQuery\b"),
+        },
+        "socket": {
+            "patterns": (r"\.getInputStream\s*\(",),
+            "file_evidence": (r"\bSocket\b",),
+        },
+    },
+    "python": {
+        "web": {
+            "patterns": (
+                r"request\.args",
+                r"request\.form",
+                r"request\.values",
+                r"request\.get_json\s*\(",
+            ),
+        },
+    },
+    "c": {},
 }
 
 
@@ -91,6 +159,12 @@ class PostpassStats:
     # switch:constant-resolved, plus table-load-resolved constancy) —
     # the refusal/mechanism telemetry that ranks the next iteration.
     mechanism_counts: Dict[str, int] = field(default_factory=dict)
+    # Which source KINDS supplied the candidates for examined findings
+    # (locator path only; codeFlows findings are counted as "trace").
+    source_kind_counts: Dict[str, int] = field(default_factory=dict)
+
+    def source_kind(self, kind: str) -> None:
+        self.source_kind_counts[kind] = self.source_kind_counts.get(kind, 0) + 1
 
     def refuse(self, reason: str) -> None:
         self.refused += 1
@@ -108,6 +182,7 @@ class PostpassStats:
             "refused_reasons": dict(sorted(self.refused_reasons.items())),
             "budget_exhausted_skips": self.budget_exhausted_skips,
             "mechanism_counts": dict(sorted(self.mechanism_counts.items())),
+            "source_kind_counts": dict(sorted(self.source_kind_counts.items())),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
         }
 
@@ -177,12 +252,83 @@ def _grammar_ok(language: str, cache: Dict[str, bool]) -> bool:
 _MAX_CANDIDATE_SOURCES = 4
 
 
-def _candidate_source_lines(
+def _scan_file_for_kinds(
+    file_path: Path, language: str, extra_patterns: tuple,
+) -> Optional[List[tuple]]:
+    """Per-file scan: ``[(line, frozenset(kinds)), ...]`` or None.
+
+    Kind activation, exclusion, and the properties/resolver
+    composition all happen here so the result is cacheable per file.
+    """
+    kinds_table = _SOURCE_KINDS.get(language) or {}
+    if not kinds_table and not extra_patterns:
+        return []
+    try:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    active: Dict[str, Dict[str, Any]] = {}
+    for kind, spec in kinds_table.items():
+        evidence = spec.get("file_evidence")
+        if evidence and not any(re.search(p, text) for p in evidence):
+            continue
+        active[kind] = {
+            "regex": re.compile("|".join(spec["patterns"])),
+            "exclude": [re.compile(p) for p in spec.get("exclude_line", ())],
+            "resolver": bool(spec.get("resolver_composed")),
+        }
+    extra_regex = re.compile("|".join(extra_patterns)) if extra_patterns else None
+
+    resolver = None
+    resolver_built = False
+    out: List[tuple] = []
+    for i, line in enumerate(text.splitlines()):
+        lineno = i + 1
+        kinds = set()
+        for kind, spec in active.items():
+            if not spec["regex"].search(line):
+                continue
+            if any(ex.search(line) for ex in spec["exclude"]):
+                continue
+            if spec["resolver"]:
+                # Resolver first: a proven config constant is not a
+                # source. Resolver failure (parser missing, ambiguous
+                # line, unresolved read) keeps the line a candidate —
+                # the conservative direction for a suppressor.
+                if not resolver_built:
+                    resolver_built = True
+                    try:
+                        from core.analysis.config_resolve_java import (
+                            make_config_resolver,
+                        )
+                        resolver = make_config_resolver(
+                            text, str(file_path))
+                    except Exception:  # noqa: BLE001
+                        resolver = None
+                if resolver is not None:
+                    try:
+                        from core.analysis.config_resolve_java import (
+                            resolve_line,
+                        )
+                        if resolve_line(resolver, lineno).resolved:
+                            continue
+                    except Exception:  # noqa: BLE001
+                        pass
+            kinds.add(kind)
+        if extra_regex is not None and extra_regex.search(line):
+            kinds.add("learned")
+        if kinds:
+            out.append((lineno, frozenset(kinds)))
+    return out
+
+
+def _candidate_source_lines_with_kinds(
     file_path: Path, sink_line: int, language: str,
-    _cache: Dict[Path, Optional[List[int]]],
+    _cache: Dict[Path, Optional[List[tuple]]],
     extra_patterns: tuple = (),
-) -> List[int]:
-    """Source-shaped lines before the sink (possibly several).
+) -> List[tuple]:
+    """Source-shaped lines before the sink with their source kinds.
 
     The soundness argument for multiple candidates: the taint rule's
     withheld trace started at ONE of these lines, so the gate verdict
@@ -191,28 +337,26 @@ def _candidate_source_lines(
     file, or more than :data:`_MAX_CANDIDATE_SOURCES` return ``[]``
     (refusal).
     """
-    patterns = (_SOURCE_PATTERNS.get(language) or ()) + tuple(extra_patterns)
-    if not patterns:
-        return []
     if file_path not in _cache:
-        try:
-            text = file_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            _cache[file_path] = None
-        else:
-            regex = re.compile("|".join(patterns))
-            _cache[file_path] = [
-                i + 1
-                for i, line in enumerate(text.splitlines())
-                if regex.search(line)
-            ]
-    lines = _cache[file_path]
-    if lines is None:
+        _cache[file_path] = _scan_file_for_kinds(
+            file_path, language, extra_patterns)
+    entries = _cache[file_path]
+    if entries is None:
         return []
-    before_sink = [ln for ln in lines if ln < sink_line]
+    before_sink = [(ln, kinds) for ln, kinds in entries if ln < sink_line]
     if not before_sink or len(before_sink) > _MAX_CANDIDATE_SOURCES:
         return []
     return before_sink
+
+
+def _candidate_source_lines(
+    file_path: Path, sink_line: int, language: str,
+    _cache: Dict[Path, Optional[List[tuple]]],
+    extra_patterns: tuple = (),
+) -> List[int]:
+    """Back-compat lines-only view of the kinds variant."""
+    return [ln for ln, _ in _candidate_source_lines_with_kinds(
+        file_path, sink_line, language, _cache, extra_patterns)]
 
 
 def _locate_unique_source_line(
@@ -353,11 +497,15 @@ def run_postpass(
         trace_line = _dataflow_source_line(finding)
         if trace_line is not None:
             source_lines = [trace_line]
+            stats.source_kind("trace")
         else:
-            source_lines = _candidate_source_lines(
+            with_kinds = _candidate_source_lines_with_kinds(
                 resolved_path, int(sink_line), language, source_cache,
                 learned_patterns if language == "java" else (),
             )
+            source_lines = [ln for ln, _ in with_kinds]
+            for kind in sorted({k for _, ks in with_kinds for k in ks}):
+                stats.source_kind(kind)
         if not source_lines:
             stats.refuse("no-source-candidates")
             continue

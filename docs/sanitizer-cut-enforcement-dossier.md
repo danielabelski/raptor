@@ -62,9 +62,23 @@ grew 3 → 88 as mechanisms landed while damage never left zero.
 
 ## Honest caveats
 
-- The corpus is OWASP-plus-adversarial-fixtures weighted; Juliet warm
-  numbers are not yet measured (the Juliet FP set exists; the warm
-  scorer has not been run against it). Recommendation: one Juliet
+- The corpus is OWASP-plus-adversarial-fixtures weighted. The Juliet
+  warm run HAS now been measured (source-kind locator generalization,
+  full manifest, serialized workers): would-suppress 0, true-finding
+  damage 0 (vacuously — zero suppression records), 29,749 findings
+  examined. The source locator generalizes (11,596 non-servlet
+  candidates attributed across console/environment/file/properties/
+  database/socket kinds; no-source refusals fell 18,195 -> 15,059) but
+  the GATE does not yet fire on Juliet: 11,645 findings refuse at
+  resolution (Juliet's source and sink commonly live in different
+  methods — the resolver is intra-method) and the 3,045 that resolve
+  meet control-flow-shaped guards where the gate's mechanisms are
+  call/constant-shaped. Enforcement implication: a flip is supportable
+  on OWASP-shaped evidence only; zero-record Juliet behavior means
+  enforcement would be a no-op there (it cannot damage what it never
+  suppresses). Cross-method resolution and branch-guard mechanisms are
+  the pre-conditions for Juliet-positive evidence.
+  Historical recommendation (retained): one Juliet
   warm run pre-flip.
 - Mechanism maturity differs: encoder cuts and constant-definers have
   the longest live history; conduit summaries are the newest (one

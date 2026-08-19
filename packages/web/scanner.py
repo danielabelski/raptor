@@ -5,13 +5,18 @@ Autonomous Web Security Scanner
 Combines crawling, fuzzing, and LLM analysis for complete web app testing.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Self
 
-# Add paths for cross-package imports
-# packages/web/scanner.py -> repo root
-sys.path.insert(0, str(Path(__file__).parents[2]))
+if __name__ == "__main__":
+    # Direct script invocation only — module imports rely on the
+    # caller's sys.path. Hard lookup per the path-safety rule
+    # (CLAUDE.md): RAPTOR_DIR is the only permitted sys.path
+    # addition, and a missing value must KeyError loudly rather than
+    # fall back to a positional walk.
+    sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 from core.json import save_json
 from core.llm.providers import LLMProvider

@@ -13,12 +13,10 @@ import re
 from typing import Dict, List, Set, Optional
 from urllib.parse import urlparse, urljoin, parse_qs
 
-import sys
-from pathlib import Path
-
-# Add paths for cross-package imports
-# packages/web/crawler.py -> repo root
-sys.path.insert(0, str(Path(__file__).parents[2]))
+# No sys.path mutation here: this module is only ever imported (no
+# __main__ entry point), and the path-safety rule (CLAUDE.md) forbids
+# positional-walk inserts — callers already run with the repo root on
+# sys.path via the launcher's RAPTOR_DIR.
 
 from core.logging import get_logger
 from core.security.redaction import is_secret_field_name, redact_url_secrets_only

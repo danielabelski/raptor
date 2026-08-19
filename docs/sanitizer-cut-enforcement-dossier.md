@@ -1,6 +1,43 @@
 # Sanitizer-cut enforcement dossier
 
-## Status: FLIP ATTEMPTED AND STOPPED (2026-08-19) — counterexample found
+## Status: ENFORCED (2026-08-19, re-attempt — operator standing approval)
+
+The flip is live: `sanitizer_dominated` carries
+`earns_suppression=True`, enforced by the scan post-pass alone on
+full-proof suppress verdicts. Executed after both first-attempt root
+causes were closed **by construction** (the shared threat-model
+authority — environment reads can never fold taint-free; line-carrying
+damage-gated suppression records) and re-verified end to end:
+
+- **Attestation at flip time**: 239 fixtures (172 must-not-suppress),
+  zero false suppressions, zero missed, rule-of-three 95% UB 0.0174
+  (`raptor-sanitizer-cut-precision`; report.json sha256
+  `139a3f07fecade2b35925591401f8a77dd3f684a78a768b2b751ece12450ee9a`,
+  preserved with the run in the b46 artifacts). Post-flip corpus
+  re-run: identical, clean.
+- **OWASP live gate**: recall held **100.0% exactly** (1415/1415,
+  zero missed); 500 records, **482 enforced = 482 dropped**,
+  reconciled; labeled clean-region FPs 706 → 560 post-enforcement;
+  manifest-backed damage **0**. `verify-enforced` flagged the six
+  known cross-CWE file-level-label artifacts; per-record review
+  confirmed every one line/CWE-disjoint with its file's expected
+  finding, and every expected finding survived.
+- **Juliet confirmation leg** (the gate that caught the first
+  attempt): post-pass examined 22,044 findings and enforced **zero**
+  — the first attempt's counterexample class (environment-fed CWE-36
+  shapes) now refuses upstream at the threat-model authority; recall
+  byte-matches the canonical pre-flip number (2623/3055). Enforcement
+  is a proven no-op where unearned.
+- **Damage gate integrity**: `warm` without a manifest now reports
+  damage UNKNOWN, never a silent zero (the round-twelve close
+  finding, fixed in this change).
+
+**Reversibility**: record-only is one field —
+`VERDICTS["sanitizer_dominated"].earns_suppression = False` — and the
+`test_enforcement_bounded_by_spec` pin proves the revert path works.
+The scanner's `--no-sanitizer-cut-enforce` gives per-run record-only.
+
+## Prior status: FLIP ATTEMPTED AND STOPPED (2026-08-19, first attempt) — counterexample found
 
 The operator approved the flip and it was executed under the earning
 protocol (attestation: 218-fixture corpus clean, UB 0.019; OWASP live

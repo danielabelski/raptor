@@ -251,14 +251,30 @@ def _may_escape_on_path(
 ) -> bool:
     """Phase 10 — True iff any node with ``may_escape=True`` lies on
     a source→sink path in ``graph``, after removing ``excluded`` (the
-    value-bound sanitizer cut). Forward-reachable-from-sources
-    intersected with backward-reachable-to-sink gives the on-path set;
-    we early-return on the first ``may_escape`` hit.
+    value-bound sanitizer cut). See
+    :func:`_may_escape_nodes_on_path` for the node-returning variant
+    the element-sensitive exemption reads.
 
     Cheap: O(V + E) per call (one forward BFS + one reverse BFS).
     Pure function. Uses ``getattr(node, "may_escape", False)`` so
     PyCFGNode (which lacks the attribute) always returns False — the
     Python evaluate_finding paths stay bit-identical.
+    """
+    return bool(_may_escape_nodes_on_path(graph, sources, sink, excluded))
+
+
+def _may_escape_nodes_on_path(
+    graph,
+    sources: Iterable,
+    sink,
+    excluded: Set,
+) -> List:
+    """The ``may_escape`` nodes lying on a source→sink path — the
+    evidence set behind :func:`_may_escape_on_path`. The
+    element-sensitive exemption inspects each node's line: a
+    suppression may stand only when EVERY such node is exempt
+    (its escape triggers are all tracked-array accesses; see
+    :meth:`core.analysis.java_array_escape.LocalArrayIndex.exempt_line`).
     """
     excl: Set = set(excluded) if excluded else set()
 
@@ -292,7 +308,7 @@ def _may_escape_on_path(
     # surrounding evaluate_finding wouldn't be checking us). Seed
     # only if it is.
     if sink not in forward:
-        return False
+        return []
     backward: Set = {sink}
     rqueue: deque = deque([sink])
     while rqueue:
@@ -303,11 +319,8 @@ def _may_escape_on_path(
             backward.add(prev)
             rqueue.append(prev)
 
-    # On-path = forward ∩ backward. Check may_escape on each.
-    for n in backward:
-        if getattr(n, "may_escape", False):
-            return True
-    return False
+    # On-path = forward ∩ backward. Collect may_escape hits.
+    return [n for n in backward if getattr(n, "may_escape", False)]
 
 
 def _propagate_taint(
@@ -501,6 +514,122 @@ def _sink_arg_constant_reason(
         return None
 
 
+def _build_array_index(graph, java_source_text: str):
+    """Best-effort :class:`LocalArrayIndex` over the graph's line
+    span; None on any failure (grammar missing, parse error, no
+    lined nodes)."""
+    try:
+        from core.analysis.java_array_escape import build_local_array_index
+        linenos = [
+            n.lineno for n in graph.nodes()
+            if getattr(n, "lineno", 0) > 0
+        ]
+        if not linenos:
+            return None
+        return build_local_array_index(
+            java_source_text, (min(linenos), max(linenos)),
+        )
+    except Exception:  # noqa: BLE001 — indexing is best-effort, never fatal
+        return None
+
+
+def _sibling_args_tainted(
+    graph, sources_set, sink, sink_arg: str, source_symbols,
+) -> bool:
+    """True when a name OTHER than ``sink_arg`` in the sink call's
+    arguments is tainted — the shared guard against the sink-arg
+    inversion trap (sink_arg is a heuristic pick; proving IT safe
+    says nothing about taint riding a sibling argument). Unknown
+    shapes read as tainted (refusal direction)."""
+    call_sites = getattr(sink, "call_sites", ()) or ()
+    if not call_sites:
+        return True
+    outermost = call_sites[-1]
+    other_names = (
+        (set(outermost.arg_names) | set(outermost.arg_deep_names))
+        - {sink_arg}
+    )
+    if not other_names:
+        return False
+    rd = reaching_defs(graph)
+    tainted_at = _propagate_taint(
+        graph, rd, sources_set, frozenset(source_symbols or ()),
+    )
+    return bool(other_names & set(tainted_at.get(sink, frozenset())))
+
+
+def _element_exclusive_reason(
+    graph,
+    sources_set,
+    sink,
+    sink_arg: str,
+    source_symbols,
+    candidate_callables,
+    array_index,
+) -> Optional[str]:
+    """Reason string when the value the sink consumes is an element of
+    a tracked local array whose every write is a catalog-sanitizer
+    call; None otherwise.
+
+    Flow-insensitive over the element writes ON PURPOSE: base-name
+    reaching-defs cannot be trusted for elements (a write to ``a[1]``
+    kills a prior ``a[0]`` write in the base-name lattice — trusting
+    it would false-suppress ``a[0] = tainted; a[1] = sanitize(x);
+    sink(a[0])``). Requiring EVERY write to the consumed element to
+    be a sanitizer output makes the conclusion independent of which
+    write reaches; an unwritten element reads as Java's null default,
+    which carries no caller taint.
+
+    Two consumed shapes resolve; everything else refuses:
+
+    * direct — the sink call reads ``sink_arg[C]`` (all element reads
+      of ``sink_arg`` on the sink's line, every index a literal);
+    * one scalar hop — ``sink_arg`` is a scalar whose EVERY reaching
+      definer at the sink is a single-writer ``sink_arg = arr[C]``
+      copy (scalar reaching-defs are exact: Java locals are
+      unaliasable).
+    """
+    if array_index is None or not array_index.ok:
+        return None
+    sink_lineno = getattr(sink, "lineno", 0)
+    targets: List[Tuple[str, int]] = []
+    direct = array_index.element_reads_at(sink_lineno, sink_arg)
+    if direct:
+        targets = [(sink_arg, i) for i in sorted(direct)]
+    else:
+        rd = reaching_defs(graph)
+        definers = rd.at(sink, sink_arg)
+        if not definers:
+            return None
+        for d in definers:
+            copy = array_index.scalar_copy(
+                getattr(d, "lineno", 0), sink_arg,
+            )
+            if copy is None:
+                return None
+            targets.append(copy)
+    if not targets:
+        return None
+    for name, index in targets:
+        if not array_index.tracked(name):
+            return None
+        writes = array_index.element_writes(name, index)
+        if not writes:
+            return None
+        for w in writes:
+            if not array_index.write_is_catalog_call(
+                    w, candidate_callables):
+                return None
+    if _sibling_args_tainted(
+            graph, sources_set, sink, sink_arg, source_symbols):
+        return None
+    return (
+        f"element-exclusive sanitizer definitions: every write to the "
+        f"consumed element(s) of {len({n for n, _ in targets})} tracked "
+        f"local array(s) is a catalog sanitizer call"
+    )
+
+
 def evaluate_finding(
     graph,
     sources: Iterable,
@@ -614,6 +743,31 @@ def evaluate_finding(
             candidate_callables=frozenset(),
         )
 
+    # Element-sensitive pre-check (Java only, needs the file text):
+    # when the sink consumes an element of a tracked local array whose
+    # every write is a catalog-sanitizer call, the consumed value is a
+    # sanitizer output no matter which write reaches — the standard
+    # gate can't see this (element stores carry no assigned_names and
+    # stamp may_escape). Runs AFTER the catalog gate so a wrong-class
+    # sanitizer or a catalog-empty class can never suppress through it.
+    array_index = None
+    if language == "java" and java_source_text:
+        array_index = _build_array_index(graph, java_source_text)
+        if array_index is not None and sink_arg:
+            elem_reason = _element_exclusive_reason(
+                graph, sources_set, sink, sink_arg, source_symbols,
+                candidate_callables, array_index,
+            )
+            if elem_reason is not None:
+                return SanitizerCutResult(
+                    suppress=True,
+                    reason=elem_reason,
+                    cut_set=frozenset(),
+                    candidate_callables=frozenset(candidate_callables),
+                    verdict=VERDICT_SUPPRESS,
+                    sink_arg=sink_arg or "",
+                )
+
     matched_bindings = match_sanitizers_in_cfg(graph, cwe, language)
     # Phase 14 — fold in inter-procedural synthetic bindings. A
     # finding whose enclosing function has NO direct catalog
@@ -700,7 +854,26 @@ def evaluate_finding(
         # about whether the cleaned VALUE survives indirection on
         # that path. Downgrade SUPPRESS → CANDIDATE_ONLY rather
         # than risk a false suppression.
-        if _may_escape_on_path(graph, sources_set, sink, excluded=set()):
+        #
+        # Element-sensitive exemption: a node whose ONLY escape
+        # triggers are accesses on tracked local arrays cannot break
+        # the scalar binding condition 3 just proved — tracked arrays
+        # never alias a scalar (Java locals are unaliasable) and their
+        # references never leave the method. The exemption demands
+        # positive evidence per node (a node whose trigger sits on a
+        # different physical line of a multi-line statement is NOT
+        # exempt) and any field store / arraycopy / untracked array
+        # keeps the downgrade.
+        escape_nodes = _may_escape_nodes_on_path(
+            graph, sources_set, sink, excluded=set(),
+        )
+        if escape_nodes and array_index is not None:
+            if all(
+                array_index.exempt_line(getattr(n, "lineno", 0))
+                for n in escape_nodes
+            ):
+                escape_nodes = []
+        if escape_nodes:
             return SanitizerCutResult(
                 suppress=False,
                 reason=(

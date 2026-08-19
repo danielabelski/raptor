@@ -43,3 +43,20 @@ they call `html.escape` directly or a non-sanitizing callee and
 so produce no synthetic binding. The
 `test_corpus_fixture_verdict_interproc` test and the
 `test_corpus_ablation_summary` A/B table pin this.
+
+## b19 — element-sensitive arrays + wrapper summaries
+
+| fixture | shape | expected verdict |
+| --- | --- | --- |
+| `array_element_java.java` | tracked local array, element written only by a catalog sanitizer, one scalar hop to the sink | suppress |
+| `wrapper_helper_java.java` | private static same-class wrapper returning the sanitizer applied to its argument | suppress (via synthetic wrapper binding) |
+
+The full adversarial batteries (element rebind/mismatch/aliasing/
+escape/poison shapes; wrapper depth/dispatch/overload/branch/mixed-
+param refusals) live in `sanitizer_cut_precision.py` —
+`_java_array_fixtures()` / `_java_wrapper_fixtures()`. The
+pre-existing `java_xss_array_store_escape` precision fixture was
+re-shaped at b19: its array was local, fresh, and never read, which
+element tracking legitimately proves irrelevant to the sanitized
+scalar sink; an alias line now makes the array genuinely untracked so
+the fixture keeps guarding "escaping arrays block the exemption".

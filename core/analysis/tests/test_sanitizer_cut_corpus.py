@@ -115,6 +115,9 @@ _JAVA_CORPUS_CASES = [
 # summaries only engage on that path.
 # (filename, cwe, source_line, sink_line, expected_verdict)
 _JAVA_B19_CASES = [
+    # Tracked-local-array element written only by a catalog sanitizer,
+    # consumed through one exact scalar hop.
+    ("array_element_java.java", "CWE-79", 8, 12, VERDICT_SUPPRESS),
     # Private static wrapper whose return is provably the sanitizer
     # applied to its argument — the synthetic binding carries the cut.
     ("wrapper_helper_java.java", "CWE-79", 12, 14, VERDICT_SUPPRESS),

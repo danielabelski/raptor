@@ -304,14 +304,22 @@ def _java_fixtures() -> List[CutFixture]:
                    "        out.println(x);\n"),
         3, 5, language="java", suffix=".java"))
     j.append(_fx(
+        # b19 note: the original body's array was LOCAL, fresh, and
+        # never read — element tracking proves it irrelevant to the
+        # sanitized scalar sink, so the old body became legitimately
+        # suppressible (the b19 exemption). The alias line below makes
+        # the array genuinely untracked, preserving this fixture's
+        # guard role: an escaping array on the path must keep the
+        # may_escape downgrade.
         "java_xss_array_store_escape", "xss", "CWE-79",
         "array_element_aliasing", LABEL_MUST_NOT_SUPPRESS,
         imp + meth("        String[] a = new String[2];\n"
+                   "        String[] b = a;\n"
                    "        a[0] = Encode.forHtml(x);\n"
-                   "        a[0] = x;\n"
+                   "        b[0] = x;\n"
                    "        String y = Encode.forHtml(x);\n"
                    "        out.println(y);\n"),
-        3, 8, language="java", suffix=".java"))
+        3, 9, language="java", suffix=".java"))
     j.append(_fx(
         "java_xss_esapi_chain", "xss", "CWE-79", "esapi_singleton_chain",
         LABEL_MAY_SUPPRESS,
@@ -468,6 +476,146 @@ def _java_wrapper_fixtures() -> List[CutFixture]:
     return j
 
 
+def _java_array_fixtures() -> List[CutFixture]:
+    """b19 element-sensitivity battery. Adversarial shapes first —
+    every way per-element reasoning can be broken must refuse: element
+    rebind with taint, element mismatch trusted via base-name kills,
+    reference aliasing (both directions), the array passed to a
+    helper, a field array, a non-constant index poisoning the array,
+    a compound element write, an enhanced-for element read, a tainted
+    write below the sink, and a whole-array sink pass. Safe shapes:
+    the direct element read, the one-scalar-hop copy, and the
+    incidental-tracked-array exemption."""
+    imp = "import org.owasp.encoder.Encode;\n"
+
+    def meth(body: str,
+             params: str = "String x, java.io.PrintWriter out") -> str:
+        return ("public class T {\n"
+                f"    public void handle({params}) {{\n"
+                f"{body}    }}\n"
+                "}\n")
+
+    j = []
+    j.append(_fx(
+        "java_arr_element_rebind", "xss", "CWE-79",
+        "element_rebound_with_taint", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        a[0] = x;\n"
+                   "        out.println(a[0]);\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        # The base-name reaching-defs inversion: a[1]'s write kills
+        # a[0]'s in the base-name lattice, so trusting RD here would
+        # read "only the sanitizer reaches" while the sink consumes
+        # the TAINTED element. Flow-insensitive exclusivity refuses.
+        "java_arr_element_mismatch", "xss", "CWE-79",
+        "element_mismatch_rd_inversion", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        a[1] = x;\n"
+                   "        out.println(a[1]);\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_alias_out", "xss", "CWE-79",
+        "array_alias_out", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        String[] b = a;\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        b[0] = x;\n"
+                   "        out.println(a[0]);\n"),
+        3, 8, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_helper_escape", "xss", "CWE-79",
+        "array_passed_to_helper", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        fill(a, x);\n"
+                   "        out.println(a[0]);\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_field_array", "xss", "CWE-79",
+        "field_array_not_local", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        this.a[0] = Encode.forHtml(x);\n"
+                   "        out.println(this.a[0]);\n"),
+        3, 5, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_nonconst_index", "xss", "CWE-79",
+        "nonconstant_index_poisons", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[i] = x;\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        out.println(a[0]);\n",
+                   params="String x, int i, java.io.PrintWriter out"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_compound_write", "xss", "CWE-79",
+        "compound_element_write", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        a[0] += x;\n"
+                   "        out.println(a[0]);\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_enhanced_for_read", "xss", "CWE-79",
+        "enhanced_for_element_read", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        a[1] = x;\n"
+                   "        for (String s : a) { out.println(s); }\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_taint_below_sink", "xss", "CWE-79",
+        "tainted_write_below_sink", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        out.println(a[0]);\n"
+                   "        a[0] = x;\n"),
+        3, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_whole_array_sink", "xss", "CWE-79",
+        "whole_array_sink_pass", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        a[1] = x;\n"
+                   "        out.println(a);\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        # Exemption blocker: an UNTRACKED (field) array access on the
+        # path must keep the may_escape downgrade even though the
+        # scalar binding held.
+        "java_arr_untracked_on_path", "xss", "CWE-79",
+        "untracked_array_blocks_exemption", LABEL_MUST_NOT_SUPPRESS,
+        imp + meth("        String y = Encode.forHtml(x);\n"
+                   "        this.cache[0] = y;\n"
+                   "        out.println(y);\n"),
+        3, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_element_direct", "xss", "CWE-79",
+        "element_direct_read", LABEL_MAY_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        out.println(a[0]);\n"),
+        3, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_scalar_hop", "xss", "CWE-79",
+        "element_scalar_hop", LABEL_MAY_SUPPRESS,
+        imp + meth("        String[] a = new String[2];\n"
+                   "        a[0] = Encode.forHtml(x);\n"
+                   "        String bar = a[0];\n"
+                   "        out.println(bar);\n"),
+        3, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_arr_incidental_exempt", "xss", "CWE-79",
+        "tracked_array_exemption", LABEL_MAY_SUPPRESS,
+        imp + meth("        String y = Encode.forHtml(x);\n"
+                   "        String[] a = new String[1];\n"
+                   "        a[0] = y;\n"
+                   "        out.println(y);\n"),
+        3, 7, language="java", suffix=".java"))
+    return j
+
+
 def build_corpus() -> List[CutFixture]:
     """The labelled corpus: the adversarial battery instantiated per
     covered python sink class, plus interproc, catalog-empty-class,
@@ -515,6 +663,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_fixtures()
     fixtures += _java_constant_fixtures()
     fixtures += _java_wrapper_fixtures()
+    fixtures += _java_array_fixtures()
     return fixtures
 
 

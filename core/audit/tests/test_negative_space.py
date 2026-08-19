@@ -1221,3 +1221,85 @@ class TestSharedWriterRace:
         gap = self._gap("WriteProgress")
         gap["file"] = "a.c"
         assert check_shared_writer_race(gap) == []
+
+
+class TestUrlBoundaryComposition:
+    """Header value interpolated after :// in a composed URL."""
+
+    _VULN = (
+        "def __init__(self, scope):\n"
+        "    scheme = scope.get('scheme', 'http')\n"
+        "    path = scope['path']\n"
+        "    for key, value in scope['headers']:\n"
+        "        if key == b'host':\n"
+        "            host_header = value.decode('latin-1')\n"
+        "    if host_header is not None:\n"
+        "        url = f\"{scheme}://{host_header}{path}\"\n"
+        "    self._url = url\n"
+        "    self._components = urlsplit(self._url)\n"
+    )
+
+    def _gap(self, source, name="URL.__init__"):
+        return {
+            "file": "starlette/datastructures.py",
+            "name": name,
+            "source": source,
+        }
+
+    def test_header_after_scheme_flagged(self):
+        from core.audit.negative_space import check_url_boundary_composition
+
+        f = check_url_boundary_composition(self._gap(self._VULN))
+        assert len(f) == 1
+        assert "host_header" in f[0].title
+        assert f[0].confidence == "medium"  # re-parsed in-function
+        assert "boundaries" in f[0].evidence
+
+    def test_server_derived_host_not_flagged(self):
+        from core.audit.negative_space import check_url_boundary_composition
+
+        src = (
+            "def build(self, scope):\n"
+            "    host, port = scope['server']\n"
+            "    return f\"{scheme}://{host}:{port}{path}\"\n"
+        )
+        assert check_url_boundary_composition(self._gap(src)) == []
+
+    def test_validated_host_not_flagged(self):
+        from core.audit.negative_space import check_url_boundary_composition
+
+        src = self._VULN.replace(
+            "    if host_header is not None:\n",
+            "    if '/' in host_header or '?' in host_header:\n"
+            "        raise ValueError\n"
+            "    if host_header is not None:\n",
+        )
+        assert check_url_boundary_composition(self._gap(src)) == []
+
+    def test_placeholder_not_after_scheme_ignored(self):
+        from core.audit.negative_space import check_url_boundary_composition
+
+        src = (
+            "def build(self, header_val):\n"
+            "    return f\"https://example.com/{header_val}\"\n"
+        )
+        assert check_url_boundary_composition(self._gap(src)) == []
+
+    def test_concat_shape_flagged(self):
+        from core.audit.negative_space import check_url_boundary_composition
+
+        src = (
+            "def build(self, request):\n"
+            "    fwd_header = request.headers['x-forwarded-host']\n"
+            "    url = 'https://' + fwd_header\n"
+            "    return urlparse(url)\n"
+        )
+        f = check_url_boundary_composition(self._gap(src))
+        assert f and "fwd_header" in f[0].title
+
+    def test_non_python_silent(self):
+        from core.audit.negative_space import check_url_boundary_composition
+
+        gap = self._gap(self._VULN)
+        gap["file"] = "a.go"
+        assert check_url_boundary_composition(gap) == []

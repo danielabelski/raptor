@@ -2014,3 +2014,120 @@ def check_shared_writer_race(
             title=f"non-atomic multi-write in {method}() without lock",
         ))
     return findings
+
+
+# ------------------------------------------------------------------
+# URL/string-composition boundary injection
+# ------------------------------------------------------------------
+
+# f-string (or .format/concat) composing a URL: a placeholder sits
+# immediately after "://" — the authority segment is interpolated.
+_URL_FSTRING_BODY_RE = re.compile(r"""f["']([^"']+)["']""")
+_URL_PLACEHOLDER_RE = re.compile(r"\{([^}]+)\}")
+_URL_CONCAT_RE = re.compile(
+    r"""["'][^"']*://["']\s*\+\s*([A-Za-z_]\w*)""",
+)
+_URL_SANITIZE_RE_TMPL = (
+    r"(?:quote|escape|encode_uri|urlencode)\s*\(\s*{var}\b"
+    r"|{var}\s*=\s*{var}\.(?:split|partition)\s*\(\s*[\"'][/?#]"
+    r"|[\"'][/?#][\"']\s+(?:not\s+)?in\s+{var}\b"
+    r"|{var}\.(?:startswith|find|index|count)\s*\(\s*[\"'][/?#]"
+)
+
+
+def check_url_boundary_composition(
+    gap: dict[str, Any],
+    *,
+    target_path: Path | None = None,
+) -> list[NegativeSpaceFinding]:
+    """Untrusted header value interpolated into a URL composite.
+
+    ``f"{scheme}://{host_header}{path}"``: a ``/``, ``?``, or ``#`` in
+    the interpolated authority segment shifts every later component's
+    boundary when the composite is re-parsed — request.url.path
+    diverges from the routed path, defeating path-based checks. Fires
+    when the placeholder right after ``://`` is header-derived (name,
+    or assignment provenance inside the function) and nothing
+    validates it for delimiter characters.
+    """
+    file = gap.get("file", "")
+    if not file.endswith(".py"):
+        return []
+    source = gap.get("source", "") or (
+        read_gap_source(gap, target_path) if target_path else ""
+    )
+    if not source or "://" not in source:
+        return []
+
+    findings: list[NegativeSpaceFinding] = []
+    seen: set[str] = set()
+    lines = source.splitlines()
+    lower_src = source.lower()
+
+    def _header_derived(var: str) -> bool:
+        if "header" in var.lower():
+            return True
+        assign_re = re.compile(rf"\b{re.escape(var)}\s*=\s*(.+)$")
+        for ln in lines:
+            m = assign_re.search(ln)
+            if m and "header" in m.group(1).lower():
+                return True
+        return False
+
+    candidates: list[tuple[str, int]] = []
+    for i, ln in enumerate(lines):
+        for body_m in _URL_FSTRING_BODY_RE.finditer(ln):
+            body = body_m.group(1)
+            pos = 0
+            for pm in _URL_PLACEHOLDER_RE.finditer(body):
+                literal_before = body[pos:pm.start()]
+                pos = pm.end()
+                if not literal_before.endswith("://"):
+                    continue
+                var = pm.group(1).split("!")[0].split(":")[0].strip()
+                candidates.append((var, i + 1))
+        cm = _URL_CONCAT_RE.search(ln)
+        if cm:
+            candidates.append((cm.group(1), i + 1))
+
+    for var, lineno in candidates:
+        if var in seen:
+            continue
+        seen.add(var)
+        if not _header_derived(var):
+            continue
+        sanitize_re = re.compile(
+            _URL_SANITIZE_RE_TMPL.format(var=re.escape(var)),
+            re.IGNORECASE,
+        )
+        if sanitize_re.search(source):
+            continue
+        # Only meaningful when the composite is (or plausibly will
+        # be) re-parsed; a pure log string cannot shift boundaries.
+        reparsed = bool(re.search(r"urlsplit|urlparse|hyperlink", lower_src))
+        findings.append(NegativeSpaceFinding(
+            check_type="url_boundary_composition",
+            expected=(
+                f"'{var}' is validated for '/', '?', '#' before being "
+                f"interpolated into the URL authority"
+            ),
+            evidence=(
+                f"line {lineno}: '{var}' (header-derived) is "
+                f"interpolated directly after '://' in a composed URL. "
+                f"A '/', '?', or '#' inside it shifts the path/query/"
+                f"fragment boundaries when the composite is re-parsed"
+                f"{' (this code re-parses it)' if reparsed else ''} — "
+                f"request.url.path then diverges from the routed path, "
+                f"bypassing path-based authorization. Trusting the Host "
+                f"header's VALUE is a separate question from whether "
+                f"its CHARACTERS can shift component boundaries."
+            ),
+            cwe="CWE-20",
+            confidence="medium" if reparsed else "low",
+            convention="",
+            strategy="pattern_scan",
+            file=file,
+            function=gap.get("name", ""),
+            title=f"URL boundary injection via '{var}' in composed URL",
+        ))
+    return findings

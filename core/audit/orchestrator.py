@@ -1730,9 +1730,13 @@ def review_one_function(
         from .negative_space import (
             check_auth_mode_registration,
             check_shared_writer_race,
+            check_url_boundary_composition,
         )
         auth_mode_findings = check_auth_mode_registration(
             gap_with_source, domain_model=shared.domain_model,
+        )
+        auth_mode_findings.extend(
+            check_url_boundary_composition(gap_with_source),
         )
         if gap.get("file", "").endswith(".go"):
             _swr_gap = dict(gap_with_source)
@@ -6701,11 +6705,14 @@ def _run_audit_body(
         from .negative_space import (
             check_auth_mode_registration,
             check_shared_writer_race,
+            check_url_boundary_composition,
         )
         for g in gaps:
             for nf in check_auth_mode_registration(
                 g, domain_model=domain_model, target_path=tp,
             ):
+                post_loop_findings.append(nf.to_dict())
+            for nf in check_url_boundary_composition(g, target_path=tp):
                 post_loop_findings.append(nf.to_dict())
             if (g.get("file") or "").endswith(".go"):
                 _swr_g = dict(g)

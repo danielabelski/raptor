@@ -261,12 +261,16 @@ def run_executor_sync(
 
     while graph.pending > 0:
         if budget_check and budget_check():
-            _flush_glance_batch()
+            # Stop path: do NOT dispatch a fresh glance LLM batch
+            # after the budget stop — queued glance tasks are dropped
+            # and stay unreviewed gaps (they were never marked
+            # complete), matching the async stop path.
+            glance_batch.clear()
             stats.budget_stopped = True
             break
 
         if is_shutdown_requested():
-            _flush_glance_batch()
+            glance_batch.clear()
             stats.budget_stopped = True
             break
 
@@ -338,7 +342,13 @@ def run_executor_sync(
             _update_run_progress(config.out_dir, result)
             last_checkpoint = now
 
-    _flush_glance_batch()
+    if stats.budget_stopped:
+        # Budget stop from inside the loop (direct review raised the
+        # budget error) — same policy as the pre-loop checks: no fresh
+        # LLM batch after the stop.
+        glance_batch.clear()
+    else:
+        _flush_glance_batch()
 
     repass = graph.repass_tasks()
     if repass and not stats.budget_stopped:

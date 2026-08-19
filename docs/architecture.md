@@ -518,30 +518,36 @@ llm/
 
 ### Package: `recon`
 
-**Purpose**: Reconnaissance and technology enumeration
+**Status**: Deprecated — not reachable from any slash-command
+dispatch. Use `/describe` (`packages/describe`) for target
+description (language mix, build system, catalog match, tool
+readiness, cost estimate). The package is kept for direct manual
+invocation only.
+
+**Purpose**: Simple repository inventory (file counts, coarse
+language mapping by extension)
 
 **Main Entry Point**: `agent.py`
 
-**CLI Interface**:
+**CLI Interface** (manual invocation only):
 ```bash
-python3 packages/recon/agent.py \
-  --target /path/to/code \
-  --out /path/to/output
+python3 packages/recon/agent.py --repo /path/or/git-url [--keep]
 ```
 
 **Responsibilities**:
-- Detect programming languages
-- Identify frameworks and libraries
-- Enumerate dependencies
-- Map attack surface
-- Generate reconnaissance report
+- Shallow-clone the repo when given a URL
+- Count files and map coarse languages by extension
+- Emit a scan manifest with a content hash of the input tree
 
 **Outputs**:
-- `recon_report.json` - Technology stack enumeration
+- `recon.json` - Inventory (file counts, language counts) + manifest
+- `scan-manifest.json` - input_hash, timestamp, agent metadata
 
 **Dependencies**:
-- `core.config` (paths)
-- `core.logging` (logging)
+- `core.git` (shallow clone)
+- `core.hash` (tree hashing)
+- `core.json` (artifact writes)
+- `core.run.scratch` (temp clone dir lifecycle)
 
 
 ### Package: `sca`
@@ -1135,9 +1141,8 @@ See [dependencies](dependencies.md) for the full tool and package reference.
 **binary_analysis**:
 - External: `gdb` (must be installed)
 
-**recon**:
-- Standard library only (file detection)
-- Future: Language-specific tools (pip, npm, maven)
+**recon** (deprecated — see `/describe`):
+- No external tools (`git` only, for shallow clones of URL targets)
 
 **sca**:
 - OSV.dev advisory matching (no external scanner binaries)

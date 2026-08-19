@@ -76,19 +76,32 @@ def _resolve_project_dir(explicit: str | None = None) -> Path | None:
     """Find the active project directory.
 
     When *explicit* is given (from ``--project``), use it directly.
-    Otherwise fall back to the ``.active`` symlink.
+    Otherwise derive it from the active project's registry JSON.
     """
     if explicit:
         p = Path(explicit)
         if p.is_dir():
             return p
         return None
-    raptor_dir = Path(__file__).resolve().parents[1]
-    active = raptor_dir / ".active"
-    if active.is_symlink() or active.exists():
-        target = active.resolve()
-        if target.is_dir():
-            return target
+    # The active-project pointer lives at ~/.raptor/projects/.active and
+    # is a symlink to the project's <name>.json FILE; the project
+    # directory is that JSON's output_dir (the same derivation the run
+    # lifecycle's journal merge uses). Pre-fix this looked for a
+    # <repo-root>/.active path nothing creates, so without --project
+    # every project-level layer (coverage store, journal index)
+    # silently read as absent.
+    try:
+        from core.json import load_json
+        from core.startup import PROJECTS_DIR, get_active_name
+        name = get_active_name()
+        if name:
+            data = load_json(PROJECTS_DIR / f"{name}.json")
+            if isinstance(data, dict) and data.get("output_dir"):
+                candidate = Path(data["output_dir"])
+                if candidate.is_dir():
+                    return candidate
+    except Exception:  # noqa: BLE001 — no active project is a normal state
+        pass
     return None
 
 

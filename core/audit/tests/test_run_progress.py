@@ -74,3 +74,40 @@ class TestResetShutdownState:
         prior = orch._sigterm_state["installed"]
         orch._reset_shutdown_state()
         assert orch._sigterm_state["installed"] == prior
+
+
+class TestFileLinesCache:
+    def test_mtime_change_invalidates(self, tmp_path) -> None:
+        import os
+
+        from core.audit.orchestrator import (
+            _file_lines_cache,
+            _read_raw_source,
+        )
+
+        _file_lines_cache.clear()
+        src = tmp_path / "a.c"
+        src.write_text("first version\n", encoding="utf-8")
+        assert _read_raw_source(tmp_path, "a.c", 1, 1) == "first version"
+
+        src.write_text("second version\n", encoding="utf-8")
+        # Force a distinct mtime even on coarse filesystems.
+        st = src.stat()
+        os.utime(src, (st.st_atime, st.st_mtime + 10))
+        assert _read_raw_source(tmp_path, "a.c", 1, 1) == "second version"
+
+    def test_cache_bounded(self, tmp_path) -> None:
+        import core.audit.orchestrator as orch
+
+        orch._file_lines_cache.clear()
+        for i in range(orch._FILE_LINES_CACHE_MAX + 20):
+            f = tmp_path / f"f{i}.c"
+            f.write_text(f"line {i}\n", encoding="utf-8")
+            orch._read_raw_source(tmp_path, f"f{i}.c", 1, 1)
+        assert len(orch._file_lines_cache) <= orch._FILE_LINES_CACHE_MAX
+        orch._file_lines_cache.clear()
+
+    def test_missing_file_returns_empty(self, tmp_path) -> None:
+        from core.audit.orchestrator import _read_raw_source
+
+        assert _read_raw_source(tmp_path, "nope.c", 1, 2) == ""

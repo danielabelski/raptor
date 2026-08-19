@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading as _threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -12840,7 +12841,17 @@ def _run_prefilter_for_gap(
     )
 
 
-_file_lines_cache: dict[str, list | None] = {}
+# Keyed by (path, mtime, size) so a file rewritten mid-run (build
+# steps, generated sources, a second in-process run on a drifted
+# target) is re-read instead of served stale; LRU-bounded so a large
+# target cannot pin every source file's lines in memory for the whole
+# run. Guarded by a lock — async-path reviews call this from worker
+# threads.
+_FILE_LINES_CACHE_MAX = 256
+_file_lines_cache: OrderedDict[tuple[str, float, int], list | None] = (
+    OrderedDict()
+)
+_file_lines_cache_lock = _threading.Lock()
 
 
 def _read_raw_source(
@@ -12850,19 +12861,25 @@ def _read_raw_source(
     line_end: int | None,
 ) -> str:
     """Read raw source lines without line-number prefixes."""
-    cache_key = str(target_path / file_path)
-    if cache_key not in _file_lines_cache:
-        full_path = target_path / file_path
-        if not full_path.exists():
-            _file_lines_cache[cache_key] = None
+    full_path = target_path / file_path
+    try:
+        st = full_path.stat()
+    except OSError:
+        return ""
+    cache_key = (str(full_path), st.st_mtime, st.st_size)
+    with _file_lines_cache_lock:
+        if cache_key in _file_lines_cache:
+            _file_lines_cache.move_to_end(cache_key)
+            lines = _file_lines_cache[cache_key]
         else:
+            lines = None
             try:
-                _file_lines_cache[cache_key] = full_path.read_text(
-                    errors="replace",
-                ).splitlines()
+                lines = full_path.read_text(errors="replace").splitlines()
             except OSError:
-                _file_lines_cache[cache_key] = None
-    lines = _file_lines_cache[cache_key]
+                lines = None
+            _file_lines_cache[cache_key] = lines
+            while len(_file_lines_cache) > _FILE_LINES_CACHE_MAX:
+                _file_lines_cache.popitem(last=False)
     if lines is None:
         return ""
     start = max(0, line_start - 1)

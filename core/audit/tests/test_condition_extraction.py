@@ -17,6 +17,7 @@ from core.audit.condition_extraction import (  # noqa: E402
     extract_sink_guards,
     language_for_file,
 )
+from core.testing.treesitter import requires_ts  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +199,7 @@ def safe_function(x):
 # ---------------------------------------------------------------------------
 
 
+@requires_ts("c")
 class TestCExtraction:
     """C guard extraction via tree-sitter layer."""
 
@@ -278,6 +280,7 @@ void process(request_t *req) {
 # ---------------------------------------------------------------------------
 
 
+@requires_ts("go")
 class TestGoExtraction:
     """Go guard extraction via tree-sitter layer."""
 
@@ -412,6 +415,7 @@ class TestPriorityScoring:
 class TestBatchExtraction:
     SINKS = frozenset({"system", "eval", "exec", "strcpy"})
 
+    @requires_ts("c")
     def test_multiple_files(self):
         sources = {
             "a.py": "def f(cmd):\n    os.system(cmd)\n",

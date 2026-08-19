@@ -22,6 +22,7 @@ from core.analysis.sanitizer_cut_precision import (
     main,
     run_corpus,
 )
+from core.testing.treesitter import requires_ts
 
 
 # ---------------------------------------------------------------------------
@@ -90,10 +91,16 @@ class TestPrecisionGate:
         assert report.rule_of_three_95_ub == pytest.approx(
             3.0 / report.n_must_not)
 
+    @requires_ts("java")
     def test_all_safe_shapes_suppress(self, report):
         """Utility pin: every may-suppress fixture currently earns the
         suppress verdict. Not a gate condition (soundness first), but
-        a regression here means the gate lost coverage it had."""
+        a regression here means the gate lost coverage it had.
+
+        Needs the Java grammar: the corpus's Java may-suppress
+        fixtures degrade to ``unresolved`` without it (a refusal, so
+        the soundness gate above still runs everywhere — only this
+        utility pin skips)."""
         assert report.missed_suppressions == []
 
     def test_cross_tab_covers_classes(self, report):

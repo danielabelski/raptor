@@ -25,6 +25,7 @@ from core.audit.ts_extract import (  # noqa: E402
     extract_loop_caps,
     extract_string_literals,
 )
+from core.testing.treesitter import requires_ts  # noqa: E402
 
 
 # ---------------------------------------------------------------
@@ -35,6 +36,7 @@ from core.audit.ts_extract import (  # noqa: E402
 class TestExtractFunctionReturns:
     """extract_function_returns across languages."""
 
+    @requires_ts("go")
     def test_go_nil_returns(self):
         src = """\
 package main
@@ -58,6 +60,7 @@ func Lookup(key string) (*Item, error) {
         null_returns = [r for r in fr.returns if r.value_type == "null"]
         assert len(null_returns) >= 2
 
+    @requires_ts("javascript")
     def test_js_null_and_undefined(self):
         src = """\
 function fetchItem(id) {
@@ -78,6 +81,7 @@ function fetchItem(id) {
         null_returns = [r for r in fr.returns if r.value_type == "null"]
         assert len(null_returns) >= 1
 
+    @requires_ts("java")
     def test_java_null_literal(self):
         src = """\
 public class Store {
@@ -96,6 +100,7 @@ public class Store {
         null_returns = [r for r in result[0].returns if r.value_type == "null"]
         assert len(null_returns) >= 1
 
+    @requires_ts("c")
     def test_c_returns_zero_and_null(self):
         src = """\
 int process(const char *input) {
@@ -149,6 +154,7 @@ class TestFunctionReturnsSentinelAmbiguous:
 class TestExtractCallChains:
     """extract_call_chains across languages."""
 
+    @requires_ts("go")
     def test_go_reassignment_chain(self):
         src = """\
 package main
@@ -168,6 +174,7 @@ func sanitize(input string) string {
         assert len(chain.steps) >= 2
         assert chain.function == "sanitize"
 
+    @requires_ts("javascript")
     def test_js_method_chain(self):
         src = """\
 function clean(input) {
@@ -181,6 +188,7 @@ function clean(input) {
         method_chains = [c for c in result if len(c.steps) >= 2]
         assert len(method_chains) >= 1
 
+    @requires_ts("c")
     def test_c_reassignment_chain(self):
         src = """\
 char *process(const char *input) {
@@ -196,6 +204,7 @@ char *process(const char *input) {
         assert len(chains) >= 1
         assert len(chains[0].steps) >= 2
 
+    @requires_ts("go")
     def test_empty_file(self):
         result = extract_call_chains("empty.go", "package main\n")
         assert result is not None
@@ -210,6 +219,7 @@ char *process(const char *input) {
 class TestExtractStringLiterals:
     """extract_string_literals across languages."""
 
+    @requires_ts("go")
     def test_go_switch_case_strings(self):
         src = """\
 package main
@@ -235,6 +245,7 @@ func dispatch(cmd string) {
         case_strings = [s for s in result if s.context == "switch_case"]
         assert len(case_strings) >= 2
 
+    @requires_ts("javascript")
     def test_js_comparison_strings(self):
         src = """\
 function check(status) {
@@ -252,6 +263,7 @@ function check(status) {
         assert "active" in values
         assert "inactive" in values
 
+    @requires_ts("java")
     def test_java_dict_key_strings(self):
         src = """\
 public class Config {
@@ -268,6 +280,7 @@ public class Config {
         assert "host" in values
         assert "port" in values
 
+    @requires_ts("c")
     def test_c_string_literals(self):
         src = """\
 void log_level(const char *level) {
@@ -284,6 +297,7 @@ void log_level(const char *level) {
         assert "error" in values
         assert "warn" in values
 
+    @requires_ts("javascript")
     def test_template_string_detected(self):
         src = """\
 function greet(name) {
@@ -304,6 +318,7 @@ function greet(name) {
 class TestExtractDispatchTables:
     """extract_dispatch_tables across languages."""
 
+    @requires_ts("go")
     def test_go_switch(self):
         src = """\
 package main
@@ -330,6 +345,7 @@ func handle(action string) {
         assert "delete" in dt.keys
         assert len(dt.keys) == 4
 
+    @requires_ts("javascript")
     def test_js_switch(self):
         src = """\
 function route(method) {
@@ -352,6 +368,7 @@ function route(method) {
         assert "GET" in result[0].keys
         assert "POST" in result[0].keys
 
+    @requires_ts("go")
     def test_single_case_not_dispatch(self):
         src = """\
 package main
@@ -377,6 +394,7 @@ func f(x string) {
 class TestExtractLoopCaps:
     """extract_loop_caps across languages."""
 
+    @requires_ts("c")
     def test_c_loop_with_cap_break(self):
         src = """\
 int collect(node_t *root, int max) {
@@ -397,6 +415,7 @@ int collect(node_t *root, int max) {
         assert len(result) >= 1
         assert result[0].function == "collect"
 
+    @requires_ts("go")
     def test_go_loop_with_len_check(self):
         src = """\
 package main
@@ -416,6 +435,7 @@ func gather(items []string, limit int) []string {
         assert result is not None
         assert len(result) >= 1
 
+    @requires_ts("javascript")
     def test_js_loop_with_truncation_signal(self):
         src = """\
 function scanPorts(host, max) {
@@ -437,6 +457,7 @@ function scanPorts(host, max) {
         assert len(result) >= 1
         assert result[0].signals_truncation
 
+    @requires_ts("go")
     def test_loop_without_cap_not_detected(self):
         src = """\
 package main
@@ -462,6 +483,7 @@ func sum(items []int) int {
 class TestExtractFunctionBody:
     """extract_function_body across languages."""
 
+    @requires_ts("go")
     def test_go_function_body(self):
         src = """\
 package main
@@ -479,6 +501,7 @@ func Farewell(name string) string {
         assert "Hello" in body
         assert "Bye" not in body
 
+    @requires_ts("c")
     def test_c_function_body(self):
         src = """\
 int add(int a, int b) {
@@ -493,6 +516,7 @@ int sub(int a, int b) {
         assert body is not None
         assert "a + b" in body
 
+    @requires_ts("c")
     def test_missing_function(self):
         src = "int f(int x) { return x; }\n"
         body = extract_function_body("f.c", src, "nonexistent")

@@ -14,6 +14,7 @@ from core.analysis.sanitizer_cut_postpass import (  # noqa: E402
     _locate_unique_source_line,
     run_postpass,
 )
+from core.testing.treesitter import requires_ts  # noqa: E402
 
 _SAFE_JAVA = """import org.owasp.encoder.Encode;
 import javax.servlet.http.HttpServletRequest;
@@ -90,6 +91,7 @@ def _write(tmp_path: Path, source: str, sarif_kwargs: dict | None = None):
 
 
 class TestVerdictRecording:
+    @requires_ts("java")
     def test_encoder_guarded_finding_records_suppress(self, tmp_path):
         repo, _, sarif_path, out = _write(tmp_path, _SAFE_JAVA)
         stats = run_postpass([sarif_path], repo, out)
@@ -103,6 +105,7 @@ class TestVerdictRecording:
         assert records[0]["verdict"] == "sanitizer_dominated"
         assert records[0]["dropped"] is False
 
+    @requires_ts("java")
     def test_unsanitized_finding_records_nothing(self, tmp_path):
         repo, _, sarif_path, out = _write(
             tmp_path, _UNSAFE_JAVA, {"sink_line": 6},
@@ -123,6 +126,7 @@ class TestVerdictRecording:
 
 
 class TestSourceLocator:
+    @requires_ts("java")
     def test_multi_source_all_must_suppress(self, tmp_path):
         # Two candidate sources: the flow from `a` is encoded
         # (suppress) but `b` never reaches the sanitizer input
@@ -245,6 +249,7 @@ public class Test {
 }
 """
 
+    @requires_ts("java")
     def test_dead_branch_ternary_suppresses_via_constancy(self, tmp_path):
         repo, _, sarif_path, out = _write(
             tmp_path, self._TRICK, {"sink_line": 7},
@@ -271,3 +276,4 @@ public class Test {
         repo, _, sarif_path, out = _write(tmp_path, src, {"sink_line": 6})
         stats = run_postpass([sarif_path], repo, out)
         assert stats["recorded_suppress"] == 0
+

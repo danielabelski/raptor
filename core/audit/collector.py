@@ -65,6 +65,20 @@ def append_journal_for_outcome(
     """
     if producer is None:
         producer = "audit"
+
+    # Stamp the receiver-qualified name on the outcome so every
+    # surface past this chokepoint (audit-log rows, progress lines,
+    # post-loop promotion entries) can report ``Class.method`` instead
+    # of a bare name that collides with same-named siblings.
+    qualified = gap.get("qualified_name") or ""
+    if qualified:
+        try:
+            outcome.function_qualified = qualified
+        except Exception:
+            logger.debug("qualified-name stamp failed", exc_info=True)
+    else:
+        qualified = getattr(outcome, "function_qualified", "") or ""
+
     source_hash = ""
     try:
         from .record import _compute_hash
@@ -189,6 +203,7 @@ def append_journal_for_outcome(
         run_id=run_id,
         file=outcome.file,
         function=outcome.function,
+        function_qualified=qualified or None,
         verdict=outcome.status,
         source_hash=source_hash,
         line_start=gap.get("line_start", 0),
@@ -258,6 +273,12 @@ class Collector:
             "cost_usd": outcome.cost_usd,
             "duration_s": outcome.duration_s,
         }
+        qualified = (
+            gap.get("qualified_name")
+            or getattr(outcome, "function_qualified", "")
+        )
+        if qualified:
+            entry["function_qualified"] = qualified
         if outcome.hypothesis:
             entry["hypothesis"] = outcome.hypothesis
         if outcome.hypotheses:

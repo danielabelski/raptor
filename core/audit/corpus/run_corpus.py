@@ -925,9 +925,15 @@ def _run_audit_on_target(
     def on_progress(idx, total, outcome):
         if idx < 0 or not outcome.file:
             return
-        key = f"{outcome.file}:{outcome.function}"
+        # Receiver-qualified progress key: seven ``Null*.Scan`` labels
+        # used to print as one indistinguishable ``sql.go:Scan``.
+        fn = getattr(outcome, "function_qualified", "") or outcome.function
+        key = f"{outcome.file}:{fn}"
         status = outcome.status
-        marker = " *" if key in labeled_ids else ""
+        marker = " *" if (
+            key in labeled_ids
+            or f"{outcome.file}:{outcome.function}" in labeled_ids
+        ) else ""
         char = {"clean": ".", "suspicious": "?", "finding": "!",
                 "dormant": "~", "error": "x"}.get(status, ".")
         print(f"  [{total}] {key} -> {status} {char}{marker}", flush=True)
@@ -995,6 +1001,24 @@ def _run_audit_on_target(
     wall_s = time.monotonic() - t0
     print(f"  Audit finished in {wall_s:.0f}s (rc={rc})", flush=True)
 
+    outcomes_by_id, bare_key_entries = _parse_audit_log_outcomes(
+        out_dir / ".audit-log.jsonl",
+    )
+    return outcomes_by_id, bare_key_entries, out_dir
+
+
+def _parse_audit_log_outcomes(
+    log_path: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Index review/promotion rows of one ``.audit-log.jsonl``.
+
+    Returns ``(outcomes_by_id, bare_key_entries)``. Keys indexed per
+    row: the raw log key (``file:function[:line]``), the derived bare
+    key, and — when the row carries ``function_qualified`` — the
+    receiver-qualified aliases ``file:Class.method[:line]`` so a
+    qualified label id resolves exactly (seven ``Null*.Scan`` labels
+    no longer collapse onto one stripped ``Scan`` key).
+    """
     outcomes_by_id: dict[str, dict[str, Any]] = {}
     bare_key_entries: dict[str, dict[str, Any]] = {}
     # Bare forms derived from line-suffixed log keys.  Kept separate so an
@@ -1003,7 +1027,6 @@ def _run_audit_on_target(
     # kept (log order breaks ties) so a real finding is never shadowed by a
     # clean sibling.
     derived_bare_entries: dict[str, dict[str, Any]] = {}
-    log_path = out_dir / ".audit-log.jsonl"
     if log_path.exists():
         with open(log_path) as f:
             for raw in f:
@@ -1031,11 +1054,21 @@ def _run_audit_on_target(
                         derived_bare_entries[head] = entry
                 else:
                     bare_key_entries[key] = entry
+                qualified = entry.get("function_qualified") or ""
+                if qualified:
+                    base = head if (head and tail.isdigit()) else key
+                    file_part = base.rsplit(":", 1)[0]
+                    if file_part:
+                        outcomes_by_id[f"{file_part}:{qualified}"] = entry
+                        if head and tail.isdigit():
+                            outcomes_by_id[
+                                f"{file_part}:{qualified}:{tail}"
+                            ] = entry
 
     for bare, entry in derived_bare_entries.items():
         bare_key_entries.setdefault(bare, entry)
 
-    return outcomes_by_id, bare_key_entries, out_dir
+    return outcomes_by_id, bare_key_entries
 
 
 def _extract_source(

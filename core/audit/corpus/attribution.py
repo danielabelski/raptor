@@ -151,15 +151,25 @@ def build_signal_index(run_dirs: Iterable[Path]) -> SignalIndex:
             for entry in _iter_jsonl(log_path):
                 action = entry.get("action", "")
                 key = _strip_line_suffix(entry.get("key", ""))
+                # Receiver-qualified alias: corpus labels use
+                # ``file:Class.method`` function_ids; without this the
+                # receipt join silently missed every qualified label
+                # (bare log keys never equal a dotted function_id).
+                keys = [key]
+                qualified = entry.get("function_qualified") or ""
+                if qualified and ":" in key:
+                    keys.append(f"{key.rsplit(':', 1)[0]}:{qualified}")
                 if action in (
                     "refutation_gate", "refutation_gate_post_promote",
                 ):
                     if entry.get("applied") is False:
                         continue
-                    index.add(index.gates, key, entry.get("gate", ""))
+                    for k in keys:
+                        index.add(index.gates, k, entry.get("gate", ""))
                 elif action in ("orchestrator_review", "sweep_promotion"):
                     et = entry.get("evidence_tool") or ""
-                    index.add(index.tools, key, et)
+                    for k in keys:
+                        index.add(index.tools, k, et)
 
         for jpath in sorted(run_dir.rglob("review-journal.jsonl")):
             for entry in _iter_jsonl(jpath):
@@ -168,8 +178,13 @@ def build_signal_index(run_dirs: Iterable[Path]) -> SignalIndex:
                 )
                 if key == ":":
                     continue
+                keys = [key]
+                qualified = entry.get("function_qualified") or ""
+                if qualified:
+                    keys.append(f"{entry.get('file', '')}:{qualified}")
                 for tool in entry.get("evidence_tools") or []:
-                    index.add(index.tools, key, str(tool))
+                    for k in keys:
+                        index.add(index.tools, k, str(tool))
                 # Study receipts: verdicts produced by a study-driven
                 # re-review carry the answers' receipts (question,
                 # tier, file, line, sha256, verified). The study
@@ -182,10 +197,12 @@ def build_signal_index(run_dirs: Iterable[Path]) -> SignalIndex:
                 for receipt in entry.get("study_receipts") or []:
                     if not isinstance(receipt, dict):
                         continue
-                    index.add(index.tools, key, "study")
+                    for k in keys:
+                        index.add(index.tools, k, "study")
                     tier = str(receipt.get("tier") or "").strip()
                     if tier:
-                        index.add(index.tools, key, f"study:{tier}")
+                        for k in keys:
+                            index.add(index.tools, k, f"study:{tier}")
 
         for mpath in sorted(run_dir.rglob("mechanical-findings.json")):
             try:

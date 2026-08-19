@@ -117,6 +117,11 @@ class ReviewJournalEntry:
     function: str
     verdict: str
     source_hash: str
+    # Receiver-qualified name (``Class.method``) when the inventory
+    # metadata carries one. Optional presentation/join identity —
+    # ``function`` stays the bare name every key derives from, so
+    # same-named methods stay auditable in reports.
+    function_qualified: str | None = None
     line_start: int = 0
     line_end: int | None = None
     cwe: str | None = None
@@ -332,6 +337,7 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         run_id=raw["run_id"],
         file=raw["file"],
         function=raw["function"],
+        function_qualified=raw.get("function_qualified"),
         verdict=raw["verdict"],
         source_hash=raw.get("source_hash", ""),
         line_start=raw.get("line_start", 0),

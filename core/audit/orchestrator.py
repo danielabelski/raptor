@@ -572,6 +572,12 @@ class ReviewOutcome:
     function: str
     status: str
     body: str
+    # Receiver-qualified name (``Class.method`` / Go ``Receiver.Method``)
+    # when the inventory metadata carries one — stamped at the commit
+    # chokepoint from ``gap["qualified_name"]``. Presentation and
+    # report-join identity only; ``function`` stays the bare inventory
+    # name every call-graph/coverage key is built from.
+    function_qualified: str = ""
     hypothesis: str = ""
     hypotheses: list[dict[str, Any]] | None = None
     evidence_tool: str = ""
@@ -6556,6 +6562,8 @@ def _run_audit_body(
                     "duration_s": 0.0,
                     "hypothesis": outcome.hypothesis or "",
                 }
+                if getattr(outcome, "function_qualified", ""):
+                    entry["function_qualified"] = outcome.function_qualified
                 append_audit_log(config.out_dir, entry)
 
     if config.adversarial:
@@ -8614,6 +8622,12 @@ def _commit_outcome(
         "cost_usd": outcome.cost_usd,
         "duration_s": outcome.duration_s,
     }
+    _qualified = (
+        gap.get("qualified_name")
+        or getattr(outcome, "function_qualified", "")
+    )
+    if _qualified:
+        entry["function_qualified"] = _qualified
     if outcome.hypothesis:
         entry["hypothesis"] = outcome.hypothesis
     if outcome.hypotheses:

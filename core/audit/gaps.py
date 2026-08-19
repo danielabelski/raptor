@@ -408,6 +408,13 @@ def compute_gaps(
                 "sloc": sloc,
                 "metadata": metadata,
             }
+            # Receiver-qualified display/report name. Same-named
+            # methods (seven ``Null*.Scan`` in one file) are otherwise
+            # indistinguishable in progress lines, journal rows, and
+            # attribution joins.
+            _class_name = metadata.get("class_name")
+            if _class_name:
+                gap["qualified_name"] = f"{_class_name}.{name}"
             if shape is not None:
                 gap["parser_shape"] = shape.to_dict()
 

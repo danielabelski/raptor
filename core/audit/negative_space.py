@@ -652,13 +652,6 @@ _XML_SAFE_GUARD = re.compile(
     re.IGNORECASE,
 )
 
-_UNBOUNDED_WRITE = re.compile(
-    r"\.(?:write|send|sendall|sendto|put|append|extend)\s*\([^)]*\bwhile\b|"
-    r"(?:fwrite|fputs|fprintf|write)\s*\(.*\bwhile\b|"
-    r"\bwhile\b[^{]*\.(?:write|send|append)\s*\(",
-    re.IGNORECASE | re.DOTALL,
-)
-
 _HASH_COLLISION = re.compile(
     r"(?:dict|HashMap|HashSet|hash_map|unordered_map|defaultdict)\s*\(",
     re.IGNORECASE,

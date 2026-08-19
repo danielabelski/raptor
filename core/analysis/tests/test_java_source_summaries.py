@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
+
 import pytest
 
 pytest.importorskip("tree_sitter_java")
@@ -252,6 +254,49 @@ class TestSemgrepProjectionSync:
             assert prop["pattern"] in origin, (
                 f"propagator drifted from origin rule: {prop['pattern']}"
             )
+
+    def test_every_generated_rule_has_scanner_cwe_mapping(self):
+        # The recall matcher never credits CWE-less findings; the scan
+        # stage stamps CWE onto SARIF rule properties from a suffix
+        # map. A generated rule missing from that map ships findings
+        # that mechanically score zero (observed live: the sqli rule).
+        from packages.semgrep import source_wrapper_rules as swr
+        scanner_src = self._origin("packages/static-analysis/scanner.py")
+        s, _ = _summaries(_PKG + """
+public class H {
+    public String grab(HttpServletRequest req, String p) {
+        return req.getParameter(p);
+    }
+}""")
+        doc = json.loads(swr.generate_rules_yaml(list(s.values())))
+        for rule in doc["rules"]:
+            suffix = "." + rule["id"].rsplit(".", 1)[-1]
+            assert f'"{suffix}"' in scanner_src, (
+                f"generated rule {rule['id']} has no cwe_by_suffix "
+                f"entry in the scan stage — its findings score zero")
+
+    def test_sqli_blocks_match_origin_rule(self):
+        from packages.semgrep.source_wrapper_rules import (
+            SQLI_SINK_BLOCKS,
+            SQLI_SINKS,
+        )
+        origin = self._origin("engine/semgrep/rules/injection/sql-taint.yaml")
+
+        def _strings(node):
+            if isinstance(node, dict):
+                for key, val in node.items():
+                    if key == "pattern" and isinstance(val, str):
+                        yield val
+                    elif key == "metavariable-regex":
+                        yield val["regex"]
+                    else:
+                        yield from _strings(val)
+            elif isinstance(node, (list, tuple)):
+                for item in node:
+                    yield from _strings(item)
+
+        for pat in list(SQLI_SINKS) + list(_strings(list(SQLI_SINK_BLOCKS))):
+            assert pat in origin, f"pattern drifted from origin rule: {pat}"
 
     def test_trust_boundary_blocks_match_origin_rule(self):
         from packages.semgrep.source_wrapper_rules import TRUST_BOUNDARY_SINKS

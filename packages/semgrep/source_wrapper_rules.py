@@ -57,6 +57,68 @@ COLLECTION_PROPAGATORS: Sequence[dict] = (
     {"pattern": "$M.add($V)", "from": "$V", "to": "$M"},
 )
 
+#: Origin: engine/semgrep/rules/injection/sql-taint.yaml
+#: (raptor.injection.sql.taint.java). Plain sink patterns — the sync
+#: test asserts each appears verbatim in the origin rule.
+SQLI_SINKS: Sequence[str] = (
+    "(Statement $STMT).executeQuery($Q)",
+    "(Statement $STMT).executeUpdate($Q)",
+    "(Statement $STMT).execute($Q)",
+)
+
+#: Structured sink blocks mirrored from the same origin rule (focus
+#: on the SQL-string argument so parameterised bind args never fire).
+#: The sync test asserts every pattern string below appears verbatim
+#: in the origin rule file.
+SQLI_SINK_BLOCKS: Sequence[dict] = (
+    {
+        "patterns": [
+            {"pattern-either": [
+                {"pattern": "(Connection $C).prepareStatement($Q, ...)"},
+                {"pattern": "(Connection $C).prepareCall($Q, ...)"},
+                {"pattern": "(java.sql.Connection $C).prepareStatement($Q, ...)"},
+                {"pattern": "(java.sql.Connection $C).prepareCall($Q, ...)"},
+            ]},
+            {"focus-metavariable": "$Q"},
+        ],
+    },
+    {
+        "patterns": [
+            {"pattern-either": [
+                {"pattern": "(JdbcTemplate $JT).queryForObject($Q, ...)"},
+                {"pattern": "(JdbcTemplate $JT).queryForList($Q, ...)"},
+                {"pattern": "(JdbcTemplate $JT).queryForMap($Q, ...)"},
+                {"pattern": "(JdbcTemplate $JT).query($Q, ...)"},
+                {"pattern": "(JdbcTemplate $JT).update($Q, ...)"},
+                {"pattern": "(JdbcTemplate $JT).execute($Q)"},
+            ]},
+            {"focus-metavariable": "$Q"},
+        ],
+    },
+    {
+        "patterns": [
+            {"pattern-either": [
+                {"pattern": "$RECV.queryForObject($Q, ...)"},
+                {"pattern": "$RECV.queryForList($Q, ...)"},
+                {"pattern": "$RECV.queryForMap($Q, ...)"},
+                {"pattern": "$RECV.queryForRowSet($Q, ...)"},
+                {"pattern": "$RECV.batchUpdate($Q, ...)"},
+            ]},
+            {"focus-metavariable": "$Q"},
+        ],
+    },
+    {
+        "patterns": [
+            {"pattern": '"$SQL" + $X'},
+            {"metavariable-regex": {
+                "metavariable": "$SQL",
+                "regex": "(?i)^(select|insert|update|delete)\\b.*",
+            }},
+            {"focus-metavariable": "$X"},
+        ],
+    },
+)
+
 #: Origin: engine/semgrep/rules/java/trust-boundary.yaml
 #: (raptor.java.trust-boundary-session-write).
 TRUST_BOUNDARY_SINKS: Sequence[str] = (
@@ -91,7 +153,8 @@ def _source_patterns(summaries) -> List[str]:
 
 def _taint_rule(rule_id: str, message: str, cwe: str,
                 sources: Sequence[str], sinks: Sequence[str],
-                sanitizers: Sequence[str]) -> dict:
+                sanitizers: Sequence[str],
+                sink_blocks: Sequence[dict] = ()) -> dict:
     rule = {
         "id": rule_id,
         "message": message,
@@ -103,6 +166,7 @@ def _taint_rule(rule_id: str, message: str, cwe: str,
         ],
         "pattern-sinks": [
             {"pattern-either": [{"pattern": p} for p in sinks]},
+            *sink_blocks,
         ],
         "metadata": {
             "cwe": [cwe],
@@ -137,6 +201,13 @@ def generate_rules_yaml(summaries: Iterable) -> str | None:
             "Untrusted data from a project source-wrapper is stored into "
             "a trusted context (session/servlet context).",
             "CWE-501", sources, TRUST_BOUNDARY_SINKS, (),
+        ),
+        _taint_rule(
+            "raptor.generated.source-wrapper.sqli",
+            "Untrusted data from a project source-wrapper flows into SQL "
+            "execution. Use parameterised queries.",
+            "CWE-89", sources, SQLI_SINKS, (),
+            sink_blocks=SQLI_SINK_BLOCKS,
         ),
     ]}
     return json.dumps(doc, indent=1)

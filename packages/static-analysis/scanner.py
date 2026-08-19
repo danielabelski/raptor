@@ -2226,6 +2226,7 @@ def run_source_wrapper_stage(
         cwe_by_suffix={
             ".xss": "CWE-79",
             ".trust-boundary": "CWE-501",
+            ".sqli": "CWE-89",
         },
     )
     save_json(sarif_path, doc)

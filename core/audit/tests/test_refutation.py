@@ -550,6 +550,53 @@ class TestRefuteByKnownReturnType:
         assert r is not None
         assert r.gate == "input_bound_t0"
 
+    def test_getchar_underflow_not_refuted(self):
+        """getchar() returns EOF (-1) — a CWE-191 underflow claim on
+        its value is real and must NOT be demoted (the table only
+        bounds the value above)."""
+        outcome = _Outcome(
+            hypothesis=(
+                "integer underflow: getchar() returns EOF (-1) and "
+                "the value is subtracted from an unsigned counter"
+            ),
+            review_result={"cwe": "CWE-191"},
+        )
+        r = _refute_by_known_return_type(outcome, _Config())
+        assert r is None
+
+    def test_getchar_underflow_keyword_only_not_refuted(self):
+        """Underflow keyword without explicit CWE also spares the
+        negative-capable functions."""
+        outcome = _Outcome(
+            hypothesis=(
+                "integer underflow when fgetc() result feeds the "
+                "size computation"
+            ),
+        )
+        r = _refute_by_known_return_type(outcome, _Config())
+        assert r is None
+
+    def test_getchar_overflow_still_refuted(self):
+        """CWE-190 on getchar() keeps the original refutation: the
+        value is bounded above by 0xFF."""
+        outcome = _Outcome(
+            hypothesis="integer overflow from getchar() return value",
+            review_result={"cwe": "CWE-190"},
+        )
+        r = _refute_by_known_return_type(outcome, _Config())
+        assert r is not None
+        assert r.gate == "input_bound_t0"
+
+    def test_ntohs_underflow_still_refuted(self):
+        """ntohs() cannot return a negative value (min 0), so the
+        CWE-191 refutation stays for it."""
+        outcome = _Outcome(
+            hypothesis="integer underflow from ntohs() return value",
+            review_result={"cwe": "CWE-191"},
+        )
+        r = _refute_by_known_return_type(outcome, _Config())
+        assert r is not None
+
 
 # ===================================================================
 # Shared helpers

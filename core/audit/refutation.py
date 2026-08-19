@@ -509,26 +509,30 @@ def _refute_by_contract(
 # Gate 4: Input-bound Tier 0 — known return-type table
 # ---------------------------------------------------------------------------
 
-# Functions whose return type is small enough that integer overflow is
-# impossible when the result is used in int-width arithmetic.  Only
-# functions whose max value fits in signed int (≤ 0x7FFF_FFFF) are
-# included.  ntohl/htonl are excluded: uint32_t can overflow signed int.
+# Functions whose return range is small enough that integer overflow
+# is impossible when the result is used in int-width arithmetic.
+# Entries carry (type description, min, max).  Only functions whose
+# max value fits in signed int (≤ 0x7FFF_FFFF) are included.
+# ntohl/htonl are excluded: uint32_t can overflow signed int.
 # atoi is excluded: it returns the full int range including negative
 # values, so wraparound in unsigned contexts is possible.
-_KNOWN_RETURN_BOUNDS: Dict[str, tuple[str, int]] = {
-    "ntohs":    ("uint16_t", 0xFFFF),
-    "htons":    ("uint16_t", 0xFFFF),
-    "getchar":  ("int [0..255 or EOF]", 0xFF),
-    "fgetc":    ("int [0..255 or EOF]", 0xFF),
-    "tolower":  ("int [0..255]", 0xFF),
-    "toupper":  ("int [0..255]", 0xFF),
-    "isdigit":  ("int [0..1]", 1),
-    "isalpha":  ("int [0..1]", 1),
-    "isspace":  ("int [0..1]", 1),
-    "isalnum":  ("int [0..1]", 1),
-    "isupper":  ("int [0..1]", 1),
-    "islower":  ("int [0..1]", 1),
-    "isprint":  ("int [0..1]", 1),
+# getchar/fgetc/tolower/toupper carry min = -1: they return EOF, and a
+# negative value is exactly what a CWE-191 underflow claim needs, so
+# they refute overflow (CWE-190) claims only.
+_KNOWN_RETURN_BOUNDS: Dict[str, tuple[str, int, int]] = {
+    "ntohs":    ("uint16_t", 0, 0xFFFF),
+    "htons":    ("uint16_t", 0, 0xFFFF),
+    "getchar":  ("int [0..255 or EOF]", -1, 0xFF),
+    "fgetc":    ("int [0..255 or EOF]", -1, 0xFF),
+    "tolower":  ("int [0..255 or EOF]", -1, 0xFF),
+    "toupper":  ("int [0..255 or EOF]", -1, 0xFF),
+    "isdigit":  ("int [0..1]", 0, 1),
+    "isalpha":  ("int [0..1]", 0, 1),
+    "isspace":  ("int [0..1]", 0, 1),
+    "isalnum":  ("int [0..1]", 0, 1),
+    "isupper":  ("int [0..1]", 0, 1),
+    "islower":  ("int [0..1]", 0, 1),
+    "isprint":  ("int [0..1]", 0, 1),
 }
 
 # Keywords that suggest an INTEGER overflow/wraparound claim.
@@ -583,13 +587,24 @@ def _refute_by_known_return_type(
     if _BUFFER_OVERFLOW_KW.search(hyp_lower):
         return None
 
+    # An underflow claim needs the value to go NEGATIVE (or wrap below
+    # zero) — a return type bounded above refutes nothing when the
+    # function can already return a negative sentinel (EOF).
+    claims_underflow = cwe == "CWE-191" or "underflow" in hyp_lower
+
     # Check if any known-bounded function appears in the hypothesis.
     # When multiple match, pick the one closest to an overflow keyword
     # for audit trail clarity.
     best: Optional[tuple[str, str, int, int]] = None  # (name, type, max, dist)
-    for func_name, (ret_type, max_val) in _KNOWN_RETURN_BOUNDS.items():
+    for func_name, (ret_type, min_val, max_val) in \
+            _KNOWN_RETURN_BOUNDS.items():
         func_pos = hyp_lower.find(func_name)
         if func_pos < 0:
+            continue
+        if claims_underflow and min_val < 0:
+            # getchar()/fgetc()/tolower() return EOF (-1): the table
+            # only bounds the value above, which cannot refute a
+            # CWE-191 (underflow) hypothesis.
             continue
 
         # When CWE is explicit (CWE-190/191), the function name alone

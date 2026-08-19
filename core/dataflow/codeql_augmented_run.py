@@ -102,6 +102,26 @@ class AnalysisResult:
     elapsed_seconds: float
 
 
+def _pack_name(pack_dir: Path) -> str:
+    """The pack's declared name, from its codeql-pack.yml.
+
+    Strict single-line parse (the emitter writes ``name: <scope/name>``
+    as the first key); a pack without a parseable name refuses loudly —
+    silently analyzing WITHOUT the models is the vacuous-measurement
+    bug this exists to prevent.
+    """
+    manifest = pack_dir / "codeql-pack.yml"
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if line.startswith("name:"):
+                return line.split(":", 1)[1].strip()
+    except OSError as e:
+        raise CodeQLRunError(
+            f"extension pack manifest unreadable: {manifest}") from e
+    raise CodeQLRunError(
+        f"extension pack has no parseable name: {manifest}")
+
+
 def analyze(
     db_path: Path,
     queries: Sequence[str],
@@ -160,7 +180,17 @@ def analyze(
     ]
     CodeQLTunables.from_tuning().append_to(cmd, include_disk_cache=False)
     if extension_pack is not None:
-        cmd.extend(["--additional-packs", str(extension_pack)])
+        # --additional-packs only makes the pack RESOLVABLE; data
+        # extensions apply to the analysis only when the pack is also
+        # named via --model-packs, and cached query results would mask
+        # the row changes, so re-evaluation is forced. Verified live:
+        # without --model-packs the augmented run is byte-identical to
+        # the baseline (the historical zero-delta was vacuous).
+        cmd.extend([
+            "--additional-packs", str(extension_pack),
+            "--model-packs", _pack_name(Path(extension_pack)),
+            "--rerun",
+        ])
     cmd.extend(extra_args)
 
     run = runner or subprocess.run

@@ -202,19 +202,49 @@ class TestWitnessRegistry:
         spec = VERDICTS["sanitizer_dominated"]
         assert spec.kind is WitnessKind.SANITIZER_CUT
         assert spec.soundness is Soundness.SOUND
-        assert spec.earns_suppression is False
-        # The chokepoint's earned set must exclude it until the
-        # corpus flip — this is the safety property.
-        assert WitnessKind.SANITIZER_CUT not in (
-            STRUCTURALLY_SUPPRESSIBLE_KINDS)
+        # Re-pinned 2026-08-19: earns_suppression flipped True under
+        # the corpus-earning protocol with operator approval (b46
+        # re-attempt; attestation report sha256 139a3f07…, 239
+        # fixtures, zero false suppressions). The safety property
+        # moved from "the earned set excludes it" to "enforcement is
+        # bounded by this spec field" — reverting to record-only is
+        # this one field (test_enforcement_bounded_by_spec).
+        assert spec.earns_suppression is True
+        # The earned set is DERIVED from the table, so the kind joins
+        # it with the flip; the chokepoint-safety property is guarded
+        # by test_chokepoint_never_fires_on_sanitizer_cut (a planted
+        # sanitizer-cut tag in the function-verdict slot still yields
+        # None).
+        assert WitnessKind.SANITIZER_CUT in STRUCTURALLY_SUPPRESSIBLE_KINDS
 
     def test_chokepoint_never_fires_on_sanitizer_cut(self):
+        # Re-pinned 2026-08-19 (b46 flip): may_suppress now returns
+        # True — the earned contract. The chokepoint-safety property
+        # this test guarded survives structurally: the FUNCTION-
+        # REACHABILITY chokepoint's input stream carries function
+        # classifications (absent/symbol_present/...), never the
+        # sanitizer-cut verdict tag — the enforcement consumer is the
+        # scan post-pass alone, full-proof suppress verdicts only.
+        from core.analysis.reach_chokepoint import check_suppress
         from core.analysis.reach_witness import (
             STRUCTURALLY_SUPPRESSIBLE_KINDS,
             verdict_from_classification,
         )
         v = verdict_from_classification("sanitizer_dominated")
-        assert not v.may_suppress(STRUCTURALLY_SUPPRESSIBLE_KINDS)
+        assert v.may_suppress(STRUCTURALLY_SUPPRESSIBLE_KINDS)
+        # The chokepoint consumes per-FUNCTION reachability verdicts
+        # from the checklist; a sanitizer-cut tag planted in that slot
+        # must still not license suppression there (the enforcement
+        # consumer is the postpass alone).
+        assert check_suppress(
+            checklist={"files": {"src/T.java": {"functions": {"f": {
+                "binary_oracle": {"verdict": "sanitizer_dominated"},
+            }}}}},
+            file_path="src/T.java",
+            function_name="f",
+            line=1,
+            repo_root=Path("/nonexistent"),
+        ) is None
 
 
 # ---------------------------------------------------------------------------

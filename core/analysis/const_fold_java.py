@@ -81,7 +81,8 @@ class _FoldExt:
     default everywhere) is byte-for-byte the pre-extension folder."""
 
     __slots__ = ("allow_taint_free", "xfile", "receiver_type",
-                 "union_hits", "ban_tf_system_reads")
+                 "union_hits", "ban_tf_system_reads",
+                 "union_member_check")
 
     def __init__(self, allow_taint_free: bool = False, xfile=None,
                  receiver_type=None, ban_tf_system_reads: bool = False):
@@ -104,6 +105,16 @@ class _FoldExt:
         # forbids.  Measured live: 17 Juliet ground-truth-bad
         # environment-source findings suppressed via the TF tier.
         self.ban_tf_system_reads: bool = ban_tf_system_reads
+        # b42 x b40 composition: the union merges VALUE-CARRYING
+        # members too, and a compile-time constant can violate a
+        # value-based finding class on its own (the finite-value-set
+        # path's per-element danger discipline — a set containing a
+        # danger-bearing constant never suppresses).  The union holds
+        # itself to the same bar: concrete string members pass through
+        # this caller-supplied predicate (str list -> bool); None (no
+        # danger authority at this entry) refuses any union containing
+        # a concrete string member.
+        self.union_member_check = None
 
 
 def _tf_or_refuse(val: Any, ext) -> Any:
@@ -739,18 +750,18 @@ def _make_point_resolver(rd, index: JavaConstIndex, array_resolver=None,
         for v in values[1:]:
             if v is TAINT_FREE or first is TAINT_FREE:
                 if v is not first:
-                    return _tf_union(ext)
+                    return _tf_union(ext, values)
                 continue
             if v is not first and v != first:
-                return _tf_union(ext)
+                return _tf_union(ext, values)
             if type(v) is not type(first):
-                return _tf_union(ext)
+                return _tf_union(ext, values)
         return first
 
     return resolve_at
 
 
-def _tf_union(ext) -> Any:
+def _tf_union(ext, values) -> Any:
     """Merge verdict for non-agreeing definers that each folded.
 
     Everything ``_fold`` produces is compile-time-known or proven
@@ -759,17 +770,33 @@ def _tf_union(ext) -> Any:
     never a usable value.  Value consumers (tier off) keep the
     historical refusal byte-for-byte; the union exists only for the
     suppression question (b42).
+
+    Concrete STRING members additionally clear the caller's danger
+    predicate (``ext.union_member_check``) or the merge refuses — the
+    b40 composition: a value-based finding class is violated by the
+    constant itself, however attacker-free, and the finite-value-set
+    path already refuses such sets per element.  No predicate at this
+    entry means no danger authority: refuse, never assume.  Valueless
+    TAINT_FREE members ride the b37 tier precedent (no value to
+    check); ints and booleans cannot carry a danger charset.
     """
-    if ext is not None and ext.allow_taint_free:
-        ext.union_hits.append(1)
-        return TAINT_FREE
-    return _REFUSE
+    if ext is None or not ext.allow_taint_free:
+        return _REFUSE
+    strs = [v for v in values if isinstance(v, str)]
+    if strs:
+        chk = ext.union_member_check
+        if chk is None or not chk(strs):
+            return _REFUSE
+    ext.union_hits.append(1)
+    return TAINT_FREE
 
 
 def fold_expr_at(rd, at_node, expr_node, index: JavaConstIndex,
                  array_resolver=None,
           config_resolver=None, conduit_resolver=None,
-          allow_taint_free: bool = False) -> Any:
+          allow_taint_free: bool = False,
+          ban_tf_system_reads: bool = False,
+          union_member_check=None) -> Any:
     """Fold an arbitrary expression at a program point: identifiers
     resolve through the reaching-defs oracle at ``at_node`` with the
     same all-defs-must-agree policy as the constant-definers gate.
@@ -779,6 +806,11 @@ def fold_expr_at(rd, at_node, expr_node, index: JavaConstIndex,
     if not index.ok:
         return _REFUSE
     ext = _index_ext(index, allow_taint_free)
+    if ext is not None:
+        # A None ext means the taint-free tier is off, so the ban has
+        # nothing to withdraw (and the union never fires).
+        ext.ban_tf_system_reads = ban_tf_system_reads
+        ext.union_member_check = union_member_check
     resolve_at = _make_point_resolver(rd, index, array_resolver,
                                       config_resolver, conduit_resolver,
                                       ext)
@@ -803,6 +835,8 @@ def definers_all_fold(
     array_resolver=None,
     config_resolver=None,
     conduit_resolver=None,
+    ban_tf_system_reads: bool = False,
+    union_member_check=None,
 ) -> bool:
     """True when EVERY reaching definer of ``name`` at ``at_node``
     folds to a compile-time constant — the values need NOT agree
@@ -817,10 +851,15 @@ def definers_all_fold(
     attacker-uncontrolled value (system reads, cross-file static-final
     config, their concats) counts as folding — its exact value is
     irrelevant to the no-caller-taint conclusion this function
-    exists to draw."""
+    exists to draw. ``ban_tf_system_reads`` withdraws the tier's
+    bounded-system-read leg for findings whose own candidate source
+    is such a read (the b42 circularity ban — see
+    :func:`all_definers_constant`)."""
     if not index.ok:
         return False
     ext = _index_ext(index, allow_taint_free=True)
+    ext.ban_tf_system_reads = ban_tf_system_reads
+    ext.union_member_check = union_member_check
     resolve_at = _make_point_resolver(rd, index, array_resolver,
                                       config_resolver, conduit_resolver,
                                       ext)
@@ -915,6 +954,7 @@ def all_definers_constant(
     config_resolver=None,
     conduit_resolver=None,
     ban_tf_system_reads: bool = False,
+    union_member_check=None,
 ) -> Optional[str]:
     """None when the constancy proof fails; a short reason string when
     every reaching definition of ``sink_arg`` at ``sink`` folds to the
@@ -933,6 +973,7 @@ def all_definers_constant(
     ext = _index_ext(index, allow_taint_free=True)
     if ext is not None:
         ext.ban_tf_system_reads = ban_tf_system_reads
+        ext.union_member_check = union_member_check
     resolve_at = _make_point_resolver(rd, index, array_resolver,
                                       config_resolver, conduit_resolver,
                                       ext)

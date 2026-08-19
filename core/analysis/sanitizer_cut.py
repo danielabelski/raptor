@@ -540,6 +540,29 @@ def _fold_stack(graph, java_source_text: str,
         return None
 
 
+def _union_member_check(cwe: Optional[str]):
+    """Danger predicate (str list -> bool) for taint-free union and
+    helper-summary members of a ``cwe``-classified finding, or None
+    when no class is known — the union then refuses any merge with a
+    concrete string member (no danger authority, no claim).  Same
+    per-element discipline as :func:`_finite_value_set_reason`: a
+    compile-time constant can violate a value-based finding class on
+    its own, however attacker-free."""
+    if not cwe:
+        return None
+
+    def check(strs) -> bool:
+        try:
+            from core.analysis.collection_guard_java import (
+                _literals_clear_danger,
+            )
+            return _literals_clear_danger(sorted(strs), cwe) is not None
+        except Exception:  # noqa: BLE001 — refusal direction
+            return False
+
+    return check
+
+
 def _finite_value_set_reason(
     rd, sink, sink_arg: str, index, cwe: str,
     table_resolver, config_resolver, invocation_hook,
@@ -679,6 +702,7 @@ def _sink_arg_constant_reason(
             )
             tf_helper_resolver = make_tf_helper_resolver(
                 java_source_text, (min(linenos), max(linenos)),
+                member_check=_union_member_check(cwe),
             )
         except Exception:  # noqa: BLE001 — summaries are optional
             tf_helper_resolver = None
@@ -696,6 +720,7 @@ def _sink_arg_constant_reason(
             config_resolver=config_resolver,
             conduit_resolver=invocation_hook,
             ban_tf_system_reads=ban_tf_system_reads,
+            union_member_check=_union_member_check(cwe),
         )
         if reason is None and cwe:
             # Finite value-set fallback (b40): the definers disagree
@@ -907,6 +932,8 @@ def _vertex_cut_siblings_clean(
     java_source_text=None,
     java_file_path=None,
     repo_root=None,
+    ban_tf_system_reads: bool = False,
+    union_member_check=None,
 ) -> bool:
     """Sibling-argument guard for the value-bound vertex-cut path.
 
@@ -945,6 +972,8 @@ def _vertex_cut_siblings_clean(
             index, None, None, None,
             candidate_callables,
             java_source_text=java_source_text,
+            ban_tf_system_reads=ban_tf_system_reads,
+            union_member_check=union_member_check,
         )
     except Exception:  # noqa: BLE001 — guard failure reads as refuse
         return False
@@ -955,6 +984,8 @@ def _siblings_fold_or_refuse(
     index, table_resolver, config_resolver, invocation_hook,
     candidate_callables,
     java_source_text=None,
+    ban_tf_system_reads: bool = False,
+    union_member_check=None,
 ) -> bool:
     """True when every OTHER argument name of the sink call is
     provably taint-free: all its reaching definers fold to constants
@@ -981,7 +1012,9 @@ def _siblings_fold_or_refuse(
                     rd, sink, name, index,
                     array_resolver=table_resolver,
                     config_resolver=config_resolver,
-                    conduit_resolver=invocation_hook):
+                    conduit_resolver=invocation_hook,
+                    ban_tf_system_reads=ban_tf_system_reads,
+                    union_member_check=union_member_check):
                 continue
             defs = rd.at(sink, name)
             if not defs:
@@ -1026,6 +1059,8 @@ def _whole_array_taint_free_reason(
     java_source_text: str,
     java_file_path: Optional[str] = None,
     repo_root: Optional[str] = None,
+    ban_tf_system_reads: bool = False,
+    union_member_check=None,
 ) -> Optional[str]:
     """Reason string when the sink consumes a WHOLE local array whose
     every element is provably taint-free; None otherwise.
@@ -1097,14 +1132,18 @@ def _whole_array_taint_free_reason(
                         rd, at, w.rhs.text.decode("utf-8", "replace"),
                         index, array_resolver=table_resolver,
                         config_resolver=config_resolver,
-                        conduit_resolver=invocation_hook):
+                        conduit_resolver=invocation_hook,
+                        ban_tf_system_reads=ban_tf_system_reads,
+                        union_member_check=union_member_check):
                     continue
             return None
         if not _siblings_fold_or_refuse(
                 graph, rd, sink, sink_arg,
                 index, table_resolver, config_resolver, invocation_hook,
                 candidate_callables,
-                java_source_text=java_source_text):
+                java_source_text=java_source_text,
+                ban_tf_system_reads=ban_tf_system_reads,
+                union_member_check=union_member_check):
             return None
         return (
             "taint-free array argument: the sink consumes a whole "
@@ -1593,6 +1632,8 @@ def evaluate_finding(
             graph, sources_set, sink, sink_arg, source_symbols,
             candidate_callables or frozenset(), java_source_text,
             java_file_path=java_file_path, repo_root=repo_root,
+            ban_tf_system_reads=ban_tf_system_reads,
+            union_member_check=_union_member_check(cwe),
         )
         if wa_reason is not None:
             return SanitizerCutResult(
@@ -1814,6 +1855,8 @@ def evaluate_finding(
                 java_source_text=java_source_text,
                 java_file_path=java_file_path,
                 repo_root=repo_root,
+                ban_tf_system_reads=ban_tf_system_reads,
+                union_member_check=_union_member_check(cwe),
         ):
             return SanitizerCutResult(
                 suppress=False,

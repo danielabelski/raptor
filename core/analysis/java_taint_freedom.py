@@ -75,7 +75,7 @@ class TfHelperIndex:
     """Summaries for one compilation unit: ``(name, arity)`` pairs
     whose helper provably returns only attacker-free values."""
 
-    __slots__ = ("ok", "taint_free", "hits", "refused")
+    __slots__ = ("ok", "taint_free", "hits", "refused", "str_members")
 
     def __init__(self) -> None:
         self.ok: bool = False
@@ -84,6 +84,14 @@ class TfHelperIndex:
         # ``hits``; ``refused`` feeds telemetry.
         self.hits: List[str] = []
         self.refused: Dict[str, int] = {}
+        # b42 x b40 composition: every concrete string value observed
+        # flowing toward a claimed helper's return, keyed like
+        # ``taint_free``.  A summary is only a TAINT-freedom claim —
+        # a value-based finding class is violated by the constant
+        # itself, so the resolver must clear these members through the
+        # caller's danger predicate before claiming (mirrors the
+        # definer union's ``union_member_check``).
+        self.str_members: Dict[Tuple[str, int], frozenset] = {}
 
     def _refuse(self, reason: str) -> None:
         self.refused[reason] = self.refused.get(reason, 0) + 1
@@ -225,7 +233,9 @@ def derive_tf_helpers(source_text: str, span=None) -> TfHelperIndex:
             idx._refuse("no-value-return")
             continue
 
-        def make_resolve(_writes, _params):
+        strs: Set[str] = set()
+
+        def make_resolve(_writes, _params, _strs):
             def resolve(name: str, depth: int,
                         _visiting: Optional[Set[str]] = None):
                 # Union resolution over ALL writes to the local.
@@ -253,6 +263,11 @@ def derive_tf_helpers(source_text: str, span=None) -> TfHelperIndex:
                         vals.append(v)
                 finally:
                     _visiting.discard(name)
+                # Every concrete string that can flow through this
+                # local is a candidate return member — collected
+                # conservatively (agreeing values too: the agreed
+                # value keeps flowing toward the return).
+                _strs.update(v for v in vals if isinstance(v, str))
                 first = vals[0]
                 for v in vals[1:]:
                     if v is not first and v != first:
@@ -263,23 +278,27 @@ def derive_tf_helpers(source_text: str, span=None) -> TfHelperIndex:
                 return first
             return resolve
 
-        resolve = make_resolve(writes, params)
+        resolve = make_resolve(writes, params, strs)
         refused = False
         for r in returns:
             v = fold_expr(r, resolve, allow_taint_free=True)
             if v is REFUSE:
                 refused = True
                 break
+            if isinstance(v, str):
+                strs.add(v)
         if refused:
             idx._refuse("return-not-taint-free")
             continue
         idx.taint_free.add(key)
+        idx.str_members[key] = frozenset(strs)
 
     idx.ok = True
     return idx
 
 
-def make_tf_helper_resolver(source_text: str, span=None):
+def make_tf_helper_resolver(source_text: str, span=None,
+                            member_check=None):
     """Invocation-hook (conduit-slot contract) claiming bare calls to
     returns-taint-free helpers.  Returns None when nothing qualifies
     (no hook installed at all — zero cost on files without helpers).
@@ -291,6 +310,12 @@ def make_tf_helper_resolver(source_text: str, span=None):
     ``TAINT_FREE`` boundary pin — and under a value-only fold (tier
     off) the boundary pin converts the claim to a refusal, exactly the
     pre-b42 behavior.
+
+    ``member_check`` (str list -> bool) is the caller's danger
+    predicate over the helper's concrete string return members — the
+    b40 composition: a constant can violate a value-based finding
+    class on its own, so a helper with string members and no clearing
+    predicate is never claimed (no danger authority means refuse).
     """
     idx = derive_tf_helpers(source_text, span)
     if not idx.ok or not idx.taint_free:
@@ -310,6 +335,10 @@ def make_tf_helper_resolver(source_text: str, span=None):
         key = (name.text.decode(), arity)
         if key not in idx.taint_free:
             return None
+        members = idx.str_members.get(key) or frozenset()
+        if members:
+            if member_check is None or not member_check(sorted(members)):
+                return None
         idx.hits.append(key[0])
         return TAINT_FREE
 

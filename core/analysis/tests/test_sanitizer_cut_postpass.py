@@ -413,7 +413,7 @@ public class Test {
         if (p.length() > 2) {
             data = java.io.File.separator;
         } else {
-            data = "/opt";
+            data = "opt";
         }
         new java.io.FileInputStream(data);
     }

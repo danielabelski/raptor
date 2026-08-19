@@ -94,8 +94,14 @@ class TestGateConsumption:
             cfg, frozenset(), sink, "y", ("x",), src, cwe=cwe)
 
     def test_chain_clears_danger_suppresses(self):
+        # b42 composition: the danger-checked taint-free union claims
+        # this set first (same per-member discipline, same verdict);
+        # the finite-set reason remains the fallback attribution.
         reason = self._reason(_CHAIN)
-        assert reason is not None and "finite set" in reason
+        assert reason is not None and (
+            "finite set" in reason
+            or "taint-free union" in reason
+        )
 
     def test_dangerous_member_must_not_suppress(self):
         body = (

@@ -1834,9 +1834,126 @@ def _java_b42_fixtures() -> List[CutFixture]:
         body('String param = request.getHeader("X");',
              'String data;',
              'if (param.length() > 2) { data = System.getenv("HOME"); }',
-             'else { data = "/opt/app"; }',
+             'else { data = "appdata"; }',
              'new java.io.FileInputStream(data);'),
         4, 8, language="java", suffix=".java"))
+    # composed pins (b40 x b42, value discipline): the union and the
+    # helper summaries merge VALUE-CARRYING members, and a compile-time
+    # constant can violate a value-based finding class on its own — the
+    # finite-value-set path's per-element danger check is the shipped
+    # bar and the union holds itself to it. A danger-bearing constant
+    # member refuses the merge even beside a valueless taint-free
+    # member (where the finite-set path could never catch it).
+    fx.append(_fx(
+        "java_b42_union_danger_member_trap", "xss", "CWE-79",
+        "definer_union_danger_bearing_constant", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String data;',
+             'if (param.length() > 2) '
+             '{ data = System.getProperty("mode"); }',
+             'else { data = "<b>x</b>"; }',
+             'out.println(data);'),
+        4, 8, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_helper_danger_member_trap", "xss", "CWE-79",
+        "helper_returns_danger_bearing_constant", LABEL_MUST_NOT_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    private boolean flag = false;\n"
+         "    private String src() {\n"
+         "        String d;\n"
+         "        if (flag) { d = null; } else { d = \"<b>x</b>\"; }\n"
+         "        return d;\n"
+         "    }\n"
+         "    public void handle(HttpServletRequest request, "
+         "java.io.PrintWriter out) throws Exception {\n"
+         "        String param = request.getParameter(\"q\");\n"
+         "        String data = src();\n"
+         "        out.println(data);\n"
+         "    }\n}\n"),
+        10, 12, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_helper_clear_member_union", "xss", "CWE-79",
+        "helper_union_members_clear_danger", LABEL_MAY_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    private boolean flag = false;\n"
+         "    private String src() {\n"
+         "        String d;\n"
+         "        if (flag) { d = null; } else { d = \"plain\"; }\n"
+         "        return d;\n"
+         "    }\n"
+         "    public void handle(HttpServletRequest request, "
+         "java.io.PrintWriter out) throws Exception {\n"
+         "        String param = request.getParameter(\"q\");\n"
+         "        String data = src();\n"
+         "        out.println(data);\n"
+         "    }\n}\n"),
+        10, 12, language="java", suffix=".java"))
+    # composed pins (b40 x b42): the if-pruning refiner and the definer
+    # union meet on the same definer set. May-direction: the refiner
+    # removes a provably-dead tainted arm, the union claims ONLY the
+    # surviving attacker-free definers. Trap-direction: an unfoldable
+    # condition keeps the tainted definer live and the union must read
+    # the set as mixed — pruning power must never leak into the union
+    # through anything but an actually-pruned edge.
+    fx.append(_fx(
+        "java_b42_pruned_taint_then_union", "xss", "CWE-79",
+        "if_pruned_dead_taint_then_definer_union", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int num = 106;',
+             'String bar = null;',
+             'if (param.length() > 3) { bar = "safe"; }',
+             'if ((7 * 42) - num > 200) { bar = param; }',
+             'out.println(bar);'),
+        4, 9, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_unpruned_taint_union_trap", "xss", "CWE-79",
+        "unfoldable_if_keeps_taint_union_mixed", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = null;',
+             'if (param.length() > 3) { bar = "safe"; }',
+             'if (param.length() > 5) { bar = param; }',
+             'out.println(bar);'),
+        4, 8, language="java", suffix=".java"))
+    # composed pins (b41 x b42): the vertex-cut sibling guard folds
+    # sibling arguments through definers_all_fold, whose NESTED
+    # resolution now carries the union. May-direction: a sibling built
+    # from a union-of-constants local folds taint-free and the
+    # catalog-sanitized pick suppresses. Trap-direction: one union arm
+    # is the raw parameter — the sibling must refuse (downgrade to
+    # candidate_only), never suppress.
+    sib_hdr = ("import org.owasp.encoder.Encode;\n"
+               "import javax.servlet.http.HttpServletRequest;\n"
+               "public class T {\n"
+               "    public void handle(HttpServletRequest request, "
+               "java.io.PrintWriter out) {\n")
+    fx.append(_fx(
+        "java_b42_sibling_union_tf", "xss", "CWE-79",
+        "sibling_folds_via_definer_union", LABEL_MAY_SUPPRESS,
+        (sib_hdr
+         + '        String x = request.getParameter("q");\n'
+         + '        String bar = Encode.forHtml(x);\n'
+         + '        String q;\n'
+         + '        if (x.length() > 3) { q = "A"; }\n'
+         + '        else { q = "B"; }\n'
+         + '        String pre = q + ":";\n'
+         + '        out.println(pre + bar);\n'
+         + "    }\n}\n"),
+        5, 11, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b42_sibling_mixed_union_trap", "xss", "CWE-79",
+        "sibling_union_arm_tainted", LABEL_MUST_NOT_SUPPRESS,
+        (sib_hdr
+         + '        String x = request.getParameter("q");\n'
+         + '        String bar = Encode.forHtml(x);\n'
+         + '        String q;\n'
+         + '        if (x.length() > 3) { q = x; }\n'
+         + '        else { q = "B"; }\n'
+         + '        String pre = q + ":";\n'
+         + '        out.println(pre + bar);\n'
+         + "    }\n}\n"),
+        5, 11, language="java", suffix=".java"))
     return fx
 
 

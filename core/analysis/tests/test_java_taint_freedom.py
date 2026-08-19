@@ -138,7 +138,8 @@ class TestHelperResolver:
         src = _cls(
             "    private String v() { return \"x\"; }\n"
         )
-        res = make_tf_helper_resolver(src)
+        res = make_tf_helper_resolver(
+            src, member_check=lambda strs: True)
         assert res is not None
         from core.analysis.cfg_builder_java import _get_parser
         from core.analysis.const_fold_java import TAINT_FREE
@@ -158,6 +159,45 @@ class TestHelperResolver:
             got[c.text.decode()] = res(c, None, 0)
         assert got["v()"] is TAINT_FREE
         assert got["t.v()"] is None  # receiver: no claim
+
+    def test_resolver_string_members_need_danger_authority(self):
+        # b40 composition: the helper's concrete string return members
+        # must clear the caller's danger predicate — no predicate or a
+        # failing one means no claim (the constant itself can violate
+        # a value-based finding class).
+        src = _cls(
+            "    private String v() { return \"x\"; }\n"
+        )
+        from core.analysis.cfg_builder_java import _get_parser
+        tree = _get_parser().parse(b"class U { void m() { use(v()); } }")
+        call = None
+        stack = [tree.root_node]
+        while stack:
+            n = stack.pop()
+            if n.type == "method_invocation" and \
+                    n.text.decode().startswith("v("):
+                call = n
+            stack.extend(n.children)
+        assert call is not None
+        no_auth = make_tf_helper_resolver(src)
+        assert no_auth is None or no_auth(call, None, 0) is None
+        danger = make_tf_helper_resolver(
+            src, member_check=lambda strs: False)
+        assert danger is None or danger(call, None, 0) is None
+
+    def test_summary_records_string_members(self):
+        from core.analysis.java_taint_freedom import derive_tf_helpers
+        src = _cls(
+            "    private boolean f = false;\n"
+            "    private String v() {\n"
+            "        String d;\n"
+            "        if (f) { d = null; } else { d = \"foo\"; }\n"
+            "        return d;\n"
+            "    }\n"
+        )
+        idx = derive_tf_helpers(src)
+        assert ("v", 0) in idx.taint_free
+        assert idx.str_members[("v", 0)] == frozenset({"foo"})
 
 
 class TestDefinerUnion:
@@ -192,9 +232,25 @@ class TestDefinerUnion:
     def test_union_tier_on_yields_taint_free_reason(self):
         from core.analysis.const_fold_java import all_definers_constant
         rd, sink, idx = self._rd_and_index()
-        reason = all_definers_constant(rd, sink, "data", idx)
+        reason = all_definers_constant(
+            rd, sink, "data", idx,
+            union_member_check=lambda strs: True)
         assert reason is not None
         assert "non-agreeing taint-free union" in reason
+
+    def test_union_refuses_without_member_check(self):
+        # b40 composition: a merge containing a concrete string member
+        # needs a danger authority — no predicate, no claim.
+        from core.analysis.const_fold_java import all_definers_constant
+        rd, sink, idx = self._rd_and_index()
+        assert all_definers_constant(rd, sink, "data", idx) is None
+
+    def test_union_refuses_on_danger_member(self):
+        from core.analysis.const_fold_java import all_definers_constant
+        rd, sink, idx = self._rd_and_index()
+        assert all_definers_constant(
+            rd, sink, "data", idx,
+            union_member_check=lambda strs: False) is None
 
     def test_union_tier_off_refuses(self):
         # The value-only entry point keeps the historical refusal:
@@ -252,3 +308,88 @@ class TestMultiWriteLineRefusal:
         from core.analysis.const_fold_java import JavaConstIndex
         idx = JavaConstIndex(src, (1, 7))
         assert idx.rhs_at(3, "s") is not None
+
+
+class TestBanThreadingComposedSurfaces:
+    """The b42 circularity ban must reach EVERY taint-free-enabled
+    fold entry the gate's suppress paths consume — the constant
+    pre-check (pinned in the postpass tests) AND the b41 sibling /
+    whole-array surfaces, which fold through ``definers_all_fold``
+    and ``fold_expr_at``."""
+
+    def _rd_setup(self, decls: str, use: str):
+        from core.analysis.cfg_builder_java import (
+            build_java_intraproc_cfg,
+        )
+        from core.analysis.const_fold_java import JavaConstIndex
+        from core.analysis.dataflow import reaching_defs
+
+        src = ("public class T {\n"
+               "    public void m(String x) {\n"
+               + decls
+               + f"        sink({use});\n"
+               "    }\n"
+               "}\n")
+        graph = build_java_intraproc_cfg(src, "m")
+        assert graph is not None
+        n_lines = src.count("\n") + 1
+        index = JavaConstIndex(src, (1, n_lines))
+        rd = reaching_defs(graph)
+        sink_node = None
+        for n in graph.nodes():
+            if getattr(n, "lineno", 0) == src.count("\n") - 2:
+                sink_node = n
+        assert sink_node is not None
+        return rd, sink_node, index
+
+    def test_definers_all_fold_honours_ban(self):
+        from core.analysis.const_fold_java import definers_all_fold
+
+        rd, sink, index = self._rd_setup(
+            '        String v = System.getenv("HOME");\n', "v")
+        assert definers_all_fold(rd, sink, "v", index)
+        assert not definers_all_fold(
+            rd, sink, "v", index, ban_tf_system_reads=True)
+
+    def test_definers_all_fold_ban_spares_non_system_tf(self):
+        from core.analysis.const_fold_java import definers_all_fold
+
+        rd, sink, index = self._rd_setup(
+            '        String v = java.io.File.separator;\n', "v")
+        assert definers_all_fold(
+            rd, sink, "v", index, ban_tf_system_reads=True)
+
+    def test_fold_expr_at_honours_ban(self):
+        from core.analysis.cfg_builder_java import (
+            build_java_intraproc_cfg,
+        )
+        from core.analysis.const_fold_java import (
+            REFUSE,
+            TAINT_FREE,
+            JavaConstIndex,
+            fold_expr_at,
+        )
+        from core.analysis.dataflow import reaching_defs
+
+        src = ("public class T {\n"
+               "    public void m(String x) {\n"
+               '        String v = System.getenv("HOME");\n'
+               "        sink(v);\n"
+               "    }\n"
+               "}\n")
+        graph = build_java_intraproc_cfg(src, "m")
+        assert graph is not None
+        index = JavaConstIndex(src, (1, 6))
+        rd = reaching_defs(graph)
+        sink = None
+        for n in graph.nodes():
+            if getattr(n, "lineno", 0) == 4:
+                sink = n
+        assert sink is not None
+        expr = index.rhs_at(3, "v")
+        assert expr is not None
+        assert fold_expr_at(
+            rd, sink, expr, index, allow_taint_free=True) is TAINT_FREE
+        assert fold_expr_at(
+            rd, sink, expr, index, allow_taint_free=True,
+            ban_tf_system_reads=True) is REFUSE

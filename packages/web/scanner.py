@@ -91,35 +91,52 @@ class WebScanner:
 
         if self.fuzzer:
             logger.info("Phase 2: Intelligent Fuzzing")
-            # Fuzz each discovered URL × discovered parameter pair.
-            # Pre-fix the loop only fuzzed `self.base_url` against
-            # every parameter — every subpath / endpoint discovered
-            # by the crawler (`/api/v1/users`, `/admin/login`,
-            # `/search?q=`) was IGNORED. Vulnerabilities reachable
-            # only via specific endpoints (an SQLi on
-            # `/api/users?id=` but not on `/`) never got tested
-            # because the fuzzer always targeted the root.
-            #
-            # Iterate over `discovered_urls` (which includes the
-            # base URL itself, set by `crawl()` at start). For
-            # large crawls, the cross-product can be N×M; the
-            # fuzzer's own per-call rate limiting bounds the
-            # wall time.
+            # Fuzz each parameter only at the URLs where the crawler
+            # actually discovered it. Pre-fix this was a full
+            # URL × parameter cross-product — every discovered
+            # parameter probed against every discovered URL, each
+            # cell paying LLM payload generation plus probe requests
+            # even for endpoints that never take the parameter. The
+            # crawler's `parameter_urls` mapping scopes the loop;
+            # form input names keep their own dedicated loop below
+            # (they are fuzzed against their form action, not query
+            # strings).
+            discovered_params = crawl_results['discovered_parameters']
             target_urls = sorted(self.crawler.discovered_urls) or [self.base_url]
-            for target_url in target_urls:
-                for param in crawl_results['discovered_parameters']:
-                    findings = self.fuzzer.fuzz_parameter(
-                        target_url,
-                        param,
-                        vulnerability_types=['sqli', 'xss', 'command_injection']
-                    )
-                    fuzzing_findings.extend(findings)
-                    # Probe context (unredacted url + verb) pairs each
-                    # finding with what verification must replay; the
-                    # finding dict itself only carries the redacted url.
-                    probe_contexts.extend(
-                        (f, target_url, param, "GET") for f in findings
-                    )
+            param_urls = getattr(self.crawler, "parameter_urls", None)
+            if not isinstance(param_urls, dict):
+                param_urls = {}
+            if param_urls:
+                fuzz_cells = [
+                    (url, param)
+                    for param in sorted(param_urls)
+                    for url in sorted(param_urls[param])
+                ]
+            else:
+                # No mapping (legacy crawler double, or parameters
+                # discovered without URL context) — fall back to the
+                # cross-product rather than silently skipping.
+                fuzz_cells = [
+                    (url, param)
+                    for url in target_urls
+                    for param in discovered_params
+                ]
+            full_product = len(target_urls) * len(discovered_params)
+            if full_product > len(fuzz_cells):
+                logger.info(
+                    "Phase 2: fuzzing %d URL x parameter pair(s); "
+                    "param-to-URL mapping pruned %d of %d "
+                    "cross-product cells",
+                    len(fuzz_cells), full_product - len(fuzz_cells),
+                    full_product,
+                )
+            for target_url, param in fuzz_cells:
+                findings = self.fuzzer.fuzz_parameter(
+                    target_url,
+                    param,
+                    vulnerability_types=['sqli', 'xss', 'command_injection']
+                )
+                fuzzing_findings.extend(findings)
 
             for form in self.crawler.discovered_forms:
                 method = form.get("method", "GET").upper()
@@ -138,6 +155,21 @@ class WebScanner:
                     probe_contexts.extend(
                         (f, action, param_name, method) for f in findings
                     )
+
+            # Surface the memoisation win so operators can see the
+            # redundant-probe reduction in the run log. Defensive
+            # against fuzzer doubles without the stats property.
+            try:
+                cache_hits, cache_keys = self.fuzzer.payload_cache_stats
+            except (TypeError, ValueError, AttributeError):
+                cache_hits, cache_keys = 0, 0
+            if cache_hits:
+                logger.info(
+                    "Phase 2: payload generation memoised — %d LLM "
+                    "call(s) saved across %d unique "
+                    "(param, type, vuln) key(s)",
+                    cache_hits, cache_keys,
+                )
         else:
             logger.warning("Phase 2: Skipping fuzzing (no LLM available)")
 

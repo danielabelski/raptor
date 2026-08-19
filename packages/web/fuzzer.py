@@ -49,7 +49,20 @@ class WebFuzzer:
         # Vulnerability findings
         self.findings: List[Dict[str, Any]] = []
 
+        # Memoised LLM payload generations, keyed on the full prompt
+        # context (param_name, param_type, vuln_type). The scanner
+        # fuzzes the same parameter at multiple URLs — the payload
+        # prompt doesn't depend on the URL, so regenerating per URL
+        # paid one redundant LLM call per extra location.
+        self._payload_cache: Dict[tuple, List[str]] = {}
+        self._payload_cache_hits: int = 0
+
         logger.info("Intelligent web fuzzer initialized (LLM-powered)")
+
+    @property
+    def payload_cache_stats(self) -> tuple:
+        """(cache_hits, unique_keys) — for run-end reduction logging."""
+        return self._payload_cache_hits, len(self._payload_cache)
 
     def set_sage_prior_recall(
         self,
@@ -148,7 +161,23 @@ class WebFuzzer:
 
     def _generate_payloads(self, param_name: str, param_type: str,
                           vuln_type: str, count: int = 10) -> List[str]:
-        """Generate intelligent payloads using LLM."""
+        """Generate intelligent payloads using LLM.
+
+        Memoised on (param_name, param_type, vuln_type) — every input
+        that shapes the prompt. Only successful generations are
+        cached, so a transient LLM failure doesn't pin the basic
+        fallback payloads for the rest of the run.
+        """
+        cache_key = (param_name, param_type, vuln_type)
+        cached = self._payload_cache.get(cache_key)
+        if cached is not None:
+            self._payload_cache_hits += 1
+            logger.debug(
+                "Payload cache hit for param=%r type=%r vuln=%r",
+                param_name, param_type, vuln_type,
+            )
+            return list(cached)
+
         system = (
             "You are a senior penetration tester generating test payloads for "
             "authorized security testing.\n\n"
@@ -210,6 +239,7 @@ class WebFuzzer:
 
             payloads = result.get('payloads', [])
             logger.info("Generated %d payloads for %s", len(payloads), vuln_type)
+            self._payload_cache[cache_key] = list(payloads)
             return payloads
 
         except Exception as e:

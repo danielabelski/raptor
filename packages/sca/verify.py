@@ -159,8 +159,10 @@ def main(
     summary, exit_code = _verdict(delta, severity_floor=args.fail_on_severity,
                                   applied=applied)
     delta_md = _render_markdown(target, proposed, applied, delta, summary)
-    (out_dir / "delta.md").write_text(delta_md, encoding="utf-8")
-    (out_dir / "delta.json").write_text(
+    from ._atomic import atomic_write_text
+    atomic_write_text(out_dir / "delta.md", delta_md)
+    atomic_write_text(
+        out_dir / "delta.json",
         json.dumps({
             "applied": [str(p) for p in applied],
             "summary": summary,
@@ -169,7 +171,6 @@ def main(
             "suppression_added": delta.suppression_added,
             "suppression_lifted": delta.suppression_lifted,
         }, indent=2),
-        encoding="utf-8",
     )
 
     sys.stdout.write(delta_md)

@@ -1605,10 +1605,11 @@ def _run_triage(
         return (False, 0.0)
 
     # Write triage output.
+    from ._atomic import atomic_write_text
     triage_path = output_dir / "triage.json"
-    triage_path.write_text(
+    atomic_write_text(
+        triage_path,
         _json_mod.dumps(result.model_dump(), indent=2, default=str),
-        encoding="utf-8",
     )
     logger.info("sca.pipeline: LLM triage ranked %d finding(s) → %s",
                  len(result.items), triage_path)
@@ -1731,9 +1732,10 @@ def _run_upgrade_impact(
         })
 
     if results:
-        (output_dir / "upgrade-impact.json").write_text(
+        from ._atomic import atomic_write_text
+        atomic_write_text(
+            output_dir / "upgrade-impact.json",
             _json_mod.dumps(results, indent=2),
-            encoding="utf-8",
         )
         logger.info("sca.pipeline: LLM upgrade-impact assessed %d dep(s)",
                      len(results))

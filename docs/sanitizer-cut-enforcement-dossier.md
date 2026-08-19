@@ -36,6 +36,25 @@ Juliet leg re-run with per-finding (not file-level) verification for
 the enforced set. Reversibility worked as designed: one field,
 reverted same-day, zero residue.
 
+**Precondition status (b45, 2026-08-19): (1) and (2) IMPLEMENTED.**
+(1) `core/analysis/threat_model_java.py` is the single authority both
+the fold tier and the source-kind locator derive from — the
+contradiction is structurally impossible (import-time disjointness
+assert + `test_threat_model_authority.py` fails the build on any
+divergence); environment reads are taint sources under the programme
+model, and the exact CWE36 Environment_01 shape joined the adversarial
+corpus as must-not-suppress (three environment-taint fixtures; corpus
+221 fixtures, zero false suppressions). (2) suppression records now
+carry the sink line (writer-enforced with a loud warning on the
+legacy path), and the damage matcher treats a line-less record against
+a labeled file as damage — refusal direction, pinned by fixtures
+reproducing this exact miss; replaying b44's six pre-fix records reads
+damage **6/6** (was 0), and the six real Juliet cases now refuse at
+the gate. (3) remains the re-attempt runbook: fresh attestation on the
+corrected tree plus `raptor-recall-measure verify-enforced` (new in
+b45 — the systematic per-finding review, exit 1 when review is
+required) over the enforced set on BOTH corpora before any new flip.
+
 Original evidence package below (assembled pre-decision; the
 "Mechanics of the flip" section predates the chokepoint correction
 above).

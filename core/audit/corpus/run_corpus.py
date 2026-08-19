@@ -2421,7 +2421,10 @@ def _run_phase2_classify(
     and is thereby ineligible for the quality-finding suppression —
     an auth/transport failure must never become a demotion input.
     """
-    from core.audit.security_classifier import CLASSIFICATION_SCHEMA
+    from core.audit.security_classifier import (
+        CALIBRATION_RULES,
+        CLASSIFICATION_SCHEMA,
+    )
     from core.llm.client import LLMClient
 
     client = LLMClient()
@@ -2470,10 +2473,15 @@ def _run_phase2_classify(
             response = client.generate_structured(
                 prompt,
                 CLASSIFICATION_SCHEMA,
+                # Same calibrated ruleset as the in-run classifier
+                # (security_classifier._CLASSIFICATION_SYSTEM): the
+                # suppression decision this pass feeds must not be
+                # made by an uncalibrated twin of that prompt.
                 system_prompt=(
                     "You are a security impact classifier. Given a "
                     "verified code defect, decide whether it has security "
-                    "implications or is purely a quality issue."
+                    "implications or is purely a quality issue.\n\n"
+                    + CALIBRATION_RULES
                 ),
                 **kwargs,
             )

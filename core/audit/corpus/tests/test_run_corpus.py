@@ -1560,3 +1560,69 @@ class TestLlmCacheKnob:
         monkeypatch.setenv("RAPTOR_LLM_CACHE", "off")
         from core.llm.config import LLMConfig
         assert LLMConfig().enable_caching is False
+
+
+class TestPhase2Calibration:
+    """The corpus phase-2 pass and the in-run classifier must judge
+    with the SAME calibrated ruleset — an uncalibrated twin of the
+    prompt reliably demotes CWE-362 shared-state races to quality."""
+
+    def test_corpus_prompt_carries_shared_calibration(self):
+        import inspect
+
+        from core.audit.security_classifier import CALIBRATION_RULES
+
+        src = inspect.getsource(run_corpus._run_phase2_classify)
+        assert "CALIBRATION_RULES" in src
+        # The shared rules cover both the stream-consumer and the
+        # check-then-create shared-registry race mechanisms.
+        assert "check-then-create" in CALIBRATION_RULES
+        assert "concurrent" in CALIBRATION_RULES
+
+    def test_in_run_classifier_carries_same_rules(self):
+        from core.audit.security_classifier import (
+            CALIBRATION_RULES,
+            _CLASSIFICATION_SYSTEM,
+        )
+
+        assert CALIBRATION_RULES in _CLASSIFICATION_SYSTEM
+
+    def test_classify_sends_calibrated_system_prompt(self, monkeypatch):
+        captured = {}
+
+        class _Resp:
+            cost = 0.0
+            content = '{"is_security": true}'
+
+        class _Client:
+            class config:  # noqa: N801 - stand-in namespace
+                @staticmethod
+                def config_for_model(name):
+                    raise ValueError
+
+            def generate_structured(self, prompt, schema, *,
+                                    system_prompt="", **kw):
+                captured["system"] = system_prompt
+                return _Resp()
+
+        monkeypatch.setattr(
+            "core.llm.client.LLMClient", lambda *a, **kw: _Client(),
+        )
+        monkeypatch.setattr(
+            run_corpus, "structured_result",
+            lambda *a, **kw: {
+                "classification": "security_finding",
+                "is_security": True,
+                "primitive": "corruption",
+            },
+        )
+        rows = [{
+            "function_id": "a.go:W",
+            "actual": "suspicious",
+            "expected": "finding",
+            "hypothesis": "unsynchronized concurrent write",
+        }]
+        run_corpus._run_phase2_classify(rows)
+        from core.audit.security_classifier import CALIBRATION_RULES
+        assert CALIBRATION_RULES in captured["system"]
+        assert rows[0]["phase2_is_security"] is True

@@ -29,6 +29,7 @@ rules:
           # Servlet
           - pattern: (HttpServletRequest $REQ).getParameter(...)
           - pattern: (HttpServletRequest $REQ).getParameterValues(...)
+          - pattern: (HttpServletRequest $REQ).getParameterMap()
           - pattern: (HttpServletRequest $REQ).getHeader(...)
           - pattern: (HttpServletRequest $REQ).getCookies()
           - pattern: (HttpServletRequest $REQ).getQueryString()

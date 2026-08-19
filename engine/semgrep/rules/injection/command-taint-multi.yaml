@@ -70,6 +70,12 @@ rules:
       - pattern-either:
           # Servlet
           - pattern: (HttpServletRequest $REQ).getParameter(...)
+          # Multi-value/map parameter spellings (source-consistency
+          # sweep; the exec args/env array seam is handled by the
+          # array-initializer propagator work — if a duplicate source
+          # addition arrives from that lane, dedup to one).
+          - pattern: (HttpServletRequest $REQ).getParameterValues(...)
+          - pattern: (HttpServletRequest $REQ).getParameterMap()
           - pattern: (HttpServletRequest $REQ).getHeader(...)
           - pattern: (HttpServletRequest $REQ).getPathInfo()
           - pattern: (HttpServletRequest $REQ).getQueryString()

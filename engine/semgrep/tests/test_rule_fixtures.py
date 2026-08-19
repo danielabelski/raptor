@@ -38,19 +38,29 @@ _CASES = {
         ["protopoll_impl_neg.js"],
     ),
     "java/trust-boundary.yaml": (
-        ["trustbound_java_pos.java"],
+        ["trustbound_java_pos.java", "trustbound_java_map_pos.java"],
         ["trustbound_java_neg.java"],
     ),
     "injection/xss.yaml": (
-        ["xss_java_pos.java", "xss_java_collection_pos.java"],
-        ["xss_java_encoder_neg.java", "xss_java_collection_neg.java"],
+        ["xss_java_pos.java", "xss_java_collection_pos.java",
+         "xss_java_printf_pos.java"],
+        ["xss_java_encoder_neg.java", "xss_java_collection_neg.java",
+         "xss_java_printf_neg.java"],
+    ),
+    "injection/ldap-taint.yaml": (
+        ["ldap_java_pos.java"],
+        ["ldap_java_neg.java"],
+    ),
+    "injection/xpath-taint.yaml": (
+        ["xpath_java_pos.java"],
+        ["xpath_java_neg.java"],
     ),
     "crypto/weak-hash.yaml": (
         ["weakhash_java_pos.java"],
         ["weakhash_java_neg.java"],
     ),
     "injection/sql-taint.yaml": (
-        ["sqli_java_pos.java"],
+        ["sqli_java_pos.java", "sql_java_multival_pos.java"],
         ["sqli_java_param_neg.java"],
     ),
 }

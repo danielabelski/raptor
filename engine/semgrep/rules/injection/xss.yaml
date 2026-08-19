@@ -114,6 +114,12 @@ rules:
       - pattern-either:
           # Servlet
           - pattern: (HttpServletRequest $REQ).getParameter(...)
+          # Multi-value / map spellings of the same parameter data
+          # (measured FN class: getParameterMap cases missed by both
+          # engines; getParameterValues chains missed on the semgrep
+          # side).
+          - pattern: (HttpServletRequest $REQ).getParameterValues(...)
+          - pattern: (HttpServletRequest $REQ).getParameterMap()
           - pattern: (HttpServletRequest $REQ).getHeader(...)
           - pattern: (HttpServletRequest $REQ).getPathInfo()
           - pattern: (HttpServletRequest $REQ).getQueryString()
@@ -139,6 +145,12 @@ rules:
       - pattern: $M.add($V)
         from: $V
         to: $M
+      # Array-initializer element flow: Object[] obj = {"a", bar}
+      # taints the array (the printf/format varargs vector and the
+      # exec args/env vector share this seam).
+      - pattern: $T[] $A = {..., $V, ...}
+        from: $V
+        to: $A
     pattern-sinks:
       - pattern-either:
           # Servlet response writer
@@ -148,7 +160,17 @@ rules:
           - pattern: (HttpServletResponse $RESP).getWriter().print($X)
           - pattern: (HttpServletResponse $RESP).getOutputStream().write(...)
           - pattern: (HttpServletResponse $RESP).getWriter().format(...)
+          - pattern: (HttpServletResponse $RESP).getWriter().printf(...)
           - pattern: (PrintWriter $PW).format(...)
+          - pattern: (PrintWriter $PW).printf(...)
+          # FQN-declared PrintWriter locals are a distinct spelling to
+          # semgrep's syntactic type matcher (no import to normalise
+          # against) — same sink set.
+          - pattern: (java.io.PrintWriter $PW).format(...)
+          - pattern: (java.io.PrintWriter $PW).printf(...)
+          - pattern: (java.io.PrintWriter $PW).write($X)
+          - pattern: (java.io.PrintWriter $PW).println($X)
+          - pattern: (java.io.PrintWriter $PW).print($X)
           # Servlet response output
           - pattern: (PrintWriter $PW).write($X)
           - pattern: (PrintWriter $PW).println($X)

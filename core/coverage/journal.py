@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -263,17 +264,46 @@ def now_iso() -> str:
 
 # ── Write ────────────────────────────────────────────────────────────
 
-def append_entry(out_dir: Path, entry: ReviewJournalEntry) -> None:
-    """Atomic single-line append to review-journal.jsonl.
+#: Serialises appends from THIS process's threads. POSIX only makes
+#: O_APPEND writes atomic up to PIPE_BUF; audit entries (full review
+#: bodies, hypotheses, study receipts) routinely exceed that, and the
+#: parallel executor appends from several worker threads through
+#: separate fds — interleaved partial writes corrupted lines.
+_append_lock = threading.Lock()
 
-    Uses a single ``write()`` call (POSIX atomicity for writes <= PIPE_BUF).
-    No per-entry fsync — the caller can ``flush_journal()`` at batch end.
+
+def append_entry(out_dir: Path, entry: ReviewJournalEntry) -> None:
+    """Locked single-line append to review-journal.jsonl.
+
+    The whole encoded line goes through one fd under a per-process
+    lock plus an advisory ``flock`` (cross-fd / cross-process safety —
+    a resumed segment or a sweep can append concurrently from another
+    process). No per-entry fsync — the caller can ``flush_journal()``
+    at batch end.
     """
     journal_path = out_dir / JOURNAL_FILENAME
     out_dir.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(entry.to_dict(), separators=(",", ":")) + "\n"
-    with open(journal_path, "a", encoding="utf-8") as f:
-        f.write(line)
+    data = (
+        json.dumps(entry.to_dict(), separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    with _append_lock:
+        fd = os.open(
+            str(journal_path),
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+            0o644,
+        )
+        try:
+            if _HAS_FCNTL:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                while data:
+                    written = os.write(fd, data)
+                    data = data[written:]
+            finally:
+                if _HAS_FCNTL:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def flush_journal(out_dir: Path) -> None:
@@ -303,6 +333,7 @@ def load_entries(out_dir: Path) -> list[ReviewJournalEntry]:
     entries: list[ReviewJournalEntry] = []
     lines = journal_path.read_text(encoding="utf-8").splitlines()
 
+    corrupt = 0
     for i, line in enumerate(lines):
         line = line.strip()
         if not line:
@@ -310,12 +341,13 @@ def load_entries(out_dir: Path) -> list[ReviewJournalEntry]:
         try:
             raw = json.loads(line)
         except json.JSONDecodeError:
+            corrupt += 1
             if i == len(lines) - 1:
-                logger.warning(
+                logger.debug(
                     "journal: skipping corrupt trailing line in %s", journal_path,
                 )
             else:
-                logger.warning(
+                logger.debug(
                     "journal: skipping corrupt line %d in %s", i + 1, journal_path,
                 )
             continue
@@ -325,6 +357,12 @@ def load_entries(out_dir: Path) -> list[ReviewJournalEntry]:
             logger.warning(
                 "journal: skipping malformed entry on line %d: %s", i + 1, exc,
             )
+    if corrupt:
+        logger.warning(
+            "journal: skipped %d corrupt line(s) in %s "
+            "(%d entries loaded)",
+            corrupt, journal_path, len(entries),
+        )
     return entries
 
 

@@ -362,6 +362,15 @@ class _NameResolver:
             if inner is None:
                 return None
             return f"{inner}().{simple}"
+        if obj.type == _OBJECT_CREATION:
+            # Instance-creation receiver (``new Helper().m(...)``):
+            # carries the explicit call marker so it can never collide
+            # with a static-chain catalog key, and so the wrapper
+            # binder can match the exact idiom.
+            inner = self.callable_name(obj)
+            if inner is None:
+                return None
+            return f"{inner}().{simple}"
         chain = _dotted_chain(obj)
         if chain is None:
             return None
@@ -424,7 +433,11 @@ def _walk_uses(n, resolver, *, exclude: Optional[set] = None) -> FrozenSet[str]:
                 # plain-variable / chained receiver is a value use.
                 if obj_u.type == _IDENT and _node_text(obj_u) not in resolver.types:
                     out.add(_node_text(obj_u))
-                elif obj_u.type == _METHOD_INVOCATION:
+                elif obj_u.type in (_METHOD_INVOCATION, _OBJECT_CREATION):
+                    # A chained-call or instance-creation receiver can
+                    # carry value uses in ITS argument subtrees
+                    # (``new Helper(x).m(y)``) — walk it. Conservative
+                    # direction: more uses = more visible taint.
                     stack.append(obj_u)
             args = cur.child_by_field_name("arguments")
             if args is not None:
@@ -473,7 +486,8 @@ def _walk_call_sites(
                     arg_deep_names=_arg_deep_names(node, resolver),
                 )))
             obj = node.child_by_field_name("object")
-            if obj is not None and _unwrap_value_expr(obj).type == _METHOD_INVOCATION:
+            if obj is not None and _unwrap_value_expr(obj).type in (
+                    _METHOD_INVOCATION, _OBJECT_CREATION):
                 visit(_unwrap_value_expr(obj))
             args = node.child_by_field_name("arguments")
             if args is not None:

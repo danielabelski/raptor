@@ -30,9 +30,15 @@ def codeql_pre_sweep(
 
     import subprocess as _sp
     try:
+        from core.config import RaptorConfig
+
         info = _sp.run(
             ["codeql", "resolve", "database", str(db_path)],
             capture_output=True, text=True, timeout=30,
+            # Sanitised environment like every other subprocess that
+            # touches scan-derived paths (the database may live under
+            # the scanned repo).
+            env=RaptorConfig.get_safe_env(),
         )
         language = None
         for line in info.stdout.splitlines():

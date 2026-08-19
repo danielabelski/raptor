@@ -718,6 +718,62 @@ class TestSignalReachableSet:
         assert any("my_sig_handler" in s for s in sig_set)
         assert any("do_work" in s for s in sig_set)
 
+    def test_memoised_per_checklist_identity(self, monkeypatch):
+        """The gate runs per outcome; the reachable-set walk must be
+        served from the per-checklist cache on repeat calls."""
+        import core.audit.refutation as rf
+
+        cl = _checklist_with_calls([
+            {"line": 10, "chain": ["signal", "my_handler"],
+             "caller": "main"},
+        ])
+        cl["files"][0]["items"] = [{"name": "my_handler"}]
+        counter = {"n": 0}
+        orig = rf._get_calls
+
+        def _counting(fentry):
+            counter["n"] += 1
+            return orig(fentry)
+
+        monkeypatch.setattr(rf, "_get_calls", _counting)
+        first = rf._signal_reachable_set(cl)
+        walked = counter["n"]
+        assert walked > 0
+        second = rf._signal_reachable_set(cl)
+        assert second == first
+        assert counter["n"] == walked  # no rebuild
+
+        # A distinct checklist object is not served the cached value.
+        other = _checklist_with_calls([
+            {"line": 10, "chain": ["printf"], "caller": "main"},
+        ])
+        assert rf._signal_reachable_set(other) == frozenset()
+
+
+class TestClassifyLifecycleMemo:
+    def test_caller_map_memoised_per_checklist(self, monkeypatch):
+        import core.audit.refutation as rf
+
+        cl = _checklist_with_calls([
+            {"line": 50, "chain": ["setup"], "caller": "main"},
+            {"line": 200, "chain": ["poll"], "caller": "main"},
+        ])
+        counter = {"n": 0}
+        orig = rf._get_calls
+
+        def _counting(fentry):
+            counter["n"] += 1
+            return orig(fentry)
+
+        monkeypatch.setattr(rf, "_get_calls", _counting)
+        assert rf._classify_lifecycle("setup", "src/main.c", cl) \
+            == "init"
+        walked = counter["n"]
+        assert walked > 0
+        assert rf._classify_lifecycle("setup", "src/main.c", cl) \
+            == "init"
+        assert counter["n"] == walked  # map served from cache
+
 
 class TestClassifyLifecycle:
     """Lifecycle phase classification."""

@@ -191,6 +191,31 @@ def _is_single_threaded(
     return True
 
 
+# Per-checklist memoisation for the call-graph structures the gates
+# derive: both gates run per outcome, and the adjacency / caller-map
+# rebuild was repeated for every hypothesis on the same run's
+# checklist. Keyed by object identity (the stored strong reference
+# pins the id); the small FIFO bound keeps long-lived processes from
+# accumulating dead checklists.
+_CHECKLIST_CACHE_MAX = 4
+_signal_reachable_cache: list = []
+_caller_map_cache: list = []
+
+
+def _checklist_cache_get(cache: list, checklist: Any) -> Any:
+    for obj, value in cache:
+        if obj is checklist:
+            return value
+    return None
+
+
+def _checklist_cache_put(cache: list, checklist: Any,
+                         value: Any) -> None:
+    cache.append((checklist, value))
+    if len(cache) > _CHECKLIST_CACHE_MAX:
+        cache.pop(0)
+
+
 def _signal_reachable_set(
     checklist: Optional[Dict[str, Any]],
 ) -> FrozenSet[str]:
@@ -200,10 +225,15 @@ def _signal_reachable_set(
     sigaction().  Returns frozenset of ``"file:function"`` keys.
 
     Falls back to empty set if signal handlers can't be identified
-    (safe: gate won't suppress).
+    (safe: gate won't suppress).  Memoised per checklist identity —
+    the gate runs once per outcome on the same checklist.
     """
     if not checklist:
         return frozenset()
+
+    cached = _checklist_cache_get(_signal_reachable_cache, checklist)
+    if cached is not None:
+        return cached
 
     files = checklist.get("files", [])
 
@@ -235,6 +265,9 @@ def _signal_reachable_set(
                 handler_names.add(name)
 
     if not handler_names:
+        _checklist_cache_put(
+            _signal_reachable_cache, checklist, frozenset(),
+        )
         return frozenset()
 
     # Phase 3: transitive closure over call graph
@@ -275,7 +308,9 @@ def _signal_reachable_set(
         # Also add bare name for matching
         result.add(f":{func}")
 
-    return frozenset(result)
+    frozen = frozenset(result)
+    _checklist_cache_put(_signal_reachable_cache, checklist, frozen)
+    return frozen
 
 
 def _refute_by_architecture(
@@ -349,19 +384,24 @@ def _classify_lifecycle(
     calls (``main → setup → target``).  Deeper chains return "unknown"
     — the checklist call graph is per-file and rarely has more depth.
     """
-    files = checklist.get("files", [])
-
-    # Build a global caller→[(callee, line)] map for indirect lookup
-    caller_map: Dict[str, list[tuple[str, int]]] = {}
-    for fentry in files:
-        for c in _get_calls(fentry):
-            caller = c.get("caller", "")
-            chain = c.get("chain", [])
-            line = c.get("line", 0)
-            if caller and chain:
-                caller_map.setdefault(caller, []).append(
-                    (chain[0], line),
-                )
+    # Build a global caller→[(callee, line)] map for indirect lookup.
+    # Memoised per checklist identity — the gate runs per outcome and
+    # the map only depends on the checklist.
+    caller_map: Dict[str, list[tuple[str, int]]] | None = (
+        _checklist_cache_get(_caller_map_cache, checklist)
+    )
+    if caller_map is None:
+        caller_map = {}
+        for fentry in checklist.get("files", []):
+            for c in _get_calls(fentry):
+                caller = c.get("caller", "")
+                chain = c.get("chain", [])
+                line = c.get("line", 0)
+                if caller and chain:
+                    caller_map.setdefault(caller, []).append(
+                        (chain[0], line),
+                    )
+        _checklist_cache_put(_caller_map_cache, checklist, caller_map)
 
     main_calls = caller_map.get("main", [])
     if not main_calls:

@@ -88,6 +88,11 @@
   "count": 14,
   "kind": "literal"
  },
+ "core/analysis/sanitizer_cut_postpass.py::to_dict": {
+  "count": 11,
+  "kind": "literal",
+  "note": "enforcement-stats field names (post-pass gate record JSON), not name vocabulary \u2014 same class as the sanitizer_cut_precision to_dict entry"
+ },
  "core/analysis/sanitizer_cut_precision.py::to_dict": {
   "count": 10,
   "kind": "literal",
@@ -1150,10 +1155,20 @@
   "count": 10,
   "kind": "literal"
  },
+ "core/recall/cvefix_manifest.py::fp_twin": {
+  "count": 10,
+  "kind": "literal",
+  "note": "recall-manifest schema field names (fp-only twin dict), not name vocabulary \u2014 same class as the report field-name entries"
+ },
  "core/recall/score.py::to_dict": {
   "count": 16,
   "kind": "literal",
   "note": "recall-report field names (counts/percentages/lists of the recall measurement JSON), not name vocabulary \u2014 same class as the finding-dict field-name entries"
+ },
+ "core/recall/verify_enforced.py::verify_enforced": {
+  "count": 12,
+  "kind": "literal",
+  "note": "verify-enforced review-record field names, not name vocabulary \u2014 same class as the recall-report field-name entries"
  },
  "core/recall/warm.py::apply_would_suppress": {
   "count": 10,
@@ -1625,6 +1640,11 @@
  "packages/cve_diff/cve_diff/report/markdown.py::_humanize_class": {
   "count": 15,
   "kind": "literal"
+ },
+ "packages/describe/package_manager.py::_INSTALL_ADVICE": {
+  "count": 11,
+  "kind": "literal",
+  "note": "host tool binary-name registry keyed to install advice (mirrors the RaptorConfig.TOOL_DEPS binaries), operator environment guidance, not target API vocabulary"
  },
  "packages/describe/report.py::doc": {
   "count": 18,

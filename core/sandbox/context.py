@@ -1589,6 +1589,50 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             )
             nonlocal_audit_mode = False
 
+        def _audit_target_dir_problem() -> str | None:
+            """Why the effective audit target dir is unusable, or None.
+
+            The audit tiers create ``<dir>/.audit`` inside the target
+            dir but never the dir itself (see evidence.ensure_audit_dir)
+            — the contract is "caller supplies an existing writable
+            directory" (lifecycle-created run dirs at every production
+            call site). A missing/unwritable dir is therefore a
+            caller-input error, categorically different from the
+            environmental degradations (no userns, no libseccomp, no
+            ptrace) the fallback ladder legitimately absorbs.
+            """
+            _d = audit_run_dir or output
+            if not (nonlocal_audit_mode and _d):
+                return None
+            if not os.path.isdir(_d):
+                return f"is not an existing directory: {_d!r}"
+            if not os.access(_d, os.W_OK | os.X_OK):
+                return f"is not writable: {_d!r}"
+            return None
+
+        # Fail-closed validation of the audit target BEFORE any spawn
+        # tier runs. Pre-fix, a typo'd audit_run_dir= surfaced as
+        # ENOENT deep inside the mount-ns spawn setup, was swallowed
+        # by the environmental-degradation excepts below, and the call
+        # cascaded mount-ns → Landlock-only → bare subprocess.run:
+        # the command executed with reduced containment and NO audit
+        # evidence, while the API call looked successful (fail-open
+        # on the evidence channel).
+        _audit_dir_problem = _audit_target_dir_problem()
+        if _audit_dir_problem:
+            _src = ("audit_run_dir" if audit_run_dir
+                    else "output (audit target fallback)")
+            raise ValueError(
+                f"audit mode is engaged but the audit target directory "
+                f"from {_src}= {_audit_dir_problem}. The sandbox creates "
+                f"only the .audit/ evidence subdirectory inside it, "
+                f"never the directory itself — create it before the "
+                f"call (production callers pass lifecycle-created run "
+                f"dirs). Refusing to run: silently continuing here "
+                f"previously disabled BOTH the mount-ns containment "
+                f"tier and the requested audit evidence."
+            )
+
         # Always use safe env unless caller provided their own.
         # env=None is treated as "no env kwarg" — the subprocess
         # default of env=None is "inherit os.environ wholesale",
@@ -2072,6 +2116,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # mount-ns is unusable.
         used_spawn = False
         _audit_landlock_engaged = False
+        # Why audit could not engage for this call, for the degrade
+        # marker written at the no-audit bottleneck
+        # below. Set by the pre-flight ineligibility block and by the
+        # runtime failure sites (spawn exception, Landlock-only tracer
+        # exception); None while audit is still expected to engage.
+        _audit_no_engage_reason = None
+        _audit_no_engage_instr = ""
         # _spawn doesn't replicate every subprocess.run kwarg through its
         # manual os.fork() path. The Landlock-only subprocess.run path
         # handles them natively via Python's posix_spawn logic. Route
@@ -2204,6 +2255,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 _b_fallback_reason, _b_fallback_instr,
                 target, output, kwargs,
             )
+            _audit_no_engage_reason = degrade_reason
+            _audit_no_engage_instr = degrade_instr
             if state.warn_once("_audit_warned_no_spawn"):
                 logger.warning(
                     "Sandbox: --audit requested but %s; syscall + "
@@ -2576,25 +2629,28 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             # pass audit_run_dir without output — the
                             # marker still fires there.
                             _retry_marker_dir = audit_run_dir or output
+                            if nonlocal_audit_mode:
+                                _audit_no_engage_reason = (
+                                    f"cmd[0]={cmd[0]!r} mount-ns "
+                                    f"failed at exec (rc="
+                                    f"{result.returncode}, no "
+                                    f"stderr) — speculative-C "
+                                    f"retry routed via Landlock-"
+                                    f"only; tracer didn't attach")
+                                _audit_no_engage_instr = (
+                                    "the binary's deps are outside "
+                                    "the tool_paths bind set; "
+                                    "audit can't engage. Other "
+                                    "tools in the workflow still "
+                                    "audit normally.")
                             if nonlocal_audit_mode and _retry_marker_dir:
                                 from pathlib import Path as _Path
 
                                 from . import summary as _summary_mod
                                 _summary_mod.record_audit_degraded(
                                     _Path(_retry_marker_dir),
-                                    reason=(
-                                        f"cmd[0]={cmd[0]!r} mount-ns "
-                                        f"failed at exec (rc="
-                                        f"{result.returncode}, no "
-                                        f"stderr) — speculative-C "
-                                        f"retry routed via Landlock-"
-                                        f"only; tracer didn't attach"),
-                                    instructions=(
-                                        "the binary's deps are outside "
-                                        "the tool_paths bind set; "
-                                        "audit can't engage. Other "
-                                        "tools in the workflow still "
-                                        "audit normally."),
+                                    reason=_audit_no_engage_reason,
+                                    instructions=_audit_no_engage_instr,
                                 )
                             used_spawn = False
                             # Fall through to subprocess path below.
@@ -2614,6 +2670,41 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     # libc layouts (musl, minimal busybox images);
                     # FileNotFoundError is a subclass but we list
                     # it explicitly for documentation.
+                    #
+                    # This except is for ENVIRONMENTAL failures only.
+                    # A caller-input error — the audit target dir
+                    # vanished after the entry validation above (the
+                    # tracer's ENOENT on <dir>/.audit lands here as a
+                    # FileNotFoundError) — must NOT ride the
+                    # degradation ladder: fail loudly instead of
+                    # silently trading away mount-ns containment AND
+                    # the requested audit evidence.
+                    _vanished = _audit_target_dir_problem()
+                    if _vanished:
+                        from .errors import SandboxSetupError
+                        raise SandboxSetupError(
+                            f"sandbox mount-ns spawn failed "
+                            f"({_spawn_err}) and the audit target "
+                            f"directory {_vanished} — refusing the "
+                            f"Landlock-only fallback: the caller asked "
+                            f"for audit evidence and the target dir is "
+                            f"gone (caller-input error, not an "
+                            f"environmental degradation).",
+                            "recreate the audit_run_dir/output "
+                            "directory (production callers pass "
+                            "lifecycle-created run dirs) and retry.",
+                        ) from _spawn_err
+                    if nonlocal_audit_mode:
+                        _audit_no_engage_reason = (
+                            f"mount-ns spawn path failed "
+                            f"({_spawn_err.__class__.__name__}: "
+                            f"{_spawn_err}) — audit falls back to the "
+                            f"Landlock-only tracer if available")
+                        _audit_no_engage_instr = (
+                            "see the sandbox log for the spawn "
+                            "failure; fix the host (uidmap package, "
+                            "userns sysctl) to restore the mount-ns "
+                            "audit tier.")
                     logger.warning(
                         "Sandbox: mount-ns spawn path failed (%s); "
                         "falling back to Landlock-only subprocess path.",
@@ -2749,20 +2840,104 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 )
                                 _audit_landlock_engaged = True
                             except (RuntimeError, OSError) as _la_err:
-                                # Tracer fork failed — fall through
-                                # to plain subprocess.run. Operator
-                                # gets the existing degrade marker.
+                                # Environmental tracer-fork failures
+                                # fall through to plain subprocess.run
+                                # (recorded at the no-audit bottleneck
+                                # below). A vanished audit target dir
+                                # is a caller-input error — the same
+                                # class the entry validation rejects —
+                                # and must not silently cost the
+                                # requested evidence channel.
+                                _vanished = _audit_target_dir_problem()
+                                if _vanished:
+                                    from .errors import SandboxSetupError
+                                    raise SandboxSetupError(
+                                        f"sandbox Landlock-only audit "
+                                        f"tracer failed ({_la_err}) and "
+                                        f"the audit target directory "
+                                        f"{_vanished} — refusing the "
+                                        f"non-audit fallback for a "
+                                        f"caller-input error.",
+                                        "recreate the audit_run_dir/"
+                                        "output directory and retry.",
+                                    ) from _la_err
+                                _audit_no_engage_reason = (
+                                    f"Landlock-only audit tracer "
+                                    f"failed "
+                                    f"({_la_err.__class__.__name__}: "
+                                    f"{_la_err}) — no audit tier "
+                                    f"engaged for this call")
+                                _audit_no_engage_instr = (
+                                    "see the sandbox log for the "
+                                    "tracer failure; b2/b3 audit "
+                                    "signal is absent for this call.")
                                 logger.warning(
                                     "Sandbox: Landlock-only audit "
                                     "tracer failed (%s); falling back "
                                     "to non-audit subprocess.run",
                                     _la_err,
                                 )
+                        elif _audit_no_engage_reason is None:
+                            # Runtime-probe miss on the Landlock-only
+                            # tier (the eager pre-flight above only
+                            # probes when spawn was ineligible, so a
+                            # spawn-path runtime failure lands here
+                            # with no reason recorded yet).
+                            _audit_no_engage_reason = (
+                                "Landlock-only audit tracer "
+                                "unavailable (libseccomp/ptrace probe "
+                                "failed or no seccomp profile) — no "
+                                "audit tier engaged for this call")
+                            _audit_no_engage_instr = (
+                                "install libseccomp and permit "
+                                "PTRACE_SEIZE (Yama scope <= 1), or "
+                                "run without audit mode.")
                     except ImportError:
                         # Sandbox helpers missing — let the bare
                         # path run.
-                        pass
+                        if _audit_no_engage_reason is None:
+                            _audit_no_engage_reason = (
+                                "sandbox audit helpers unavailable "
+                                "(ImportError) — no audit tier "
+                                "engaged for this call")
+                            _audit_no_engage_instr = (
+                                "reinstall RAPTOR's sandbox package; "
+                                "core.sandbox._landlock_audit failed "
+                                "to import.")
                 if not _audit_landlock_engaged:
+                    if nonlocal_audit_mode:
+                        # No-audit bottleneck: EVERY audit-requested
+                        # call that is about to execute via bare
+                        # subprocess.run (no tracer of any tier)
+                        # passes through here — pre-flight
+                        # ineligibility, spawn runtime failure, M/X
+                        # retry, Landlock-only tracer failure and
+                        # ImportError alike. Two guarantees:
+                        #   1. the degradation is machine-readable
+                        #      (per-run marker, idempotent — the
+                        #      pre-flight sites keep their richer
+                        #      reason; plus sandbox_info
+                        #      ["audit_engaged"]=False stamped after
+                        #      the run), and
+                        #   2. the runtime-failure paths (spawn
+                        #      exception → Landlock-only tracer
+                        #      exception) no longer reach bare
+                        #      subprocess.run with NOTHING recorded
+                        #      beyond a scrollback warning.
+                        _reason = (
+                            _audit_no_engage_reason
+                            or "no audit tier could engage for this "
+                               "call (unattributed degradation)")
+                        _marker_dir = audit_run_dir or output
+                        if _marker_dir:
+                            from pathlib import Path as _Path
+
+                            from . import summary as _summary_mod
+                            _summary_mod.record_audit_degraded(
+                                _Path(_marker_dir),
+                                reason=_reason,
+                                instructions=_audit_no_engage_instr,
+                            )
                     if need_unshare:
                         # Orphan-teardown: the shim (pid-1 of the new pid-ns)
                         # would otherwise outlive an ORCHESTRATOR that is
@@ -2882,6 +3057,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         _audit_engaged_anywhere = (
             used_spawn or _audit_landlock_engaged
         )
+        # Machine-readable evidence-channel record: when the caller
+        # asked for audit, say whether ANY audit tier engaged for
+        # this call. False pairs with the per-run
+        # sandbox-audit-degraded.json marker (which carries the why);
+        # consumers (triage provenance, run-metadata readers) get a
+        # per-call signal instead of parsing warnings out of stderr.
+        # Absent when audit was not requested/engaged for the call.
+        if nonlocal_audit_mode:
+            result.sandbox_info["audit_engaged"] = bool(
+                _audit_engaged_anywhere
+            )
         if (nonlocal_observe_nonce is not None
                 and nonlocal_audit_mode
                 and _audit_engaged_anywhere):

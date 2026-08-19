@@ -43,6 +43,7 @@ XSS_SANITIZERS: Sequence[str] = (
     "Encode.forHtmlAttribute(...)",
     "org.owasp.encoder.Encode.forHtml(...)",
     "ESAPI.encoder().encodeForHTML(...)",
+    "org.owasp.esapi.ESAPI.encoder().encodeForHTML(...)",
     "(Encoder $ENC).encodeForHTML(...)",
 )
 

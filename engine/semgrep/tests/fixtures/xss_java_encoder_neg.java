@@ -23,5 +23,9 @@ public class xss_java_encoder_neg extends HttpServlet {
         // ESAPI through a typed Encoder reference
         Encoder enc = ESAPI.encoder();
         response.getWriter().write(enc.encodeForHTML(param));
+
+        // ESAPI chained singleton, fully qualified inline (no import
+        // to normalise against — a distinct spelling to the matcher)
+        out.println(org.owasp.esapi.ESAPI.encoder().encodeForHTML(param));
     }
 }

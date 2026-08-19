@@ -3719,6 +3719,46 @@ class TestMultiPassReview:
         assert call_count[0] == 2
 
 
+class TestMultiPassBudgetPropagation:
+    """Budget-exceeded RuntimeErrors must escape _multi_pass_review —
+    swallowing them journaled 'error' verdicts (or bought more spend
+    via the fallback passes) after the cap was already blown."""
+
+    @staticmethod
+    def _budget_review(ctx, cfg):
+        raise RuntimeError("LLM budget exceeded ($5.00 cap reached)")
+
+    def test_single_pass_reraises_budget(self, tmp_path: Path):
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        with pytest.raises(RuntimeError, match="budget exceeded"):
+            _multi_pass_review(
+                self._budget_review,
+                {"file": "a.c", "function": "f"}, config, passes=1,
+            )
+
+    def test_self_consistency_reraises_budget(self, tmp_path: Path):
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        with pytest.raises(RuntimeError, match="budget exceeded"):
+            _multi_pass_review(
+                self._budget_review,
+                {"file": "a.c", "function": "f"}, config, passes=3,
+            )
+
+    def test_non_budget_error_still_journals(self, tmp_path: Path):
+        target, out = _setup_target(tmp_path)
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+
+        def broken(ctx, cfg):
+            raise RuntimeError("segfault in helper")
+
+        outcome = _multi_pass_review(
+            broken, {"file": "a.c", "function": "f"}, config, passes=1,
+        )
+        assert outcome.status == "error"
+
+
 class TestRefinementConfig:
     """Tests for refinement config fields and result counters."""
 

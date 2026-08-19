@@ -9092,6 +9092,17 @@ def _outcome_to_panel_result(
     return result
 
 
+def _is_budget_exceeded(exc: Exception) -> bool:
+    """True for the budget-exceeded RuntimeError the executor stops on.
+
+    Review fallbacks must re-raise it — journaling it as a
+    per-function 'error' outcome (or dispatching another fallback
+    pass) hides the stop signal and keeps spending past the cap.
+    """
+    from core.llm.client import is_budget_exceeded_error
+    return isinstance(exc, RuntimeError) and is_budget_exceeded_error(exc)
+
+
 def _multi_pass_review(
     review_fn: Callable,
     ctx: dict[str, Any],
@@ -9261,7 +9272,13 @@ def _multi_pass_review(
                 "multi_review unavailable, falling back to inline loop",
                 exc_info=True,
             )
-        except Exception:
+        except Exception as exc:
+            # Budget exhaustion is the executor's stop signal, not a
+            # per-function failure: swallowing it here journaled an
+            # 'error' verdict (or bought MORE spend via the fallback
+            # passes below) after the cap was already blown.
+            if _is_budget_exceeded(exc):
+                raise
             # The operator asked for cross-model consensus (--model A
             # --model B); a runtime failure here silently downgrades
             # to single-model self-consistency — say so visibly.
@@ -9298,6 +9315,8 @@ def _multi_pass_review(
                             "status": "error",
                             "body": "blocked by content filter"}
                 except Exception as exc:  # noqa: BLE001
+                    if _is_budget_exceeded(exc):
+                        raise
                     logger.warning(
                         "review_fn pass failed for %s:%s: %s",
                         file_path, function_name, exc,
@@ -9355,7 +9374,9 @@ def _multi_pass_review(
                 "falling back to a single pass",
                 file_path, function_name,
             )
-        except Exception:
+        except Exception as exc:
+            if _is_budget_exceeded(exc):
+                raise
             logger.warning(
                 "self-consistency substrate failed for %s:%s — "
                 "falling back to a single pass",
@@ -9376,6 +9397,8 @@ def _multi_pass_review(
             body="blocked by content filter",
         )
     except Exception as exc:  # noqa: BLE001
+        if _is_budget_exceeded(exc):
+            raise
         logger.warning(
             "review_fn pass failed for %s:%s: %s",
             file_path, function_name, exc,

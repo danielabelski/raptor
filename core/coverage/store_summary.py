@@ -389,10 +389,16 @@ def format_store_view(view: Dict[str, Any], max_gap: int = 15) -> str:
     v = view.get("verdicts")
     if v:
         lines.append("  Verdict:")
-        lines.append(f"    clean:           {v.get('clean', 0)}")
-        lines.append(f"    open findings:   {v.get('open', 0)}")
-        lines.append(f"    found-then-lost: {v.get('found_then_lost', 0)}  (re-examine)")
-        lines.append(f"    unexamined:      {v.get('unexamined', 0)}")
+        # "clean" the enum value = examined by SOME tool with no finding
+        # linked — a semgrep parse counts. Label it for what it is
+        # rather than implying a completed review.
+        lines.append(
+            f"    examined, no findings: {v.get('clean', 0)}")
+        lines.append(f"    open findings:         {v.get('open', 0)}")
+        lines.append(
+            f"    found-then-lost:       {v.get('found_then_lost', 0)}"
+            "  (re-examine)")
+        lines.append(f"    unexamined:            {v.get('unexamined', 0)}")
 
     lines.append("  Gaps:")
     lines.append(f"    no tool at all: {view['gap_no_tool']}")

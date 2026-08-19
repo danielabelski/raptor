@@ -243,7 +243,10 @@ def detect_framework(
         "flask": ["from flask", "import flask", "Flask("],
         "express": ["require('express')", 'require("express")', "from 'express'"],
         "spring": ["org.springframework", "@SpringBootApplication", "@RestController"],
-        "go": ["net/http", "func.*http.HandlerFunc", "http.Handle"],
+        # Literal substrings only — this matcher does `pat in source`,
+        # so regex-shaped entries never fire.
+        "go": ["net/http", "http.HandlerFunc", "http.ResponseWriter",
+               "http.Handle"],
     }
 
     for gap in gaps:

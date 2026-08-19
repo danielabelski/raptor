@@ -58,6 +58,19 @@ class TestDetectFramework:
         ]
         assert detect_framework(gaps) == "go"
 
+    def test_go_handler_func_signal(self):
+        """The matcher is substring-based; the old regex-shaped entry
+        (func.*http.HandlerFunc) could never fire. Real Go handler
+        source must count."""
+        gaps = [
+            {"name": "v1",
+             "source": "mux.Handle(\"/\", http.HandlerFunc(serve))"},
+            {"name": "v2",
+             "source": "func serve(w http.ResponseWriter, "
+                       "r *http.Request) {}"},
+        ]
+        assert detect_framework(gaps) == "go"
+
     def test_no_framework(self):
         gaps = [
             {"name": "f", "source": "int main() { return 0; }"},

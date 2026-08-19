@@ -845,11 +845,19 @@ def _rewrite_via_registry(
     by NuGet CPM / csproj / Gradle catalog paths. The registry
     operates on file paths (it reads + atomic-writes the file
     itself), but ``_rewrite_one``'s contract is text-in / text-
-    out + bool applied + reason. Adapt by:
+    out + bool applied + reason — and this function runs during
+    PLANNING, so the original manifest must never be written here
+    (only ``--apply`` writes the source tree). Adapt by:
 
       * Synthesise a single ``RewriteEdit`` from the plan.
-      * Call the registry's dispatcher.
-      * Read back the (possibly mutated) file content.
+      * Copy ``text`` to a scratch file carrying the manifest's
+        filename (registry dispatch keys on the name), and run
+        the registry's dispatcher against the copy.
+      * Read the post-state back from the copy.
+
+    Running against a copy also composes with earlier plans on
+    the same manifest: the registry rewriter sees the caller's
+    working ``text`` rather than re-reading the original file.
 
     For Gradle catalogs the locator needs a section prefix
     (``library:<alias>`` / ``version:<key>`` / ``plugin:<alias>``).
@@ -878,20 +886,27 @@ def _rewrite_via_registry(
         old_value=plan.installed,
         new_value=plan.target,
     )
-    results = _rewrite(manifest, [edit])
-    if not results:
-        return text, False, f"no rewriter for {manifest.name}"
-    r = results[0]
-    if r.applied:
-        # Reload the file content for the caller. The rewriter
-        # already wrote atomically; this read is the canonical
-        # post-state.
+    from core.run.scratch import scratch_dir
+    with scratch_dir("raptor-sca-rewrite-plan-") as scratch:
+        scratch_copy = scratch / manifest.name
         try:
-            new_text = manifest.read_text(encoding="utf-8")
+            scratch_copy.write_text(text, encoding="utf-8")
         except OSError as e:
-            return text, False, f"error: post-write read failed: {e}"
-        return new_text, True, None
-    return text, False, r.reason
+            return text, False, f"error: scratch copy write failed: {e}"
+        results = _rewrite(scratch_copy, [edit])
+        if not results:
+            return text, False, f"no rewriter for {manifest.name}"
+        r = results[0]
+        if r.applied:
+            # Reload the scratch copy for the caller. The rewriter
+            # wrote it atomically; this read is the canonical
+            # post-state. The original manifest is untouched.
+            try:
+                new_text = scratch_copy.read_text(encoding="utf-8")
+            except OSError as e:
+                return text, False, f"error: post-write read failed: {e}"
+            return new_text, True, None
+        return text, False, r.reason
 
 
 def _is_inline_install_file(path: Path) -> bool:

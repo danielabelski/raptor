@@ -12,7 +12,6 @@ truth — banner picks them up automatically).
 
 from __future__ import annotations
 
-
 import pytest
 
 from core.startup import init as startup_init
@@ -106,7 +105,7 @@ class TestPythonVersionCheck:
         # No version mock — we're running on a real Python.
         # Whatever version it is, the version should appear as a
         # part with the appropriate glyph.
-        parts, warnings = _run_check_env(monkeypatch)
+        parts, _warnings = _run_check_env(monkeypatch)
         version_parts = [p for p in parts if p.startswith("Python ")]
         assert version_parts, f"no python version in parts: {parts}"
 

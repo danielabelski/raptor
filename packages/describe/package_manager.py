@@ -35,8 +35,6 @@ import os
 import platform as _platform
 import shutil
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-
 
 # Package managers we recognise, in detection order. Order is
 # significant for the "first wins" rule — if a system has both
@@ -59,7 +57,7 @@ _PER_PM_PKG_OVERRIDES: dict = {}
 
 
 @functools.lru_cache(maxsize=1)
-def detect_package_manager() -> Optional[str]:
+def detect_package_manager() -> str | None:
     """Return the first installed PM from ``_KNOWN_PMS``, or
     None when no recognised PM is on PATH. Cached per-process
     since the answer doesn't change mid-run.
@@ -87,7 +85,7 @@ def _sudo_prefix() -> str:
     return "sudo "
 
 
-def format_install_hint(packages: List[str]) -> str:
+def format_install_hint(packages: list[str]) -> str:
     """Return an operator-pastable install command for the
     detected PM, or a generic message when no PM is found.
 
@@ -124,7 +122,7 @@ def format_install_hint(packages: List[str]) -> str:
     return f"install {pkgs} via your system package manager"
 
 
-def _resolve_pkg(pkg: str, pm: Optional[str]) -> str:
+def _resolve_pkg(pkg: str, pm: str | None) -> str:
     """Look up the per-PM override for ``pkg`` if one exists,
     else pass through unchanged."""
     overrides = _PER_PM_PKG_OVERRIDES.get(pkg)
@@ -148,7 +146,7 @@ def _resolve_pkg(pkg: str, pm: Optional[str]) -> str:
 # Pipx package name per PM (some distros namespace differently).
 # The install command is built at call time via format_install_hint
 # so the EUID==0 / no-sudo path is honoured uniformly.
-_PIPX_PKG_PER_PM: Dict[str, str] = {
+_PIPX_PKG_PER_PM: dict[str, str] = {
     "apt": "pipx",
     "dnf": "pipx",
     "yum": "pipx",
@@ -265,17 +263,17 @@ class InstallAdvice:
     the gotcha after the install succeeded, wasting Google time.
     """
     kind: str    # "distro_pm" | "pipx" | "pip" | "static_url" | "linux_only"
-    pm_packages: Optional[Dict[str, str]] = None
-    package: Optional[str] = None
-    static_url: Optional[str] = None
-    docs_url: Optional[str] = None
-    mac_caveat: Optional[str] = None
+    pm_packages: dict[str, str] | None = None
+    package: str | None = None
+    static_url: str | None = None
+    docs_url: str | None = None
+    mac_caveat: str | None = None
 
 
 # Registry — binary name → InstallAdvice. Binary names match what
 # ``shutil.which`` (and ``RaptorConfig.TOOL_DEPS[*]['binary']``)
 # checks for, so callers pass the same name they probed with.
-_INSTALL_ADVICE: Dict[str, InstallAdvice] = {
+_INSTALL_ADVICE: dict[str, InstallAdvice] = {
     # --- autotools chain (consumed by tool_readiness) ---
     "autoreconf": InstallAdvice(
         kind="distro_pm",

@@ -9,8 +9,6 @@ classification + exit code.
 
 from __future__ import annotations
 
-
-
 from core.startup import doctor
 from core.startup.doctor import _render, main
 
@@ -67,14 +65,14 @@ class TestRenderClassification:
         assert "rr not found" in text
 
     def test_llm_warnings_are_warnings(self):
-        text, n_fail, n_warn = _render(
+        _text, _n_fail, n_warn = _render(
             *_gather_stub(llm_warnings=["No API keys configured"]),
             verbose=False,
         )
         assert n_warn == 1
 
     def test_env_warnings_are_warnings(self):
-        text, n_fail, n_warn = _render(
+        _text, _n_fail, n_warn = _render(
             *_gather_stub(env_warnings=["RAPTOR_DIR not set"]),
             verbose=False,
         )
@@ -97,7 +95,7 @@ class TestRenderClassification:
         assert "PASSED:" not in text
 
     def test_pass_lines_shown_with_verbose(self):
-        text, n_fail, n_warn = _render(
+        text, _n_fail, _n_warn = _render(
             *_gather_stub(
                 tool_results=[("semgrep", True)],
                 env_parts=["out/ ✓"],
@@ -344,9 +342,9 @@ class TestOutputShape:
             doctor, "_gather",
             lambda: _gather_stub(
                 env_warnings=[
-                    "RAPTOR_DIR not set in this process; "
-                    "expected /home/op/raptor based on checkout "
-                    "location.",
+                    ("RAPTOR_DIR not set in this process; "
+                     "expected /home/op/raptor based on checkout "
+                     "location."),
                 ],
             ),
         )

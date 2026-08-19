@@ -46,10 +46,9 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from core.security.log_sanitisation import escape_nonprintable
-
 
 _USAGE = (
     "usage: raptor doctor [--strict] [--verbose]\n"
@@ -58,7 +57,7 @@ _USAGE = (
 )
 
 
-def _build_install_hints(missing_tool_names: List[str]) -> dict:
+def _build_install_hints(missing_tool_names: list[str]) -> dict:
     """For each missing TOOL_DEPS name, look up its binary and
     format install advice via packages.describe.package_manager.
 
@@ -88,12 +87,16 @@ def _build_install_hints(missing_tool_names: List[str]) -> dict:
             continue
         try:
             out[binary] = format_install_advice(binary)
-        except Exception:  # noqa: BLE001
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "install-advice lookup failed for %s", binary,
+                exc_info=True,
+            )
             continue
     return out
 
 
-def _hint_for_warning(warning: str, install_hints: dict) -> Optional[str]:
+def _hint_for_warning(warning: str, install_hints: dict) -> str | None:
     """Match a warning string to one of the install hints. The
     warnings produced by check_tools look like ``"… <binary>
     not found"`` (single-tool case) or ``"… (afl-fuzz or
@@ -109,15 +112,15 @@ def _hint_for_warning(warning: str, install_hints: dict) -> Optional[str]:
     return None
 
 
-def _gather() -> Tuple[
-    List[Tuple[str, bool]],  # tool_results
-    List[str],               # tool_warnings
-    List[str],               # llm_lines
-    List[str],               # llm_warnings
-    List[str],               # env_parts
-    List[str],               # env_warnings
-    Optional[str],           # lang_line
-    Optional[str],           # project_line
+def _gather() -> tuple[
+    list[tuple[str, bool]],  # tool_results
+    list[str],               # tool_warnings
+    list[str],               # llm_lines
+    list[str],               # llm_warnings
+    list[str],               # env_parts
+    list[str],               # env_warnings
+    str | None,           # lang_line
+    str | None,           # project_line
 ]:
     """Run every check and return the same shape ``init.main`` builds.
 
@@ -125,7 +128,10 @@ def _gather() -> Tuple[
     noisy at WARNING level (LLM key validation, sandbox probes).
     """
     from .init import (
-        check_active_project, check_env, check_lang, check_llm,
+        check_active_project,
+        check_env,
+        check_lang,
+        check_llm,
         check_tools,
     )
 
@@ -148,17 +154,17 @@ def _gather() -> Tuple[
 
 
 def _render(
-    tool_results: Iterable[Tuple[str, bool]],
+    tool_results: Iterable[tuple[str, bool]],
     tool_warnings: Iterable[str],
     llm_lines: Iterable[str],
     llm_warnings: Iterable[str],
     env_parts: Iterable[str],
     env_warnings: Iterable[str],
-    lang_line: Optional[str],
-    project_line: Optional[str],
+    lang_line: str | None,
+    project_line: str | None,
     *,
     verbose: bool,
-) -> Tuple[str, int, int]:
+) -> tuple[str, int, int]:
     """Render the doctor output. Returns (text, n_failures, n_warnings).
 
     Failure classification:
@@ -170,9 +176,9 @@ def _render(
         severity in ``tool_warnings``; we surface those as-is).
       * Anything in a ``*_warnings`` list is a warning.
     """
-    failures: List[str] = []
-    warnings: List[str] = []
-    passes: List[str] = []
+    failures: list[str] = []
+    warnings: list[str] = []
+    passes: list[str] = []
 
     # Tools — single line summary of present/missing, then individual
     # warnings (which already carry severity).
@@ -217,8 +223,7 @@ def _render(
         clean = line.strip()
         if clean:
             passes.append(clean)
-    for w in llm_warnings:
-        warnings.append(w)
+    warnings.extend(llm_warnings)
 
     # Env — mixed: ``out/ ✗`` is a failure, ``disk 16 GB free`` is a
     # pass, ``RAPTOR_DIR not set …`` from the new check appears in
@@ -231,8 +236,7 @@ def _render(
             failures.append(clean)
         else:
             passes.append(clean)
-    for w in env_warnings:
-        warnings.append(w)
+    warnings.extend(env_warnings)
 
     # Language support — single informational line.
     if lang_line:
@@ -244,7 +248,7 @@ def _render(
 
     from core.config import RaptorConfig
 
-    out: List[str] = [
+    out: list[str] = [
         "RAPTOR doctor",
         "=============",
         f"version: {RaptorConfig.effective_version()}",
@@ -304,7 +308,7 @@ def _render(
     return "\n".join(out), len(failures), real_warnings
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Run the doctor.
 
     Exit codes:

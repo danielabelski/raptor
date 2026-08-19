@@ -2155,7 +2155,7 @@ def run_graduated_rules_stage(
 def run_source_wrapper_stage(
     repo_path: Path,
     out_dir: Path,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Project mechanically-derived Java source-wrapper summaries into
     additional taint-source rules and run them as a scan stage.
 
@@ -2173,20 +2173,20 @@ def run_source_wrapper_stage(
         from core.analysis.java_source_summaries import scan_tree
         from packages.semgrep.source_wrapper_rules import generate_rules_yaml
     except ImportError:
-        return []
+        return [], []
     try:
         summaries, refusals, scanned = scan_tree(Path(repo_path))
     except Exception as exc:  # noqa: BLE001 — stage must not kill the scan
         logger.warning("source-wrappers: scan failed: %s", exc)
-        return []
+        return [], []
     if not summaries:
         logger.debug(
             "source-wrappers: no qualifying wrappers "
             "(%d files scanned)", scanned)
-        return []
+        return [], []
     yaml_text = generate_rules_yaml(summaries)
     if not yaml_text:
-        return []
+        return [], []
     stage_dir = Path(out_dir) / "source-wrappers"
     stage_dir.mkdir(parents=True, exist_ok=True)
     rules_file = stage_dir / "rules.yaml"
@@ -2196,13 +2196,13 @@ def run_source_wrapper_stage(
         from packages.semgrep.runner import is_available as semgrep_available
         from packages.semgrep.runner import run_rule as semgrep_run_rule
     except ImportError:
-        return []
+        return [], []
     if not semgrep_available():
         print(
             "⚠️  source-wrapper stage did not run: semgrep not installed",
             file=sys.stderr,
         )
-        return []
+        return [], []
     try:
         res = semgrep_run_rule(
             Path(repo_path), str(rules_file),
@@ -2212,7 +2212,7 @@ def run_source_wrapper_stage(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("source-wrappers: run failed: %s", exc)
-        return []
+        return [], []
 
     findings = [("wrapper", f.to_dict()) for f in res.findings]
     sarif_path = Path(out_dir) / "source-wrappers.sarif"
@@ -2229,13 +2229,22 @@ def run_source_wrapper_stage(
         },
     )
     save_json(sarif_path, doc)
+    # The qualified wrapper names are run-scoped learned vocabulary:
+    # the sanitizer-cut post-pass's source locator only knows the
+    # direct servlet getters, so a finding whose taint enters via
+    # scr.getTheParameter(...) has no locatable source without them.
+    wrapper_names = sorted({s.name for s in summaries})
+    save_json(stage_dir / "wrappers.json", {
+        "wrapper_methods": wrapper_names,
+        "provenance": "mechanical-summary",
+    })
     logger.info(
         "source-wrappers: %d wrapper(s) projected, %d finding(s); "
         "SARIF at %s (refusal top: %s)",
         len(summaries), len(findings), sarif_path,
         sorted(refusals.items(), key=lambda kv: -kv[1])[:3],
     )
-    return [str(sarif_path)]
+    return [str(sarif_path)], wrapper_names
 
 
 def _stage_findings_to_sarif(
@@ -3126,9 +3135,10 @@ def main():
         # methods that provably return servlet-request data become
         # additional taint sources for the in-repo java sink profiles.
         source_wrapper_sarifs = []
+        source_wrapper_names: list[str] = []
         if not args.no_source_wrappers:
-            source_wrapper_sarifs = run_source_wrapper_stage(
-                repo_path, out_dir,
+            source_wrapper_sarifs, source_wrapper_names = (
+                run_source_wrapper_stage(repo_path, out_dir)
             )
 
         # Config-resolved additive findings (default-on, opt-out):
@@ -3215,6 +3225,7 @@ def main():
                 )
                 sanitizer_cut_postpass_stats = run_postpass(
                     postpass_inputs, repo_path, out_dir,
+                    extra_source_patterns=source_wrapper_names,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("sanitizer-cut post-pass failed: %s", e)

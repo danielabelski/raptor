@@ -180,6 +180,7 @@ _MAX_CANDIDATE_SOURCES = 4
 def _candidate_source_lines(
     file_path: Path, sink_line: int, language: str,
     _cache: Dict[Path, Optional[List[int]]],
+    extra_patterns: tuple = (),
 ) -> List[int]:
     """Source-shaped lines before the sink (possibly several).
 
@@ -190,7 +191,7 @@ def _candidate_source_lines(
     file, or more than :data:`_MAX_CANDIDATE_SOURCES` return ``[]``
     (refusal).
     """
-    patterns = _SOURCE_PATTERNS.get(language) or ()
+    patterns = (_SOURCE_PATTERNS.get(language) or ()) + tuple(extra_patterns)
     if not patterns:
         return []
     if file_path not in _cache:
@@ -217,10 +218,12 @@ def _candidate_source_lines(
 def _locate_unique_source_line(
     file_path: Path, sink_line: int, language: str,
     _cache: Dict[Path, Optional[List[int]]],
+    extra_patterns: tuple = (),
 ) -> Optional[int]:
     """Back-compat single-source form: the file's single source-shaped
     call before the sink, or None when zero/ambiguous/unreadable."""
-    lines = _candidate_source_lines(file_path, sink_line, language, _cache)
+    lines = _candidate_source_lines(
+        file_path, sink_line, language, _cache, extra_patterns)
     if len(lines) != 1:
         return None
     return lines[0]
@@ -235,12 +238,34 @@ def _dataflow_source_line(finding: Mapping[str, Any]) -> Optional[int]:
     return None
 
 
+# Learned source-method names must be plain Java identifiers before
+# they become regex alternates — anything else is refused (a learned
+# name is derived from parsed source, but the boundary revalidates).
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _compile_extra_source_patterns(names: Iterable[str]) -> tuple:
+    """Run-scoped learned source patterns (e.g. source-wrapper methods).
+
+    Each valid identifier becomes a ``\\.name\\s*(`` call pattern —
+    the same shape as the seed table. Invalid names are dropped, not
+    escaped: the caller passes mechanically-derived method names, so
+    anything non-identifier is a contract violation worth losing.
+    """
+    out = []
+    for name in names or ():
+        if isinstance(name, str) and _IDENT_RE.match(name):
+            out.append(r"\." + re.escape(name) + r"\s*\(")
+    return tuple(out)
+
+
 def run_postpass(
     sarif_paths: Iterable[Path],
     repo_root: Path,
     out_dir: Path,
     *,
     budget_seconds: float = 180.0,
+    extra_source_patterns: Iterable[str] = (),
 ) -> Dict[str, Any]:
     """Run the record-only gate over every eligible SARIF finding.
 
@@ -260,6 +285,9 @@ def run_postpass(
 
     stats = PostpassStats()
     started = time.monotonic()
+    learned_patterns = _compile_extra_source_patterns(extra_source_patterns)
+    if learned_patterns:
+        stats.mechanism_counts["learned-source-patterns"] = len(learned_patterns)
     source_cache: Dict[Path, Optional[List[int]]] = {}
     text_cache: Dict[Path, str] = {}
     grammar_cache: Dict[str, bool] = {}
@@ -328,6 +356,7 @@ def run_postpass(
         else:
             source_lines = _candidate_source_lines(
                 resolved_path, int(sink_line), language, source_cache,
+                learned_patterns if language == "java" else (),
             )
         if not source_lines:
             stats.refuse("no-source-candidates")

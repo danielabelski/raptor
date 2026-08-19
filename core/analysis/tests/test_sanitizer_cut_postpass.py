@@ -331,3 +331,53 @@ class TestGrammarAbsentDegradation:
         assert stats["examined"] == 1
         assert stats["refused_reasons"].get("language-unsupported") is None
         assert stats["recorded_suppress"] == 1
+
+
+_WRAPPER_SOURCE_JAVA = """import org.owasp.encoder.Encode;
+import java.io.PrintWriter;
+public class Test {
+    void doPost(Helper scr, PrintWriter out) {
+        String p = scr.getTheParameter("q");
+        String safe = Encode.forHtml(p);
+        out.println(safe);
+    }
+}
+"""
+
+
+class TestLearnedSourcePatterns:
+    """Run-scoped learned wrapper names extend the source locator."""
+
+    def test_wrapper_source_refused_without_learned_names(self, tmp_path):
+        repo, _, sarif_path, out = _write(
+            tmp_path, _WRAPPER_SOURCE_JAVA, {"sink_line": 7},
+        )
+        stats = run_postpass([sarif_path], repo, out)
+        assert stats["refused_reasons"].get("no-source-candidates") == 1
+        assert stats["recorded_suppress"] == 0
+
+    def test_wrapper_source_examined_with_learned_names(self, tmp_path):
+        repo, _, sarif_path, out = _write(
+            tmp_path, _WRAPPER_SOURCE_JAVA, {"sink_line": 7},
+        )
+        stats = run_postpass(
+            [sarif_path], repo, out,
+            extra_source_patterns=["getTheParameter"],
+        )
+        assert stats["refused_reasons"].get("no-source-candidates") is None
+        assert stats["recorded_suppress"] == 1
+        assert stats["mechanism_counts"]["learned-source-patterns"] == 1
+
+    def test_invalid_learned_names_dropped_not_compiled(self, tmp_path):
+        from core.analysis.sanitizer_cut_postpass import (
+            _compile_extra_source_patterns,
+        )
+        pats = _compile_extra_source_patterns(
+            ["ok_name", "bad name", "get(", "", None, "x" * 200],
+        )
+        assert pats == (r"\.ok_name\s*\(",)
+
+    def test_default_behavior_unchanged_without_names(self, tmp_path):
+        repo, _, sarif_path, out = _write(tmp_path, _SAFE_JAVA)
+        base = run_postpass([sarif_path], repo, out)
+        assert "learned-source-patterns" not in base["mechanism_counts"]

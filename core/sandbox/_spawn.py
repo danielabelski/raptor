@@ -548,6 +548,7 @@ def run_sandboxed(
     start_new_session: bool = True,
     audit_mode: bool = False,
     audit_run_dir: str | None = None,
+    audit_required: bool = False,
     audit_verbose: bool = False,
     observe_mode: bool = False,
     observe_nonce: str | None = None,
@@ -607,6 +608,12 @@ def run_sandboxed(
     the function logs a warning and degrades — runs the workflow
     WITHOUT seccomp audit and WITHOUT a tracer. b1 (egress proxy
     audit) is configured separately and is unaffected.
+
+    audit_required: when True, the three in-spawn audit degradations
+    above (no seccomp profile / no libseccomp / ptrace blocked —
+    F063a/b/c) raise SandboxSetupError after writing the per-run
+    degrade marker, instead of running the command without a tracer.
+    The raise happens before the fork, so the target never executes.
     """
     # Sandbox root directory. Created by the parent via tempfile.mkdtemp
     # so the path is random-suffixed (mode 0700) — a same-UID attacker
@@ -677,6 +684,22 @@ def run_sandboxed(
                     "audit_mode if seccomp is intentionally disabled"
                 ),
             )
+            if audit_required:
+                # Fail closed BEFORE the fork: the caller demanded
+                # audit evidence; running the target without a tracer
+                # would return a successful-looking result with no
+                # observe record. Marker above is kept — it documents
+                # the refused degradation for run-dir readers.
+                _cleanup_stub(_root_dir)
+                from .errors import SandboxSetupError
+                raise SandboxSetupError(
+                    "audit_required=True but no seccomp filter is "
+                    "active — b2/b3 audit cannot engage; refusing to "
+                    "run the target unaudited.",
+                    "pass seccomp_profile= (e.g. \"full\") or drop "
+                    "audit_required= to accept marker-recorded "
+                    "degradation.",
+                )
         elif not check_seccomp_available():
             # libseccomp missing — tracer would attach but never
             # receive events (no filter installed). Skip the
@@ -698,6 +721,18 @@ def run_sandboxed(
                     "intentionally absent"
                 ),
             )
+            if audit_required:
+                _cleanup_stub(_root_dir)
+                from .errors import SandboxSetupError
+                raise SandboxSetupError(
+                    "audit_required=True but libseccomp is "
+                    "unavailable on this host — the tracer would "
+                    "receive no events; refusing to run the target "
+                    "unaudited.",
+                    "install libseccomp (Debian/Ubuntu: apt install "
+                    "libseccomp2), or drop audit_required= to accept "
+                    "marker-recorded degradation.",
+                )
         elif check_ptrace_available():
             _audit_engaged = True
             # Sweep stale config tempfiles from prior crashed runs
@@ -878,6 +913,18 @@ def run_sandboxed(
                     "without audit_mode"
                 ),
             )
+            if audit_required:
+                _cleanup_stub(_root_dir)
+                from .errors import SandboxSetupError
+                raise SandboxSetupError(
+                    "audit_required=True but ptrace is blocked on "
+                    "this host — the tracer cannot attach; refusing "
+                    "to run the target unaudited.",
+                    "lower Yama scope (sysctl kernel.yama."
+                    "ptrace_scope=1) or grant CAP_SYS_PTRACE, or "
+                    "drop audit_required= to accept marker-recorded "
+                    "degradation.",
+                )
 
     # Track every fd we hold in the parent so a failure ANYWHERE from
     # pipe()/fork() through the newuidmap handshake closes the lot.

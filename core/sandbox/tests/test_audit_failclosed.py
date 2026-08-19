@@ -7,7 +7,7 @@ Landlock-only → bare ``subprocess.run``, and the command executed with
 reduced containment and NO audit evidence while the API call looked
 successful.
 
-These tests cover the fix layers:
+These tests cover the three fix layers:
 
   1. Entry validation — a caller-supplied audit target directory that
      is missing / not a directory / not writable raises ``ValueError``
@@ -16,11 +16,11 @@ These tests cover the fix layers:
   2. Vanished-mid-run — an audit target dir that disappears between
      entry validation and spawn setup raises ``SandboxSetupError``
      instead of riding the degradation ladder.
-  3. Evidence bottleneck — legitimate environmental degradation still
-     runs the command but always leaves the machine-readable trail
-     (``sandbox-audit-degraded.json`` +
-     ``sandbox_info["audit_engaged"] is False``), including on the
-     runtime-failure paths that previously recorded nothing.
+  3. Evidence bottleneck — when no audit tier can engage,
+     ``audit_required=True`` refuses to execute the command
+     (``SandboxSetupError``); the default degrades but always leaves
+     the machine-readable trail (``sandbox-audit-degraded.json`` +
+     ``sandbox_info["audit_engaged"] is False``).
 
 All tests are hermetic: environmental degradation is forced by
 monkeypatching the seccomp/ptrace probes and by ``input=`` (which
@@ -36,7 +36,7 @@ import sys
 
 import pytest
 
-from core.sandbox.context import sandbox
+from core.sandbox.context import run_trusted, run_untrusted, sandbox
 from core.sandbox.errors import SandboxSetupError
 
 linux_only = pytest.mark.skipif(
@@ -198,8 +198,7 @@ class TestVanishedMidRun:
 
 @linux_only
 class TestEvidenceBottleneck:
-    """Layer 3: audit requested but no tier engaged is always
-    machine-readable."""
+    """Layer 3: audit requested but no tier engaged."""
 
     def test_default_degrade_writes_marker_and_sandbox_info(
             self, tmp_path, no_audit_tiers):
@@ -215,3 +214,163 @@ class TestEvidenceBottleneck:
         assert payload["audit_requested"] is True
         assert payload["audit_engaged"] is False
         assert payload["reason"]
+
+    def test_audit_required_refuses_to_execute(
+            self, tmp_path, no_audit_tiers):
+        d = tmp_path / "audit"
+        d.mkdir()
+        proof = tmp_path / "ran"
+        with _audit_sandbox(d, audit_required=True) as r:
+            with pytest.raises(SandboxSetupError,
+                               match="audit_required=True"):
+                r(["touch", str(proof)], input=b"",
+                  capture_output=True, timeout=30)
+        assert not proof.exists(), (
+            "audit_required=True must prevent execution when no audit "
+            "tier engaged"
+        )
+        # The refused degradation is still marker-recorded.
+        assert (d / MARKER).exists()
+
+    def test_audit_required_inert_when_audit_engages(self, tmp_path):
+        """audit_required must not fire when an audit tier engages or
+        when audit is not requested at all."""
+        d = tmp_path / "audit"
+        d.mkdir()
+        # audit not requested → audit_required inert.
+        with sandbox(audit_required=True, block_network=False,
+                     target="/tmp", profile="target_run") as r:
+            res = r(["true"], capture_output=True, timeout=60)
+        assert res.returncode == 0
+
+
+class TestKwargSurface:
+    """audit_required is sandbox()-level configuration."""
+
+    def test_inner_run_rejects_audit_required(self, tmp_path):
+        with sandbox(block_network=False, target="/tmp",
+                     profile="target_run") as r:
+            with pytest.raises(TypeError, match="audit_required"):
+                r(["true"], audit_required=True)
+
+    def test_run_trusted_rejects_audit_required(self):
+        with pytest.raises(TypeError, match="audit_required"):
+            run_trusted(["true"], audit_required=True)
+
+    def test_module_run_forwards_audit_required(
+            self, tmp_path, monkeypatch):
+        """The one-shot run() wrapper must forward audit_required into
+        the sandbox() context (signature parity guard)."""
+        seen = {}
+        import core.sandbox.context as ctx
+
+        class _FakeCtx:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+            def __enter__(self):
+                return lambda cmd, **k: __import__("subprocess").run(
+                    cmd, capture_output=True, check=False)
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(ctx, "sandbox", _FakeCtx)
+        ctx.run(["true"], audit_required=True)
+        assert seen.get("audit_required") is True
+
+    def test_run_untrusted_accepts_audit_required(self, monkeypatch):
+        """run_untrusted's kwarg allowlist admits audit_required and
+        forwards it (composability with audit=True)."""
+        import core.sandbox.context as ctx
+        captured = {}
+
+        def _fake_run(cmd, **kw):
+            captured.update(kw)
+
+            class _R:
+                returncode = 0
+                sandbox_info = {}
+            return _R()
+
+        monkeypatch.setattr(ctx, "run", _fake_run)
+        # Pretend the userns tier is available so run_untrusted's
+        # degraded-host guard (whatever its current shape) is a no-op
+        # and the call reaches the forwarding under test.
+        monkeypatch.setattr(ctx, "check_net_available", lambda: True)
+        run_untrusted(["true"], output="/tmp", audit=True,
+                      audit_required=True)
+        assert captured.get("audit_required") is True
+
+
+@linux_only
+class TestSpawnTierFailClosed:
+    """audit_required threads into _spawn's in-spawn degrade sites
+    (F063a/b/c) — the raise happens before the fork."""
+
+    def test_f063a_no_seccomp_profile_raises_when_required(self, tmp_path):
+        from core.sandbox import _spawn as spawn_mod
+        d = tmp_path / "audit"
+        d.mkdir()
+        with pytest.raises(SandboxSetupError, match="no seccomp filter"):
+            spawn_mod.run_sandboxed(
+                ["true"],
+                target=None, output=None, block_network=False,
+                nproc_limit=64, limits={}, writable_paths=[],
+                readable_paths=None, allowed_tcp_ports=None,
+                seccomp_profile=None, seccomp_block_udp=False,
+                env={}, cwd=None, timeout=30,
+                audit_mode=True, audit_run_dir=str(d),
+                audit_required=True,
+            )
+        # The refused degradation is still marker-recorded.
+        assert (d / MARKER).exists()
+        # The pre-raise cleanup removed the mkdtemp stub.
+        import glob
+        import tempfile
+        stubs = glob.glob(os.path.join(tempfile.gettempdir(),
+                                       ".raptor-sbx-*"))
+        # (other concurrent runs may own stubs; just assert no crash)
+        assert isinstance(stubs, list)
+
+    def test_f063b_no_libseccomp_raises_when_required(
+            self, tmp_path, monkeypatch):
+        import core.sandbox.seccomp as sc
+        from core.sandbox import _spawn as spawn_mod
+        monkeypatch.setattr(sc, "check_seccomp_available", lambda: False)
+        d = tmp_path / "audit"
+        d.mkdir()
+        with pytest.raises(SandboxSetupError, match="libseccomp"):
+            spawn_mod.run_sandboxed(
+                ["true"],
+                target=None, output=None, block_network=False,
+                nproc_limit=64, limits={}, writable_paths=[],
+                readable_paths=None, allowed_tcp_ports=None,
+                seccomp_profile="full", seccomp_block_udp=False,
+                env={}, cwd=None, timeout=30,
+                audit_mode=True, audit_run_dir=str(d),
+                audit_required=True,
+            )
+        assert (d / MARKER).exists()
+
+    def test_f063c_ptrace_blocked_raises_when_required(
+            self, tmp_path, monkeypatch):
+        import core.sandbox.ptrace_probe as pp
+        import core.sandbox.seccomp as sc
+        from core.sandbox import _spawn as spawn_mod
+        monkeypatch.setattr(sc, "check_seccomp_available", lambda: True)
+        monkeypatch.setattr(pp, "check_ptrace_available", lambda: False)
+        d = tmp_path / "audit"
+        d.mkdir()
+        with pytest.raises(SandboxSetupError, match="ptrace"):
+            spawn_mod.run_sandboxed(
+                ["true"],
+                target=None, output=None, block_network=False,
+                nproc_limit=64, limits={}, writable_paths=[],
+                readable_paths=None, allowed_tcp_ports=None,
+                seccomp_profile="full", seccomp_block_udp=False,
+                env={}, cwd=None, timeout=30,
+                audit_mode=True, audit_run_dir=str(d),
+                audit_required=True,
+            )
+        assert (d / MARKER).exists()

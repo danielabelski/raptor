@@ -139,7 +139,11 @@ _SANDBOX_KWARGS = frozenset({
     # no-op. audit_run_dir is sandbox()-level (decoupled target for
     # audit JSONL); passing it to inner run() would silently have no
     # effect — reject so the caller catches their mistake.
-    "audit", "audit_verbose", "audit_run_dir",
+    # audit_required is sandbox()-level for the same reason: the
+    # fail-closed decision is taken inside the context's run() closure
+    # from context-creation state; a per-call value would silently
+    # no-op.
+    "audit", "audit_verbose", "audit_run_dir", "audit_required",
     # Fingerprint-sanitisation kwargs — sandbox-context-level because
     # the persona is built once per context and reused across run()
     # calls. Per-call override would silently no-op.

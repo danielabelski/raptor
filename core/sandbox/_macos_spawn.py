@@ -192,6 +192,7 @@ def run_sandboxed(cmd: list[str], *,
                   input: "bytes | str | None" = None,  # noqa: A002 — subprocess parity
                   audit_mode: bool = False,
                   audit_run_dir: str | None = None,
+                  audit_required: bool = False,
                   audit_verbose: bool = False,
                   observe_mode: bool = False,
                   observe_nonce: str | None = None,
@@ -508,6 +509,21 @@ def run_sandboxed(cmd: list[str], *,
                     "audit_mode on hosts where the streamer cannot attach"
                 ),
             )
+            if audit_required:
+                # Fail closed BEFORE spawning the workload: the caller
+                # demanded audit evidence and macOS has no other audit
+                # tier to fall back to. Marker above is kept — it
+                # documents the refused degradation.
+                from .errors import SandboxSetupError
+                raise SandboxSetupError(
+                    f"audit_required=True but the seatbelt log "
+                    f"streamer failed to start "
+                    f"({type(exc).__name__}: {exc}) — refusing to "
+                    f"run the target unaudited.",
+                    "check the macOS unified log subsystem (log show "
+                    "/ log stream), or drop audit_required= to accept "
+                    "marker-recorded degradation.",
+                ) from exc
 
     # 5b. Status + death pipes for the seatbelt shim.
     #     status: the inner shim writes one readiness byte after the profile

@@ -439,6 +439,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             tool_paths: list | None = None,
             audit: bool = False, audit_verbose: bool = False,
             audit_run_dir: str | None = None,
+            audit_required: bool = False,
             observe: bool = False,
             writable_paths: list | None = None,
             exclude_tmp_baseline: bool = False,
@@ -543,6 +544,18 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  should pre-populate `{output}/.home/` before invoking.
                  Requires `output=` to be set. Defaults to True on
                  `run_untrusted()`, False on direct `sandbox()` use.
+        audit_required: (default False) Fail-closed switch for the audit
+                 evidence channel (precedent: `require_sanitisation`).
+                 When True and audit mode is engaged for a run() call but
+                 NO audit tier can attach (mount-ns/seatbelt spawn tracer
+                 AND the Landlock-only tracer both unavailable or failed),
+                 raise SandboxSetupError instead of degrading to an
+                 unaudited subprocess — the command does not execute.
+                 When False (default), degradation is permitted but is
+                 always recorded: the per-run
+                 ``sandbox-audit-degraded.json`` marker is written and
+                 ``result.sandbox_info["audit_engaged"]`` is False. Inert
+                 when audit mode is not engaged for the call.
         degraded_net_deny: (default True) When `block_network=True` was
                  requested but no namespace backend is available on this
                  host (Landlock-only degradation — Ubuntu 24.04+ AppArmor
@@ -2117,7 +2130,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         used_spawn = False
         _audit_landlock_engaged = False
         # Why audit could not engage for this call, for the degrade
-        # marker written at the no-audit bottleneck
+        # marker / audit_required raise at the no-audit bottleneck
         # below. Set by the pre-flight ineligibility block and by the
         # runtime failure sites (spawn exception, Landlock-only tracer
         # exception); None while audit is still expected to engage.
@@ -2367,6 +2380,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     input=kwargs.get("input"),
                     audit_mode=nonlocal_audit_mode,
                     audit_run_dir=_audit_run_dir,
+                    audit_required=audit_required,
                     audit_verbose=audit_verbose_active and nonlocal_audit_mode,
                     observe_mode=observe and nonlocal_audit_mode,
                     observe_nonce=(nonlocal_observe_nonce
@@ -2472,6 +2486,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             stdin=kwargs.get("stdin"),
                             audit_mode=nonlocal_audit_mode,
                             audit_run_dir=_audit_run_dir,
+                            audit_required=audit_required,
                             audit_verbose=audit_verbose_active and nonlocal_audit_mode,
                             observe_mode=observe and nonlocal_audit_mode,
                             observe_nonce=(nonlocal_observe_nonce
@@ -2919,11 +2934,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         #      reason; plus sandbox_info
                         #      ["audit_engaged"]=False stamped after
                         #      the run), and
-                        #   2. the runtime-failure paths (spawn
-                        #      exception → Landlock-only tracer
-                        #      exception) no longer reach bare
-                        #      subprocess.run with NOTHING recorded
-                        #      beyond a scrollback warning.
+                        #   2. audit_required=True refuses to execute
+                        #      the command at all (fail-closed on the
+                        #      evidence channel) instead of returning
+                        #      a successful-looking result with no
+                        #      observe record.
                         _reason = (
                             _audit_no_engage_reason
                             or "no audit tier could engage for this "
@@ -2937,6 +2952,21 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 _Path(_marker_dir),
                                 reason=_reason,
                                 instructions=_audit_no_engage_instr,
+                            )
+                        if audit_required:
+                            from .errors import SandboxSetupError
+                            raise SandboxSetupError(
+                                f"audit was requested with "
+                                f"audit_required=True but no audit "
+                                f"tier could engage: {_reason}. "
+                                f"Refusing to run the command without "
+                                f"the requested audit evidence.",
+                                _audit_no_engage_instr
+                                or "fix the host's audit "
+                                   "prerequisites (userns/libseccomp/"
+                                   "ptrace) or drop audit_required= "
+                                   "to accept marker-recorded "
+                                   "degradation.",
                             )
                     if need_unshare:
                         # Orphan-teardown: the shim (pid-1 of the new pid-ns)
@@ -3364,6 +3394,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         tool_paths: list | None = None,
         audit: bool = False, audit_verbose: bool = False,
         audit_run_dir: str | None = None,
+        audit_required: bool = False,
         observe: bool = False,
         writable_paths: list | None = None,
         exclude_tmp_baseline: bool = False,
@@ -3395,6 +3426,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
                  tool_paths=tool_paths,
                  audit=audit, audit_verbose=audit_verbose,
                  audit_run_dir=audit_run_dir,
+                 audit_required=audit_required,
                  observe=observe,
                  writable_paths=writable_paths,
                  exclude_tmp_baseline=exclude_tmp_baseline,
@@ -3558,7 +3590,7 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
         "encoding", "errors",
         "stdin", "input", "start_new_session", "pass_fds",
         "caller_label",
-        "audit", "audit_verbose", "audit_run_dir",
+        "audit", "audit_verbose", "audit_run_dir", "audit_required",
         "observe", "exclude_tmp_baseline",
         "tool_paths",
         "profile",
@@ -3717,7 +3749,7 @@ def run_untrusted_networked(
         "encoding", "errors",
         "stdin", "input", "start_new_session", "pass_fds",
         "caller_label",
-        "audit", "audit_verbose", "audit_run_dir",
+        "audit", "audit_verbose", "audit_run_dir", "audit_required",
         "observe", "exclude_tmp_baseline",
         "tool_paths",
     })

@@ -897,6 +897,14 @@ def fail_run(output_dir: Path, error: str | None = None,
     if _triage_verdict is not None:
         extra.setdefault("sandbox_triage", _triage_verdict)
     _update_status(output_dir, STATUS_FAILED, extra, record_timing=record_timing)
+    # The LLM's reads happened regardless of how the run ended — convert
+    # the manifest so the read coverage survives. Pre-fix only
+    # complete_run converted, so every failed/cancelled/interrupted
+    # run's reads were silently lost (the raw manifest lingers but no
+    # importer reads raw manifests). The manifest is left in place, and
+    # a later resume→complete re-converts it with any new reads —
+    # write_record overwrites, so this is idempotent, never additive.
+    _convert_reads_manifest(output_dir)
 
 
 def cancel_run(output_dir: Path, extra: dict[str, Any] | None = None) -> None:
@@ -907,6 +915,7 @@ def cancel_run(output_dir: Path, extra: dict[str, Any] | None = None) -> None:
         extra = dict(extra or {})
         extra.setdefault("sandbox_triage", _triage_verdict)
     _update_status(output_dir, STATUS_CANCELLED, extra)
+    _convert_reads_manifest(output_dir)  # see fail_run
 
 
 def interrupt_run(output_dir: Path, reason: str | None = None,
@@ -927,6 +936,7 @@ def interrupt_run(output_dir: Path, reason: str | None = None,
     if _triage_verdict is not None:
         extra.setdefault("sandbox_triage", _triage_verdict)
     _update_status(output_dir, STATUS_INTERRUPTED, extra)
+    _convert_reads_manifest(output_dir)  # see fail_run
 
 
 #: Statuses :func:`resume_run` accepts as re-enterable. ``completed``

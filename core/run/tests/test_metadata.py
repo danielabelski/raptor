@@ -523,6 +523,31 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             self.assertTrue(any(g["file"] == "a.c"
                                 for g in view["llm_gap_functions"]))
 
+    def test_non_completion_endings_still_convert_reads(self):
+        # The LLM's reads happened regardless of how the run ended.
+        # Pre-fix only complete_run converted the manifest, so a
+        # failed/cancelled/interrupted run's reads never became coverage
+        # (nothing imports raw manifests).
+        from core.run.metadata import interrupt_run
+        for ending in (
+            lambda run: fail_run(run, error="boom"),
+            cancel_run,
+            interrupt_run,
+        ):
+            with TemporaryDirectory() as d:
+                proj = Path(d)
+                (proj / "checklist.json").write_text(self._checklist())
+                run = proj / "agentic-20260526_120000"
+                start_run(run, "agentic")
+                (run / ".reads-manifest").write_text("a.c\n")
+                ending(run)
+                self.assertTrue(
+                    (run / "coverage-read.json").exists(), ending,
+                )
+                # Manifest stays: a resume→complete re-converts it with
+                # any new reads (write_record overwrites; idempotent).
+                self.assertTrue((run / ".reads-manifest").exists())
+
     def test_standalone_run_writes_no_store(self):
         import json
         with TemporaryDirectory() as d:

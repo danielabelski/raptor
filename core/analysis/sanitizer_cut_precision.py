@@ -398,8 +398,12 @@ def _java_wrapper_fixtures() -> List[CutFixture]:
             "        out.println(y);\n"),
         5, 7, language="java", suffix=".java"))
     j.append(_fx(
+        # b19 pinned depth-2 as a refusal; b21's composition proves
+        # exactly this shape, so the clean two-level wrapper GRADUATES
+        # to may_suppress. The standing depth cap pin is
+        # java_xss_depth3_refusal_pin in the b21 battery.
         "java_wrap_two_level", "xss", "CWE-79",
-        "wrapper_depth_two", LABEL_MUST_NOT_SUPPRESS,
+        "wrapper_depth_two", LABEL_MAY_SUPPRESS,
         imp + cls(
             "    private static String inner(String s) "
             "{ return Encode.forHtml(s); }\n"
@@ -793,6 +797,271 @@ def _java_valueset_fixtures() -> List[CutFixture]:
     return j
 
 
+
+
+def _marked(name, sink_class, cwe, shape, label, source,
+            src_marker, sink_marker) -> CutFixture:
+    """b21 fixture constructor: source/sink lines are computed from
+    unique substring markers — a hand-miscounted line number turned a
+    corpus run into a false-positive hunt once; never again."""
+    lines = source.splitlines()
+    src_ln = next(i for i, ln in enumerate(lines, 1) if src_marker in ln)
+    sink_ln = next(i for i, ln in enumerate(lines, 1) if sink_marker in ln)
+    return _fx(name, sink_class, cwe, shape, label, source,
+               src_ln, sink_ln, language="java", suffix=".java")
+
+
+def _java_b21_fixtures() -> List[CutFixture]:
+    """The b21 battery: cross-class/depth-2 wrapper shapes and
+    constant-collection membership guards. MUST-NOT entries split into
+    genuinely-unsafe shapes and deliberate refusal pins (genuinely safe
+    but outside the mechanisms' proof scope — named ``_refusal_pin``,
+    following the b13 lambda-pin precedent)."""
+    imp = "import org.owasp.encoder.Encode;\n"
+
+    def cls_t(body: str) -> str:
+        return imp + "public class T {\n" + body + "}\n"
+
+    handle = ("    public void handle(String x, "
+              "java.io.PrintWriter out) {\n")
+    j: List[CutFixture] = []
+
+    # ---- Mechanism 1: wrapper summaries v2 ----
+    j.append(_marked(
+        "java_xss_innerclass_wrapper", "xss", "CWE-79",
+        "cross_class_inner_wrapper", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().doSomething(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String doSomething(String p) {\n"
+              + "            return Encode.forHtml(p);\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_xss_static_helper_class", "xss", "CWE-79",
+        "cross_class_static_wrapper", LABEL_MAY_SUPPRESS,
+        imp + "final class H {\n"
+        + "    static String esc(String s) { return Encode.forHtml(s); }\n"
+        + "}\n"
+        + "public class T {\n" + handle
+        + "        String y = H.esc(x);\n"
+        + "        out.println(y);\n    }\n}\n",
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_depth2_wrapper", "xss", "CWE-79",
+        "depth2_wrapper_composition", LABEL_MAY_SUPPRESS,
+        cls_t("    private String inner(String s) "
+              "{ return Encode.forHtml(s); }\n"
+              "    private String outerw(String s) "
+              "{ return inner(s) + \"!\"; }\n"
+              + handle
+              + "        String y = outerw(x);\n"
+              + "        out.println(y);\n    }\n"),
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_ctor_taint", "xss", "CWE-79",
+        "taint_storing_constructor", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String y = new Holder(x).out();\n"
+              + "        out.println(y);\n    }\n"
+              + "    private class Holder {\n"
+              + "        String v;\n"
+              + "        Holder(String s) { v = s; }\n"
+              + "        String out() { return v; }\n    }\n"),
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_override_dispatch", "xss", "CWE-79",
+        "subclass_override_dispatch", LABEL_MUST_NOT_SUPPRESS,
+        imp + "class Base {\n"
+        + "    public String m(String s) { return Encode.forHtml(s); }\n"
+        + "}\n"
+        + "class Evil extends Base {\n"
+        + "    public String m(String s) { return s; }\n"
+        + "}\n"
+        + "public class T {\n" + handle
+        + "        Base b = new Evil();\n"
+        + "        String y = b.m(x);\n"
+        + "        out.println(y);\n    }\n}\n",
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_cycle_wrappers", "xss", "CWE-79",
+        "two_level_wrapper_cycle", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    private String a(String s) { return b(s); }\n"
+              "    private String b(String s) { return a(s); }\n"
+              + handle
+              + "        String y = a(x);\n"
+              + "        out.println(y);\n    }\n"),
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_depth3_refusal_pin", "xss", "CWE-79",
+        "depth3_wrapper_refusal_pin", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    private String w1(String s) "
+              "{ return Encode.forHtml(s); }\n"
+              "    private String w2(String s) { return w1(s); }\n"
+              "    private String w3(String s) { return w2(s); }\n"
+              + handle
+              + "        String y = w3(x);\n"
+              + "        out.println(y);\n    }\n"),
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_passthrough_helper", "xss", "CWE-79",
+        "passthrough_wrapper", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String y = new W().doSomething(x);\n"
+              + "        out.println(y);\n    }\n"
+              + "    private class W {\n"
+              + "        public String doSomething(String p) "
+              "{ return p; }\n    }\n"),
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_instance_state_helper", "xss", "CWE-79",
+        "field_mediated_wrapper", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String y = new W().doSomething(x);\n"
+              + "        out.println(y);\n    }\n"
+              + "    private class W {\n"
+              + "        String f = \"x\";\n"
+              + "        public String doSomething(String p) "
+              "{ f = p; return f; }\n    }\n"),
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_sanitizing_ctor_refusal_pin", "xss", "CWE-79",
+        "creation_with_args_refusal_pin", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String y = new W(x).out();\n"
+              + "        out.println(y);\n    }\n"
+              + "    private class W {\n"
+              + "        private final String v;\n"
+              + "        W(String s) { v = Encode.forHtml(s); }\n"
+              + "        String out() { return v; }\n    }\n"),
+        "public void handle", "out.println(y)"))
+    j.append(_marked(
+        "java_xss_ambiguous_class_name", "xss", "CWE-79",
+        "ambiguous_helper_class_name", LABEL_MUST_NOT_SUPPRESS,
+        imp + "class Outer {\n"
+        + "    static class W {\n"
+        + "        static String esc(String s) { return s; }\n    }\n"
+        + "}\n"
+        + "class W {\n"
+        + "    static String esc(String s) { return Encode.forHtml(s); }\n"
+        + "}\n"
+        + "public class T {\n" + handle
+        + "        String y = W.esc(x);\n"
+        + "        out.println(y);\n    }\n}\n",
+        "public void handle", "out.println(y)"))
+
+    # ---- Mechanism 2: constant-collection membership guards ----
+    allowed = ("        java.util.List<String> allowed = "
+               "java.util.Arrays.asList(\"home\", \"about\");\n")
+    j.append(_marked(
+        "java_xss_contains_exit_guard", "xss", "CWE-79",
+        "collection_guard_exit_on_fail", LABEL_MAY_SUPPRESS,
+        cls_t(handle + allowed
+              + "        if (!allowed.contains(x)) { return; }\n"
+              + "        out.println(x);\n    }\n"),
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_sqli_contains_enclosed", "sqli", "CWE-89",
+        "collection_guard_enclosed_sink", LABEL_MAY_SUPPRESS,
+        "public class T {\n"
+        + "    public void handle(String x, java.sql.Statement st)"
+        " throws Exception {\n"
+        + "        java.util.List<String> allowed = "
+        "java.util.Arrays.asList(\"name\", \"email\");\n"
+        + "        if (allowed.contains(x)) {\n"
+        + "            st.executeQuery(x);\n        }\n    }\n}\n",
+        "public void handle", "st.executeQuery(x)"))
+    j.append(_marked(
+        "java_xss_contains_exclusion", "xss", "CWE-79",
+        "collection_guard_exit_on_match_exclusion",
+        LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle + allowed
+              + "        if (allowed.contains(x)) { return; }\n"
+              + "        out.println(x);\n    }\n"),
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_xss_contains_continue_exclusion", "xss", "CWE-79",
+        "collection_guard_continue_exclusion", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(String[] xs, "
+              "java.io.PrintWriter out) {\n"
+              + "        java.util.List<String> allowed = "
+              "java.util.Arrays.asList(\"home\", \"about\");\n"
+              + "        for (String x : xs) {\n"
+              + "            if (allowed.contains(x)) { continue; }\n"
+              + "            out.println(x);\n        }\n    }\n"),
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_xss_contains_mutated", "xss", "CWE-79",
+        "collection_guard_mutable_collection", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle + allowed
+              + "        allowed.add(x);\n"
+              + "        if (!allowed.contains(x)) { return; }\n"
+              + "        out.println(x);\n    }\n"),
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_xss_contains_nonliteral", "xss", "CWE-79",
+        "collection_guard_nonliteral_element", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(String x, String other, "
+              "java.io.PrintWriter out) {\n"
+              + "        java.util.List<String> allowed = "
+              "java.util.Arrays.asList(\"home\", other);\n"
+              + "        if (!allowed.contains(x)) { return; }\n"
+              + "        out.println(x);\n    }\n"),
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_xss_contains_other_var", "xss", "CWE-79",
+        "collection_guard_different_variable", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(String x, String y, "
+              "java.io.PrintWriter out) {\n" + allowed
+              + "        if (!allowed.contains(y)) { return; }\n"
+              + "        out.println(x);\n    }\n"),
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_xss_contains_reassigned", "xss", "CWE-79",
+        "collection_guard_reassigned_between", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(String x, String t, "
+              "java.io.PrintWriter out) {\n" + allowed
+              + "        if (!allowed.contains(x)) { return; }\n"
+              + "        x = t;\n"
+              + "        out.println(x);\n    }\n"),
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_sqli_contains_dangerous_literal", "sqli", "CWE-89",
+        "collection_guard_dangerous_literal", LABEL_MUST_NOT_SUPPRESS,
+        "public class T {\n"
+        + "    public void handle(String x, java.sql.Statement st)"
+        " throws Exception {\n"
+        + "        java.util.List<String> allowed = "
+        "java.util.Arrays.asList(\"o'brien\", \"name\");\n"
+        + "        if (!allowed.contains(x)) { return; }\n"
+        + "        st.executeQuery(x);\n    }\n}\n",
+        "public void handle", "st.executeQuery(x)"))
+    j.append(_marked(
+        "java_xss_contains_static_field", "xss", "CWE-79",
+        "collection_guard_static_final_field", LABEL_MAY_SUPPRESS,
+        imp + "public class T {\n"
+        + "    private static final java.util.Set<String> ALLOWED =\n"
+        + "            new java.util.HashSet<>(java.util.Arrays.asList("
+        "\"home\", \"about\"));\n"
+        + handle
+        + "        if (!ALLOWED.contains(x)) { return; }\n"
+        + "        out.println(x);\n    }\n}\n",
+        "public void handle", "out.println(x)"))
+    j.append(_marked(
+        "java_xss_contains_nonfinal_field", "xss", "CWE-79",
+        "collection_guard_nonfinal_field", LABEL_MUST_NOT_SUPPRESS,
+        imp + "public class T {\n"
+        + "    static java.util.Set<String> ALLOWED =\n"
+        + "            new java.util.HashSet<>(java.util.Arrays.asList("
+        "\"home\", \"about\"));\n"
+        + handle
+        + "        if (!ALLOWED.contains(x)) { return; }\n"
+        + "        out.println(x);\n    }\n}\n",
+        "public void handle", "out.println(x)"))
+    return j
+
+
 def build_corpus() -> List[CutFixture]:
     """The labelled corpus: the adversarial battery instantiated per
     covered python sink class, plus interproc, catalog-empty-class,
@@ -838,6 +1107,7 @@ def build_corpus() -> List[CutFixture]:
         "    system(cmd);\n"
         "}\n", 1, 2, language="c", suffix=".c"))
     fixtures += _java_fixtures()
+    fixtures += _java_b21_fixtures()
     fixtures += _java_switch_fixtures()
     fixtures += _java_valueset_fixtures()
     fixtures += _java_constant_fixtures()

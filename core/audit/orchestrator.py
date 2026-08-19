@@ -688,6 +688,8 @@ def _make_tier_counters() -> dict[str, TierCounters]:
         "synthesis_on_demand": TierCounters(),
         "adapter_aggregation": TierCounters(),
         "secondary_sweep": TierCounters(),
+        "sweep_validate": TierCounters(),
+        "primary_sweep": TierCounters(),
         "lifecycle": TierCounters(),
         "triage_skip": TierCounters(),
         "joern_guard": TierCounters(),
@@ -14537,6 +14539,17 @@ def _sweep_validate(
             "[sweep validation: finding demoted — no testable hypothesis]",
         )
 
+    # Premise binding, same rule as the secondary-sweep and smt-clean
+    # escalation lanes: this pass grades the LLM's OWN finding, so a
+    # function-local confirm re-proves the lexical shape the reviewer
+    # already saw — it encodes nothing about the hypothesis's
+    # cross-function counter ("the caller validates the level"). Such
+    # a confirm may not ground the finding: the verdict falls through
+    # ungrounded, the G2 gate holds it at suspicious, and the parked
+    # premise awaits a study receipt. Cross-function-capable channels
+    # (Joern, CodeQL dataflow) still ground it.
+    premise_h = _primary_hypothesis_entry(outcome, hypothesis)
+
     is_binary = is_binary or outcome.file.startswith("binary:")
     if source_override is not None:
         source = source_override
@@ -14580,17 +14593,23 @@ def _sweep_validate(
                     )
                 ]
                 if correlated:
-                    return _stamp_evidence(
-                        outcome, f"prefilter:{correlated[0].rule_id}",
+                    _pf_tool = f"prefilter:{correlated[0].rule_id}"
+                    if not _premise_blocks_confirm(premise_h, [_pf_tool]):
+                        return _stamp_evidence(outcome, _pf_tool)
+                    _note_premise_blocked_validation(
+                        outcome, premise_h, [_pf_tool],
+                        config, tier_counters,
                     )
-                _record_uncorrelated_hits(outcome, pf.hits)
-                logger.info(
-                    "sweep_validate: %s:%s prefilter hits (%s) uncorrelated "
-                    "with hypothesis — kept as context, not evidence",
-                    outcome.file,
-                    outcome.function,
-                    ",".join(h.rule_id for h in pf.hits[:3]),
-                )
+                else:
+                    _record_uncorrelated_hits(outcome, pf.hits)
+                    logger.info(
+                        "sweep_validate: %s:%s prefilter hits (%s) "
+                        "uncorrelated with hypothesis — kept as context, "
+                        "not evidence",
+                        outcome.file,
+                        outcome.function,
+                        ",".join(h.rule_id for h in pf.hits[:3]),
+                    )
 
         chain = _hypothesis_to_tool_chain(hypothesis, effective_file, cwe=cwe)
 
@@ -14632,7 +14651,11 @@ def _sweep_validate(
         outcome.tools_dispatched = (outcome.tools_dispatched or set()) | dispatched
         if errored:
             outcome.tools_errored = (outcome.tools_errored or set()) | errored
-        if confirmed:
+        if confirmed and _premise_blocks_confirm(premise_h, confirmed):
+            _note_premise_blocked_validation(
+                outcome, premise_h, confirmed, config, tier_counters,
+            )
+        elif confirmed:
             high_prec = [t for t in confirmed if not _is_detection_only(t)]
             if high_prec:
                 tool_label = "+".join(high_prec)
@@ -14751,13 +14774,19 @@ def _sweep_validate(
                     outcome.review_result["evidence_tool"] = "smt:disproof:unsat"
                 return outcome
             elif smt_result.disproved is False:
-                logger.info(
-                    "sweep_validate: %s:%s overflow feasible "
-                    "(Z3 SAT) — stamping supporting evidence",
-                    outcome.file,
-                    outcome.function,
-                )
-                return _stamp_evidence(outcome, "smt:disproof:sat")
+                if _premise_blocks_confirm(premise_h, ["smt:disproof:sat"]):
+                    _note_premise_blocked_validation(
+                        outcome, premise_h, ["smt:disproof:sat"],
+                        config, tier_counters,
+                    )
+                else:
+                    logger.info(
+                        "sweep_validate: %s:%s overflow feasible "
+                        "(Z3 SAT) — stamping supporting evidence",
+                        outcome.file,
+                        outcome.function,
+                    )
+                    return _stamp_evidence(outcome, "smt:disproof:sat")
         except Exception:
             logger.debug(
                 "disprove_integer_overflow failed for %s:%s",
@@ -16818,6 +16847,14 @@ def _promote_suspicious(
 
         refuting_counter = _has_refuting_counter(outcome)
 
+        # Premise binding for the primary hypothesis, same rule as the
+        # secondary sweep below: a function-local confirm cannot
+        # adjudicate a counter that rests on a cross-function premise
+        # — it re-proves the lexical shape the reviewer already saw
+        # and weighed. Blocked promotions stay suspicious and park the
+        # premise on the reading list.
+        premise_h = _primary_hypothesis_entry(outcome, hypothesis)
+
         gap = _find_gap_in_checklist(checklist or {}, outcome.file, outcome.function)
         line_end = gap.get("line_end") if gap else None
 
@@ -16861,6 +16898,12 @@ def _promote_suspicious(
                     outcome.function,
                     mech_tool,
                 )
+            elif _premise_blocks_confirm(premise_h, [mech_tool]):
+                _note_premise_blocked_validation(
+                    outcome, premise_h, [mech_tool],
+                    config, result.tier_counters,
+                    lane="sweep promotion", tier="primary_sweep",
+                )
             else:
                 result.outcomes[i] = _promote_outcome(outcome, mech_tool)
                 result.sweep_promoted += 1
@@ -16900,18 +16943,25 @@ def _promote_suspicious(
             ]
             if correlated:
                 tool = f"prefilter:{correlated[0].rule_id}"
-                result.outcomes[i] = _promote_outcome(outcome, tool)
-                result.sweep_promoted += 1
-                result.suspicious -= 1
-                result.findings += 1
-                logger.info(
-                    "sweep promoted %s:%s via %s",
-                    outcome.file,
-                    outcome.function,
-                    tool,
-                )
-                continue
-            if pf.hits:
+                if _premise_blocks_confirm(premise_h, [tool]):
+                    _note_premise_blocked_validation(
+                        outcome, premise_h, [tool],
+                        config, result.tier_counters,
+                        lane="sweep promotion", tier="primary_sweep",
+                    )
+                else:
+                    result.outcomes[i] = _promote_outcome(outcome, tool)
+                    result.sweep_promoted += 1
+                    result.suspicious -= 1
+                    result.findings += 1
+                    logger.info(
+                        "sweep promoted %s:%s via %s",
+                        outcome.file,
+                        outcome.function,
+                        tool,
+                    )
+                    continue
+            if pf.hits and not correlated:
                 _record_uncorrelated_hits(outcome, pf.hits)
                 logger.info(
                     "sweep promotion withheld %s:%s — prefilter hits (%s) "
@@ -16968,6 +17018,13 @@ def _promote_suspicious(
                         "inconclusive",
                     )
                     continue
+            if _premise_blocks_confirm(premise_h, confirmed):
+                _note_premise_blocked_validation(
+                    outcome, premise_h, list(confirmed),
+                    config, result.tier_counters,
+                    lane="sweep promotion", tier="primary_sweep",
+                )
+                continue
             high_prec = [
                 t for t in confirmed
                 if not _is_detection_only(t)
@@ -17124,6 +17181,17 @@ def _synthesize_unmapped_suspicious(
             "on-demand synthesis promotion blocked %s:%s via %s — "
             "all tested sink calls guarded",
             outcome.file, outcome.function, synth.stamp,
+        )
+        return
+    _premise_h = _primary_hypothesis_entry(outcome, hypothesis)
+    if _premise_blocks_confirm(_premise_h, [synth.stamp]):
+        _increment_tier_dict(
+            result.tier_counters, "synthesis_on_demand", "inconclusive",
+        )
+        _note_premise_blocked_validation(
+            outcome, _premise_h, [synth.stamp],
+            config, result.tier_counters,
+            lane="on-demand synthesis promotion", tier="primary_sweep",
         )
         return
 
@@ -17687,6 +17755,75 @@ def _queue_premise_study_question(
         rl.save(rl_path)
     except Exception:
         logger.debug("premise study-question queueing failed", exc_info=True)
+
+
+def _primary_hypothesis_entry(
+    outcome: ReviewOutcome,
+    hypothesis: str,
+) -> dict[str, Any]:
+    """Structured hypothesis entry backing the resolved primary mechanism.
+
+    ``_sweep_validate`` grades a finding against its primary hypothesis
+    string; premise binding needs the structured entry that carries
+    ``counter``/``counter_scope``. Matches on mechanism text, falling
+    back to the highest-confidence entry. Returns ``{}`` when the
+    review has no structured hypotheses — the premise gate then no-ops
+    (there is no counter to weigh a confirm against).
+    """
+    hyps = getattr(outcome, "hypotheses", None) or []
+    if not hyps and outcome.review_result:
+        hyps = outcome.review_result.get("hypotheses") or []
+    entries = [h for h in hyps if isinstance(h, dict)]
+    if not entries:
+        return {}
+    head = (hypothesis or "").strip()[:120]
+    if head:
+        for h in entries:
+            mech = (h.get("mechanism") or "").strip()
+            if mech and (
+                mech.startswith(head) or head.startswith(mech[:120])
+            ):
+                return h
+    rank = {"high": 0, "medium": 1, "low": 2}
+    return min(
+        entries,
+        key=lambda h: rank.get((h.get("confidence") or "").lower(), 3),
+    )
+
+
+def _note_premise_blocked_validation(
+    outcome: ReviewOutcome,
+    h: dict[str, Any],
+    tools: list[str],
+    config: OrchestratorConfig,
+    tier_counters: dict[str, TierCounters] | None,
+    *,
+    lane: str = "finding validation",
+    tier: str = "sweep_validate",
+) -> None:
+    """Receipt + study question for a premise-blocked primary confirm.
+
+    Mirrors the secondary-sweep premise block: the confirmation is
+    recorded for the export (it is real local evidence) but does not
+    ground or promote the verdict, and the unconsumed cross-function
+    premise is parked on the reading list for a study receipt.
+    """
+    if outcome.review_result is not None:
+        outcome.review_result.setdefault(
+            "premise_blocked_confirms", [],
+        ).append({
+            "mechanism": (h.get("mechanism") or "")[:200],
+            "evidence_tool": "+".join(tools),
+            "premise_blocked": True,
+        })
+    logger.info(
+        "%s blocked %s:%s via %s — the counter rests "
+        "on a cross-function premise no confirming channel models",
+        lane, outcome.file, outcome.function, "+".join(tools),
+    )
+    if tier_counters is not None:
+        _increment_tier_dict(tier_counters, tier, "premise_blocked")
+    _queue_premise_study_question(config, outcome, h)
 
 
 def _promote_clean_refuted(

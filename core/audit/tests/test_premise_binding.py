@@ -217,3 +217,210 @@ class TestSmtCleanEscalationPremiseGate:
             self._clean_with_refuted("local"), tmp_path, monkeypatch,
         )
         assert r.outcomes[0].status == "suspicious"
+
+
+class TestSweepValidatePremiseGate:
+    """G2-lane premise binding: a function-local confirm may not ground
+    the LLM's own finding when the primary hypothesis's counter rests
+    on a cross-function premise the engine cannot see."""
+
+    def _finding(self, counter_scope):
+        return ReviewOutcome(
+            file="a.c", function="f", status="finding",
+            body="finding",
+            hypothesis="resource leak: the error path skips the free "
+                       "of the allocated cipher",
+            hypotheses=[{
+                "mechanism": "resource leak: the error path skips the "
+                             "free of the allocated cipher",
+                "confidence": "high",
+                "counter": _CROSS_COUNTER,
+                "counter_scope": counter_scope,
+            }],
+            review_result={
+                "hypothesis": "resource leak: the error path skips the "
+                              "free of the allocated cipher",
+            },
+            line=1,
+        )
+
+    def _run(self, outcome, tmp_path, monkeypatch):
+        target = tmp_path / "t"
+        target.mkdir()
+        (target / "a.c").write_text("int f(void) { return 0; }\n")
+        out = tmp_path / "o"
+        out.mkdir()
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+
+        class _PF:
+            hits = []
+
+        monkeypatch.setattr(orch, "run_prefilter", lambda *a, **k: _PF())
+        monkeypatch.setattr(
+            orch, "_hypothesis_to_tool_chain",
+            lambda *a, **k: [{"type": "smt"}],
+        )
+        monkeypatch.setattr(
+            orch, "_run_tool_chain",
+            lambda *a, **k: ["smt:check-resource-leak"],
+        )
+        tier_counters = orch._make_tier_counters()
+        validated = orch._sweep_validate(
+            outcome, config, tier_counters=tier_counters,
+        )
+        return validated, config, tier_counters
+
+    def test_cross_function_premise_blocks_grounding(
+        self, tmp_path, monkeypatch,
+    ):
+        from core.audit.evidence_grade import is_tool_evidence
+
+        validated, config, tiers = self._run(
+            self._finding("cross_function"), tmp_path, monkeypatch,
+        )
+        assert not is_tool_evidence(validated.evidence_tool or "")
+        blocked = (validated.review_result or {}).get(
+            "premise_blocked_confirms",
+        )
+        assert blocked and blocked[0]["evidence_tool"] == (
+            "smt:check-resource-leak"
+        )
+        assert getattr(
+            tiers["sweep_validate"], "premise_blocked", 0,
+        ) >= 1
+        rl = json.loads(
+            (config.out_dir / "reading-list.json").read_text(),
+        )
+        assert any(
+            "access_remote_vm" in it["question"] for it in rl["items"]
+        )
+
+    def test_local_counter_still_grounds(self, tmp_path, monkeypatch):
+        validated, _config, _tiers = self._run(
+            self._finding("local"), tmp_path, monkeypatch,
+        )
+        assert validated.evidence_tool == "smt:check-resource-leak"
+
+    def test_cross_function_channel_still_grounds(
+        self, tmp_path, monkeypatch,
+    ):
+        outcome = self._finding("cross_function")
+        target = tmp_path / "t"
+        target.mkdir()
+        (target / "a.c").write_text("int f(void) { return 0; }\n")
+        out = tmp_path / "o"
+        out.mkdir()
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+
+        class _PF:
+            hits = []
+
+        monkeypatch.setattr(orch, "run_prefilter", lambda *a, **k: _PF())
+        monkeypatch.setattr(
+            orch, "_hypothesis_to_tool_chain",
+            lambda *a, **k: [{"type": "joern"}],
+        )
+        monkeypatch.setattr(
+            orch, "_run_tool_chain",
+            lambda *a, **k: ["joern:flow"],
+        )
+        validated = orch._sweep_validate(
+            outcome, config, tier_counters=orch._make_tier_counters(),
+        )
+        assert validated.evidence_tool == "joern:flow"
+
+
+class TestPromoteSuspiciousPremiseGate:
+    """Primary-hypothesis sweep premise binding: a local confirm may
+    not promote suspicious → finding past a cross-function counter the
+    reviewer dismissed without evidence."""
+
+    def _suspicious(self, counter_scope):
+        # A dismissive-worded counter keeps _has_refuting_counter False
+        # (the sweep proceeds) while the premise scope still binds.
+        return ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="suspicious",
+            hypothesis="resource leak on the rejected-level error path",
+            hypotheses=[{
+                "mechanism": "resource leak on the rejected-level "
+                             "error path",
+                "confidence": "high",
+                "counter": "no realistic path: callers validate the "
+                           "level before this function runs, so the "
+                           "default branch is unreachable",
+                "counter_scope": counter_scope,
+            }],
+            review_result={
+                "hypothesis": "resource leak on the rejected-level "
+                              "error path",
+                "hypotheses": [{
+                    "mechanism": "resource leak on the rejected-level "
+                                 "error path",
+                    "confidence": "high",
+                    "counter": "no realistic path: callers validate "
+                               "the level before this function runs, "
+                               "so the default branch is unreachable",
+                    "counter_scope": counter_scope,
+                }],
+            },
+            line=1,
+        )
+
+    def _run(self, outcome, tmp_path, monkeypatch):
+        target = tmp_path / "t"
+        target.mkdir()
+        (target / "a.c").write_text("int f(void) { return 0; }\n")
+        out = tmp_path / "o"
+        out.mkdir()
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        result.suspicious = 1
+
+        class _PF:
+            hits = []
+
+        monkeypatch.setattr(orch, "run_prefilter", lambda *a, **k: _PF())
+        monkeypatch.setattr(
+            orch, "_correlated_mech_detector_tool", lambda *a, **k: None,
+        )
+        monkeypatch.setattr(
+            orch, "_hypothesis_to_tool_chain",
+            lambda *a, **k: [{"type": "smt"}],
+        )
+        monkeypatch.setattr(
+            orch, "_run_tool_chain",
+            lambda *a, **k: ["smt:check-resource-leak"],
+        )
+        monkeypatch.setattr(
+            orch, "_check_sink_guarded_cached",
+            lambda *a, **k: "unguarded",
+        )
+        checklist = {"files": [{"path": "a.c", "items": [
+            {"name": "f", "line_start": 1, "line_end": 1}]}]}
+        orch._promote_suspicious(result, config, checklist=checklist)
+        return result, config
+
+    def test_cross_function_premise_blocks_promotion(
+        self, tmp_path, monkeypatch,
+    ):
+        result, config = self._run(
+            self._suspicious("cross_function"), tmp_path, monkeypatch,
+        )
+        assert result.outcomes[0].status == "suspicious"
+        assert getattr(
+            result.tier_counters["primary_sweep"], "premise_blocked", 0,
+        ) >= 1
+        rl = json.loads(
+            (config.out_dir / "reading-list.json").read_text(),
+        )
+        assert any(
+            "callers validate" in it["question"] for it in rl["items"]
+        )
+
+    def test_local_counter_still_promotes(self, tmp_path, monkeypatch):
+        result, _config = self._run(
+            self._suspicious("local"), tmp_path, monkeypatch,
+        )
+        assert result.outcomes[0].status == "finding"

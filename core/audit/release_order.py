@@ -772,8 +772,16 @@ def run_release_order_prepass(
         if time.monotonic() - t0 > budget_s:
             telemetry["budget_exceeded"] = True
             break
+        # Language from the file's extension, not a hardcoded "c":
+        # the suffix filter admits C++ files, and the C guard walk on
+        # a .cpp file fails into cfg-unavailable inconclusive.
+        try:
+            from .fail_open_lang import language_for_path
+            lang = language_for_path(fp) or "c"
+        except Exception:
+            lang = "c"
         res = _adjudicate_function(
-            source_texts[fp], fp, name, "c",
+            source_texts[fp], fp, name, lang,
             domain_model=domain_model,
             context=context,
             inventory=inventory,

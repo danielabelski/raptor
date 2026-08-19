@@ -171,11 +171,15 @@ def append_journal_for_outcome(
     # Promotion-without-tool-evidence alarm: the journal write is the
     # chokepoint every review outcome flows through, so an evidence-less
     # ``finding`` here means the tool-gated promotion invariant was
-    # bypassed upstream.  Alarm-only — the entry is still written.
+    # bypassed upstream.  Enforcing — a violating finding is demoted to
+    # suspicious BEFORE the entry is built, so the journal, the
+    # audit-log row, and the tallies that follow all carry the gated
+    # status instead of shipping the bypass.
     try:
         from .promotion_alarm import check_and_emit
         check_and_emit(
             out_dir, outcome, stage="journal-write", run_id=run_id,
+            enforce=True,
         )
     except Exception:
         logger.debug("promotion alarm hook failed", exc_info=True)

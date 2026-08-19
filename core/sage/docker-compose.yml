@@ -28,7 +28,7 @@ services:
     #   docker buildx imagetools inspect ollama/ollama:0.32.14
     # (or docker pull + docker inspect --format
     # '{{index .RepoDigests 0}}') — and append @sha256:<digest> here.
-    image: ollama/ollama:0.32.14
+    image: ollama/ollama:0.32.14@sha256:9d30908e41144b1f1da89b9d8e33c07e4aeb43ff41a8660241b1686e2cc330ad
     ports:
       # Loopback-bound: every in-repo consumer targets localhost, and
       # the sidecars have no peer authentication of their own.

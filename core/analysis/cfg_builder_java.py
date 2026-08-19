@@ -13,10 +13,25 @@ complete while execution bypasses it):
 
 * Constructs whose control flow the builder cannot faithfully
   enumerate cause the whole build to REFUSE (return ``None``):
-  lambdas, method references, anonymous / local classes, and
-  ``switch``. The resolver surfaces the refusal as a
+  lambdas, method references, anonymous / local classes,
+  pattern-matching ``switch`` labels (``case Integer i when …``),
+  ``yield``, and ``switch`` used in VALUE position (its result
+  feeding an expression). The resolver surfaces the refusal as a
   :class:`~core.analysis.finding_resolver.ResolutionFailure`, so the
   finding survives to the LLM — never a silent wrong graph.
+* Statement-position ``switch`` IS modelled: classic groups with
+  fall-through (the tail of group N flows into group N+1 unless a
+  jump terminates it — a missing fall-through edge is the
+  false-suppression direction), arrow rules without fall-through,
+  ``break`` targeting the switch's join node (not the enclosing
+  loop), and a missing ``default`` adding the condition → join edge.
+  When the discriminant and every case label fold to compile-time
+  constants (:mod:`core.analysis.const_fold_java` over the built
+  graph's reaching definitions), the condition's edges to the
+  non-selected groups are PRUNED — proof-backed dead-branch removal,
+  the switch analog of the dead-branch ternary. Any refusal along
+  the way keeps every edge (sound over-approximation) and is
+  recorded in :attr:`JavaCFG.build_notes`.
 * ``try`` / ``catch`` / ``finally`` is modelled with LIBERAL edges:
   every statement in a ``try`` body gets an edge to every catch
   handler's entry (any statement may throw). Extra edges only add
@@ -108,6 +123,10 @@ class JavaCFG:
     _nodes: Tuple[JavaCFGNode, ...]
     _adjacency: Dict[JavaCFGNode, Tuple[JavaCFGNode, ...]]
     params: Tuple[str, ...] = ()
+    # Mechanism telemetry: which optional modelling steps fired
+    # ("switch:constant-resolved", "switch:all-branches", …). Additive
+    # — consumers must tolerate an empty tuple.
+    build_notes: Tuple[str, ...] = ()
 
     @property
     def entry(self) -> JavaCFGNode:
@@ -169,7 +188,10 @@ _CAST = "cast_expression"
 _PARENS = "parenthesized_expression"
 
 # Constructs the builder REFUSES (soundness: their control/data flow
-# can't be faithfully modelled intra-procedurally).
+# can't be faithfully modelled intra-procedurally). switch stays in
+# this set so a switch nested in VALUE position (inside any
+# expression payload) refuses via _subtree_has_refused; statement-
+# position switch is dispatched to _build_switch BEFORE this check.
 _REFUSED_NODE_TYPES = frozenset({
     "lambda_expression",
     "method_reference",
@@ -178,6 +200,12 @@ _REFUSED_NODE_TYPES = frozenset({
     "class_declaration",         # local class inside a method body
     "anonymous_class_body",      # older grammar name
 })
+
+_SWITCH_TYPES = ("switch_expression", "switch_statement")
+_SWITCH_GROUP = "switch_block_statement_group"
+_SWITCH_RULE = "switch_rule"
+_SWITCH_LABEL = "switch_label"
+_YIELD = "yield_statement"
 
 # Bulk-copy analog: writes through a destination reference the value
 # gate can't follow.
@@ -656,9 +684,18 @@ class _JavaCFGBuilder:
         self._adjacency: Dict[JavaCFGNode, List[JavaCFGNode]] = {}
         self._all_nodes: List[JavaCFGNode] = [self.entry, self.exit]
         self._loop_stack: List[Tuple[JavaCFGNode, JavaCFGNode]] = []
+        # Unlabeled ``break`` targets: loops push their header,
+        # switches push their join node — Java's break exits the
+        # innermost of EITHER, unlike continue which is loop-only.
+        self._break_targets: List[JavaCFGNode] = []
         # Ambient catch entries for liberal try-edge wiring.
         self._catch_entry_stack: List[List[JavaCFGNode]] = []
         self._dedupe_counter = 0
+        # (cond_node, disc_ts_node, [(entry, label_nodes, is_default)],
+        #  join_node) per modelled switch — consumed by the post-build
+        # constant-discriminant refinement.
+        self._switch_records: List[Tuple] = []
+        self.build_notes: List[str] = []
 
     # ----- plumbing -----
 
@@ -715,6 +752,16 @@ class _JavaCFGBuilder:
 
     def _build_stmt(self, stmt, incoming):
         t = stmt.type
+        # Statement-position switch is modelled; expression_statement-
+        # wrapped switch is the same statement position in older
+        # grammars. Value-position switch still refuses via the
+        # _REFUSED_NODE_TYPES check below / _subtree_has_refused.
+        if t in _SWITCH_TYPES:
+            return self._build_switch(stmt, incoming)
+        if t == _EXPR_STMT:
+            inner = next((c for c in stmt.children if c.is_named), None)
+            if inner is not None and inner.type in _SWITCH_TYPES:
+                return self._build_switch(inner, incoming)
         if t in _REFUSED_NODE_TYPES:
             raise _RefusedConstruct(t)
         if t == _IF:
@@ -821,12 +868,14 @@ class _JavaCFGBuilder:
         self._ambient_catch_link(header)
         after = [header]
         self._loop_stack.append((header, header))
+        self._break_targets.append(header)
         body = stmt.child_by_field_name("body")
         body_out = self._build_stmts(body, [header]) \
             if body is not None else []
         for tail in body_out:
             self._link(tail, header)
         self._loop_stack.pop()
+        self._break_targets.pop()
         return after
 
     def _build_do(self, stmt, incoming):
@@ -843,10 +892,12 @@ class _JavaCFGBuilder:
         self._ambient_catch_link(head)
         header = self._cond_node(stmt, "do-while")
         self._loop_stack.append((header, head))
+        self._break_targets.append(header)
         body = stmt.child_by_field_name("body")
         body_out = self._build_stmts(body, [head]) \
             if body is not None else [head]
         self._loop_stack.pop()
+        self._break_targets.pop()
         self._link_many(body_out, header)
         self._ambient_catch_link(header)
         self._link(header, head)
@@ -865,6 +916,7 @@ class _JavaCFGBuilder:
         self._ambient_catch_link(header)
         update = stmt.child_by_field_name("update")
         self._loop_stack.append((header, header))
+        self._break_targets.append(header)
         body = stmt.child_by_field_name("body")
         body_out = self._build_stmts(body, [header]) \
             if body is not None else []
@@ -876,6 +928,7 @@ class _JavaCFGBuilder:
             for tail in body_out:
                 self._link(tail, header)
         self._loop_stack.pop()
+        self._break_targets.pop()
         return [header]
 
     def _build_enhanced_for(self, stmt, incoming):
@@ -898,12 +951,14 @@ class _JavaCFGBuilder:
         self._link_many(incoming, header)
         self._ambient_catch_link(header)
         self._loop_stack.append((header, header))
+        self._break_targets.append(header)
         body = stmt.child_by_field_name("body")
         body_out = self._build_stmts(body, [header]) \
             if body is not None else []
         for tail in body_out:
             self._link(tail, header)
         self._loop_stack.pop()
+        self._break_targets.pop()
         return [header]
 
     def _build_try(self, stmt, incoming):
@@ -978,14 +1033,14 @@ class _JavaCFGBuilder:
             raise _RefusedConstruct("labeled break")
         node = self._straight_node(stmt)
         self._link_many(incoming, node)
-        if not self._loop_stack:
+        if not self._break_targets:
             self._link(node, self.exit)
             return []
-        # break exits the innermost loop: successors resolved by the
-        # loop's after-set — the header IS the after-node in this
-        # model, but break must NOT re-test the condition. Link to
-        # header anyway: extra edge = extra path = conservative.
-        self._link(node, self._loop_stack[-1][0])
+        # break exits the innermost loop OR switch: for a loop the
+        # header stands in for the after-set (break must NOT re-test
+        # the condition, but the extra edge is only an extra path —
+        # conservative); for a switch the target is its join node.
+        self._link(node, self._break_targets[-1])
         return []
 
     def _build_continue(self, stmt, incoming):
@@ -998,6 +1053,110 @@ class _JavaCFGBuilder:
             return []
         self._link(node, self._loop_stack[-1][1])
         return []
+
+    # ----- switch -----
+
+    def _build_switch(self, stmt, incoming):
+        """Statement-position switch: classic groups with fall-through
+        or arrow rules without; ``break`` targets the join node. The
+        condition initially links to EVERY group entry (plus the join
+        when no ``default`` exists) — the post-build refinement prunes
+        non-selected entries only under a full constant proof."""
+        disc = stmt.child_by_field_name("condition")
+        body = stmt.child_by_field_name("body")
+        if disc is None or body is None:
+            raise _RefusedConstruct("switch shape")
+        if _subtree_has_refused(disc):
+            raise _RefusedConstruct("switch condition")
+        # A yield anywhere makes this a value-producing switch body —
+        # its result flow is not modelled.
+        scan = [body]
+        while scan:
+            cur = scan.pop()
+            if cur.type == _YIELD:
+                raise _RefusedConstruct("switch yield")
+            for c in cur.children:
+                if c.is_named:
+                    scan.append(c)
+        groups = [c for c in body.children if c.type == _SWITCH_GROUP]
+        rules = [c for c in body.children if c.type == _SWITCH_RULE]
+        if groups and rules:
+            raise _RefusedConstruct("mixed switch block")
+        units = groups or rules
+
+        # Parse labels up front so a pattern label refuses before any
+        # graph mutation beyond this switch.
+        parsed = []
+        for u in units:
+            labels = [c for c in u.children if c.type == _SWITCH_LABEL]
+            if not labels:
+                raise _RefusedConstruct("switch label shape")
+            exprs: List = []
+            is_default = False
+            for lab in labels:
+                named = [c for c in lab.children if c.is_named]
+                if any(c.type in ("pattern", "guard", "type_pattern",
+                                  "record_pattern") for c in named):
+                    raise _RefusedConstruct("switch pattern label")
+                if not named:
+                    is_default = True
+                else:
+                    exprs.extend(named)
+            parsed.append((u, labels, exprs, is_default))
+
+        calls, defs, uses, css = _payload_from_subtree(disc, self.resolver)
+        cond_node = self._make_node(
+            lineno=stmt.start_point[0] + 1,
+            label=f"switch {self._short_label(disc)}",
+            calls=calls, defs=defs, uses=uses, call_sites=css,
+            may_escape=_subtree_may_escape(disc, self.resolver),
+        )
+        self._link_many(incoming, cond_node)
+        self._ambient_catch_link(cond_node)
+        join = self._make_node(
+            lineno=stmt.end_point[0] + 1, label="switch-end",
+        )
+
+        if not units:
+            self._link(cond_node, join)
+            return [join]
+
+        entries: List[Tuple[JavaCFGNode, Tuple, bool]] = []
+        has_default = False
+        prev_tails: Optional[List[JavaCFGNode]] = None
+        for u, labels, exprs, is_default in parsed:
+            has_default = has_default or is_default
+            entry = self._make_node(
+                lineno=labels[0].start_point[0] + 1,
+                label=self._short_label(labels[0]),
+            )
+            self._link(cond_node, entry)
+            self._ambient_catch_link(entry)
+            if prev_tails is not None:
+                # Classic fall-through: group N's live tails flow into
+                # group N+1's entry. A missing fall-through edge would
+                # hide the path where a re-taint after the sanitizing
+                # case executes — the false-suppression direction.
+                self._link_many(prev_tails, entry)
+            stmts = [c for c in u.children
+                     if c.is_named and c.type != _SWITCH_LABEL]
+            self._break_targets.append(join)
+            outs = self._build_stmts(stmts, [entry]) if stmts else [entry]
+            self._break_targets.pop()
+            if u.type == _SWITCH_RULE:
+                self._link_many(outs, join)
+                prev_tails = None
+            else:
+                prev_tails = outs
+            entries.append((entry, tuple(exprs), is_default))
+        if prev_tails is not None:
+            self._link_many(prev_tails, join)
+        if not has_default:
+            self._link(cond_node, join)
+        self._switch_records.append(
+            (cond_node, disc, tuple(entries), join, has_default),
+        )
+        return [join]
 
 
 def build_java_intraproc_cfg(
@@ -1069,8 +1228,24 @@ def build_java_intraproc_cfg(
         return None
     builder._link_many(tails, builder.exit)
 
+    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
+    notes: List[str] = list(builder.build_notes)
+    if builder._switch_records:
+        try:
+            pruned, refine_notes = _refine_constant_switches(
+                builder, source_text, _method_params(decl),
+            )
+            notes.extend(refine_notes)
+        except Exception:  # noqa: BLE001 — refinement is an optimisation;
+            # failure keeps every edge (sound) and is recorded.
+            logger.debug("switch refinement failed for %s",
+                         function_name, exc_info=True)
+            pruned = set()
+            notes.append("switch:refine-error")
+
     adjacency = {
-        n: tuple(dsts) for n, dsts in builder._adjacency.items()
+        n: tuple(d for d in dsts if (n, d) not in pruned)
+        for n, dsts in builder._adjacency.items()
     }
     return JavaCFG(
         function_name=function_name,
@@ -1081,7 +1256,106 @@ def build_java_intraproc_cfg(
         _nodes=tuple(builder._all_nodes),
         _adjacency=adjacency,
         params=_method_params(decl),
+        build_notes=tuple(notes),
     )
+
+
+def _refine_constant_switches(
+    builder: _JavaCFGBuilder,
+    source_text: str,
+    params: Tuple[str, ...],
+) -> Tuple[Set[Tuple[JavaCFGNode, JavaCFGNode]], List[str]]:
+    """Prune condition→group edges of switches whose discriminant and
+    every case label fold to compile-time constants.
+
+    The proof runs over the UNPRUNED graph's reaching definitions (more
+    reaching defs = more chances to refuse — conservative) using the
+    same definition oracle as the constant-definers gate. Anything
+    short of a full proof — an unresolvable label, a discriminant that
+    refuses, a duplicate match, a non int/string discriminant value —
+    keeps every edge and records ``switch:all-branches``.
+    """
+    from core.analysis.const_fold_java import (
+        REFUSE,
+        JavaConstIndex,
+        fold_expr,
+        fold_expr_at,
+    )
+    from core.analysis.dataflow import reaching_defs
+
+    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
+    notes: List[str] = []
+    n_lines = source_text.count("\n") + 1
+    index = JavaConstIndex(source_text, (1, n_lines))
+    try:
+        from core.analysis.value_set_java import build_table_resolver
+        table_resolver = build_table_resolver(source_text, (1, n_lines))
+    except Exception:  # noqa: BLE001 — table support is optional
+        table_resolver = None
+    interim = JavaCFG(
+        function_name=builder.function_name,
+        file_path=builder.file_path,
+        language="java",
+        entry_node=builder.entry,
+        exit_node=builder.exit,
+        _nodes=tuple(builder._all_nodes),
+        _adjacency={n: tuple(d) for n, d in builder._adjacency.items()},
+        params=params,
+    )
+    rd = reaching_defs(interim)
+
+    def _refuse_names(_name: str, _depth: int):
+        return REFUSE
+
+    for cond_node, disc, entries, join, has_default in \
+            builder._switch_records:
+        label_vals: List[List] = []
+        ok = True
+        for _entry, exprs, _is_default in entries:
+            vals = []
+            for e in exprs:
+                # Labels fold literal-only: Java constant-variable
+                # labels (``case MY_CONST:``) refuse — resolving them
+                # against field initializers is out of scope.
+                v = fold_expr(e, _refuse_names)
+                if v is REFUSE:
+                    ok = False
+                    break
+                vals.append(v)
+            if not ok:
+                break
+            label_vals.append(vals)
+        if not ok:
+            notes.append("switch:all-branches")
+            continue
+        dv = fold_expr_at(rd, cond_node, disc, index,
+                          array_resolver=table_resolver)
+        if dv is REFUSE or isinstance(dv, bool) or dv is None \
+                or not isinstance(dv, (int, str)):
+            notes.append("switch:all-branches")
+            continue
+        selected = None
+        duplicate = False
+        for (entry, _exprs, _is_default), vals in zip(entries, label_vals):
+            for lv in vals:
+                if type(lv) is type(dv) and lv == dv:
+                    if selected is not None and selected is not entry:
+                        duplicate = True
+                    selected = entry
+        if duplicate:
+            notes.append("switch:all-branches")
+            continue
+        if selected is None:
+            selected = next(
+                (e for e, _x, d in entries if d), None,
+            )
+        for entry, _exprs, _is_default in entries:
+            if entry is not selected:
+                pruned.add((cond_node, entry))
+        # No match and no default: control falls straight to the join —
+        # the cond→join edge already exists (has_default is False).
+        notes.append("switch:constant-resolved")
+    return pruned, notes
 
 
 __all__ = [

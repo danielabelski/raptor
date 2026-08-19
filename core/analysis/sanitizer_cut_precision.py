@@ -616,6 +616,178 @@ def _java_array_fixtures() -> List[CutFixture]:
     return j
 
 
+def _java_switch_fixtures() -> List[CutFixture]:
+    """Switch battery: constant-resolved selection may suppress; every
+    variation where the model could hide a live path — non-constant
+    discriminant, the fold selecting the tainted branch, fall-through
+    from the safe case into a re-taint (the missing-break hazard), an
+    unresolvable constant-variable label — must not."""
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    def sw(num_line: str, *, drop_break: bool = False) -> str:
+        case_stmts = ['switch (num) {', '  case 106:', '    bar = "safe";']
+        if not drop_break:
+            case_stmts.append('    break;')
+        case_stmts += ['  default:', '    bar = param;', '    break;', '}']
+        return body('String param = request.getParameter("q");',
+                    num_line, 'String bar;', *case_stmts,
+                    'out.println(bar);')
+
+    j = []
+    j.append(_fx(
+        "java_switch_constant_safe", "xss", "CWE-79",
+        "switch_constant_selected_safe", LABEL_MAY_SUPPRESS,
+        sw('int num = 106;'), 4, 15, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_switch_nonconstant", "xss", "CWE-79",
+        "switch_nonconstant_discriminant", LABEL_MUST_NOT_SUPPRESS,
+        sw('int num = request.getIntHeader("n");'), 4, 15,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_switch_selects_tainted", "xss", "CWE-79",
+        "switch_constant_selects_tainted", LABEL_MUST_NOT_SUPPRESS,
+        sw('int num = 105;'), 4, 15, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_switch_fallthrough_retaint", "xss", "CWE-79",
+        "switch_fallthrough_retaint", LABEL_MUST_NOT_SUPPRESS,
+        sw('int num = 106;', drop_break=True), 4, 14,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_switch_charat_selected_safe", "xss", "CWE-79",
+        "switch_charat_selected_safe", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String guess = "ABC";',
+             "char target = guess.charAt(1);",
+             'String bar;',
+             'switch (target) {', "  case 'A':", '    bar = param;',
+             '    break;', "  case 'B':", '    bar = "bob";',
+             '    break;', '  default:', '    bar = param;',
+             '    break;', '}',
+             'out.println(bar);'), 4, 19,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_switch_charat_selected_tainted", "xss", "CWE-79",
+        "switch_charat_selected_tainted", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String guess = "ABC";',
+             "char target = guess.charAt(0);",
+             'String bar;',
+             'switch (target) {', "  case 'A':", '    bar = param;',
+             '    break;', "  case 'B':", '    bar = "bob";',
+             '    break;', '  default:', '    bar = param;',
+             '    break;', '}',
+             'out.println(bar);'), 4, 19,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_switch_identifier_label", "xss", "CWE-79",
+        "switch_identifier_label", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'final int SAFE = 106;', 'int num = 106;', 'String bar;',
+             'switch (num) {', '  case SAFE:', '    bar = "safe";',
+             '    break;', '  default:', '    bar = param;',
+             '    break;', '}',
+             'out.println(bar);'), 4, 16,
+        language="java", suffix=".java"))
+    return j
+
+
+def _java_valueset_fixtures() -> List[CutFixture]:
+    """Constant-table battery: a provably-unmodified literal table read
+    by a constant index may suppress; stores, aliases (assignment or
+    call argument), tainted elements, out-of-bounds and non-constant
+    indexes must not."""
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    j = []
+    j.append(_fx(
+        "java_table_constant_read", "xss", "CWE-79",
+        "table_constant_read", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String[] values = {"safe0", "safe1"};',
+             'String bar = values[1];',
+             'out.println(bar);'), 4, 7,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_table_element_store", "xss", "CWE-79",
+        "table_element_store", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String[] values = {"safe0", "safe1"};',
+             'values[1] = param;',
+             'String bar = values[1];',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_table_alias_store", "xss", "CWE-79",
+        "table_alias_store", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String[] values = {"safe0", "safe1"};',
+             'String[] other = values;',
+             'other[1] = param;',
+             'String bar = values[1];',
+             'out.println(bar);'), 4, 9,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_table_alias_call", "xss", "CWE-79",
+        "table_alias_call_argument", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String[] values = {"safe0", "safe1"};',
+             'java.util.Arrays.fill(values, param);',
+             'String bar = values[1];',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_table_tainted_element", "xss", "CWE-79",
+        "table_tainted_element", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String[] values = {param, "safe1"};',
+             'String bar = values[0];',
+             'out.println(bar);'), 4, 7,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_table_nonconstant_index", "xss", "CWE-79",
+        "table_nonconstant_index", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int k = request.getIntHeader("n");',
+             'String[] values = {"safe0", "safe1"};',
+             'String bar = values[k];',
+             'out.println(bar);'), 4, 8,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_table_out_of_bounds", "xss", "CWE-79",
+        "table_out_of_bounds_index", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String[] values = {"safe0"};',
+             'String bar = values[3];',
+             'out.println(bar);'), 4, 7,
+        language="java", suffix=".java"))
+    j.append(_fx(
+        "java_table_switch_discriminant", "xss", "CWE-79",
+        "table_switch_discriminant", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'int[] keys = {105, 106};',
+             'String bar;',
+             'switch (keys[1]) {', '  case 106:', '    bar = "safe";',
+             '    break;', '  default:', '    bar = param;',
+             '    break;', '}',
+             'out.println(bar);'), 4, 15,
+        language="java", suffix=".java"))
+    return j
+
+
 def build_corpus() -> List[CutFixture]:
     """The labelled corpus: the adversarial battery instantiated per
     covered python sink class, plus interproc, catalog-empty-class,
@@ -661,6 +833,8 @@ def build_corpus() -> List[CutFixture]:
         "    system(cmd);\n"
         "}\n", 1, 2, language="c", suffix=".c"))
     fixtures += _java_fixtures()
+    fixtures += _java_switch_fixtures()
+    fixtures += _java_valueset_fixtures()
     fixtures += _java_constant_fixtures()
     fixtures += _java_wrapper_fixtures()
     fixtures += _java_array_fixtures()

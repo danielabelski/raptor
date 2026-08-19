@@ -491,9 +491,20 @@ def _sink_arg_constant_reason(
             java_source_text, (min(linenos), max(linenos)),
         )
         rd = reaching_defs(graph)
-        reason = all_definers_constant(rd, sink, sink_arg, index)
+        try:
+            from core.analysis.value_set_java import build_table_resolver
+            table_resolver = build_table_resolver(
+                java_source_text, (min(linenos), max(linenos)),
+            )
+        except Exception:  # noqa: BLE001 — table support is optional
+            table_resolver = None
+        reason = all_definers_constant(
+            rd, sink, sink_arg, index, array_resolver=table_resolver,
+        )
         if reason is None:
             return None
+        if table_resolver is not None and table_resolver.hits:
+            reason += " (resolved through a constant-table load)"
         call_sites = getattr(sink, "call_sites", ()) or ()
         if not call_sites:
             return None

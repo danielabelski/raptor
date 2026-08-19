@@ -114,21 +114,31 @@ class JavaConstIndex:
         return self._defs.get((lineno, name))
 
 
-REFUSE = _REFUSE
-
-
-def _fold(node, resolve_name, depth: int) -> Any:
+def fold_expr(node, resolve_name, array_resolver=None) -> Any:
     """Fold a tree-sitter Java expression node to a constant.
 
     ``resolve_name(name, depth)`` returns the name's constant value or
-    ``_REFUSE``. Returns the folded value or ``_REFUSE``.
+    ``_REFUSE``. ``array_resolver(node, resolve_name, depth)`` — when
+    supplied (see :mod:`core.analysis.value_set_java`) — resolves an
+    ``array_access`` read; without it every array access refuses.
+    Returns the folded value or ``_REFUSE``.
     """
+    return _fold(node, resolve_name, 0, array_resolver)
+
+
+REFUSE = _REFUSE
+
+
+def _fold(node, resolve_name, depth: int, array_resolver=None) -> Any:
     if node is None or depth > _MAX_DEPTH:
         return _REFUSE
     t = node.type
     if t == "parenthesized_expression":
         inner = [c for c in node.children if c.is_named]
-        return _fold(inner[0], resolve_name, depth + 1) if len(inner) == 1 else _REFUSE
+        return _fold(inner[0], resolve_name, depth + 1, array_resolver) \
+            if len(inner) == 1 else _REFUSE
+    if t == "array_access" and array_resolver is not None:
+        return array_resolver(node, resolve_name, depth + 1)
     if t == "decimal_integer_literal":
         try:
             v = int(node.text.decode())
@@ -136,21 +146,35 @@ def _fold(node, resolve_name, depth: int) -> Any:
             return _REFUSE
         return v if _INT_MIN <= v <= _INT_MAX else _REFUSE
     if t == "string_literal":
-        # Value identity is all the gate compares; escape fidelity is
-        # irrelevant as long as it is deterministic.
-        return node.text.decode()
+        # DECODED value, not raw text: the raw quote-inclusive form
+        # made "a" + "b" fold to a value that compared unequal to the
+        # folded "ab" — a wrong False in exactly the branch-selection
+        # position where it could pick the wrong ternary/switch arm.
+        # Escapes refuse rather than risk a mis-decode.
+        raw = node.text.decode()
+        if len(raw) < 2 or "\\" in raw:
+            return _REFUSE
+        return raw[1:-1]
     if t in ("true", "false"):
         return t == "true"
     if t == "null_literal":
         return None
     if t == "character_literal":
-        return node.text.decode()
+        # Java char, represented as a 1-char str: switch labels and
+        # charAt results then compare under one convention. Escaped
+        # chars refuse.
+        raw = node.text.decode()
+        if len(raw) != 3 or "\\" in raw:
+            return _REFUSE
+        return raw[1:-1]
+    if t == "method_invocation":
+        return _fold_pure_call(node, resolve_name, depth, array_resolver)
     if t == "identifier":
         return resolve_name(node.text.decode(), depth + 1)
     if t == "unary_expression":
         operand = node.child_by_field_name("operand")
         op = node.child_by_field_name("operator")
-        val = _fold(operand, resolve_name, depth + 1)
+        val = _fold(operand, resolve_name, depth + 1, array_resolver)
         if val is _REFUSE or op is None:
             return _REFUSE
         text = op.type
@@ -161,7 +185,7 @@ def _fold(node, resolve_name, depth: int) -> Any:
             return not val
         return _REFUSE
     if t == "binary_expression":
-        left = _fold(node.child_by_field_name("left"), resolve_name, depth + 1)
+        left = _fold(node.child_by_field_name("left"), resolve_name, depth + 1, array_resolver)
         if left is _REFUSE:
             return _REFUSE
         op_node = node.child_by_field_name("operator")
@@ -172,17 +196,50 @@ def _fold(node, resolve_name, depth: int) -> Any:
             return False
         if op == "||" and left is True:
             return True
-        right = _fold(node.child_by_field_name("right"), resolve_name, depth + 1)
+        right = _fold(node.child_by_field_name("right"), resolve_name, depth + 1, array_resolver)
         if right is _REFUSE:
             return _REFUSE
         return _fold_binop(op, left, right)
     if t == "ternary_expression":
-        cond = _fold(node.child_by_field_name("condition"), resolve_name, depth + 1)
+        cond = _fold(node.child_by_field_name("condition"), resolve_name, depth + 1, array_resolver)
         if not isinstance(cond, bool):
             return _REFUSE
         branch = "consequence" if cond else "alternative"
-        return _fold(node.child_by_field_name(branch), resolve_name, depth + 1)
+        return _fold(node.child_by_field_name(branch), resolve_name, depth + 1, array_resolver)
     return _REFUSE
+
+
+def _fold_pure_call(node, resolve_name, depth: int,
+                    array_resolver=None) -> Any:
+    """Fold the tiny pure-function allowlist: ``charAt`` / ``length``
+    on a receiver that itself folds to a string. Both are total on
+    their folded domain (charAt bounds-checked), side-effect free, and
+    independent of runtime state — the OWASP-style
+    ``"ABC".charAt(1)`` discriminant is the canonical shape. Every
+    other call refuses as before."""
+    name_node = node.child_by_field_name("name")
+    obj = node.child_by_field_name("object")
+    if name_node is None or obj is None:
+        return _REFUSE
+    method = name_node.text.decode()
+    if method not in ("charAt", "length"):
+        return _REFUSE
+    receiver = _fold(obj, resolve_name, depth + 1, array_resolver)
+    if not isinstance(receiver, str):
+        return _REFUSE
+    args_node = node.child_by_field_name("arguments")
+    args = [c for c in (args_node.children if args_node else ())
+            if c.is_named]
+    if method == "length":
+        return len(receiver) if not args else _REFUSE
+    if len(args) != 1:
+        return _REFUSE
+    idx = _fold(args[0], resolve_name, depth + 1, array_resolver)
+    if idx is _REFUSE or isinstance(idx, bool) or not isinstance(idx, int):
+        return _REFUSE
+    if not (0 <= idx < len(receiver)):
+        return _REFUSE
+    return receiver[idx]
 
 
 def _is_int(v: Any) -> bool:
@@ -218,19 +275,12 @@ def _fold_binop(op: str, left: Any, right: Any) -> Any:
     return _REFUSE
 
 
-def all_definers_constant(
-    rd,
-    sink,
-    sink_arg: str,
-    index: JavaConstIndex,
-) -> Optional[str]:
-    """None when the constancy proof fails; a short reason string when
-    every reaching definition of ``sink_arg`` at ``sink`` folds to the
-    same compile-time constant (the reason names the value's type, not
-    the value — audit records shouldn't quote scanned content).
+def _make_point_resolver(rd, index: JavaConstIndex, array_resolver=None):
+    """Name resolver over the reaching-defs oracle: every reaching
+    definition of the name at the program point must itself fold, and
+    all must fold to the same value (see module docstring). Shared by
+    the constant-definers gate and the switch-discriminant refinement.
     """
-    if not index.ok:
-        return None
 
     def resolve_at(node, name: str, depth: int,
                    visiting: Set[Tuple[int, str]]) -> Any:
@@ -256,6 +306,7 @@ def all_definers_constant(
                 rhs,
                 lambda nm, dp, _d=d: resolve_at(_d, nm, dp, visiting),
                 depth,
+                array_resolver,
             )
             visiting.discard(key)
             if val is _REFUSE:
@@ -269,6 +320,43 @@ def all_definers_constant(
                 return _REFUSE
         return first
 
+    return resolve_at
+
+
+def fold_expr_at(rd, at_node, expr_node, index: JavaConstIndex,
+                 array_resolver=None) -> Any:
+    """Fold an arbitrary expression at a program point: identifiers
+    resolve through the reaching-defs oracle at ``at_node`` with the
+    same all-defs-must-agree policy as the constant-definers gate.
+    Returns the folded value or :data:`REFUSE`."""
+    if not index.ok:
+        return _REFUSE
+    resolve_at = _make_point_resolver(rd, index, array_resolver)
+    visiting: Set[Tuple[int, str]] = set()
+    return _fold(
+        expr_node,
+        lambda nm, dp: resolve_at(at_node, nm, dp, visiting),
+        0,
+        array_resolver,
+    )
+
+
+def all_definers_constant(
+    rd,
+    sink,
+    sink_arg: str,
+    index: JavaConstIndex,
+    array_resolver=None,
+) -> Optional[str]:
+    """None when the constancy proof fails; a short reason string when
+    every reaching definition of ``sink_arg`` at ``sink`` folds to the
+    same compile-time constant (the reason names the value's type, not
+    the value — audit records shouldn't quote scanned content).
+    """
+    if not index.ok:
+        return None
+
+    resolve_at = _make_point_resolver(rd, index, array_resolver)
     value = resolve_at(sink, sink_arg, 0, set())
     if value is _REFUSE:
         return None

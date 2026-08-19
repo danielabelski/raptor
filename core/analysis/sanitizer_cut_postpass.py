@@ -58,7 +58,11 @@ _SOURCE_PATTERNS: Dict[str, tuple] = {
     "java": (
         r"\.getParameter\s*\(",
         r"\.getParameterValues\s*\(",
+        r"\.getParameterMap\s*\(",
         r"\.getHeader\s*\(",
+        r"\.getHeaderNames\s*\(",
+        r"\.getHeaders\s*\(",
+        r"\.getIntHeader\s*\(",
         r"\.getCookies\s*\(",
         r"\.getQueryString\s*\(",
     ),
@@ -83,10 +87,17 @@ class PostpassStats:
     refused_reasons: Dict[str, int] = field(default_factory=dict)
     budget_exhausted_skips: int = 0
     elapsed_seconds: float = 0.0
+    # Which optional gate mechanisms fired (CFG build_notes such as
+    # switch:constant-resolved, plus table-load-resolved constancy) —
+    # the refusal/mechanism telemetry that ranks the next iteration.
+    mechanism_counts: Dict[str, int] = field(default_factory=dict)
 
     def refuse(self, reason: str) -> None:
         self.refused += 1
         self.refused_reasons[reason] = self.refused_reasons.get(reason, 0) + 1
+
+    def mechanism(self, note: str) -> None:
+        self.mechanism_counts[note] = self.mechanism_counts.get(note, 0) + 1
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -96,6 +107,7 @@ class PostpassStats:
             "refused": self.refused,
             "refused_reasons": dict(sorted(self.refused_reasons.items())),
             "budget_exhausted_skips": self.budget_exhausted_skips,
+            "mechanism_counts": dict(sorted(self.mechanism_counts.items())),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
         }
 
@@ -362,6 +374,10 @@ def run_postpass(
             except Exception:  # noqa: BLE001 — arbitrary scanned source can break parsing
                 verdicts = ["gate-error"]
                 break
+            for note in getattr(resolved.cfg, "build_notes", ()) or ():
+                stats.mechanism(note)
+            if "constant-table load" in (getattr(result, "reason", "") or ""):
+                stats.mechanism("constant:table-load")
             verdicts.append(result.verdict)
 
         if verdicts == ["resolver-refused"]:

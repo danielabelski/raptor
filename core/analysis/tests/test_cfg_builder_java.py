@@ -107,7 +107,11 @@ class TestRefusals:
         "        Runnable r = () -> out.println(x);\n",
         "        java.util.function.Function<String,Integer> f = "
         "String::length;\n",
-        "        switch (x) { default: break; }\n",
+        # Statement-position switch is modelled since the switch-CFG
+        # work; VALUE-position switch (result feeding an expression)
+        # still refuses — pinned here and in test_cfg_builder_java_switch.
+        '        String s = switch (x.length()) '
+        '{ case 1 -> "a"; default -> "b"; };\n',
         "        outer: for (int i = 0; i < 2; i++) { break outer; }\n",
         "        class Local { void m() {} }\n",
     ])

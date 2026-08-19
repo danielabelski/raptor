@@ -390,6 +390,11 @@ def run_postpass(
                 stats.mechanism("constant:table-load")
             if reason_text.startswith("collection-membership guard"):
                 stats.mechanism("collection:membership-guard")
+            if ("conduit helper" in reason_text
+                    or reason_text.startswith("conduit-constant")):
+                stats.mechanism("conduit:constant")
+            if "(conduit transparency)" in reason_text:
+                stats.mechanism("conduit:transparency")
             verdicts.append(result.verdict)
 
         if verdicts == ["resolver-refused"]:

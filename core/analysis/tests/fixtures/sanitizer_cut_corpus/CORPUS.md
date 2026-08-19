@@ -60,3 +60,5 @@ re-shaped at b19: its array was local, fresh, and never read, which
 element tracking legitimately proves irrelevant to the sanitized
 scalar sink; an alias line now makes the array genuinely untracked so
 the fixture keeps guarding "escaping arrays block the exemption".
+| `conduit_transparency_java.java` | sanitized value through a returns-param conduit helper — value-transparent hop | suppress (conduit transparency) |
+| `conduit_tainted_java.java` | the same conduit with the raw request value (decoy sanitizer keeps the catalog non-empty) — transparency must not launder taint | candidate_only (survives) |

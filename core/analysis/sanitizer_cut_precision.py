@@ -1114,7 +1114,301 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_wrapper_fixtures()
     fixtures += _java_array_fixtures()
     fixtures += _java_config_fixtures()
+    fixtures += _java_b27_fixtures()
     return fixtures
+
+
+def _java_b27_fixtures() -> List[CutFixture]:
+    """The b27 battery: conduit summaries — helpers that provably
+    return either a compile-time constant or a specific parameter
+    UNCHANGED. A conduit call site is value-transparent: the sink's
+    taint question passes through to the argument (or vanishes on the
+    constant side — constants are taint-free for the taint classes
+    this gate serves, the precedent the b17 constant-definers gate
+    settled). The adversarial direction is transparency HONESTY: a
+    tainted argument must ride through untouched."""
+    imp = ("import org.owasp.encoder.Encode;\n"
+           "import javax.servlet.http.HttpServletRequest;\n")
+
+    def cls_t(body: str) -> str:
+        return imp + "public class T {\n" + body + "}\n"
+
+    handle = ("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out) {\n"
+              "        String x = request.getParameter(\"q\");\n")
+    j: List[CutFixture] = []
+
+    # ---- may-suppress: the shapes the mechanism exists for ----
+    j.append(_marked(
+        "java_conduit_static_const", "xss", "CWE-79",
+        "conduit_static_const", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = C.pick();\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private static class C {\n"
+              + "        static String pick() {\n"
+              + "            return \"safe\";\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_folded_ternary_const", "xss", "CWE-79",
+        "conduit_folded_ternary_const", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pick(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p) {\n"
+              + "            int n = 42;\n"
+              + "            return (7 * 42) - n > 200 ? \"safe\" : p;\n"
+              + "        }\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_param_sanitized", "xss", "CWE-79",
+        "conduit_param_sanitized_transparency", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String clean = Encode.forHtml(x);\n"
+              + "        String bar = new W().pass(clean);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pass(String p) {\n"
+              + "            return p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_join_sanitized", "xss", "CWE-79",
+        "conduit_join_sanitized_param", LABEL_MAY_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out, int mode) {\n"
+              "        String x = request.getParameter(\"q\");\n"
+              + "        String clean = Encode.forHtml(x);\n"
+              + "        String bar = new W().pick(clean, mode);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p, int m) {\n"
+              + "            return m > 0 ? \"safe\" : p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_const_literal_arg", "xss", "CWE-79",
+        "conduit_param_constant_argument", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pass(\"hello\");\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pass(String p) {\n"
+              + "            return p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+
+    # ---- must-not-suppress: transparency honesty + refusals ----
+    j.append(_marked(
+        "java_conduit_tainted_passthrough", "xss", "CWE-79",
+        "conduit_tainted_passthrough", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pass(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pass(String p) {\n"
+              + "            return p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_join_tainted", "xss", "CWE-79",
+        "conduit_join_tainted_param", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out, int mode) {\n"
+              "        String x = request.getParameter(\"q\");\n"
+              + "        String bar = new W().pick(x, mode);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p, int m) {\n"
+              + "            return m > 0 ? \"safe\" : p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_transform_concat", "xss", "CWE-79",
+        "conduit_param_transformed_concat", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pass(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pass(String p) {\n"
+              + "            return \"pre\" + p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_transform_call", "xss", "CWE-79",
+        "conduit_param_transformed_call", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pass(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pass(String p) {\n"
+              + "            return p.trim();\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_unfoldable_tainted", "xss", "CWE-79",
+        "conduit_unfoldable_cond_tainted_param", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out, int mode) {\n"
+              "        String x = request.getParameter(\"q\");\n"
+              + "        String bar = new W().pick(x, mode);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p, int m) {\n"
+              + "            return m > 0 ? \"<b>ok</b>\" : p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_multireturn", "xss", "CWE-79",
+        "conduit_multi_return_refusal", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pick(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p) {\n"
+              + "            if (p.isEmpty()) { return \"a\"; }\n"
+              + "            return p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_recursion", "xss", "CWE-79",
+        "conduit_recursion_refusal", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pick(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p) {\n"
+              + "            return pick(p);\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_two_param_join", "xss", "CWE-79",
+        "conduit_two_param_join_refusal", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out, String other, int mode) {\n"
+              "        String x = request.getParameter(\"q\");\n"
+              + "        String bar = new W().pick(x, other, mode);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p, String q, int m) {\n"
+              + "            return m > 0 ? q : p;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_anon_subclass", "xss", "CWE-79",
+        "conduit_anonymous_subclass_refusal", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W() {\n"
+              + "            public String pick(String p) {"
+              " return p + \"!\"; }\n"
+              + "        }.pick(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private static class W {\n"
+              + "        public String pick(String p) {\n"
+              + "            return \"safe\";\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    # ---- the Benchmark's REAL body shapes (declare-uninitialized +
+    # reassign; unbraced if/else arms) — measured live as the dominant
+    # conduit population; the ternary-only grammar missed all of them.
+    j.append(_marked(
+        "java_conduit_reassign_folded_const", "xss", "CWE-79",
+        "conduit_declare_reassign_folded_const", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pick(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p) {\n"
+              + "            String bar;\n"
+              + "            int num = 106;\n"
+              + "            return_helper: ;\n"
+              + "            bar = (7 * 18) + num > 200 ?"
+              " \"always\" : p;\n"
+              + "            return bar;\n        }\n"
+              + "    }\n").replace("            return_helper: ;\n", ""),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_ifelse_folded_const", "xss", "CWE-79",
+        "conduit_ifelse_folded_const", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pick(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p) {\n"
+              + "            String bar;\n"
+              + "            int num = 86;\n"
+              + "            if ((7 * 42) - num > 200) bar = \"always\";\n"
+              + "            else bar = p;\n"
+              + "            return bar;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_ifelse_join_sanitized", "xss", "CWE-79",
+        "conduit_ifelse_join_sanitized_param", LABEL_MAY_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out, int mode) {\n"
+              "        String x = request.getParameter(\"q\");\n"
+              + "        String clean = Encode.forHtml(x);\n"
+              + "        String bar = new W().pick(clean, mode);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p, int m) {\n"
+              + "            String bar;\n"
+              + "            if (m > 0) bar = \"safe\";\n"
+              + "            else bar = p;\n"
+              + "            return bar;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_ifelse_join_tainted", "xss", "CWE-79",
+        "conduit_ifelse_join_tainted_param", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out, int mode) {\n"
+              "        String x = request.getParameter(\"q\");\n"
+              + "        String bar = new W().pick(x, mode);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p, int m) {\n"
+              + "            String bar;\n"
+              + "            if (m > 0) bar = \"safe\";\n"
+              + "            else bar = p;\n"
+              + "            return bar;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_partial_if_unassigned", "xss", "CWE-79",
+        "conduit_partial_if_unassigned_refusal", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = new W().pick(x);\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick(String p) {\n"
+              + "            String bar;\n"
+              + "            if (p.isEmpty()) bar = \"safe\";\n"
+              + "            return bar;\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_conduit_mixed_defs", "xss", "CWE-79",
+        "conduit_mixed_tainted_def", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out, int mode) {\n"
+              "        String x = request.getParameter(\"q\");\n"
+              + "        String bar;\n"
+              + "        if (mode > 0) {\n"
+              + "            bar = new W().pick();\n"
+              + "        } else {\n"
+              + "            bar = x;\n"
+              + "        }\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private class W {\n"
+              + "        public String pick() {\n"
+              + "            return \"safe\";\n        }\n"
+              + "    }\n"),
+        "public void handle", "out.println(bar)"))
+    return j
 
 
 def measure_fixture(fx: CutFixture, work_dir: Path) -> FixtureMeasurement:

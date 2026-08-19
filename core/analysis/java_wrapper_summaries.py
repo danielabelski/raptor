@@ -721,8 +721,539 @@ def synthetic_wrapper_bindings_java(
     return frozenset(bindings)
 
 
+# ---------------------------------------------------------------------------
+# Conduit summaries (b27) — helpers that provably return either a
+# compile-time constant or a specific parameter UNCHANGED.
+# ---------------------------------------------------------------------------
+#
+# A conduit is NOT a sanitizer: it forwards a value. The gate consumes
+# a conduit call site as value-transparent — the taint/constancy
+# question passes through to the argument (returns-param), vanishes
+# (returns-constant: a compile-time constant cannot carry attacker
+# data, the precedent the constant-definers gate settled), or reduces
+# to the parameter side (join: constant-or-param when the selecting
+# condition doesn't fold — the constant side is taint-free either
+# way). Transparency preserves honesty by construction: a tainted
+# argument rides through untouched and the gate's ordinary taint
+# reasoning refuses the suppression.
+#
+# Class/method eligibility is IDENTICAL to wrapper summaries (bounded
+# dispatch, trivial construction, strict instance-state rule,
+# overload/varargs/anonymous-subclass refusals). The return grammar
+# differs: any method call in the return refuses (including catalog
+# sanitizers — a sanitizing return is wrapper-summary territory), any
+# transformation of the parameter (concatenation, arithmetic) refuses,
+# and a ``null`` constant refuses (the fold-hook contract uses None
+# for "not a conduit call", so a null conduit would be
+# indistinguishable — and null forwards no taint anyway).
+
+CONDUIT_CONST = "const"
+CONDUIT_PARAM = "param"
+CONDUIT_JOIN = "join"
+
+_TERNARY = "ternary_expression"
+
+
+@dataclass(frozen=True)
+class ConduitSummary:
+    """Value summary for one conduit helper.
+
+    ``kind``:
+
+    * :data:`CONDUIT_CONST` — every execution returns
+      ``const_value`` (``param_index`` is None);
+    * :data:`CONDUIT_PARAM` — every execution returns parameter
+      ``param_index`` unchanged (``const_value`` is None);
+    * :data:`CONDUIT_JOIN` — returns either ``const_value`` or
+      parameter ``param_index`` unchanged, branch statically
+      unknown.
+    """
+    owner: str
+    simple_name: str
+    arity: int
+    kind: str
+    param_index: Optional[int]
+    const_value: Any
+    is_static: bool
+    bare_callable: bool
+
+
+_UNASSIGNED = object()
+
+_IF_STMT = "if_statement"
+_COMMENTS = frozenset({"line_comment", "block_comment"})
+
+
+def _classify_expr(expr, params: Tuple[str, ...],
+                   env: Dict[str, Any]) -> Tuple[str, Optional[int], Any]:
+    """AbstractVal ``(kind, param_index, const_value)`` for an
+    expression under the body environment, or raise :class:`_Refused`.
+    ``env`` maps body-local names to AbstractVals (or
+    :data:`_UNASSIGNED` for declared-uninitialized locals)."""
+    from core.analysis.const_fold_java import REFUSE, fold_expr
+
+    def resolve(name: str, _depth: int) -> Any:
+        v = env.get(name)
+        if isinstance(v, tuple) and v[0] == CONDUIT_CONST:
+            return v[2]
+        return REFUSE
+
+    val = fold_expr(expr, resolve)
+    if val is not REFUSE:
+        if val is None:
+            raise _Refused("null constant return")
+        return (CONDUIT_CONST, None, val)
+    n = _unwrap(expr)
+    if n is None:
+        raise _Refused("unparseable return fragment")
+    param_pos = {p: i for i, p in enumerate(params)}
+    if n.type == _IDENT:
+        name = _text(n)
+        if name in param_pos:
+            return (CONDUIT_PARAM, param_pos[name], None)
+        v = env.get(name)
+        if v is None or v is _UNASSIGNED:
+            raise _Refused("unknown or unassigned name in expression")
+        return v
+    if n.type == _TERNARY:
+        cond_val = fold_expr(n.child_by_field_name("condition"), resolve)
+        if isinstance(cond_val, bool):
+            branch = n.child_by_field_name(
+                "consequence" if cond_val else "alternative")
+            return _classify_expr(branch, params, env)
+        a = _classify_expr(
+            n.child_by_field_name("consequence"), params, env)
+        b = _classify_expr(
+            n.child_by_field_name("alternative"), params, env)
+        return _merge_vals(a, b)
+    raise _Refused("parameter transformed or unsupported return construct")
+
+
+def _merge_vals(a, b):
+    """Join of two AbstractVals — the exact union when it fits the
+    const/param/join lattice, :class:`_Refused` otherwise."""
+    if a == b:
+        return a
+    ka, kb = a[0], b[0]
+    if ka == kb == CONDUIT_CONST:
+        raise _Refused("constant-set return (branch constants differ)")
+    if ka == kb == CONDUIT_PARAM:
+        raise _Refused("join of two different parameters")
+    if {ka, kb} == {CONDUIT_CONST, CONDUIT_PARAM}:
+        c, p = (a, b) if ka == CONDUIT_CONST else (b, a)
+        return (CONDUIT_JOIN, p[1], c[2])
+    # join ∪ its own constant side / its own param side stays the join
+    if ka == CONDUIT_JOIN and kb == CONDUIT_CONST and b[2] == a[2] \
+            and type(b[2]) is type(a[2]):
+        return a
+    if kb == CONDUIT_JOIN and ka == CONDUIT_CONST and a[2] == b[2] \
+            and type(a[2]) is type(b[2]):
+        return b
+    if ka == CONDUIT_JOIN and kb == CONDUIT_PARAM and b[1] == a[1]:
+        return a
+    if kb == CONDUIT_JOIN and ka == CONDUIT_PARAM and a[1] == b[1]:
+        return b
+    raise _Refused("unmergeable branch values")
+
+
+def _single_assignment_arm(arm) -> Optional[Tuple[str, Any]]:
+    """``(name, rhs)`` when an if-arm is exactly one plain assignment
+    (braced or not); None otherwise."""
+    node = arm
+    if node is None:
+        return None
+    if node.type == _BLOCK:
+        named = [c for c in node.children
+                 if c.is_named and c.type not in _COMMENTS]
+        if len(named) != 1:
+            return None
+        node = named[0]
+    if node.type != _EXPR_STMT:
+        return None
+    inner = next((c for c in node.children if c.is_named), None)
+    if inner is None or inner.type != _ASSIGNMENT:
+        return None
+    left = inner.child_by_field_name("left")
+    right = inner.child_by_field_name("right")
+    op = inner.child_by_field_name("operator")
+    if left is None or left.type != _IDENT or right is None \
+            or _text(op) != "=":
+        return None
+    return _text(left), right
+
+
+def _walk_conduit_body(
+    body,
+    params: Tuple[str, ...],
+    *,
+    strict_state: bool,
+) -> Tuple[str, Optional[int], Any]:
+    """Sequential abstract interpretation of a conduit body over the
+    const/param/join lattice. Exact for the accepted statement forms
+    (declarations with or without initializers, plain reassignments —
+    last write wins in straight line, single-assignment ``if`` /
+    ``if/else`` arms with the join as the unfoldable-condition merge);
+    every other statement refuses. Returns the return expression's
+    AbstractVal or raises :class:`_Refused`."""
+    from core.analysis.const_fold_java import REFUSE, fold_expr
+
+    stmts = [c for c in body.children
+             if c.is_named and c.type not in _COMMENTS]
+    if len(stmts) > _MAX_BODY_STATEMENTS:
+        raise _Refused("body exceeds statement cap")
+    if not stmts or stmts[-1].type != _RETURN:
+        raise _Refused("body does not end in a single return")
+    if strict_state and _subtree_touches_state(body):
+        raise _Refused("instance state touched in a cross-class helper")
+    env: Dict[str, Any] = {}
+    declared: Set[str] = set()
+
+    def assign(name: str, rhs) -> None:
+        if name in params:
+            raise _Refused("parameter reassigned in body")
+        if strict_state and name not in declared:
+            raise _Refused("bare assignment in a cross-class helper body")
+        env[name] = _classify_expr(rhs, params, env)
+
+    for stmt in stmts[:-1]:
+        if stmt.type == _LOCAL_DECL:
+            decls = [c for c in stmt.children if c.type == _DECLARATOR]
+            if len(decls) != 1:
+                raise _Refused("multi-declarator local")
+            name_node = decls[0].child_by_field_name("name")
+            if name_node is None:
+                raise _Refused("declarator without a name")
+            name = _text(name_node)
+            if name in params:
+                raise _Refused("parameter shadowed by a local")
+            declared.add(name)
+            value = decls[0].child_by_field_name("value")
+            if value is None:
+                env[name] = _UNASSIGNED
+            else:
+                env[name] = _classify_expr(value, params, env)
+            continue
+        if stmt.type == _EXPR_STMT:
+            arm = _single_assignment_arm(stmt)
+            if arm is None:
+                raise _Refused("unsupported statement in body")
+            assign(*arm)
+            continue
+        if stmt.type == _IF_STMT:
+            then_arm = _single_assignment_arm(
+                stmt.child_by_field_name("consequence"))
+            if then_arm is None:
+                raise _Refused("unsupported if-arm in body")
+            alt = stmt.child_by_field_name("alternative")
+            else_arm = None
+            if alt is not None:
+                # the alternative field wraps the else clause; the arm
+                # is its single named child (block or statement).
+                inner = next(
+                    (c for c in alt.children if c.is_named), alt)
+                else_arm = _single_assignment_arm(
+                    inner if alt.type == "else_clause" else alt)
+                if else_arm is None:
+                    raise _Refused("unsupported else-arm in body")
+                if else_arm[0] != then_arm[0]:
+                    raise _Refused("if/else arms assign different names")
+
+            def resolve(name: str, _depth: int) -> Any:
+                v = env.get(name)
+                if isinstance(v, tuple) and v[0] == CONDUIT_CONST:
+                    return v[2]
+                return REFUSE
+
+            cond = fold_expr(
+                stmt.child_by_field_name("condition"), resolve)
+            if isinstance(cond, bool):
+                if cond:
+                    assign(*then_arm)
+                elif else_arm is not None:
+                    assign(*else_arm)
+                continue
+            name = then_arm[0]
+            then_val = _classify_expr(then_arm[1], params, env)
+            if else_arm is not None:
+                else_val = _classify_expr(else_arm[1], params, env)
+                merged = _merge_vals(then_val, else_val)
+            else:
+                prior = env.get(name)
+                if not isinstance(prior, tuple):
+                    raise _Refused(
+                        "partially assigned local (unknown fall-through)")
+                merged = _merge_vals(then_val, prior)
+            if strict_state and name not in declared:
+                raise _Refused("bare assignment in a cross-class helper body")
+            if name in params:
+                raise _Refused("parameter reassigned in body")
+            env[name] = merged
+            continue
+        raise _Refused(f"unsupported body statement: {stmt.type}")
+
+    ret_expr = next((c for c in stmts[-1].children if c.is_named), None)
+    if ret_expr is None:
+        raise _Refused("bare return")
+    return _classify_expr(ret_expr, params, env)
+
+
+def _summarize_class_conduits(
+    info: _ClassInfo,
+    *,
+    is_enclosing: bool,
+    decisions: List[str],
+) -> Dict[Tuple[str, str, int], ConduitSummary]:
+    """Conduit summaries for one class — same structural discipline
+    as :func:`_summarize_class`, different return grammar."""
+    owner = info.name
+    out: Dict[Tuple[str, str, int], ConduitSummary] = {}
+    for (name, arity), decls in _methods_of(info.node).items():
+        if len(decls) > 1:
+            decisions.append(
+                f"{owner}.{name}/{arity}: conduit refused "
+                "(overload ambiguity)")
+            continue
+        decl = decls[0]
+        mods = _modifiers(decl)
+        strict = not is_enclosing and "static" not in mods
+        if is_enclosing and "private" not in mods and "static" not in mods:
+            decisions.append(
+                f"{owner}.{name}/{arity}: conduit refused "
+                "(overridable instance method)")
+            continue
+        if "abstract" in mods or "native" in mods:
+            decisions.append(
+                f"{owner}.{name}/{arity}: conduit refused (no body)")
+            continue
+        mbody = decl.child_by_field_name("body")
+        if mbody is None or mbody.type != _BLOCK:
+            decisions.append(
+                f"{owner}.{name}/{arity}: conduit refused (no block body)")
+            continue
+        params = _param_names(decl) or ()
+        try:
+            kind, p_idx, c_val = _walk_conduit_body(
+                mbody, params, strict_state=strict)
+        except _Refused as r:
+            decisions.append(
+                f"{owner}.{name}/{arity}: conduit refused ({r.reason})")
+            continue
+        out[(owner, name, arity)] = ConduitSummary(
+            owner=owner, simple_name=name, arity=arity,
+            kind=kind, param_index=p_idx, const_value=c_val,
+            is_static="static" in mods, bare_callable=is_enclosing,
+        )
+        decisions.append(
+            f"{owner}.{name}/{arity}: conduit {kind}"
+            + (f" param={p_idx}" if p_idx is not None else ""))
+    return out
+
+
+def derive_conduit_summaries(
+    source_text: str,
+    line_hint: Tuple[int, int],
+) -> Tuple[Dict[Tuple[str, str, int], ConduitSummary], List[str]]:
+    """Conduit summaries reachable from the method enclosing
+    ``line_hint`` — enclosing-class helpers plus qualifying same-file
+    classes under the wrapper rules (bounded dispatch, trivial
+    construction). CWE-independent: conduits carry values, not
+    sanitization."""
+    decisions: List[str] = []
+    parser = _parser()
+    if parser is None:
+        return {}, ["tree-sitter java unavailable"]
+    try:
+        tree = parser.parse(source_text.encode("utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001 — arbitrary scanned source
+        return {}, ["parse failure"]
+    root = tree.root_node
+    by_name, extended = _class_inventory(root)
+
+    lo, hi = min(line_hint), max(line_hint)
+    enclosing: Optional[_ClassInfo] = None
+    best_span = None
+    for infos in by_name.values():
+        for info in infos:
+            start = info.node.start_point[0] + 1
+            end = info.node.end_point[0] + 1
+            if start <= lo and hi <= end:
+                span = end - start
+                if best_span is None or span < best_span:
+                    best_span, enclosing = span, info
+    if enclosing is None:
+        return {}, ["no enclosing class for the finding's lines"]
+
+    summaries: Dict[Tuple[str, str, int], ConduitSummary] = {}
+    summaries.update(_summarize_class_conduits(
+        enclosing, is_enclosing=True, decisions=decisions))
+    for name, infos in by_name.items():
+        if len(infos) > 1:
+            decisions.append(
+                f"{name}: conduits refused (ambiguous class name in file)")
+            continue
+        info = infos[0]
+        if info is enclosing:
+            continue
+        cls = _summarize_class_conduits(
+            info, is_enclosing=False, decisions=decisions)
+        bounded = (
+            ("private" in info.modifiers
+             or "final" in info.modifiers
+             or info.is_nested)
+            and name not in extended
+        )
+        if not bounded or not _trivially_constructible(info.node):
+            dropped = {k for k, v in cls.items() if not v.is_static}
+            if dropped:
+                decisions.append(
+                    f"{name}: instance conduits dropped "
+                    "(unbounded dispatch or non-trivial construction)")
+            cls = {k: v for k, v in cls.items() if v.is_static}
+        summaries.update(cls)
+    for d in decisions:
+        logger.debug("java conduit summary: %s", d)
+    return summaries, decisions
+
+
+def _index_conduit_calls(
+    source_text: str,
+    summaries: Dict[Tuple[str, str, int], ConduitSummary],
+) -> Dict[Tuple[int, int], Tuple[ConduitSummary, Tuple[Optional[str], ...]]]:
+    """Qualifying conduit invocations keyed by (lineno, col), resolved
+    to their summary plus positional argument identifiers. Anonymous
+    subclass bodies and creation-with-arguments never resolve;
+    variable receivers are never indexed (unknown dynamic type)."""
+    simple_names = {n for (_o, n, _a) in summaries}
+    class_names = {o for (o, _n, _a) in summaries}
+    parser = _parser()
+    if parser is None:
+        return {}
+    try:
+        tree = parser.parse(source_text.encode("utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001
+        return {}
+    out: Dict[Tuple[int, int],
+              Tuple[ConduitSummary, Tuple[Optional[str], ...]]] = {}
+    for cur in _iter_named(tree.root_node):
+        if cur.type != _METHOD_INVOCATION:
+            continue
+        name_node = cur.child_by_field_name("name")
+        if name_node is None or _text(name_node) not in simple_names:
+            continue
+        method = _text(name_node)
+        args = _positional_args(cur)
+        arity = len(args)
+        key = (cur.start_point[0] + 1, cur.start_point[1])
+        obj = cur.child_by_field_name("object")
+        summary: Optional[ConduitSummary] = None
+        if obj is None:
+            matching = [
+                s for s in summaries.values()
+                if s.bare_callable and s.simple_name == method
+                and s.arity == arity
+            ]
+            summary = matching[0] if len(matching) == 1 else None
+        else:
+            obj_u = _unwrap(obj)
+            if obj_u is None:
+                continue
+            if obj_u.type == _IDENT and _text(obj_u) in class_names:
+                s = summaries.get((_text(obj_u), method, arity))
+                summary = s if (s is not None and s.is_static) else None
+            elif obj_u.type == _OBJECT_CREATION:
+                if any(c.type == "class_body" for c in obj_u.children):
+                    continue          # anonymous subclass — overrides win
+                ty = _text(obj_u.child_by_field_name("type"))
+                ty = ty.split("<", 1)[0].strip()
+                ctor_args = obj_u.child_by_field_name("arguments")
+                n_ctor = len([
+                    c for c in ctor_args.children if c.is_named
+                ]) if ctor_args is not None else 0
+                if n_ctor != 0:
+                    continue          # constructor could capture state
+                summary = summaries.get((ty, method, arity))
+        if summary is not None:
+            out[key] = (summary, args)
+    return out
+
+
+def conduit_call_map(
+    source_text: str,
+    line_hint: Tuple[int, int],
+) -> Dict[Tuple[int, int], Tuple[ConduitSummary, Tuple[Optional[str], ...]]]:
+    """(lineno, col) → (summary, arg identifiers) for every resolvable
+    conduit call in the file. Empty dict on any failure."""
+    summaries, _decisions = derive_conduit_summaries(source_text, line_hint)
+    if not summaries:
+        return {}
+    return _index_conduit_calls(source_text, summaries)
+
+
+class ConduitFoldResolver:
+    """``conduit_resolver`` hook for the Java constant folder: a
+    resolvable conduit invocation folds to its constant (const kind)
+    or to the fold of its selected argument (param / join kinds; the
+    join accepts only when the argument folds to exactly the constant
+    side — the folder's single-value contract). Returns None for
+    invocations that are not conduit calls so the folder falls
+    through to its pure-call allowlist. ``hits`` counts resolutions
+    for reason-string attribution."""
+
+    def __init__(self, calls) -> None:
+        self._calls = calls
+        self.hits = 0
+
+    def __call__(self, node, refold, depth: int) -> Any:
+        from core.analysis.const_fold_java import REFUSE
+
+        key = (node.start_point[0] + 1, node.start_point[1])
+        entry = self._calls.get(key)
+        if entry is None:
+            return None
+        summary, _arg_idents = entry
+        if summary.kind == CONDUIT_CONST:
+            self.hits += 1
+            return summary.const_value
+        args_node = node.child_by_field_name("arguments")
+        named = [c for c in (args_node.children if args_node else ())
+                 if c.is_named]
+        i = summary.param_index
+        if i is None or i >= len(named):
+            return REFUSE
+        v = refold(named[i], depth)
+        if v is REFUSE:
+            return REFUSE
+        if summary.kind == CONDUIT_JOIN:
+            if v == summary.const_value and \
+                    type(v) is type(summary.const_value):
+                self.hits += 1
+                return v
+            return REFUSE
+        self.hits += 1
+        return v
+
+
+def make_conduit_fold_resolver(
+    source_text: str,
+    line_hint: Tuple[int, int],
+) -> Optional[ConduitFoldResolver]:
+    """Fold-hook over the file's resolvable conduit calls; None when
+    the file has none (the folder then skips the hook entirely)."""
+    calls = conduit_call_map(source_text, line_hint)
+    if not calls:
+        return None
+    return ConduitFoldResolver(calls)
+
+
 __all__ = [
     "WrapperSummary",
     "derive_wrapper_summaries",
     "synthetic_wrapper_bindings_java",
+    "ConduitSummary",
+    "CONDUIT_CONST",
+    "CONDUIT_PARAM",
+    "CONDUIT_JOIN",
+    "derive_conduit_summaries",
+    "conduit_call_map",
+    "make_conduit_fold_resolver",
 ]

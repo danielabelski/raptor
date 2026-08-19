@@ -513,14 +513,26 @@ def _sink_arg_constant_reason(
                     config_resolver = resolver.fold_hook
             except Exception:  # noqa: BLE001 — config support is optional
                 config_resolver = None
+        try:
+            from core.analysis.java_wrapper_summaries import (
+                make_conduit_fold_resolver,
+            )
+            conduit_resolver = make_conduit_fold_resolver(
+                java_source_text, (min(linenos), max(linenos)),
+            )
+        except Exception:  # noqa: BLE001 — conduit support is optional
+            conduit_resolver = None
         reason = all_definers_constant(
             rd, sink, sink_arg, index, array_resolver=table_resolver,
             config_resolver=config_resolver,
+            conduit_resolver=conduit_resolver,
         )
         if reason is None:
             return None
         if table_resolver is not None and table_resolver.hits:
             reason += " (resolved through a constant-table load)"
+        if conduit_resolver is not None and conduit_resolver.hits:
+            reason += " (resolved through a conduit helper)"
         call_sites = getattr(sink, "call_sites", ()) or ()
         if not call_sites:
             return None
@@ -654,6 +666,237 @@ def _element_exclusive_reason(
         f"element-exclusive sanitizer definitions: every write to the "
         f"consumed element(s) of {len({n for n, _ in targets})} tracked "
         f"local array(s) is a catalog sanitizer call"
+    )
+
+
+_CONDUIT_CHAIN_DEPTH_CAP = 4
+
+
+def _conduit_transparent_result(
+    graph,
+    rd: ReachingDefs,
+    tainted_at,
+    sources_set,
+    sink,
+    sink_arg: str,
+    matched_bindings,
+    source_symbols,
+    java_source_text: str,
+    candidate_callables,
+    array_index,
+) -> Optional[SanitizerCutResult]:
+    """Conduit-transparency extension of condition 3 (b27). None when
+    it can't strengthen the flat gate's answer.
+
+    A conduit call site (:mod:`core.analysis.java_wrapper_summaries`
+    conduit summaries: returns-constant / returns-param / join) is
+    value-transparent — the sink value's provenance question passes
+    through to the selected argument. The walk accepts a reaching
+    definer of a symbol when it is (a) a sanitizer-output binding for
+    that symbol, (b) a conduit definition whose constant side is
+    taint-free and whose parameter side recursively accepts, or (c) a
+    plain definition whose RHS folds to a compile-time constant at
+    that point. Anything else refuses the whole walk — a tainted
+    argument rides through a conduit untouched, so transparency can
+    never launder taint.
+
+    Verdict composition mirrors the shipped arguments exactly:
+
+    * all-constant chain (no sanitizer feeders) — the consumed value
+      is compile-time constant through conduits; suppress under the
+      same sibling-argument taint guard the constant-definers
+      pre-check uses (no vertex cut needed — constancy is a value
+      argument, not a path argument).
+    * sanitizer-fed chain — every feeder must pass condition 2
+      (taint actually flows into it) and the feeder set must pass
+      condition 4 (removing the feeders cuts every source→sink
+      path); the may_escape downgrade then applies exactly as on the
+      flat path. A chain mixing constant-only paths with
+      sanitizer-fed paths whose feeders don't cut refuses (counted
+      conservatism — the vertex-cut argument doesn't cover the
+      constant branch).
+    """
+    try:
+        from core.analysis.java_wrapper_summaries import (
+            CONDUIT_CONST,
+            conduit_call_map,
+        )
+        from core.analysis.const_fold_java import (
+            REFUSE,
+            JavaConstIndex,
+            fold_expr_at,
+        )
+        from core.analysis.java_wrapper_summaries import (
+            make_conduit_fold_resolver,
+        )
+    except Exception:  # noqa: BLE001 — optional machinery
+        return None
+    linenos = [
+        n.lineno for n in graph.nodes() if getattr(n, "lineno", 0) > 0
+    ]
+    if not linenos:
+        return None
+    span = (min(linenos), max(linenos))
+    try:
+        calls = conduit_call_map(java_source_text, span)
+    except Exception:  # noqa: BLE001 — arbitrary scanned source
+        return None
+    if not calls:
+        return None
+
+    # CFG definition sites that are conduit calls: (node id, symbol) →
+    # (summary, positional arg identifiers).
+    conduit_defs: Dict[Tuple[int, str], Tuple[Any, Tuple]] = {}
+    for node in graph.nodes():
+        for cs in getattr(node, "call_sites", ()) or ():
+            entry = calls.get((cs.lineno, cs.col_offset))
+            if entry is None:
+                continue
+            for sym in cs.assigned_names:
+                conduit_defs[(id(node), sym)] = entry
+    if not conduit_defs:
+        return None
+
+    try:
+        index = JavaConstIndex(java_source_text, span)
+    except Exception:  # noqa: BLE001
+        index = None
+    try:
+        fold_hook = make_conduit_fold_resolver(java_source_text, span)
+    except Exception:  # noqa: BLE001
+        fold_hook = None
+
+    sanitizer_nodes_by_symbol: Dict[str, Set] = {}
+    for b in matched_bindings:
+        for sym in b.output_symbols:
+            sanitizer_nodes_by_symbol.setdefault(sym, set()).add(b.node)
+
+    def _def_folds_constant(d, sym) -> bool:
+        if index is None or not index.ok:
+            return False
+        rhs = index.rhs_at(getattr(d, "lineno", 0), sym)
+        if rhs is None:
+            return False
+        try:
+            v = fold_expr_at(
+                rd, d, rhs, index, conduit_resolver=fold_hook,
+            )
+        except Exception:  # noqa: BLE001
+            return False
+        return v is not REFUSE
+
+    def _walk(sym: str, at, depth: int, visiting: Set) -> Optional[Set]:
+        if depth > _CONDUIT_CHAIN_DEPTH_CAP:
+            return None
+        defs = rd.at(at, sym)
+        if not defs:
+            return None
+        feeders: Set = set()
+        for d in defs:
+            if d in sanitizer_nodes_by_symbol.get(sym, ()):
+                feeders.add(d)
+                continue
+            entry = conduit_defs.get((id(d), sym))
+            if entry is not None:
+                summary, arg_idents = entry
+                if summary.kind == CONDUIT_CONST:
+                    continue
+                i = summary.param_index
+                arg = (
+                    arg_idents[i]
+                    if i is not None and i < len(arg_idents) else None
+                )
+                if arg is None:
+                    return None
+                key = (id(d), sym)
+                if key in visiting:
+                    return None
+                visiting.add(key)
+                sub = _walk(arg, d, depth + 1, visiting)
+                visiting.discard(key)
+                if sub is None:
+                    return None
+                feeders |= sub
+                continue
+            if _def_folds_constant(d, sym):
+                continue
+            return None
+        return feeders
+
+    feeders = _walk(sink_arg, sink, 0, set())
+    if feeders is None:
+        return None
+
+    if not feeders:
+        if _sibling_args_tainted(
+                graph, sources_set, sink, sink_arg, source_symbols):
+            return None
+        return SanitizerCutResult(
+            suppress=True,
+            reason=(
+                "conduit-constant sink argument: every reaching "
+                "definer chain resolves to compile-time constants "
+                "through conduit helpers"
+            ),
+            cut_set=frozenset(),
+            candidate_callables=frozenset(candidate_callables),
+            verdict=VERDICT_SUPPRESS,
+            sink_arg=sink_arg,
+        )
+
+    feeder_bindings = frozenset(
+        b for b in matched_bindings if b.node in feeders
+    )
+    for node in feeders:
+        node_ok = any(
+            b.node is node
+            and (b.input_symbols & tainted_at.get(node, frozenset()))
+            for b in feeder_bindings
+        )
+        if not node_ok:
+            return None
+    if not sanitizer_cuts_source_to_sink(
+            graph, sources_set, sink, feeders):
+        return None
+    escape_nodes = _may_escape_nodes_on_path(
+        graph, sources_set, sink, excluded=set(),
+    )
+    if escape_nodes and array_index is not None:
+        if all(
+            array_index.exempt_line(getattr(n, "lineno", 0))
+            for n in escape_nodes
+        ):
+            escape_nodes = []
+    if escape_nodes:
+        return SanitizerCutResult(
+            suppress=False,
+            reason=(
+                "candidate_only: conduit-transparent value binding "
+                "held but a node on a source→sink path is may_escape; "
+                "cleaned value's identity at the sink is unprovable "
+                "without alias analysis"
+            ),
+            cut_set=frozenset(),
+            candidate_callables=frozenset(candidate_callables),
+            verdict=VERDICT_CANDIDATE_ONLY,
+            value_bound_bindings=feeder_bindings,
+            all_matched_bindings=matched_bindings,
+            sink_arg=sink_arg,
+        )
+    return SanitizerCutResult(
+        suppress=True,
+        reason=(
+            f"value-bound vertex-cut (conduit transparency): the sink "
+            f"value is provably a sanitizer output through conduit "
+            f"helper hops; removing {len(feeders)} feeder node(s) "
+            f"cuts every source→sink path"
+        ),
+        cut_set=frozenset(feeders),
+        candidate_callables=frozenset(candidate_callables),
+        verdict=VERDICT_SUPPRESS,
+        value_bound_bindings=feeder_bindings,
+        all_matched_bindings=matched_bindings,
+        sink_arg=sink_arg,
     )
 
 
@@ -909,6 +1152,21 @@ def evaluate_finding(
     value_bound_cut = sanitizer_cuts_source_to_sink(
         graph, sources_set, sink, value_bound_nodes,
     )
+
+    # Conduit transparency (b27): when the flat gate can't cut, retry
+    # condition 3 with conduit call sites treated as value-transparent
+    # (returns-constant vanishes, returns-param passes the question to
+    # the argument). Bit-identical when the file has no resolvable
+    # conduit calls on the def chain — the helper returns None and the
+    # flat verdict logic below decides as before.
+    if not value_bound_cut and language == "java" and java_source_text:
+        transparent = _conduit_transparent_result(
+            graph, rd, tainted_at, sources_set, sink, sink_arg,
+            matched_bindings, source_symbols, java_source_text,
+            candidate_callables, array_index,
+        )
+        if transparent is not None:
+            return transparent
 
     if value_bound_cut:
         # Phase 10 — pointer/alias conservatism. If any node on a

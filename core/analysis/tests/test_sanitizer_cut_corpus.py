@@ -123,6 +123,21 @@ _JAVA_B19_CASES = [
     ("wrapper_helper_java.java", "CWE-79", 12, 14, VERDICT_SUPPRESS),
 ]
 
+_JAVA_B27_CASES = [
+    # Sanitized value through a returns-param conduit — transparency
+    # carries the vertex-cut through the helper hop.
+    ("conduit_transparency_java.java", "CWE-79", 11, 14,
+     VERDICT_SUPPRESS),
+    # The honesty pin: the same conduit with the raw request value
+    # must ride the taint through untouched. The decoy sanitizer call
+    # keeps a catalog match on the (single) control path, so the
+    # control-flow cut holds and the verdict is candidate_only — the
+    # finding SURVIVES to the LLM; the load-bearing assertion is that
+    # transparency never upgrades this to suppress.
+    ("conduit_tainted_java.java", "CWE-79", 12, 15,
+     "candidate_only"),
+]
+
 
 def _native_finding(fixture: str, cwe: str, source_line: int,
                     sink_line: int, language: str = "python"):
@@ -224,6 +239,29 @@ def test_java_b19_full_path_verdict(
     summaries through the exact production entry point
     (``value_bound_verdict_for``: resolver + inter-proc bindings +
     java_source_text)."""
+    pytest.importorskip("tree_sitter_java")
+    from core.dataflow.sanitizer_cut_parity import value_bound_verdict_for
+    verdict = value_bound_verdict_for({
+        "cwe": cwe,
+        "file_path": str(_CORPUS_DIR / fixture),
+        "source_line": source_line,
+        "sink_line": sink_line,
+        "language": "java",
+    })
+    assert verdict == expected_verdict
+
+
+@pytest.mark.parametrize(
+    "fixture,cwe,source_line,sink_line,expected_verdict",
+    _JAVA_B27_CASES,
+)
+def test_java_b27_conduit_verdict(
+    fixture, cwe, source_line, sink_line, expected_verdict,
+):
+    """b27 pins — conduit transparency through the exact production
+    entry point, in both directions: the sanitized value survives the
+    helper hop (suppress) and the tainted value rides through it
+    (no_suppress)."""
     pytest.importorskip("tree_sitter_java")
     from core.dataflow.sanitizer_cut_parity import value_bound_verdict_for
     verdict = value_bound_verdict_for({

@@ -1961,13 +1961,16 @@ def record_sanitizer_cut_suppression(
     verdict. The default is ``False`` — record-only: the verdict is
     written as evidence (``dropped: false``, ``enforced: false``)
     without asserting that any finding was removed. The sanitizer-cut
-    witness kind has NOT yet earned hard-suppression on a
-    zero-false-suppress corpus (run
-    ``libexec/raptor-sanitizer-cut-precision`` — the corpus that has
-    to stay clean before an enforcement consumer may pass
-    ``enforce=True``; see the ``sanitizer_dominated`` entry in
-    :mod:`core.analysis.reach_witness` for the earning contract).
-    Until then every caller records evidence, never a drop.
+    witness kind EARNED hard-suppression on 2026-08-19 (operator-
+    approved; zero-false-suppress corpus clean at flip time — see the
+    attested ``sanitizer_dominated`` entry in
+    :mod:`core.analysis.reach_witness`). The enforcement consumer is
+    the scan post-pass, which passes ``enforce=True`` for full-proof
+    ``suppress`` verdicts only and is itself bounded by the spec's
+    ``earns_suppression`` field — reverting that one field returns
+    every caller to record-only. ``candidate_only`` records can never
+    carry ``enforce=True`` (the postpass call structure makes it
+    impossible; pinned by test).
 
     Verdict tags:
 

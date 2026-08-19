@@ -216,26 +216,37 @@ VERDICTS: Dict[str, VerdictSpec] = {
     # source→sink path crosses a catalog sanitizer whose cleaned value
     # reaches the sink (core.analysis.sanitizer_cut, verdict tag
     # ``sanitizer_dominated``). SOUND as a candidate class — the cut is
-    # a structural graph argument — but ``earns_suppression=False``: the
-    # kind flips to True only after the zero-false-suppress corpus
-    # (``libexec/raptor-sanitizer-cut-precision``) is clean across every
-    # covered sink class AND the run's report is recorded alongside the
-    # flip (the binary-oracle earning protocol, CLAUDE.md
-    # binary-oracle-reachability §corpus-earned). Until then the
-    # chokepoint can never fire on it (STRUCTURALLY_SUPPRESSIBLE_KINDS
-    # excludes it) and the live producer records evidence with
-    # ``dropped: false`` only.
+    # a structural graph argument. ``earns_suppression=True`` — EARNED
+    # under the binary-oracle protocol (CLAUDE.md
+    # binary-oracle-reachability §corpus-earned) and flipped with
+    # operator approval, 2026-08-19 (re-attempt after the first flip's
+    # stop-ship; both root causes closed by construction — the shared
+    # threat-model authority and line-carrying damage-gated records):
+    #   * zero-false-suppress corpus clean at flip time: 239 fixtures
+    #     (172 must-not-suppress), zero false suppressions, zero missed,
+    #     rule-of-three 95% UB 0.0174 (raptor-sanitizer-cut-precision,
+    #     report.json sha256 139a3f07fecade2b…50ee9a — recorded
+    #     alongside this change per the protocol);
+    #   * live evidence: zero true-finding damage across every
+    #     manifest-backed damage-gated measurement run, including the
+    #     replayed first-flip counterexamples now reading as damage
+    #     through the fixed matcher and refusing at the gate
+    #     (see docs/sanitizer-cut-enforcement-dossier.md).
+    # Enforcement consumer: the scan post-pass
+    # (core.analysis.sanitizer_cut_postpass) — full-proof ``suppress``
+    # verdicts only; ``candidate_only`` records can never enforce
+    # (structurally pinned). Reverting to record-only is this one field.
     "sanitizer_dominated": VerdictSpec(
         Reachability.UNREACHABLE, WitnessKind.SANITIZER_CUT,
-        Soundness.SOUND, earns_suppression=False,
+        Soundness.SOUND, earns_suppression=True,
         summary=(
             "value-bound vertex-cut: every tainted source→sink path "
             "crosses a catalog sanitizer whose output reaches the sink"),
         prompt_verdict=(
             "Verdict: SANITIZER_DOMINATED — the value-bound vertex-cut "
             "proved every tainted path to this sink crosses a catalog "
-            "sanitizer whose cleaned value reaches the sink. Recorded as "
-            "evidence; does not suppress (corpus gate not yet earned)."),
+            "sanitizer whose cleaned value reaches the sink "
+            "(corpus-earned; suppression enforced)."),
     ),
     "called": VerdictSpec(
         Reachability.REACHABLE, WitnessKind.HAS_CALLER, Soundness.HEURISTIC,

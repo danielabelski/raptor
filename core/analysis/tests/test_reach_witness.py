@@ -288,10 +288,14 @@ def test_only_earned_sound_kinds_can_ever_be_suppress_eligible():
     assert suppressible == {
         "module_aborts", "lexical_dead", "binary_oracle_absent",
     }
+    # Grew again 2026-08-19: sanitizer_dominated earned suppression
+    # (operator-approved flip; zero-false-suppress corpus clean at flip
+    # time — attestation recorded on the VerdictSpec).
     assert STRUCTURALLY_SUPPRESSIBLE_KINDS == {
         WitnessKind.MODULE_ABORTS,
         WitnessKind.LEXICAL_DEAD,
         WitnessKind.BINARY_ORACLE_ABSENT,
+        WitnessKind.SANITIZER_CUT,
     }
 
 
@@ -331,10 +335,14 @@ def test_structurally_suppressible_derived_from_table():
     from core.analysis.reach_witness import (
         STRUCTURALLY_SUPPRESSIBLE_KINDS, WitnessKind,
     )
+    # sanitizer_dominated joined 2026-08-19 (operator-approved
+    # enforcement flip under the earning protocol; attestation on the
+    # VerdictSpec in reach_witness.py).
     assert STRUCTURALLY_SUPPRESSIBLE_KINDS == frozenset({
         WitnessKind.MODULE_ABORTS,
         WitnessKind.LEXICAL_DEAD,
         WitnessKind.BINARY_ORACLE_ABSENT,
+        WitnessKind.SANITIZER_CUT,
     })
 
 

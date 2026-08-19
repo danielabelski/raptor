@@ -1,4 +1,4 @@
-"""Record-only sanitizer-cut post-pass over scan SARIF findings.
+"""Sanitizer-cut post-pass over scan SARIF findings.
 
 The value-bound gate (:mod:`core.analysis.sanitizer_cut`) runs inside
 the audit / smt_barrier paths, so a plain ``/scan`` run produced no
@@ -6,11 +6,19 @@ the audit / smt_barrier paths, so a plain ``/scan`` run produced no
 had nothing to measure. This post-pass closes that gap: after the
 scanner writes its SARIFs, every finding whose CWE has catalog
 sanitizers for the file's language is resolved and evaluated through
-the production gate, and ``suppress`` / ``candidate_only`` verdicts
-are written as RECORD-ONLY evidence (``dropped: false`` — see the
-``sanitizer_dominated`` earning contract in
-:mod:`core.analysis.reach_witness`). No finding is mutated, demoted,
-or dropped here, in any mode.
+the production gate. ``candidate_only`` verdicts are always written
+as record-only evidence (``dropped: false``). Full-proof ``suppress``
+verdicts ENFORCE when — and only when — the ``sanitizer_dominated``
+witness is corpus-earned (``earns_suppression`` in
+:mod:`core.analysis.reach_witness`, flipped with operator approval
+2026-08-19 under the binary-oracle protocol) AND the caller requested
+enforcement: their records carry ``dropped: true`` and their finding
+identities are returned so the scanner can filter the combined SARIF
+(per-tool SARIFs stay unfiltered as the forensic record). Enforcement
+can never exceed the spec: a caller passing ``enforce=True`` against
+an unearned spec still records evidence only. The post-pass itself
+still never mutates a finding — filtering is the scanner's, driven by
+the returned identities.
 
 Source-line discovery
 ---------------------
@@ -166,6 +174,10 @@ class PostpassStats:
 
     examined: int = 0
     recorded_suppress: int = 0
+    enforced: int = 0
+    # Identities of enforced findings (rule_id, file-as-in-SARIF, line)
+    # — the scanner's filter input. Empty when enforcement is off.
+    enforced_findings: List[Dict[str, Any]] = field(default_factory=list)
     recorded_candidate: int = 0
     refused: int = 0
     refused_reasons: Dict[str, int] = field(default_factory=dict)
@@ -193,6 +205,8 @@ class PostpassStats:
         return {
             "examined": self.examined,
             "recorded_suppress": self.recorded_suppress,
+            "enforced": self.enforced,
+            "enforced_findings": list(self.enforced_findings),
             "recorded_candidate": self.recorded_candidate,
             "refused": self.refused,
             "refused_reasons": dict(sorted(self.refused_reasons.items())),
@@ -450,6 +464,7 @@ def run_postpass(
     *,
     budget_seconds: float = 180.0,
     extra_source_patterns: Iterable[str] = (),
+    enforce: bool = True,
 ) -> Dict[str, Any]:
     """Run the record-only gate over every eligible SARIF finding.
 
@@ -466,6 +481,21 @@ def run_postpass(
     )
     from core.dataflow.sanitizer_catalog import sanitizer_callables_for_cwe
     from core.sarif.parser import parse_sarif_findings
+
+    # Enforcement is bounded by the earning contract, not the caller:
+    # enforce=True only takes effect while the sanitizer_dominated
+    # witness kind is corpus-earned (derived set membership tracks
+    # VERDICTS[*].earns_suppression). Reverting the one spec field
+    # returns every caller to record-only with no further changes.
+    from core.analysis.reach_witness import (
+        STRUCTURALLY_SUPPRESSIBLE_KINDS,
+        VERDICTS,
+    )
+    _san_spec = VERDICTS["sanitizer_dominated"]
+    enforce_live = bool(enforce) and (
+        _san_spec.earns_suppression
+        and _san_spec.kind in STRUCTURALLY_SUPPRESSIBLE_KINDS
+    )
 
     stats = PostpassStats()
     started = time.monotonic()
@@ -682,7 +712,8 @@ def run_postpass(
         if verdicts == ["gate-error"]:
             stats.refuse("gate-error")
             continue
-        if all(v == VERDICT_SUPPRESS for v in verdicts):
+        full_proof = all(v == VERDICT_SUPPRESS for v in verdicts)
+        if full_proof:
             stats.recorded_suppress += 1
         elif all(v in (VERDICT_SUPPRESS, VERDICT_CANDIDATE_ONLY)
                  for v in verdicts):
@@ -696,17 +727,101 @@ def run_postpass(
             stats.refuse("no-suppress-verdict")
             continue
         try:
-            # Record-only, always: enforce stays False until the
-            # sanitizer_dominated witness earns hard suppression.
-            record_sanitizer_cut_suppression(out_dir, native, result)
+            # Enforcement is structurally limited to FULL-PROOF suppress
+            # verdicts (every source candidate individually proven):
+            # the candidate_only path can never reach an enforce=True
+            # call — pinned by test_candidate_only_never_enforces.
+            if full_proof and enforce_live:
+                record_sanitizer_cut_suppression(
+                    out_dir, native, result, enforce=True,
+                )
+                stats.enforced += 1
+                stats.enforced_findings.append({
+                    "rule_id": finding.get("rule_id") or "",
+                    "file": str(finding.get("file") or ""),
+                    "line": int(sink_line),
+                })
+            else:
+                record_sanitizer_cut_suppression(out_dir, native, result)
         except Exception as exc:  # noqa: BLE001
             logger.warning("sanitizer-cut post-pass: record failed: %s", exc)
 
     stats.elapsed_seconds = time.monotonic() - started
     logger.info(
-        "sanitizer-cut post-pass: %d examined, %d suppress-verdicts recorded, "
-        "%d candidate_only recorded, %d refused, %d skipped on budget (%.1fs)",
-        stats.examined, stats.recorded_suppress, stats.recorded_candidate,
+        "sanitizer-cut post-pass: %d examined, %d suppress-verdicts recorded "
+        "(%d enforced), %d candidate_only recorded, %d refused, "
+        "%d skipped on budget (%.1fs)",
+        stats.examined, stats.recorded_suppress, stats.enforced,
+        stats.recorded_candidate,
         stats.refused, stats.budget_exhausted_skips, stats.elapsed_seconds,
     )
     return stats.to_dict()
+
+
+def filter_enforced_from_sarif(
+    sarif_path: Path,
+    enforced: List[Dict[str, Any]],
+) -> int:
+    """Remove enforced findings from one SARIF file, in place.
+
+    The scanner's drop surface for corpus-earned sanitizer-cut
+    enforcement: results matching an enforced identity (exact rule id,
+    exact start line, and URI suffix-agreement with the recorded file)
+    are removed from the combined SARIF. Per-tool SARIFs are never
+    passed here — they stay unfiltered as the forensic record, matching
+    the binary-oracle convention. Returns the number of results
+    removed. Any parse/shape failure removes nothing (0) — filtering
+    can only ever be a no-op, never corrupt a SARIF.
+    """
+    if not enforced:
+        return 0
+    import json as _json
+
+    def _norm(s: str) -> str:
+        return str(s or "").replace("\\", "/").lstrip("./")
+
+    keys = [
+        ((e.get("rule_id") or ""), _norm(e.get("file") or ""),
+         int(e.get("line") or 0))
+        for e in enforced
+    ]
+    try:
+        data = _json.loads(Path(sarif_path).read_text(encoding="utf-8"))
+        removed = 0
+        for run in data.get("runs") or []:
+            results = run.get("results")
+            if not isinstance(results, list):
+                continue
+            kept = []
+            for res in results:
+                rule = res.get("ruleId") or ""
+                uri, line = "", 0
+                try:
+                    loc = (res.get("locations") or [{}])[0]
+                    phys = loc.get("physicalLocation") or {}
+                    uri = _norm(
+                        (phys.get("artifactLocation") or {}).get("uri") or "")
+                    line = int((phys.get("region") or {}).get("startLine") or 0)
+                except Exception:  # noqa: BLE001 — malformed location = keep
+                    kept.append(res)
+                    continue
+                hit = any(
+                    rule == k_rule and line == k_line
+                    and (uri == k_file or uri.endswith("/" + k_file)
+                         or k_file.endswith("/" + uri))
+                    for (k_rule, k_file, k_line) in keys
+                )
+                if hit:
+                    removed += 1
+                else:
+                    kept.append(res)
+            run["results"] = kept
+        if removed:
+            Path(sarif_path).write_text(
+                _json.dumps(data, indent=2), encoding="utf-8")
+        return removed
+    except Exception as exc:  # noqa: BLE001 — never corrupt the SARIF
+        logger.warning(
+            "sanitizer-cut enforcement: SARIF filter failed on %s: %s "
+            "(no findings removed)", sarif_path, exc)
+        return 0

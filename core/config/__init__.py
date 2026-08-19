@@ -210,6 +210,16 @@ class RaptorConfig:
     # finding. Per-run CLI override: `--no-sanitizer-cut-postpass`.
     SANITIZER_CUT_POSTPASS_ENABLED: bool = True
 
+    # Sanitizer-cut ENFORCEMENT (corpus-earned 2026-08-19, operator-
+    # approved — see the attested sanitizer_dominated entry in
+    # core/analysis/reach_witness.py and
+    # docs/sanitizer-cut-enforcement-dossier.md): full-proof suppress
+    # verdicts drop their findings from the combined SARIF, with
+    # dropped: true records in suppressions.jsonl. Per-tool SARIFs stay
+    # unfiltered (forensic record). Per-run CLI override:
+    # `--no-sanitizer-cut-enforce` (reverts to record-only evidence).
+    SANITIZER_CUT_ENFORCE_ENABLED: bool = True
+
     # Config-resolved additive findings (scan stage, Java): selector
     # calls (MessageDigest/Cipher/SecureRandom.getInstance) whose
     # argument resolves through the strict properties-file resolver to

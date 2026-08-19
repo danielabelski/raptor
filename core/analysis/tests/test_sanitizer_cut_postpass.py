@@ -91,18 +91,58 @@ def _write(tmp_path: Path, source: str, sarif_kwargs: dict | None = None):
 
 
 class TestVerdictRecording:
-    @requires_ts("java")
     def test_encoder_guarded_finding_records_suppress(self, tmp_path):
+        # Re-pinned 2026-08-19: enforcement is the corpus-earned,
+        # operator-approved default — a full-proof suppress verdict now
+        # records dropped: true and its identity for the scanner filter.
         repo, _, sarif_path, out = _write(tmp_path, _SAFE_JAVA)
         stats = run_postpass([sarif_path], repo, out)
         assert stats["examined"] == 1
         assert stats["recorded_suppress"] == 1
+        assert stats["enforced"] == 1
+        assert len(stats["enforced_findings"]) == 1
         records = [
             json.loads(line)
             for line in (out / "suppressions.jsonl").read_text().splitlines()
         ]
         assert len(records) == 1
         assert records[0]["verdict"] == "sanitizer_dominated"
+        assert records[0]["dropped"] is True
+        assert records[0]["enforced"] is True
+
+    def test_record_only_mode_still_available(self, tmp_path):
+        # The pre-flip contract survives behind enforce=False (the
+        # scanner's --no-sanitizer-cut-enforce path): evidence only.
+        repo, _, sarif_path, out = _write(tmp_path, _SAFE_JAVA)
+        stats = run_postpass([sarif_path], repo, out, enforce=False)
+        assert stats["recorded_suppress"] == 1
+        assert stats["enforced"] == 0
+        assert stats["enforced_findings"] == []
+        records = [
+            json.loads(line)
+            for line in (out / "suppressions.jsonl").read_text().splitlines()
+        ]
+        assert records[0]["dropped"] is False
+        assert records[0]["enforced"] is False
+
+    def test_enforcement_bounded_by_spec(self, tmp_path, monkeypatch):
+        # enforce=True can never exceed the earning contract: with the
+        # spec reverted (the one-field rollback), the same call records
+        # evidence only. Guards the reversibility promise.
+        import dataclasses
+        import core.analysis.reach_witness as rw
+        reverted = dataclasses.replace(
+            rw.VERDICTS["sanitizer_dominated"], earns_suppression=False,
+        )
+        monkeypatch.setitem(rw.VERDICTS, "sanitizer_dominated", reverted)
+        repo, _, sarif_path, out = _write(tmp_path, _SAFE_JAVA)
+        stats = run_postpass([sarif_path], repo, out, enforce=True)
+        assert stats["recorded_suppress"] == 1
+        assert stats["enforced"] == 0
+        records = [
+            json.loads(line)
+            for line in (out / "suppressions.jsonl").read_text().splitlines()
+        ]
         assert records[0]["dropped"] is False
 
     @requires_ts("java")
@@ -264,7 +304,9 @@ public class Test {
             (out / "suppressions.jsonl").read_text().splitlines()[0],
         )
         assert "constant sink argument" in rec["reason"]
-        assert rec["dropped"] is False
+        # Re-pinned 2026-08-19: full-proof suppress verdicts enforce by
+        # default (corpus-earned, operator-approved).
+        assert rec["dropped"] is True
 
     def test_sibling_arg_inversion_never_suppresses(self, tmp_path):
         src = """import javax.servlet.http.HttpServletRequest;
@@ -470,3 +512,83 @@ class TestTfSystemReadBan:
         # b42 record-line fix: the record must place itself at the
         # sink so line-scoped ground-truth entries can match it.
         assert records[0]["line"] == 11
+
+
+class TestEnforcementBoundaries:
+    """The flip's structural safety pins (operator-approved
+    2026-08-19): candidates can never enforce; the SARIF filter is
+    conservative and no-op-on-failure."""
+
+    def test_candidate_only_never_enforces(self, tmp_path):
+        # A candidate_only verdict must record dropped: false even with
+        # enforcement on — the enforce=True call is structurally
+        # reachable only from the full-proof suppress branch.
+        src = """import javax.servlet.http.HttpServletRequest;
+import org.owasp.encoder.Encode;
+public class Test {
+    void doPost(HttpServletRequest request, java.io.PrintWriter out) {
+        String p = request.getParameter("q");
+        String[] arr = new String[2];
+        arr[0] = Encode.forHtml(p);
+        out.println(arr[0]);
+    }
+}
+"""
+        repo, _, sarif_path, out = _write(tmp_path, src, {"sink_line": 8})
+        stats = run_postpass([sarif_path], repo, out, enforce=True)
+        if stats["recorded_candidate"]:
+            import json as _json
+            recs = [
+                _json.loads(line) for line in
+                (out / "suppressions.jsonl").read_text().splitlines()
+            ]
+            assert all(r["dropped"] is False for r in recs)
+            assert all(r["enforced"] is False for r in recs)
+        assert stats["enforced_findings"] == [] or stats["enforced"] == len(
+            stats["enforced_findings"])
+
+    def test_filter_removes_exact_match_only(self, tmp_path):
+        import json as _json
+        from core.analysis.sanitizer_cut_postpass import (
+            filter_enforced_from_sarif,
+        )
+        sarif = tmp_path / "combined.sarif"
+        results = [
+            {"ruleId": "r1", "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": "src/A.java"},
+                "region": {"startLine": 8}}}]},
+            {"ruleId": "r1", "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": "src/A.java"},
+                "region": {"startLine": 9}}}]},
+            {"ruleId": "r2", "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": "src/A.java"},
+                "region": {"startLine": 8}}}]},
+        ]
+        sarif.write_text(_json.dumps(
+            {"runs": [{"results": results}]}), encoding="utf-8")
+        removed = filter_enforced_from_sarif(
+            sarif, [{"rule_id": "r1", "file": "src/A.java", "line": 8}])
+        assert removed == 1
+        kept = _json.loads(sarif.read_text())["runs"][0]["results"]
+        assert len(kept) == 2
+        assert {(r["ruleId"],
+                 r["locations"][0]["physicalLocation"]["region"]["startLine"])
+                for r in kept} == {("r1", 9), ("r2", 8)}
+
+    def test_filter_noop_on_malformed_sarif(self, tmp_path):
+        from core.analysis.sanitizer_cut_postpass import (
+            filter_enforced_from_sarif,
+        )
+        sarif = tmp_path / "combined.sarif"
+        sarif.write_text("not json", encoding="utf-8")
+        assert filter_enforced_from_sarif(
+            sarif, [{"rule_id": "r", "file": "f", "line": 1}]) == 0
+        assert sarif.read_text() == "not json"
+
+    def test_filter_empty_enforced_is_noop(self, tmp_path):
+        from core.analysis.sanitizer_cut_postpass import (
+            filter_enforced_from_sarif,
+        )
+        sarif = tmp_path / "combined.sarif"
+        sarif.write_text("{}", encoding="utf-8")
+        assert filter_enforced_from_sarif(sarif, []) == 0

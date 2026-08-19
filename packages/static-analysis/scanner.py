@@ -2704,6 +2704,16 @@ def main():
              "this flag skips it entirely.",
     )
     ap.add_argument(
+        "--no-sanitizer-cut-enforce", action="store_true",
+        dest="no_sanitizer_cut_enforce",
+        help="Run the sanitizer-cut post-pass in record-only mode: "
+             "full-proof suppress verdicts are written as evidence "
+             "(dropped: false) but no finding is removed from the "
+             "combined SARIF. Default is enforcement (corpus-earned, "
+             "operator-approved 2026-08-19; per-tool SARIFs are never "
+             "filtered in any mode).",
+    )
+    ap.add_argument(
         "--no-config-resolved", action="store_true",
         dest="no_config_resolved",
         help="Disable the config-resolved additive findings stage. By "
@@ -3207,13 +3217,17 @@ def main():
                 logger.warning("SARIF merge failed, using individual files: %s", e)
                 (out_dir / "sarif_merge.stderr.log").write_text(str(e), encoding="utf-8")
 
-        # Record-only sanitizer-cut post-pass: value-bound gate
-        # verdicts land in suppressions.jsonl as evidence (dropped:
-        # false) for the warm scorer / operators. Reads the filtered
-        # combined SARIF when it exists so --exclude-dir is honored;
-        # falls back to the per-tool SARIFs. Failure degrades to a
-        # warning — the post-pass can never fail a scan, and it never
-        # mutates a finding.
+        # Sanitizer-cut post-pass: value-bound gate verdicts land in
+        # suppressions.jsonl. Candidate verdicts are always evidence
+        # (dropped: false); full-proof suppress verdicts ENFORCE by
+        # default (corpus-earned, operator-approved 2026-08-19) — their
+        # findings are filtered from the combined SARIF below, while
+        # per-tool SARIFs stay unfiltered as the forensic record.
+        # Enforcement only runs when the combined SARIF exists (the
+        # per-tool fallback has no drop surface, so it stays
+        # record-only). Reads the filtered combined SARIF when it
+        # exists so --exclude-dir is honored. Failure degrades to a
+        # warning — the post-pass can never fail a scan.
         sanitizer_cut_postpass_stats = None
         if (
             RaptorConfig.SANITIZER_CUT_POSTPASS_ENABLED
@@ -3221,14 +3235,47 @@ def main():
             and sarif_inputs
         ):
             try:
-                from core.analysis.sanitizer_cut_postpass import run_postpass
+                from core.analysis.sanitizer_cut_postpass import (
+                    filter_enforced_from_sarif,
+                    run_postpass,
+                )
+                merged_exists = merged.exists()
                 postpass_inputs = (
-                    [merged] if merged.exists() else list(sarif_inputs)
+                    [merged] if merged_exists else list(sarif_inputs)
+                )
+                enforce_on = (
+                    RaptorConfig.SANITIZER_CUT_ENFORCE_ENABLED
+                    and not args.no_sanitizer_cut_enforce
+                    and merged_exists
                 )
                 sanitizer_cut_postpass_stats = run_postpass(
                     postpass_inputs, repo_path, out_dir,
                     extra_source_patterns=source_wrapper_names,
+                    enforce=enforce_on,
                 )
+                enforced = (
+                    (sanitizer_cut_postpass_stats or {})
+                    .get("enforced_findings") or []
+                )
+                if enforce_on and enforced:
+                    removed = filter_enforced_from_sarif(merged, enforced)
+                    sanitizer_cut_postpass_stats["enforced_removed"] = removed
+                    if removed != len(enforced):
+                        logger.warning(
+                            "sanitizer-cut enforcement: %d verdicts enforced "
+                            "but %d results removed from the combined SARIF "
+                            "— identities that matched no result stayed "
+                            "recorded (dropped: true) without a drop; "
+                            "investigate before trusting this run's counts",
+                            len(enforced), removed,
+                        )
+                    else:
+                        logger.info(
+                            "sanitizer-cut enforcement: %d proven-safe "
+                            "finding(s) removed from the combined SARIF "
+                            "(per-tool SARIFs unfiltered; records in "
+                            "suppressions.jsonl)", removed,
+                        )
             except Exception as e:  # noqa: BLE001
                 logger.warning("sanitizer-cut post-pass failed: %s", e)
 
@@ -3237,7 +3284,13 @@ def main():
         # the just-written combined.sarif rather than the unfiltered
         # individual inputs.
         logger.info("Generating scan metrics...")
-        if excluded_count and merged.exists():
+        _enforced_removed = int(
+            (sanitizer_cut_postpass_stats or {}).get("enforced_removed") or 0
+        )
+        if (excluded_count or _enforced_removed) and merged.exists():
+            # The combined SARIF reflects --exclude-dir filtering and/or
+            # sanitizer-cut enforcement drops; metrics must read it, not
+            # the unfiltered per-tool forensic SARIFs.
             metrics = generate_scan_metrics([str(merged)])
         else:
             metrics = generate_scan_metrics(sarif_inputs)

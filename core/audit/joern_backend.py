@@ -607,6 +607,7 @@ def import_sibling_joern_flows(
     if not siblings:
         return None
     imported: dict[str, list] = {}
+    skipped_stale = 0
     current_hash: str | None = None
     current_hash_resolved = False
     for sibling_dir in siblings:
@@ -622,18 +623,20 @@ def import_sibling_joern_flows(
                 if sibling_hash:
                     # Staleness gate: a sibling run at a different
                     # commit carries taint flows for code that no
-                    # longer exists. Only enforced when both hashes
-                    # are known — legacy siblings without hashes
-                    # import as before.
+                    # longer exists (line drift makes them actively
+                    # misleading). Only enforced when both hashes are
+                    # known — legacy siblings without hashes import
+                    # as before.
                     if not current_hash_resolved:
                         current_hash = _current_content_hash(
                             out_dir, target_path,
                         )
                         current_hash_resolved = True
                     if current_hash and sibling_hash != current_hash:
+                        skipped_stale += 1
                         logger.info(
                             "sibling %s joern-flows stale "
-                            "(hash %s → %s) — skipped",
+                            "(hash %s != %s) — skipped",
                             sibling_dir.name,
                             sibling_hash[:8], current_hash[:8],
                         )
@@ -647,6 +650,11 @@ def import_sibling_joern_flows(
                 imported.setdefault(key, []).extend(flows)
         except (json.JSONDecodeError, OSError):
             logger.debug("failed to import joern-flows from %s", sibling_dir.name)
+    if skipped_stale:
+        logger.info(
+            "sibling joern-flow import: %d stale run(s) skipped",
+            skipped_stale,
+        )
     return imported if imported else None
 
 

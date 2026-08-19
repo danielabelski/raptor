@@ -110,7 +110,15 @@ class RaptorConfig:
         # Dynamic analysis tools
         "frida":        {"binary": "frida",       "severity": "degrades", "affects": "/frida, dynamic analysis, /fuzz harness probe"},
         "frida-trace":  {"binary": "frida-trace", "severity": "degrades", "affects": "dynamic tracing"},
-        "jadx":         {"binary": "jadx",        "severity": "degrades", "affects": "Android/APK reverse engineering"},
+        # Binary-oracle reachability and /audit's binary-evidence
+        # channel read ELF symbols/DWARF via binutils (readelf, nm,
+        # objdump, c++filt). readelf is the presence proxy — the
+        # suite ships as one package on every distro.
+        "binutils":     {"binary": "readelf",     "severity": "degrades", "affects": "/agentic, /codeql, /validate (binary-oracle reachability)"},
+        # r2 drives --binary-edges call-graph extraction
+        # (core/analysis/binary_oracle_edges.py) and /audit's binary
+        # corroboration (core/audit/capabilities.py).
+        "radare2":      {"binary": "r2",          "severity": "degrades", "affects": "/agentic, /codeql (--binary-edges), /audit (binary evidence)"},
         # Perlasm generated-asm inventory (core/inventory/perlasm.py):
         # without perl, detected generators become loud coverage gaps
         # instead of enumerable generated kernels.

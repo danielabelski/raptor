@@ -341,6 +341,30 @@ _INSTALL_ADVICE: dict[str, InstallAdvice] = {
         package="semgrep",
         docs_url="https://semgrep.dev/docs/getting-started/quickstart",
     ),
+    "joern": InstallAdvice(
+        # Coursier-based installer; not in any distro repo.
+        kind="static_url",
+        static_url="https://docs.joern.io/installation",
+    ),
+    "r2": InstallAdvice(
+        kind="distro_pm",
+        # Package name is radare2 everywhere; the binary is r2.
+        pm_packages={
+            "apt": "radare2", "dnf": "radare2", "yum": "radare2",
+            "pacman": "radare2", "apk": "radare2",
+            "zypper": "radare2", "brew": "radare2",
+        },
+        docs_url="https://rada.re/n/",
+    ),
+    "readelf": InstallAdvice(
+        kind="distro_pm",
+        # readelf ships in binutils on every PM.
+        pm_packages={
+            "apt": "binutils", "dnf": "binutils", "yum": "binutils",
+            "pacman": "binutils", "apk": "binutils",
+            "zypper": "binutils", "brew": "binutils",
+        },
+    ),
 }
 
 

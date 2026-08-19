@@ -18637,6 +18637,9 @@ def _promote_clean_refuted(
                 review_result=outcome.review_result,
                 line=outcome.line,
             )
+            rescued.function_qualified = getattr(
+                outcome, "function_qualified", "",
+            )
             if rescued.review_result is not None:
                 rescued.review_result["evidence_tool"] = tool
                 rescued.review_result["refuted_hypothesis_confirmed"] = True
@@ -19700,7 +19703,7 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
 
         best = unrefuted[0]
         mechanism = best.get("mechanism", "")[:120]
-        result.outcomes[i] = ReviewOutcome(
+        promoted = ReviewOutcome(
             file=outcome.file,
             function=outcome.function,
             status="suspicious",
@@ -19718,6 +19721,10 @@ def _promote_hypothesis_inconsistent(result: OrchestratorResult) -> None:
             review_result=outcome.review_result,
             line=outcome.line,
         )
+        promoted.function_qualified = getattr(
+            outcome, "function_qualified", "",
+        )
+        result.outcomes[i] = promoted
         result.clean -= 1
         result.suspicious += 1
         logger.info(
@@ -19876,6 +19883,9 @@ def _promote_outcome(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:
     promoted.tools_dispatched = outcome.tools_dispatched
     promoted.tools_errored = outcome.tools_errored
     promoted.semantic_confidence = outcome.semantic_confidence
+    promoted.function_qualified = getattr(
+        outcome, "function_qualified", "",
+    )
     if promoted.review_result:
         promoted.review_result["evidence_tool"] = tool
     return promoted
@@ -21141,6 +21151,9 @@ def _demote_outcome(outcome: ReviewOutcome, reason: str) -> ReviewOutcome:
     demoted.tools_errored = outcome.tools_errored
     demoted.semantic_confidence = outcome.semantic_confidence
     demoted.provenance_all_trusted = outcome.provenance_all_trusted
+    demoted.function_qualified = getattr(
+        outcome, "function_qualified", "",
+    )
     return demoted
 
 

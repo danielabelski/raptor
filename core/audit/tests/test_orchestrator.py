@@ -2500,6 +2500,47 @@ class TestPostLoopReceiptRescue:
         assert flipped == 0
 
 
+class TestQualifiedIdentityCarry:
+    """Status-flipping clone helpers must carry function_qualified —
+    a promotion logged without it never reaches a receiver-qualified
+    label key, so the flip is invisible to last-row-wins scoring."""
+
+    def _outcome(self):
+        o = ReviewOutcome(
+            file="pkg/a.go", function="SetVal", status="clean",
+            body="b", line=10,
+            hypotheses=[{
+                "mechanism": "unchecked arithmetic on parsed exponent",
+                "confidence": "medium",
+                "counter": "",
+            }],
+        )
+        o.function_qualified = "Recv.SetVal"
+        return o
+
+    def test_promote_outcome_carries_qualified(self):
+        from core.audit.orchestrator import _promote_outcome
+        p = _promote_outcome(self._outcome(), "smt:check")
+        assert p.function_qualified == "Recv.SetVal"
+
+    def test_demote_outcome_carries_qualified(self):
+        from core.audit.orchestrator import _demote_outcome
+        d = _demote_outcome(self._outcome(), "[gate]")
+        assert d.function_qualified == "Recv.SetVal"
+
+    def test_hypothesis_inconsistent_promotion_carries_qualified(self):
+        from core.audit.orchestrator import (
+            _promote_hypothesis_inconsistent,
+        )
+        result = OrchestratorResult()
+        o = self._outcome()
+        result.outcomes = [o]
+        result.clean = 1
+        _promote_hypothesis_inconsistent(result)
+        assert result.outcomes[0].status == "suspicious"
+        assert result.outcomes[0].function_qualified == "Recv.SetVal"
+
+
 class TestRelogFinalStatuses:
     """Audit-log twin of the re-journal pass: ``orchestrator_review``
     rows are written mid-loop, pre-resolution — the end-of-run pass

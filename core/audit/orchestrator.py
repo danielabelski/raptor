@@ -3587,8 +3587,11 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         logger.debug("SCA advisory enrichment failed", exc_info=True)
 
     # Operator pins (``--pin file:function``): guaranteed review slots,
-    # hoisted ahead of the budget cut. See gaps.hoist_pins.
-    gaps = hoist_pins(gaps, getattr(config, "pins", None))
+    # hoisted ahead of the budget cut. See gaps.hoist_pins. The
+    # checklist classifies any unmatched pin's cause in the warning.
+    gaps = hoist_pins(
+        gaps, getattr(config, "pins", None), checklist=checklist,
+    )
 
     if config.budget and config.budget > 0:
         # Records the dropped tail in not-attempted.json so the run

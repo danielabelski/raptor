@@ -461,18 +461,101 @@ def compute_gaps(
     return gaps
 
 
+def gap_keys(gap: dict[str, Any]) -> set:
+    """All ``file:function`` keys a gap answers to.
+
+    The bare inventory key always; additionally the receiver-qualified
+    key (``file:Class.method`` / ``file:Receiver.Method``) when the
+    extractor recorded a ``metadata.class_name`` (Python/Java classes,
+    Go receiver types with the ``*`` stripped, C++ inline methods).
+    Pins and corpus labels use the qualified spelling, so matching on
+    the bare name alone silently no-ops every dotted pin — a corpus
+    run lost the force/prefilter-bypass guarantee on all 78
+    receiver-qualified pin instances that way.
+    """
+    file_path = gap.get("file", "")
+    name = gap.get("name", "")
+    keys = {f"{file_path}:{name}"}
+    class_name = (gap.get("metadata") or {}).get("class_name")
+    if class_name and name:
+        keys.add(f"{file_path}:{class_name}.{name}")
+    return keys
+
+
+def _classify_unmatched_pin(
+    pin: str,
+    checklist: dict[str, Any] | None,
+) -> str:
+    """Truthful cause for a pin that matched no gap.
+
+    Three distinct situations used to share one (wrong) warning
+    string: the item exists in the inventory but produced no gap
+    (already reviewed / filtered), the item is absent from the
+    inventory entirely (label drift, preprocessor-dead code), or the
+    receiver qualification matches nothing although the bare method
+    name exists in the file (name mismatch).
+    """
+    if not checklist:
+        return "unclassified (no checklist available)"
+    file_part, _, name_part = pin.rpartition(":")
+    bare = name_part.rsplit(".", 1)[-1]
+    exact = False
+    bare_in_file = False
+    for file_info in checklist.get("files", []):
+        if file_info.get("path", "") != file_part:
+            continue
+        for item in file_info.get("items", file_info.get("functions", [])):
+            item_name = item.get("name", "")
+            class_name = (item.get("metadata") or {}).get("class_name")
+            qualified = f"{class_name}.{item_name}" if class_name else ""
+            if name_part in (item_name, qualified):
+                exact = True
+            if item_name == bare or (
+                item_name.rsplit(".", 1)[-1] == bare
+            ):
+                bare_in_file = True
+    if exact:
+        return (
+            "in the inventory but not in the gap list — already "
+            "reviewed this run, suppressed by coverage, or filtered "
+            "(re-review needs --force)"
+        )
+    if bare_in_file:
+        return (
+            "receiver/name mismatch — the bare method name exists in "
+            "the file's inventory but no item carries this "
+            "qualification (check the receiver/class spelling)"
+        )
+    return (
+        "not in the checklist inventory — the function does not "
+        "exist at this path in the analysed tree (label drift or "
+        "preprocessor-excluded code)"
+    )
+
+
 def hoist_pins(
     gaps: list[dict[str, Any]],
     pins: list[str] | None,
+    *,
+    checklist: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Hoist operator-pinned gaps to the head of the ordered list.
 
-    ``pins`` are ``file:function`` keys (``--pin``, repeatable). Pinned
-    gaps move to the front — the budget cut and the scope floor then
-    cannot drop them, and the review loop reaches them first. Guidance
-    only: unlike the ``--functions`` filter nothing is excluded, and
-    unmatched pins warn loudly instead of failing the run (an
-    already-reviewed function is not a gap — re-review needs --force).
+    ``pins`` are ``file:function`` keys (``--pin``, repeatable), where
+    ``function`` may be receiver-qualified (``Class.method``, Go
+    ``Receiver.Method``). Pinned gaps move to the front — the budget
+    cut and the scope floor then cannot drop them, and the review loop
+    reaches them first. Guidance only: unlike the ``--functions``
+    filter nothing is excluded, and unmatched pins warn loudly instead
+    of failing the run, with the actual cause per pin (classified
+    against *checklist* when provided).
+
+    Matching: a pin matches a gap on the bare inventory key or the
+    metadata-qualified key (see :func:`gap_keys`). A qualified pin
+    whose qualification matches no gap falls back to the bare method
+    name ONLY when exactly one gap in that file bears it — an
+    ambiguous bare fallback (seven ``Null*.Scan`` methods in one file)
+    must not hoist an arbitrary sibling.
 
     Motivating run: a scoped head-to-head where every per-file floor
     slot went to a finding-free sibling while the functions under
@@ -482,26 +565,54 @@ def hoist_pins(
     if not wanted or not gaps:
         return gaps
     pin_set = set(wanted)
-    pinned = [
-        g for g in gaps
-        if f"{g.get('file', '')}:{g.get('name', '')}" in pin_set
-    ]
-    matched = {f"{g.get('file', '')}:{g.get('name', '')}" for g in pinned}
+
+    keys_by_gap = [(g, gap_keys(g)) for g in gaps]
+    matched: set = set()
+    pinned: list[dict[str, Any]] = []
+    pinned_ids: set = set()
+
+    def _take(gap: dict[str, Any], pin: str) -> None:
+        matched.add(pin)
+        if id(gap) not in pinned_ids:
+            pinned_ids.add(id(gap))
+            pinned.append(gap)
+
+    for g, keys in keys_by_gap:
+        for pin in keys & pin_set:
+            _take(g, pin)
+
+    # Unambiguous bare-name fallback for qualified pins the metadata
+    # could not qualify (extractors without class_name capture).
+    for pin in sorted(pin_set - matched):
+        file_part, _, name_part = pin.rpartition(":")
+        if "." not in name_part:
+            continue
+        bare = name_part.rsplit(".", 1)[-1]
+        candidates = [
+            g for g, _keys in keys_by_gap
+            if g.get("file", "") == file_part and g.get("name", "") == bare
+        ]
+        if len(candidates) == 1:
+            _take(candidates[0], pin)
+
     unmatched = sorted(pin_set - matched)
     if unmatched:
+        causes = [
+            f"{pin}: {_classify_unmatched_pin(pin, checklist)}"
+            for pin in unmatched
+        ]
         logger.warning(
-            "--pin: %d pin(s) matched no gap and will not be reviewed: "
-            "%s (the function is missing from the checklist inventory, "
-            "outside --scope, or already reviewed — re-review needs "
-            "--force; a missing inventory entry usually means the "
-            "name or file path does not exist in the analysed tree)",
-            len(unmatched), ", ".join(unmatched),
+            "--pin: %d pin(s) matched no gap — pin priority (hoist + "
+            "triage/prefilter bypass) NOT applied; the function may "
+            "still be reviewed by the normal schedule:\n  %s",
+            len(unmatched), "\n  ".join(causes),
         )
     if not pinned:
         return gaps
     logger.info(
-        "--pin: %d function(s) hoisted to the front of the schedule: %s",
-        len(matched), ", ".join(sorted(matched)),
+        "--pin: %d pin(s) matched %d gap(s) hoisted to the front of "
+        "the schedule: %s",
+        len(matched), len(pinned), ", ".join(sorted(matched)),
     )
     # An operator pin is an explicit review order: mark the gap so the
     # review loop's triage-skip gate cannot drop it (a pinned function
@@ -509,7 +620,6 @@ def hoist_pins(
     # "guaranteed slot" without guaranteed review).
     for g in pinned:
         g["pinned"] = True
-    pinned_ids = {id(g) for g in pinned}
     return pinned + [g for g in gaps if id(g) not in pinned_ids]
 
 

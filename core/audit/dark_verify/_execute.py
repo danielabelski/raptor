@@ -18,6 +18,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from core.paths import confine
 from core.run.scratch import scratch_dir
 
 from ._harness import (
@@ -69,6 +70,39 @@ _DANGEROUS_INTERP_FUNCS = frozenset({
 _TYPE_RE = re.compile(
     r"^[a-zA-Z_][a-zA-Z0-9_*&\[\]<>, .:]*$"
 )
+
+# require_path is pasted into JS/TS require(), Ruby require, PHP
+# require_once and Lua require — a load path rooted at the target tree.
+# Keep it to plain path characters: anything outside this set (quotes,
+# backslashes, $, #, backticks, whitespace) has no business in a module
+# path and only shows up in injection attempts.
+_REQUIRE_PATH_RE = re.compile(r"^[a-zA-Z0-9_@./-]+$")
+
+
+def _module_ref_error(
+    field: str,
+    value: str,
+    target_root: Path | None,
+) -> str | None:
+    """Traversal/containment check for spec fields that become load paths.
+
+    require_path (JS/TS/Ruby/PHP/Lua), use_path (Rust), use_module
+    (Perl) and import_path (Go) all feed module resolution rooted at
+    the target tree; an absolute value or a ``..`` walks the load
+    outside it. The fields are separator-joined names, so a plain
+    ``..`` substring test covers every separator convention (``/``,
+    ``.``, ``::``) at once — legitimate module references never contain
+    consecutive dots. With a *target_root* the joined path must also
+    resolve inside the root (:func:`core.paths.confine`), which catches
+    a repo-planted symlink pointing out of the tree.
+    """
+    if value.startswith(("/", "\\")):
+        return f"{field} must be relative: {value!r}"
+    if ".." in value:
+        return f"{field} must not contain '..': {value!r}"
+    if target_root is not None and confine(target_root, value) is None:
+        return f"{field} escapes target root: {value!r}"
+    return None
 
 # arg_expressions are target-language literal expressions that the harness
 # generators paste verbatim into compiled/interpreted source (C: "NULL",
@@ -142,13 +176,17 @@ def _arg_expression_error(expr_s: str) -> str | None:
     return None
 
 
-def validate_spec(spec: DarkWitnessSpec) -> str | None:
+def validate_spec(
+    spec: DarkWitnessSpec,
+    target_root: Path | None = None,
+) -> str | None:
     """Pre-execution validation of LLM-generated spec fields.
 
     Returns an error string if the spec contains dangerous patterns,
     None if it passes validation. Defense-in-depth layer — the sandbox
     is the primary defense, this catches obvious injection attempts
-    before code generation.
+    before code generation. When *target_root* is given, the load-path
+    fields must also resolve inside it.
     """
     if not _IDENTIFIER_RE.match(spec.function):
         return f"invalid function name: {spec.function!r}"
@@ -178,16 +216,36 @@ def validate_spec(spec: DarkWitnessSpec) -> str | None:
         return f"invalid class_name: {cn!r}"
 
     up = lc.get("use_path", "")
-    if up and not _QUALIFIED_RE.match(up):
-        return f"invalid use_path: {up!r}"
+    if up:
+        if not _QUALIFIED_RE.match(up):
+            return f"invalid use_path: {up!r}"
+        err = _module_ref_error("use_path", up, target_root)
+        if err:
+            return err
 
     um = lc.get("use_module", "")
-    if um and not _QUALIFIED_RE.match(um):
-        return f"invalid use_module: {um!r}"
+    if um:
+        if not _QUALIFIED_RE.match(um):
+            return f"invalid use_module: {um!r}"
+        err = _module_ref_error("use_module", um, target_root)
+        if err:
+            return err
 
     ip = lc.get("import_path", "")
-    if ip and not re.match(r"^[a-zA-Z0-9_./-]+$", ip):
-        return f"invalid import_path: {ip!r}"
+    if ip:
+        if not re.match(r"^[a-zA-Z0-9_./-]+$", ip):
+            return f"invalid import_path: {ip!r}"
+        err = _module_ref_error("import_path", ip, target_root)
+        if err:
+            return err
+
+    rp = lc.get("require_path", "")
+    if rp:
+        if not _REQUIRE_PATH_RE.match(rp):
+            return f"invalid require_path: {rp!r}"
+        err = _module_ref_error("require_path", rp, target_root)
+        if err:
+            return err
 
     return None
 
@@ -242,7 +300,7 @@ def execute_witness(
             match_detail=f"source file not found: {spec.file}",
         )
 
-    spec_err = validate_spec(spec)
+    spec_err = validate_spec(spec, target_root)
     if spec_err:
         return DarkVerifyResult(
             finding_key=spec.finding_key, verdict="error", language=lang,

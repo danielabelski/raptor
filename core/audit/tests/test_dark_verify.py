@@ -3128,6 +3128,90 @@ class TestValidateSpecLanguageFallback:
         err = validate_spec(spec)
         assert err is not None
         assert "dangerous builtin" in err
+# -- validate_spec load-path fields --------------------------------------------
+
+
+class TestValidateSpecLoadPaths:
+    """require_path / use_path / use_module / import_path feed module
+    resolution rooted at the target tree — absolute values, '..' and
+    (with a target_root) symlinked escapes must all be rejected."""
+
+    def _spec(self, lang_config, language="ruby", file="a.rb"):
+        return DarkWitnessSpec(
+            finding_key="f1", file=file, function="check",
+            language=language, lang_config=lang_config,
+        )
+
+    @pytest.mark.parametrize("field,language,file,value", [
+        ("require_path", "ruby", "a.rb", "../../etc/evil"),
+        ("require_path", "javascript", "a.js", "./../evil"),
+        ("use_path", "rust", "a.rs", "lib/../../evil"),
+        ("use_module", "perl", "A.pm", "Foo::..::Bar"),
+        ("import_path", "go", "a.go", "pkg/../../evil"),
+    ])
+    def test_traversal_rejected(self, field, language, file, value):
+        err = validate_spec(self._spec({field: value}, language, file))
+        assert err is not None
+        assert field in err
+
+    @pytest.mark.parametrize("field,language,file", [
+        ("require_path", "ruby", "a.rb"),
+        ("import_path", "go", "a.go"),
+    ])
+    def test_absolute_rejected(self, field, language, file):
+        err = validate_spec(
+            self._spec({field: "/etc/passwd"}, language, file))
+        assert err is not None
+        assert field in err
+
+    @pytest.mark.parametrize("hostile", [
+        "#{`touch /tmp/x`}",        # Ruby interpolation
+        "$injected",                # PHP interpolation
+        "lib'; system('x'); '",     # quote breakout
+        "a b",                      # whitespace
+        "x\ny",                     # newline
+    ])
+    def test_require_path_charset_rejected(self, hostile):
+        err = validate_spec(self._spec({"require_path": hostile}))
+        assert err is not None
+        assert "require_path" in err
+
+    @pytest.mark.parametrize("field,language,file,value", [
+        ("require_path", "ruby", "a.rb", "lib/auth"),
+        ("require_path", "javascript", "a.js", "./parser"),
+        ("require_path", "lua", "a.lua", "lib.auth"),
+        ("use_path", "rust", "a.rs", "std::collections::HashMap"),
+        ("use_module", "perl", "A.pm", "MathUtil"),
+        ("import_path", "go", "a.go", "github.com/user/repo/pkg"),
+    ])
+    def test_legitimate_values_pass(self, field, language, file, value):
+        assert validate_spec(self._spec({field: value}, language, file)) is None
+
+    def test_require_path_symlink_escape_rejected(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "esc").symlink_to(outside)
+        spec = self._spec({"require_path": "esc/mod"})
+        assert validate_spec(spec) is None  # lexically clean
+        err = validate_spec(spec, root)
+        assert err is not None
+        assert "escapes target root" in err
+
+    def test_confined_require_path_passes_with_root(self, tmp_path):
+        spec = self._spec({"require_path": "lib/auth"})
+        assert validate_spec(spec, tmp_path) is None
+
+    def test_execute_witness_rejects_traversal_require_path(self, tmp_path):
+        src = tmp_path / "a.rb"
+        src.write_text("def check; end\n", encoding="utf-8")
+        spec = self._spec({"require_path": "../../evil"})
+        r = execute_witness(spec, tmp_path)
+        assert r.verdict == "error"
+        assert "spec validation failed" in r.match_detail
+
+
 # -- scripting-language string args render as data, never code ----------------
 
 

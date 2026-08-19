@@ -85,7 +85,7 @@ class CampaignPlan:
             for h in self.hints:
                 lines.append(f"  - {h}")
         lines.append("")
-        lines.append(f"Can run: {'YES' if self.can_run else 'NO'}")
+        lines.append(f"Can run: {'Yes' if self.can_run else 'No'}")
         lines.append("=" * 70)
         return "\n".join(lines)
 

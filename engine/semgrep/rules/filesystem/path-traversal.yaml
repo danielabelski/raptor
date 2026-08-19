@@ -48,14 +48,17 @@ rules:
           - pattern: flask.request.form[$_]
           - pattern: input(...)
     pattern-sinks:
+      # os.path.join is deliberately not a sink here —
+      # raptor.python.path-join-traversal owns that shape with the
+      # correct focus on the joined component.
       - pattern-either:
-          - pattern: open($PATH)
+          - pattern: open($PATH, ...)
           - pattern: os.open($PATH, ...)
-          - pattern: os.path.join($PATH, ...)
           - pattern: Path($PATH)
+    # No abspath/resolve sanitizers: both NORMALISE the path — they
+    # resolve "../" so the escape takes effect, they do not confine
+    # it. basename genuinely confines (strips directory components).
     pattern-sanitizers:
-      - pattern: os.path.abspath(...)
       - pattern: os.path.basename(...)
-      - pattern: pathlib.Path(...).resolve()
     metadata:
       cwe: ["CWE-22"]

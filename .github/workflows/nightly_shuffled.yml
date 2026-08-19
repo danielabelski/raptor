@@ -52,6 +52,10 @@ jobs:
           uv venv $VENV_PATH
           source $VENV_PATH/bin/activate
           uv pip install -r requirements-dev.txt
+          # Grammar wheels: same rationale as the slow nightly — the
+          # shuffled fast tier is where grammar-dependent suites run
+          # at volume, and without the wheels they all skip.
+          uv pip install -r requirements-grammars.txt
 
       - name: Shuffled default-tier tests (${{ env.FAST_ITERATIONS }} iterations)
         run: |

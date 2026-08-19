@@ -264,7 +264,7 @@ actually look at?" and to find gaps:
 ```
 /project coverage              # summary for the active project
 /project coverage --detailed   # per-file table
-/project coverage --gaps       # files not reviewed by any run
+libexec/raptor-coverage-summary --gaps   # unreviewed functions
 ```
 
 Coverage is per-run.  Project-level coverage merges across all runs, so

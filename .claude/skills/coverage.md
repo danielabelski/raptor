@@ -24,8 +24,9 @@ Each tool writes a `coverage-<tool>.json` in the run output directory:
 |------|-----------|----------|
 | `coverage-semgrep.json` | Scanner (`/scan`) | files examined, policy groups, errors |
 | `coverage-codeql.json` | Scanner (`/scan`, `/codeql`) | files examined, packs, rules, extraction failures |
-| `coverage-read.json` | Lifecycle complete | files the LLM read (from `.reads-manifest`) |
-| `coverage-llm.json` | Lifecycle complete (`/validate`, `/understand`) | files + items analysed (from findings + mark) |
+| `coverage-read.json` | Lifecycle end (any status) | files the LLM read (from `.reads-manifest`) |
+| `coverage-llm.json` | `/validate` stage 1; operator/agent `--mark` | items analysed (from findings + marks) |
+| `coverage-journal.json` | `/agentic` | functions reviewed (from review-journal entries) |
 
 Records are written automatically — no manual action needed.
 
@@ -36,14 +37,14 @@ Records are written automatically — no manual action needed.
 ```python
 from core.coverage.store import CoverageStore
 
-store = CoverageStore.load(project_dir / "coverage.json")
+store = CoverageStore(project_dir / "coverage.json")   # loads if present
 
 # Mark lines as examined by a tool
-store.mark("src/auth.c", start=10, end=50, tool="audit")
+store.mark("src/auth.c", 10, 50, "audit")
 
-# Query who examined a line or function
-tools = store.who_checked("src/auth.c", line=25)
-tools = store.who_checked_function("src/auth.c", "check_pw", start=10, end=50)
+# Query who examined a line or a function's span
+tools = store.who_checked("src/auth.c", 25)
+tools = store.who_checked_function("src/auth.c", 10, 50)
 ```
 
 Line-range tracking uses inclusive `[lo, hi]` intervals, kept sorted and coalesced per tool.
@@ -259,7 +260,8 @@ Semgrep policy groups are compared against `RaptorConfig.POLICY_GROUP_TO_SEMGREP
 `core/audit/gaps.py:compute_gaps` determines which functions still need review. Coverage sources, in priority order:
 
 1. **Review journal** — `review-journal.jsonl` (per-run) and `review-journal-index.json` (project-level). This is the primary mid-run and cross-run source.
-2. **Coverage records** — legacy `coverage-record.json` (back-compat for pre-per-tool-split runs).
-3. **Coverage store** — `coverage.json` (imported at run completion via `import_journal`).
+2. **Coverage records** — per-tool `coverage-*.json` in the run dir: review-grade `functions_analysed` entries (an operator `--mark`, `coverage-llm.json`, `coverage-journal.json`) suppress gaps; scanned-depth labels (`read`, `understand`) and whole-file `files_examined` never do. Legacy `coverage-record.json` still loads for pre-per-tool-split runs.
 
-A function is a gap when it has no entry in any of these sources.
+A function is a gap when it has no entry in either source. The durable
+`coverage.json` store is a query-time projection (summaries, `--gaps`),
+not a `compute_gaps` input.

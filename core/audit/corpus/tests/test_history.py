@@ -934,3 +934,49 @@ class TestRefireDeltas:
         # crash and never a phantom prior run.
         assert len(lines) == 1
         assert "unchanged" in lines[0] or "no prior history" in lines[0]
+
+
+class TestFullRunDelta:
+    def _store_with(self, tmp_path, records):
+        store = tmp_path / "s.jsonl"
+        history.append_records(store, records)
+        return store
+
+    def test_full_run_gets_a_compare_vs_latest_prior(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            _run_rec("v4"),
+            _label_rec("a.c:f", "clean", run_id="v4",
+                       expected="finding", match=False),
+            _label_rec("a.c:g", "clean", run_id="v4",
+                       expected="clean", match=True),
+            _run_rec("v5"),
+            _label_rec("a.c:f", "finding", run_id="v5",
+                       expected="finding", match=True),
+            _label_rec("a.c:g", "clean", run_id="v5",
+                       expected="clean", match=True),
+        ])
+        out = history.full_run_delta(store, "v5")
+        assert out is not None
+        assert "Compare v4" in out
+        assert "a.c:f" in out
+
+    def test_no_prior_run_returns_none(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            _run_rec("v1"),
+            _label_rec("a.c:f", "clean", run_id="v1"),
+        ])
+        assert history.full_run_delta(store, "v1") is None
+
+    def test_unknown_run_or_missing_store_return_none(self, tmp_path):
+        store = self._store_with(tmp_path, [_run_rec("v1")])
+        assert history.full_run_delta(store, "ghost") is None
+        assert history.full_run_delta(tmp_path / "absent.jsonl", "v1") is None
+
+    def test_disjoint_label_sets_return_none(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            _run_rec("v1"),
+            _label_rec("a.c:f", "clean", run_id="v1"),
+            _run_rec("v2"),
+            _label_rec("b.c:g", "clean", run_id="v2"),
+        ])
+        assert history.full_run_delta(store, "v2") is None

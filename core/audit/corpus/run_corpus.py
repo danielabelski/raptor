@@ -3055,27 +3055,44 @@ def main(argv: list[str] | None = None) -> int:
             selection=selection,
         )
 
-    # Selective-refire delta report: when specific labels were
-    # refired (--label) and the history store holds prior verdicts,
-    # phrase each flip for the operator. Read-only history use —
-    # results.json and the store are already final; nothing here
-    # feeds the pipeline — and best-effort: a report failure never
-    # fails the run.
-    if args.label_ids and recorded_history:
+    # History delta report. Read-only history use — results.json and
+    # the store are already final; nothing here feeds the pipeline —
+    # and best-effort: a report failure never fails the run.
+    # * selective refire (--label): per-label flips vs each label's
+    #   latest prior record;
+    # * everything else (full runs included): the fix-impact compare
+    #   vs the latest prior recorded run. Full 220-label runs used to
+    #   print nothing despite a complete prior run sitting in the
+    #   store — the flip report existed in the data and was not shown.
+    if recorded_history:
         try:
-            from .history import refire_deltas, run_id_for_output, store_path
-
-            delta_lines = refire_deltas(
-                store_path(),
-                sorted(args.label_ids),
-                current_run_id=run_id_for_output(args.output),
+            from .history import (
+                full_run_delta,
+                refire_deltas,
+                run_id_for_output,
+                store_path,
             )
-            if delta_lines:
-                print("\nRefire deltas (vs latest prior history):")
-                for line in delta_lines:
-                    print(f"  {line}")
+
+            if args.label_ids:
+                delta_lines = refire_deltas(
+                    store_path(),
+                    sorted(args.label_ids),
+                    current_run_id=run_id_for_output(args.output),
+                )
+                if delta_lines:
+                    print("\nRefire deltas (vs latest prior history):")
+                    for line in delta_lines:
+                        print(f"  {line}")
+            else:
+                delta = full_run_delta(
+                    store_path(),
+                    run_id_for_output(args.output),
+                )
+                if delta:
+                    print("\nHistory delta (vs latest prior run):")
+                    print(delta)
         except Exception:
-            logger.debug("refire delta report failed", exc_info=True)
+            logger.debug("history delta report failed", exc_info=True)
 
     _print_accounting(
         violations, census, len(selected_labels), len(account_models),

@@ -834,6 +834,44 @@ def refire_deltas(
     return lines
 
 
+def full_run_delta(store: Path, current_run_id: str) -> Optional[str]:
+    """Fix-impact delta of THIS run vs the latest prior recorded run.
+
+    Full-run counterpart to :func:`refire_deltas`: a 220-label run
+    used to print nothing but "history appended" even when the store
+    held a complete prior run — the flip report existed in the data
+    and was never shown.  Read-only, reporting-only, best-effort:
+    returns None when the store, the current run, a prior run, or any
+    common label is absent.
+    """
+    try:
+        runs, labels_by_run = load_store(store)
+    except OSError:
+        return None
+    order = [r.get("run_id", "") for r in runs]
+    if current_run_id not in order:
+        return None
+    # Last occurrence, same convention as refire_deltas: a reused
+    # --output path re-records under the same id.
+    cur_idx = max(
+        i for i, rid in enumerate(order) if rid == current_run_id
+    )
+    current = runs[cur_idx]
+    prior_runs = [
+        r for r in runs[:cur_idx]
+        if r.get("run_id") != current_run_id
+    ]
+    if not prior_runs:
+        return None
+    prior = prior_runs[-1]
+    labels_a = _latest_labels(prior, labels_by_run)
+    labels_b = _latest_labels(current, labels_by_run)
+    if not (set(labels_a) & set(labels_b)):
+        return None
+    diff = compare_runs(prior, current, labels_a, labels_b)
+    return format_compare(diff)
+
+
 # ---------------------------------------------------------------------------
 # import
 # ---------------------------------------------------------------------------

@@ -243,6 +243,16 @@ class TestSemgrepProjectionSync:
         for pat in list(XSS_SINKS) + list(XSS_SANITIZERS):
             assert pat in origin, f"pattern drifted from origin rule: {pat}"
 
+    def test_collection_propagators_match_origin_rule(self):
+        from packages.semgrep.source_wrapper_rules import (
+            COLLECTION_PROPAGATORS,
+        )
+        origin = self._origin("engine/semgrep/rules/injection/xss.yaml")
+        for prop in COLLECTION_PROPAGATORS:
+            assert prop["pattern"] in origin, (
+                f"propagator drifted from origin rule: {prop['pattern']}"
+            )
+
     def test_trust_boundary_blocks_match_origin_rule(self):
         from packages.semgrep.source_wrapper_rules import TRUST_BOUNDARY_SINKS
         origin = self._origin("engine/semgrep/rules/java/trust-boundary.yaml")

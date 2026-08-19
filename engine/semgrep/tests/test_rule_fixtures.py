@@ -42,8 +42,8 @@ _CASES = {
         ["trustbound_java_neg.java"],
     ),
     "injection/xss.yaml": (
-        ["xss_java_pos.java"],
-        ["xss_java_encoder_neg.java"],
+        ["xss_java_pos.java", "xss_java_collection_pos.java"],
+        ["xss_java_encoder_neg.java", "xss_java_collection_neg.java"],
     ),
     "crypto/weak-hash.yaml": (
         ["weakhash_java_pos.java"],

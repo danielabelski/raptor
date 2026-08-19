@@ -121,6 +121,19 @@ rules:
           # Spring MVC
           - pattern: (WebRequest $REQ).getParameter(...)
           - pattern: (WebRequest $REQ).getHeader(...)
+    pattern-propagators:
+      # Collection round-trips (measured FN class: same-method
+      # map.put(k, tainted) -> get(k) -> sink). put/add taint the
+      # receiver; semgrep then propagates receiver taint through get.
+      # Key-insensitive by engine design — recall-side over-taint on a
+      # different key is adjudicated downstream (gate/validation), the
+      # honest asymmetry for a detector.
+      - pattern: $M.put($K, $V)
+        from: $V
+        to: $M
+      - pattern: $M.add($V)
+        from: $V
+        to: $M
     pattern-sinks:
       - pattern-either:
           # Servlet response writer
@@ -129,6 +142,8 @@ rules:
           - pattern: (HttpServletResponse $RESP).getWriter().println($X)
           - pattern: (HttpServletResponse $RESP).getWriter().print($X)
           - pattern: (HttpServletResponse $RESP).getOutputStream().write(...)
+          - pattern: (HttpServletResponse $RESP).getWriter().format(...)
+          - pattern: (PrintWriter $PW).format(...)
           # Servlet response output
           - pattern: (PrintWriter $PW).write($X)
           - pattern: (PrintWriter $PW).println($X)

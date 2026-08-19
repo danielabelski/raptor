@@ -30,6 +30,8 @@ XSS_SINKS: Sequence[str] = (
     "(HttpServletResponse $RESP).getWriter().println($X)",
     "(HttpServletResponse $RESP).getWriter().print($X)",
     "(HttpServletResponse $RESP).getOutputStream().write(...)",
+    "(HttpServletResponse $RESP).getWriter().format(...)",
+    "(PrintWriter $PW).format(...)",
     "(PrintWriter $PW).write($X)",
     "(PrintWriter $PW).println($X)",
     "(PrintWriter $PW).print($X)",
@@ -45,6 +47,14 @@ XSS_SANITIZERS: Sequence[str] = (
     "ESAPI.encoder().encodeForHTML(...)",
     "org.owasp.esapi.ESAPI.encoder().encodeForHTML(...)",
     "(Encoder $ENC).encodeForHTML(...)",
+)
+
+#: Collection round-trip propagators mirrored from the origin java
+#: taint rules (engine/semgrep/rules/injection/xss.yaml et al.) —
+#: the sync test pins each against its origin.
+COLLECTION_PROPAGATORS: Sequence[dict] = (
+    {"pattern": "$M.put($K, $V)", "from": "$V", "to": "$M"},
+    {"pattern": "$M.add($V)", "from": "$V", "to": "$M"},
 )
 
 #: Origin: engine/semgrep/rules/java/trust-boundary.yaml
@@ -102,6 +112,7 @@ def _taint_rule(rule_id: str, message: str, cwe: str,
     }
     if sanitizers:
         rule["pattern-sanitizers"] = [{"pattern": p} for p in sanitizers]
+    rule["pattern-propagators"] = [dict(p) for p in COLLECTION_PROPAGATORS]
     return rule
 
 

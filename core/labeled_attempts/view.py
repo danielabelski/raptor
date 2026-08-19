@@ -30,6 +30,7 @@ field regardless of which evidence shape produced the record.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import Counter
@@ -56,6 +57,7 @@ __all__ = [
     "Oracle",
     "OutcomeStatus",
     "ScoredOutcome",
+    "VERIFIED_OUTCOMES_FILENAME",
     "VerifiedOutcome",
     "collect_outcomes",
     "exemplar_block_for_finding",
@@ -87,6 +89,8 @@ class Oracle(str, Enum):
     CODEQL = "codeql"     # isBarrier adjudication / trust-witness soundness
     WEB = "web"           # /web live-target dynamic confirmation
     MANUAL = "manual"     # operator-supplied
+    CONSENSUS = "consensus"  # independent-source agreement (e.g. /cve-diff
+    #                          OSV + NVD fix-pointer consensus)
 
 
 class OutcomeStatus(str, Enum):
@@ -453,6 +457,12 @@ def from_barrier_synthesis(
 # ---------------------------------------------------------------------------
 
 
+# Run-local VerifiedOutcome sidecar: one ``VerifiedOutcome.to_dict()``
+# JSON object per line, appended by producers whose oracle evidence
+# doesn't fit the LabeledAttempt shapes (source 3 in collect_outcomes).
+VERIFIED_OUTCOMES_FILENAME = "verified-outcomes.jsonl"
+
+
 def collect_outcomes(
     output_dir: Optional[Path],
     *,
@@ -544,7 +554,49 @@ def collect_outcomes(
     except Exception as exc:
         _log.debug("legacy witness discovery failed: %s", exc)
 
+    # 3. Run-local VerifiedOutcome records — producers whose oracle
+    # evidence doesn't fit the LabeledAttempt shapes (e.g. /cve-diff's
+    # OSV+NVD fix-pointer consensus) append ``to_dict()`` lines to
+    # VERIFIED_OUTCOMES_FILENAME in their run dir. Best-effort: an
+    # unparseable line is skipped, never fatal.
+    for run_dir in _verified_outcome_dirs(output_dir, project_root):
+        path = run_dir / VERIFIED_OUTCOMES_FILENAME
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                outcomes.append(VerifiedOutcome.from_dict(json.loads(line)))
+            except Exception:
+                _log.debug(
+                    "skipping malformed verified-outcome line in %s",
+                    path, exc_info=True,
+                )
+
     return outcomes
+
+
+def _verified_outcome_dirs(
+    output_dir: Optional[Path],
+    project_root: Optional[Path],
+) -> List[Path]:
+    """Candidate directories for run-local verified-outcome files: the
+    run itself plus (cross-run view) the project's sibling run dirs."""
+    dirs: List[Path] = []
+    if output_dir is not None:
+        dirs.append(Path(output_dir))
+    if project_root is not None:
+        try:
+            for child in sorted(Path(project_root).iterdir()):
+                if child.is_dir() and child not in dirs:
+                    dirs.append(child)
+        except OSError:
+            pass
+    return dirs
 
 
 # ---------------------------------------------------------------------------

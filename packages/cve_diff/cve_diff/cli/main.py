@@ -502,6 +502,14 @@ def run(
                 typer.echo(f"root-cause analysis failed: {exc}", err=True)
                 raise typer.Exit(code=9) from exc
 
+        # Consensus-confirmed discovery → run-local verified outcome
+        # (surfaced by libexec/raptor-verified-outcomes). Best-effort.
+        from cve_diff.report.verified_outcomes import write_consensus_outcome
+        write_consensus_outcome(
+            output_dir, result.bundle,
+            cwe_id=getattr(rc, "cwe_id", None),
+        )
+
         osv_path = output_dir / f"{cve_id}.osv.json"
         md_path = output_dir / f"{cve_id}.md"
         osv_path.write_text(

@@ -7,6 +7,7 @@ import inspect
 import json
 import shutil
 import sys
+import subprocess
 import textwrap
 
 import pytest
@@ -18,6 +19,7 @@ from core.audit.dark_verify._execute import (
     _sandboxed_compile,
     _toolchain_read_paths,
 )
+from core.audit.dark_verify import _harness as hy
 from core.audit.dark_verify import (
     DarkVerifyResult,
     DarkWitnessSpec,
@@ -873,7 +875,7 @@ class TestGenerateRubyHarness:
         )
         harness = generate_ruby_harness(spec, tmp_path)
         assert "require 'json'" in harness
-        assert '"lib/auth"' in harness
+        assert "'lib/auth'" in harness
         assert "validate" in harness
         assert "nil" in harness
 
@@ -3126,3 +3128,163 @@ class TestValidateSpecLanguageFallback:
         err = validate_spec(spec)
         assert err is not None
         assert "dangerous builtin" in err
+# -- scripting-language string args render as data, never code ----------------
+
+
+_HOSTILE_STRINGS = [
+    "#{1+1}",                             # Ruby interpolation
+    "@{[system('x')]}",                   # Perl block interpolation
+    "$injected",                          # Perl/PHP scalar interpolation
+    "{$var}",                             # PHP curly interpolation
+    "`id`",                               # backticks
+    'double "quotes" inside',
+    "single 'quotes' inside",
+    "trailing backslash \\",
+    "escape-looking \\' \\\\ \\n",
+    "hash # and #{nested '\\' mix}",
+]
+
+
+def _sq_roundtrip(literal: str) -> str:
+    """Decode a single-quoted literal under Ruby/Perl/PHP semantics.
+
+    In all three languages a single-quoted string recognises exactly two
+    escapes (``\\\\`` and ``\\'``) and interpolates nothing. Walking the
+    literal with those rules proves it is well-formed pure data: any
+    unescaped quote (early termination) or dangling backslash asserts.
+    """
+    assert literal.startswith("'") and literal.endswith("'"), literal
+    body = literal[1:-1]
+    out = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\":
+            assert i + 1 < len(body), f"dangling backslash: {literal!r}"
+            nxt = body[i + 1]
+            assert nxt in ("\\", "'"), f"unexpected escape: {literal!r}"
+            out.append(nxt)
+            i += 2
+        else:
+            assert ch != "'", f"unescaped quote ends literal early: {literal!r}"
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _run_stdout(argv: list[str]) -> str:
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+class TestScriptingStringArgsAreData:
+    """LLM-supplied string args are pasted into Ruby/Perl/PHP/Lua harness
+    source. Rendered double-quoted they are an eval sink (#{...}, @{[...]},
+    $var); rendered single-quoted they are pure data. Interpreter round-trips
+    run when the interpreter is installed; the quote-closure asserts always
+    run."""
+
+    @pytest.mark.parametrize("hostile", _HOSTILE_STRINGS)
+    def test_single_quote_closure(self, hostile):
+        assert _sq_roundtrip(hy._single_quote(hostile)) == hostile
+
+    @pytest.mark.parametrize("hostile", _HOSTILE_STRINGS)
+    def test_ruby_roundtrips_as_data(self, hostile):
+        lit = hy._format_args_scripting([hostile], nil_kw="nil")
+        assert _sq_roundtrip(lit) == hostile
+        ruby = shutil.which("ruby")
+        if ruby:
+            assert _run_stdout([ruby, "-e", f"print({lit})"]) == hostile
+
+    @pytest.mark.parametrize("hostile", _HOSTILE_STRINGS)
+    def test_perl_roundtrips_as_data(self, hostile):
+        lit = hy._format_args_scripting([hostile], nil_kw="undef")
+        assert _sq_roundtrip(lit) == hostile
+        perl = shutil.which("perl")
+        if perl:
+            assert _run_stdout([perl, "-e", f"print({lit});"]) == hostile
+
+    @pytest.mark.parametrize("hostile", _HOSTILE_STRINGS)
+    def test_php_roundtrips_as_data(self, hostile):
+        lit = hy._format_args_scripting([hostile], nil_kw="null")
+        assert _sq_roundtrip(lit) == hostile
+        php = shutil.which("php")
+        if php:
+            assert _run_stdout([php, "-r", f"echo {lit};"]) == hostile
+
+    @pytest.mark.parametrize("hostile", _HOSTILE_STRINGS)
+    def test_lua_roundtrips_as_data(self, hostile):
+        lit = hy._format_args_scripting(
+            [hostile], nil_kw="nil", quote=hy._lua_quote,
+        )
+        assert lit.startswith("'") and lit.endswith("'")
+        lua = shutil.which("lua") or shutil.which("lua5.4") \
+            or shutil.which("lua5.3") or shutil.which("luajit")
+        if lua:
+            assert _run_stdout([lua, "-e", f"io.write({lit})"]) == hostile
+
+    def test_lua_control_chars_use_decimal_escapes(self):
+        lit = hy._lua_quote("a\nb\tc")
+        assert lit == "'a\\010b\\009c'"
+
+    def test_perl_backtick_block_interpolation_stays_data(self, tmp_path):
+        """Regression for the live repro: a Perl @{[ `cmd` ]} arg executed
+        under the double-quoted rendering. Single-quoted it must print
+        verbatim and the command must not run."""
+        probe_file = tmp_path / "pwned"
+        hostile = f"@{{[ `touch {probe_file}` ]}}"
+        lit = hy._format_args_scripting([hostile], nil_kw="undef")
+        assert _sq_roundtrip(lit) == hostile
+        perl = shutil.which("perl")
+        if perl:
+            assert _run_stdout([perl, "-e", f"print({lit});"]) == hostile
+        assert not probe_file.exists()
+
+    def test_ruby_harness_renders_args_single_quoted(self, tmp_path):
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.rb", function="check",
+            language="ruby",
+            args=["#{1+1}"],
+            lang_config={"require_path": "a"},
+        )
+        harness = generate_ruby_harness(spec, tmp_path)
+        assert "check('#{1+1}')" in harness
+        assert '"#{1+1}"' not in harness
+
+    def test_ruby_harness_require_path_not_interpolable(self, tmp_path):
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.rb", function="check",
+            language="ruby",
+            lang_config={"require_path": "#{`touch /tmp/x`}"},
+        )
+        harness = generate_ruby_harness(spec, tmp_path)
+        assert 'require "#{' not in harness
+        assert "require '#{`touch /tmp/x`}'" in harness
+
+    def test_perl_harness_renders_args_single_quoted(self, tmp_path):
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="A.pm", function="check",
+            language="perl",
+            args=["@{[system('x')]}"],
+            lang_config={"use_module": "A"},
+        )
+        harness = generate_perl_harness(spec, tmp_path)
+        assert "'@{[system(\\'x\\')]}'" in harness
+        assert '"@{[system' not in harness
+
+    def test_php_harness_renders_args_single_quoted(self, tmp_path):
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.php", function="check",
+            language="php",
+            args=["$HOME"],
+        )
+        harness = generate_php_harness(spec, tmp_path)
+        assert "check('$HOME')" in harness
+        assert '"$HOME"' not in harness
+
+    def test_nested_containers_render_strings_as_data(self):
+        lit = hy._format_args_scripting(
+            [["#{1+1}"], {"k": "$v"}], nil_kw="nil",
+        )
+        assert lit == "['#{1+1}'], {'k' => '$v'}"

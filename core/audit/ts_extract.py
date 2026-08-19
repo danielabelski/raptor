@@ -534,8 +534,15 @@ def extract_call_chains(
                 first_arg=first_arg,
             ))
 
-        # Also extract method chains from expressions
+        # Also extract method chains from expressions. Only maximal
+        # chains: a call node that is the object of an enclosing
+        # chain call would re-emit every suffix of the enclosing
+        # chain as its own (duplicate) CallChain.
         for desc in _walk_descendants(body):
+            if desc.type not in call_types:
+                continue
+            if _is_chain_object(desc, call_types):
+                continue
             chain = _extract_method_chain(desc, lang, src, call_types)
             if chain and len(chain.steps) >= 2:
                 chain.file = file_path
@@ -665,6 +672,22 @@ def _extract_first_arg(
         text = _node_text(child, src)
         return text[:60] if len(text) > 60 else text
     return ""
+
+
+def _is_chain_object(node, call_types: tuple[str, ...]) -> bool:
+    """True when *node* is the object of an enclosing method-chain
+    call (``node.m(...)``): its steps are a strict sub-chain of the
+    enclosing call's and must not be emitted separately."""
+    parent = node.parent
+    if parent is None or parent.type not in (
+        "member_expression", "field_expression",
+    ):
+        return False
+    obj = parent.child_by_field_name("object")
+    if obj is None or not _same_node(obj, node):
+        return False
+    grand = parent.parent
+    return grand is not None and grand.type in call_types
 
 
 def _extract_method_chain(

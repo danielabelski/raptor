@@ -188,6 +188,43 @@ function clean(input) {
         method_chains = [c for c in result if len(c.steps) >= 2]
         assert len(method_chains) >= 1
 
+    def test_method_chain_emitted_once(self):
+        """Only the maximal chain: every inner call node used to emit
+        its own sub-chain (x.a().b() inside x.a().b().c())."""
+        src = """\
+function clean(input) {
+    const result = input.trim().toLowerCase().replace(/[^a-z]/g, '');
+    return result;
+}
+"""
+        result = extract_call_chains("clean.js", src)
+        assert result is not None
+        method_chains = [
+            c for c in result
+            if c.steps and c.steps[0].call_name.startswith(".")
+        ]
+        assert len(method_chains) == 1
+        assert [s.call_name for s in method_chains[0].steps] == [
+            ".trim", ".toLowerCase", ".replace",
+        ]
+        assert method_chains[0].variable == "input"
+
+    def test_c_field_expression_chain_emitted_once(self):
+        # C field_expression chains go through the same maximal-chain
+        # gate as the JS member_expression ones.
+        src = """\
+void process(ctx_t *c) {
+    c->reader.open(c)->read(c)->close(c);
+}
+"""
+        result = extract_call_chains("chain.c", src)
+        assert result is not None
+        method_chains = [
+            ch for ch in result
+            if ch.steps and ch.steps[0].call_name.startswith(".")
+        ]
+        assert len(method_chains) <= 1
+
     @requires_ts("c")
     def test_c_reassignment_chain(self):
         src = """\

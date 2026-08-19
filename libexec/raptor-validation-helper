@@ -1825,6 +1825,34 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
         raise
 
 
+def _write_stage1_coverage_records(workdir: Path) -> None:
+    """Coverage records: findings → llm (review-grade), reads manifest →
+    read (scanned). Two records, two depths.
+
+    Pre-fix the manifest reads were folded into the llm record's
+    files_examined, and the importer marks files_examined WHOLE-FILE at
+    the record tool's depth — every file the LLM merely opened during
+    validation was credited as analysed, contradicting the
+    read-vs-reviewed contract coverage-read.json enforces everywhere
+    else (core/coverage/registry.py).
+    """
+    from core.coverage.record import (
+        build_from_findings,
+        build_from_manifest,
+        cleanup_manifest,
+        write_record,
+    )
+    record = build_from_findings(workdir / "findings.json", tool="llm")
+    if record:
+        write_record(workdir, record, tool_name="llm")
+    read_record = build_from_manifest(workdir, "read")
+    if read_record:
+        write_record(workdir, read_record, tool_name="read")
+    if record or read_record:
+        # Consumed — run completion must not re-convert the manifest.
+        cleanup_manifest(workdir)
+
+
 def prepare_1(workdir, target=None, model=None):
     """Stage 1: report, coverage, diagrams, complete lifecycle."""
     _apply_stage_file(workdir, "F")
@@ -1842,24 +1870,8 @@ def prepare_1(workdir, target=None, model=None):
 
     print(generate_summary(workdir))
 
-    # Coverage record from findings + reads manifest
     with contextlib.suppress(Exception):
-        from core.coverage.record import (
-            READS_MANIFEST,
-            build_from_findings,
-            cleanup_manifest,
-            write_record,
-        )
-        findings_path = Path(workdir) / "findings.json"
-        manifest_path = Path(workdir) / READS_MANIFEST
-        record = build_from_findings(
-            findings_path,
-            reads_manifest_path=manifest_path if manifest_path.exists() else None,
-            tool="llm",
-        )
-        if record:
-            write_record(Path(workdir), record, tool_name="llm")
-            cleanup_manifest(Path(workdir))
+        _write_stage1_coverage_records(Path(workdir))
 
     # SAGE store: persist validation verdicts + disproven hypotheses for cross-run learning.
     with contextlib.suppress(Exception):

@@ -106,11 +106,24 @@ _LANGUAGE_LAYOUTS: Mapping[str, Mapping[str, str]] = {
         # rows are rejected with a directed reason (use QL barrier
         # synthesis instead — core/dataflow/barrier_synth.py).
     },
+    # java-all rows share the cpp 9/10-column family (package, type,
+    # subtypes, name, signature, ext, access, kind, provenance) —
+    # verified against codeql/java-all 9.0.4's ext/*.model.yml.
+    "java": {
+        ROLE_SOURCE: "sourceModel",
+        ROLE_SINK: "sinkModel",
+        ROLE_SUMMARY: "summaryModel",
+        ROLE_BARRIER: "barrierModel",
+    },
 }
 
 SUPPORTED_LANGUAGES = frozenset(_LANGUAGE_LAYOUTS)
 
-_STDLIB_PACK = {"cpp": "codeql/cpp-all", "python": "codeql/python-all"}
+_STDLIB_PACK = {
+    "cpp": "codeql/cpp-all",
+    "python": "codeql/python-all",
+    "java": "codeql/java-all",
+}
 
 # ── cell grammars ────────────────────────────────────────────────────
 
@@ -120,6 +133,13 @@ _CPP_NAMESPACE_RE = re.compile(r"^[A-Za-z_~][\w:<>,*&\s~-]*$")
 _CPP_TYPE_RE = _CPP_NAMESPACE_RE
 # Function name: a plain (optionally destructor) identifier.
 _CPP_NAME_RE = re.compile(r"^~?[A-Za-z_]\w*$")
+# Java package (dotted identifiers; empty = default package), type
+# (identifier, nested via $ or .), name, and "(Type,Type)" signature
+# of erased simple types — the stdlib ext-file conventions.
+_JAVA_PACKAGE_RE = re.compile(r"^([A-Za-z_]\w*(\.[A-Za-z_]\w*)*)?$")
+_JAVA_TYPE_RE = re.compile(r"^[A-Za-z_]\w*([.$][A-Za-z_]\w*)*$")
+_JAVA_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+_JAVA_SIGNATURE_RE = re.compile(r"^\([\w\s,.<>\[\]$]*\)$")
 # Python dotted type path; a leading ~ on a segment is the stdlib
 # "match by name suffix" convention (e.g. asyncpg.~Connection).
 _PY_TYPE_RE = re.compile(r"^~?[A-Za-z_]\w*(\.~?[A-Za-z_]\w*)*$")
@@ -274,6 +294,29 @@ def _validate_python(row: ModelRow) -> str | None:
     return None
 
 
+def _validate_java(row: ModelRow) -> str | None:
+    if not _JAVA_PACKAGE_RE.match(row.namespace or ""):
+        return f"package {row.namespace!r} fails java grammar"
+    if not _JAVA_TYPE_RE.match(row.type_name or ""):
+        return f"type {row.type_name!r} fails java grammar"
+    if not _JAVA_NAME_RE.match(row.name or ""):
+        return f"name {row.name!r} fails java identifier grammar"
+    if not _JAVA_SIGNATURE_RE.match(row.signature or "()"):
+        return f"signature {row.signature!r} fails java signature grammar"
+    if row.role in (ROLE_SOURCE, ROLE_BARRIER) and not _valid_access(row.access_output):
+        return f"output access {row.access_output!r} fails access grammar"
+    if row.role == ROLE_SINK and not _valid_access(row.access_input):
+        return f"input access {row.access_input!r} fails access grammar"
+    if row.role == ROLE_SUMMARY and not (
+        _valid_access(row.access_input) and _valid_access(row.access_output)
+    ):
+        return (
+            f"summary access {row.access_input!r}→{row.access_output!r} "
+            "fails access grammar"
+        )
+    return None
+
+
 def _validate(row: ModelRow, language: str) -> str | None:
     reason = _gate_provenance(row) or _validate_common(row)
     if reason:
@@ -289,6 +332,8 @@ def _validate(row: ModelRow, language: str) -> str | None:
         return f"role {row.role!r} unsupported for language {language!r}"
     if language == "cpp":
         return _validate_cpp(row)
+    if language == "java":
+        return _validate_java(row)
     return _validate_python(row)
 
 
@@ -300,13 +345,16 @@ def _mad_provenance(row: ModelRow) -> str:
 
 
 def _cells(row: ModelRow, language: str) -> list:
-    if language == "cpp":
+    if language in ("cpp", "java"):
+        sig = row.signature
+        if language == "java" and not sig:
+            sig = "()"
         base = [
             row.namespace,
             row.type_name,
             row.subtypes,
             row.name,
-            row.signature,
+            sig,
             "",  # ext (subclass extension column) — unused
         ]
         prov = _mad_provenance(row)

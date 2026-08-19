@@ -187,9 +187,12 @@ class TestCellValidation:
 
 class TestPackShape:
     def test_unsupported_language_raises(self, tmp_path: Path):
+        # java graduated to supported (layout verified against
+        # codeql/java-all 9.0.4); go remains speculative and refuses.
         with pytest.raises(ValueError, match="unsupported"):
-            write_extension_pack([_row()], language="java", out_dir=tmp_path)
-        assert "java" not in SUPPORTED_LANGUAGES
+            write_extension_pack([_row()], language="go", out_dir=tmp_path)
+        assert "go" not in SUPPORTED_LANGUAGES
+        assert "java" in SUPPORTED_LANGUAGES
 
     def test_bad_pack_name_raises(self, tmp_path: Path):
         with pytest.raises(ValueError, match="scope/name"):

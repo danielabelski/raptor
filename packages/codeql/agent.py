@@ -135,6 +135,10 @@ class CodeQLWorkflowResult:
     # candidates surfaced). Additive; consumers tolerate its absence.
     learned_models: dict | None = None
 
+    #: Source-wrapper summaries staged for the standard suite
+    #: (wrappers found, rows emitted, refusal counts).
+    source_summaries: dict | None = None
+
     def to_dict(self):
         """
         Convert to dictionary for JSON serialization.
@@ -591,6 +595,16 @@ class CodeQLAgent:
             logger.info("PHASE 4: SECURITY ANALYSIS")
             logger.info("%s", '=' * 70)
 
+            # Source-wrapper summaries (mechanical, LLM-free): helper
+            # methods whose return provably carries servlet-request
+            # data become models-as-data sourceModel rows the STANDARD
+            # java suite consumes via --additional-packs — the taint
+            # enters through constructor-stored fields the engine's
+            # default tracking declines. Additive detection only;
+            # failures degrade to a warning.
+            source_summaries_cell = self._run_source_summaries_pass(
+                successful_dbs)
+
             analysis_results = self.query_runner.analyze_all_databases(
                 successful_dbs,
                 self.out_dir,
@@ -713,6 +727,7 @@ class CodeQLAgent:
                 errors=errors,
                 threat_model_overlap=threat_model_overlap,
                 learned_models=learned_models,
+                source_summaries=source_summaries_cell,
             )
 
             # Save report
@@ -735,6 +750,55 @@ class CodeQLAgent:
                 sarif_files=[],
                 errors=[str(e)] + errors,
             )
+
+    def _run_source_summaries_pass(self, successful_dbs) -> dict | None:
+        """Derive Java source-wrapper summaries and stage their
+        models-as-data pack for the standard suite run. Returns the
+        report cell (or None when skipped)."""
+        from core.config import RaptorConfig as _RC
+        if not getattr(_RC, "CODEQL_SOURCE_SUMMARIES_ENABLED", True):
+            return None
+        if "java" not in successful_dbs:
+            return None
+        try:
+            from core.analysis.java_source_summaries import (
+                rows_from_source_summaries,
+                scan_tree,
+            )
+            from core.dataflow.extension_pack import write_extension_pack
+            summaries, refusals, scanned = scan_tree(self.repo_path)
+            if not summaries:
+                logger.info(
+                    "source-summaries: no qualifying wrappers "
+                    "(%d files)", scanned)
+                return {"wrappers": 0, "files_scanned": scanned}
+            out = self.out_dir / "source-summaries"
+            result = write_extension_pack(
+                rows_from_source_summaries(summaries),
+                language="java", out_dir=out,
+            )
+            if result.rows_written == 0:
+                logger.warning(
+                    "source-summaries: every derived row was rejected "
+                    "at emission (%d rejections)", len(result.rejected))
+                return {"wrappers": len(summaries), "rows_written": 0}
+            packs = dict(self.query_runner.additional_model_packs or {})
+            packs.setdefault("java", []).append(
+                (str(out), result.pack_name))
+            self.query_runner.additional_model_packs = packs
+            logger.info(
+                "source-summaries: %d wrapper(s) → %d sourceModel "
+                "row(s); pack staged for the java suite",
+                len(summaries), result.rows_written)
+            return {
+                "wrappers": len(summaries),
+                "rows_written": result.rows_written,
+                "pack_dir": str(result.pack_dir),
+                "refusals": dict(refusals),
+            }
+        except Exception as exc:  # noqa: BLE001 — never kill the scan
+            logger.warning("source-summaries pass failed: %s", exc)
+            return None
 
     def _run_learned_models_pass(self, successful_dbs) -> dict | None:
         """Emit learned taint specs as a model pack and measure the diff.

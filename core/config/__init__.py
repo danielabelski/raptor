@@ -195,6 +195,13 @@ class RaptorConfig:
     # `/codeql --no-learned-models`.
     CODEQL_LEARNED_MODELS_ENABLED: bool = True
 
+    # Mechanical Java source-wrapper summaries: same-tree helper
+    # methods whose return provably carries servlet-request data
+    # (core/analysis/java_source_summaries) are emitted as
+    # models-as-data sourceModel rows and threaded into the standard
+    # java suite via --additional-packs. Additive detection only.
+    CODEQL_SOURCE_SUMMARIES_ENABLED: bool = True
+
     # Record-only sanitizer-cut post-pass over scan SARIF findings
     # (core/analysis/sanitizer_cut_postpass.py): value-bound gate
     # verdicts are written to suppressions.jsonl as evidence

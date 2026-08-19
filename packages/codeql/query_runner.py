@@ -284,6 +284,29 @@ class QueryRunner:
         self._version_probe = version or ""
         return version
 
+    #: language → [(search_dir, pack_name)] for learned/derived model
+    #: packs. Set by the agent BEFORE the parallel analysis phase and
+    #: read-only afterwards, so the ThreadPoolExecutor sees a frozen
+    #: map. BOTH halves are required: --additional-packs only makes a
+    #: pack resolvable; --model-packs applies its data extensions
+    #: (verified live — without it the augmented analysis is
+    #: byte-identical to the baseline).
+    additional_model_packs: dict[str, list[tuple[str, str]]] | None = None
+
+    def _model_pack_args(self, language: str) -> list[str]:
+        packs = (self.additional_model_packs or {}).get(language, [])
+        out: list[str] = []
+        for search_dir, pack_name in packs:
+            out.extend([
+                "--additional-packs", str(search_dir),
+                "--model-packs", pack_name,
+            ])
+        return out
+
+    def _has_model_packs(self, language: str) -> bool:
+        return bool((self.additional_model_packs or {}).get(language))
+
+
     def active_threat_models(self) -> tuple:
         """Threat models the standard-suite pass will request.
 
@@ -448,12 +471,16 @@ class QueryRunner:
             actual_suite_path,
             "--format=sarif-latest",
             f"--output={sarif_path}",
-            "--no-rerun",  # Don't rerun queries if results exist
+            # Cached query results MASK model-pack rows — force
+            # re-evaluation when learned models are staged.
+            ("--rerun" if self._has_model_packs(language)
+             else "--no-rerun"),
             # Additive source models (e.g. `local` = environment /
             # commandargs / stdin / file / database) on stock queries.
             # Empty on old CLIs / kill-switch; CLI-documented no-op for
             # packs without threat-model support.
             *self._threat_model_args(),
+            *self._model_pack_args(language),
         ]
         # Central CodeQL resource tunables (-j / -M, tuning.json-backed).
         # ``include_disk_cache=False`` because ``database analyze``

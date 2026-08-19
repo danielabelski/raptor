@@ -214,3 +214,33 @@ class TestCliFlags:
         assert r.returncode == 0, r.stderr
         assert "--threat-models" in r.stdout
         assert "--no-threat-models" in r.stdout
+
+
+class TestModelPackArgs:
+    """Learned model packs must be APPLIED, not merely resolvable —
+    and cached results must not mask their rows (the vacuous
+    zero-delta bug, verified live on the corpus)."""
+
+    def _runner(self):
+        from packages.codeql.query_runner import QueryRunner
+        qr = QueryRunner.__new__(QueryRunner)
+        qr.additional_model_packs = None
+        return qr
+
+    def test_no_packs_no_args(self):
+        qr = self._runner()
+        assert qr._model_pack_args("java") == []
+        assert not qr._has_model_packs("java")
+
+    def test_pack_args_pair_resolution_and_application(self):
+        qr = self._runner()
+        qr.additional_model_packs = {
+            "java": [("/tmp/packs", "raptor/learned-models-java")],
+        }
+        args = qr._model_pack_args("java")
+        assert args == [
+            "--additional-packs", "/tmp/packs",
+            "--model-packs", "raptor/learned-models-java",
+        ]
+        assert qr._has_model_packs("java")
+        assert qr._model_pack_args("cpp") == []

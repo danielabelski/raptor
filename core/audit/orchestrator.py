@@ -1102,6 +1102,7 @@ def run_orchestrator(
     if prep_cache is None or not prep_cache.get("_caches_cleared"):
         _sink_guard_cache.clear()
         _file_lines_cache.clear()
+        _parse_wrapper_cache.clear()
         # line_end values come from the run's inventory — stale bounds
         # from a previous in-process run mis-window the sweeps.
         _line_end_cache.clear()
@@ -12969,6 +12970,11 @@ _file_lines_cache: OrderedDict[tuple[str, float, int], list | None] = (
 )
 _file_lines_cache_lock = _threading.Lock()
 
+# Same-file parse-wrapper names for the parsed-int contract screen,
+# keyed like _file_lines_cache (absolute path) so concurrent targets
+# in one process never share entries.
+_parse_wrapper_cache: dict[str, frozenset] = {}
+
 
 def _read_raw_source(
     target_path: Path,
@@ -19293,8 +19299,22 @@ def _pre_loop_smt_screen(
 
         if not tool_hit and is_c_or_go:
             with contextlib.suppress(*_SMT_SCREEN_ERRORS):
+                # Same-file parse wrappers (the stdlib idiom puts the
+                # strconv call one helper away from the consumer):
+                # derived once per file, mechanically, from the file
+                # itself — never from a name list.
+                _wkey = str(config.target_path / file_path)
+                wrappers = _parse_wrapper_cache.get(_wkey)
+                if wrappers is None:
+                    from .condition_smt import derive_parse_wrappers
+                    _full_src = _read_raw_source(
+                        config.target_path, file_path, 1, 10**7,
+                    )
+                    wrappers = derive_parse_wrappers(_full_src)
+                    _parse_wrapper_cache[_wkey] = wrappers
                 pir = check_parsed_int_contract(
                     source, consumer_widths=consumer_widths,
+                    parse_wrappers=wrappers,
                 )
                 if pir.narrowing_found:
                     tool_hit = "smt:check-parsed-int-contract"

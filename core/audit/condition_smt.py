@@ -2982,11 +2982,110 @@ _PARSED_INT_ASSIGN_RES: tuple[re.Pattern, ...] = (
     ),
 )
 
+# Ordering comparisons only: an equality test (``n == 0`` / ``n != 0``)
+# establishes no bound, so it does not discharge the width contract (a
+# directive value can pass ``n == 0`` and still overflow the consumer's
+# 32-bit storage).
 _PARSED_INT_COMPARE_TEMPLATE = (
-    r"\b{var}\b\s*(?:[<>]=?|==|!=)|(?:[<>]=?|==|!=)\s*\b{var}\b"
+    r"\b{var}\b\s*[<>]=?|[<>]=?\s*\b{var}\b"
 )
 
 _PARSED_INT_CALL_ARG_RE = re.compile(r"\b([A-Za-z_][\w.]*)\s*\(([^()]*)\)")
+
+# A direct text-to-integer parse call anywhere in a function body marks
+# that function as a parse WRAPPER: callers receive text-derived
+# integers from it without ever naming strconv/strto* themselves.
+_PARSE_CALL_BODY_RE = re.compile(
+    r"strconv\.(?:Atoi|ParseInt|ParseUint)\s*\(|"
+    r"\b(?:strtou?ll?|strtou?l|atoi|atoll?|strtou?imax|strtoumax)\s*\(",
+)
+
+_GO_FUNC_DEF_RE = re.compile(r"^func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(")
+_C_FUNC_DEF_RE = re.compile(
+    r"^[A-Za-z_][\w\s*]*?\**(\w+)\s*\(",
+)
+_C_KEYWORD_STARTS = ("if", "for", "while", "switch", "return", "else")
+
+_PARSED_INT_SKIP_NAMES = frozenset({"_", "err", "ok"})
+
+
+def derive_parse_wrappers(file_text: str) -> frozenset:
+    """Names of functions in *file_text* whose bodies contain a direct
+    text-to-integer parse call.
+
+    File-local and mechanical — the wrapper vocabulary is derived from
+    the analysed file itself, never from a hardcoded name list. Walks
+    each parse-call line back to the nearest enclosing function
+    definition (Go ``func`` at column 0, or a C-style definition at
+    column 0).
+    """
+    lines = file_text.split("\n")
+    wrappers: set[str] = set()
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(("//", "/*", "#", "*")):
+            continue
+        if not _PARSE_CALL_BODY_RE.search(line):
+            continue
+        for j in range(i, -1, -1):
+            m = _GO_FUNC_DEF_RE.match(lines[j])
+            if m:
+                wrappers.add(m.group(1))
+                break
+            if lines[j].startswith("}"):
+                break
+            if lines[j][:1].isalpha() and not lines[j].startswith(
+                _C_KEYWORD_STARTS,
+            ):
+                mc = _C_FUNC_DEF_RE.match(lines[j])
+                if mc:
+                    wrappers.add(mc.group(1))
+                    break
+    return frozenset(w for w in wrappers if w)
+
+
+_ASSIGN_LINE_RE = re.compile(
+    r"^\s*((?:\w+\s*,\s*)*\w+)\s*(?::?=|\+=|-=)\s*(.+)$",
+)
+
+
+def _propagate_parsed_aliases(
+    lines: list[str], parsed_vars: dict[str, int],
+) -> None:
+    """Extend *parsed_vars* through simple assignments (fixpoint).
+
+    ``line, col = n2, n`` / ``line = n`` / ``exp5 += exp`` — the alias
+    carries the text-derived value, so the contract follows it.
+    Positional multi-assigns map LHS[i] ← RHS[i]; anything more complex
+    taints every LHS name (detection role: over-approximate).
+    """
+    for _ in range(3):
+        changed = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith(("//", "/*", "#", "*")):
+                continue
+            m = _ASSIGN_LINE_RE.match(line)
+            if not m:
+                continue
+            lhs = [v.strip() for v in m.group(1).split(",")]
+            rhs = m.group(2)
+            rhs_parts = [p.strip() for p in rhs.split(",")]
+            if len(rhs_parts) == len(lhs) and len(lhs) > 1:
+                pairs = list(zip(lhs, rhs_parts))
+            else:
+                pairs = [(v, rhs) for v in lhs]
+            for var, expr in pairs:
+                if var in _PARSED_INT_SKIP_NAMES or var in parsed_vars:
+                    continue
+                if any(
+                    re.search(rf"\b{re.escape(p)}\b", expr)
+                    for p in parsed_vars
+                ):
+                    parsed_vars[var] = i
+                    changed = True
+        if not changed:
+            return
 
 
 def build_consumer_width_index(
@@ -3022,6 +3121,7 @@ def check_parsed_int_contract(
     source: str,
     *,
     consumer_widths: dict[str, int] | None = None,
+    parse_wrappers: frozenset | None = None,
 ) -> IntegerNarrowingResult:
     """Parsed-integer width contract: a value parsed from text flows
     into a consumer without ANY range check.
@@ -3032,12 +3132,25 @@ def check_parsed_int_contract(
     never established (the callee may store it in 32 bits, use it in
     position arithmetic, or loop on it). Detection-role: the result is
     injected as review evidence, never a verdict.
+
+    ``parse_wrappers`` extends the parse-site vocabulary with function
+    names derived from the analysed file itself (see
+    :func:`derive_parse_wrappers`): a call to a same-file wrapper whose
+    body parses text yields text-derived values too — the stdlib idiom
+    puts the ``strconv`` call one helper away from the consumer.
     """
     from .safety_contract import assert_boost_only
     assert_boost_only("condition_smt")
 
     lines = source.split("\n")
     parsed_vars: dict[str, int] = {}
+    wrapper_re = None
+    if parse_wrappers:
+        wrapper_re = re.compile(
+            r"((?:\w+\s*,\s*)*\w+)\s*(?::?=)\s*(?:\w+\.)?(?:"
+            + "|".join(re.escape(w) for w in sorted(parse_wrappers))
+            + r")\s*\(",
+        )
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if stripped.startswith(("//", "/*", "#", "*")):
@@ -3046,11 +3159,57 @@ def check_parsed_int_contract(
             m = rex.search(line)
             if m and m.group(1) not in ("_", "err"):
                 parsed_vars.setdefault(m.group(1), i)
+        if wrapper_re:
+            m = wrapper_re.search(line)
+            if m:
+                # A wrapper may return several values; which position
+                # carries the parsed int is unknown mechanically, so
+                # every named LHS is a candidate (detection role:
+                # over-approximate, the range-check pass prunes).
+                for var in m.group(1).split(","):
+                    var = var.strip()
+                    if var and var not in _PARSED_INT_SKIP_NAMES:
+                        parsed_vars.setdefault(var, i)
 
     if not parsed_vars:
         return IntegerNarrowingResult(
             reasoning="no text-parsed integer variables found",
         )
+
+    _propagate_parsed_aliases(lines, parsed_vars)
+
+    # Broken-abs idiom on a text-derived integer: ``if n < 0 { n = -n }``
+    # negation overflows at the width boundary (-MinInt == MinInt stays
+    # negative), so any subsequent upper-bound cap is bypassable. The
+    # range-check pass below must NOT clear this shape — the check the
+    # code performs is exactly the one the overflow defeats.
+    min_guard = re.search(
+        r"MinInt|INT(?:\d+)?_MIN|L?LONG_MIN", source,
+    )
+    for var in parsed_vars:
+        neg_re = re.compile(
+            rf"\b{re.escape(var)}\s*=\s*-\s*{re.escape(var)}\b",
+        )
+        for j, line in enumerate(lines):
+            if line.lstrip().startswith(("//", "/*", "#", "*")):
+                continue
+            if neg_re.search(line) and not min_guard:
+                return IntegerNarrowingResult(
+                    narrowing_found=True,
+                    source_type="parsed-int",
+                    dest_type="negation",
+                    source_width=64,
+                    dest_width=64,
+                    assign_line=j + 1,
+                    reasoning=(
+                        f"'{var}' carries a text-parsed integer and is "
+                        f"negated onto itself at line {j + 1} "
+                        f"(absolute-value idiom) with no MinInt guard: "
+                        f"-MinInt overflows back to MinInt and stays "
+                        f"negative, so any later upper-bound cap on "
+                        f"'{var}' is bypassed at the width boundary"
+                    ),
+                )
 
     for var, assign_idx in parsed_vars.items():
         compare_re = re.compile(

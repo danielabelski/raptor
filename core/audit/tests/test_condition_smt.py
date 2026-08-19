@@ -1071,6 +1071,191 @@ class TestParsedIntContract:
         assert "32-bit" in r.reasoning
         assert r.dest_width == 32
 
+    def test_equality_check_does_not_discharge_contract(self):
+        """`n == 0` bounds nothing — the contract stays undischarged."""
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        src = (
+            "func f(s string) {\n"
+            "\tn, err := strconv.Atoi(s)\n"
+            "\tif err != nil || n == 0 {\n"
+            "\t\treturn\n"
+            "\t}\n"
+            "\tstore.Apply(n)\n"
+            "}\n"
+        )
+        r = check_parsed_int_contract(src)
+        assert r.narrowing_found
+        assert "Apply" in r.reasoning
+
+
+class TestParseWrapperDerivation:
+    """Same-file parse wrappers: the stdlib idiom puts the strconv
+    call one helper away from the consumer, so the checker learns the
+    wrapper names from the file itself."""
+
+    _FILE = (
+        "package directive\n"
+        "\n"
+        "func readSuffixInt(text []byte) (int, int, bool) {\n"
+        "\ti := lastColon(text)\n"
+        "\tn, err := strconv.ParseUint(string(text[i+1:]), 10, 0)\n"
+        "\treturn i + 1, int(n), err == nil\n"
+        "}\n"
+        "\n"
+        "func unrelated(a int) int {\n"
+        "\treturn a * 2\n"
+        "}\n"
+    )
+
+    def test_wrapper_names_derived_from_file(self):
+        from core.audit.condition_smt import derive_parse_wrappers
+
+        w = derive_parse_wrappers(self._FILE)
+        assert "readSuffixInt" in w
+        assert "unrelated" not in w
+
+    def test_c_wrapper_derived(self):
+        from core.audit.condition_smt import derive_parse_wrappers
+
+        src = (
+            "static long read_num(const char *p)\n"
+            "{\n"
+            "\treturn strtol(p, NULL, 10);\n"
+            "}\n"
+        )
+        assert "read_num" in derive_parse_wrappers(src)
+
+    def test_wrapper_call_marks_values_parsed(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        consumer = (
+            "func (s *Lexer) applyDirective(text []byte) {\n"
+            "\ti, n, ok := readSuffixInt(text)\n"
+            "\tif !ok {\n"
+            "\t\treturn\n"
+            "\t}\n"
+            "\ts.file.SetLinePosition(i, n)\n"
+            "}\n"
+        )
+        r = check_parsed_int_contract(
+            consumer, parse_wrappers=frozenset({"readSuffixInt"}),
+        )
+        assert r.narrowing_found
+        assert "SetLinePosition" in r.reasoning
+
+    def test_no_wrappers_stays_silent(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        consumer = (
+            "func (s *Lexer) applyDirective(text []byte) {\n"
+            "\ti, n, ok := readSuffixInt(text)\n"
+            "\ts.file.SetLinePosition(i, n)\n"
+            "\t_ = ok\n"
+            "}\n"
+        )
+        assert not check_parsed_int_contract(consumer).narrowing_found
+
+    def test_alias_propagation_through_multi_assign(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        consumer = (
+            "func (s *Lexer) applyDirective(text []byte) {\n"
+            "\t_, n, ok := readSuffixInt(text)\n"
+            "\t_, n2, ok2 := readSuffixInt(text[:4])\n"
+            "\tvar row, col int\n"
+            "\tif ok && ok2 {\n"
+            "\t\trow, col = n2, n\n"
+            "\t\tif col == 0 {\n"
+            "\t\t\treturn\n"
+            "\t\t}\n"
+            "\t}\n"
+            "\ts.file.SetLinePosition(row, col)\n"
+            "}\n"
+        )
+        r = check_parsed_int_contract(
+            consumer, parse_wrappers=frozenset({"readSuffixInt"}),
+        )
+        assert r.narrowing_found
+
+    def test_range_checked_wrapper_value_silent(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        consumer = (
+            "func (s *Lexer) applyDirective(text []byte) {\n"
+            "\ti, n, ok := readSuffixInt(text)\n"
+            "\tif !ok || n > maxVal || i > maxVal {\n"
+            "\t\treturn\n"
+            "\t}\n"
+            "\ts.file.SetLinePosition(i, n)\n"
+            "}\n"
+        )
+        r = check_parsed_int_contract(
+            consumer, parse_wrappers=frozenset({"readSuffixInt"}),
+        )
+        assert not r.narrowing_found
+
+
+class TestNegationOverflow:
+    """Broken-abs idiom on a text-derived value: -MinInt == MinInt, so
+    a subsequent upper-bound cap is exactly the check the overflow
+    defeats."""
+
+    _VULN = (
+        "func apply(s string) bool {\n"
+        "\texp, err := strconv.ParseInt(s, 10, 64)\n"
+        "\tif err != nil {\n"
+        "\t\treturn false\n"
+        "\t}\n"
+        "\tn := exp\n"
+        "\tif n < 0 {\n"
+        "\t\tn = -n\n"
+        "\t}\n"
+        "\tif n > 1e6 {\n"
+        "\t\treturn false\n"
+        "\t}\n"
+        "\tgrow(uint(n))\n"
+        "\treturn true\n"
+        "}\n"
+    )
+
+    def test_abs_idiom_without_min_guard_flagged(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        r = check_parsed_int_contract(self._VULN)
+        assert r.narrowing_found
+        assert r.dest_type == "negation"
+        assert "MinInt" in r.reasoning
+
+    def test_min_guard_silences(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        guarded = self._VULN.replace(
+            "\tif n < 0 {\n",
+            "\tif n == math.MinInt64 {\n\t\treturn false\n\t}\n"
+            "\tif n < 0 {\n",
+        )
+        assert not check_parsed_int_contract(guarded).narrowing_found
+
+    def test_c_llong_min_guard_silences(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        src = (
+            "static int apply(const char *p) {\n"
+            "\tlong long v;\n"
+            "\tv = strtoll(p, NULL, 10);\n"
+            "\tif (v == LLONG_MIN)\n"
+            "\t\treturn -1;\n"
+            "\tif (v < 0)\n"
+            "\t\tv = -v;\n"
+            "\tif (v > CAP)\n"
+            "\t\treturn -1;\n"
+            "\tgrow(v);\n"
+            "\treturn 0;\n"
+            "}\n"
+        )
+        assert not check_parsed_int_contract(src).narrowing_found
+
 
 class TestConsumerWidthIndex:
     def test_go_signature_widths(self):

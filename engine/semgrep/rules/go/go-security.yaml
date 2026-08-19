@@ -172,8 +172,12 @@ rules:
       - patterns:
           - pattern: filepath.Join($BASE, $PATH)
           - focus-metavariable: $PATH
+    # No filepath.Clean sanitizer: Clean("../..") returns "../.." and
+    # Clean("/srv/"+f) resolves the escape rather than preventing it —
+    # it normalises, it does not confine. filepath.Base does confine
+    # (strips every directory component, "../" included).
     pattern-sanitizers:
-      - pattern: filepath.Clean(...)
+      - pattern: filepath.Base(...)
     metadata:
       cwe: ["CWE-22"]
       owasp_top_10: ["A1:2021-Broken Access Control"]

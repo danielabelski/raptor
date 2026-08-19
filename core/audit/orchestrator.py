@@ -18838,6 +18838,34 @@ def _promote_smt_clean(
                 )
 
         if tool_hit:
+            # Premise binding, same rule as the clean-refuted lanes: a
+            # function-local checker hit may not re-arm a clean whose
+            # own refutation rests on a cross-function premise the
+            # checker cannot see — the hit re-proves the lexical shape
+            # the reviewer already saw and argued past (caller
+            # contract, callee guarantee, lock domain). Escalation
+            # stays for local refutations and unrefuted cleans.
+            _hyps = getattr(outcome, "hypotheses", None) or []
+            if not _hyps and outcome.review_result:
+                _hyps = outcome.review_result.get("hypotheses") or []
+            _premise_held = any(
+                isinstance(h, dict)
+                and (h.get("confidence") or "").lower() == "refuted"
+                and _premise_blocks_confirm(h, [tool_hit])
+                for h in _hyps
+            )
+            if _premise_held:
+                logger.info(
+                    "smt-clean escalation blocked %s:%s via %s — the "
+                    "clean's refutation rests on a cross-function "
+                    "premise the checker cannot see",
+                    outcome.file, outcome.function, tool_hit,
+                )
+                _increment_tier_dict(
+                    result.tier_counters, "refuted_sweep",
+                    "premise_blocked",
+                )
+                continue
             # The LLM reviewed this function and said clean; these
             # checkers are heuristic/detection-grade. Overriding clean
             # straight to finding contradicted the documented invariant

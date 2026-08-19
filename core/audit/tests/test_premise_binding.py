@@ -163,3 +163,57 @@ class TestCleanRefutedLaneIntegration:
         )
         _promote_clean_refuted(result, config, checklist=checklist)
         assert result.outcomes[0].status == "finding"
+
+
+class TestSmtCleanEscalationPremiseGate:
+    def _clean_with_refuted(self, counter_scope):
+        o = ReviewOutcome(
+            file="a.c", function="f", status="clean", body="clean",
+            hypothesis="",
+            hypotheses=[{
+                "mechanism": "early release of the buffer before the "
+                             "flush completes",
+                "confidence": "refuted",
+                "counter": _CROSS_COUNTER,
+                "counter_scope": counter_scope,
+            }],
+            line=1,
+        )
+        return o
+
+    def _run(self, outcome, tmp_path, monkeypatch):
+        import core.audit.orchestrator as o
+        target = tmp_path / "t"
+        target.mkdir()
+        (target / "a.c").write_text("int f(void) { return 0; }\n")
+        out = tmp_path / "o"
+        out.mkdir()
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        result.clean = 1
+        # Force one checker to hit.
+        import core.audit.condition_smt as cs
+        class _R:  # minimal result shim
+            bypass_found = True
+            witness = None
+        monkeypatch.setattr(cs, "check_auth_bypass", lambda *a, **k: _R())
+        checklist = {"files": [{"path": "a.c", "items": [
+            {"name": "f", "line_start": 1, "line_end": 1}]}]}
+        o._promote_smt_clean(result, config, checklist=checklist)
+        return result
+
+    def test_cross_function_refutation_blocks_escalation(
+        self, tmp_path, monkeypatch,
+    ):
+        r = self._run(
+            self._clean_with_refuted("cross_function"), tmp_path,
+            monkeypatch,
+        )
+        assert r.outcomes[0].status == "clean"
+
+    def test_local_refutation_still_escalates(self, tmp_path, monkeypatch):
+        r = self._run(
+            self._clean_with_refuted("local"), tmp_path, monkeypatch,
+        )
+        assert r.outcomes[0].status == "suspicious"

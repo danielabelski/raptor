@@ -714,25 +714,46 @@ class TestSeccompBlocklist(unittest.TestCase):
         if not check_seccomp_available():
             self.skipTest("libseccomp not available on this system")
 
-    def _run_probe(self, profile: str, code: str) -> subprocess.CompletedProcess:
+    def _run_probe(self, profile: str, code: str,
+                   force_preexec_tier: bool = False,
+                   ) -> subprocess.CompletedProcess:
+        run_kwargs = dict(
+            profile=profile,
+            capture_output=True, text=True, timeout=15,
+        )
         with TemporaryDirectory() as d:
-            return sandbox_run(
-                ["python3", "-c", code],
-                profile=profile, target=d, output=d,
-                capture_output=True, text=True, timeout=15,
-            )
+            if not force_preexec_tier:
+                return sandbox_run(["python3", "-c", code],
+                                   target=d, output=d, **run_kwargs)
+            # Force the no-mount-ns tier the way the observe-latency
+            # test does: the AF_UNIX block is tier-dependent (see
+            # _spawn's _allow_unix rationale — with mount-ns + netns
+            # engaged AF_UNIX is deliberately ALLOWED for Python
+            # 3.14's forkserver listener), so the blocked-assertions
+            # only hold on the preexec path and must pin THAT path on
+            # every host, not whichever tier the host happens to give.
+            from unittest.mock import patch
+            with patch("core.sandbox._spawn.mount_ns_available",
+                       return_value=False), \
+                 patch("core.sandbox.context.check_mount_available",
+                       return_value=False):
+                return sandbox_run(["python3", "-c", code],
+                                   target=d, output=d, **run_kwargs)
 
     def test_af_unix_blocked_in_full(self):
-        """AF_UNIX socket creation is blocked — closes docker.sock escape."""
+        """AF_UNIX socket creation is blocked on the preexec tier —
+        closes the docker.sock escape where no mount-ns masks /run."""
         r = self._run_probe("full",
-            "import socket; socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)")
+            "import socket; socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)",
+            force_preexec_tier=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Operation not permitted", r.stderr)
 
     def test_af_unix_blocked_in_debug(self):
         """debug profile still blocks AF_UNIX — only ptrace is exempted."""
         r = self._run_probe("debug",
-            "import socket; socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)")
+            "import socket; socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)",
+            force_preexec_tier=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Operation not permitted", r.stderr)
 

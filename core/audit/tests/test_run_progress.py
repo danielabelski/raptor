@@ -46,8 +46,16 @@ class TestUpdateRunProgress:
     def test_malformed_metadata_is_noop(self, tmp_path) -> None:
         meta_path = tmp_path / ".raptor-run.json"
         meta_path.write_text("[1, 2, 3]", encoding="utf-8")
-        _update_run_progress(tmp_path, SimpleNamespace(reviewed=1))
-        assert json.loads(meta_path.read_text(encoding="utf-8")) == [1, 2, 3]
+        try:
+            _update_run_progress(tmp_path, SimpleNamespace(reviewed=1))
+            assert (
+                json.loads(meta_path.read_text(encoding="utf-8")) == [1, 2, 3]
+            )
+        finally:
+            # Hermeticity: tmp_path is a child of the shared pytest tmp
+            # root, which other tests may sweep as a project directory —
+            # never leave a malformed .raptor-run.json behind.
+            meta_path.unlink()
 
 
 class TestResetShutdownState:

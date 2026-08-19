@@ -2418,6 +2418,87 @@ class TestPostLoopReceiptRescue:
         )
         assert flipped == 0
 
+    def _call_site_receipt(self):
+        return {
+            "check_type": "auth_mode_registration",
+            "file": "m.py",
+            "function": "wire_endpoints",
+            "evidence": (
+                "2 add_view_no_menu() call(s) are gated on an "
+                "auth-mode conditional, but the add_view_no_menu() "
+                "call(s) at line(s) 17, 18 run REGARDLESS of the mode"
+            ),
+            "cwe": "CWE-306",
+        }
+
+    def test_low_confidence_dismissal_floored_on_call_site_overlap(
+        self, tmp_path: Path,
+    ):
+        """Reviewer raised the receipt's exact shape (same call site)
+        at low confidence and ruled clean — receipt outranks the
+        dismissal."""
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+        from core.audit.record import load_audit_log
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        outcome.hypotheses[0]["mechanism"] = (
+            "views registered via add_view_no_menu regardless of the "
+            "auth mode, exposing mode-gated registration capability"
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._call_site_receipt()], config,
+        )
+        assert flipped == 1
+        assert outcome.status == "suspicious"
+        rows = [
+            e for e in load_audit_log(config.out_dir)
+            if e.get("action") == "refutation_gate"
+        ]
+        assert rows[0]["gate"] == "receipt_corroborated_hypothesis"
+
+    def test_low_confidence_without_call_site_overlap_untouched(
+        self, tmp_path: Path,
+    ):
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        outcome.hypotheses[0]["mechanism"] = (
+            "auth mode gates some registration behaviour asymmetrically"
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._call_site_receipt()], config,
+        )
+        assert flipped == 0
+        assert outcome.status == "clean"
+
+    def test_tool_evidence_blocks_corroboration_floor(
+        self, tmp_path: Path,
+    ):
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        outcome.hypotheses[0]["mechanism"] = (
+            "views registered via add_view_no_menu regardless of the "
+            "auth mode, exposing mode-gated registration capability"
+        )
+        outcome.evidence_tool = "joern:flow"
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._call_site_receipt()], config,
+        )
+        assert flipped == 0
+
 
 class TestRelogFinalStatuses:
     """Audit-log twin of the re-journal pass: ``orchestrator_review``

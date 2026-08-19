@@ -19889,6 +19889,76 @@ _STRUCTURAL_RECEIPT_CHECKS = frozenset({
 })
 
 
+# A structural receipt names the concrete call sites whose gating is
+# asymmetric ("2 add_view_no_menu() call(s) are gated on ...").
+_RECEIPT_CALL_NAME_RE = re.compile(r"\b(\w+)\(\)\s+call")
+
+
+def _receipt_corroborated_hypothesis(outcome, receipts):
+    """Floor a clean verdict when the reviewer RAISED the receipt's
+    exact shape and dismissed it without tool evidence.
+
+    The anti-self-refutation gate only consumes confidence=refuted;
+    the observed dismissal mode is different — the reviewer holds the
+    matching hypothesis at low confidence and rules clean, so the
+    receipt never reaches the verdict. Preconditions are deliberately
+    tighter than the refuted clause: the hypothesis must name at least
+    one of the concrete call sites the receipt flagged AND match the
+    receipt family's token stems, and the outcome must carry no tool
+    evidence. Returns a RefutationVerdict-shaped object or None.
+    """
+    from .evidence_grade import is_tool_evidence
+    from .refutation import (
+        RefutationVerdict,
+        _receipt_matches_mechanism,
+    )
+
+    if is_tool_evidence(outcome.evidence_tool or ""):
+        return None
+    hypotheses = getattr(outcome, "hypotheses", None) or []
+    if not hypotheses and outcome.review_result:
+        hypotheses = outcome.review_result.get("hypotheses") or []
+
+    for receipt in receipts:
+        check_type = receipt.get("check_type", "")
+        called = set(
+            _RECEIPT_CALL_NAME_RE.findall(receipt.get("evidence", "")),
+        )
+        if not called:
+            continue
+        for h in hypotheses:
+            if not isinstance(h, dict):
+                continue
+            mechanism = h.get("mechanism", "") or ""
+            if not _receipt_matches_mechanism(check_type, mechanism):
+                continue
+            if not any(
+                re.search(rf"\b{re.escape(c)}\b", mechanism)
+                for c in called
+            ):
+                continue
+            return RefutationVerdict(
+                gate="receipt_corroborated_hypothesis",
+                reason=(
+                    f"reviewer raised the exact shape an active "
+                    f"{check_type} receipt flags (same call sites: "
+                    f"{', '.join(sorted(called & _mechanism_calls(mechanism, called)))}) "
+                    f"and dismissed it without tool evidence; the "
+                    f"structural receipt outranks the dismissal"
+                ),
+                demote_to="suspicious",
+            )
+    return None
+
+
+def _mechanism_calls(mechanism: str, called: set) -> set:
+    """Subset of *called* names the hypothesis mechanism mentions."""
+    return {
+        c for c in called
+        if re.search(rf"\b{re.escape(c)}\b", mechanism)
+    }
+
+
 def _post_loop_receipt_rescue(
     result: OrchestratorResult,
     post_loop_findings: list,
@@ -19936,6 +20006,8 @@ def _post_loop_receipt_rescue(
                 outcome.file, outcome.function, exc_info=True,
             )
             continue
+        if rv is None:
+            rv = _receipt_corroborated_hypothesis(outcome, receipts)
         if rv is None:
             continue
         append_audit_log(config.out_dir, {

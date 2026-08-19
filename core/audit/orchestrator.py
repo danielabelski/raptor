@@ -2555,6 +2555,7 @@ def review_one_function(
                 config,
                 seen_keys,
                 synthesis_count=result.synthesis_amplified,
+                quarantined_rules=set(shared.quarantined_rules),
             )
             if synth and synth.cost_usd:
                 result.cost_tracker.record_call(
@@ -2713,15 +2714,27 @@ def review_one_function(
                 exc_info=True,
             )
 
+    # In-run rule precision feedback. ``is_tp`` mirrors record_match's
+    # convention: a claim verdict on the matched function counts the
+    # match as a true positive; clean/dormant counts it false.
+    _rule_is_tp = outcome.status in ("finding", "suspicious")
     if (
         pf_result
         and pf_result.hits
         and checker_library
         and checker_library.all_entries()
     ):
-        is_tp = outcome.status in ("finding", "suspicious")
+        library_rule_ids = {
+            e.rule_id for e in checker_library.all_entries()
+        }
         for hit in pf_result.hits:
-            checker_library.record_match(hit.rule_id, is_tp)
+            checker_library.record_match(hit.rule_id, _rule_is_tp)
+            if hit.rule_id in library_rule_ids:
+                _note_rule_triage(shared, hit.rule_id, _rule_is_tp)
+    if outcome.status != "error" and gap.get("synthesis_rule_id"):
+        # This gap exists because a run-synthesized rule matched it —
+        # the review verdict is a direct triage of that match.
+        _note_rule_triage(shared, gap["synthesis_rule_id"], _rule_is_tp)
 
     disagree = _check_layer_disagreement(outcome, ctx, gap)
     if disagree is not None and layer_disagreements is not None:
@@ -3289,7 +3302,19 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     checker_library = RuleLibrary()
     if checker_library.all_entries():
-        logger.info(checker_library.summary())
+        # Provenance suffix: under a replay-gated profile (cold corpus
+        # runs) the library entries are inert for THIS run — without
+        # the suffix the banner is indistinguishable from a
+        # replay-gate breach when a rule synthesized by an earlier
+        # group in the same process shows up here.
+        if getattr(config, "library_replay", True):
+            _lib_provenance = "replay enabled"
+        else:
+            _lib_provenance = (
+                "replay gated off — entries inert this run; any new "
+                "rules are synthesized this run"
+            )
+        logger.info("%s [%s]", checker_library.summary(), _lib_provenance)
 
     summary_cache = None
     try:
@@ -6058,6 +6083,20 @@ def _run_audit_body(
         if shared.synthesis_queue and not executor_stats.budget_stopped:
             synth_hits = list(shared.synthesis_queue)
             shared.synthesis_queue.clear()
+            if shared.quarantined_rules:
+                kept = [
+                    h for h in synth_hits
+                    if h.get("rule_id") not in shared.quarantined_rules
+                ]
+                dropped = len(synth_hits) - len(kept)
+                if dropped:
+                    logger.info(
+                        "synthesis pass: %d hit(s) dropped from "
+                        "quarantined rule(s) (%s)",
+                        dropped,
+                        ", ".join(sorted(shared.quarantined_rules)),
+                    )
+                synth_hits = kept
             synth_gaps = _synthesis_hits_to_gaps(
                 synth_hits,
                 checklist,
@@ -11967,6 +12006,10 @@ def _synthesis_hits_to_gaps(
             gap["synthesis_snippet"] = hit["snippet"]
         if hit.get("provenance"):
             gap["synthesis_provenance"] = hit["provenance"]
+        if hit.get("rule_id"):
+            # Joins the review verdict on this gap back to the rule
+            # that produced it — the in-run quarantine's evidence.
+            gap["synthesis_rule_id"] = hit["rule_id"]
         gaps.append(gap)
 
     if unresolved:
@@ -11980,6 +12023,46 @@ def _synthesis_hits_to_gaps(
             _write_unresolved_synthesis_hits(unresolved, out_dir)
 
     return gaps
+
+
+# A run-synthesized rule whose triaged matches are ALL false positives
+# is deactivated for the rest of the run once this many verdicts are
+# in.  Rule-of-thumb floor: below 3 triages a single unlucky match
+# would quarantine every young rule; at 3+ with zero true positives
+# the rule is demonstrably minting review work (and, worse, promotion
+# receipts) from a pattern the reviewers keep rejecting.
+_RULE_QUARANTINE_MIN_TRIAGES = 3
+
+
+def _note_rule_triage(shared: SharedState, rule_id: str, is_tp: bool) -> None:
+    """Record one triaged match for a synthesized/library rule and
+    quarantine the rule for the remainder of the run at 0% precision.
+
+    Quarantine is run-scoped: the library entry survives (cross-run
+    retirement stays ``retire_low_precision``'s job), but this run
+    stops sweeping the rule's remaining hits into review gaps.  One
+    corpus run watched an on-demand rule confirm a no-defect
+    hypothesis and then sit at "avg precision 0%" in every subsequent
+    group with nothing acting on it.
+    """
+    if not rule_id:
+        return
+    with shared._rule_triage_lock:
+        counts = shared.rule_triage.setdefault(rule_id, [0, 0])
+        counts[0 if is_tp else 1] += 1
+        tp, fp = counts
+        if (
+            tp == 0
+            and fp >= _RULE_QUARANTINE_MIN_TRIAGES
+            and rule_id not in shared.quarantined_rules
+        ):
+            shared.quarantined_rules.add(rule_id)
+            logger.warning(
+                "rule quarantine: %s deactivated for the remainder of "
+                "this run — %d/%d triaged match(es) false-positive "
+                "(0%% precision)",
+                rule_id, fp, tp + fp,
+            )
 
 
 def _write_unresolved_synthesis_hits(

@@ -140,7 +140,8 @@ def _gather() -> tuple[
         tool_results, tool_warnings, unavailable = check_tools()
         llm_lines, llm_warnings = check_llm()
         env_parts, env_warnings = check_env(unavailable)
-        lang_line = check_lang()
+        lang_line, lang_warnings = check_lang()
+        env_warnings = list(env_warnings) + list(lang_warnings)
         project_line = check_active_project()
     finally:
         logging.disable(logging.NOTSET)

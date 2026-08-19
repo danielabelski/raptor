@@ -819,17 +819,31 @@ def _gcc_version(gcc_path: str) -> str | None:
     return None
 
 
-def check_lang() -> str | None:
-    """Check language support (tree-sitter). Returns formatted line or None."""
+def check_lang() -> tuple[str | None, list]:
+    """Check language support (tree-sitter).
+
+    Returns ``(formatted line or None, warnings)``. Zero installed
+    grammars is a warning, not just a ✗ glyph: the inventory silently
+    degrades to regex extraction (fewer functions, no line_end, so
+    span-based slicing across /audit, /agentic and /understand loses
+    fidelity) — a state operators repeatedly failed to notice from
+    the glyph alone.
+    """
+    warnings: list = []
     try:
         from core.inventory.extractors import _get_ts_languages
         ts_langs = _get_ts_languages()
         if ts_langs:
-            return f"  lang: tree-sitter ✓ ({', '.join(ts_langs)})"
-        else:
-            return "  lang: tree-sitter ✗"
+            return f"  lang: tree-sitter ✓ ({', '.join(ts_langs)})", warnings
+        warnings.append(
+            "no tree-sitter grammars installed — inventory degrades "
+            "to regex extraction (fewer functions, no spans); "
+            "install the grammar wheels listed in requirements.txt "
+            "(tree-sitter, tree-sitter-python, tree-sitter-c, ...)"
+        )
+        return "  lang: tree-sitter ✗", warnings
     except Exception:  # noqa: BLE001
-        return None
+        return None, warnings
 
 
 def check_active_project() -> str | None:
@@ -899,14 +913,15 @@ def main():
             tool_results, tool_warnings, unavailable = check_tools()
             llm_lines, llm_warnings = check_llm()
             env_parts, env_warnings = check_env(unavailable)
-            lang_line = check_lang()
+            lang_line, lang_warnings = check_lang()
             project_line = check_active_project()
         finally:
             logging.disable(logging.NOTSET)
 
         output = format_banner(
             logo, quote, tool_results, tool_warnings,
-            llm_lines, llm_warnings, env_parts, env_warnings,
+            llm_lines, llm_warnings, env_parts,
+            env_warnings + lang_warnings,
             project_line, lang_line,
         )
     except Exception:  # noqa: BLE001

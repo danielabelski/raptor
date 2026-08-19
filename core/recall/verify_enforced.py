@@ -131,9 +131,10 @@ def render_verify_markdown(result: dict[str, Any]) -> str:
         f"(on_expected {result['by_proximity']['on_expected']}, "
         f"null_line {result['by_proximity']['null_line']}, "
         f"same_file {result['by_proximity']['same_file']})",
-        f"- verdict: {'CLEAN — no record lands on or ambiguously near '
-                      'an expected finding' if result['clean'] else
-                      'REVIEW REQUIRED before any enforcement decision'}",
+        "- verdict: " + (
+            "CLEAN — no record lands on or ambiguously near "
+            "an expected finding" if result["clean"] else
+            "REVIEW REQUIRED before any enforcement decision"),
         "",
     ]
     for r in result["reviews"]:

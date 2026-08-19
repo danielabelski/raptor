@@ -2196,6 +2196,7 @@ def review_one_function(
                 outcome,
                 negative_space=ctx.get("negative_space"),
                 source=_rescue_src or None,
+                pre_evidence=gap.get("_smt_pre_evidence"),
             )
             if rv is None:
                 # Durable receipt for the non-fire: when a structural
@@ -12620,6 +12621,7 @@ def _review_items(
                         gap.get("line_start", 0),
                         gap.get("line_end"),
                     ) or None,
+                    pre_evidence=gap.get("_smt_pre_evidence"),
                 )
                 if rv is not None:
                     append_audit_log(config.out_dir, {

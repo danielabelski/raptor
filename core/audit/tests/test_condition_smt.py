@@ -1196,6 +1196,53 @@ class TestParseWrapperDerivation:
         assert not r.narrowing_found
 
 
+class TestCastInReturnSuppression:
+    """A bare type conversion inside a return statement is the
+    producer idiom — the width contract belongs to the caller, so the
+    helper itself stays silent."""
+
+    def test_cast_in_return_is_silent(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        src = (
+            "func readSuffixInt(text []byte) (int, int, bool) {\n"
+            "\tn, err := strconv.ParseUint(string(text), 10, 0)\n"
+            "\treturn 1, int(n), err == nil\n"
+            "}\n"
+        )
+        assert not check_parsed_int_contract(src).narrowing_found
+
+    def test_cast_mid_function_still_flagged(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        src = (
+            "func setOwner(s string) {\n"
+            "\tv, err := strconv.Atoi(s)\n"
+            "\tif err != nil {\n"
+            "\t\treturn\n"
+            "\t}\n"
+            "\tspec.UID = uint32(v)\n"
+            "}\n"
+        )
+        r = check_parsed_int_contract(src)
+        assert r.narrowing_found
+        assert "uint32" in r.reasoning
+
+    def test_real_callee_in_return_still_flagged(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        src = (
+            "func lookup(s string) int {\n"
+            "\tn, err := strconv.Atoi(s)\n"
+            "\t_ = err\n"
+            "\treturn resolve(n)\n"
+            "}\n"
+        )
+        r = check_parsed_int_contract(src)
+        assert r.narrowing_found
+        assert "resolve" in r.reasoning
+
+
 class TestNegationOverflow:
     """Broken-abs idiom on a text-derived value: -MinInt == MinInt, so
     a subsequent upper-bound cap is exactly the check the overflow

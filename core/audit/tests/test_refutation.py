@@ -1105,6 +1105,57 @@ class TestRaceProtectedSelfRefutation:
         assert r is not None
 
 
+class TestPreEvidenceCorroboratedRefutation:
+    """A pre-loop screen receipt from the parsed-int family outranks a
+    same-family self-refutation — the integer CWEs are outside the
+    gate's CWE allowlist, so this clause is the only path."""
+
+    def _outcome(self, mechanism):
+        return _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": mechanism,
+                "confidence": "refuted",
+                "counter": "values are stored as metadata only",
+            }],
+        )
+
+    def test_int_family_refutation_floored_with_screen_receipt(self):
+        o = self._outcome(
+            "huge parsed values overflow int32 storage downstream",
+        )
+        r = rescue_self_refuted(
+            o, pre_evidence="smt:check-parsed-int-contract",
+        )
+        assert r is not None
+        assert r.demote_to == "suspicious"
+        assert "pre-loop screen receipt" in r.reason
+
+    def test_no_screen_receipt_no_floor(self):
+        o = self._outcome(
+            "huge parsed values overflow int32 storage downstream",
+        )
+        assert rescue_self_refuted(o) is None
+
+    def test_unrelated_family_hypothesis_not_floored(self):
+        o = self._outcome(
+            "path traversal via the parsed filename component",
+        )
+        r = rescue_self_refuted(
+            o, pre_evidence="smt:check-parsed-int-contract",
+        )
+        assert r is None
+
+    def test_unrelated_pre_evidence_not_consumed(self):
+        o = self._outcome(
+            "huge parsed values overflow int32 storage downstream",
+        )
+        r = rescue_self_refuted(
+            o, pre_evidence="smt:check-auth-bypass",
+        )
+        assert r is None
+
+
 class TestDiagnoseRescue:
     """diagnose_rescue mirrors the Gate-5 precondition chain and names
     the first broken link, so a silent non-fire is explainable from a

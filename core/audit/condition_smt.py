@@ -3008,6 +3008,14 @@ _C_KEYWORD_STARTS = ("if", "for", "while", "switch", "return", "else")
 
 _PARSED_INT_SKIP_NAMES = frozenset({"_", "err", "ok"})
 
+# Bare numeric/string conversions: consumers only in the sense of
+# syntax. Inside a return statement they are the producer idiom.
+_CAST_CONSUMERS = frozenset({
+    "int", "int8", "int16", "int32", "int64",
+    "uint", "uint8", "uint16", "uint32", "uint64",
+    "uintptr", "byte", "rune", "float32", "float64", "string",
+})
+
 
 def derive_parse_wrappers(file_text: str) -> frozenset:
     """Names of functions in *file_text* whose bodies contain a direct
@@ -3233,6 +3241,16 @@ def check_parsed_int_contract(
                 if re.search(rf"\b{re.escape(var)}\b", args):
                     consumer = cm.group(1).rsplit(".", 1)[-1]
                     break
+            # Producer idiom: a bare type conversion inside a return
+            # statement hands the parsed value to the CALLER — the
+            # width/semantic contract is the caller's to discharge, so
+            # flagging the helper itself only trains reviewers to
+            # dismiss the receipt where it matters.
+            if (
+                consumer in _CAST_CONSUMERS
+                and line.lstrip().startswith("return")
+            ):
+                continue
             indexed = bool(
                 re.search(rf"\[[^\]]*\b{re.escape(var)}\b[^\]]*\]", line),
             )

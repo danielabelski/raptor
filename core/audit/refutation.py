@@ -712,6 +712,16 @@ _LOCK_DISCHARGEABLE_RACE_CWES = frozenset({
 })
 
 
+# Pre-loop screen families whose injected evidence can corroborate a
+# same-family self-refutation, and the hypothesis-text family matcher.
+_INT_CONTRACT_PRE_EVIDENCE = ("check-parsed-int-contract",
+                              "check-integer-narrowing")
+_INT_FAMILY_HYP_RE = re.compile(
+    r"overflow|narrow|truncat|wraps?\b|int(?:8|16|32|64)\b|width",
+    re.IGNORECASE,
+)
+
+
 def rescue_self_refuted(
     outcome,
     *,
@@ -720,6 +730,7 @@ def rescue_self_refuted(
     config=None,
     negative_space: Optional[list] = None,
     source: Optional[str] = None,
+    pre_evidence: Optional[str] = None,
 ) -> Optional[RefutationVerdict]:
     """Rescue hypotheses the LLM formed then refuted without evidence.
 
@@ -732,6 +743,14 @@ def rescue_self_refuted(
         exact shape the reviewer refuted without evidence)
       - no mechanical tool has confirmed OR denied the hypothesis
       - the hypothesis has a non-empty counter field
+
+    When *pre_evidence* names a pre-loop screen hit from the
+    parsed-int/integer-narrowing family and a refuted hypothesis is in
+    the same family, the screen receipt outranks the self-refutation —
+    the mechanical checker flagged the exact contract the reviewer
+    talked itself out of (same philosophy as the structural
+    negative-space clause; the CWE allowlist cannot carry this case
+    because integer CWEs are not in it).
 
     When *source* is provided and every shared-state access in it is
     mechanically lock-protected (:func:`check_race_protection`), a
@@ -803,6 +822,21 @@ def rescue_self_refuted(
                     f"hypothesis '{mechanism[:80]}' self-refuted without "
                     f"mechanical evidence; concurrency/lifecycle "
                     f"self-refutations are unreliable"
+                ),
+                demote_to="suspicious",
+            )
+        if (
+            pre_evidence
+            and any(t in pre_evidence for t in _INT_CONTRACT_PRE_EVIDENCE)
+            and _INT_FAMILY_HYP_RE.search(mechanism)
+        ):
+            return RefutationVerdict(
+                gate="anti_self_refutation",
+                reason=(
+                    f"hypothesis '{mechanism[:80]}' self-refuted "
+                    f"against the pre-loop screen receipt "
+                    f"{pre_evidence}; the mechanical contract check "
+                    f"outranks an unverified self-refutation"
                 ),
                 demote_to="suspicious",
             )

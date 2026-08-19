@@ -1626,3 +1626,30 @@ class TestPhase2Calibration:
         from core.audit.security_classifier import CALIBRATION_RULES
         assert CALIBRATION_RULES in captured["system"]
         assert rows[0]["phase2_is_security"] is True
+
+
+class TestQualitySuppressionNullPrimitive:
+    """A null primitive from the classifier is the same ruling as the
+    string "none" — it must not exempt a quality finding from
+    suppression."""
+
+    def _row(self, primitive):
+        return {
+            "function_id": "a.go:NS.Scan",
+            "expected": "clean",
+            "actual": "suspicious",
+            "evidence_tool": "",
+            "phase2_classification": "quality_finding",
+            "phase2_is_security": False,
+            "phase2_primitive": primitive,
+        }
+
+    def test_null_primitive_suppressed(self):
+        rows = [self._row(None)]
+        assert run_corpus._suppress_quality_findings(rows) == 1
+        assert rows[0]["actual"] == "clean"
+
+    def test_real_primitive_not_suppressed(self):
+        rows = [self._row("write")]
+        assert run_corpus._suppress_quality_findings(rows) == 0
+        assert rows[0]["actual"] == "suspicious"

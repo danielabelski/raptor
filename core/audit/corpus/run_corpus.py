@@ -2397,7 +2397,10 @@ def _suppress_quality_findings(merged_results: list[dict[str, Any]]) -> int:
             and not r.get("phase2_error")
             and not r.get("phase2_is_security")
             and r["actual"] in ("finding", "suspicious")
-            and r.get("phase2_primitive", "none") == "none"
+            # `or` not a dict default: a model that returns primitive
+            # null (instead of the string "none") must not exempt the
+            # row from suppression.
+            and (r.get("phase2_primitive") or "none") == "none"
         ):
             ev = r.get("evidence_tool", "")
             if _is_verification_evidence(ev):
@@ -2505,7 +2508,7 @@ def _run_phase2_classify(
 
         r["phase2_classification"] = result.get("classification", "quality_finding")
         r["phase2_is_security"] = result.get("is_security", False)
-        r["phase2_primitive"] = result.get("primitive", "none")
+        r["phase2_primitive"] = result.get("primitive") or "none"
         cls_tag = result.get("classification", "?")
         print(f"  {fid} -> {cls_tag}", flush=True)
 

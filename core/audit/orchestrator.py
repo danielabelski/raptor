@@ -562,6 +562,18 @@ class OrchestratorConfig:
     # 1 for a first run; the segment number stamped by
     # core.run.metadata.resume_run for resumed segments.
     resume_segment: int = 1
+    # Extra run dirs whose review journals feed prior FINDING-GRADE
+    # claims (/agentic per-finding analyses) into review context
+    # (``--prior-journal``, repeatable). The project index is always
+    # consulted; this covers journals not yet merged into it — the
+    # /agentic post-pass launches the audit BEFORE the parent run
+    # completes (the lifecycle merge happens at completion).
+    prior_journal_dirs: list[Path] | None = None
+    # Derived at run start (never set by callers): ``file:function`` →
+    # newest-first finding-grade journal entries, consumed by
+    # ``_build_context`` as prior claims. Kind-gated OUT of coverage
+    # by the gap fold; kind-gated INTO the prompt here.
+    prior_finding_analyses: dict[str, list] | None = None
 
 
 @dataclass
@@ -3392,6 +3404,12 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         Path(config.out_dir).parent
         if config.out_dir and (Path(config.out_dir) / ".raptor-run.json").exists()
         else None
+    )
+    # Prior finding-grade claims (/agentic per-finding analyses) for
+    # review context. The gap fold kind-gates these OUT of coverage;
+    # this map kind-gates them INTO the prompt as prior claims.
+    config.prior_finding_analyses = _build_prior_finding_analyses(
+        config, _project_dir,
     )
     # Cross-run verdict reuse: compute_gaps fills this with
     # hash-verified, reuse-eligible prior-run journal entries; they
@@ -8503,6 +8521,73 @@ def _merge_stale(
     return gaps
 
 
+#: Newest-first cap on prior finding-grade claims kept per function —
+#: a finding-dense function (many scanner hits) must not flood the
+#: review prompt with near-duplicate per-finding narratives.
+_MAX_PRIOR_FINDING_CLAIMS = 3
+
+
+def _build_prior_finding_analyses(
+    config: OrchestratorConfig,
+    project_dir: Path | None,
+) -> dict[str, list] | None:
+    """``file:function`` → newest-first finding-grade journal entries.
+
+    Sources: the project journal index (prior runs, any producer) and
+    ``config.prior_journal_dirs`` (journals not yet merged into the
+    index — the /agentic post-pass case). Only FINDING-GRADE entries
+    qualify: function-grade priors already reach the prompt through
+    the verdict-reuse / prior_verdict machinery.
+
+    Best-effort — a missing or corrupt journal costs the claims, never
+    the run. Returns None when nothing qualifies so callers can gate
+    on truthiness.
+    """
+    from core.coverage.journal import (
+        is_function_grade,
+        load_entries,
+        load_index_full,
+    )
+
+    entries: list = []
+    if project_dir is not None:
+        try:
+            entries.extend(load_index_full(project_dir).values())
+        except Exception:
+            logger.debug("prior-claim index read failed", exc_info=True)
+    for run_dir in config.prior_journal_dirs or []:
+        try:
+            entries.extend(load_entries(Path(run_dir)))
+        except Exception:
+            logger.debug(
+                "prior-claim journal read failed for %s",
+                run_dir, exc_info=True,
+            )
+
+    claims: dict[str, list] = {}
+    for entry in entries:
+        if is_function_grade(entry) or entry.verdict == "error":
+            continue
+        claims.setdefault(f"{entry.file}:{entry.function}", []).append(entry)
+    if not claims:
+        return None
+    out: dict[str, list] = {}
+    for key, group in claims.items():
+        group.sort(key=lambda e: e.ts, reverse=True)
+        out[key] = [
+            {
+                "verdict": e.verdict,
+                "cwe": e.cwe,
+                "model": e.model,
+                "run_id": e.run_id,
+                "ts": e.ts,
+                "body": e.body or "",
+            }
+            for e in group[:_MAX_PRIOR_FINDING_CLAIMS]
+        ]
+    return out
+
+
 def _build_context(
     config: OrchestratorConfig,
     gap: dict[str, Any],
@@ -8577,6 +8662,17 @@ def _build_context(
         # Mechanically derived hypotheses (IRIS bypass detection,
         # fix-history mining) ride the gap into the review prompt.
         ctx["injected_hypotheses"] = list(gap["injected_hypotheses"])
+
+    if not blind and config.prior_finding_analyses:
+        # Prior finding-grade claims (/agentic per-finding analyses of
+        # scanner findings located in this function). Advisory prior
+        # claims only — withheld in blind mode like the mechanical
+        # evidence, and never a verdict.
+        claims = config.prior_finding_analyses.get(
+            f"{gap['file']}:{gap['name']}"
+        )
+        if claims:
+            ctx["prior_finding_analyses"] = claims
 
     if config.models:
         ctx["model"] = config.models[0]

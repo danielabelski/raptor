@@ -1436,6 +1436,42 @@ def format_context_for_prompt(
     if prior_hyp_text:
         sections.append(PromptSection("prior_hypotheses", prior_hyp_text, 1))
 
+    if ctx.get("prior_finding_analyses"):
+        # Finding-grade prior claims: /agentic analysed individual
+        # scanner findings located in this function. The kind-aware
+        # gap fold deliberately does NOT count them as coverage; this
+        # section is where they reach the reviewer instead — as prior
+        # claims to verify, never as verdicts. Bodies can embed
+        # scanner messages quoting the target repo, so they go
+        # through the untrusted envelope like every other
+        # target-derived surface.
+        pfa = ["\n### Prior finding-grade analyses (claims, not verdicts)"]
+        pfa.append(
+            "Earlier /agentic runs analysed individual scanner findings "
+            "located in this function — one finding each, not a function "
+            "review. Treat each as a prior claim from another reviewer: "
+            "verify independently against THIS function's code, never "
+            "inherit a verdict, and still review the whole function, "
+            "not just the claimed line."
+        )
+        for pa in ctx["prior_finding_analyses"]:
+            head = f"- Prior claim: **{pa.get('verdict') or 'unknown'}**"
+            if pa.get("cwe"):
+                head += f" ({pa['cwe']})"
+            if pa.get("model"):
+                head += f" by {pa['model']}"
+            pfa.append(head)
+            body = (pa.get("body") or "").strip()
+            if body:
+                pfa.append(wrap_untrusted(
+                    body[:600],
+                    kind="prior_finding_analysis",
+                    origin=f"agentic:{pa.get('run_id') or 'unknown'}",
+                ))
+        sections.append(
+            PromptSection("prior_finding_analyses", "\n".join(pfa), 4),
+        )
+
     injected_hyp_text = _format_injected_hypotheses(
         ctx.get("injected_hypotheses"),
     )

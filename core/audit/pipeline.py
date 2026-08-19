@@ -172,6 +172,11 @@ class AuditPipelineOpts:
     # Segment number for a resumed run (from core.run.metadata.
     # resume_run); 1 for a first run.
     resume_segment: int = 1
+    # Extra run dirs whose review journals feed prior finding-grade
+    # claims (/agentic per-finding analyses) into review context
+    # (--prior-journal, repeatable). Covers journals not yet merged
+    # into the project index.
+    prior_journal_dirs: list[Path] | None = None
 
 
 
@@ -322,6 +327,7 @@ def _build_orchestrator_config(
         same_run_reuse=opts.same_run_reuse,
         prior_cost_breakdown=opts.prior_cost_breakdown,
         resume_segment=opts.resume_segment,
+        prior_journal_dirs=opts.prior_journal_dirs,
         llm_budget_client=client,
         llm_client=client,
     )

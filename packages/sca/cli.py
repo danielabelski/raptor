@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 SUBCOMMANDS = ("fix", "check", "upgrade", "diff",
                "verify", "health", "purl", "render",
                "clean-cache", "dt-push", "suppress", "bump",
-               "fingerprint", "triage")
+               "fingerprint", "triage", "fix-diff")
 _SUBCOMMANDS = SUBCOMMANDS  # backcompat alias for internal callers
 
 
@@ -124,6 +124,9 @@ def _dispatch(subcommand: str, argv: list[str]) -> int:
     if subcommand == "triage":
         from .supply_chain import typosquat_audit
         return typosquat_audit.main(argv)
+    if subcommand == "fix-diff":
+        from . import fix_diff
+        return fix_diff.main(argv)
     print(f"raptor-sca: unknown subcommand {subcommand!r}", file=sys.stderr)
     return 2
 

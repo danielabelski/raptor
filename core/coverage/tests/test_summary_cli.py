@@ -79,3 +79,29 @@ def test_import_gcov_persists_and_shows_runtime(tmp_path):
     assert rep.returncode == 0, rep.stderr
     assert "runtime" in rep.stdout
     assert "runtime      0 (0.0%)" not in rep.stdout
+
+
+def test_help_flag_prints_usage(tmp_path):
+    # Pre-fix --help was silently ignored and the summary ran instead.
+    res = _run("--help")
+    assert res.returncode == 0
+    assert "Usage:" in res.stdout
+    assert "--mark" in res.stdout
+
+
+def test_run_listing_shows_target_path(tmp_path):
+    # The acquisition stamp's "source" is the acquisition KIND
+    # ("directory"), not a target; the listing must show the real path.
+    d = tmp_path / "scan-1"
+    d.mkdir()
+    (d / ".raptor-run.json").write_text(json.dumps({
+        "command": "scan", "status": "completed",
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "target_path": "/repos/myproj",
+        "manifest": {"target": {"source": "directory"}},
+    }))
+    (d / "coverage-semgrep.json").write_text(json.dumps(
+        {"tool": "semgrep", "files_examined": ["a.c"], "timestamp": "t"}))
+    res = _run(str(d))
+    assert "target: /repos/myproj" in res.stdout
+    assert "target: directory" not in res.stdout

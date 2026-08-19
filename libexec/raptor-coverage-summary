@@ -285,6 +285,12 @@ def _cmd_import(import_path, fmt, tool, args):
 def main():
     argv = sys.argv[1:]
 
+    if "-h" in argv or "--help" in argv:
+        # Hand-rolled flag walker (no argparse) — pre-fix an operator's
+        # --help was silently ignored and the summary ran instead.
+        print(__doc__.strip())
+        return
+
     # --import <path> [--format <fmt>] [--tool <label>]: ingest external runtime
     # coverage. Extract the flag+value pairs up front so the path value isn't
     # later mistaken for a positional <dir>.

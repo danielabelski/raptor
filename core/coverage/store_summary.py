@@ -56,6 +56,9 @@ def file_level_view(run_dirs: Iterable[Path]) -> Dict[str, Any]:
                 "status": md.get("status"),
                 "timestamp": run_timestamp(md),
                 "target": run_target(md),
+                # The resolved path — the acquisition stamp above only
+                # says HOW the code arrived ({"source": "directory"}…).
+                "target_path": md.get("target_path"),
             })
         for rec in load_records(rd):
             tool = rec.get("tool")
@@ -248,7 +251,10 @@ def format_file_level_view(view: Dict[str, Any], max_files: int = 20) -> str:
     if runs:
         lines.append(f"  Runs: {len(runs)}")
         for r in runs:
-            tgt = r.get("target")
+            # Prefer the resolved path; the acquisition stamp's "source"
+            # is the acquisition KIND ("directory", "git"…), which read
+            # as a nonsense target in the listing.
+            tgt = r.get("target_path") or r.get("target")
             tgt = tgt.get("source") if isinstance(tgt, dict) else tgt
             lines.append(
                 f"    {r.get('command')} / {r.get('status')} / "

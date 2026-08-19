@@ -165,17 +165,40 @@ class FlagModeDeviation:
 def _extract_arg_sites(
     source_texts: dict[str, str],
 ) -> dict[str, list[_ArgSite]]:
-    """Per-callee argument views, one parse per file (shared cache)."""
+    """Per-callee argument views, one parse per file (shared cache).
+
+    Per-file failure isolation: an extraction error skips that file
+    (counted, logged) instead of aborting the dimension."""
     if not _TS_AVAILABLE:
         return {}
     by_callee: dict[str, list[_ArgSite]] = {}
+    failed = 0
     for file_path, source in source_texts.items():
-        tree, lang = parse_source_cached(file_path, source)
-        if tree is None or lang is None:
-            continue
-        call_types = _CALL_TYPES.get(lang, ())
-        if not call_types:
-            continue
+        try:
+            _arg_sites_for_file(file_path, source, by_callee)
+        except Exception:
+            failed += 1
+            logger.debug("consistency: arg-site extraction failed on %s",
+                         file_path, exc_info=True)
+    if failed:
+        logger.warning(
+            "consistency: arg-site extraction skipped %d file(s) that "
+            "raised — peer groups may be smaller than the source set",
+            failed,
+        )
+    return by_callee
+
+
+def _arg_sites_for_file(
+    file_path: str,
+    source: str,
+    by_callee: dict[str, list[_ArgSite]],
+) -> None:
+    tree, lang = parse_source_cached(file_path, source)
+    if tree is None or lang is None:
+        return
+    call_types = _CALL_TYPES.get(lang, ())
+    if call_types:
         src = source.encode("utf-8", errors="replace")
         lines = source.splitlines()
         for node in _walk_descendants(tree.root_node):
@@ -219,7 +242,6 @@ def _extract_arg_sites(
                 kwargs=kwargs,
                 snippet=snippet,
             ))
-    return by_callee
 
 
 def _flag_tokens(arg_text: str) -> frozenset[str] | None:
@@ -592,28 +614,51 @@ def _function_spans(
     source_texts: dict[str, str],
 ) -> list[tuple[str, str, int, list[str]]]:
     """(file, function, start_line, body_lines) per function, on the
-    shared parse cache."""
+    shared parse cache.
+
+    Per-file failure isolation: an extraction error skips that file
+    (counted, logged) instead of aborting the dimension."""
     if not _TS_AVAILABLE:
         return []
-    from .ts_extract import _FUNCTION_TYPES
     spans: list[tuple[str, str, int, list[str]]] = []
+    failed = 0
     for file_path, source in source_texts.items():
-        tree, lang = parse_source_cached(file_path, source)
-        if tree is None or lang is None:
-            continue
-        func_types = _FUNCTION_TYPES.get(lang, ())
-        if not func_types:
-            continue
-        src = source.encode("utf-8", errors="replace")
-        lines = source.splitlines()
-        for node in _walk_descendants(tree.root_node):
-            if node.type not in func_types:
-                continue
-            name = _get_func_name(node, lang, src)
-            start = node.start_point[0] + 1
-            end = node.end_point[0] + 1
-            spans.append((file_path, name, start, lines[start - 1:end]))
+        try:
+            _function_spans_for_file(file_path, source, spans)
+        except Exception:
+            failed += 1
+            logger.debug("consistency: span extraction failed on %s",
+                         file_path, exc_info=True)
+    if failed:
+        logger.warning(
+            "consistency: span extraction skipped %d file(s) that "
+            "raised — span-based dimensions see a smaller source set",
+            failed,
+        )
     return spans
+
+
+def _function_spans_for_file(
+    file_path: str,
+    source: str,
+    spans: list[tuple[str, str, int, list[str]]],
+) -> None:
+    from .ts_extract import _FUNCTION_TYPES
+    tree, lang = parse_source_cached(file_path, source)
+    if tree is None or lang is None:
+        return
+    func_types = _FUNCTION_TYPES.get(lang, ())
+    if not func_types:
+        return
+    src = source.encode("utf-8", errors="replace")
+    lines = source.splitlines()
+    for node in _walk_descendants(tree.root_node):
+        if node.type not in func_types:
+            continue
+        name = _get_func_name(node, lang, src)
+        start = node.start_point[0] + 1
+        end = node.end_point[0] + 1
+        spans.append((file_path, name, start, lines[start - 1:end]))
 
 
 def _acquire_binding(body: list[str], acquire: str) -> tuple[int, str]:
@@ -1016,17 +1061,40 @@ def _argshape_cwe(majority: str, deviant: str) -> str:
 def _extract_shape_sites(
     source_texts: dict[str, str],
 ) -> dict[tuple[str, int], list[_ShapeSite]]:
-    """Per (callee, position) shape views, one parse per file."""
+    """Per (callee, position) shape views, one parse per file.
+
+    Per-file failure isolation: an extraction error skips that file
+    (counted, logged) instead of aborting the dimension."""
     if not _TS_AVAILABLE:
         return {}
     by_key: dict[tuple[str, int], list[_ShapeSite]] = {}
+    failed = 0
     for file_path, source in source_texts.items():
-        tree, lang = parse_source_cached(file_path, source)
-        if tree is None or lang is None:
-            continue
-        call_types = _CALL_TYPES.get(lang, ())
-        if not call_types:
-            continue
+        try:
+            _shape_sites_for_file(file_path, source, by_key)
+        except Exception:
+            failed += 1
+            logger.debug("consistency: shape-site extraction failed on "
+                         "%s", file_path, exc_info=True)
+    if failed:
+        logger.warning(
+            "consistency: shape-site extraction skipped %d file(s) "
+            "that raised — peer groups may be smaller than the "
+            "source set", failed,
+        )
+    return by_key
+
+
+def _shape_sites_for_file(
+    file_path: str,
+    source: str,
+    by_key: dict[tuple[str, int], list[_ShapeSite]],
+) -> None:
+    tree, lang = parse_source_cached(file_path, source)
+    if tree is None or lang is None:
+        return
+    call_types = _CALL_TYPES.get(lang, ())
+    if call_types:
         src = source.encode("utf-8", errors="replace")
         lines = source.splitlines()
         for node in _walk_descendants(tree.root_node):
@@ -1069,7 +1137,6 @@ def _extract_shape_sites(
                     snippet=snippet,
                 ))
                 pos += 1
-    return by_key
 
 
 def detect_argument_shape_deviations(
@@ -1476,47 +1543,70 @@ def _extract_call_events(
     source_texts: dict[str, str],
 ) -> dict[tuple[str, str], list[_CallEvent]]:
     """Ordered call events per (file, function), on the shared parse
-    cache. Capped at ``_MAX_EVENTS_PER_FUNCTION`` events."""
+    cache. Capped at ``_MAX_EVENTS_PER_FUNCTION`` events.
+
+    Per-file failure isolation: an extraction error skips that file
+    (counted, logged) instead of aborting the dimension."""
     if not _TS_AVAILABLE:
         return {}
     events: dict[tuple[str, str], list[_CallEvent]] = {}
+    failed = 0
     for file_path, source in source_texts.items():
-        tree, lang = parse_source_cached(file_path, source)
-        if tree is None or lang is None:
-            continue
-        call_types = _CALL_TYPES.get(lang, ())
-        if not call_types:
-            continue
-        src = source.encode("utf-8", errors="replace")
-        lines = source.splitlines()
-        for node in _walk_descendants(tree.root_node):
-            if node.type not in call_types:
-                continue
-            callee = _callee_name_ts(node, lang, src)
-            if not callee or callee in _KEYWORDS or len(callee) < 2:
-                continue
-            enclosing = _find_enclosing_function(node, lang)
-            if enclosing is None:
-                continue
-            func_name = _get_func_name(enclosing, lang, src)
-            key = (file_path, func_name)
-            bucket = events.setdefault(key, [])
-            if len(bucket) >= _MAX_EVENTS_PER_FUNCTION:
-                continue
-            line = _node_line(node)
-            bucket.append(_CallEvent(
-                callee=callee,
-                line=line,
-                tested=_classify_usage_ts(node, lang, src)
-                == USAGE_TESTED,
-                lhs_names=_call_lhs_names(node, src),
-                arg_idents=_call_arg_idents(node, src),
-                snippet=(
-                    lines[line - 1].strip()[:200]
-                    if 1 <= line <= len(lines) else ""
-                ),
-            ))
+        try:
+            _call_events_for_file(file_path, source, events)
+        except Exception:
+            failed += 1
+            logger.debug("consistency: call-event extraction failed on "
+                         "%s", file_path, exc_info=True)
+    if failed:
+        logger.warning(
+            "consistency: call-event extraction skipped %d file(s) "
+            "that raised — event-based dimensions see a smaller "
+            "source set", failed,
+        )
     return events
+
+
+def _call_events_for_file(
+    file_path: str,
+    source: str,
+    events: dict[tuple[str, str], list[_CallEvent]],
+) -> None:
+    tree, lang = parse_source_cached(file_path, source)
+    if tree is None or lang is None:
+        return
+    call_types = _CALL_TYPES.get(lang, ())
+    if not call_types:
+        return
+    src = source.encode("utf-8", errors="replace")
+    lines = source.splitlines()
+    for node in _walk_descendants(tree.root_node):
+        if node.type not in call_types:
+            continue
+        callee = _callee_name_ts(node, lang, src)
+        if not callee or callee in _KEYWORDS or len(callee) < 2:
+            continue
+        enclosing = _find_enclosing_function(node, lang)
+        if enclosing is None:
+            continue
+        func_name = _get_func_name(enclosing, lang, src)
+        key = (file_path, func_name)
+        bucket = events.setdefault(key, [])
+        if len(bucket) >= _MAX_EVENTS_PER_FUNCTION:
+            continue
+        line = _node_line(node)
+        bucket.append(_CallEvent(
+            callee=callee,
+            line=line,
+            tested=_classify_usage_ts(node, lang, src)
+            == USAGE_TESTED,
+            lhs_names=_call_lhs_names(node, src),
+            arg_idents=_call_arg_idents(node, src),
+            snippet=(
+                lines[line - 1].strip()[:200]
+                if 1 <= line <= len(lines) else ""
+            ),
+        ))
 
 
 @dataclass

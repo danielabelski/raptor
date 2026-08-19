@@ -3128,6 +3128,57 @@ class TestValidateSpecLanguageFallback:
         err = validate_spec(spec)
         assert err is not None
         assert "dangerous builtin" in err
+# -- execute_witness source-path containment -----------------------------------
+
+
+class TestSourcePathContainment:
+    """spec.file joins the target root and is later read UNSANDBOXED by
+    the Go/Rust executors — absolute values, traversal and repo-planted
+    symlinks pointing out of the tree must be rejected up front."""
+
+    def _spec(self, file, language=""):
+        return DarkWitnessSpec(
+            finding_key="f1", file=file, function="check",
+            language=language,
+        )
+
+    def test_absolute_path_rejected(self, tmp_path):
+        r = execute_witness(self._spec("/etc/hostname", "ruby"), tmp_path)
+        assert r.verdict == "error"
+        assert "escapes target root" in r.match_detail
+
+    def test_traversal_rejected(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        secret = tmp_path / "secret.rb"
+        secret.write_text("def check; end\n", encoding="utf-8")
+        r = execute_witness(self._spec("../secret.rb"), root)
+        assert r.verdict == "error"
+        assert "escapes target root" in r.match_detail
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        secret = tmp_path / "secret.rb"
+        secret.write_text("def check; end\n", encoding="utf-8")
+        (root / "link.rb").symlink_to(secret)
+        r = execute_witness(self._spec("link.rb"), root)
+        assert r.verdict == "error"
+        assert "escapes target root" in r.match_detail
+
+    def test_in_root_symlink_not_rejected(self, tmp_path):
+        real = tmp_path / "real.rb"
+        real.write_text("def check; end\n", encoding="utf-8")
+        (tmp_path / "link.rb").symlink_to(real)
+        r = execute_witness(self._spec("link.rb"), tmp_path)
+        assert "escapes target root" not in r.match_detail
+
+    def test_missing_file_still_reported_as_not_found(self, tmp_path):
+        r = execute_witness(self._spec("nope.rb"), tmp_path)
+        assert r.verdict == "error"
+        assert "not found" in r.match_detail
+
+
 # -- validate_spec load-path fields --------------------------------------------
 
 

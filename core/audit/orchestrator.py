@@ -16600,6 +16600,70 @@ def _correlated_mech_detector_tool(
     return None
 
 
+# Design-pattern CWEs: a structural match asserts a code SHAPE
+# (comparison style, API misuse pattern), not attacker-reachable data.
+# A synthesized-checker receipt for one of these may promote only with
+# a trust-boundary/taint receipt from the run's context map.
+_DESIGN_PATTERN_CWES = frozenset({"CWE-697", "CWE-595", "CWE-486", "CWE-480"})
+
+_TRUST_BOUNDARY_KEYS_CACHE: dict[str, frozenset] = {}
+
+
+def _function_on_trust_boundary(
+    outcome: ReviewOutcome, config: OrchestratorConfig,
+) -> bool:
+    """Does the run's context map place this function on a trust
+    boundary (entry point or trust-boundary member)?"""
+    out_dir = getattr(config, "out_dir", None)
+    if not out_dir:
+        return False
+    cache_key = str(out_dir)
+    keys = _TRUST_BOUNDARY_KEYS_CACHE.get(cache_key)
+    if keys is None:
+        try:
+            context_map = load_context_map(Path(out_dir))
+        except OSError:
+            context_map = None
+        keys = frozenset(
+            extract_context_map_set(context_map, "entry_points")
+            | extract_context_map_set(
+                context_map, "trust_boundaries", nested_key="functions",
+            ),
+        )
+        _TRUST_BOUNDARY_KEYS_CACHE[cache_key] = keys
+    return f"{outcome.file}:{outcome.function}" in keys
+
+
+def _synth_receipt_promotion_block_reason(
+    tool_id: str,
+    outcome: ReviewOutcome,
+    cwe: str,
+    config: OrchestratorConfig,
+) -> str:
+    """Why a synthesized-checker receipt may not promote this outcome
+    ('' when it may).
+
+    Two gates: (1) self-match exclusion — a rule synthesized from this
+    function's own shape is a circular oracle on it; (2) design-pattern
+    CWEs need a trust-boundary/taint receipt — the pattern match
+    asserts a shape, not attacker-reachable data.
+    """
+    if ":synth-" not in (tool_id or ""):
+        return ""
+    from .checker_synthesis import is_self_match_synth_receipt
+    if is_self_match_synth_receipt(tool_id, outcome.file, outcome.function):
+        return "self-match: rule synthesized from this function's own shape"
+    if (cwe or "").upper().strip() in _DESIGN_PATTERN_CWES:
+        if outcome.provenance_all_trusted:
+            return "design-pattern CWE with all-trusted provenance"
+        if not _function_on_trust_boundary(outcome, config):
+            return (
+                "design-pattern CWE without a trust-boundary receipt "
+                "from the context map"
+            )
+    return ""
+
+
 def _promote_suspicious(
     result: OrchestratorResult,
     config: OrchestratorConfig,
@@ -16779,6 +16843,26 @@ def _promote_suspicious(
         )
 
         if confirmed:
+            _synth_blocked = {
+                t: reason for t in confirmed
+                if (reason := _synth_receipt_promotion_block_reason(
+                    t, outcome, cwe, config,
+                ))
+            }
+            if _synth_blocked:
+                for _t, _reason in _synth_blocked.items():
+                    logger.info(
+                        "sweep promotion: synth receipt %s excluded for "
+                        "%s:%s — %s",
+                        _t, outcome.file, outcome.function, _reason,
+                    )
+                confirmed = [t for t in confirmed if t not in _synth_blocked]
+                if not confirmed:
+                    _increment_tier_dict(
+                        result.tier_counters, "adapter_aggregation",
+                        "inconclusive",
+                    )
+                    continue
             high_prec = [
                 t for t in confirmed
                 if not _is_detection_only(t)
@@ -16908,6 +16992,23 @@ def _synthesize_unmapped_suspicious(
     if not synth.confirmed or not synth.stamp:
         _increment_tier_dict(
             result.tier_counters, "synthesis_on_demand", "inconclusive",
+        )
+        return
+    _block = _synth_receipt_promotion_block_reason(
+        synth.stamp, outcome, cwe, config,
+    )
+    if _block:
+        # The rule survives (library persistence + variant sweeps on
+        # OTHER functions); it just may not convict its own seed.
+        _increment_tier_dict(
+            result.tier_counters, "synthesis_on_demand", "inconclusive",
+        )
+        if outcome.review_result is not None:
+            outcome.review_result["ondemand_synth_receipt"] = synth.stamp
+            outcome.review_result["ondemand_synth_blocked"] = _block
+        logger.info(
+            "on-demand synthesis promotion blocked %s:%s via %s — %s",
+            outcome.file, outcome.function, synth.stamp, _block,
         )
         return
     if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":

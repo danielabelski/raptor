@@ -59,6 +59,42 @@ class SynthesisResult:
     rule_tier: str = "sweep_once"
 
 
+def is_self_match_synth_receipt(
+    tool_id: str,
+    file_path: str,
+    function: str,
+) -> bool:
+    """True when *tool_id* is an ``<engine>:synth-<rule_id>`` receipt
+    whose rule was synthesized from this very function.
+
+    A rule distilled from function F's own code shape necessarily
+    matches F — the match is circular and can never disconfirm, so it
+    may not serve as promoting evidence ON F. It still counts on other
+    functions (variant discovery). Detection is structural: rule ids
+    are ``<slug(file)>.<slug(function)>.<slug(cwe)>.<attempt>``.
+    """
+    tid = tool_id or ""
+    if ":synth-" not in tid:
+        return False
+    rule_id = tid.split(":synth-", 1)[1]
+    try:
+        from packages.checker_synthesis.synthesise import _slugify
+    except ImportError:
+        return False
+    if not file_path or not function:
+        return False
+    prefix = f"{_slugify(file_path)}.{_slugify(function)}."
+    if rule_id.startswith(prefix):
+        return True
+    # The seed file may have been recorded basename-only or with a
+    # different root prefix; the function+cwe tail is the stable part.
+    from pathlib import PurePosixPath
+    base_prefix = (
+        f"{_slugify(PurePosixPath(file_path).name)}.{_slugify(function)}."
+    )
+    return f".{base_prefix}" in f".{rule_id}" and rule_id.split(".")[-1].isdigit()
+
+
 def _synthesis_class_cost(client: Any) -> float:
     """Completed-call spend recorded for the checker_synthesis class.
 

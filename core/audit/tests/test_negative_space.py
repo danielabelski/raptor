@@ -1303,3 +1303,59 @@ class TestUrlBoundaryComposition:
         gap = self._gap(self._VULN)
         gap["file"] = "a.go"
         assert check_url_boundary_composition(gap) == []
+
+
+class TestStructuralCheckersRejectRenderedSource:
+    """The prompt rendering of a function body carries '{n:4d}  '
+    line-number prefixes (context._read_source). The structural
+    checkers match indentation from line start, so feeding them the
+    rendered source silently disables them — the injection site must
+    hand them raw disk spans instead. These tests pin both halves."""
+
+    _RAW = (
+        "def mount_endpoints(self):\n"
+        "    if self.login_mode == MODE_DB:\n"
+        "        self.add_view(DbLoginView())\n"
+        "        self.add_view(SignupView())\n"
+        "    elif self.login_mode == MODE_SSO:\n"
+        "        self.add_view(SsoLoginView())\n"
+        "    self.add_view(ResetView())\n"
+        "    self.add_view(InfoView())\n"
+    )
+
+    def _rendered(self) -> str:
+        return "\n".join(
+            f"{i + 1:4d}  {line}"
+            for i, line in enumerate(self._RAW.splitlines())
+        )
+
+    def test_raw_source_fires(self):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        gap = {
+            "file": "app/wiring.py", "name": "mount_endpoints",
+            "source": self._RAW,
+        }
+        assert check_auth_mode_registration(gap)
+
+    def test_rendered_source_is_blind(self):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        gap = {
+            "file": "app/wiring.py", "name": "mount_endpoints",
+            "source": self._rendered(),
+        }
+        assert not check_auth_mode_registration(gap)
+
+    def test_disk_fallback_fires_without_source(self, tmp_path):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        d = tmp_path / "app"
+        d.mkdir()
+        (d / "wiring.py").write_text(self._RAW)
+        raw_lines = self._RAW.count("\n")
+        gap = {
+            "file": "app/wiring.py", "name": "mount_endpoints",
+            "line_start": 1, "line_end": raw_lines,
+        }
+        assert check_auth_mode_registration(gap, target_path=tmp_path)

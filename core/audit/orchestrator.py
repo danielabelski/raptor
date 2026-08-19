@@ -1734,14 +1734,29 @@ def review_one_function(
             check_shared_writer_race,
             check_url_boundary_composition,
         )
+        # ctx["source"] is the PROMPT rendering — every line carries a
+        # "{n:4d}  " number prefix (context._read_source), which
+        # defeats the structural checkers' line-start regexes: they
+        # silently returned [] on it. Hand them the gap without the
+        # rendered source so they read the raw span from disk.
+        if gap.get("source"):
+            _structural_gap = gap_with_source
+        else:
+            _structural_gap = {
+                k: v for k, v in gap_with_source.items()
+                if k != "source"
+            }
         auth_mode_findings = check_auth_mode_registration(
-            gap_with_source, domain_model=shared.domain_model,
+            _structural_gap, domain_model=shared.domain_model,
+            target_path=config.target_path,
         )
         auth_mode_findings.extend(
-            check_url_boundary_composition(gap_with_source),
+            check_url_boundary_composition(
+                _structural_gap, target_path=config.target_path,
+            ),
         )
         if gap.get("file", "").endswith(".go"):
-            _swr_gap = dict(gap_with_source)
+            _swr_gap = dict(_structural_gap)
             with contextlib.suppress(OSError):
                 _fp = config.target_path / gap.get("file", "")
                 if _fp.is_file():
@@ -1751,7 +1766,9 @@ def review_one_function(
                         errors="replace",
                     )
             auth_mode_findings.extend(
-                check_shared_writer_race(_swr_gap),
+                check_shared_writer_race(
+                    _swr_gap, target_path=config.target_path,
+                ),
             )
     except Exception:
         logger.debug(

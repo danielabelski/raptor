@@ -216,6 +216,8 @@ def value_bound_verdict_for(finding: Dict[str, Any]) -> str:
         sink_arg=resolved.sink_arg,
         extra_bindings=resolved.inter_proc_bindings,
         java_source_text=java_text,
+        java_file_path=str(finding.get("file_path") or "") or None,
+        repo_root=str(finding.get("repo_root") or "") or None,
     )
     return result.verdict
 

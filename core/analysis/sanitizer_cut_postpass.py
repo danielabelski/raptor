@@ -370,6 +370,8 @@ def run_postpass(
                     sink_arg=resolved.sink_arg,
                     extra_bindings=resolved.inter_proc_bindings,
                     java_source_text=java_text,
+                    java_file_path=str(resolved_path),
+                    repo_root=str(repo_root),
                 )
             except Exception:  # noqa: BLE001 — arbitrary scanned source can break parsing
                 verdicts = ["gate-error"]

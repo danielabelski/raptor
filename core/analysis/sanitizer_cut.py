@@ -463,6 +463,8 @@ def _binding_satisfies_value_gate(
 def _sink_arg_constant_reason(
     graph, sources_set, sink, sink_arg: str,
     source_symbols, java_source_text: str,
+    java_file_path: Optional[str] = None,
+    repo_root: Optional[str] = None,
 ) -> Optional[str]:
     """Reason string when the Java constant-folder proves every
     reaching definer of ``sink_arg`` constant AND no other name in
@@ -498,8 +500,22 @@ def _sink_arg_constant_reason(
             )
         except Exception:  # noqa: BLE001 — table support is optional
             table_resolver = None
+        config_resolver = None
+        if java_file_path:
+            try:
+                from core.analysis.config_resolve_java import (
+                    make_config_resolver,
+                )
+                resolver = make_config_resolver(
+                    java_source_text, java_file_path, repo_root,
+                )
+                if resolver is not None:
+                    config_resolver = resolver.fold_hook
+            except Exception:  # noqa: BLE001 — config support is optional
+                config_resolver = None
         reason = all_definers_constant(
             rd, sink, sink_arg, index, array_resolver=table_resolver,
+            config_resolver=config_resolver,
         )
         if reason is None:
             return None
@@ -652,6 +668,8 @@ def evaluate_finding(
     sink_arg: Optional[str] = None,
     extra_bindings: Optional[Iterable[SanitizerBinding]] = None,
     java_source_text: Optional[str] = None,
+    java_file_path: Optional[str] = None,
+    repo_root: Optional[str] = None,
 ) -> SanitizerCutResult:
     """Phase 4 suppression decision for one finding.
 
@@ -732,6 +750,8 @@ def evaluate_finding(
         const_reason = _sink_arg_constant_reason(
             graph, sources_set, sink, sink_arg,
             source_symbols, java_source_text,
+            java_file_path=java_file_path,
+            repo_root=repo_root,
         )
         if const_reason is not None:
             return SanitizerCutResult(

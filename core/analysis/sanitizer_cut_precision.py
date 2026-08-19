@@ -67,6 +67,10 @@ class CutFixture:
     source_line: int
     sink_line: int
     suffix: str = ".py"
+    # Sidecar files written beside the fixture source (relative path →
+    # content) — the config-resolution battery ships .properties files
+    # the resolver must locate under the fixture's directory.
+    aux_files: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -132,11 +136,12 @@ class PrecisionReport:
 
 
 def _fx(name, sink_class, cwe, shape, label, source, src_ln, sink_ln,
-        language="python", suffix=".py") -> CutFixture:
+        language="python", suffix=".py", aux_files=None) -> CutFixture:
     return CutFixture(
         name=name, sink_class=sink_class, cwe=cwe, language=language,
         shape=shape, label=label, source=source,
         source_line=src_ln, sink_line=sink_ln, suffix=suffix,
+        aux_files=aux_files or {},
     )
 
 
@@ -838,6 +843,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_constant_fixtures()
     fixtures += _java_wrapper_fixtures()
     fixtures += _java_array_fixtures()
+    fixtures += _java_config_fixtures()
     return fixtures
 
 
@@ -847,6 +853,10 @@ def measure_fixture(fx: CutFixture, work_dir: Path) -> FixtureMeasurement:
 
     path = work_dir / f"{fx.name}{fx.suffix}"
     path.write_text(fx.source, encoding="utf-8")
+    for rel, content in fx.aux_files.items():
+        aux = work_dir / rel
+        aux.parent.mkdir(parents=True, exist_ok=True)
+        aux.write_text(content, encoding="utf-8")
     verdict = value_bound_verdict_for({
         "cwe": fx.cwe,
         "file_path": str(path),
@@ -941,6 +951,102 @@ def _java_constant_fixtures() -> List[CutFixture]:
              'else { bar = param; }',
              'out.println(bar);'),
         4, 8, language="java", suffix=".java"))
+    return j
+
+
+def _java_config_fixtures() -> List[CutFixture]:
+    """Config-resolution battery: a value read from a bundled
+    .properties file through the strict resolver may fold to a
+    constant (and suppress via the constant-definers gate); every
+    shape that weakens the proof — ambiguous files, a call-site
+    default (two possible runtime values, one possibly tainted), a
+    System.getProperty receiver, an attacker-chosen key, an escaping
+    receiver, a missing key — must not. Each fixture uses a unique
+    .properties basename: the harness shares one work dir.
+    """
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    def props_lines(basename: str,
+                    getter: str = 'props.getProperty("alg")'):
+        return [
+            'String param = request.getParameter("q");',
+            'java.util.Properties props = new java.util.Properties();',
+            'props.load(getClass().getClassLoader()'
+            f'.getResourceAsStream("{basename}"));',
+            f'String bar = {getter};',
+            'out.println(bar);',
+        ]
+
+    j = []
+    j.append(_fx(
+        "java_config_safe_value", "xss", "CWE-79",
+        "config_resolved_constant", LABEL_MAY_SUPPRESS,
+        body(*props_lines("cfg_safe.properties")),
+        4, 8, language="java", suffix=".java",
+        aux_files={"cfg_safe.properties": "alg=SHA-256\n"}))
+    j.append(_fx(
+        "java_config_two_files_ambiguous", "xss", "CWE-79",
+        "config_two_files", LABEL_MUST_NOT_SUPPRESS,
+        body(*props_lines("cfg_ambig.properties")),
+        4, 8, language="java", suffix=".java",
+        aux_files={"cfg_ambig.properties": "alg=SHA-256\n",
+                   "conf/cfg_ambig.properties": "alg=MD5\n"}))
+    j.append(_fx(
+        "java_config_tainted_default", "xss", "CWE-79",
+        "config_tainted_default", LABEL_MUST_NOT_SUPPRESS,
+        body(*props_lines(
+            "cfg_dflt.properties",
+            getter='props.getProperty("alg", param)')),
+        4, 8, language="java", suffix=".java",
+        aux_files={"cfg_dflt.properties": "alg=SHA-256\n"}))
+    j.append(_fx(
+        "java_config_literal_default", "xss", "CWE-79",
+        "config_literal_default", LABEL_MUST_NOT_SUPPRESS,
+        body(*props_lines(
+            "cfg_dflt2.properties",
+            getter='props.getProperty("alg", "MD5")')),
+        4, 8, language="java", suffix=".java",
+        aux_files={"cfg_dflt2.properties": "alg=SHA-256\n"}))
+    j.append(_fx(
+        "java_config_system_receiver", "xss", "CWE-79",
+        "config_system_receiver", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = System.getProperty("alg");',
+             'out.println(bar);'),
+        4, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_config_dynamic_key", "xss", "CWE-79",
+        "config_dynamic_key", LABEL_MUST_NOT_SUPPRESS,
+        body(*props_lines(
+            "cfg_dyn.properties",
+            getter='props.getProperty(param)')),
+        4, 8, language="java", suffix=".java",
+        aux_files={"cfg_dyn.properties": "alg=SHA-256\n"}))
+    j.append(_fx(
+        "java_config_receiver_escapes", "xss", "CWE-79",
+        "config_receiver_escapes", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'java.util.Properties props = new java.util.Properties();',
+             'props.load(getClass().getClassLoader()'
+             '.getResourceAsStream("cfg_esc.properties"));',
+             'reload(props);',
+             'String bar = props.getProperty("alg");',
+             'out.println(bar);'),
+        4, 9, language="java", suffix=".java",
+        aux_files={"cfg_esc.properties": "alg=SHA-256\n"}))
+    j.append(_fx(
+        "java_config_key_missing", "xss", "CWE-79",
+        "config_key_missing", LABEL_MUST_NOT_SUPPRESS,
+        body(*props_lines("cfg_miss.properties")),
+        4, 8, language="java", suffix=".java",
+        aux_files={"cfg_miss.properties": "other=SHA-256\n"}))
     return j
 
 

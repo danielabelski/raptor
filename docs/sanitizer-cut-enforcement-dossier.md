@@ -1,5 +1,45 @@
 # Sanitizer-cut enforcement dossier
 
+## Status: FLIP ATTEMPTED AND STOPPED (2026-08-19) — counterexample found
+
+The operator approved the flip and it was executed under the earning
+protocol (attestation: 218-fixture corpus clean, UB 0.019; OWASP live
+measurement: recall held 100.0% exactly, 510 enforced drops, zero
+damage). The Juliet confirmation leg then found a REAL FALSE
+SUPPRESSION and the flip was reverted per the stop-ship discipline:
+
+* Counterexample: CWE36_Absolute_Path_Traversal__Environment_01.java
+  line 39 (`new File(data)` with `data = System.getenv("ADD")`, no
+  sanitizer) — enforced-dropped with reason "constant sink argument:
+  … taint-free system/config reads". Five sibling variants likewise.
+  Masked from recall by Juliet's file-level labels (another finding
+  on the same file carried the match).
+* Root cause 1 (the unsound premise): the taint-free fold tier treats
+  System.getenv reads as attacker-uncontrolled, while the postpass
+  source locator simultaneously treats `environment` as a taint
+  source. Two mechanisms hold contradictory threat models; under
+  OWASP's servlet-centric labels the contradiction was invisible —
+  the corpus never contained an environment-taint fixture.
+* Root cause 2 (the missed alarm): the suppression record's `line`
+  field is null (the sink line lives only in the postpass identity),
+  so the warm damage matcher could not attribute the record to the
+  found expected entry — damage read 0 against a live counterexample.
+
+Preconditions for any re-attempt: (1) the taint-free table and the
+source-kind table must be mutually exclusive BY CONSTRUCTION (a read
+shape listed as a source kind can never be taint-free), with
+environment-taint fixtures joining the adversarial corpus as
+must-not-suppress; (2) the record schema carries the sink line and
+the damage matcher reads it (pinned by a fixture reproducing this
+exact miss); (3) a fresh attestation on the corrected tree, and the
+Juliet leg re-run with per-finding (not file-level) verification for
+the enforced set. Reversibility worked as designed: one field,
+reverted same-day, zero residue.
+
+Original evidence package below (assembled pre-decision; the
+"Mechanics of the flip" section predates the chokepoint correction
+above).
+
 Evidence package for the operator decision to flip the sanitizer-cut
 witness from record-only to enforcing. The decision itself is the
 operator's; this document assembles what the earning protocol

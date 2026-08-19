@@ -71,6 +71,11 @@ class CveFixRecord:
     files: tuple[CveFixFile, ...]
     cwe: str = ""          # root_cause.cwe_id when --with-root-cause ran
     summary: str = ""      # root_cause.summary when present
+    # database_specific.diff_against — the pre-fix parent commit. Empty
+    # when the record predates the field or carries a malformed SHA;
+    # consumers that need a before/after pair (core.dataflow's cvefix
+    # walk) must skip such records rather than guess.
+    parent_commit: str = ""
 
     @property
     def provenance(self) -> str:
@@ -164,6 +169,10 @@ def load_cve_run(output_dir: Path | str) -> CveFixRecord:
             is_test=bool(f.get("is_test", False)),
         ))
 
+    parent_commit = str(db.get("diff_against", "") or "")
+    if not _SHA_RE.match(parent_commit):
+        parent_commit = ""
+
     root_cause = db.get("root_cause", {}) or {}
     return CveFixRecord(
         cve_id=cve_id,
@@ -172,6 +181,7 @@ def load_cve_run(output_dir: Path | str) -> CveFixRecord:
         files=tuple(files),
         cwe=str(root_cause.get("cwe_id", "") or ""),
         summary=str(root_cause.get("summary", "") or ""),
+        parent_commit=parent_commit,
     )
 
 

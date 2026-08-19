@@ -645,7 +645,13 @@ class AFLRunner:
 
         # Monitor fuzzing
         start_time = time.time()
-        last_logged_crashes = 0
+        # Track crash paths already reported to telemetry. A count
+        # slice over the re-sorted union of all instances' crash dirs
+        # mis-attributes new files: a fresh crash that sorts BEFORE an
+        # already-seen one (secondary instances interleave) fell inside
+        # the "seen" prefix and was never recorded, while an old crash
+        # got re-emitted in its place.
+        seen_crash_paths: set[Path] = set()
         last_status_time = 0
 
         try:
@@ -657,13 +663,14 @@ class AFLRunner:
                 crash_files = self._collect_all_crash_files()
                 num_crashes = len(crash_files)
 
-                if num_crashes > last_logged_crashes:
+                new_crashes = [p for p in crash_files if p not in seen_crash_paths]
+                if new_crashes:
                     logger.info("Progress: %s unique crashes found", num_crashes)
                     # Telemetry: emit a per-crash event for new ones only
                     if self.telemetry:
-                        for crash_path in crash_files[last_logged_crashes:]:
+                        for crash_path in new_crashes:
                             self.telemetry.record_crash(str(crash_path), signal="afl")
-                    last_logged_crashes = num_crashes
+                    seen_crash_paths.update(new_crashes)
 
                 if max_crashes is not None and num_crashes >= max_crashes:
                     logger.info("✓ Reached %s crashes, stopping early", max_crashes)

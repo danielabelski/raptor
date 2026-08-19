@@ -14,7 +14,7 @@ You are helping the user run RAPTOR's autonomous security scanning on a code rep
 1. **Understand the user's request**: They want to scan code for security vulnerabilities
 2. **Identify the target**: Ask which directory/repository to scan if not specified
 3. **Run RAPTOR scan**: Execute the appropriate command based on what they need:
-   - For full autonomous scan (recommended): `python3 raptor.py agentic --repo <path>`
+   - For full autonomous scan (recommended): `libexec/raptor-agentic --repo <path>`
    - For quick Semgrep scan: `python3 raptor.py scan --repo <path>`
    - For CodeQL only: `python3 raptor.py codeql --repo <path>`
 
@@ -33,7 +33,7 @@ You are helping the user run RAPTOR's autonomous security scanning on a code rep
 
 Full autonomous workflow (Semgrep + LLM analysis; add `--codeql` to include CodeQL):
 ```bash
-python3 raptor.py agentic --repo /path/to/code --max-findings 10
+libexec/raptor-agentic --repo /path/to/code --max-findings 10
 ```
 
 Quick Semgrep scan:

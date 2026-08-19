@@ -74,6 +74,56 @@ class TestVersionDecoration:
         assert ("coccinelle", True) in results
 
 
+class TestWarningsNameTheBinary:
+    def test_warning_names_binary_not_dep_key(self):
+        # coccinelle's binary is spatch — the operator installs
+        # spatch, and doctor's install hints match on binary names.
+        _, warnings, _ = _run_check_tools(on_path={"semgrep"})
+        cocci = [w for w in warnings if "semantic-patch" in w]
+        assert cocci and "spatch not found" in cocci[0]
+        assert "coccinelle not found" not in cocci[0]
+
+    def test_required_tool_warning_names_binary(self):
+        _, warnings, unavailable = _run_check_tools(on_path={"semgrep"})
+        fuzz = [w for w in warnings if "/fuzz" in w]
+        assert fuzz and "afl-fuzz not found" in fuzz[0]
+        assert "unavailable" in fuzz[0]
+        assert "/fuzz" in unavailable
+
+    def test_module_dep_warning_uses_dep_name(self):
+        # Module deps have no binary — fall back to the dep key.
+        _, warnings, _ = _run_check_tools(on_path={"semgrep"})
+        assert any("z3 not found" in w for w in warnings)
+
+
+class TestGroupMemberWarnings:
+    def test_missing_member_of_satisfied_group_warns(self):
+        # semgrep present satisfies the scanner group, but /codeql
+        # specifically is still dead without codeql — pre-fix this
+        # was completely silent.
+        _, warnings, _ = _run_check_tools(on_path={"semgrep"})
+        codeql = [w for w in warnings if "codeql not found" in w]
+        assert codeql, warnings
+        assert "limited" in codeql[0]
+        assert "/codeql" in codeql[0]
+
+    def test_unsatisfied_group_emits_only_group_warning(self):
+        # No scanner at all → one group-level warning; no redundant
+        # per-member warnings on top.
+        _, warnings, unavailable = _run_check_tools(on_path=set())
+        group = [w for w in warnings if "no scanner" in w]
+        assert len(group) == 1
+        assert not any("codeql not found" in w for w in warnings)
+        assert not any("semgrep not found" in w for w in warnings)
+        assert {"/scan", "/agentic"} <= unavailable
+
+    def test_fully_satisfied_group_is_silent(self):
+        _, warnings, _ = _run_check_tools(on_path={"semgrep", "codeql"})
+        assert not any("scanner" in w for w in warnings)
+        assert not any("codeql not found" in w for w in warnings)
+        assert not any("semgrep not found" in w for w in warnings)
+
+
 class TestSemgrepVersion:
     def test_prefers_importlib_metadata(self):
         with mock.patch(

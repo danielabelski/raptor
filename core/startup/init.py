@@ -60,21 +60,37 @@ def check_tools() -> tuple[list, list, set]:
     unavailable_features = set()
 
     # Group checks (e.g., need at least one scanner)
+    satisfied_groups = set()
     for group_name, group in RaptorConfig.TOOL_GROUPS.items():
         members = sorted(n for n, d in RaptorConfig.TOOL_DEPS.items() if d.get("group") == group_name)
-        if not any(m in available for m in members):
+        if any(m in available for m in members):
+            satisfied_groups.add(group_name)
+        else:
             warnings.append(f"{group['affects']} unavailable — no scanner ({' or '.join(members)})")
             for cmd in group["affects"].split(", "):
                 unavailable_features.add(cmd.strip())
 
-    # Individual checks (skip group members)
+    # Individual checks. Warnings name the missing BINARY (what the
+    # operator must install / what doctor's install-hint lookup keys
+    # on), not the TOOL_DEPS key — "spatch not found", not
+    # "coccinelle not found".
     for name in sorted(RaptorConfig.TOOL_DEPS):
         dep = RaptorConfig.TOOL_DEPS[name]
-        if name in available or dep.get("group"):
+        if name in available:
+            continue
+        binary = dep.get("binary", name)
+        group = dep.get("group")
+        if group:
+            # Group totally absent → the group warning above already
+            # covers it. Group satisfied by another member → this
+            # tool's OWN commands are still affected (codeql missing
+            # while semgrep present used to be silent); warn.
+            if group in satisfied_groups:
+                warnings.append(f"{dep['affects']} limited — {binary} not found")
             continue
         severity = dep.get("severity", "degrades")
         label = "unavailable" if severity == "required" else "limited"
-        warnings.append(f"{dep['affects']} {label} — {name} not found")
+        warnings.append(f"{dep['affects']} {label} — {binary} not found")
         if severity == "required":
             for cmd in dep["affects"].split(", "):
                 unavailable_features.add(cmd.strip())

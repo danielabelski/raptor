@@ -1199,6 +1199,39 @@ def _audit_run_status(audit_dir: Path) -> str | None:
     return None
 
 
+def _run_audit_feedback(audit_dir: Path, validate_dir: Path) -> bool:
+    """Import /validate verdicts into the audit journal (Reflexion loop).
+
+    Best-effort: a feedback failure costs the correction entries, never
+    the run. Uses the same annotations-dir default the audit run itself
+    resolved (project-level in project mode).
+    """
+    validation_report = Path(validate_dir) / "findings.json"
+    if not validation_report.is_file():
+        logger.info(
+            "audit feedback skipped: validate run wrote no findings.json",
+        )
+        return False
+    # Same resolution the audit run applied for its own default.
+    from core.audit.record import _resolve_annotations_dir
+    raptor_dir = Path(__file__).parent.resolve()
+    cmd = [
+        str(raptor_dir / "libexec" / "raptor-audit"), "feedback",
+        "--validation-report", str(validation_report),
+        "--annotations-dir", str(_resolve_annotations_dir(Path(audit_dir))),
+        "--audit-out", str(audit_dir),
+    ]
+    rc, _stdout, stderr = run_command_streaming(
+        cmd, "Importing validation verdicts into the audit journal",
+        timeout=300,
+    )
+    if rc != 0:
+        logger.warning(
+            "audit feedback exited %d: %s", rc, (stderr or "")[-300:],
+        )
+    return rc == 0
+
+
 def run_audit_postpass(args, target: Path, out_dir: Path) -> dict:
     """Run ``raptor-audit run`` over the residual coverage gaps.
 
@@ -3409,6 +3442,9 @@ Examples:
             # Re-check at dispatch time — the pre-scan verdict may be stale.
             block_cc_dispatch=check_repo_claude_trust(original_repo_path),
             allow_unreachable=getattr(args, "allow_unreachable", False),
+            # --gap-audit: the sibling audit run's findings join the
+            # selection, so one validate pass covers both pipelines.
+            audit_dir=audit_dir if audit_postpass.get("completed") else None,
         )
         if postpass_result.ran:
             logger.info(
@@ -3416,8 +3452,21 @@ Examples:
                 postpass_result.selected_count,
                 postpass_result.duration_s,
             )
+            # Close the Reflexion loop: import the validation verdicts
+            # into the audit journal (disproven findings downgrade,
+            # corroborated ones get confirmation entries).
+            if audit_dir is not None and audit_postpass.get("completed") \
+                    and postpass_result.validate_dir is not None:
+                _run_audit_feedback(audit_dir, postpass_result.validate_dir)
         else:
             logger.warning("Post-pass skipped: %s", postpass_result.skipped_reason)
+    elif audit_postpass.get("completed"):
+        print(
+            "\n  ⚠️  --gap-audit findings are UNVALIDATED (--validate not "
+            "set). The audit is the wide net; /validate is the filter "
+            "that kills false positives. Re-run with --validate, or run "
+            f"/validate against {audit_postpass.get('audit_dir')}/findings.json."
+        )
 
     # ========================================================================
     # FINAL REPORT

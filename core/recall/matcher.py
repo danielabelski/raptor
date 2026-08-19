@@ -105,6 +105,14 @@ def finding_matches(expected: ExpectedFinding, produced: dict[str, Any],
     )
 
 
+def _basename(path: str | None) -> str:
+    """Final normalised path component ("" for empty paths)."""
+    if not path:
+        return ""
+    norm = _norm_rel(path)
+    return norm.rsplit("/", 1)[-1] if norm else ""
+
+
 def match_findings(
     expected: list[ExpectedFinding],
     produced: list[dict[str, Any]],
@@ -116,10 +124,23 @@ def match_findings(
     file-level benchmark case and a line-level CVE label can name the
     same code); that is correct for recall — each expected entry is
     an independent question.
+
+    Produced findings are indexed by path basename before the full
+    tolerance check: suffix agreement in either direction requires the
+    final path components to be equal, so the index prunes candidates
+    without changing which pairs can match (benchmark corpora put each
+    case in its own file, collapsing the former
+    len(expected) * len(produced) scan — which did not finish on
+    3k-expected x 136k-produced inputs — to near-linear bucket walks).
     """
+    by_basename: dict[str, list[dict[str, Any]]] = {}
+    for p in produced:
+        by_basename.setdefault(_basename(p.get("file")), []).append(p)
+
     results: list[MatchResult] = []
     for exp in expected:
-        hits = [p for p in produced if finding_matches(exp, p, tolerance)]
+        candidates = by_basename.get(_basename(exp.file), [])
+        hits = [p for p in candidates if finding_matches(exp, p, tolerance)]
         tools = sorted({str(p.get("tool")) for p in hits if p.get("tool")})
         results.append(MatchResult(expected=exp, matched=bool(hits),
                                    tools=tools, hits=hits))

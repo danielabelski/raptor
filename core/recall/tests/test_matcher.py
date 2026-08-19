@@ -134,3 +134,52 @@ class TestCleanRegions:
         hits = clean_region_hits(
             clean, [_prod(file="/work/repo/src/C.java")], TOL)
         assert len(hits) == 1 and hits[0].matched
+
+
+class TestBasenameIndexEquivalence:
+    """The basename index must prune candidates without changing results."""
+
+    def _brute(self, expected, produced, tolerance):
+        from core.recall.matcher import MatchResult, finding_matches
+        out = []
+        for exp in expected:
+            hits = [p for p in produced if finding_matches(exp, p, tolerance)]
+            tools = sorted({str(p.get("tool")) for p in hits if p.get("tool")})
+            out.append(MatchResult(expected=exp, matched=bool(hits),
+                                   tools=tools, hits=hits))
+        return out
+
+    def test_indexed_equals_brute_force(self):
+        import random
+        from core.recall.manifest import ExpectedFinding, Tolerance
+        from core.recall.matcher import match_findings
+
+        rng = random.Random(3155)
+        names = [f"Case{i:02d}.java" for i in range(12)]
+        dirs = ["", "src/", "a/b/", "deep/x/y/"]
+        cwes = ["CWE-79", "CWE-89", "CWE-78", ""]
+        expected = []
+        for i in range(60):
+            start = rng.choice([None, rng.randint(1, 40)])
+            end = None if start is None else start + rng.randint(0, 5)
+            expected.append(ExpectedFinding(
+                id=f"e{i}", file=rng.choice(dirs) + rng.choice(names),
+                line_start=start, line_end=end, cwe=rng.choice(cwes[:3]),
+                provenance={"kind": "benchmark", "suite": "t", "case": str(i)},
+            ))
+        produced = [
+            {"file": rng.choice(["/abs/repo/", "", "repo/"]) + rng.choice(dirs)
+             + rng.choice(names + ["Other.java"]),
+             "startLine": rng.randint(1, 50), "endLine": rng.randint(1, 50),
+             "cwe_id": rng.choice(cwes), "tool": rng.choice(["semgrep", "codeql"]),
+             "rule_id": "r"}
+            for _ in range(400)
+        ]
+        tol = Tolerance(line_drift=3, cwe_family_match=True)
+        fast = match_findings(expected, produced, tol)
+        slow = self._brute(expected, produced, tol)
+        assert len(fast) == len(slow)
+        for f, s in zip(fast, slow):
+            assert f.matched == s.matched, f.expected.id
+            assert f.tools == s.tools
+            assert len(f.hits) == len(s.hits)

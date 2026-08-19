@@ -35,6 +35,17 @@ matches against ground truth. Profiles: `scan`, `scan-codeql` (both
 LLM-free), `agentic` (LLM-tier — requires `--allow-llm` because every
 finding costs tokens).
 
+**`scan-codeql` is the recall-bearing posture.** Measured: on the
+Juliet holdout the CodeQL leg lifts recall from 29.7% to 84.3%
+(threat-model `local` covers console/env/file/properties sources that
+semgrep's web-centric taint rules do not), and buildless Java
+extraction makes the database build routine. Both bundled manifest
+generators emit `"profile": "scan-codeql"`. `scan` remains the fast
+lane for quick iteration; recall numbers quoted for the programme come
+from `scan-codeql` runs, and FP calibration (clean-region counters,
+warm scoring) should be read against the same profile so the two
+numbers describe one detector configuration.
+
 ## Ground truth manifests
 
 JSON, schema in `core/recall/manifest.py`. Each expected finding

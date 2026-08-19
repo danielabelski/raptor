@@ -187,7 +187,10 @@ def generate_manifest(clone_dir: Path, *, cwes: list[int] | None = None,
             "local_path": str(clone_dir),
         },
         "language": "java",
-        "profile": "scan",
+        # scan-codeql is the recall-bearing profile: measured 84.3% vs
+        # 29.7% for semgrep-only on this corpus (threat-model=local
+        # covers Juliet's console/env/file/properties sources).
+        "profile": "scan-codeql",
         "tolerance": {"line_drift": 0, "cwe_family_match": True},
         "expected": expected,
         "clean_regions": clean,

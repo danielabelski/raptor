@@ -124,6 +124,9 @@ class TestGenerate:
         parsed = parse_manifest(json.loads(json.dumps(manifest)))
         assert parsed.name == "juliet-java-holdout"
         assert parsed.tolerance.cwe_family_match is True
+        # scan-codeql is the recall-bearing posture (84.3% vs 29.7%
+        # semgrep-only on this corpus) — the generator must emit it.
+        assert parsed.profile == "scan-codeql"
 
     def test_missing_clone_refused(self, tmp_path):
         with pytest.raises(JulietManifestError, match="acquire"):

@@ -40,6 +40,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from core.analysis.threat_model_java import (
+    NON_SOURCE_JVM_CONSTANT_FIELDS,
+    NON_SOURCE_SYSTEM_READS,
+)
+
 
 
 _MAX_DEPTH = 8
@@ -52,7 +57,10 @@ _REFUSE = object()
 
 class _TaintFree:
     """Sentinel: provably attacker-uncontrolled, runtime value unknown
-    (``System.getProperty("user.dir")``-class reads and their concats).
+    (JVM constant fields such as ``File.separator`` and JDK class
+    constants — NOT environment reads: the threat-model authority
+    classifies ``System.getenv``/``getProperty`` as taint sources, the
+    b44 stop-ship's root cause).
     Never a usable VALUE — value consumers (switch pruning, weak-name
     matching, danger checks) must never see it, so the fold boundary
     converts it to REFUSE unless the caller opted in. Taint-freedom
@@ -67,12 +75,16 @@ class _TaintFree:
 
 TAINT_FREE = _TaintFree()
 
-# System reads that are operator/host-controlled, never request data.
-# Literal name argument required — a variable property name could be
-# attacker-chosen and read attacker-influenced state. Seed set <= 9;
-# growth must come through learned vocabulary, never ad-hoc additions.
-_TF_SYSTEM_READS = frozenset({"getProperty", "getenv"})
-_TF_FILE_FIELDS = frozenset({"separator", "pathSeparator", "separatorChar"})
+# System reads that may fold taint-free and the JVM constant fields —
+# BOTH derived from the shared threat-model authority so this table can
+# never contradict the postpass source-kind locator (the b44 stop-ship:
+# System.getenv was taint-free here and a taint source there, and
+# enforcement suppressed six real Juliet findings). Under the current
+# model the System-read set is EMPTY — getenv/getProperty are
+# environment taint sources; ``_fold_tf_system_read`` is kept for any
+# future authority-approved non-source read.
+_TF_SYSTEM_READS = NON_SOURCE_SYSTEM_READS
+_TF_FILE_FIELDS = NON_SOURCE_JVM_CONSTANT_FIELDS
 
 
 class _FoldExt:
@@ -319,16 +331,21 @@ def _fold_field_access(node, ext) -> Any:
 
 def _fold_tf_system_read(node, resolve_name, depth, array_resolver,
                          config_resolver, conduit_resolver, ext) -> Any:
-    """``System.getProperty("lit")`` / two-arg / ``System.getenv("lit")``
-    → TAINT_FREE. Literal (or folded-constant) name required; the
-    two-arg default must itself fold or be taint-free — either possible
-    runtime value is then attacker-uncontrolled."""
+    """``System.<read>("lit")`` → TAINT_FREE for authority-approved
+    NON-SOURCE reads only. Under the current threat model that set is
+    EMPTY (getenv/getProperty are environment taint sources — the b44
+    counterexample class; see core.analysis.threat_model_java), so
+    this producer refuses everything today; it stays wired for any
+    future read the authority approves. Literal (or folded-constant)
+    name required; the two-arg default must itself fold or be
+    taint-free."""
     if ext is None or not ext.allow_taint_free:
         return _REFUSE
     if ext.ban_tf_system_reads:
-        # This finding's own source candidates include a system-read
-        # kind: the read under fold may BE the suspected source, so
-        # taint-freedom cannot discharge it (b42 circularity ban).
+        # b42's per-finding circularity ban. With the authority's
+        # non-source set empty this branch is structurally
+        # never-firing (the name gate below refuses first) — kept as
+        # defense-in-depth with its tests as never-firing pins.
         return _REFUSE
     name_node = node.child_by_field_name("name")
     obj = node.child_by_field_name("object")

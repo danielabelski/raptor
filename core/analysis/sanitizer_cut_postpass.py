@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from core.analysis import threat_model_java as _tm
+
 logger = logging.getLogger(__name__)
 
 # Languages with a wired resolver leg (python native, java via
@@ -109,10 +111,12 @@ _SOURCE_KINDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "file_evidence": (r"System\s*\.\s*in\b",),
         },
         "environment": {
-            "patterns": (
-                r"System\s*\.\s*getenv\s*\(",
-                r"System\s*\.\s*getProperty\s*\(",
-            ),
+            # Derived from the shared threat-model authority: an API
+            # classified as an environment source here can NEVER fold
+            # taint-free in const_fold_java (both tables read the same
+            # module; the b44 stop-ship's contradiction is structurally
+            # impossible). See core.analysis.threat_model_java.
+            "patterns": _tm.environment_source_patterns(),
         },
         "file": {
             "patterns": (

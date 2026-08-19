@@ -1830,7 +1830,10 @@ def _java_b42_fixtures() -> List[CutFixture]:
         10, 12, language="java", suffix=".java"))
     fx.append(_fx(
         "java_b42_union_tf_and_const", "pathtrav", "CWE-22",
-        "definer_union_system_read_and_constant", LABEL_MAY_SUPPRESS,
+        # b45 re-pin (threat-model authority, post-b44 stop-ship): the
+        # getenv member makes this the Juliet CWE36 Environment shape —
+        # environment reads are taint sources, the union must refuse.
+        "environment_read_is_source", LABEL_MUST_NOT_SUPPRESS,
         body('String param = request.getHeader("X");',
              'String data;',
              'if (param.length() > 2) { data = System.getenv("HOME"); }',
@@ -2078,9 +2081,12 @@ def _java_b37_fixtures() -> List[CutFixture]:
              'out.println(bar);'),
         4, 7, language="java", suffix=".java",
         aux_files={"Cfg.java": cfg_aux}, use_repo_root=True))
+    # b45 re-pin (threat-model authority, post-b44 stop-ship):
+    # environment reads are taint sources under threat-model local —
+    # a getProperty-fed sink must never suppress, write proof or not.
     j.append(_fx(
         "java_b37_tf_system_read", "xss", "CWE-79",
-        "taint_free_system_read", LABEL_MAY_SUPPRESS,
+        "environment_read_is_source", LABEL_MUST_NOT_SUPPRESS,
         body('String param = request.getParameter("q");',
              'String dir = System.getProperty("user.dir");',
              'out.println(dir);'),
@@ -2117,14 +2123,37 @@ def _java_b37_fixtures() -> List[CutFixture]:
             "    void w(String k, String t) { "
             "System.setProperty(k, t); }\n"
             "}\n")}, use_repo_root=True))
+    # b45 re-pin: a static final initialized from an environment
+    # read is environment-influenced — never taint-free (b44 class).
     j.append(_fx(
         "java_b37_tf_static_final", "xss", "CWE-79",
-        "taint_free_xfile_static_final", LABEL_MAY_SUPPRESS,
+        "environment_derived_static_final", LABEL_MUST_NOT_SUPPRESS,
         body('String param = request.getParameter("q");',
              'String bar = Env.USERDIR;',
              'out.println(bar);'),
         4, 6, language="java", suffix=".java",
         aux_files={"Env.java": tf_aux}, use_repo_root=True))
+    # ---- b45: environment-taint battery (the b44 counterexample
+    # shapes — the corpus class whose absence made the threat-model
+    # contradiction structurally invisible until Juliet first contact).
+    j.append(_fx(
+        "java_b45_env_getenv_file_sink", "pathtrav", "CWE-22",
+        "environment_getenv_to_file_sink", LABEL_MUST_NOT_SUPPRESS,
+        body('String data = System.getenv("ADD");',
+             'java.io.File f = new java.io.File(data);'),
+        4, 5, language="java", suffix=".java", use_repo_root=True))
+    j.append(_fx(
+        "java_b45_env_getenv_xss_sink", "xss", "CWE-79",
+        "environment_getenv_to_xss_sink", LABEL_MUST_NOT_SUPPRESS,
+        body('String data = System.getenv("ADD");',
+             'out.println(data);'),
+        4, 5, language="java", suffix=".java", use_repo_root=True))
+    j.append(_fx(
+        "java_b45_env_getprop_cmdi_sink", "cmdi", "CWE-78",
+        "environment_getproperty_to_exec_sink", LABEL_MUST_NOT_SUPPRESS,
+        body('String data = System.getProperty("cmd.path");',
+             'Runtime.getRuntime().exec(data);'),
+        4, 5, language="java", suffix=".java", use_repo_root=True))
     j.append(_fx(
         "java_b37_prefix_trap", "pathtrav", "CWE-22",
         "constant_prefix_tainted_suffix", LABEL_MUST_NOT_SUPPRESS,

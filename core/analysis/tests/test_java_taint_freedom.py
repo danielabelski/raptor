@@ -342,12 +342,16 @@ class TestBanThreadingComposedSurfaces:
         assert sink_node is not None
         return rd, sink_node, index
 
-    def test_definers_all_fold_honours_ban(self):
+    def test_definers_all_fold_ban_never_fires(self):
+        # b45 re-pin: the threat-model authority's non-source set is
+        # empty, so system reads refuse BEFORE the b42 ban can act —
+        # both legs read False and the ban is structurally
+        # never-firing (kept as defense-in-depth threading).
         from core.analysis.const_fold_java import definers_all_fold
 
         rd, sink, index = self._rd_setup(
             '        String v = System.getenv("HOME");\n', "v")
-        assert definers_all_fold(rd, sink, "v", index)
+        assert not definers_all_fold(rd, sink, "v", index)
         assert not definers_all_fold(
             rd, sink, "v", index, ban_tf_system_reads=True)
 
@@ -388,8 +392,11 @@ class TestBanThreadingComposedSurfaces:
         assert sink is not None
         expr = index.rhs_at(3, "v")
         assert expr is not None
+        # b45 re-pin: the authority refuses system reads before the
+        # ban acts — both legs REFUSE (never-firing threading pin).
         assert fold_expr_at(
-            rd, sink, expr, index, allow_taint_free=True) is TAINT_FREE
+            rd, sink, expr, index, allow_taint_free=True) is REFUSE
         assert fold_expr_at(
             rd, sink, expr, index, allow_taint_free=True,
             ban_tf_system_reads=True) is REFUSE
+        assert TAINT_FREE is not REFUSE  # keep both imports honest

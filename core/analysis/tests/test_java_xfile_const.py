@@ -57,10 +57,14 @@ class TestTaintFreeBoundary:
         assert _fold('System.getProperty("user.dir")',
                      allow_tf=True) is REFUSE
 
-    def test_getenv_literal_tf(self):
-        # No self-write API for the environment — unconditionally
-        # taint-free, no scan needed.
-        assert _fold('System.getenv("HOME")', allow_tf=True) is TAINT_FREE
+    def test_getenv_literal_refuses(self):
+        # b45 re-pin (threat-model authority, post-b44 stop-ship):
+        # the environment IS the attack surface under threat-model
+        # local — getenv is a taint source and can never fold
+        # taint-free, opt-in or not. The b44 counterexample was
+        # exactly new File(System.getenv(...)).
+        assert _fold('System.getenv("HOME")', allow_tf=True) is REFUSE
+        assert _fold('System.getenv("HOME")') is REFUSE
 
     def test_variable_property_name_refuses(self):
         assert _fold("System.getProperty(x)", allow_tf=True) is REFUSE
@@ -75,8 +79,12 @@ class TestTaintFreeBoundary:
 
 class TestTaintFreeAlgebra:
     def test_concat_tf_with_constant_is_tf(self):
-        assert _fold('System.getenv("HOME") + "x"',
+        # b45: algebra coverage moved to a JVM-constant TF producer;
+        # environment reads are sources (authority) and refuse below.
+        assert _fold('File.separator + "x"',
                      allow_tf=True) is TAINT_FREE
+        assert _fold('System.getenv("HOME") + "x"',
+                     allow_tf=True) is REFUSE
 
     def test_concat_tf_with_unfoldable_refuses(self):
         assert _fold('System.getenv("HOME") + x',
@@ -120,9 +128,13 @@ class TestStringOps:
         assert _fold("String.valueOf(true)") == "true"
 
     def test_ops_on_tf_receiver_stay_tf(self):
-        v = _fold('System.getenv("HOME").substring(1)', allow_tf=True)
+        # b45: TF producer switched to File.separator (see authority).
+        v = _fold('File.separator.substring(1)', allow_tf=True)
         assert v is TAINT_FREE
-        assert _fold('System.getenv("HOME").substring(1)') is REFUSE
+        assert _fold('File.separator.substring(1)') is REFUSE
+        # Environment receivers refuse regardless of the ops chain.
+        assert _fold('System.getenv("HOME").substring(1)',
+                     allow_tf=True) is REFUSE
 
 
 # ---- cross-file fixtures ------------------------------------------------
@@ -136,6 +148,8 @@ CFG_CLASS = (
     '    public static final String BASE = SAFE + "-2";\n'
     "    public static final String USERDIR = "
     'System.getProperty("user.dir") + File.separator;\n'
+    "    public static final String SEP2 = "
+    'File.separator + File.separator;\n'
     '    public static String MUTABLE = "not-final";\n'
     '    public String getTheValue(String p) { return "bar"; }\n'
     '    public String echo(String p) { return p; }\n'
@@ -180,10 +194,17 @@ class TestCrossFileField:
         assert v == "safe-const-2"
 
     def test_tf_initializer_is_tf_only_with_opt_in(self, xroot):
+        # b45 re-pin: a static final initialized from an ENVIRONMENT
+        # read is environment-influenced (authority: getProperty is a
+        # source) and refuses even with the opt-in — the b44 class.
         v, _ = _xfold(xroot, "Cfg.USERDIR", allow_tf=True)
-        assert v is TAINT_FREE
-        v2, _ = _xfold(xroot, "Cfg.USERDIR")
-        assert v2 is REFUSE
+        assert v is REFUSE
+        # The opt-in boundary itself still holds, on a JVM-constant
+        # initializer (File.separator family stays taint-free).
+        v3, _ = _xfold(xroot, "Cfg.SEP2", allow_tf=True)
+        assert v3 is TAINT_FREE
+        v4, _ = _xfold(xroot, "Cfg.SEP2")
+        assert v4 is REFUSE
 
     def test_non_final_field_refuses(self, xroot):
         v, _ = _xfold(xroot, "Cfg.MUTABLE")
@@ -267,9 +288,14 @@ class TestGateConsumers:
         return rd, sink_node, index
 
     def test_definers_all_fold_accepts_tf(self):
+        # b45: TF producer is a JVM constant; the environment read
+        # must now FAIL the all-fold check (it is a taint source).
         rd, sink, index = self._rd_setup(
-            '        String v = System.getenv("HOME");\n', "v")
+            '        String v = java.io.File.separator;\n', "v")
         assert definers_all_fold(rd, sink, "v", index)
+        rd2, sink2, index2 = self._rd_setup(
+            '        String v = System.getenv("HOME");\n', "v")
+        assert not definers_all_fold(rd2, sink2, "v", index2)
 
     def test_fold_expr_at_stays_value_only_by_default(self):
         from core.analysis.cfg_builder_java import _get_parser
@@ -298,10 +324,15 @@ class TestGateConsumers:
 
 
 class TestPropertyWriteScan:
-    def test_clean_tree_allows_property_tf(self, xroot):
+    def test_clean_tree_property_still_refuses(self, xroot):
+        # b45 re-pin: the no-setProperty proof only rules out
+        # in-process writes; the environment itself is the attack
+        # surface (authority) — clean tree or not, property reads
+        # refuse. tf_property_key_ok stays exercised below as the
+        # write-scan primitive.
         v, _ = _xfold(xroot, 'System.getProperty("user.dir")',
                       allow_tf=True)
-        assert v is TAINT_FREE
+        assert v is REFUSE
 
     def test_written_key_refuses(self, xroot, tmp_path):
         (tmp_path / "app" / "W.java").write_text(
@@ -313,15 +344,19 @@ class TestPropertyWriteScan:
                       allow_tf=True)
         assert v is REFUSE
 
-    def test_written_other_key_still_tf(self, xroot, tmp_path):
+    def test_write_scan_primitive_per_key(self, xroot, tmp_path):
+        # b45: the tree-wide write scan remains a valid primitive
+        # (per-key answer), even though it no longer buys the fold
+        # tier anything — pinned here directly.
         (tmp_path / "app" / "W.java").write_text(
             "package app;\npublic class W {\n"
             "    void w(String t) { "
             'System.setProperty("other.key", t); }\n}\n',
             encoding="utf-8")
-        v, _ = _xfold(xroot, 'System.getProperty("user.dir")',
-                      allow_tf=True)
-        assert v is TAINT_FREE
+        _, xfile = _xfold(xroot, 'System.getProperty("user.dir")',
+                          allow_tf=True)
+        assert xfile.tf_property_key_ok("user.dir")
+        assert not xfile.tf_property_key_ok("other.key")
 
     def test_variable_key_poisons_all(self, xroot, tmp_path):
         (tmp_path / "app" / "W.java").write_text(

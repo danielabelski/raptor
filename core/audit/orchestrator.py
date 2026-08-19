@@ -330,10 +330,13 @@ def _update_run_progress(out_dir: Path, result: Any) -> None:
     """Update run metadata with progress checkpoint.
 
     Atomic + locked like every other ``.raptor-run.json`` writer
-    (``_update_status``): a bare ``write_text`` torn by a kill left
-    the run metadata unparseable, and an unlocked read-modify-write
-    raced the lifecycle writers (last writer dropped the other's
-    update).
+    (``core.run.metadata._update_status``): the previous bare
+    ``write_text`` could be torn by a kill mid-write, leaving the run
+    metadata unparseable, and the unlocked read-modify-write raced the
+    lifecycle writers — the last writer silently dropped the other's
+    update (a SIGTERM drain marking the run ``interrupted`` could be
+    clobbered back to ``running`` by a checkpoint that loaded the
+    stale status a moment earlier).
     """
     meta_path = out_dir / ".raptor-run.json"
     try:

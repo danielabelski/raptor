@@ -149,21 +149,17 @@ Three integer knobs on the dispatcher server
 (`core/llm/dispatcher/server.py`). All resolve caller argument > env
 > default; non-numeric or below-minimum (1) values fall back to the
 default with a debug log — a typo never breaks dispatcher startup.
-They are read by helper, not by `os.environ.get` at the call site, so
-the machine inventory currently sees only the first one (its test
-monkeypatches it); listed here as prose until the extractor learns
-that seam:
 
-- `RAPTOR_LLM_DISPATCHER_UPSTREAM_TIMEOUT_S` (default `600`) —
-  read/write/pool timeout in seconds on the dispatcher→provider
-  forwarding leg, re-read per request. The connect timeout stays
-  fixed at 10 s: a provider that cannot finish the TCP/TLS handshake
-  in 10 s is down, and a long connect timeout only delays failover.
-- `RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S` (default `28800` = 8 h) —
-  lifetime of a worker's one-shot auth token; bump for kernel-scale
-  runs that outlive the default.
-- `RAPTOR_LLM_DISPATCHER_TOKEN_BUDGET` (default `10000`) — requests
-  allowed per worker token.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RAPTOR_LLM_DISPATCHER_UPSTREAM_TIMEOUT_S` | `600` | Read/write/pool timeout in seconds on the dispatcher→provider forwarding leg, re-read per request. The connect timeout stays fixed at 10 s: a provider that cannot finish the TCP/TLS handshake in 10 s is down, and a long connect timeout only delays failover. |
+| `RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S` | `28800` (8 h) | Lifetime of a worker's one-shot auth token; bump for kernel-scale runs that outlive the default. The in-process self-serve route (`core/llm/dispatcher/lifecycle.py`) sizes its own token to 7 days when this is unset — an explicit value pins both. |
+
+The third knob, `RAPTOR_LLM_DISPATCHER_TOKEN_BUDGET` (default
+`10000`) — requests allowed per worker token — is read only through
+the server's `_env_int` helper, which the machine inventory does not
+see; it stays in prose until the extractor learns that seam (a table
+row would trip the stale-entry check).
 
 Not to be confused with the dispatcher *route pair*
 (`RAPTOR_LLM_SOCKET` / `RAPTOR_LLM_TOKEN_FD`) — that is per-child

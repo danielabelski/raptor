@@ -2108,7 +2108,9 @@ def review_one_function(
         try:
             from .refutation import rescue_self_refuted
 
-            rv = rescue_self_refuted(outcome)
+            rv = rescue_self_refuted(
+                outcome, negative_space=ctx.get("negative_space"),
+            )
             if rv is not None:
                 append_audit_log(config.out_dir, {
                     "action": "refutation_gate",
@@ -20102,6 +20104,7 @@ def _probe_backed_suspicious(outcome: ReviewOutcome) -> bool:
         for t in (outcome.tools_dispatched or set())
         if str(t).strip()
     }
+    detection_namespaces: set[str] = set()
     for part in (p.strip() for p in ev.split("+")):
         if not part:
             continue
@@ -20115,9 +20118,19 @@ def _probe_backed_suspicious(outcome: ReviewOutcome) -> bool:
             continue
         if part.startswith("prefilter:"):
             continue
+        if _is_detection_only(part):
+            # A single detection-role receipt (inject-mode checker,
+            # -majority consistency variant) surfaces a candidate but
+            # is documented as too imprecise to convict alone; a
+            # deepen re-review that examined the mechanism and
+            # concluded clean may answer it. Two INDEPENDENT
+            # detection namespaces agreeing keep the floor — that is
+            # the aggregation-promotion shape.
+            detection_namespaces.add(part.split(":", 1)[0].lower())
+            continue
         if is_tool_evidence(part):
             return True
-    return False
+    return len(detection_namespaces) >= 2
 
 
 def _stamp_evidence(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:

@@ -191,3 +191,28 @@ class TestResolutionRefereesProbeBacked:
         )
         assert result.outcomes[0].status in ("clean", "dark")
         assert result.suspicious == 0
+
+
+class TestSingleDetectionReceiptFloor:
+    """A single detection-role receipt may not hold the referee floor
+    (observed sustaining clean-expected kernel functions against
+    structured deepen demotions); two independent detection namespaces
+    — the aggregation shape — still hold, as does any
+    verification-role receipt."""
+
+    def test_single_detection_receipt_does_not_qualify(self):
+        assert not _probe_backed_suspicious(
+            _outcome(evidence="smt:check-lock-domain"),
+        )
+
+    def test_verification_receipt_still_qualifies(self):
+        assert _probe_backed_suspicious(
+            _outcome(evidence="smt:check-early-release"),
+        )
+
+    def test_same_namespace_detection_pair_does_not_qualify(self):
+        assert not _probe_backed_suspicious(
+            _outcome(
+                evidence="smt:check-lock-domain+smt:invariant-preservation",
+            ),
+        )

@@ -522,10 +522,34 @@ def _sink_arg_constant_reason(
             )
         except Exception:  # noqa: BLE001 — conduit support is optional
             conduit_resolver = None
+        # Collection round-trips (b28): a ``get`` on a tracked local
+        # map/list folds when every write to the consumed key folds to
+        # the same constant. Both hooks own the method-invocation
+        # slot; composition is first-claim-wins with None as the
+        # fall-through, so no const_fold_java change is needed.
+        collection_resolver = None
+        try:
+            from core.analysis.java_collection_index import (
+                CollectionFoldResolver,
+                build_local_collection_index,
+                compose_invocation_hooks,
+            )
+            coll_index = build_local_collection_index(
+                java_source_text, (min(linenos), max(linenos)),
+            )
+            if coll_index is not None and coll_index.ok:
+                collection_resolver = CollectionFoldResolver(coll_index)
+        except Exception:  # noqa: BLE001 — collection support is optional
+            collection_resolver = None
+        invocation_hook = conduit_resolver
+        if collection_resolver is not None:
+            invocation_hook = compose_invocation_hooks(
+                conduit_resolver, collection_resolver,
+            )
         reason = all_definers_constant(
             rd, sink, sink_arg, index, array_resolver=table_resolver,
             config_resolver=config_resolver,
-            conduit_resolver=conduit_resolver,
+            conduit_resolver=invocation_hook,
         )
         if reason is None:
             return None
@@ -533,6 +557,10 @@ def _sink_arg_constant_reason(
             reason += " (resolved through a constant-table load)"
         if conduit_resolver is not None and conduit_resolver.hits:
             reason += " (resolved through a conduit helper)"
+        if collection_resolver is not None and collection_resolver.hits:
+            reason += (
+                " (resolved through a constant-key collection round-trip)"
+            )
         call_sites = getattr(sink, "call_sites", ()) or ()
         if not call_sites:
             return None
@@ -666,6 +694,93 @@ def _element_exclusive_reason(
         f"element-exclusive sanitizer definitions: every write to the "
         f"consumed element(s) of {len({n for n, _ in targets})} tracked "
         f"local array(s) is a catalog sanitizer call"
+    )
+
+
+def _build_collection_index(graph, java_source_text: str):
+    """Best-effort :class:`LocalCollectionIndex` over the graph's line
+    span; None on any failure — the refusal direction."""
+    try:
+        from core.analysis.java_collection_index import (
+            build_local_collection_index,
+        )
+        linenos = [
+            n.lineno for n in graph.nodes()
+            if getattr(n, "lineno", 0) > 0
+        ]
+        if not linenos:
+            return None
+        return build_local_collection_index(
+            java_source_text, (min(linenos), max(linenos)),
+        )
+    except Exception:  # noqa: BLE001 — collection support is optional
+        return None
+
+
+def _collection_exclusive_reason(
+    graph,
+    sources_set,
+    sink,
+    sink_arg: str,
+    source_symbols,
+    candidate_callables,
+    collection_index,
+) -> Optional[str]:
+    """Reason string when the value the sink consumes is an element of
+    a tracked local collection whose every write to the consumed key
+    is a catalog-sanitizer call; None otherwise. The b19 array rule's
+    exact mirror on map/list round-trips — flow-insensitive over the
+    key's writes for the same reason (which write reaches is
+    irrelevant when every write is a sanitizer output; a never-written
+    key reads as null, which carries no caller taint). List reads are
+    governed by ALL writes to the list (positional order is
+    unprovable), which is strictly stronger.
+
+    Two consumed shapes resolve; everything else refuses:
+
+    * direct — the sink call reads ``sink_arg.get(K)`` on the sink's
+      line (every key recorded, i.e. literal);
+    * one scalar hop — every reaching definer of ``sink_arg`` at the
+      sink is a single-writer ``sink_arg = <cast?> coll.get(K)`` copy.
+    """
+    if collection_index is None or not collection_index.ok:
+        return None
+    sink_lineno = getattr(sink, "lineno", 0)
+    targets: List[Tuple[str, str]] = []
+    direct = collection_index.element_reads_at(sink_lineno, sink_arg)
+    if direct:
+        targets = [(sink_arg, k) for k in sorted(direct)]
+    else:
+        rd = reaching_defs(graph)
+        definers = rd.at(sink, sink_arg)
+        if not definers:
+            return None
+        for d in definers:
+            copy = collection_index.scalar_copy(
+                getattr(d, "lineno", 0), sink_arg,
+            )
+            if copy is None:
+                return None
+            targets.append(copy)
+    if not targets:
+        return None
+    for name, key in targets:
+        if not collection_index.tracked(name):
+            return None
+        writes = collection_index.element_writes(name, key)
+        if not writes:
+            return None
+        for w in writes:
+            if not collection_index.write_is_catalog_call(
+                    w, candidate_callables):
+                return None
+    if _sibling_args_tainted(
+            graph, sources_set, sink, sink_arg, source_symbols):
+        return None
+    return (
+        f"element-exclusive sanitizer definitions: every write to the "
+        f"consumed key(s) of {len({n for n, _ in targets})} tracked "
+        f"local collection(s) is a catalog sanitizer call"
     )
 
 
@@ -1077,6 +1192,28 @@ def evaluate_finding(
                     verdict=VERDICT_SUPPRESS,
                     sink_arg=sink_arg or "",
                 )
+        # Collection mirror of the array pre-check (b28): a sink value
+        # that round-trips through a tracked local map/list whose every
+        # write to the consumed key is a catalog sanitizer. Same
+        # placement rationale — after the catalog gate, so wrong-class
+        # or catalog-empty classes can never suppress through it.
+        if sink_arg:
+            collection_index = _build_collection_index(
+                graph, java_source_text)
+            if collection_index is not None:
+                coll_reason = _collection_exclusive_reason(
+                    graph, sources_set, sink, sink_arg, source_symbols,
+                    candidate_callables, collection_index,
+                )
+                if coll_reason is not None:
+                    return SanitizerCutResult(
+                        suppress=True,
+                        reason=coll_reason,
+                        cut_set=frozenset(),
+                        candidate_callables=frozenset(candidate_callables),
+                        verdict=VERDICT_SUPPRESS,
+                        sink_arg=sink_arg or "",
+                    )
 
     matched_bindings = match_sanitizers_in_cfg(graph, cwe, language)
     # Phase 14 — fold in inter-procedural synthetic bindings. A

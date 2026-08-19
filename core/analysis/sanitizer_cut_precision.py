@@ -1115,6 +1115,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_array_fixtures()
     fixtures += _java_config_fixtures()
     fixtures += _java_b27_fixtures()
+    fixtures += _java_b28_collection_fixtures()
     return fixtures
 
 
@@ -1736,3 +1737,182 @@ __all__ = [
     "run_corpus",
     "main",
 ]
+
+
+def _java_b28_collection_fixtures() -> List[CutFixture]:
+    """b28 battery: local map/list round-trips. Adversarial shapes
+    first — a keyed store is exactly where key confusion, ordering
+    assumptions, or escape blindness would false-suppress, so every
+    such shape is pinned before the two safe idioms the mechanism
+    exists for (the OWASP-style constant-key read and the
+    sanitizer-written key read)."""
+    imp = ("import java.util.HashMap;\n"
+           "import java.util.Hashtable;\n"
+           "import java.util.ArrayList;\n"
+           "import org.owasp.encoder.Encode;\n"
+           "import javax.servlet.http.HttpServletRequest;\n")
+
+    def cls_t(body: str) -> str:
+        return imp + "public class T {\n" + body + "}\n"
+
+    handle = ("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out) {\n"
+              "        String x = request.getParameter(\"q\");\n")
+    j: List[CutFixture] = []
+
+    # ---- must-not-suppress: adversarial shapes ----
+    j.append(_marked(
+        "java_coll_tainted_put_key", "xss", "CWE-79",
+        "coll_tainted_write_on_read_key", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"keyA\", \"a-Value\");\n"
+              + "        m.put(\"keyB\", x);\n"
+              + "        String bar = (String) m.get(\"keyB\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_concat_after_read", "xss", "CWE-79",
+        "coll_const_read_concat_taint", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"k\", \"safe\");\n"
+              + "        String bar = ((String) m.get(\"k\")) + x;\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_nonconst_key_poison", "xss", "CWE-79",
+        "coll_nonconstant_key_poisons_all", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"k\", Encode.forHtml(x));\n"
+              + "        m.put(x, x);\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_aliased_map", "xss", "CWE-79",
+        "coll_alias_untracks", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"k\", Encode.forHtml(x));\n"
+              + "        java.util.Map<String, Object> m2 = m;\n"
+              + "        m2.put(\"k\", x);\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_get_never_put", "xss", "CWE-79",
+        "coll_read_of_unwritten_key", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"a\", Encode.forHtml(x));\n"
+              + "        String bar = (String) m.get(\"b\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_iteration_escape", "xss", "CWE-79",
+        "coll_iteration_escape", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, String> m = new HashMap<>();\n"
+              + "        m.put(\"k\", Encode.forHtml(x));\n"
+              + "        for (String v : m.values()) { x = v; }\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_helper_returned", "xss", "CWE-79",
+        "coll_helper_returned_untracked", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = makeMap(x);\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"
+              + "    private HashMap<String, Object> makeMap(String v) {\n"
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"k\", v);\n"
+              + "        return m;\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_remove_untracks", "xss", "CWE-79",
+        "coll_remove_untracks", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"k\", Encode.forHtml(x));\n"
+              + "        m.remove(\"k\");\n"
+              + "        m.put(\"k\", x);\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_list_mixed_adds", "xss", "CWE-79",
+        "list_positional_order_unprovable", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<>();\n"
+              + "        l.add(Encode.forHtml(x));\n"
+              + "        l.add(x);\n"
+              + "        String bar = l.get(0);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_putall_untracks", "xss", "CWE-79",
+        "coll_putall_imports_state", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        HashMap<String, Object> o = new HashMap<>();\n"
+              + "        o.put(\"k\", x);\n"
+              + "        m.put(\"k\", Encode.forHtml(x));\n"
+              + "        m.putAll(o);\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_tainted_sibling_arg", "xss", "CWE-79",
+        "coll_sibling_argument_taint", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"k\", \"safe\");\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.printf(bar, x);\n    }\n"),
+        "public void handle", "out.printf(bar, x)"))
+
+    # ---- may-suppress: the shapes the mechanism exists for ----
+    j.append(_marked(
+        "java_coll_const_roundtrip", "xss", "CWE-79",
+        "coll_constant_key_roundtrip", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"keyA\", \"a-Value\");\n"
+              + "        m.put(\"keyB\", \"safe-const\");\n"
+              + "        m.put(\"keyC\", \"another\");\n"
+              + "        String bar = (String) m.get(\"keyB\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_sanitizer_roundtrip", "xss", "CWE-79",
+        "coll_sanitizer_key_roundtrip", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        HashMap<String, Object> m = new HashMap<>();\n"
+              + "        m.put(\"k\", Encode.forHtml(x));\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_coll_hashtable_const", "xss", "CWE-79",
+        "coll_hashtable_constant_roundtrip", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        Hashtable<String, Object> m = new Hashtable<>();\n"
+              + "        m.put(\"k\", \"const-value\");\n"
+              + "        String bar = (String) m.get(\"k\");\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    j.append(_marked(
+        "java_list_all_sanitizer_adds", "xss", "CWE-79",
+        "list_every_add_sanitizer", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<>();\n"
+              + "        l.add(Encode.forHtml(x));\n"
+              + "        l.add(Encode.forHtml(x));\n"
+              + "        String bar = l.get(1);\n"
+              + "        out.println(bar);\n    }\n"),
+        "public void handle", "out.println(bar)"))
+    return j

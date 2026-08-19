@@ -141,6 +141,22 @@ def _fold(node, resolve_name, depth: int, array_resolver=None,
         return _fold(inner[0], resolve_name, depth + 1, array_resolver,
                  config_resolver, conduit_resolver) \
             if len(inner) == 1 else _REFUSE
+    if t == "cast_expression":
+        # Only the identity cast folds: ``(String) e`` where ``e``
+        # folds to a str is the same str (the OWASP-style collection
+        # round-trip's ubiquitous shape). Numeric casts can truncate
+        # or reinterpret, so every non-String target refuses — the
+        # wrong-value direction here selects wrong branches downstream.
+        ty = node.child_by_field_name("type")
+        val = node.child_by_field_name("value")
+        if ty is None or val is None:
+            return _REFUSE
+        ty_text = ty.text.decode().split("<", 1)[0].strip()
+        if ty_text.split(".")[-1] != "String":
+            return _REFUSE
+        v = _fold(val, resolve_name, depth + 1, array_resolver,
+                  config_resolver, conduit_resolver)
+        return v if isinstance(v, str) else _REFUSE
     if t == "array_access" and array_resolver is not None:
         return array_resolver(node, resolve_name, depth + 1)
     if t == "decimal_integer_literal":

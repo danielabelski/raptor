@@ -424,6 +424,10 @@ def run_postpass(
                 stats.mechanism("conduit:constant")
             if "(conduit transparency)" in reason_text:
                 stats.mechanism("conduit:transparency")
+            if "constant-key collection round-trip" in reason_text:
+                stats.mechanism("collection:constant-roundtrip")
+            if "tracked local collection" in reason_text:
+                stats.mechanism("collection:sanitizer-elements")
             verdicts.append(result.verdict)
 
         if verdicts == ["resolver-refused"]:

@@ -134,6 +134,11 @@ class RecallManifest:
     profile: str
     expected: list[ExpectedFinding]
     clean_regions: list[ExpectedFinding] = field(default_factory=list)
+    #: "recall" (default) or "fp-only" — an fp-only manifest labels a
+    #: known-clean tree (e.g. the post-CVE-fix twin): expected may be
+    #: empty and the report's recall reads None; clean-region FPs are
+    #: the measurement.
+    corpus_kind: str = "recall"
     build_command: str | None = None
     tolerance: Tolerance = field(default_factory=Tolerance)
 
@@ -241,11 +246,17 @@ def parse_manifest(data: Any) -> RecallManifest:
         drift = DEFAULT_LINE_DRIFT
     tolerance = Tolerance(line_drift=drift, cwe_family_match=bool(fam))
 
+    corpus_kind = data.get("corpus_kind", "recall")
+    if corpus_kind not in ("recall", "fp-only"):
+        errors.append("corpus_kind must be 'recall' or 'fp-only'")
+
     raw_expected = data.get("expected")
     expected: list[ExpectedFinding] = []
-    if not isinstance(raw_expected, list) or not raw_expected:
-        errors.append("expected must be a non-empty list")
-    else:
+    if not isinstance(raw_expected, list) or (
+            not raw_expected and corpus_kind != "fp-only"):
+        errors.append("expected must be a non-empty list "
+                      "(unless corpus_kind is 'fp-only')")
+    elif raw_expected:
         expected = [
             _parse_expected(e, f"expected[{i}]", errors)
             for i, e in enumerate(raw_expected)
@@ -259,6 +270,8 @@ def parse_manifest(data: Any) -> RecallManifest:
         _parse_expected(e, f"clean_regions[{i}]", errors)
         for i, e in enumerate(data.get("clean_regions") or [])
     ]
+    if corpus_kind == "fp-only" and not clean:
+        errors.append("an fp-only manifest needs clean_regions")
 
     if errors:
         raise ManifestError(
@@ -269,6 +282,7 @@ def parse_manifest(data: Any) -> RecallManifest:
         local_path=local_path, language=language, profile=profile,
         expected=expected, clean_regions=clean,
         build_command=data.get("build_command"), tolerance=tolerance,
+        corpus_kind=corpus_kind,
     )
 
 

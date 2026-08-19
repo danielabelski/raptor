@@ -110,3 +110,20 @@ from the v1 manifest and counted in the manifest's `notes`. The suite
 is not bundled — the generator reads an operator-acquired clone of
 the public find-sec-bugs mirror of the NIST suite, sha-pinned like
 every recall corpus.
+
+## The corpus portfolio
+
+Three tiers, each measuring a different thing:
+
+| Corpus | Role | What a delta means |
+|---|---|---|
+| OWASP Benchmark | **Regression floor** (closed at 100.0% recall) | any newly-missed is a regression; recall deltas are otherwise meaningless here |
+| Juliet Java (single-file) | **Generalization gate** with a disclosure ledger | do OWASP-tuned mechanisms transfer? First-contact numbers only; direction-level exposures (weak-hash vocab, stored-XSS investigation) are recorded in the ledger |
+| Juliet-B (`juliet-manifest --variant-b`) | **Ledger-fresh first-contact corpus**: the multi-file variants (cross-file flow), sink-anchored | ranks cross-file/cross-class recall work; untouched by any tuning to date |
+| cvefix (`cvefix-manifest`) | **Real-CVE corpus**: fix-diff candidate labels, pre-fix recall manifest + post-fix `corpus_kind: fp-only` twin | the only tier measuring real-world code; labels are `review: unreviewed-candidate` until hand-verified — raw labels must never gate (FN-corruption caveat) |
+
+Rules of use: recall work is ranked by Juliet/Juliet-B/cvefix, never by
+OWASP deltas; any corpus that informs mechanism *direction* moves to
+the disclosed tier of the ledger and a fresh corpus takes over pure
+first-contact duty; `fp-only` manifests measure clean-region FPs with
+recall reading `null` by design.

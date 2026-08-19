@@ -460,6 +460,80 @@ def _binding_satisfies_value_gate(
     return True
 
 
+def _fold_stack(graph, java_source_text: str,
+                java_file_path: Optional[str] = None,
+                repo_root: Optional[str] = None):
+    """Assemble the composed constant-fold context (const index +
+    table/config resolvers + the conduit/collection invocation hook)
+    over the graph's line span. None on any failure — every consumer
+    treats that as not-constant. Shared by the constant-definers
+    pre-check and the whole-array taint-freedom check so the two can
+    never diverge on resolution power."""
+    try:
+        from core.analysis.const_fold_java import JavaConstIndex
+        linenos = [
+            n.lineno for n in graph.nodes()
+            if getattr(n, "lineno", 0) > 0
+        ]
+        if not linenos:
+            return None
+        span = (min(linenos), max(linenos))
+        index = JavaConstIndex(java_source_text, span)
+        try:
+            from core.analysis.value_set_java import build_table_resolver
+            table_resolver = build_table_resolver(java_source_text, span)
+        except Exception:  # noqa: BLE001 — table support is optional
+            table_resolver = None
+        config_resolver = None
+        if java_file_path:
+            try:
+                from core.analysis.config_resolve_java import (
+                    make_config_resolver,
+                )
+                resolver = make_config_resolver(
+                    java_source_text, java_file_path, repo_root,
+                )
+                if resolver is not None:
+                    config_resolver = resolver.fold_hook
+            except Exception:  # noqa: BLE001 — config support is optional
+                config_resolver = None
+        try:
+            from core.analysis.java_wrapper_summaries import (
+                make_conduit_fold_resolver,
+            )
+            conduit_resolver = make_conduit_fold_resolver(
+                java_source_text, span,
+            )
+        except Exception:  # noqa: BLE001 — conduit support is optional
+            conduit_resolver = None
+        collection_resolver = None
+        try:
+            from core.analysis.java_collection_index import (
+                CollectionFoldResolver,
+                build_local_collection_index,
+                compose_invocation_hooks,
+            )
+            coll_index = build_local_collection_index(
+                java_source_text, span,
+            )
+            if coll_index is not None and coll_index.ok:
+                collection_resolver = CollectionFoldResolver(coll_index)
+        except Exception:  # noqa: BLE001 — collection support is optional
+            collection_resolver = None
+        invocation_hook = conduit_resolver
+        if collection_resolver is not None:
+            from core.analysis.java_collection_index import (
+                compose_invocation_hooks,
+            )
+            invocation_hook = compose_invocation_hooks(
+                conduit_resolver, collection_resolver,
+            )
+        return (index, table_resolver, config_resolver, invocation_hook,
+                conduit_resolver, collection_resolver)
+    except Exception:  # noqa: BLE001 — folding is best-effort, never fatal
+        return None
+
+
 def _sink_arg_constant_reason(
     graph, sources_set, sink, sink_arg: str,
     source_symbols, java_source_text: str,
@@ -695,6 +769,102 @@ def _element_exclusive_reason(
         f"consumed element(s) of {len({n for n, _ in targets})} tracked "
         f"local array(s) is a catalog sanitizer call"
     )
+
+
+def _whole_array_taint_free_reason(
+    graph,
+    sources_set,
+    sink,
+    sink_arg: str,
+    source_symbols,
+    candidate_callables,
+    java_source_text: str,
+    java_file_path: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> Optional[str]:
+    """Reason string when the sink consumes a WHOLE local array whose
+    every element is provably taint-free; None otherwise.
+
+    Conditions, all load-bearing: ``sink_arg`` names a fresh
+    initializer-form array whose ONLY escape is the single exempted
+    sink-argument occurrence (any other appearance — aliasing, call
+    argument, element write through an alias — violates in the index);
+    every recorded element write is a catalog-sanitizer call, folds to
+    a compile-time constant through the full composed resolver stack,
+    or is a bare identifier whose EVERY reaching definer at the write
+    site folds to a constant (values need not agree — taint-freedom,
+    not value identity); and no sibling argument of the sink call is
+    tainted. Any resolution failure refuses.
+    """
+    try:
+        from core.analysis.java_array_escape import build_local_array_index
+        linenos = [
+            n.lineno for n in graph.nodes()
+            if getattr(n, "lineno", 0) > 0
+        ]
+        if not linenos:
+            return None
+        sink_lineno = getattr(sink, "lineno", 0)
+        arr = build_local_array_index(
+            java_source_text, (min(linenos), max(linenos)),
+            sink_exempt=(sink_lineno, sink_arg),
+        )
+        if arr is None or not arr.ok or not arr.whole_pass_ok(sink_arg):
+            return None
+        writes = [
+            w for (name, _i), ws in arr._writes.items()
+            if name == sink_arg for w in ws
+        ]
+        if not writes:
+            return None
+        stack = _fold_stack(graph, java_source_text,
+                            java_file_path=java_file_path,
+                            repo_root=repo_root)
+        if stack is None:
+            return None
+        index, table_resolver, config_resolver, invocation_hook = stack[:4]
+        from core.analysis.const_fold_java import (
+            REFUSE,
+            definers_all_fold,
+            fold_expr_at,
+        )
+        rd = reaching_defs(graph)
+        by_line = {}
+        for n in graph.nodes():
+            ln = getattr(n, "lineno", 0)
+            if ln > 0 and ln not in by_line:
+                by_line[ln] = n
+        for w in writes:
+            if arr.write_is_catalog_call(w, candidate_callables):
+                continue
+            at = by_line.get(w.lineno)
+            if at is None or w.rhs is None:
+                return None
+            val = fold_expr_at(
+                rd, at, w.rhs, index, array_resolver=table_resolver,
+                config_resolver=config_resolver,
+                conduit_resolver=invocation_hook,
+            )
+            if val is not REFUSE:
+                continue
+            if w.rhs.type == "identifier":
+                if definers_all_fold(
+                        rd, at, w.rhs.text.decode("utf-8", "replace"),
+                        index, array_resolver=table_resolver,
+                        config_resolver=config_resolver,
+                        conduit_resolver=invocation_hook):
+                    continue
+            return None
+        if _sibling_args_tainted(
+                graph, sources_set, sink, sink_arg, source_symbols):
+            return None
+        return (
+            "taint-free array argument: the sink consumes a whole "
+            "initializer-only local array whose every element is a "
+            "catalog sanitizer call or folds to a compile-time constant"
+        )
+    except Exception:  # noqa: BLE001 — best-effort, never fatal
+        return None
 
 
 def _build_collection_index(graph, java_source_text: str):
@@ -1158,6 +1328,31 @@ def evaluate_finding(
             )
 
     candidate_callables = sanitizer_callables_for_cwe(cwe, language)
+
+    # Whole-array taint-freedom (b34): the sink consumes the array
+    # ITSELF (no element read to anchor the exclusive rule on) —
+    # suppressible only when the array is initializer-only, never
+    # escapes except into this sink argument, and every element is
+    # provably taint-free through the full fold stack. Runs BEFORE the
+    # catalog-empty return (the collection-guard precedent): the
+    # constancy leg needs no sanitizer catalog, and the catalog leg is
+    # naturally inert when the class has no call-shaped sanitizers.
+    if language == "java" and java_source_text and sink_arg:
+        wa_reason = _whole_array_taint_free_reason(
+            graph, sources_set, sink, sink_arg, source_symbols,
+            candidate_callables or frozenset(), java_source_text,
+            java_file_path=java_file_path, repo_root=repo_root,
+        )
+        if wa_reason is not None:
+            return SanitizerCutResult(
+                suppress=True,
+                reason=wa_reason,
+                cut_set=frozenset(),
+                candidate_callables=frozenset(candidate_callables or ()),
+                verdict=VERDICT_SUPPRESS,
+                sink_arg=sink_arg,
+            )
+
     if not candidate_callables:
         return SanitizerCutResult(
             suppress=False,

@@ -2141,19 +2141,84 @@ def _java_b34_positional_fixtures() -> List[CutFixture]:
     j.append(_marked(
         "java_exec_array_tainted_elem", "cmdi", "CWE-78",
         "exec_array_tainted_element_whole_pass", LABEL_MUST_NOT_SUPPRESS,
-        cls_t(handle
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out) throws Exception {\n"
+              "        String x = request.getParameter(\"q\");\n"
               + "        String[] a = {\"sh\", \"-c\", x};\n"
               + "        Runtime r = Runtime.getRuntime();\n"
-              + "        try { r.exec(a); } catch (Exception e) {}\n"
+              + "        r.exec(a);\n"
               + "    }\n"),
         "public void handle", "r.exec(a)"))
     j.append(_marked(
         "java_exec_array_constant_whole", "cmdi", "CWE-78",
-        "exec_array_constant_whole_pass", LABEL_MUST_NOT_SUPPRESS,
-        cls_t(handle
+        # Graduated by b34's whole-array taint-freedom (was pinned
+        # out-of-scope earlier in the same wave; the mechanism now
+        # proves it: initializer-only never-escaping array, every
+        # element constant).
+        "exec_array_constant_whole_pass", LABEL_MAY_SUPPRESS,
+        cls_t("    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out) throws Exception {\n"
+              "        String x = request.getParameter(\"q\");\n"
               + "        String[] a = {\"ls\", \"-la\"};\n"
               + "        Runtime r = Runtime.getRuntime();\n"
-              + "        try { r.exec(a); } catch (Exception e) {}\n"
+              + "        r.exec(a);\n"
               + "    }\n"),
         "public void handle", "r.exec(a)"))
+    # Whole-array taint-freedom battery: an initializer-only,
+    # never-escaping array passed WHOLE to the sink suppresses only
+    # when every element is provably taint-free (constant via the full
+    # fold stack — positional list resolution included — or a catalog
+    # sanitizer call).
+    j.append(_marked(
+        "java_wholearr_const_positional", "xss", "CWE-79",
+        "wholearr_positional_constant_elements", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        ArrayList<String> l = new ArrayList<String>();\n"
+              + "        l.add(\"safe\");\n"
+              + "        l.add(x);\n"
+              + "        l.add(\"moresafe\");\n"
+              + "        l.remove(0);\n"
+              + "        String bar = l.get(1);\n"
+              + "        Object[] obj = {\"a\", bar};\n"
+              + "        out.format(\"%1$s %2$s\", obj);\n    }\n"),
+        "public void handle", "out.format"))
+    j.append(_marked(
+        "java_wholearr_sanitized_elem", "xss", "CWE-79",
+        "wholearr_sanitized_element", LABEL_MAY_SUPPRESS,
+        cls_t(handle
+              + "        Object[] obj = {\"a\", Encode.forHtml(x)};\n"
+              + "        out.format(\"%1$s %2$s\", obj);\n    }\n"),
+        "public void handle", "out.format"))
+    j.append(_marked(
+        "java_wholearr_tainted_elem", "xss", "CWE-79",
+        "wholearr_tainted_element", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        Object[] obj = {\"a\", x};\n"
+              + "        out.format(\"%1$s %2$s\", obj);\n    }\n"),
+        "public void handle", "out.format"))
+    j.append(_marked(
+        "java_wholearr_elem_mutated", "xss", "CWE-79",
+        "wholearr_element_mutated_after_init", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        Object[] obj = {\"a\", \"b\"};\n"
+              + "        obj[1] = x;\n"
+              + "        out.format(\"%1$s %2$s\", obj);\n    }\n"),
+        "public void handle", "out.format"))
+    j.append(_marked(
+        "java_wholearr_aliased", "xss", "CWE-79",
+        "wholearr_aliased_reference", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        Object[] obj = {\"a\", \"b\"};\n"
+              + "        Object[] p = obj;\n"
+              + "        p[1] = x;\n"
+              + "        out.format(\"%1$s %2$s\", obj);\n    }\n"),
+        "public void handle", "out.format"))
+    j.append(_marked(
+        "java_wholearr_tainted_scalar_elem", "xss", "CWE-79",
+        "wholearr_tainted_scalar_element", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String bar = x;\n"
+              + "        Object[] obj = {\"a\", bar};\n"
+              + "        out.format(\"%1$s %2$s\", obj);\n    }\n"),
+        "public void handle", "out.format"))
     return j

@@ -103,6 +103,9 @@ class LocalArrayIndex:
 
     ok: bool = False
     _fresh: Set[str] = field(default_factory=set)
+    # Names whose single sink-line whole-array occurrence was exempted
+    # (see build_local_array_index's sink_exempt).
+    _whole_pass_names: Set[str] = field(default_factory=set)
     _violated: Set[str] = field(default_factory=set)
     _global_refuse: bool = False
     _writes: Dict[Tuple[str, int], List[_ElementWrite]] = field(
@@ -121,6 +124,11 @@ class LocalArrayIndex:
     _resolver: Any = None
 
     # ----- queries ---------------------------------------------------
+
+    def whole_pass_ok(self, name: str) -> bool:
+        """True when the name's only escape was the exempted sink
+        argument occurrence."""
+        return name in self._whole_pass_names and self.tracked(name)
 
     def tracked(self, name: str) -> bool:
         """True iff ``name`` is a local, fresh-initialised, never-
@@ -181,10 +189,17 @@ class LocalArrayIndex:
 
 def build_local_array_index(
     source_text: str, line_span: Tuple[int, int],
+    sink_exempt: Optional[Tuple[int, str]] = None,
 ) -> Optional[LocalArrayIndex]:
     """Build the index over ``line_span`` (inclusive, 1-based — the
     method body's line range). None when the grammar is unavailable
-    or parsing fails."""
+    or parsing fails.
+
+    ``sink_exempt=(lineno, name)`` permits AT MOST ONE otherwise-
+    unconsumed bare occurrence of ``name`` on ``lineno`` — the sink
+    call's whole-array argument — recording it in
+    ``_whole_pass_names`` instead of violating. A second unconsumed
+    occurrence on that line still violates (conservative)."""
     parser = _parser()
     if parser is None:
         return None
@@ -386,7 +401,13 @@ def build_local_array_index(
                 nm = _text(cur)
                 if nm in idx._fresh and (
                         (cur.start_byte, cur.end_byte) not in consumed):
-                    idx._violated.add(nm)
+                    if (sink_exempt is not None
+                            and nm == sink_exempt[1]
+                            and cur.start_point[0] + 1 == sink_exempt[0]
+                            and nm not in idx._whole_pass_names):
+                        idx._whole_pass_names.add(nm)
+                    else:
+                        idx._violated.add(nm)
                 continue
             for c in cur.children:
                 if c.is_named:

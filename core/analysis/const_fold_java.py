@@ -389,6 +389,49 @@ def fold_expr_at(rd, at_node, expr_node, index: JavaConstIndex,
     )
 
 
+def definers_all_fold(
+    rd,
+    at_node,
+    name: str,
+    index: JavaConstIndex,
+    array_resolver=None,
+    config_resolver=None,
+    conduit_resolver=None,
+) -> bool:
+    """True when EVERY reaching definer of ``name`` at ``at_node``
+    folds to a compile-time constant — the values need NOT agree
+    (taint-freedom, not value identity; a variable that is provably
+    one of several constants carries no caller taint). Nested
+    identifier resolution keeps the strict all-defs-must-agree policy
+    of :func:`_make_point_resolver`, so relaxation applies only to the
+    named variable's own definer set, never inside arithmetic."""
+    if not index.ok:
+        return False
+    resolve_at = _make_point_resolver(rd, index, array_resolver,
+                                      config_resolver, conduit_resolver)
+    try:
+        defs = rd.at(at_node, name)
+    except Exception:  # noqa: BLE001 — oracle failure reads as refuse
+        return False
+    if not defs:
+        return False
+    for d in defs:
+        rhs = index.rhs_at(getattr(d, "lineno", 0), name)
+        if rhs is None:
+            return False
+        val = _fold(
+            rhs,
+            lambda nm, dp, _d=d: resolve_at(_d, nm, dp, set()),
+            0,
+            array_resolver,
+            config_resolver,
+            conduit_resolver,
+        )
+        if val is _REFUSE:
+            return False
+    return True
+
+
 def all_definers_constant(
     rd,
     sink,

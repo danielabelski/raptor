@@ -126,6 +126,9 @@ def _cmd_census(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"error: cannot read report: {exc}", file=sys.stderr)
         return 2
+
+    if args.fn:
+        return _fn_census(args, report)
     clean_fps = report.get("clean_region_fps", [])
 
     # Rule attribution: reports produced before the score() rules
@@ -167,6 +170,38 @@ def _cmd_census(args: argparse.Namespace) -> int:
     (out_dir / "census.md").write_text(md, encoding="utf-8")
     print(md)
     print(f"census: {out_dir / 'census.json'}")
+    return 0
+
+
+def _fn_census(args: argparse.Namespace, report: dict) -> int:
+    from core.recall.fn_census import (
+        build_fn_census,
+        render_fn_census_markdown,
+    )
+
+    missed = report.get("missed", [])
+    produced = None
+    run_dir = args.run_dir or (
+        Path(report["run_output_dir"])
+        if report.get("run_output_dir") else None)
+    if run_dir is not None and Path(run_dir).is_dir():
+        produced = collect_findings(Path(run_dir),
+                                    source_root=args.source_root)
+    else:
+        print("warning: no usable run dir — the census will not name "
+              "the rules firing per missed CWE", file=sys.stderr)
+
+    census = build_fn_census(missed, source_root=args.source_root,
+                             per_cwe=report.get("per_cwe"),
+                             produced=produced)
+    md = render_fn_census_markdown(census)
+    out_dir = args.out or args.report.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "fn-census.json").write_text(
+        json.dumps(census, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "fn-census.md").write_text(md, encoding="utf-8")
+    print(md)
+    print(f"fn census: {out_dir / 'fn-census.json'}")
     return 0
 
 
@@ -255,7 +290,11 @@ def main(argv: list[str] | None = None) -> int:
 
     cen_p = sub.add_parser(
         "census",
-        help="rank clean-region FPs by rule, CWE, and sanitizer idiom")
+        help="rank clean-region FPs by rule, CWE, and sanitizer idiom "
+             "(--fn: rank MISSED findings by chain-breaking construct)")
+    cen_p.add_argument("--fn", action="store_true",
+                       help="census the missed expected findings "
+                            "instead of the clean-region FPs")
     cen_p.add_argument("--report", type=Path, required=True)
     cen_p.add_argument("--manifest", type=Path, default=None,
                        help="needed to recompute rule attribution for "

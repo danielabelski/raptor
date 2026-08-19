@@ -827,6 +827,11 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
             ),
         )
 
+    inter_proc = _inter_proc_bindings_java(
+        source_text, cfg,
+        (parsed.source_lineno, parsed.sink_lineno), parsed.cwe,
+    )
+
     return ResolvedFinding(
         file=parsed.file,
         enclosing_function=fn_name,
@@ -839,7 +844,30 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
         cfg=cfg,
         source_node=source_node,
         sink_node=sink_node,
+        inter_proc_bindings=inter_proc,
     )
+
+
+def _inter_proc_bindings_java(
+    source_text: str,
+    cfg: "JavaCFG",
+    line_hint: Tuple[int, int],
+    cwe: str,
+) -> FrozenSet:
+    """Java analog of :func:`_inter_proc_bindings_python` — one-level
+    same-class wrapper summaries
+    (:mod:`core.analysis.java_wrapper_summaries`) synthesised into
+    bindings at qualifying call sites. Empty frozenset on any failure
+    (best-effort — the intra-procedural verdict still stands)."""
+    try:
+        from core.analysis.java_wrapper_summaries import (
+            synthetic_wrapper_bindings_java,
+        )
+        return synthetic_wrapper_bindings_java(
+            cfg, source_text, line_hint, cwe, "java",
+        )
+    except Exception:                                       # noqa: BLE001
+        return frozenset()
 
 
 # ---------------------------------------------------------------------------

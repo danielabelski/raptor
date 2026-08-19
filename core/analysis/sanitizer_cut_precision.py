@@ -356,6 +356,118 @@ def _java_fixtures() -> List[CutFixture]:
     return j
 
 
+def _java_wrapper_fixtures() -> List[CutFixture]:
+    """b19 wrapper-summary battery. Adversarial shapes first — every
+    way a helper can LOOK like a sanitizer without being one must
+    refuse: a non-sanitizing body, a two-level wrapper (depth cap), a
+    branchy body, an overridable instance method (dynamic dispatch),
+    recursion, same-arity overloads, and a mixed clean+dirty parameter
+    signature. Safe shapes: the direct wrapper and the
+    local-chain body."""
+    imp = "import org.owasp.encoder.Encode;\n"
+
+    def cls(helpers: str, body: str,
+            params: str = "String x, java.io.PrintWriter out") -> str:
+        return ("public class T {\n"
+                f"{helpers}"
+                f"    public void handle({params}) {{\n"
+                f"{body}    }}\n"
+                "}\n")
+
+    j = []
+    j.append(_fx(
+        "java_wrap_nonsanitizing", "xss", "CWE-79",
+        "wrapper_without_sanitizer", LABEL_MUST_NOT_SUPPRESS,
+        cls("    private static String clean(String s) {\n"
+            "        return s.trim();\n"
+            "    }\n",
+            "        String y = clean(x);\n"
+            "        out.println(y);\n"),
+        5, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_two_level", "xss", "CWE-79",
+        "wrapper_depth_two", LABEL_MUST_NOT_SUPPRESS,
+        imp + cls(
+            "    private static String inner(String s) "
+            "{ return Encode.forHtml(s); }\n"
+            "    private static String outer(String s) "
+            "{ return inner(s); }\n",
+            "        String y = outer(x);\n"
+            "        out.println(y);\n"),
+        5, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_branchy", "xss", "CWE-79",
+        "wrapper_sanitizes_one_branch", LABEL_MUST_NOT_SUPPRESS,
+        imp + cls(
+            "    private static String h(String s) {\n"
+            "        if (s.length() > 3) { return Encode.forHtml(s); }\n"
+            "        return s;\n"
+            "    }\n",
+            "        String y = h(x);\n"
+            "        out.println(y);\n"),
+        7, 9, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_overridable", "xss", "CWE-79",
+        "wrapper_dynamic_dispatch", LABEL_MUST_NOT_SUPPRESS,
+        imp + cls(
+            "    public String h(String s) "
+            "{ return Encode.forHtml(s); }\n",
+            "        String y = h(x);\n"
+            "        out.println(y);\n"),
+        4, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_recursive", "xss", "CWE-79",
+        "wrapper_recursion", LABEL_MUST_NOT_SUPPRESS,
+        imp + cls(
+            "    private static String h(String s) "
+            "{ return h(Encode.forHtml(s)); }\n",
+            "        String y = h(x);\n"
+            "        out.println(y);\n"),
+        4, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_overloaded", "xss", "CWE-79",
+        "wrapper_overload_ambiguity", LABEL_MUST_NOT_SUPPRESS,
+        imp + cls(
+            "    private static String h(String s) "
+            "{ return Encode.forHtml(s); }\n"
+            "    private static String h(Object s) "
+            "{ return s.toString(); }\n",
+            "        String y = h(x);\n"
+            "        out.println(y);\n"),
+        5, 7, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_mixed_params", "xss", "CWE-79",
+        "wrapper_clean_and_dirty_params", LABEL_MUST_NOT_SUPPRESS,
+        imp + cls(
+            "    private static String h(String a, String b) {\n"
+            "        return Encode.forHtml(a) + b;\n"
+            "    }\n",
+            "        String y = h(x, x);\n"
+            "        out.println(y);\n"),
+        6, 8, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_direct", "xss", "CWE-79",
+        "wrapper_direct_sanitizer", LABEL_MAY_SUPPRESS,
+        imp + cls(
+            "    private static String esc(String s) "
+            "{ return Encode.forHtml(s); }\n",
+            "        String y = esc(x);\n"
+            "        out.println(y);\n"),
+        4, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_wrap_local_chain", "xss", "CWE-79",
+        "wrapper_local_chain", LABEL_MAY_SUPPRESS,
+        imp + cls(
+            "    private static String esc(String s) {\n"
+            "        String t = Encode.forHtml(s);\n"
+            "        return t;\n"
+            "    }\n",
+            "        String y = esc(x);\n"
+            "        out.println(y);\n"),
+        7, 9, language="java", suffix=".java"))
+    return j
+
+
 def build_corpus() -> List[CutFixture]:
     """The labelled corpus: the adversarial battery instantiated per
     covered python sink class, plus interproc, catalog-empty-class,
@@ -402,6 +514,7 @@ def build_corpus() -> List[CutFixture]:
         "}\n", 1, 2, language="c", suffix=".c"))
     fixtures += _java_fixtures()
     fixtures += _java_constant_fixtures()
+    fixtures += _java_wrapper_fixtures()
     return fixtures
 
 

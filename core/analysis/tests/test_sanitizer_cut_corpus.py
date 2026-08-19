@@ -109,6 +109,18 @@ _JAVA_CORPUS_CASES = [
 ]
 
 
+# b19 regression pins running the FULL production path (resolver →
+# evaluate_finding with inter-proc bindings AND java_source_text) via
+# the parity wrapper — the element-exclusive pre-check and wrapper
+# summaries only engage on that path.
+# (filename, cwe, source_line, sink_line, expected_verdict)
+_JAVA_B19_CASES = [
+    # Private static wrapper whose return is provably the sanitizer
+    # applied to its argument — the synthetic binding carries the cut.
+    ("wrapper_helper_java.java", "CWE-79", 12, 14, VERDICT_SUPPRESS),
+]
+
+
 def _native_finding(fixture: str, cwe: str, source_line: int,
                     sink_line: int, language: str = "python"):
     return {
@@ -196,6 +208,29 @@ def test_java_corpus_fixture_verdict(
         f"{fixture}: verdict={result.verdict!r}, "
         f"expected {expected_verdict!r}. Reason: {result.reason}"
     )
+
+
+@pytest.mark.parametrize(
+    "fixture,cwe,source_line,sink_line,expected_verdict",
+    _JAVA_B19_CASES,
+)
+def test_java_b19_full_path_verdict(
+    fixture, cwe, source_line, sink_line, expected_verdict,
+):
+    """b19 pins — element-exclusive sanitizer definitions and wrapper
+    summaries through the exact production entry point
+    (``value_bound_verdict_for``: resolver + inter-proc bindings +
+    java_source_text)."""
+    pytest.importorskip("tree_sitter_java")
+    from core.dataflow.sanitizer_cut_parity import value_bound_verdict_for
+    verdict = value_bound_verdict_for({
+        "cwe": cwe,
+        "file_path": str(_CORPUS_DIR / fixture),
+        "source_line": source_line,
+        "sink_line": sink_line,
+        "language": "java",
+    })
+    assert verdict == expected_verdict
 
 
 @pytest.mark.parametrize(

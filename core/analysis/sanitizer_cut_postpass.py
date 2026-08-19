@@ -356,6 +356,7 @@ def run_postpass(
                     language=resolved.language,
                     source_symbols=resolved.source_symbols,
                     sink_arg=resolved.sink_arg,
+                    extra_bindings=resolved.inter_proc_bindings,
                     java_source_text=java_text,
                 )
             except Exception:  # noqa: BLE001 — arbitrary scanned source can break parsing

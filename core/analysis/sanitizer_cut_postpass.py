@@ -187,6 +187,30 @@ class PostpassStats:
         }
 
 
+def _sink_method_span(
+    resolved_path: "Path",
+    sink_line: int,
+    text_cache: Dict["Path", str],
+):
+    """Sink's enclosing-method span for candidate scoping.
+
+    Uses the shared per-file text cache; any failure returns None and
+    scoping simply does not apply (candidates behave as before).
+    """
+    try:
+        if resolved_path not in text_cache:
+            text_cache[resolved_path] = resolved_path.read_text(
+                encoding="utf-8", errors="replace",
+            )
+        text = text_cache[resolved_path]
+        if not text:
+            return None
+        from core.analysis.cross_method_java import enclosing_method_span
+        return enclosing_method_span(text, sink_line)
+    except Exception:  # noqa: BLE001 — scoping is an optimisation, never a failure
+        return None
+
+
 def _language_for(file_path: str) -> Optional[str]:
     for ext, lang in _EXT_LANGUAGE.items():
         if file_path.lower().endswith(ext):
@@ -506,6 +530,32 @@ def run_postpass(
             source_lines = [ln for ln, _ in with_kinds]
             for kind in sorted({k for _, ks in with_kinds for k in ks}):
                 stats.source_kind(kind)
+            if language == "java" and source_lines:
+                # Traceless findings come from intra-procedural taint
+                # (trace-capable producers emit traces, which take the
+                # branch above), so a candidate outside the sink's
+                # enclosing method cannot be the withheld source —
+                # scope it out. See core.analysis.cross_method_java.
+                span = _sink_method_span(
+                    resolved_path, int(sink_line), text_cache,
+                )
+                if span is not None:
+                    _name, span_start, span_end = span
+                    in_method = [
+                        ln for ln in source_lines
+                        if span_start <= ln <= span_end
+                    ]
+                    scoped_out = len(source_lines) - len(in_method)
+                    if scoped_out:
+                        for _i in range(scoped_out):
+                            stats.mechanism("cross-method:candidate-scoped")
+                        source_lines = in_method
+                    # Caller-mediated taint needs no extra candidate:
+                    # the gate's definer-exclusivity condition is
+                    # source-agnostic, so a sink argument reachable
+                    # from a method parameter fails condition 3 under
+                    # EVERY candidate (pinned by
+                    # test_params_entry_redundant_with_condition3).
         if not source_lines:
             stats.refuse("no-source-candidates")
             continue

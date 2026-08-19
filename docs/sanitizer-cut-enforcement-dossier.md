@@ -80,6 +80,23 @@ grew 3 → 88 as mechanisms landed while damage never left zero.
   the pre-conditions for Juliet-positive evidence.
   Historical recommendation (retained): one Juliet
   warm run pre-flip.
+- UPDATE (cross-method candidate scoping measured, full Juliet
+  manifest): the intra-method resolution blocker is now closed —
+  traceless candidates scope to the sink's enclosing method on an
+  engine-fact basis (intra-procedural producers cannot have used a
+  cross-method source), collapsing resolver refusals 11,645 -> 1,651
+  with OWASP byte-identical (same 278 suppress records, damage 0).
+  Suppression on Juliet remains honestly ZERO, and the residual is now
+  precisely named: 17,161 findings have no intra-method source
+  candidate at all — Juliet's traceless findings are dominantly
+  PRESENCE-rule findings (weak-crypto/config shapes) with no taint
+  question the value-bound gate can adjudicate, an out-of-domain
+  class rather than a coverage gap — and 3,236 resolve but meet
+  control-flow-shaped guards (branch-guard mechanisms remain the one
+  buildable pre-condition). Enforcement implication unchanged and
+  sharpened: a flip stays a Juliet no-op, and the flagged pre-flip
+  Juliet warm measurement is now DONE (zero records, zero damage,
+  twice measured under different locator generations).
 - Mechanism maturity differs: encoder cuts and constant-definers have
   the longest live history; conduit summaries are the newest (one
   round). A staged flip (enforce only verdicts whose mechanism

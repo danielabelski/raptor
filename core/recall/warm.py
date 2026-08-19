@@ -68,6 +68,23 @@ def _record_matches(rec: dict[str, Any], entry: dict[str, Any],
     entry_rules = entry.get("rules") or []
     if rec_rule and entry_rules and rec_rule not in entry_rules:
         return False
+    # CWE-family discrimination: a record that names the suppressed
+    # finding's CWE only matches an entry of the same family —
+    # suppressing an XSS finding on a file whose expected finding is
+    # trust-boundary is not recall damage for that entry (observed
+    # cross-CWE misattribution on file-level entries). A record
+    # WITHOUT a cwe keeps matching (refusal direction: unknown
+    # provenance still blocks enforcement via the damage count).
+    rec_cwe = str(rec.get("cwe") or "")
+    entry_cwe = str(entry.get("cwe") or "")
+    if rec_cwe and entry_cwe:
+        try:
+            from packages.checker_synthesis.cwe_families import cwe_siblings
+            if (rec_cwe != entry_cwe
+                    and rec_cwe not in cwe_siblings(entry_cwe)):
+                return False
+        except ImportError:                                 # pragma: no cover
+            pass
     start = entry.get("line_start")
     if start is None:
         return True

@@ -1049,6 +1049,14 @@ def record_sanitizer_cut_suppression(
         "catalog_matches": [_binding_to_json(b) for b in catalog_matches],
         "witness_lines": sorted({b.lineno for b in catalog_matches}),
         "enforced": bool(enforce),
+        # The suppressed finding's CWE — consumers matching records
+        # against ground-truth entries need it to avoid cross-CWE
+        # misattribution on file-level entries (observed: an XSS-rule
+        # suppression on a file whose expected finding is CWE-501 read
+        # as recall damage).
+        "cwe": str(
+            finding.get("cwe") or finding.get("cwe_id") or ""
+        ),
     }
 
     record_suppression(

@@ -47,6 +47,16 @@ rules:
           # Raw HTML responses
           - pattern: Response($X, ..., content_type="text/html", ...)
           - pattern: HttpResponse($X, ..., content_type="text/html", ...)
+      # Django HttpResponse without an explicit content_type defaults
+      # to text/html — tainted body is XSS. Explicit non-HTML types
+      # (application/json, text/plain, ...) are excluded.
+      - patterns:
+          - pattern-either:
+              - pattern: HttpResponse($X, ...)
+              - pattern: django.http.HttpResponse($X, ...)
+          - pattern-not: HttpResponse(..., content_type=$CT, ...)
+          - pattern-not: django.http.HttpResponse(..., content_type=$CT, ...)
+          - focus-metavariable: $X
     pattern-sanitizers:
       - pattern: html.escape(...)
       - pattern: markupsafe.escape(...)
@@ -240,6 +250,11 @@ rules:
           - pattern: $EL.html($X)
           # React — explicit escape hatch
           - pattern: "dangerouslySetInnerHTML = {__html: $X}"
+          # Express — res.send() of a string body defaults to
+          # text/html; res.write() streams the raw body. Both reflect
+          # tainted request data as markup.
+          - pattern: $RES.send($X)
+          - pattern: $RES.write($X)
     pattern-sanitizers:
       - pattern: DOMPurify.sanitize(...)
       - pattern: xss(...)

@@ -88,20 +88,28 @@ def _journal_project_dir(out_dir: Path) -> Path | None:
 
 
 def _merge_journal_index(out_dir: Path) -> None:
-    """Merge per-run review journal into project-level index.
+    """Merge per-run review journals into the project-level index.
 
+    Covers the run root AND one-level tool subdirs (see
+    ``core.coverage.journal.merge_run_into_index``): /audit journals
+    at the root, /agentic's analysis agent under ``autonomous/``.
     No-op when the run produced no journal or when no active project
     context exists.
     """
-    journal_path = out_dir / "review-journal.jsonl"
-    if not journal_path.is_file():
+    candidates = [out_dir / "review-journal.jsonl"]
+    try:
+        candidates += [d / "review-journal.jsonl"
+                       for d in out_dir.iterdir() if d.is_dir()]
+    except OSError:
+        pass
+    if not any(p.is_file() for p in candidates):
         return
     project_dir = _journal_project_dir(out_dir)
     if project_dir is None:
         return
     try:
-        from core.audit.journal import merge_into_index
-        merged = merge_into_index(project_dir, out_dir)
+        from core.coverage.journal import merge_run_into_index
+        merged = merge_run_into_index(project_dir, out_dir)
         if merged:
             print(f"  journal: {merged} entries merged into project index",
                   file=sys.stderr)

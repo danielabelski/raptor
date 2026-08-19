@@ -539,6 +539,33 @@ def merge_into_index(project_dir: Path, run_dir: Path) -> int:
     return merged
 
 
+def merge_run_into_index(project_dir: Path, run_dir: Path) -> int:
+    """Merge a RUN's journals into the project index — root and
+    one-level tool subdirs.
+
+    Producers write journals where they run: /audit at the run root,
+    /agentic's analysis agent under ``autonomous/``. The same
+    one-level-subdir convention as ``core.coverage.record.
+    load_records`` (which globs ``coverage-*.json`` in tool subdirs).
+    Before this, run-completion merged only the root journal, so
+    /agentic per-finding entries never reached the project index —
+    cross-run consumers (prior finding-grade claims, the coverage
+    importer's index path) silently saw nothing.
+
+    Returns total entries merged.
+    """
+    run_dir = Path(run_dir)
+    merged = merge_into_index(project_dir, run_dir)
+    try:
+        subdirs = sorted(d for d in run_dir.iterdir() if d.is_dir())
+    except OSError:
+        return merged
+    for sub in subdirs:
+        if (sub / JOURNAL_FILENAME).is_file():
+            merged += merge_into_index(project_dir, sub)
+    return merged
+
+
 def load_index(project_dir: Path) -> dict[str, ReviewJournalEntry]:
     """Load the project-level journal index, collapsed to
     latest-per-``(file, function)``.

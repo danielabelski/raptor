@@ -57,7 +57,12 @@ class TestBuildCmd:
         assert cmd[2] == str(tmp_path / "target")
         assert "--no-validate" in cmd
         assert _flag_value(cmd, "--schedule") == "priority"
-        assert _flag_value(cmd, "--prior-journal") == str(tmp_path / "out")
+        priors = [cmd[i + 1] for i, a in enumerate(cmd)
+                  if a == "--prior-journal"]
+        assert priors == [
+            str(tmp_path / "out"),
+            str(tmp_path / "out" / "autonomous"),
+        ]
         assert _flag_value(cmd, "--out") == str(tmp_path / "audit")
         assert "--max-cost" not in cmd
         assert "--adversarial" not in cmd

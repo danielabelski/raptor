@@ -1158,9 +1158,13 @@ def _build_audit_postpass_cmd(
         # most promising functions first.
         "--schedule", "priority",
         # The agentic run completes AFTER this subprocess, so its
-        # journal is not yet merged into any project index — hand it
-        # over directly as prior finding-grade claims.
+        # journals are not yet merged into any project index — hand
+        # them over directly as prior finding-grade claims. The
+        # analysis agent journals under autonomous/; the run root is
+        # included for producers that write there (and costs nothing
+        # when absent).
         "--prior-journal", str(agentic_out),
+        "--prior-journal", str(agentic_out / "autonomous"),
     ]
     if args.gap_audit_reserved_cost:
         cmd += ["--max-cost", str(args.gap_audit_reserved_cost)]

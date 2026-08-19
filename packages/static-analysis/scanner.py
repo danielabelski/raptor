@@ -2539,6 +2539,16 @@ def main():
              "this flag skips it entirely.",
     )
     ap.add_argument(
+        "--no-config-resolved", action="store_true",
+        dest="no_config_resolved",
+        help="Disable the config-resolved additive findings stage. By "
+             "default Java getInstance-family selector calls whose "
+             "argument resolves through the strict .properties-file "
+             "resolver to a known-weak algorithm emit an additional "
+             "finding (provenance=config-resolved). Detection only — "
+             "the stage never suppresses anything.",
+    )
+    ap.add_argument(
         "--no-graduated-rules", action="store_true",
         dest="no_graduated_rules",
         help="Disable the graduated synthesized-rules stage. By default "
@@ -2951,10 +2961,34 @@ def main():
                 ),
             )
 
+        # Config-resolved additive findings (default-on, opt-out):
+        # weak algorithms selected via bundled .properties files are
+        # invisible to pattern detectors — the strict resolver proves
+        # the file value and emits provenance=config-resolved findings
+        # as a separate SARIF run. Detection only; never suppresses.
+        config_resolved_sarifs = []
+        config_resolved_stats = None
+        if (
+            RaptorConfig.CONFIG_RESOLVED_ENABLED
+            and not args.no_config_resolved
+        ):
+            try:
+                from core.analysis.config_resolved_findings import (
+                    run_config_resolved_stage,
+                )
+                _cr_sarif, config_resolved_stats = (
+                    run_config_resolved_stage(repo_path, out_dir)
+                )
+                if _cr_sarif is not None:
+                    config_resolved_sarifs = [_cr_sarif]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("config-resolved stage failed: %s", e)
+
         # Merge SARIFs if more than one
         sarif_inputs = (
             semgrep_sarifs + codeql_sarifs + cocci_sarifs
             + compiler_sarifs + expanded_sarifs + graduated_sarifs
+            + config_resolved_sarifs
         )
         merged = out_dir / "combined.sarif"
         exclude_globs = args.exclude_dir
@@ -3040,6 +3074,9 @@ def main():
         # — verdict counts, refusal reasons, budget skips. The verdicts
         # themselves live in suppressions.jsonl.
         metrics["sanitizer_cut_postpass"] = sanitizer_cut_postpass_stats
+        # Additive config-resolved stage stats (None when disabled) —
+        # files scanned, emissions, per-refusal resolver counts.
+        metrics["config_resolved"] = config_resolved_stats
         metrics["show_suppressed"] = getattr(args, "show_suppressed", False)
         save_json(out_dir / "scan_metrics.json", metrics)
 

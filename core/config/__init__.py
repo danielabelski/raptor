@@ -203,6 +203,15 @@ class RaptorConfig:
     # finding. Per-run CLI override: `--no-sanitizer-cut-postpass`.
     SANITIZER_CUT_POSTPASS_ENABLED: bool = True
 
+    # Config-resolved additive findings (scan stage, Java): selector
+    # calls (MessageDigest/Cipher/SecureRandom.getInstance) whose
+    # argument resolves through the strict properties-file resolver to
+    # a known-weak algorithm emit a NEW finding with
+    # provenance=config-resolved. Detection only — the stage never
+    # suppresses, and a resolution failure emits nothing. Per-run CLI
+    # override: `--no-config-resolved`.
+    CONFIG_RESOLVED_ENABLED: bool = True
+
     # Threat models passed to `codeql database analyze` on the STANDARD
     # suite pass (`--threat-model=<name>` per entry, additive to the
     # always-on `default`/remote model). `local` enables the

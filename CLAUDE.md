@@ -221,7 +221,7 @@ The `/oss-forensics` command provides evidence-backed forensic investigation for
 
 **Requirements:** `GOOGLE_APPLICATION_CREDENTIALS` for BigQuery
 
-**Output:** `.out/oss-forensics-<timestamp>/forensic-report.md`
+**Output:** `.out/oss-forensics-<timestamp>/forensic-report.md` (note: hidden `.out/` directory, not the usual `out/`)
 
 ---
 

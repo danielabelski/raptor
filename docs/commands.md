@@ -572,6 +572,9 @@ bytes-billed cap, egress-pinned sandbox).
 
 Output: `.out/oss-forensics-<timestamp>/forensic-report.md`
 
+Note: unlike other commands, `/oss-forensics` writes under a hidden
+`.out/` directory, not the usual `out/` — it will not show up in `ls out/`.
+
 ---
 
 ## Software Composition Analysis

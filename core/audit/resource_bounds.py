@@ -1199,13 +1199,15 @@ def run_resource_bounds_prepass(
         return bool(_STEM_INSERT_RE.search(text))
 
     candidates: list[tuple[str, str, int, int]] = []
+    lines_cache: dict[str, list[str]] = {}
     for fp, source in sorted(source_texts.items()):
         if not fp.endswith(_SOURCE_SUFFIXES):
             continue
         if not _has_insert(source):
             continue
+        lines = lines_cache.setdefault(fp, source.splitlines())
         for name, start, end in _c_function_spans(source):
-            segment = "\n".join(source.splitlines()[start - 1:end])
+            segment = "\n".join(lines[start - 1:end])
             if _has_insert(segment):
                 candidates.append((fp, name, start, end))
             if len(candidates) >= MAX_PREPASS_CANDIDATES:
@@ -1219,7 +1221,8 @@ def run_resource_bounds_prepass(
             telemetry["budget_exceeded"] = True
             break
         source = source_texts[fp]
-        segment_lines = source.splitlines()[start - 1:end]
+        lines = lines_cache.setdefault(fp, source.splitlines())
+        segment_lines = lines[start - 1:end]
         sites = _enumerate_sites(
             segment_lines, start, insert_vocab, alloc_vocab,
         )

@@ -757,8 +757,9 @@ def run_release_order_prepass(
             continue
         if not (fin_re.search(source) and rel_re.search(source)):
             continue
+        lines = source.splitlines()  # once per file, not per span
         for name, start, end in _c_function_spans(source):
-            segment = "\n".join(source.splitlines()[start - 1:end])
+            segment = "\n".join(lines[start - 1:end])
             if fin_re.search(segment) and rel_re.search(segment):
                 candidates.append((fp, name))
             if len(candidates) >= MAX_PREPASS_CANDIDATES:

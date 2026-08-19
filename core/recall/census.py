@@ -53,10 +53,36 @@ _IDIOM_PROBES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-def classify_source(text: str) -> tuple[str, list[str]]:
-    """Return (primary idiom, all matched idioms) for one clean case."""
+# Encoder idioms neutralize HTML-context injection only; on non-XSS
+# CWEs an encoder call in the file is response-message decoration, not
+# the clean-reason (measured on the OWASP corpus: every sampled
+# pathtrav/sqli "encoder" clean case was actually safe via the
+# constant/collection-selection family, with the encoder sitting on
+# the response println). Likewise "PreparedStatement" text is present
+# in every JDBC case regardless of why it is safe — 48/48 of the
+# corpus's prepared_statement-idiom clean cases carry CONCATENATED
+# SQL, so the probe is a textual coincidence and ranks below the
+# selection-family probes.
+_XSS_ONLY_IDIOMS = frozenset(
+    {"esapi_encoder", "owasp_java_encoder", "esapi_other"})
+_XSS_CWES = frozenset({"CWE-79", "CWE-80", "CWE-83"})
+_DEMOTED_IDIOMS = frozenset({"prepared_statement"})
+
+
+def classify_source(text: str, cwe: str = "") -> tuple[str, list[str]]:
+    """Return (primary idiom, all matched idioms) for one clean case.
+
+    ``cwe`` gates primary selection: encoder idioms may claim primary
+    only for XSS-class cases, and textual-coincidence idioms rank
+    after the semantically-decisive probes. All matches are still
+    reported in the full list.
+    """
     matched = [name for name, probe in _IDIOM_PROBES if probe.search(text)]
-    primary = matched[0] if matched else UNCLASSIFIED
+    eligible = list(matched)
+    if cwe and cwe not in _XSS_CWES:
+        eligible = [m for m in eligible if m not in _XSS_ONLY_IDIOMS]
+    non_demoted = [m for m in eligible if m not in _DEMOTED_IDIOMS]
+    primary = (non_demoted or eligible or [UNCLASSIFIED])[0]
     return primary, matched
 
 
@@ -104,7 +130,7 @@ def build_census(
             unreadable += 1
             primary, matched = UNCLASSIFIED, []
         else:
-            primary, matched = classify_source(text)
+            primary, matched = classify_source(text, entry.get("cwe") or "")
         by_idiom[primary] += 1
         for rule in rules or ["(no-rule-attribution)"]:
             by_rule[rule] += 1

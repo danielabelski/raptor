@@ -109,3 +109,34 @@ class TestBuildCensus:
         md = render_census_markdown(census)
         assert "esapi_encoder" in md and "| r |" in md
         json.dumps(census)  # JSON-serialisable
+
+
+class TestCweAwareIdiomPrimary:
+    def test_encoder_not_primary_for_pathtrav(self):
+        from core.recall.census import classify_source
+        text = ('bar = cond ? "safe" : param;\n'
+                'switch (c) { case 1: x = "a"; }\n'
+                'out.println(ESAPI.encoder().encodeForHTML(fileName));')
+        primary, matched = classify_source(text, "CWE-22")
+        assert "esapi_encoder" in matched
+        assert primary == "allowlist_or_table"
+
+    def test_encoder_primary_for_xss(self):
+        from core.recall.census import classify_source
+        text = 'out.println(ESAPI.encoder().encodeForHTML(param));'
+        primary, _ = classify_source(text, "CWE-79")
+        assert primary == "esapi_encoder"
+
+    def test_prepared_statement_demoted_below_selection(self):
+        from core.recall.census import classify_source
+        text = ('java.util.HashMap<String, Object> map = null;\n'
+                'switch (c) { case 1: break; }\n'
+                'st = conn.prepareStatement(sql);')
+        primary, matched = classify_source(text, "CWE-89")
+        assert "prepared_statement" in matched
+        assert primary == "allowlist_or_table"
+
+    def test_prepared_statement_still_primary_when_alone(self):
+        from core.recall.census import classify_source
+        primary, _ = classify_source("conn.prepareStatement(sql);", "CWE-89")
+        assert primary == "prepared_statement"

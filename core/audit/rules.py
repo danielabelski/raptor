@@ -71,7 +71,11 @@ def save_rule(
         raise ValueError(
             f"invalid rule_id {rule_id!r}: resolved path escapes rules directory"
         )
-    rule_path.write_text(content)
+    # Atomic like the manifest write below: rules are cross-run
+    # artifacts consumed by future /scan runs — a torn write would
+    # ship a half-rule to every later scan.
+    from core.atomic_fs import write_text_atomically
+    write_text_atomically(rule_path, content)
 
     manifest = _load_manifest(out_dir)
     manifest[rule_id] = {

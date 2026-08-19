@@ -20,6 +20,9 @@ public class trustbound_java_pos extends HttpServlet {
         // deprecated API spelling
         session.putValue("legacy", param);
 
+        // chained legacy variant
+        request.getSession().putValue(param, "flag");
+
         // application scope
         getServletContext().setAttribute("appWide", request.getHeader("X-Custom"));
     }

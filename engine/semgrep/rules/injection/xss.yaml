@@ -125,6 +125,7 @@ rules:
       - pattern-either:
           # Servlet response writer
           - pattern: (HttpServletResponse $RESP).getWriter().write($X)
+          - pattern: (HttpServletResponse $RESP).getWriter().write($X, ...)
           - pattern: (HttpServletResponse $RESP).getWriter().println($X)
           - pattern: (HttpServletResponse $RESP).getWriter().print($X)
           - pattern: (HttpServletResponse $RESP).getOutputStream().write(...)

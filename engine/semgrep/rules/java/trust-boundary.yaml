@@ -43,6 +43,8 @@ rules:
           - pattern: (HttpSession $SESS).putValue(...)
           - pattern: (HttpServletRequest $REQ).getSession().setAttribute(...)
           - pattern: (HttpServletRequest $REQ).getSession(...).setAttribute(...)
+          - pattern: (HttpServletRequest $REQ).getSession().putValue(...)
+          - pattern: (HttpServletRequest $REQ).getSession(...).putValue(...)
           # Application scope, including the chained accessor form
           - pattern: (ServletContext $CTX).setAttribute(...)
           - pattern: getServletContext().setAttribute(...)

@@ -11,5 +11,9 @@ public class xss_java_pos extends HttpServlet {
         // unencoded request data straight into the response body
         out.println(param);
         response.getWriter().write("<div>" + request.getHeader("X-Name") + "</div>");
+
+        // offset/length write variant — same unencoded body write
+        String p2 = request.getParameter("p2");
+        response.getWriter().write(p2, 0, p2.length());
     }
 }

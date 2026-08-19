@@ -2152,6 +2152,160 @@ def run_graduated_rules_stage(
     return [str(sarif_path)]
 
 
+def run_source_wrapper_stage(
+    repo_path: Path,
+    out_dir: Path,
+) -> list[str]:
+    """Project mechanically-derived Java source-wrapper summaries into
+    additional taint-source rules and run them as a scan stage.
+
+    Sources are proofs from ``core.analysis.java_source_summaries``
+    (a helper method whose return provably carries servlet-request
+    data); sinks/sanitizers mirror the in-repo java rules. The
+    generated YAML lives under the run output directory — never in
+    the rules tree. Additive findings only, emitted as
+    ``source-wrappers.sarif`` under the ``raptor-source-wrappers``
+    tool name with rule ids prefixed ``source-wrapper:``. Auto-skips
+    silently when the tree yields no summaries or tree-sitter java
+    is unavailable.
+    """
+    try:
+        from core.analysis.java_source_summaries import scan_tree
+        from packages.semgrep.source_wrapper_rules import generate_rules_yaml
+    except ImportError:
+        return []
+    try:
+        summaries, refusals, scanned = scan_tree(Path(repo_path))
+    except Exception as exc:  # noqa: BLE001 — stage must not kill the scan
+        logger.warning("source-wrappers: scan failed: %s", exc)
+        return []
+    if not summaries:
+        logger.debug(
+            "source-wrappers: no qualifying wrappers "
+            "(%d files scanned)", scanned)
+        return []
+    yaml_text = generate_rules_yaml(summaries)
+    if not yaml_text:
+        return []
+    stage_dir = Path(out_dir) / "source-wrappers"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    rules_file = stage_dir / "rules.yaml"
+    rules_file.write_text(yaml_text, encoding="utf-8")
+
+    try:
+        from packages.semgrep.runner import is_available as semgrep_available
+        from packages.semgrep.runner import run_rule as semgrep_run_rule
+    except ImportError:
+        return []
+    if not semgrep_available():
+        print(
+            "⚠️  source-wrapper stage did not run: semgrep not installed",
+            file=sys.stderr,
+        )
+        return []
+    try:
+        res = semgrep_run_rule(
+            Path(repo_path), str(rules_file),
+            name="source_wrappers",
+            timeout=RaptorConfig.SEMGREP_PACK_TIMEOUT,
+            env=RaptorConfig.get_safe_env(preserve_proxy=True),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("source-wrappers: run failed: %s", exc)
+        return []
+
+    findings = [("wrapper", f.to_dict()) for f in res.findings]
+    sarif_path = Path(out_dir) / "source-wrappers.sarif"
+    doc = _stage_findings_to_sarif(
+        findings,
+        tool_name="raptor-source-wrappers",
+        rule_prefix="source-wrapper",
+        # CWE rides the SARIF rule properties — the recall matcher
+        # never credits CWE-less findings (by doctrine), and the
+        # downstream CWE dispatch keys off it too.
+        cwe_by_suffix={
+            ".xss": "CWE-79",
+            ".trust-boundary": "CWE-501",
+        },
+    )
+    save_json(sarif_path, doc)
+    logger.info(
+        "source-wrappers: %d wrapper(s) projected, %d finding(s); "
+        "SARIF at %s (refusal top: %s)",
+        len(summaries), len(findings), sarif_path,
+        sorted(refusals.items(), key=lambda kv: -kv[1])[:3],
+    )
+    return [str(sarif_path)]
+
+
+def _stage_findings_to_sarif(
+    findings: list[tuple[str, dict]],
+    *,
+    tool_name: str,
+    rule_prefix: str,
+    cwe_by_suffix: dict[str, str] | None = None,
+) -> dict:
+    """SARIF doc for a generated-rule stage; same shape discipline as
+    the graduated stage (distinct tool name, provenance in ruleId)."""
+    rule_defs: list[dict] = []
+    seen_rules: set = set()
+    results: list[dict] = []
+    for rule_id, f in findings:
+        sarif_rule_id = (
+            f.get("rule_id") or f"{rule_prefix}:{rule_id}"
+        )
+        if not str(sarif_rule_id).startswith(rule_prefix):
+            sarif_rule_id = f"{rule_prefix}:{sarif_rule_id}"
+        if sarif_rule_id not in seen_rules:
+            rule_def = {
+                "id": sarif_rule_id,
+                "name": sarif_rule_id,
+                "shortDescription": {"text": sarif_rule_id},
+                "defaultConfiguration": {"level": "warning"},
+            }
+            for suffix, cwe in (cwe_by_suffix or {}).items():
+                if str(sarif_rule_id).endswith(suffix):
+                    rule_def["properties"] = {"cwe": cwe}
+                    break
+            rule_defs.append(rule_def)
+            seen_rules.add(sarif_rule_id)
+        results.append({
+            "ruleId": sarif_rule_id,
+            "level": f.get("level") or "warning",
+            "message": {
+                "text": f.get("message") or f"{rule_prefix} rule matched",
+            },
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {
+                        "uri": f.get("file") or f.get("path") or "",
+                    },
+                    "region": {
+                        "startLine": f.get("line")
+                                     or f.get("start_line") or 1,
+                        "endLine": f.get("line_end")
+                                   or f.get("end_line")
+                                   or f.get("line")
+                                   or f.get("start_line") or 1,
+                    },
+                },
+            }],
+            "properties": {"provenance": "mechanical-source-summary"},
+        })
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": tool_name,
+                "informationUri": "https://github.com/anthropics",
+                "rules": rule_defs,
+            }},
+            "results": results,
+        }],
+    }
+
+
 def _graduated_findings_to_sarif(
     findings: list[tuple[str, dict]],
 ) -> dict:
@@ -2547,6 +2701,13 @@ def main():
              "resolver to a known-weak algorithm emit an additional "
              "finding (provenance=config-resolved). Detection only — "
              "the stage never suppresses anything.",
+    )
+    ap.add_argument(
+        "--no-source-wrappers", action="store_true",
+        dest="no_source_wrappers",
+        help="Skip the source-wrapper projection stage (mechanically "
+             "derived Java taint-source rules for helper classes whose "
+             "methods return servlet-request data).",
     )
     ap.add_argument(
         "--no-graduated-rules", action="store_true",
@@ -2961,6 +3122,15 @@ def main():
                 ),
             )
 
+        # Source-wrapper projection (default-on, opt-out): helper
+        # methods that provably return servlet-request data become
+        # additional taint sources for the in-repo java sink profiles.
+        source_wrapper_sarifs = []
+        if not args.no_source_wrappers:
+            source_wrapper_sarifs = run_source_wrapper_stage(
+                repo_path, out_dir,
+            )
+
         # Config-resolved additive findings (default-on, opt-out):
         # weak algorithms selected via bundled .properties files are
         # invisible to pattern detectors — the strict resolver proves
@@ -2988,7 +3158,7 @@ def main():
         sarif_inputs = (
             semgrep_sarifs + codeql_sarifs + cocci_sarifs
             + compiler_sarifs + expanded_sarifs + graduated_sarifs
-            + config_resolved_sarifs
+            + config_resolved_sarifs + source_wrapper_sarifs
         )
         merged = out_dir / "combined.sarif"
         exclude_globs = args.exclude_dir

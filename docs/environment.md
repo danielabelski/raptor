@@ -100,9 +100,10 @@ deleting).
 
 ## LLM model selection and transport
 
-Prose: [LLM Providers](llm.md) — Claude Code transport, Bedrock
-opt-in/authentication/region, cost management. models.json entries
-beat every env knob for model selection.
+These knobs are covered in narrative form in [LLM Providers](llm.md)
+— Claude Code transport, Bedrock opt-in/authentication/region, and
+cost management. `models.json` entries beat every env knob for model
+selection.
 
 ### Claude Code transport (`RAPTOR_CC_*`)
 
@@ -181,7 +182,8 @@ does not count as local.
 
 ## LLM HTTP transport
 
-Prose: [LLM Providers](llm.md), "HTTP Transport Tuning". Pooled
+See "HTTP Transport Tuning" in [LLM Providers](llm.md) for the
+narrative version. Pooled
 `httpx` transports for the in-process SDK clients
 (`core.llm.http_pool`); all numeric knobs must be strictly positive —
 absent, unparseable, or non-positive values warn and fall back.
@@ -198,8 +200,8 @@ absent, unparseable, or non-positive values warn and fall back.
 
 ## Egress proxy
 
-Prose: [Sandbox](sandbox.md), "Egress proxy" / "Upstream proxy
-support".
+See "Egress proxy" and "Upstream proxy support" in
+[Sandbox](sandbox.md) for the narrative version.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

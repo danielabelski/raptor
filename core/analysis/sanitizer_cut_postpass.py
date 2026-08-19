@@ -115,13 +115,22 @@ def _resolver_grammar_available(language: str) -> bool:
     resolver uses so a broken grammar classifies the same way the
     resolver would see it.
     """
+    # Alias the imports: the two builders export the same
+    # ``_get_parser`` name with different signatures (java takes no
+    # argument, cpp takes the language), and importing both bare into
+    # one function scope invites exactly the cross-binding mixup that
+    # static call checkers flag.
     try:
         if language == "java":
-            from core.analysis.cfg_builder_java import _get_parser
-            return _get_parser() is not None
+            from core.analysis.cfg_builder_java import (
+                _get_parser as _get_java_parser,
+            )
+            return _get_java_parser() is not None
         if language == "c":
-            from core.analysis.cfg_builder_cpp import _get_parser
-            return _get_parser("c") is not None
+            from core.analysis.cfg_builder_cpp import (
+                _get_parser as _get_cpp_parser,
+            )
+            return _get_cpp_parser("c") is not None
     except Exception:  # noqa: BLE001 — a broken grammar counts as absent
         return False
     return True

@@ -1470,6 +1470,158 @@ def _run_probe(
     return results
 
 
+# Relative telemetry-vs-ledger divergence above which a group is
+# called out in the reconciliation section (matches the orchestrator's
+# per-group warning threshold).
+_SPEND_DIVERGENCE_THRESHOLD = 0.01
+
+
+def _aggregate_spend(run_dirs: list[Path]) -> dict[str, Any] | None:
+    """Aggregate the authoritative spend across all group run dirs.
+
+    Sources, per group directory: ``llm-telemetry.jsonl`` (the
+    telemetry ledger — every completed provider call with its class
+    and cost; authoritative for money actually spent by this process)
+    and ``cost-breakdown.json`` (the phase/summary ledger — used only
+    to surface divergence). Returns None when no telemetry exists.
+
+    A v5 corpus run printed FOUR mutually inconsistent totals ($300 /
+    $301 / $142 / $95) and the prominent final banner under-stated
+    spend by 3.2x (it summed only label-attributed review cost). This
+    aggregate is the single end-of-run number, with the per-class and
+    per-group breakdown and the reconciliation deltas in one block.
+    """
+    groups: list[dict[str, Any]] = []
+    per_class: dict[str, list[float]] = {}
+    seen: set = set()
+    for base in run_dirs:
+        base = Path(base)
+        if not base.is_dir():
+            continue
+        for tel_path in sorted(base.rglob("llm-telemetry.jsonl")):
+            gdir = tel_path.parent.resolve()
+            if gdir in seen:
+                continue
+            seen.add(gdir)
+            calls = 0
+            cost = 0.0
+            try:
+                with open(tel_path, encoding="utf-8") as f:
+                    for raw in f:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            rec = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        c = float(rec.get("cost_usd") or 0.0)
+                        cls = str(rec.get("call_class") or "unclassified")
+                        st = per_class.setdefault(cls, [0, 0.0])
+                        completed = (
+                            rec.get("event") != "attempt_failed"
+                            and rec.get("disposition") != "cache_hit"
+                        )
+                        if completed:
+                            calls += 1
+                            st[0] += 1
+                        cost += c
+                        st[1] += c
+            except OSError:
+                continue
+            ledger_total = None
+            bd_path = gdir / "cost-breakdown.json"
+            if bd_path.is_file():
+                try:
+                    totals = json.loads(bd_path.read_text()).get(
+                        "totals", {},
+                    )
+                    ledger_total = float(
+                        totals.get(
+                            "total_spend_usd", totals.get("cost_usd", 0.0),
+                        ) or 0.0,
+                    )
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    ledger_total = None
+            name = "/".join(Path(gdir).parts[-2:])
+            groups.append({
+                "group": name,
+                "calls": calls,
+                "telemetry_usd": cost,
+                "ledger_usd": ledger_total,
+            })
+    if not groups:
+        return None
+    return {
+        "total_usd": sum(g["telemetry_usd"] for g in groups),
+        "calls": sum(g["calls"] for g in groups),
+        "per_class": {
+            cls: (int(v[0]), v[1]) for cls, v in sorted(per_class.items())
+        },
+        "groups": groups,
+    }
+
+
+def _format_spend_block(
+    spend: dict[str, Any],
+    label_cost: float,
+) -> str:
+    """The single authoritative end-of-run spend block."""
+    lines = ["Spend (telemetry ledger — authoritative):"]
+    infra = spend["total_usd"] - label_cost
+    lines.append(
+        f"  Total: ${spend['total_usd']:.4f} across "
+        f"{spend['calls']} completed call(s) "
+        f"(labels ${label_cost:.4f}, infra ${max(infra, 0.0):.4f})",
+    )
+    cls_parts = [
+        f"{cls}={calls}/${cost:.2f}"
+        for cls, (calls, cost) in spend["per_class"].items()
+        if calls or cost
+    ]
+    if cls_parts:
+        lines.append("  Per class: " + ", ".join(cls_parts))
+    lines.append(
+        f"  {'Group':<38} {'Calls':>6} {'Telemetry':>11} "
+        f"{'Summary':>11} {'Delta':>7}",
+    )
+    diverged = []
+    for g in spend["groups"]:
+        tel = g["telemetry_usd"]
+        led = g["ledger_usd"]
+        if led is None:
+            led_s, delta_s = "n/a", ""
+        else:
+            led_s = f"${led:.2f}"
+            scale = max(tel, led)
+            frac = abs(tel - led) / scale if scale > 0 else 0.0
+            delta_s = f"{frac:.1%}"
+            if frac > _SPEND_DIVERGENCE_THRESHOLD:
+                diverged.append((g["group"], frac))
+        name = g["group"]
+        if len(name) > 37:
+            name = "..." + name[-34:]
+        lines.append(
+            f"  {name:<38} {g['calls']:>6} {'$' + format(tel, '.2f'):>11} "
+            f"{led_s:>11} {delta_s:>7}",
+        )
+    if diverged:
+        worst = max(diverged, key=lambda d: d[1])
+        lines.append(
+            f"  Reconciliation: {len(diverged)}/{len(spend['groups'])} "
+            f"group(s) diverged >{_SPEND_DIVERGENCE_THRESHOLD:.0%} "
+            f"between telemetry and summary ledgers (worst "
+            f"{worst[1]:.1%} in {worst[0]}) — unbooked or double-booked "
+            f"phase spend; the telemetry total above is authoritative.",
+        )
+    else:
+        lines.append(
+            "  Reconciliation: telemetry and summary ledgers agree "
+            f"within {_SPEND_DIVERGENCE_THRESHOLD:.0%} in every group.",
+        )
+    return "\n".join(lines)
+
+
 def _record_scorecard(
     results: list[dict[str, Any]],
     model: str,
@@ -1638,6 +1790,7 @@ def _format_summary(
     results: list[dict[str, Any]],
     wall_s: float,
     model: str,
+    spend: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
     """Format the full summary block.
 
@@ -1673,9 +1826,26 @@ def _format_summary(
     if cached_count:
         lines.append(f"  Cached: {cached_count}/{len(results)} (cost and duration reflect cache hits)")
     lines.append(f"  Matched: {matched}/{len(reviewed)}")
-    lines.append(f"  Cost: ${total_cost:.4f}")
+    if spend:
+        lines.append(
+            f"  Total spend: ${spend['total_usd']:.4f} "
+            f"(telemetry ledger; label-attributed review "
+            f"${total_cost:.4f})",
+        )
+    else:
+        # No telemetry ledgers (probe mode / legacy dirs): say what
+        # this number is — per-label review spend only, NOT the run
+        # total (a v5 run's bare "Cost:" banner under-stated total
+        # spend by 3.2x).
+        lines.append(
+            f"  Label-attributed cost: ${total_cost:.4f} "
+            f"(per-label review spend only)",
+        )
     lines.append(f"  Wall clock: {wall_s:.0f}s ({wall_s/60:.1f}m)")
     lines.append(f"  LLM time: {total_llm_s:.0f}s ({total_llm_s/60:.1f}m)")
+    if spend:
+        lines.append("")
+        lines.append(_format_spend_block(spend, total_cost))
     lines.append("")
     lines.append(format_report(
         aggregate, per_class, model=model, skipped=skipped_count,
@@ -1726,6 +1896,7 @@ def _emit_summary(
     wall_s: float,
     model_label: str,
     output_path: Path,
+    spend: dict[str, Any] | None = None,
 ) -> int:
     """Print the human summary without ever losing the run.
 
@@ -1739,7 +1910,9 @@ def _emit_summary(
     or scoring step itself crashed.
     """
     try:
-        summary, gate_failures = _format_summary(results, wall_s, model_label)
+        summary, gate_failures = _format_summary(
+            results, wall_s, model_label, spend=spend,
+        )
         print(summary)
         return EXIT_GATE_FAIL if gate_failures else 0
     except Exception:  # noqa: BLE001 -- results are on disk; summary must not lose them
@@ -2748,6 +2921,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nSpliced {len(spliced_ids)} re-run result(s) into "
               f"{args.splice} ({len(results)} total)")
 
+    # Authoritative spend: aggregated from the per-group telemetry
+    # ledgers (probe mode has no run dirs — its per-label costs ARE
+    # the whole spend). Best-effort: reporting must never fail a run.
+    spend = None
+    if not args.probe and run_dirs:
+        try:
+            spend = _aggregate_spend(run_dirs)
+        except Exception:
+            logger.debug("spend aggregation failed", exc_info=True)
+
     total_llm_s = sum(r.get("duration_s", 0.0) for r in results)
     meta = {
         "wall_s": round(wall_s, 1),
@@ -2759,6 +2942,8 @@ def main(argv: list[str] | None = None) -> int:
         # skips the orchestrator, so there it only labels the rows).
         "profile": args.profile,
     }
+    if spend:
+        meta["total_spend_usd"] = round(spend["total_usd"], 4)
     if not args.probe:
         # Audit modes only — probe never consults the triage pipeline
         # or the mechanical prefilter.
@@ -2855,7 +3040,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     model_label = meta["model"]
-    return _emit_summary(results, wall_s, model_label, args.output)
+    return _emit_summary(
+        results, wall_s, model_label, args.output, spend=spend,
+    )
 
 
 if __name__ == "__main__":

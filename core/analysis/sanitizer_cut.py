@@ -650,6 +650,23 @@ def _sink_arg_constant_reason(
             )
             if other_names & set(tainted_at.get(sink, frozenset())):
                 return None
+            # The front is necessary but NOT sufficient: a sibling
+            # tainted through a helper call is invisible to it
+            # (observed live — see _siblings_fold_or_refuse). Every
+            # sibling must additionally fold or be a catalog call.
+            from core.analysis.const_fold_java import definers_all_fold
+            for name in other_names:
+                if definers_all_fold(
+                        rd, sink, name, index,
+                        array_resolver=table_resolver,
+                        config_resolver=config_resolver,
+                        conduit_resolver=invocation_hook):
+                    continue
+                # Fold-only: a catalog-sanitizer allowance would need
+                # the finding's class context (a wrong-class sanitizer
+                # on a sibling proves nothing), and this pre-check runs
+                # before the catalog gate. Not foldable -> refuse.
+                return None
         return reason
     except Exception:  # noqa: BLE001 — folding is best-effort, never fatal
         return None
@@ -771,6 +788,68 @@ def _element_exclusive_reason(
     )
 
 
+def _siblings_fold_or_refuse(
+    graph, rd, sink, sink_arg: str,
+    index, table_resolver, config_resolver, invocation_hook,
+    candidate_callables,
+) -> bool:
+    """True when every OTHER argument name of the sink call is
+    provably taint-free: all its reaching definers fold to constants
+    (values may differ) or are catalog-sanitizer calls. The local
+    taint front is deliberately NOT trusted here — a sibling tainted
+    through a helper call is invisible to it (observed live: a
+    constant env array was picked as the sink argument while taint
+    rode `cmd + bar` beside it, `bar` fed by a same-file helper the
+    front cannot see). Fold-or-refuse is the only honest polarity for
+    a suppression guard."""
+    try:
+        from core.analysis.const_fold_java import definers_all_fold
+        call_sites = getattr(sink, "call_sites", ()) or ()
+        if not call_sites:
+            return False
+        outermost = call_sites[-1]
+        other = (
+            (set(outermost.arg_names) | set(outermost.arg_deep_names))
+            - {sink_arg}
+        )
+        for name in other:
+            if definers_all_fold(
+                    rd, sink, name, index,
+                    array_resolver=table_resolver,
+                    config_resolver=config_resolver,
+                    conduit_resolver=invocation_hook):
+                continue
+            defs = rd.at(sink, name)
+            if not defs:
+                return False
+            for d in defs:
+                rhs = index.rhs_at(getattr(d, "lineno", 0), name)
+                if rhs is None or not _rhs_is_catalog_call(
+                        rhs, candidate_callables):
+                    return False
+        return True
+    except Exception:  # noqa: BLE001 — refusal direction
+        return False
+
+
+def _rhs_is_catalog_call(rhs, candidate_callables) -> bool:
+    """Best-effort: the rhs expression is a single call whose text
+    ends with a catalog callable name."""
+    try:
+        node = rhs
+        if node.type == "cast_expression":
+            node = node.child_by_field_name("value") or node
+        if node.type != "method_invocation":
+            return False
+        txt = node.text.decode("utf-8", "replace").split("(", 1)[0]
+        return any(
+            txt == c or txt.endswith("." + c) or txt.endswith(c)
+            for c in candidate_callables
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _whole_array_taint_free_reason(
     graph,
     sources_set,
@@ -855,8 +934,10 @@ def _whole_array_taint_free_reason(
                         conduit_resolver=invocation_hook):
                     continue
             return None
-        if _sibling_args_tainted(
-                graph, sources_set, sink, sink_arg, source_symbols):
+        if not _siblings_fold_or_refuse(
+                graph, rd, sink, sink_arg,
+                index, table_resolver, config_resolver, invocation_hook,
+                candidate_callables):
             return None
         return (
             "taint-free array argument: the sink consumes a whole "

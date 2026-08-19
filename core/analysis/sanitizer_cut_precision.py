@@ -2221,4 +2221,28 @@ def _java_b34_positional_fixtures() -> List[CutFixture]:
               + "        Object[] obj = {\"a\", bar};\n"
               + "        out.format(\"%1$s %2$s\", obj);\n    }\n"),
         "public void handle", "out.format"))
+    # Live-damage regression (BenchmarkTest02342 shape): the picked
+    # sink argument is a genuinely-constant env array while taint
+    # rides the SIBLING argument through a same-file helper — the
+    # local taint front cannot see it, so the sibling guard must
+    # fold-or-refuse, never assume.
+    j.append(_marked(
+        "java_wholearr_helper_tainted_sibling", "cmdi", "CWE-78",
+        "wholearr_sibling_tainted_via_helper", LABEL_MUST_NOT_SUPPRESS,
+        cls_t("    private String grab(HttpServletRequest r, String p) {\n"
+              "        return r.getParameter(p);\n    }\n"
+              "    public void handle(HttpServletRequest request, "
+              "java.io.PrintWriter out) throws Exception {\n"
+              "        String param = \"\";\n"
+              "        java.util.Enumeration<String> names = "
+              "request.getParameterNames();\n"
+              "        while (names.hasMoreElements()) {\n"
+              "            param = (String) names.nextElement();\n"
+              "        }\n"
+              "        String bar = grab(request, param);\n"
+              "        String[] argsEnv = {\"Foo=bar\"};\n"
+              "        Runtime r = Runtime.getRuntime();\n"
+              "        r.exec(\"echo \" + bar, argsEnv);\n"
+              "    }\n"),
+        "public void handle", "r.exec"))
     return j

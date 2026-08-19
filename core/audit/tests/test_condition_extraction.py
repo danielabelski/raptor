@@ -478,3 +478,40 @@ class TestSerialization:
         d = g.to_dict()
         assert d["resolvable"] is True
         assert d["concrete_values"] == {"MAX_SIZE": "1024"}
+
+
+# ---------------------------------------------------------------------------
+# Deep nesting (explicit-stack walker regression)
+# ---------------------------------------------------------------------------
+
+
+def _deeply_nested_c(n: int = 20000) -> tuple[str, int]:
+    """(source, 1-based sink line) — a sink under *n* nested ifs."""
+    lines = ["void f(void) {"]
+    lines.extend(["if (x) {"] * n)
+    lines.append("system(cmd);")
+    lines.extend(["}"] * (n + 1))
+    return "\n".join(lines) + "\n", n + 2
+
+
+class TestDeepNesting:
+    """CST depth tracks source nesting depth — the line/call/sink
+    walkers must not recurse per level (regression: 20k-deep nesting
+    raised RecursionError in all three)."""
+
+    def test_sink_names_mode_survives(self):
+        src, sink_line = _deeply_nested_c()
+        guards = extract_sink_guards(
+            src, "deep.c", sink_names=frozenset({"system"}),
+        )
+        assert len(guards) == 1
+        assert guards[0].sink_line == sink_line
+        assert guards[0].sink_api == "system"
+
+    def test_sink_lines_mode_survives(self):
+        src, sink_line = _deeply_nested_c()
+        guards = extract_sink_guards(
+            src, "deep.c", sink_lines=[sink_line],
+        )
+        assert len(guards) == 1
+        assert guards[0].sink_line == sink_line

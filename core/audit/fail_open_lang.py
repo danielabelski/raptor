@@ -286,21 +286,24 @@ def _enclosing_function_names(tree: ast.Module) -> dict[int, str]:
     methods), for attributing handlers to reviewed functions."""
     spans: list[tuple[int, int, str]] = []
 
-    def visit(node: ast.AST, prefix: str) -> None:
+    # Explicit-stack walk — recursion depth would track the AST
+    # nesting depth and overflow on deeply nested (possibly
+    # adversarial) inputs the parser itself still accepts.
+    stack: list[tuple[ast.AST, str]] = [(tree, "")]
+    while stack:
+        node, prefix = stack.pop()
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 name = f"{prefix}.{child.name}" if prefix else child.name
                 spans.append(
                     (child.lineno, child.end_lineno or child.lineno, name),
                 )
-                visit(child, name)
+                stack.append((child, name))
             elif isinstance(child, ast.ClassDef):
-                visit(child, f"{prefix}.{child.name}" if prefix
-                      else child.name)
+                stack.append((child, f"{prefix}.{child.name}" if prefix
+                              else child.name))
             else:
-                visit(child, prefix)
-
-    visit(tree, "")
+                stack.append((child, prefix))
     # Innermost span wins: sort by size, smallest last.
     spans.sort(key=lambda s: s[1] - s[0], reverse=True)
     result: dict[int, str] = {}

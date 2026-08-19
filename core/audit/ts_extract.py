@@ -282,10 +282,16 @@ def _node_line(node) -> int:
 
 
 def _walk_descendants(node):
-    """Yield all descendants of a node in pre-order."""
-    for child in node.children:
-        yield child
-        yield from _walk_descendants(child)
+    """Yield all descendants of a node in pre-order.
+
+    Explicit stack, not recursion: CST depth tracks source nesting
+    depth, and a deeply nested (possibly adversarial) input file must
+    degrade gracefully instead of raising RecursionError."""
+    stack = list(reversed(node.children))
+    while stack:
+        cur = stack.pop()
+        yield cur
+        stack.extend(reversed(cur.children))
 
 
 def _same_node(a, b) -> bool:

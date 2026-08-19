@@ -579,3 +579,24 @@ class TestDataclasses:
             ReturnInfo(value_type="null", is_error_path=False, line=10),
         ])
         assert "null" in fr.ambiguous_value
+
+
+# ---------------------------------------------------------------
+# Deep nesting (explicit-stack walker regression)
+# ---------------------------------------------------------------
+
+
+class TestDeepNesting:
+    """CST depth tracks source nesting depth — the descendant walker
+    must not recurse per level (regression: a 20k-deep parenthesised
+    expression raised RecursionError)."""
+
+    def test_string_literal_survives_deep_nesting(self):
+        n = 20000
+        src = (
+            "int f(void) { const char *s = " + "(" * n + '"deep"'
+            + ")" * n + "; return 0; }\n"
+        )
+        lits = extract_string_literals("deep.c", src)
+        assert lits is not None
+        assert any(lit.value == "deep" for lit in lits)

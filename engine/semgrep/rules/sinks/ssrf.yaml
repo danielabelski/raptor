@@ -267,11 +267,14 @@ rules:
   # ---------------------------------------------------------------------------
   - id: raptor.web.ssrf.redirect-following.python
     message: >-
-      HTTP client follows redirects by default. An SSRF via open redirect
-      can bypass allowlists. Consider allow_redirects=False or a
-      redirect hook that validates the target.
+      httpx does not follow redirects by default; enabling
+      follow_redirects=True lets an SSRF via open redirect bypass URL
+      allowlists. Validate redirect targets or leave redirects off.
     languages: [python]
     severity: MEDIUM
-    pattern-either:
-      - pattern: requests.$FUNC($URL, ..., allow_redirects=True, ...)
-      - pattern: httpx.$FUNC($URL, ..., follow_redirects=True, ...)
+    # requests' allow_redirects=True is deliberately NOT flagged: it
+    # is the library default made explicit, not a behaviour change.
+    pattern: httpx.$FUNC($URL, ..., follow_redirects=True, ...)
+    metadata:
+      cwe: ["CWE-918"]
+      tags: ["security", "ssrf", "redirect"]

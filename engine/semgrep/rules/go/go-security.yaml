@@ -8,7 +8,7 @@ rules:
       the enclosing function returns, causing resource exhaustion. Close
       explicitly or extract the loop body into a separate function.
     languages: [go]
-    severity: WARNING
+    severity: MEDIUM
     patterns:
       - pattern: defer $X.Close()
       - pattern-inside: |

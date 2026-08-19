@@ -55,24 +55,35 @@ def load_variants(out_dir: Path) -> set[str]:
 
 
 def load_coverage_records(out_dir: Path) -> list[dict[str, Any]]:
-    """Load legacy coverage-record.json if present.
+    """Load the run's coverage records: per-tool + legacy.
 
-    Back-compat: modern coverage uses per-tool records (coverage-*.json)
-    imported into CoverageStore, and the review journal is the primary
-    source of function-level coverage (see gaps._fold_journal_into_covered).
-    This loader exists for runs that pre-date the per-tool split.
+    Modern per-tool records (``coverage-*.json`` via
+    ``core.coverage.record.load_records`` — the same loader the
+    ``raptor-audit gaps`` CLI uses) feed the gap computation's covered
+    set and file-tool priority tiers. Pre-fix only the legacy
+    single-file ``coverage-record.json`` was loaded here, so the
+    orchestrator path saw an empty list on every modern run — record
+    priority tiers and ``--mark`` suppression were silently inert.
+    ``load_records`` still serves the legacy single file as a fallback
+    for runs that pre-date the per-tool split (list-shaped legacy
+    files, which this loader always accepted, are spliced flat).
     """
-    path = out_dir / "coverage-record.json"
-    if not path.exists():
-        return []
+    records: list[dict[str, Any]] = []
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-        return [data]
-    except (json.JSONDecodeError, OSError):
-        return []
+        from core.coverage.record import load_records
+        loaded = load_records(out_dir)
+    except Exception:
+        logger.debug("coverage record load failed", exc_info=True)
+        return records
+    for rec in loaded:
+        # A list-shaped legacy coverage-record.json comes back as one
+        # list element from load_records' fallback; this loader always
+        # accepted list-shaped legacy files, so splice it flat.
+        if isinstance(rec, list):
+            records.extend(r for r in rec if isinstance(r, dict))
+        elif isinstance(rec, dict):
+            records.append(rec)
+    return records
 
 
 def load_exploit_feedback(out_dir: Path, load_feedback_state, FeedbackState):

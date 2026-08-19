@@ -153,3 +153,51 @@ rules:
       cwe: ["CWE-22"]
       owasp_top_10: ["A1:2021-Broken Access Control"]
       tags: ["security", "go", "path-traversal", "taint"]
+
+  # ---------------------------------------------------------------------------
+  # Go — pattern: strconv result cast to a narrower int without a range check
+  # ---------------------------------------------------------------------------
+  - id: raptor.go.parsed-int-narrowing-cast
+    message: >-
+      A strconv.Atoi/ParseInt result is cast to a narrower integer type with
+      no range check between the parse and the cast. Values outside the
+      narrow type wrap silently (e.g. uid 4294967296 becomes 0, granting
+      root); negative parses wrap to huge unsigned values. Range-check the
+      parsed value against the destination type's bounds first.
+    languages: [go]
+    severity: WARNING
+    patterns:
+      - pattern-either:
+          - pattern: uint32($V)
+          - pattern: uint16($V)
+          - pattern: uint8($V)
+          - pattern: int32($V)
+          - pattern: int16($V)
+          - pattern: int8($V)
+      - pattern-inside: |
+          func $F(...) {
+            ...
+            $V, $ERR := strconv.Atoi(...)
+            ...
+          }
+      - pattern-not-inside: |
+          func $F(...) {
+            ...
+            if $V > $MAX { ... }
+            ...
+          }
+      - pattern-not-inside: |
+          func $F(...) {
+            ...
+            if $V < $MIN { ... }
+            ...
+          }
+      - pattern-not-inside: |
+          func $F(...) {
+            ...
+            if $A <= $V && $V <= $B { ... }
+            ...
+          }
+    metadata:
+      cwe: ["CWE-190", "CWE-681"]
+      tags: ["security", "go", "integer", "truncation"]

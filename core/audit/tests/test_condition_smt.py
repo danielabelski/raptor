@@ -985,3 +985,99 @@ class TestGuardExitUnlock:
         )
         r = check_early_release(src)
         assert not r.early_release_found
+
+
+class TestParsedIntContract:
+    """Text-parsed integers consumed without a range check."""
+
+    _VULN = (
+        "func (s *Scanner) updateLineInfo(next int, text []byte) {\n"
+        "\tline, err := strconv.Atoi(string(text))\n"
+        "\tif err != nil {\n"
+        "\t\treturn\n"
+        "\t}\n"
+        "\ts.file.AddLineColumnInfo(next, filename, line, line)\n"
+        "}\n"
+    )
+
+    def test_unchecked_parse_to_callee_flagged(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        r = check_parsed_int_contract(self._VULN)
+        assert r.narrowing_found
+        assert "AddLineColumnInfo" in r.reasoning
+        assert "NO range check" in r.reasoning
+
+    def test_range_checked_parse_silent(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        fixed = self._VULN.replace(
+            "\ts.file.AddLineColumnInfo",
+            "\tif line < 1 || line > maxLineCol {\n\t\treturn\n\t}\n"
+            "\ts.file.AddLineColumnInfo",
+        )
+        assert not check_parsed_int_contract(fixed).narrowing_found
+
+    def test_c_strtoul_index_flagged(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        src = (
+            "static int parse(const char *p) {\n"
+            "\tunsigned long idx;\n"
+            "\tidx = strtoul(p, NULL, 10);\n"
+            "\treturn table[idx];\n"
+            "}\n"
+        )
+        r = check_parsed_int_contract(src)
+        assert r.narrowing_found
+        assert "index" in r.reasoning
+
+    def test_unconsumed_parse_silent(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        src = (
+            "func f(s string) {\n"
+            "\tn, err := strconv.Atoi(s)\n"
+            "\t_ = n\n"
+            "\t_ = err\n"
+            "}\n"
+        )
+        assert not check_parsed_int_contract(src).narrowing_found
+
+    def test_consumer_width_binding_lands_in_reasoning(self):
+        from core.audit.condition_smt import check_parsed_int_contract
+
+        r = check_parsed_int_contract(
+            self._VULN,
+            consumer_widths={"AddLineColumnInfo": 32},
+        )
+        assert r.narrowing_found
+        assert "32-bit" in r.reasoning
+        assert r.dest_width == 32
+
+
+class TestConsumerWidthIndex:
+    def test_go_signature_widths(self):
+        from core.audit.condition_smt import build_consumer_width_index
+
+        checklist = {
+            "files": [{
+                "path": "go/token/position.go",
+                "items": [{
+                    "name": "File.AddLineColumnInfo",
+                    "signature": (
+                        "func (f *File) AddLineColumnInfo(offset int, "
+                        "filename string, line, column int32)"
+                    ),
+                }],
+            }],
+        }
+        idx = build_consumer_width_index(checklist)
+        assert idx["AddLineColumnInfo"] == 32
+
+    def test_missing_signature_skipped(self):
+        from core.audit.condition_smt import build_consumer_width_index
+
+        assert build_consumer_width_index(
+            {"files": [{"items": [{"name": "f"}]}]},
+        ) == {}

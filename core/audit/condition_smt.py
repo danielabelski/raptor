@@ -3000,6 +3000,160 @@ def _var_only_in_call_args(rhs: str, var_name: str) -> bool:
     return not re.search(rf"\b{re.escape(var_name)}\b", remainder)
 
 
+# ------------------------------------------------------------------
+# Parsed-integer width contract
+# ------------------------------------------------------------------
+
+# Text-to-integer parse calls whose results are attacker-influenceable
+# whenever the parsed text is: Go strconv (stdlib) and the C libc
+# strto*/ato* family. Target-specific parse wrappers are NOT listed —
+# they arrive via the learned vocabulary, never hardcoded.
+_PARSED_INT_ASSIGN_RES: tuple[re.Pattern, ...] = (
+    re.compile(
+        r"(\w+)\s*(?:,\s*\w+)?\s*(?::?=)\s*"
+        r"strconv\.(?:Atoi|ParseInt|ParseUint)\s*\(",
+    ),
+    re.compile(
+        r"(\w+)\s*=\s*(?:\(\s*[\w\s*]+\)\s*)?"
+        r"(?:strtou?ll?|strtou?l|atoi|atoll?|strtou?imax|strtoumax)"
+        r"\s*\(",
+    ),
+)
+
+_PARSED_INT_COMPARE_TEMPLATE = (
+    r"\b{var}\b\s*(?:[<>]=?|==|!=)|(?:[<>]=?|==|!=)\s*\b{var}\b"
+)
+
+_PARSED_INT_CALL_ARG_RE = re.compile(r"\b([A-Za-z_][\w.]*)\s*\(([^()]*)\)")
+
+
+def build_consumer_width_index(
+    checklist: dict[str, Any] | None,
+) -> dict[str, int]:
+    """Narrowest integer parameter width per function, from checklist
+    signatures (cross-file: the callee usually lives in another file).
+
+    Best-effort: functions without a parsable signature are absent.
+    """
+    index: dict[str, int] = {}
+    for fi in (checklist or {}).get("files", []):
+        for item in fi.get("items", fi.get("functions", [])) or []:
+            name = item.get("name") or ""
+            sig = item.get("signature") or ""
+            if not name or "(" not in sig:
+                continue
+            inner = sig[sig.find("(") + 1:sig.rfind(")")]
+            widths: list[int] = []
+            for tok in re.split(r"[,)]", inner):
+                for word in tok.split():
+                    w = _TYPE_WIDTHS.get(word.strip("*& ")) or \
+                        _GO_TYPE_WIDTHS.get(word.strip("*& "))
+                    if w:
+                        widths.append(w)
+            if widths:
+                short = name.rsplit(".", 1)[-1]
+                index[short] = min(widths)
+    return index
+
+
+def check_parsed_int_contract(
+    source: str,
+    *,
+    consumer_widths: dict[str, int] | None = None,
+) -> IntegerNarrowingResult:
+    """Parsed-integer width contract: a value parsed from text flows
+    into a consumer without ANY range check.
+
+    Text-derived integers are attacker-influenceable wherever the text
+    is; passing one to a callee, index, or arithmetic without a range
+    comparison delegates an int-width/semantic contract the local code
+    never established (the callee may store it in 32 bits, use it in
+    position arithmetic, or loop on it). Detection-role: the result is
+    injected as review evidence, never a verdict.
+    """
+    from .safety_contract import assert_boost_only
+    assert_boost_only("condition_smt")
+
+    lines = source.split("\n")
+    parsed_vars: dict[str, int] = {}
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(("//", "/*", "#", "*")):
+            continue
+        for rex in _PARSED_INT_ASSIGN_RES:
+            m = rex.search(line)
+            if m and m.group(1) not in ("_", "err"):
+                parsed_vars.setdefault(m.group(1), i)
+
+    if not parsed_vars:
+        return IntegerNarrowingResult(
+            reasoning="no text-parsed integer variables found",
+        )
+
+    for var, assign_idx in parsed_vars.items():
+        compare_re = re.compile(
+            _PARSED_INT_COMPARE_TEMPLATE.format(var=re.escape(var)),
+        )
+        range_checked = any(
+            compare_re.search(ln)
+            for ln in lines
+            if not ln.lstrip().startswith(("//", "#"))
+        )
+        if range_checked:
+            continue
+
+        for j in range(assign_idx + 1, len(lines)):
+            line = lines[j]
+            if line.lstrip().startswith(("//", "/*", "#", "*")):
+                continue
+            consumer = ""
+            for cm in _PARSED_INT_CALL_ARG_RE.finditer(line):
+                args = cm.group(2)
+                if re.search(rf"\b{re.escape(var)}\b", args):
+                    consumer = cm.group(1).rsplit(".", 1)[-1]
+                    break
+            indexed = bool(
+                re.search(rf"\[[^\]]*\b{re.escape(var)}\b[^\]]*\]", line),
+            )
+            if not consumer and not indexed:
+                continue
+
+            width_note = ""
+            if consumer and consumer_widths:
+                w = consumer_widths.get(consumer)
+                if w and w < 64:
+                    width_note = (
+                        f" — and {consumer}()'s narrowest integer "
+                        f"parameter is {w}-bit"
+                    )
+            sink_desc = (
+                f"passed to {consumer}()" if consumer
+                else "used as an index"
+            )
+            return IntegerNarrowingResult(
+                narrowing_found=True,
+                source_type="parsed-int",
+                dest_type=consumer or "index",
+                source_width=64,
+                dest_width=(consumer_widths or {}).get(consumer, 0) or 0,
+                assign_line=j + 1,
+                reasoning=(
+                    f"'{var}' is parsed from text at line "
+                    f"{assign_idx + 1} and {sink_desc} at line {j + 1} "
+                    f"with NO range check anywhere in the function"
+                    f"{width_note}. Text-derived integers are "
+                    f"attacker-influenceable wherever the text is; the "
+                    f"consumer's width/semantic contract (32-bit "
+                    f"storage, position arithmetic, loop bounds) was "
+                    f"never established locally"
+                ),
+            )
+
+    return IntegerNarrowingResult(
+        reasoning="all text-parsed integers are range-checked or unconsumed",
+    )
+
+
 def _has_bounds_check_before(
     lines: list[str], var_name: str, before_line: int,
 ) -> bool:

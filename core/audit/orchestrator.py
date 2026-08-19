@@ -18417,16 +18417,23 @@ def _pre_loop_smt_screen(
     try:
         from .condition_smt import (
             DomainVocabulary,
+            build_consumer_width_index,
             check_auth_bypass,
             check_early_release,
             check_integer_narrowing,
             check_lock_discipline,
             check_null_propagation,
+            check_parsed_int_contract,
             check_resource_leak,
             check_toctou,
         )
     except Exception:  # noqa: BLE001
         return workqueue
+
+    # Cross-file width bindings for the parsed-int contract check:
+    # callee signatures come from the checklist (the callee usually
+    # lives in another file than the parse).
+    consumer_widths = build_consumer_width_index(checklist)
 
     _extract_sg = None
     _check_pf = None
@@ -18499,6 +18506,14 @@ def _pre_loop_smt_screen(
                     tool_hit = "smt:check-integer-narrowing"
                     if inr.witness:
                         tool_hit += ":witness"
+
+        if not tool_hit and is_c_or_go:
+            with contextlib.suppress(*_SMT_SCREEN_ERRORS):
+                pir = check_parsed_int_contract(
+                    source, consumer_widths=consumer_widths,
+                )
+                if pir.narrowing_found:
+                    tool_hit = "smt:check-parsed-int-contract"
 
         if not tool_hit and is_c_or_go:
             with contextlib.suppress(*_SMT_SCREEN_ERRORS):

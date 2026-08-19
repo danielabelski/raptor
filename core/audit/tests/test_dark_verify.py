@@ -3187,7 +3187,7 @@ class TestReturnValueComparison:
 # -- execute_witness source-path containment -----------------------------------
 
 
-class TestSourcePathContainment:
+class TestExecuteWitnessSourcePathContainment:
     """spec.file joins the target root and is later read UNSANDBOXED by
     the Go/Rust executors — absolute values, traversal and repo-planted
     symlinks pointing out of the tree must be rejected up front."""

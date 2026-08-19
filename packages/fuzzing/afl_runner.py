@@ -518,7 +518,7 @@ class AFLRunner:
         parallel_jobs: int = 1,
         timeout_ms: int = 1000,
         max_crashes: int | None = None,
-    ) -> tuple[int, Path]:
+    ) -> tuple[int, Path | None]:
         """
         Run AFL++ fuzzing campaign.
 
@@ -529,7 +529,9 @@ class AFLRunner:
             max_crashes: Stop after finding N unique crashes
 
         Returns:
-            Tuple of (num_crashes, crashes_dir)
+            Tuple of (num_crashes, crashes_dir). crashes_dir is None
+            when the campaign produced no crashes and AFL never created
+            a crashes directory.
         """
         logger.info("=" * 70)
         logger.info("STARTING AFL++ FUZZING CAMPAIGN")
@@ -855,7 +857,7 @@ class AFLRunner:
                 )
         return sorted(crash_files)
 
-    def _merge_crash_files(self, crash_files: list[Path]) -> Path:
+    def _merge_crash_files(self, crash_files: list[Path]) -> Path | None:
         """Return one directory containing every collected crash file.
 
         Single-instance campaigns (or ones where only the main instance
@@ -865,8 +867,15 @@ class AFLRunner:
         CrashCollector sees them all. Names keep their ``id:`` prefix
         (the collector filters on it) and gain an ``,instance:<name>``
         suffix to disambiguate identical AFL ids across instances.
+
+        With no crashes collected, return ``main/crashes`` only when it
+        actually exists, else ``None``. Pre-fix ``all()`` over the empty
+        list returned a possibly-nonexistent path that downstream
+        consumers (CrashCollector) rejected with FileNotFoundError.
         """
         main_crashes = self.output_dir / "main" / "crashes"
+        if not crash_files:
+            return main_crashes if main_crashes.is_dir() else None
         if all(f.parent.parent.name == "main" for f in crash_files):
             return main_crashes
 

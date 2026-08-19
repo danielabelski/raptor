@@ -650,7 +650,7 @@ Examples:
         print("\n✓ Fuzzing complete:")
         print(f"  - Duration: {args.duration}s")
         print(f"  - Unique crashes: {num_crashes}")
-        print(f"  - Crashes dir: {crashes_dir}")
+        print(f"  - Crashes dir: {crashes_dir if crashes_dir else '(none)'}")
 
         if num_crashes == 0:
             print("\nNo crashes found. Try:")

@@ -179,6 +179,19 @@ class TestMergeCrashFiles:
         assert all(f.name.startswith("id:") for f in merged)
         assert sorted(f.read_bytes() for f in merged) == [b"a", b"b", b"c"]
 
+    def test_no_crashes_returns_none_when_main_dir_missing(self, tmp_path):
+        # Regression: all() over the empty crash list returned a
+        # nonexistent main/crashes path; CrashCollector then raised
+        # FileNotFoundError on a perfectly healthy zero-crash campaign.
+        runner = self._make_runner(tmp_path)
+        assert runner._merge_crash_files([]) is None
+
+    def test_no_crashes_returns_main_dir_when_it_exists(self, tmp_path):
+        runner = self._make_runner(tmp_path)
+        main_crashes = tmp_path / "main" / "crashes"
+        main_crashes.mkdir(parents=True)
+        assert runner._merge_crash_files([]) == main_crashes
+
     def test_merge_is_idempotent(self, tmp_path):
         runner = self._make_runner(tmp_path)
         self._plant_crash(tmp_path, "main",

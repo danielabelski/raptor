@@ -172,7 +172,11 @@ def _positional_to_target_flag(argv: list[str]) -> list[str]:
     if "--target" in argv:
         return argv
     has_findings = "--findings" in argv
-    _VALUE_FLAGS = {"--findings", "--out", "--fix", "--target", "--cache-root"}
+    # Every update.py flag that consumes a value — a value missing here
+    # gets mistaken for the positional target (``--format pr-comment``
+    # would become ``--target pr-comment``).
+    _VALUE_FLAGS = {"--findings", "--out", "--fix", "--target",
+                    "--cache-root", "--format", "--validate-against"}
     out: list[str] = []
     expect_value = False
     for arg in argv:

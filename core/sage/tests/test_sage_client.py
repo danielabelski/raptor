@@ -459,5 +459,101 @@ class TestSageClientWithFakeSdk(unittest.TestCase):
             _restore_sdk(client_mod, snapshot)
 
 
+class TestHardenIdentityKeyPerms(unittest.TestCase):
+    """The SDK writes the agent key umask-wide; RAPTOR clamps it."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = __import__("pathlib").Path(self.tmp.name) / "ids"
+        self.dir.mkdir(mode=0o755)
+        self.key = self.dir / "agent.key"
+        self.key.write_bytes(b"\x00" * 32)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _mode(path):
+        import os
+        import stat
+        return stat.S_IMODE(os.stat(path).st_mode)
+
+    def test_wide_key_clamped_with_warning(self):
+        import os
+        os.chmod(self.key, 0o664)
+        from core.sage.client import harden_identity_key_perms
+        with self.assertLogs("raptor", level="WARNING") as logs:
+            harden_identity_key_perms(self.key)
+        self.assertEqual(self._mode(self.key), 0o600)
+        self.assertEqual(self._mode(self.dir), 0o700)
+        self.assertTrue(any("clamping" in line for line in logs.output))
+
+    def test_tight_key_untouched_no_warning(self):
+        import logging
+        import os
+        os.chmod(self.key, 0o600)
+        os.chmod(self.dir, 0o700)
+        from core.sage.client import harden_identity_key_perms
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger = logging.getLogger("raptor")
+        logger.addHandler(handler)
+        try:
+            harden_identity_key_perms(self.key)
+        finally:
+            logger.removeHandler(handler)
+        self.assertEqual(self._mode(self.key), 0o600)
+        self.assertFalse(
+            [r for r in records if r.levelno >= logging.WARNING],
+        )
+
+    def test_missing_key_is_noop(self):
+        from core.sage.client import harden_identity_key_perms
+        harden_identity_key_perms(self.dir / "absent.key")  # must not raise
+
+    def test_symlink_key_refused(self):
+        import os
+        target = self.dir / "target"
+        target.write_bytes(b"\x00" * 32)
+        os.chmod(target, 0o644)
+        link = self.dir / "link.key"
+        link.symlink_to(target)
+        from core.sage.client import harden_identity_key_perms
+        with self.assertLogs("raptor", level="WARNING") as logs:
+            harden_identity_key_perms(link)
+        # The symlink target's permissions must not be touched.
+        self.assertEqual(self._mode(target), 0o644)
+        self.assertTrue(
+            any("not a regular file" in line for line in logs.output),
+        )
+
+    def test_default_path_resolves_env_var(self):
+        import os
+        os.chmod(self.key, 0o664)
+        from core.sage.client import harden_identity_key_perms
+        with patch.dict(
+            os.environ, {"SAGE_IDENTITY_PATH": str(self.key)},
+        ):
+            harden_identity_key_perms(None)
+        self.assertEqual(self._mode(self.key), 0o600)
+
+    def test_home_parent_never_clamped(self):
+        import os
+        from pathlib import Path
+        key = Path(self.tmp.name) / "home" / "stray.key"
+        key.parent.mkdir(mode=0o755)
+        key.write_bytes(b"\x00" * 32)
+        os.chmod(key, 0o664)
+        from core.sage.client import harden_identity_key_perms
+        with patch("core.sage.client.Path.home",
+                   return_value=key.parent):
+            harden_identity_key_perms(key)
+        self.assertEqual(self._mode(key), 0o600)
+        # $HOME itself keeps its mode.
+        self.assertEqual(self._mode(key.parent), 0o755)
+
+
 if __name__ == "__main__":
     unittest.main()

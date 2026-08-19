@@ -84,14 +84,19 @@ def _get_client(timeout: float = 0):
     # The SDK's httpx client honours proxy env but does not special-case
     # loopback — without this, a proxied shell routes the localhost SAGE
     # call to the proxy and every subcommand reports "not reachable".
+    from core.sage.client import harden_identity_key_perms
     from core.sage.config import ensure_loopback_no_proxy
     ensure_loopback_no_proxy()
     cfg = SageConfig.from_env()
     identity_path = cfg.identity_path
     if identity_path and Path(identity_path).exists():
         identity = AgentIdentity.from_file(identity_path)
+        harden_identity_key_perms(identity_path)
     else:
         identity = AgentIdentity.default()
+        # default() may have just auto-provisioned the key with a
+        # umask-wide write — clamp it (resolves the SDK's default path).
+        harden_identity_key_perms(None)
     return SageClient(
         base_url=cfg.url,
         identity=identity,

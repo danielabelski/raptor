@@ -112,6 +112,56 @@ def _hint_for_warning(warning: str, install_hints: dict) -> str | None:
     return None
 
 
+def _module_dep_warnings() -> list[str]:
+    """Import-verify the Python-module TOOL_DEPS in a subprocess.
+
+    ``check_tools`` uses ``find_spec`` (locate without importing), so
+    a wheel whose native extension is broken — Python upgraded under
+    the venv, half-completed install — passes the presence check and
+    then crashes the first /audit or /codeql run that imports it.
+    Import in a THROWAWAY subprocess: a segfaulting extension module
+    must not take doctor down with it. Never raises.
+    """
+    import subprocess
+
+    out: list[str] = []
+    try:
+        import importlib.util
+
+        from core.config import RaptorConfig
+    except Exception:  # noqa: BLE001
+        return out
+    for name in sorted(RaptorConfig.TOOL_DEPS):
+        dep = RaptorConfig.TOOL_DEPS[name]
+        module = dep.get("module")
+        if not module:
+            continue
+        try:
+            if importlib.util.find_spec(module) is None:
+                continue  # absent — check_tools already covers it
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "find_spec(%s) failed", module, exc_info=True,
+            )
+            continue
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c",
+                 f"import importlib; importlib.import_module({module!r})"],
+                capture_output=True, text=True, check=False, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue  # probe failure ≠ broken module; stay quiet
+        if proc.returncode != 0:
+            pip_name = dep.get("pip", module)
+            out.append(
+                f"{name} is installed but failed to import — "
+                f"{dep['affects']} will fail at use time "
+                f"(pip install --force-reinstall {pip_name})"
+            )
+    return out
+
+
 def _gather() -> tuple[
     list[tuple[str, bool]],  # tool_results
     list[str],               # tool_warnings
@@ -138,6 +188,13 @@ def _gather() -> tuple[
     logging.disable(logging.WARNING)
     try:
         tool_results, tool_warnings, unavailable = check_tools()
+        # Doctor-only depth: verify Python-module deps actually
+        # import. The banner's find_spec probe deliberately does not
+        # import (startup speed; a broken wheel can't crash the
+        # banner) — the cost is that a present-but-broken wheel shows
+        # ✓ and crashes at first use. Doctor is on-demand and allowed
+        # to spend a subprocess to catch exactly that.
+        tool_warnings = list(tool_warnings) + _module_dep_warnings()
         llm_lines, llm_warnings = check_llm()
         env_parts, env_warnings = check_env(unavailable)
         lang_line, lang_warnings = check_lang()
@@ -187,12 +244,9 @@ def _render(
     present = [name for name, ok in tool_results if ok]
     if present:
         passes.append(f"tools present: {', '.join(sorted(present))}")
-    if missing:
-        # The warnings list carries the feature-impact phrasing
-        # (``rr not found — /crash-analysis limited``) so we don't
-        # need to re-format from tool_results here. tool_warnings
-        # also carries group-level entries (e.g. "no scanner").
-        pass
+    # Missing tools need no re-formatting here: the warnings list
+    # carries the feature-impact phrasing (``/crash-analysis limited
+    # — rr not found``) and the group-level entries ("no scanner").
     # Build a lookup of "binary name → install advice" for every
     # tool that's missing so we can enrich the upstream warnings.
     # Pre-fix /doctor printed "rr not found" with no hint — the
@@ -239,8 +293,10 @@ def _render(
             passes.append(clean)
     warnings.extend(env_warnings)
 
-    # Language support — single informational line.
-    if lang_line:
+    # Language support — single informational line. A ✗ lang line
+    # (no grammars) must NOT be listed under PASSED; the degradation
+    # warning check_lang emits alongside it covers the signal.
+    if lang_line and "✗" not in lang_line:
         passes.append(lang_line.strip())
 
     # Active project — informational.

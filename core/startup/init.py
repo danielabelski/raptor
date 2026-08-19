@@ -44,7 +44,10 @@ def check_tools() -> tuple[list, list, set]:
         if "module" in dep:
             # Python-module dependency (e.g. z3) — no binary to probe.
             # find_spec locates without importing, so a broken module
-            # can't crash the banner.
+            # can't crash the banner. Trade-off: a present-but-broken
+            # wheel shows ✓ here and fails at first import; doctor
+            # (not the banner — startup stays fast) verifies module
+            # deps actually import.
             found = importlib.util.find_spec(dep["module"]) is not None
         else:
             found = bool(shutil.which(dep["binary"]))

@@ -198,6 +198,31 @@ rules:
           - metavariable-regex:
               metavariable: $Q
               regex: '(?i).*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|MERGE|WHERE|FROM|INTO|SET|VALUES|JOIN|UNION|GRANT|REVOKE).*'
+      # Template-literal query construction in query position. The $Q
+      # regex requires a quoted/backtick literal opening with SQL text,
+      # so identifier names containing SQL words never match; taint can
+      # only reach a template literal through ${...} interpolation, so
+      # parameterised literals without interpolation stay clean.
+      - patterns:
+          - pattern-either:
+              - pattern: $CONN.query($Q, ...)
+              - pattern: $CONN.execute($Q, ...)
+          - metavariable-regex:
+              metavariable: $Q
+              regex: '(?is)^[`"''].*\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|MERGE|UNION|GRANT|REVOKE)\b.*'
+          - focus-metavariable: $Q
+      # Assignment-then-call form: the query text is built into a
+      # variable (template literal or concat) and handed to .query()
+      # later. $Q carries no SQL text to anchor on, so the receiver
+      # name is the FP control — only DB-shaped receivers qualify.
+      - patterns:
+          - pattern-either:
+              - pattern: $DBOBJ.query($Q, ...)
+              - pattern: $DBOBJ.execute($Q, ...)
+          - metavariable-regex:
+              metavariable: $DBOBJ
+              regex: '(?i)^(conn(ection)?|client|pool|db|database|sql|mysql|pg|pgpool|dbconn|dbpool)[0-9_]*$'
+          - focus-metavariable: $Q
     metadata:
       cwe: ["CWE-89"]
       owasp_top_10: ["A3:2021-Injection"]

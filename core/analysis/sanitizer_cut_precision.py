@@ -1126,6 +1126,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_b33_sink_shape_fixtures()
     fixtures += _java_b34_positional_fixtures()
     fixtures += _java_b37_fixtures()
+    fixtures += _java_b36_fixtures()
     return fixtures
 
 
@@ -1420,6 +1421,78 @@ def _java_b27_fixtures() -> List[CutFixture]:
               + "    }\n"),
         "public void handle", "out.println(bar)"))
     return j
+
+
+def _java_b36_fixtures() -> List[CutFixture]:
+    """b36 battery (merged onto b37's machinery): the JDK-class tier
+    and statement-scoped sibling coverage. Deduped against the b37
+    battery — non-final, ambiguous-class, static-final-concat,
+    taint-free-static-final, and prefix-trap shapes are pinned THERE;
+    kept here are only the shapes b37 does not exercise."""
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) throws Exception {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    fx = []
+    # must NOT suppress -------------------------------------------------
+    fx.append(_fx(
+        "java_b36_jdk_char_switch_value", "pathtrav", "CWE-22",
+        "jdk_sentinel_in_value_position", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getHeader("X");',
+             'String bar;',
+             'char c = java.io.File.separatorChar;',
+             'switch (c) {',
+             "    case '/': bar = \"safe\"; break;",
+             '    default: bar = param; break;',
+             '}',
+             'new java.io.FileInputStream(bar);'),
+        4, 11, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b36_instance_field_chain", "pathtrav", "CWE-22",
+        "instance_field_via_local", LABEL_MUST_NOT_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    static class H { String dir = \"d\"; }\n"
+         "    public void handle(HttpServletRequest request, "
+         "java.io.PrintWriter out) throws Exception {\n"
+         "        String param = request.getHeader(\"X\");\n"
+         "        H h = new H();\n"
+         "        String f = h.dir + param;\n"
+         "        new java.io.FileInputStream(f);\n"
+         "    }\n}\n"),
+        5, 8, language="java", suffix=".java"))
+    # may suppress -------------------------------------------------------
+    fx.append(_fx(
+        "java_b36_prepcall_jdk_const_siblings", "sqli", "CWE-89",
+        "jdk_constant_siblings_multiline_call", LABEL_MAY_SUPPRESS,
+        ("import javax.servlet.http.HttpServletRequest;\n"
+         "public class T {\n"
+         "    public void handle(HttpServletRequest request, "
+         "java.io.PrintWriter out) throws Exception {\n"
+         "        String param = request.getHeader(\"X\");\n"
+         "        String bar = \"bob\";\n"
+         "        String sql = \"{call \" + bar + \"}\";\n"
+         "        java.sql.Connection con = getC();\n"
+         "        con.prepareCall(sql,\n"
+         "                java.sql.ResultSet.TYPE_FORWARD_ONLY,\n"
+         "                java.sql.ResultSet.CONCUR_READ_ONLY);\n"
+         "    }\n"
+         "    java.sql.Connection getC() { return null; }\n"
+         "}\n"),
+        4, 6, language="java", suffix=".java"))
+    fx.append(_fx(
+        "java_b36_jdk_locale_sibling", "xss", "CWE-79",
+        "jdk_locale_printf_sibling", LABEL_MAY_SUPPRESS,
+        body('String param = request.getHeader("X");',
+             'String bar = "bob";',
+             'out.printf(java.util.Locale.US, "%s", bar);'),
+        4, 6, language="java", suffix=".java"))
+    return fx
 
 
 def _java_b37_fixtures() -> List[CutFixture]:

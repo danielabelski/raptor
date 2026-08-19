@@ -665,12 +665,19 @@ def _sink_arg_constant_reason(
             # (observed live — see _siblings_fold_or_refuse). Every
             # sibling must additionally fold or be a catalog call.
             from core.analysis.const_fold_java import definers_all_fold
+            covered = _xfile_covered_names(index, java_source_text, sink)
             for name in other_names:
                 if definers_all_fold(
                         rd, sink, name, index,
                         array_resolver=table_resolver,
                         config_resolver=config_resolver,
                         conduit_resolver=invocation_hook):
+                    continue
+                if name in covered and not rd.at(sink, name):
+                    # every occurrence sits inside an accepted
+                    # taint-free chain and no local definition
+                    # reaches — a class-constant segment, not a
+                    # taint path.
                     continue
                 # Fold-only: a catalog-sanitizer allowance would need
                 # the finding's class context (a wrong-class sanitizer
@@ -680,6 +687,23 @@ def _sink_arg_constant_reason(
         return reason
     except Exception:  # noqa: BLE001 — folding is best-effort, never fatal
         return None
+
+
+def _xfile_covered_names(index, java_source_text, sink):
+    """Sibling names whose every occurrence on the sink STATEMENT sits
+    inside a chain the cross-file resolver accepts under the
+    taint-free tier (b36 port: JDK class constants split into base
+    identifiers by arg-name extraction — ``java``/``ResultSet`` from a
+    three-argument prepareCall — have no reaching defs and would
+    refuse forever without expression-level coverage)."""
+    try:
+        xfile = getattr(index, "xfile", None)
+        if xfile is None or not java_source_text:
+            return frozenset()
+        return frozenset(xfile.covered_identifiers(
+            java_source_text, getattr(sink, "lineno", 0)))
+    except Exception:  # noqa: BLE001 — refusal direction
+        return frozenset()
 
 
 def _build_array_index(graph, java_source_text: str):
@@ -802,6 +826,7 @@ def _siblings_fold_or_refuse(
     graph, rd, sink, sink_arg: str,
     index, table_resolver, config_resolver, invocation_hook,
     candidate_callables,
+    java_source_text=None,
 ) -> bool:
     """True when every OTHER argument name of the sink call is
     provably taint-free: all its reaching definers fold to constants
@@ -822,6 +847,7 @@ def _siblings_fold_or_refuse(
             (set(outermost.arg_names) | set(outermost.arg_deep_names))
             - {sink_arg}
         )
+        covered = _xfile_covered_names(index, java_source_text, sink)
         for name in other:
             if definers_all_fold(
                     rd, sink, name, index,
@@ -831,6 +857,8 @@ def _siblings_fold_or_refuse(
                 continue
             defs = rd.at(sink, name)
             if not defs:
+                if name in covered:
+                    continue
                 return False
             for d in defs:
                 rhs = index.rhs_at(getattr(d, "lineno", 0), name)
@@ -947,7 +975,8 @@ def _whole_array_taint_free_reason(
         if not _siblings_fold_or_refuse(
                 graph, rd, sink, sink_arg,
                 index, table_resolver, config_resolver, invocation_hook,
-                candidate_callables):
+                candidate_callables,
+                java_source_text=java_source_text):
             return None
         return (
             "taint-free array argument: the sink consumes a whole "

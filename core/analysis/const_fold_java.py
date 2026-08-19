@@ -122,7 +122,9 @@ class JavaConstIndex:
         # non-creation or differently-typed definition.
         self._creation_types: Dict[str, Optional[str]] = {}
         self.xfile = None
-        if java_file_path and repo_root:
+        if java_file_path:
+            # repo_root may be absent: the resolver then serves only
+            # the JDK tier (no tree lookups), which needs no root.
             try:
                 from core.analysis.java_xfile_const import (
                     make_xfile_resolver,

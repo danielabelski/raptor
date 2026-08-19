@@ -341,3 +341,88 @@ class TestPropertyWriteScan:
         rd, sink, index = TestGateConsumers()._rd_setup(
             "        String v = x;\n", "v")
         assert not definers_all_fold(rd, sink, "v", index)
+
+
+class TestJdkTier:
+    """b36 merge: JDK class chains are TAINT_FREE (source-less classes
+    XFileConst can never resolve from the tree)."""
+
+    def _resolver(self, tmp_path, src):
+        from core.analysis.java_xfile_const import make_xfile_resolver
+        f = tmp_path / "T.java"
+        f.write_text(src, encoding="utf-8")
+        return make_xfile_resolver(str(f), str(tmp_path))
+
+    def test_fqn_jdk_chain_taint_free(self, tmp_path):
+        from core.analysis.const_fold_java import REFUSE, TAINT_FREE
+        r = self._resolver(tmp_path, "public class T {}\n")
+        assert r.resolve_field("java.sql.ResultSet",
+                               "TYPE_FORWARD_ONLY", True) is TAINT_FREE
+        # value consumers never see it
+        assert r.resolve_field("java.sql.ResultSet",
+                               "TYPE_FORWARD_ONLY", False) is REFUSE
+
+    def test_imported_simple_jdk_chain(self, tmp_path):
+        from core.analysis.const_fold_java import TAINT_FREE
+        src = ("import java.sql.ResultSet;\n"
+               "public class T {}\n")
+        r = self._resolver(tmp_path, src)
+        assert r.resolve_field("ResultSet", "CONCUR_READ_ONLY",
+                               True) is TAINT_FREE
+
+    def test_non_jdk_simple_name_still_tree_resolves(self, tmp_path):
+        (tmp_path / "Cfg.java").write_text(
+            'public class Cfg { public static final String '
+            'D = "v"; }\n', encoding="utf-8")
+        r = self._resolver(tmp_path, "public class T {}\n")
+        assert r.resolve_field("Cfg", "D", True) == "v"
+
+    def test_rootless_resolver_serves_jdk_only(self, tmp_path):
+        from core.analysis.const_fold_java import REFUSE, TAINT_FREE
+        from core.analysis.java_xfile_const import make_xfile_resolver
+        f = tmp_path / "T.java"
+        f.write_text("import java.sql.ResultSet;\npublic class T {}\n",
+                     encoding="utf-8")
+        r = make_xfile_resolver(str(f), None)
+        assert r is not None
+        assert r.resolve_field("ResultSet", "X", True) is TAINT_FREE
+        assert r.resolve_field("Cfg", "D", True) is REFUSE
+
+
+class TestCoveredIdentifiers:
+    """b36 merge: statement-scoped sibling coverage."""
+
+    def _resolver(self, tmp_path, src):
+        from core.analysis.java_xfile_const import make_xfile_resolver
+        f = tmp_path / "T.java"
+        f.write_text(src, encoding="utf-8")
+        return make_xfile_resolver(str(f), str(tmp_path))
+
+    SRC = (
+        "public class T {\n"
+        "    void m(String sql, Object con) {\n"
+        "        prepareCall(sql,\n"
+        "            java.sql.ResultSet.TYPE_FORWARD_ONLY,\n"
+        "            java.sql.ResultSet.CONCUR_READ_ONLY);\n"
+        "    }\n"
+        "    void prepareCall(String s, int a, int b) {}\n"
+        "}\n"
+    )
+
+    def test_multiline_call_statement_scope(self, tmp_path):
+        r = self._resolver(tmp_path, self.SRC)
+        cov = r.covered_identifiers(self.SRC, 3)
+        assert {"java", "ResultSet", "TYPE_FORWARD_ONLY",
+                "CONCUR_READ_ONLY"} <= cov
+        # 'sql' occurs bare outside every accepted chain:
+        # uncovered-wins even though it is also a package segment.
+        assert "sql" not in cov
+        assert "prepareCall" not in cov
+
+    def test_other_lines_do_not_leak(self, tmp_path):
+        src = self.SRC.replace(
+            "    void prepareCall",
+            "    void n(String x) { f(x); }\n    void prepareCall")
+        r = self._resolver(tmp_path, src)
+        cov = r.covered_identifiers(src, 7)  # the n(...) line
+        assert "TYPE_FORWARD_ONLY" not in cov

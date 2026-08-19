@@ -66,6 +66,29 @@ def _package_of(root) -> str:
     return ""
 
 
+def _chain_text(node) -> Optional[str]:
+    """Dotted text of a pure identifier chain; None for anything with
+    a non-identifier link (calls, array access, this/super)."""
+    parts = []
+    cur = node
+    while cur is not None:
+        if cur.type in ("field_access", "scoped_identifier"):
+            fld = (cur.child_by_field_name("field")
+                   or cur.child_by_field_name("name"))
+            obj = (cur.child_by_field_name("object")
+                   or cur.child_by_field_name("scope"))
+            if fld is None or fld.type != "identifier":
+                return None
+            parts.append(_text(fld))
+            cur = obj
+            continue
+        if cur.type == "identifier":
+            parts.append(_text(cur))
+            return ".".join(reversed(parts))
+        return None
+    return None
+
+
 class _Refused(Exception):
     pass
 
@@ -88,7 +111,10 @@ class XFileConst:
         # System.setProperty exists somewhere (any key may be written);
         # otherwise the frozenset of literally-written property keys.
         self._setproperty_scan = None
-        if self.ok:
+        # imports are needed even without a source root: the JDK tier
+        # resolves imported simple names (ResultSet -> java.sql.*)
+        # from them, and JDK resolution reads no tree files.
+        if self._parser is not None:
             try:
                 text = self._file.read_text(encoding="utf-8",
                                             errors="replace")
@@ -225,10 +251,23 @@ class XFileConst:
             return False
         return key not in scan
 
+    def is_jdk_chain(self, chain: str) -> bool:
+        """True when ``chain`` names a JDK class — a fully-qualified
+        ``java.*``/``javax.*`` chain or a simple name the analysed
+        file imports from those packages. JDK class fields cannot
+        carry the current request's taint under the gate's
+        intra-procedural model (b36 tier, merged here: XFileConst
+        cannot resolve JDK classes from source, so without this the
+        ResultSet.TYPE_FORWARD_ONLY sibling class refuses forever)."""
+        fqn = self._imports.get(chain, chain) if "." not in chain             else chain
+        return fqn.startswith(("java.", "javax."))
+
     def resolve_field(self, chain: str, field: str,
                       allow_taint_free: bool) -> Any:
         """``chain.field`` → constant | TAINT_FREE | REFUSE."""
         from core.analysis.const_fold_java import REFUSE, TAINT_FREE
+        if self.is_jdk_chain(chain):
+            return TAINT_FREE if allow_taint_free else REFUSE
         key = (chain, field)
         if key in self._field_cache:
             val = self._field_cache[key]
@@ -249,6 +288,68 @@ class XFileConst:
         if val is TAINT_FREE and not allow_taint_free:
             return REFUSE
         return val
+
+    def covered_identifiers(self, source_text: str,
+                            lineno: int):
+        """Identifier texts on ``lineno``'s enclosing STATEMENT that
+        occur only inside chains this resolver accepts under the
+        taint-free tier (b36 port). A sink call routinely spans lines
+        (three-argument prepareCall), so the scope is the smallest
+        statement intersecting the line — uncovered occurrences win."""
+        covered, uncovered = set(), set()
+        if self._parser is None:
+            return covered
+        try:
+            tree = self._parser.parse(
+                source_text.encode("utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            return covered
+        stmt_types = ("expression_statement",
+                      "local_variable_declaration",
+                      "return_statement", "throw_statement")
+
+        def find_stmt(node):
+            if node.start_point[0] + 1 > lineno \
+                    or node.end_point[0] + 1 < lineno:
+                return None
+            for c in node.children:
+                found = find_stmt(c)
+                if found is not None:
+                    return found
+            return node if node.type in stmt_types else None
+
+        scope = find_stmt(tree.root_node)
+        if scope is None:
+            return covered
+
+        from core.analysis.const_fold_java import REFUSE
+
+        def accepts(node) -> bool:
+            fld = node.child_by_field_name("field") \
+                or node.child_by_field_name("name")
+            obj = node.child_by_field_name("object") \
+                or node.child_by_field_name("scope")
+            if fld is None or fld.type != "identifier" or obj is None:
+                return False
+            chain = _chain_text(obj)
+            if chain is None:
+                return False
+            val = self.resolve_field(chain, _text(fld), True)
+            return val is not REFUSE
+
+        def visit(node, inside: bool) -> None:
+            here = inside
+            if not here and node.type in ("field_access",
+                                          "scoped_identifier"):
+                here = accepts(node)
+            if node.type == "identifier":
+                (covered if here else uncovered).add(_text(node))
+                return
+            for c in node.children:
+                visit(c, here)
+
+        visit(scope, False)
+        return covered - uncovered
 
     def resolve_method(self, chain: str, method: str, argc: int,
                        allow_taint_free: bool) -> Any:
@@ -341,10 +442,14 @@ def _scan_setproperty(root: Path, parser):
 
 def make_xfile_resolver(java_file_path: Optional[str],
                         repo_root: Optional[str]) -> Optional[XFileConst]:
-    if not java_file_path or not repo_root:
+    if not java_file_path:
         return None
     try:
         r = XFileConst(java_file_path, repo_root)
-        return r if r.ok else None
+        # ok=False (no root / no parser) still serves the JDK tier,
+        # which resolves from the import map alone; every tree lookup
+        # keeps refusing through the ok gate.
+        return r if (r.ok or r._imports or r._parser is not None) \
+            else None
     except Exception:  # noqa: BLE001 — refusal direction
         return None

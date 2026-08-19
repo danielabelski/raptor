@@ -4,7 +4,9 @@ Builds a fixture with O(10k) deps across mixed ecosystems, runs
 ``raptor-sca <target> --offline`` against it, records:
 
   * Cold wallclock (total)
-  * Peak RSS (via ``resource.getrusage``)
+  * Peak RSS of the scan process itself (via ``os.wait4`` — see
+    ``_run_scan`` for why session-cumulative ``getrusage`` readings
+    are wrong here)
   * Per-stage timing (best-effort — extracted from stderr if
     progress logs carry stage transitions)
 
@@ -27,12 +29,13 @@ egregious regressions.
 from __future__ import annotations
 
 import json
+import os
 import resource
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
-from typing import Tuple
 
 import pytest
 
@@ -165,38 +168,81 @@ spec:
         )
 
 
-def _peak_rss_mb() -> float:
-    """Peak RSS of the current process in MiB.
+# Hard cap on one scan invocation. Mirrors the old
+# ``subprocess.run(..., timeout=600)`` bound.
+_SCAN_TIMEOUT_S = 600.0
+
+# ``os.wait4`` poll interval while the scan child runs.
+_WAIT_POLL_S = 0.05
+
+
+def _rusage_rss_mb(rusage: resource.struct_rusage) -> float:
+    """Convert a reaped child's ``ru_maxrss`` to MiB.
 
     Linux: ``ru_maxrss`` is in KiB. macOS: ``ru_maxrss`` is in bytes.
     Sniff via platform.
     """
-    rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
     if sys.platform == "darwin":
         return rusage.ru_maxrss / (1024 * 1024)
     return rusage.ru_maxrss / 1024
 
 
-def _run_scan(target: Path, out: Path) -> Tuple[float, float, str]:
+def _run_scan(target: Path, out: Path) -> tuple[float, float, str]:
     """Run the scan, returning (wallclock_s, peak_child_rss_mb,
-    stderr)."""
+    stderr).
+
+    Peak RSS comes from ``os.wait4`` on the scan process, so the
+    reading covers exactly that child (plus anything it spawned and
+    reaped) and nothing else. The previous implementation read
+    ``resource.getrusage(RUSAGE_CHILDREN)``, which is the high-water
+    mark across EVERY child the test process ever reaped — and the
+    nightly runs all slow tests in one shuffled pytest process, so
+    an earlier test's heavyweight child (an audit-orchestrator E2E's
+    Joern JVM peaks ~1.7 GiB) set the mark and this gate blamed the
+    SCA scan for it.
+
+    Child stdout/stderr go to unnamed temp files rather than pipes:
+    ``os.wait4`` must be the reaper (``communicate()`` would reap the
+    child first and discard its rusage), and files can't deadlock on
+    a full pipe buffer while we sit in the wait loop.
+    """
     cmd = [
         sys.executable, "-m", "packages.sca.cli",
         str(target), "--offline", "--out", str(out),
     ]
     start = time.perf_counter()
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True,
-        cwd=str(REPO_ROOT), timeout=600,
-    )
-    elapsed = time.perf_counter() - start
-    rss_mb = _peak_rss_mb()
-    if proc.returncode not in (0, 1):
-        raise RuntimeError(
-            f"scan crashed: exit={proc.returncode}\n"
-            f"stderr (last 2k):\n{proc.stderr[-2000:]}"
+    with tempfile.TemporaryFile() as out_fh, \
+            tempfile.TemporaryFile() as err_fh:
+        proc = subprocess.Popen(
+            cmd, stdout=out_fh, stderr=err_fh, cwd=str(REPO_ROOT),
         )
-    return elapsed, rss_mb, proc.stderr
+        deadline = start + _SCAN_TIMEOUT_S
+        while True:
+            pid, status, rusage = os.wait4(proc.pid, os.WNOHANG)
+            if pid == proc.pid:
+                break
+            if time.perf_counter() > deadline:
+                proc.kill()
+                _, status, _ = os.wait4(proc.pid, 0)
+                proc.returncode = os.waitstatus_to_exitcode(status)
+                raise RuntimeError(
+                    f"scan timed out after {_SCAN_TIMEOUT_S:.0f}s"
+                )
+            time.sleep(_WAIT_POLL_S)
+        # The child was reaped via wait4, behind Popen's back — sync
+        # its bookkeeping so __exit__/__del__ don't wait again.
+        returncode = os.waitstatus_to_exitcode(status)
+        proc.returncode = returncode
+        elapsed = time.perf_counter() - start
+        err_fh.seek(0)
+        stderr = err_fh.read().decode("utf-8", errors="replace")
+    rss_mb = _rusage_rss_mb(rusage)
+    if returncode not in (0, 1):
+        raise RuntimeError(
+            f"scan crashed: exit={returncode}\n"
+            f"stderr (last 2k):\n{stderr[-2000:]}"
+        )
+    return elapsed, rss_mb, stderr
 
 
 # ---------------------------------------------------------------------------

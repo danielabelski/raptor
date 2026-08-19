@@ -1475,3 +1475,88 @@ class TestRefireLoop:
         self._wire(tmp_path, monkeypatch, labels, {"a.c:f": "finding"})
         run_corpus.main(["--output", str(tmp_path / "r2.json")])
         assert "Refire deltas" not in capsys.readouterr().out
+
+
+class TestLlmCacheKnob:
+    """--no-llm-cache must arm RAPTOR_LLM_CACHE=off before the audit
+    runs (every LLMConfig constructed downstream reads it) and record
+    the setting in results.json meta — a refire graded against cache
+    replays proves nothing about the fix being measured."""
+
+    def _label_for(self, fid="a.c:f", file="a.c"):
+        return SimpleNamespace(
+            function_id=fid,
+            bug_class="auth",
+            expected_status="clean",
+            expected_mechanism="",
+            expected_mode_results={},
+            source=SimpleNamespace(
+                repo="test", sha="x", file=file, line_start=1, line_end=6,
+            ),
+        )
+
+    def _run_main(self, tmp_path, monkeypatch, argv):
+        from contextlib import contextmanager
+
+        import os
+
+        import core.audit.corpus.label as label_mod
+
+        @contextmanager
+        def fake_project(run_tag):
+            yield f"corpus-{run_tag}"
+
+        src = tmp_path / "repo"
+        src.mkdir(exist_ok=True)
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+
+        monkeypatch.setattr(
+            label_mod, "load_all_labels",
+            lambda bug_class=None: [self._label_for()],
+        )
+        monkeypatch.setattr(
+            run_corpus, "_resolve_source_dirs",
+            lambda labels, do_fetch=False: {"test": src},
+        )
+        monkeypatch.setattr(
+            run_corpus, "_corpus_project_context", fake_project,
+        )
+        captured = {}
+
+        def fake_ensemble(labels, dirs, **kw):
+            captured["env"] = os.environ.get("RAPTOR_LLM_CACHE")
+            return (
+                [dict(_result_row("a.c:f", "clean", "clean"), model="")],
+                [],
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_ensemble_audit", fake_ensemble,
+        )
+        out = tmp_path / "results.json"
+        run_corpus.main(["--output", str(out), *argv])
+        return json.loads(out.read_text())["meta"], captured
+
+    def test_default_records_cache_on(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RAPTOR_LLM_CACHE", "")
+        meta, captured = self._run_main(tmp_path, monkeypatch, [])
+        assert meta["llm_cache"] == "on"
+        assert captured["env"] == ""  # untouched by the runner
+
+    def test_no_llm_cache_arms_env_and_meta(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RAPTOR_LLM_CACHE", "")
+        meta, captured = self._run_main(
+            tmp_path, monkeypatch, ["--no-llm-cache"],
+        )
+        assert meta["llm_cache"] == "off"
+        assert captured["env"] == "off", (
+            "cache bypass must be armed in the environment BEFORE "
+            "the audit pipeline runs"
+        )
+
+    def test_bypassed_config_disables_caching(self, tmp_path, monkeypatch):
+        # The armed environment reaches a fresh LLMConfig — the whole
+        # point of the knob.
+        monkeypatch.setenv("RAPTOR_LLM_CACHE", "off")
+        from core.llm.config import LLMConfig
+        assert LLMConfig().enable_caching is False

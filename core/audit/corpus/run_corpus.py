@@ -2741,6 +2741,17 @@ def main(argv: list[str] | None = None) -> int:
              "prefilter behaviour. Recorded in results.json meta",
     )
     parser.add_argument(
+        "--no-llm-cache",
+        action="store_true",
+        help="Bypass the LLM response cache for this run (sets "
+             "RAPTOR_LLM_CACHE=off for the whole pipeline). Use for "
+             "refires that measure a fix: a cached completion replays "
+             "verbatim for any unchanged prompt, so trap/paired-label "
+             "verification against cache hits is vacuous and "
+             "calibration-style fixes grade against frozen prior "
+             "output. Recorded in results.json meta",
+    )
+    parser.add_argument(
         "--profile",
         choices=("cold", "deployed"),
         default="cold",
@@ -2757,6 +2768,13 @@ def main(argv: list[str] | None = None) -> int:
              "header",
     )
     args = parser.parse_args(argv)
+
+    # Cache bypass must be armed before ANY LLMConfig is constructed
+    # (clients read the switch at construction time), so set it right
+    # after parse — probe mode, dispatcher children, and the in-
+    # process orchestrator all inherit it from the environment.
+    if args.no_llm_cache:
+        os.environ["RAPTOR_LLM_CACHE"] = "off"
 
     # Fail fast: a mistyped --splice path silently produced a partial
     # results file the operator believed was merged.  Check before any
@@ -3004,6 +3022,11 @@ def main(argv: list[str] | None = None) -> int:
         # The knowledge profile the run was invoked with (probe mode
         # skips the orchestrator, so there it only labels the rows).
         "profile": args.profile,
+        # Whether LLM response-cache replay was possible for this run
+        # ("off" = every completion was generated fresh — see
+        # --no-llm-cache). Rows may still carry cached=True markers
+        # only when this is "on".
+        "llm_cache": "off" if args.no_llm_cache else "on",
     }
     if spend:
         meta["total_spend_usd"] = round(spend["total_usd"], 4)
@@ -3050,6 +3073,7 @@ def main(argv: list[str] | None = None) -> int:
                 "model": meta["model"],
                 "scope": args.scope,
                 "splice": str(args.splice) if args.splice else None,
+                "llm_cache": meta["llm_cache"],
             },
             profile=args.profile,
             selection=selection,

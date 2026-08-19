@@ -1928,9 +1928,10 @@ def _format_summary(
         lines.append("")
         lines.append("Mismatches:")
         for r in mismatched:
-            hyp = r.get("hypothesis", "")
-            if len(hyp) > 80:
-                hyp = hyp[:77] + "..."
+            # Full hypothesis — the mid-word 80-char truncation left
+            # the one block operators diagnose mismatches from
+            # unreadable ("allowing memmo...").
+            hyp = " ".join((r.get("hypothesis") or "").split())
             lines.append(f"  {r['function_id']}: "
                          f"expected={r['expected']} got={r['actual']} "
                          f"evidence={r.get('evidence_tool', '')}")

@@ -331,17 +331,38 @@ def check_gate(
     """Check regression gates.  Returns list of failure messages."""
     failures = []
 
-    # Gate 1: trap hard gate — any claim is a failure
+    # Gate 1: trap hard gate — any claim is a failure.  The message
+    # must be actionable on its own: what the trap is (the label's
+    # rationale), what verdict/evidence flagged it, and the full
+    # hypothesis — an operator should not have to join three separate
+    # blocks to see why a deliberately-safe bait was flagged.
     trap = per_class.get("trap")
     if trap and trap.fp > 0:
-        trap_findings = [
-            r["function_id"] for r in rows
+        trap_rows = [
+            r for r in rows
             if r["bug_class"] == "trap"
             and r["actual"] in CLAIM_STATUSES
         ]
+        rationales = _label_rationales(
+            [r.get("function_id", "") for r in trap_rows],
+        )
+        detail_lines = []
+        for r in trap_rows:
+            fid = r.get("function_id", "")
+            detail_lines.append(
+                f"  {fid}: expected={r.get('expected', '')} "
+                f"got={r.get('actual', '')} "
+                f"evidence={r.get('evidence_tool') or '(none)'}"
+            )
+            trap_what = rationales.get(fid, "")
+            if trap_what:
+                detail_lines.append(f"    trap: {trap_what}")
+            hyp = r.get("hypothesis") or ""
+            if hyp:
+                detail_lines.append(f"    hypothesis: {hyp}")
         failures.append(
-            f"Trap gate FAILED: {trap.fp} function(s) "
-            f"flagged: {', '.join(trap_findings)}"
+            f"Trap gate FAILED: {trap.fp} deliberately-safe "
+            f"function(s) flagged:\n" + "\n".join(detail_lines)
         )
 
     # Gate 2: precision floor
@@ -379,21 +400,51 @@ def check_gate(
     # Gate 5: misattribution — a right verdict produced by the WRONG
     # mechanism means the mechanism under calibration was never
     # exercised.  Verdict-only scoring would call this a pass; that is
-    # the dangerous quiet cell, so it fails loudly by default.
+    # the dangerous quiet cell, so it fails loudly by default.  One
+    # aligned row per label — the previous single ~1,900-char joined
+    # line was unreadable in a terminal and duplicated the per-label
+    # attribution block wholesale.
     attribution = compute_attribution(rows)
     if attribution.misattributed:
-        detail = "; ".join(
-            f"{r['function_id']} expected={r['expected_mechanism']} "
-            f"observed=[{', '.join(r['observed_mechanisms']) or 'none'}]"
-            for r in attribution.misattributed
-        )
+        detail_lines = [
+            f"  {'Function':<45} {'Expected mechanism':<24} Observed",
+        ]
+        for r in attribution.misattributed:
+            fid = r["function_id"]
+            if len(fid) > 44:
+                fid = "..." + fid[-41:]
+            observed = ", ".join(r["observed_mechanisms"]) or "(none)"
+            detail_lines.append(
+                f"  {fid:<45} {r['expected_mechanism']:<24} {observed}"
+            )
         failures.append(
             f"Misattribution gate FAILED: "
             f"{len(attribution.misattributed)} label(s) got the right "
-            f"verdict from the wrong mechanism: {detail}"
+            f"verdict from the wrong mechanism (details also in the "
+            f"'Mechanism attribution' block above):\n"
+            + "\n".join(detail_lines)
         )
 
     return failures
+
+
+def _label_rationales(function_ids: List[str]) -> Dict[str, str]:
+    """Best-effort ``function_id -> rationale`` join from the
+    committed labels (what the trap actually is).  Results predating
+    the labels, or a missing labels checkout, degrade to no rationale
+    — never an error."""
+    wanted = {fid for fid in function_ids if fid}
+    if not wanted:
+        return {}
+    try:
+        from .label import load_all_labels
+        return {
+            lb.function_id: " ".join(lb.rationale.split())
+            for lb in load_all_labels()
+            if lb.function_id in wanted
+        }
+    except Exception:  # noqa: BLE001 — enrichment only
+        return {}
 
 
 def format_report(

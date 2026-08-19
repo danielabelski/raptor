@@ -325,12 +325,19 @@ def attribute_row(
     expected = normalise_expected(row.get("expected_mechanism", ""))
     matched = mechanism_matches(expected, observed) if expected else None
 
-    if row.get("actual") == "error":
+    # ``no_expectation`` is checked FIRST: a label without an
+    # expected_mechanism has nothing to attribute regardless of its
+    # verdict, and counting its errors/mismatches into the other cells
+    # made the report internally inconsistent (a v5 header said "23
+    # label(s) with expectations" over rows summing to 55 because
+    # wrong_verdict absorbed 32 expectation-less rows).  With this
+    # order the five verdict cells sum exactly to the header's count.
+    if not expected:
+        cell = "no_expectation"
+    elif row.get("actual") == "error":
         cell = "error"
     elif not row.get("match"):
         cell = "wrong_verdict"
-    elif not expected:
-        cell = "no_expectation"
     elif matched:
         cell = "attributed"
     elif observed:

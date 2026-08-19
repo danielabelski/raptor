@@ -589,3 +589,92 @@ class TestMainCLI:
         assert rc == 0
         assert "recomputed from 1 run dir(s)" in out.lower()
         assert "attributed (right verdict, right mechanism):     1" in out
+
+
+class TestActionableGateOutput:
+    def _trap_row(self, **over):
+        row = {
+            "function_id": "c/buffer_ops.c:bufops_shift",
+            "bug_class": "trap",
+            "expected": "clean",
+            "actual": "suspicious",
+            "match": False,
+            "hypothesis": (
+                "off-by-one when shifting the tail region allowing "
+                "memmove to write one element past the buffer"
+            ),
+            "evidence_tool": "",
+        }
+        row.update(over)
+        return row
+
+    def test_trap_gate_message_is_actionable(self):
+        rows = [self._trap_row()]
+        aggregate, per_class, _ = compute_metrics(rows)
+        failures = check_gate(aggregate, per_class, rows)
+        trap_failures = [f for f in failures if f.startswith("Trap gate")]
+        assert trap_failures
+        msg = trap_failures[0]
+        # Verdict, evidence, and the FULL hypothesis in one block.
+        assert "expected=clean" in msg
+        assert "got=suspicious" in msg
+        assert "evidence=(none)" in msg
+        assert "write one element past the buffer" in msg
+
+    def test_misattribution_gate_is_a_table_not_a_blob(self):
+        rows = [{
+            "function_id": f"src/f{i}.c:fn{i}",
+            "bug_class": "auth",
+            "expected": "finding",
+            "actual": "finding",
+            "match": True,
+            "expected_mechanism": "smt:check-overflow",
+            "attribution": "misattributed",
+            "observed_mechanisms": ["semgrep"],
+            "hypothesis": "",
+            "evidence_tool": "semgrep",
+        } for i in range(14)]
+        aggregate, per_class, _ = compute_metrics(rows)
+        failures = check_gate(aggregate, per_class, rows)
+        mis = [f for f in failures if f.startswith("Misattribution")]
+        assert mis
+        msg = mis[0]
+        assert "Mechanism attribution" in msg  # points at the block
+        lines = msg.splitlines()
+        assert len(lines) >= 15  # header + table, one row per label
+        # No single unreadable joined line.
+        assert all(len(line) < 200 for line in lines)
+
+
+class TestAttributionHeaderConsistency:
+    def test_cells_sum_to_expectation_count(self):
+        from core.audit.corpus.corpus_metrics import compute_attribution
+
+        rows = [
+            # 1 with expectation, attributed.
+            {"function_id": "a.c:f", "expected_mechanism": "semgrep",
+             "actual": "finding", "match": True,
+             "evidence_tool": "semgrep", "hypothesis": ""},
+            # 1 with expectation, errored.
+            {"function_id": "a.c:g", "expected_mechanism": "smt",
+             "actual": "error", "match": False,
+             "evidence_tool": "", "hypothesis": ""},
+            # 2 WITHOUT expectation — one wrong verdict, one error.
+            # These used to leak into wrong_verdict/error and make the
+            # header count contradict the rows.
+            {"function_id": "a.c:h", "expected_mechanism": "",
+             "actual": "finding", "match": False,
+             "evidence_tool": "", "hypothesis": ""},
+            {"function_id": "a.c:i", "expected_mechanism": "",
+             "actual": "error", "match": False,
+             "evidence_tool": "", "hypothesis": ""},
+        ]
+        summary = compute_attribution(rows)
+        assert summary.checked == 2
+        with_expectation = sum(
+            summary.cells.get(c, 0)
+            for c in ("attributed", "misattributed", "unattributed",
+                      "wrong_verdict", "error")
+        )
+        assert with_expectation == summary.checked
+        assert summary.cells.get("no_expectation") == 2

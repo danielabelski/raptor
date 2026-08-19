@@ -485,6 +485,45 @@ def _stop_shared_joern(srv):
         logger.debug("shared Joern server stop failed", exc_info=True)
 
 
+# File suffixes the C preprocessor governs — the only ones the
+# preprocessor-dead dormancy mapping may apply to.
+_CPP_SUFFIXES = frozenset({
+    ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+})
+
+
+def _label_preprocessor_dead(src_dir: Path | None, label: Any) -> bool:
+    """True when the label's whole pinned span sits in a statically-dead
+    preprocessor arm (``#if 0`` / ``#elif 0`` — config-independent).
+
+    Uses the same literal-only detector the inventory's translation
+    view uses, so the verdict matches WHY the checklist excluded the
+    function. Best-effort: unreadable files or non-C sources are
+    simply not preprocessor-dead.
+    """
+    if Path(label.source.file).suffix.lower() not in _CPP_SUFFIXES:
+        return False
+    if src_dir is None:
+        return False
+    src_file = src_dir / label.source.file
+    if not src_file.is_file():
+        return False
+    try:
+        from core.inventory.translation_view import (
+            detect_preprocessor_dead_ranges,
+        )
+        text = src_file.read_text(encoding="utf-8", errors="replace")
+        ranges = detect_preprocessor_dead_ranges(text)
+    except Exception:  # noqa: BLE001 — enrichment only, never fatal
+        logger.debug(
+            "preprocessor-dead probe failed for %s", label.function_id,
+            exc_info=True,
+        )
+        return False
+    start, end = label.source.line_start, label.source.line_end
+    return any(r0 <= start and end <= r1 for r0, r1 in ranges)
+
+
 def _load_inventoried_functions(audit_dir: Path | None) -> set:
     """Return {(file, function_name)} for every function in the checklist."""
     if audit_dir is None:
@@ -653,6 +692,19 @@ def _run_audit(
                         actual = "error"
                         evidence_tool = ""
                         error_reason = "not_reviewed:pin_matched_no_gap"
+                    elif _label_preprocessor_dead(src_dir, label):
+                        # The inventory excluded the function because
+                        # the preprocessor does: its whole span sits in
+                        # a statically-dead arm (#if 0 / #elif 0).
+                        # That exclusion IS the dormancy evidence —
+                        # score dormant with a receipt instead of an
+                        # unexplained error cell (three extractors
+                        # used to disagree here: the raw-text pin
+                        # verifies, taint-approx indexes it, the
+                        # checklist drops it).
+                        actual = "dormant"
+                        evidence_tool = "inventory:preprocessor_dead"
+                        error_reason = ""
                     else:
                         # The pin matched no gap because the labeled
                         # function is not in the checklist inventory at

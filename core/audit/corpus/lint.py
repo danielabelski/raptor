@@ -107,6 +107,12 @@ class PinCheck:
     # Span hash of the pinned range in the verified tree (ok only) —
     # what --stamp writes.
     current_span_sha: str = ""
+    # The pinned span sits entirely inside a statically-dead
+    # preprocessor arm (#if 0 / #elif 0).  The pin itself verifies —
+    # raw text is raw text — but the inventory excludes the function,
+    # so the runner scores it dormant (receipt
+    # ``inventory:preprocessor_dead``) rather than reviewing it.
+    preprocessor_dead: bool = False
 
 
 def _function_name(label: FunctionLabel) -> str:
@@ -463,6 +469,37 @@ def _tree_search(tree: Path, name: str, limit: int = 3) -> List[str]:
     return hits
 
 
+# File suffixes the C preprocessor governs (mirrors the runner's set).
+_CPP_SUFFIXES = frozenset({
+    ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+})
+
+
+def _span_preprocessor_dead(
+    rel_file: str,
+    lines: List[str],
+    line_start: int,
+    line_end: int,
+) -> bool:
+    """Whole pinned span inside a statically-dead preprocessor arm?
+
+    Same literal-only detector the inventory's translation view uses
+    (``#if 0`` / ``#elif 0`` — config-independent), so the lint note
+    matches what the checklist will actually do. Best-effort: any
+    probe failure means "not dead".
+    """
+    if Path(rel_file).suffix.lower() not in _CPP_SUFFIXES:
+        return False
+    try:
+        from core.inventory.translation_view import (
+            detect_preprocessor_dead_ranges,
+        )
+        ranges = detect_preprocessor_dead_ranges("\n".join(lines))
+    except Exception:  # noqa: BLE001 — lint note only, never fatal
+        return False
+    return any(r0 <= line_start and line_end <= r1 for r0, r1 in ranges)
+
+
 def _check_span(
     label: FunctionLabel,
     lines: List[str],
@@ -487,9 +524,18 @@ def _check_span(
         name_in_span = bool(_name_re(name).search(span_text))
         sha_ok = (not src.span_sha) or current == src.span_sha
         if sha_ok and name_in_span and rel_file == src.file:
+            dead = _span_preprocessor_dead(
+                rel_file, lines, src.line_start, src.line_end,
+            )
             return PinCheck(
                 label=label, path=path, outcome=PIN_OK,
+                detail=(
+                    "preprocessor-dead (#if 0 arm) — the inventory "
+                    "excludes it; the runner scores dormant"
+                    if dead else ""
+                ),
                 current_span_sha=current,
+                preprocessor_dead=dead,
             )
 
     # Relocation: exact span by hash first, then the function name.

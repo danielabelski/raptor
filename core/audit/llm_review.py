@@ -1258,6 +1258,14 @@ def make_review_fn(
                 status = "suspicious"
                 result["status"] = status
                 counter_escalated = True
+                # Persist the machine-raised provenance: this
+                # suspicious is NOT a model claim (the model concluded
+                # clean); it is kept alive so deepen/verification can
+                # convict. End-of-run gate resolution reads this flag
+                # to apply the counter-escalation evidence floor —
+                # without a receipt the model's own clean verdict is
+                # restored at output.
+                result["counter_escalated"] = True
                 snippet = counter[:120]
                 if len(counter) > 120:
                     snippet += "…"

@@ -19610,6 +19610,72 @@ def _resolve_gate_demoted(
         if outcome.status != "suspicious":
             continue
         gate_demoted = outcome.body.startswith(_GATE_DEMOTED_PREFIXES)
+        if not gate_demoted and _is_counter_escalated(outcome):
+            # Counter-escalation evidence floor. This suspicious was
+            # machine-raised off the review's own counter_hypothesis:
+            # the model's verdict was clean, with a completed
+            # hypothesis-refutation ladder behind it. The escalation
+            # exists so deepen/verification can convict a lead the
+            # model may have talked itself out of — by the time this
+            # end-of-run pass runs, they have had their chance. If no
+            # receipt materialised, shipping suspicious would mint an
+            # LLM-only verdict that even the LLM did not make.
+            #
+            # Retention requires a receipt: verification-role evidence
+            # or a fired probe (the demotion-referee floor — a tool
+            # observation is never erased by this pass). Pattern-prior
+            # corroboration (_has_mechanical_corroboration: pre-sweep
+            # detector hits, prefilter sink scans) deliberately does
+            # NOT retain here — those priors seeded the very review
+            # that adjudicated them clean, so recycling them re-arms
+            # the verdict off its own input (corpus case: a cocci
+            # missing_bounds_check lead on a correct strlcpy-shaped
+            # helper kept a receipt-less machine-escalated suspicious
+            # alive to export). Resolves to clean, never dark: the
+            # review completed and concluded clean, so "no channel
+            # ever looked" is false. Model-emitted suspicious verdicts
+            # never carry the flag and are untouched.
+            if _is_verification_evidence_for_gate(outcome):
+                continue
+            if _probe_backed_suspicious(outcome):
+                logger.info(
+                    "counter-escalation floor: %s:%s stays suspicious "
+                    "— probe-backed",
+                    outcome.file,
+                    outcome.function,
+                )
+                continue
+            resolved = ReviewOutcome(
+                file=outcome.file,
+                function=outcome.function,
+                status="clean",
+                body=(
+                    "[counter-escalation resolution: machine-raised "
+                    "suspicious earned no receipt — model verdict "
+                    "clean restored]\n\n" + outcome.body
+                ),
+                hypothesis=outcome.hypothesis,
+                hypotheses=outcome.hypotheses,
+                evidence_tool=outcome.evidence_tool,
+                cost_usd=outcome.cost_usd,
+                model=outcome.model,
+                duration_s=outcome.duration_s,
+                review_result=outcome.review_result,
+                line=outcome.line,
+            )
+            resolved.tools_dispatched = outcome.tools_dispatched
+            resolved.tools_errored = outcome.tools_errored
+            result.outcomes[i] = resolved
+            result.suspicious -= 1
+            result.clean += 1
+            logger.info(
+                "counter-escalation floor: %s:%s → clean "
+                "(machine-raised suspicious, no receipt survived "
+                "verification)",
+                outcome.file,
+                outcome.function,
+            )
+            continue
         if not gate_demoted:
             # Replacement for the removed in-loop suspicious-demotion
             # gate: evidence-free suspicious outcomes resolve here,
@@ -20164,6 +20230,26 @@ def _is_verification_evidence_for_gate(outcome: ReviewOutcome) -> bool:
         if _is_verification_evidence(part.strip()):
             return True
     return False
+
+
+_COUNTER_ESCALATION_PREFIX = "[counter-hypothesis escalation:"
+
+
+def _is_counter_escalated(outcome: ReviewOutcome) -> bool:
+    """True when this suspicious verdict was machine-raised off the
+    review's own counter_hypothesis (the model's verdict was clean).
+
+    Reads the structured ``counter_escalated`` flag stamped by the
+    review path; the body-prefix check covers outcomes rebuilt from a
+    journal or checkpoint where ``review_result`` was dropped (the
+    escalation marker is always the first prefix written, and an
+    outcome that a later structured demotion re-prefixed is no longer
+    suspicious, so the startswith test cannot misfire on it).
+    """
+    rr = outcome.review_result or {}
+    if rr.get("counter_escalated"):
+        return True
+    return (outcome.body or "").startswith(_COUNTER_ESCALATION_PREFIX)
 
 
 def _deepen_demotion_refereed(

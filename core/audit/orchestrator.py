@@ -17362,6 +17362,127 @@ def _refutation_is_high_confidence(h: dict[str, Any]) -> bool:
     return not any(d in lower for d in _DISMISSIVE_COUNTERS)
 
 
+# Tool-id families whose engines model ONE function at a time — they
+# cannot see caller guarantees, callee behaviour, or lock domains.
+# Joern/CodeQL (whole-program CPG/database), consistency (peer set)
+# and callsite_deviation (caller corpus) are cross-function-capable.
+_FUNCTION_LOCAL_TOOL_FAMILIES = frozenset({
+    "smt", "coccinelle", "coccinelle_flow", "semgrep", "compiler",
+    "ptr_lifecycle", "resource_bounds", "lock_region", "release_order",
+    "protocol_state", "fail_open", "prefilter",
+})
+
+
+def _tool_sees_cross_function(tool_id: str) -> bool:
+    """True when the confirming tool models more than one function."""
+    fam = (tool_id or "").split(":", 1)[0].strip().lower()
+    return bool(fam) and fam not in _FUNCTION_LOCAL_TOOL_FAMILIES
+
+
+# Fallback prose markers for a refutation resting on facts OUTSIDE the
+# reviewed function (used only when the structured ``counter_scope``
+# field is absent). Two shapes: explicit caller/callee-contract
+# language, or a named symbol coupled with a guarantee verb.
+_EXTERNAL_PREMISE_WORDS = (
+    "caller", "callers", "call site", "call sites", "callee",
+    "callees", "upstream", "api contract", "api guarantees",
+    "contract guarantees", "before this function", "before calling",
+    "grace period", "pre-validate", "pre-validates",
+)
+_GUARANTEE_VERBS = (
+    "caps", "clamps", "pins", "pinned", "validates", "ensures",
+    "guarantees", "prevents", "serialises", "serializes",
+    "serialised", "serialized", "protected by", "held across",
+    "bounded by", "never returns", "never exceeds", "cannot exceed",
+    "re-points", "repoints",
+)
+_EXTERNAL_SYMBOL_RE = re.compile(r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b")
+
+
+def _refutation_scope_cross_function(h: dict[str, Any]) -> bool:
+    """Does this hypothesis's refutation rest on a cross-function premise?
+
+    Prefers the structured ``counter_scope`` field emitted by the
+    review model at generation time; falls back to a structural prose
+    check for responses predating the field.
+    """
+    scope = str(h.get("counter_scope") or "").strip().lower()
+    if scope == "cross_function":
+        return True
+    if scope == "local":
+        return False
+    counter = (h.get("counter") or "").strip().lower()
+    if len(counter) < 20:
+        return False
+    if any(w in counter for w in _EXTERNAL_PREMISE_WORDS):
+        return True
+    return (
+        bool(_EXTERNAL_SYMBOL_RE.search(counter))
+        and any(v in counter for v in _GUARANTEE_VERBS)
+    )
+
+
+def _premise_blocks_confirm(
+    h: dict[str, Any],
+    confirmed: list[str] | tuple[str, ...],
+) -> bool:
+    """Premise binding for refuted/countered-hypothesis re-verification.
+
+    A SAT/pattern confirm from a function-local engine encodes none of
+    the refutation's cross-function premise ("the caller validates the
+    level", "that helper caps the length") — it re-proves the lexical
+    shape the LLM already saw and refuted. Such a confirm grades
+    inconclusive: it may override the refutation only when at least
+    one confirming channel actually models beyond the function, or
+    when the refutation itself is function-local (the engine CAN see
+    it, so SAT genuinely contradicts it).
+    """
+    if not confirmed:
+        return False
+    if not _refutation_scope_cross_function(h):
+        return False
+    return not any(_tool_sees_cross_function(t) for t in confirmed)
+
+
+def _queue_premise_study_question(
+    config: OrchestratorConfig,
+    outcome: ReviewOutcome,
+    h: dict[str, Any],
+) -> None:
+    """Best-effort: park the refutation's cross-function premise on the
+    reading list so the study loop can verify it with a receipt. A
+    resolved premise re-enters review; an unverified one stays visible
+    instead of being silently trusted or silently overridden."""
+    try:
+        import uuid
+
+        from core.concepts.reading_list import ReadingList, ReadingListItem
+
+        counter = (h.get("counter") or "").strip()
+        if not counter or config.out_dir is None:
+            return
+        rl_path = config.out_dir / "reading-list.json"
+        rl = ReadingList.load(rl_path)
+        question = (
+            f"Does this hold: {counter[:400]} "
+            f"(refutation premise for {outcome.function})?"
+        )
+        if any(it.question == question for it in rl.items):
+            return
+        rl.queue(ReadingListItem(
+            id=f"premise-{uuid.uuid4().hex[:12]}",
+            question=question,
+            source_command="/audit",
+            source_file=outcome.file,
+            source_function=outcome.function,
+            priority="high",
+            context=(h.get("mechanism") or "")[:200],
+        ))
+        rl.save(rl_path)
+    except Exception:
+        logger.debug("premise study-question queueing failed", exc_info=True)
+
+
 def _promote_clean_refuted(
     result: OrchestratorResult,
     config: OrchestratorConfig,
@@ -17476,6 +17597,21 @@ def _promote_clean_refuted(
                     "confirmed" if confirmed else "inconclusive",
                 )
                 if confirmed:
+                    if _premise_blocks_confirm(h, confirmed):
+                        logger.info(
+                            "clean-refuted promotion blocked %s:%s via %s "
+                            "— the refutation rests on a cross-function "
+                            "premise no confirming channel models "
+                            "(confirm grades inconclusive)",
+                            outcome.file, outcome.function,
+                            "+".join(confirmed),
+                        )
+                        _increment_tier_dict(
+                            result.tier_counters, "refuted_sweep",
+                            "premise_blocked",
+                        )
+                        _queue_premise_study_question(config, outcome, h)
+                        continue
                     if _check_sink_guarded_cached(
                             outcome.function, joern_server) == "guarded":
                         logger.info(
@@ -17539,6 +17675,19 @@ def _promote_clean_refuted(
                     "detection-role rules (%s)",
                     outcome.file, outcome.function, "+".join(confirmed),
                 )
+                continue
+            if _premise_blocks_confirm(h, high_prec):
+                logger.info(
+                    "refuted-hypothesis promotion blocked %s:%s via %s — "
+                    "the refutation rests on a cross-function premise no "
+                    "confirming channel models",
+                    outcome.file, outcome.function, "+".join(high_prec),
+                )
+                _increment_tier_dict(
+                    result.tier_counters, "refuted_sweep",
+                    "premise_blocked",
+                )
+                _queue_premise_study_question(config, outcome, h)
                 continue
             if _check_sink_guarded_cached(
                     outcome.function, joern_server) == "guarded":
@@ -17754,6 +17903,34 @@ def _dispatch_secondary_hypotheses(
                     "all tested sink calls guarded",
                     outcome.file, outcome.function, "+".join(high_prec),
                 )
+                continue
+            if _premise_blocks_confirm(h, high_prec):
+                # The LLM's own counter on this hypothesis rests on a
+                # cross-function premise (e.g. "the setsockopt path
+                # validates the level, the default branch is
+                # unreachable") that no confirming channel models. The
+                # confirmation is recorded for the export but may not
+                # outrank the unconsumed premise.
+                if outcome.review_result is not None:
+                    outcome.review_result.setdefault(
+                        "secondary_confirmations", [],
+                    ).append({
+                        "mechanism": mechanism[:200],
+                        "evidence_tool": "+".join(high_prec),
+                        "confidence": (h.get("confidence") or "").lower(),
+                        "premise_blocked": True,
+                    })
+                logger.info(
+                    "secondary-hypothesis promotion blocked %s:%s via %s "
+                    "— the counter rests on a cross-function premise no "
+                    "confirming channel models",
+                    outcome.file, outcome.function, "+".join(high_prec),
+                )
+                _increment_tier_dict(
+                    result.tier_counters, "secondary_sweep",
+                    "premise_blocked",
+                )
+                _queue_premise_study_question(config, outcome, h)
                 continue
 
             tool = "+".join(high_prec)

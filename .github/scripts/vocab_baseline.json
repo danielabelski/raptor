@@ -497,6 +497,11 @@
   "count": 19,
   "kind": "literal"
  },
+ "core/audit/orchestrator.py::_FUNCTION_LOCAL_TOOL_FAMILIES": {
+  "count": 12,
+  "kind": "literal",
+  "note": "RAPTOR's own tool-channel taxonomy (which engines model one function at a time) for the premise-binding gate - internal tool ids, not target API names"
+ },
  "core/audit/orchestrator.py::_R2_ABI_TABLES": {
   "count": 10,
   "kind": "literal"

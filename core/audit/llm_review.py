@@ -216,6 +216,22 @@ REVIEW_SCHEMA = {
                             "hypothesis, state it here. Leave empty if none."
                         ),
                     },
+                    "counter_scope": {
+                        "type": "string",
+                        "enum": ["local", "cross_function"],
+                        "description": (
+                            "When you state a counter: does the "
+                            "counter-argument rest ONLY on facts visible "
+                            "inside this function's own body (local), or "
+                            "does it rely on guarantees provided by "
+                            "callers, callees, locking domains, or other "
+                            "functions — e.g. 'the caller validates the "
+                            "level', 'that helper caps the length', "
+                            "'writers are serialised by the lock' "
+                            "(cross_function)? Omit when there is no "
+                            "counter."
+                        ),
+                    },
                 },
                 "required": ["mechanism", "confidence"],
             },

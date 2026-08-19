@@ -1198,7 +1198,10 @@ def run_smt_sweep(
             errors=[f"shim not found: {shim_path}"],
         )
 
-    cmd = ["python3", str(shim_path)]
+    # sys.executable, not a PATH-resolved "python3": the shim must run
+    # under THIS interpreter (same venv, same installed z3), matching
+    # the SMT verb child spawn below.
+    cmd = [sys.executable, str(shim_path)]
     import re as _re
     _safe_key_re = _re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
     for key, value in smt_args.items():

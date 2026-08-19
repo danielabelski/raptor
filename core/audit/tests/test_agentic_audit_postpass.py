@@ -1,0 +1,273 @@
+"""/agentic --gap-audit post-pass: command construction and phase handling.
+
+The post-pass runs ``raptor-audit run`` over the coverage residual as a
+lifecycle-managed sibling run. These tests pin the subprocess argv
+contract (unified validation, priority schedule, prior-journal handoff,
+budget reserve, model/adversarial and binary passthrough, single-DB
+CodeQL discovery) and the phase-dict outcomes for success, failure, and
+interruption.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import pytest
+
+from core.json import save_json
+from raptor_agentic import (
+    _audit_run_status,
+    _build_audit_postpass_cmd,
+    _discover_codeql_db,
+    run_audit_postpass,
+)
+
+
+def _args(**kw) -> argparse.Namespace:
+    base = {
+        "gap_audit": True,
+        "gap_audit_budget": None,
+        "gap_audit_strategy": None,
+        "gap_audit_scope": None,
+        "gap_audit_share": 0.35,
+        "gap_audit_reserved_cost": None,
+        "max_cost_usd": None,
+        "model": [],
+        "binary": None,
+        "binary_auto": False,
+        "no_binary_oracle": False,
+    }
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _flag_value(cmd: list, flag: str) -> str | None:
+    return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+class TestBuildCmd:
+    def test_baseline_contract(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(), tmp_path / "target", tmp_path / "audit", tmp_path / "out",
+        )
+        assert cmd[0].endswith("raptor-audit")
+        assert cmd[1] == "run"
+        assert cmd[2] == str(tmp_path / "target")
+        assert "--no-validate" in cmd
+        assert _flag_value(cmd, "--schedule") == "priority"
+        assert _flag_value(cmd, "--prior-journal") == str(tmp_path / "out")
+        assert _flag_value(cmd, "--out") == str(tmp_path / "audit")
+        assert "--max-cost" not in cmd
+        assert "--adversarial" not in cmd
+
+    def test_reserved_cost_wins_over_max_cost(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(gap_audit_reserved_cost=17.5, max_cost_usd=32.5),
+            tmp_path, tmp_path, tmp_path,
+        )
+        assert _flag_value(cmd, "--max-cost") == "17.5"
+
+    def test_max_cost_passthrough_without_reserve(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(max_cost_usd=40.0), tmp_path, tmp_path, tmp_path,
+        )
+        assert _flag_value(cmd, "--max-cost") == "40.0"
+
+    def test_audit_flags_passthrough(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(gap_audit_budget=50, gap_audit_strategy="memory",
+                  gap_audit_scope=["ipc/", "net/"]),
+            tmp_path, tmp_path, tmp_path,
+        )
+        assert _flag_value(cmd, "--budget") == "50"
+        assert _flag_value(cmd, "--strategy") == "memory"
+        assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "--scope"] == [
+            "ipc/", "net/",
+        ]
+
+    def test_two_models_enable_adversarial(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(model=["model-a", "model-b"]), tmp_path, tmp_path, tmp_path,
+        )
+        assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "--model"] == [
+            "model-a", "model-b",
+        ]
+        assert "--adversarial" in cmd
+
+    def test_single_model_no_adversarial(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(model=["model-a"]), tmp_path, tmp_path, tmp_path,
+        )
+        assert "--adversarial" not in cmd
+
+    def test_binary_passthrough(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(binary=["/b/lib.so"], no_binary_oracle=True,
+                  binary_auto=True),
+            tmp_path, tmp_path, tmp_path,
+        )
+        assert _flag_value(cmd, "--binary") == "/b/lib.so"
+        assert "--binary-auto" in cmd
+        assert "--no-binary-oracle" in cmd
+
+
+class TestDiscoverCodeqlDb:
+    def _report(self, out_dir: Path, dbs: dict) -> None:
+        (out_dir / "codeql").mkdir(parents=True, exist_ok=True)
+        save_json(out_dir / "codeql" / "codeql_report.json",
+                  {"databases_created": dbs})
+
+    def test_single_database(self, tmp_path):
+        db = tmp_path / "db-python"
+        db.mkdir()
+        self._report(tmp_path, {
+            "python": {"success": True, "database_path": str(db)},
+        })
+        assert _discover_codeql_db(tmp_path) == str(db)
+
+    def test_multiple_databases_yield_none(self, tmp_path):
+        db1 = tmp_path / "db-python"
+        db2 = tmp_path / "db-cpp"
+        db1.mkdir()
+        db2.mkdir()
+        self._report(tmp_path, {
+            "python": {"success": True, "database_path": str(db1)},
+            "cpp": {"success": True, "database_path": str(db2)},
+        })
+        assert _discover_codeql_db(tmp_path) is None
+
+    def test_failed_or_missing_databases_ignored(self, tmp_path):
+        db = tmp_path / "db-python"
+        db.mkdir()
+        self._report(tmp_path, {
+            "python": {"success": True, "database_path": str(db)},
+            "cpp": {"success": False,
+                    "database_path": str(tmp_path / "nope")},
+            "go": {"success": True,
+                   "database_path": str(tmp_path / "gone")},
+        })
+        assert _discover_codeql_db(tmp_path) == str(db)
+
+    def test_no_report_yields_none(self, tmp_path):
+        assert _discover_codeql_db(tmp_path) is None
+
+
+class TestRunStatus:
+    def test_reads_lifecycle_status(self, tmp_path):
+        save_json(tmp_path / ".raptor-run.json", {"status": "running"})
+        assert _audit_run_status(tmp_path) == "running"
+
+    def test_missing_metadata_is_none(self, tmp_path):
+        assert _audit_run_status(tmp_path) is None
+
+
+@pytest.fixture
+def _postpass_env(tmp_path, monkeypatch):
+    """Fake lifecycle + subprocess so run_audit_postpass is hermetic."""
+    import raptor_agentic
+    from core.orchestration import skill_dispatch
+
+    audit_dir = tmp_path / "audit_run"
+    audit_dir.mkdir()
+    monkeypatch.setattr(
+        skill_dispatch, "start_lifecycle", lambda cmd, target: audit_dir,
+    )
+    fails: list = []
+    monkeypatch.setattr(
+        skill_dispatch, "fail_lifecycle",
+        lambda d, msg: fails.append((d, msg)),
+    )
+    calls: dict = {"rc": 0}
+
+    def fake_stream(cmd, description, timeout=1800):
+        calls["cmd"] = cmd
+        calls["timeout"] = timeout
+        return calls["rc"], "", "boom"
+
+    monkeypatch.setattr(raptor_agentic, "run_command_streaming", fake_stream)
+    return audit_dir, calls, fails
+
+
+class TestRunAuditPostpass:
+    def test_success_reads_report_stats(self, tmp_path, _postpass_env):
+        audit_dir, calls, _fails = _postpass_env
+        save_json(audit_dir / "audit-report.json", {
+            "stats": {"reviewed": 12, "finding": 2, "suspicious": 1,
+                      "clean": 9, "dormant": 0, "error": 0},
+            "findings_count": 2,
+            "gaps_remaining": 88,
+        })
+        out_dir = tmp_path / "agentic_out"
+        out_dir.mkdir()
+        (out_dir / "checklist.json").write_text("{}", encoding="utf-8")
+
+        phase = run_audit_postpass(_args(), tmp_path / "target", out_dir)
+
+        assert phase["completed"] is True
+        assert phase["reviewed"] == 12
+        assert phase["findings_count"] == 2
+        assert phase["gaps_remaining"] == 88
+        assert phase["audit_dir"] == str(audit_dir)
+        # No wall timeout: the audit self-bounds via cost/time budgets.
+        assert calls["timeout"] == 0
+        # The agentic checklist is provisioned for reuse.
+        assert (audit_dir / "checklist.json").is_file()
+
+    def test_failure_backstops_lifecycle(self, tmp_path, _postpass_env):
+        audit_dir, calls, fails = _postpass_env
+        calls["rc"] = 2
+        save_json(audit_dir / ".raptor-run.json", {"status": "running"})
+        out_dir = tmp_path / "agentic_out"
+        out_dir.mkdir()
+
+        phase = run_audit_postpass(_args(), tmp_path / "target", out_dir)
+
+        assert phase["completed"] is False
+        assert "exited 2" in phase["skipped_reason"]
+        assert fails and fails[0][0] == audit_dir
+
+    def test_failure_after_own_lifecycle_handling_no_double_fail(
+        self, tmp_path, _postpass_env,
+    ):
+        audit_dir, calls, fails = _postpass_env
+        calls["rc"] = 1
+        save_json(audit_dir / ".raptor-run.json", {"status": "failed"})
+        out_dir = tmp_path / "agentic_out"
+        out_dir.mkdir()
+
+        phase = run_audit_postpass(_args(), tmp_path / "target", out_dir)
+
+        assert phase["completed"] is False
+        assert not fails
+
+    def test_interrupt_reports_resume_hint(self, tmp_path, _postpass_env):
+        audit_dir, calls, fails = _postpass_env
+        calls["rc"] = 130
+        out_dir = tmp_path / "agentic_out"
+        out_dir.mkdir()
+
+        phase = run_audit_postpass(_args(), tmp_path / "target", out_dir)
+
+        assert phase["completed"] is False
+        assert "resume" in phase["skipped_reason"]
+        assert not fails
+
+    def test_lifecycle_start_failure_skips(self, tmp_path, monkeypatch):
+        from core.orchestration import skill_dispatch
+        monkeypatch.setattr(
+            skill_dispatch, "start_lifecycle", lambda cmd, target: None,
+        )
+        phase = run_audit_postpass(_args(), tmp_path, tmp_path)
+        assert phase["completed"] is False
+        assert phase["skipped_reason"] == "lifecycle start failed"
+
+
+class TestJsonRoundTrip:
+    def test_phase_dict_is_json_serialisable(self, tmp_path, _postpass_env):
+        audit_dir, _calls, _fails = _postpass_env
+        out_dir = tmp_path / "agentic_out"
+        out_dir.mkdir()
+        phase = run_audit_postpass(_args(), tmp_path / "target", out_dir)
+        json.dumps(phase)

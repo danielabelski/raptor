@@ -1102,6 +1102,195 @@ def _build_completion_manifest(orch_meta, import_result, import_sarif_files,
     return manifest
 
 
+# ============================================================================
+# AUDIT POST-PASS (opt-in via --gap-audit)
+# ============================================================================
+
+def _discover_codeql_db(out_dir: Path) -> str | None:
+    """Path of the single successfully-created CodeQL database from
+    this run's codeql phase, or None.
+
+    ``raptor-audit run`` takes exactly one ``--codeql-db``; when the
+    scan phase built databases for multiple languages there is no
+    principled single choice, so the post-pass proceeds without one
+    (the audit's own SARIF corroboration still sees the scan results).
+    """
+    report = load_json(out_dir / "codeql" / "codeql_report.json")
+    if not isinstance(report, dict):
+        return None
+    dbs = []
+    for result in (report.get("databases_created") or {}).values():
+        if not isinstance(result, dict):
+            continue
+        db_path = result.get("database_path")
+        if db_path and result.get("success", True) and Path(db_path).is_dir():
+            dbs.append(db_path)
+    if len(dbs) == 1:
+        return dbs[0]
+    if len(dbs) > 1:
+        logger.info(
+            "audit post-pass: %d CodeQL databases exist — proceeding "
+            "without --codeql-db (no single choice)", len(dbs),
+        )
+    return None
+
+
+def _build_audit_postpass_cmd(
+    args, target: Path, audit_dir: Path, agentic_out: Path,
+) -> list:
+    """argv for the ``raptor-audit run`` subprocess.
+
+    Shared inputs are inherited from the agentic run (models, binaries,
+    CodeQL database, the agentic journal as prior finding-grade
+    claims); the audit-specific surface is the small prefixed flag set
+    (--audit-budget / --audit-strategy / --audit-scope). Anything finer
+    belongs in a standalone /audit run.
+    """
+    raptor_dir = Path(__file__).parent.resolve()
+    cmd = [
+        str(raptor_dir / "libexec" / "raptor-audit"), "run", str(target),
+        "--out", str(audit_dir),
+        # Validation is unified at the pipeline level: audit findings
+        # join the --validate post-pass selection instead of spawning
+        # a second validate run.
+        "--no-validate",
+        # Budget-capped pass over an unknown-size residual: review the
+        # most promising functions first.
+        "--schedule", "priority",
+        # The agentic run completes AFTER this subprocess, so its
+        # journal is not yet merged into any project index — hand it
+        # over directly as prior finding-grade claims.
+        "--prior-journal", str(agentic_out),
+    ]
+    if args.gap_audit_reserved_cost:
+        cmd += ["--max-cost", str(args.gap_audit_reserved_cost)]
+    elif getattr(args, "max_cost_usd", None):
+        cmd += ["--max-cost", str(args.max_cost_usd)]
+    if args.gap_audit_budget:
+        cmd += ["--budget", str(args.gap_audit_budget)]
+    if args.gap_audit_strategy:
+        cmd += ["--strategy", args.gap_audit_strategy]
+    for scope in args.gap_audit_scope or []:
+        cmd += ["--scope", scope]
+    models = args.model or []
+    for model in models:
+        cmd += ["--model", model]
+    if len(models) >= 2:
+        # Two or more analysis models: the adversarial reviewer that
+        # challenges positive verdicts becomes available — enable it.
+        cmd.append("--adversarial")
+    for binary in args.binary or []:
+        cmd += ["--binary", str(binary)]
+    if getattr(args, "binary_auto", False):
+        cmd.append("--binary-auto")
+    if getattr(args, "no_binary_oracle", False):
+        cmd.append("--no-binary-oracle")
+    codeql_db = _discover_codeql_db(agentic_out)
+    if codeql_db:
+        cmd += ["--codeql-db", codeql_db]
+    return cmd
+
+
+def _audit_run_status(audit_dir: Path) -> str | None:
+    """Lifecycle status recorded in the audit run dir, or None."""
+    meta = load_json(audit_dir / ".raptor-run.json")
+    if isinstance(meta, dict):
+        return meta.get("status")
+    return None
+
+
+def run_audit_postpass(args, target: Path, out_dir: Path) -> dict:
+    """Run ``raptor-audit run`` over the residual coverage gaps.
+
+    Creates a proper lifecycle-managed sibling /audit run (project
+    sibling in project mode, global out/ otherwise) so the artifacts
+    are discoverable by /review, /validate's audit bridge, and
+    cross-run verdict reuse. The subprocess manages its own lifecycle
+    completion/failure; this wrapper only backstops early exits that
+    die before the orchestrator takes over.
+
+    Returns a phase dict for the final report. Never raises.
+    """
+    from core.orchestration.skill_dispatch import (
+        fail_lifecycle,
+        start_lifecycle,
+    )
+
+    phase: dict = {"enabled": True, "completed": False}
+    t0 = time.time()
+    try:
+        audit_dir = start_lifecycle("audit", target)
+        if audit_dir is None:
+            phase["skipped_reason"] = "lifecycle start failed"
+            return phase
+        phase["audit_dir"] = str(audit_dir)
+
+        # Reuse the agentic checklist — same target, same parser;
+        # skips a full re-parse of the repo. raptor-audit builds a
+        # fresh one when the copy is missing.
+        agentic_checklist = out_dir / "checklist.json"
+        if agentic_checklist.is_file():
+            import shutil
+            try:
+                shutil.copyfile(
+                    agentic_checklist, audit_dir / "checklist.json",
+                )
+            except OSError as e:
+                logger.warning(
+                    "audit post-pass: checklist copy failed (%s); "
+                    "raptor-audit will rebuild it", e,
+                )
+
+        cmd = _build_audit_postpass_cmd(args, target, audit_dir, out_dir)
+        # No wall timeout here: the audit self-bounds via --max-cost /
+        # its own supervisor bound, and a wall kill would waste the
+        # spend (an interrupted run stays resumable via
+        # `raptor-audit resume`).
+        rc, _stdout, stderr = run_command_streaming(
+            cmd, "Auditing coverage residual", timeout=0,
+        )
+        phase["duration_seconds"] = round(time.time() - t0, 1)
+        phase["exit_code"] = rc
+
+        if rc == 130:
+            phase["skipped_reason"] = (
+                "interrupted — resume with: libexec/raptor-audit "
+                f"resume {audit_dir}"
+            )
+            return phase
+        if rc != 0:
+            # raptor-audit marks its own lifecycle failure for pipeline
+            # errors; backstop the early-exit paths (argparse, trust
+            # gate) that die before lifecycle handling exists.
+            if _audit_run_status(audit_dir) == "running":
+                fail_lifecycle(
+                    audit_dir, f"audit post-pass exited {rc}",
+                )
+            phase["skipped_reason"] = (
+                f"raptor-audit exited {rc}: {(stderr or '')[-300:]}"
+            )
+            return phase
+
+        phase["completed"] = True
+        report = load_json(audit_dir / "audit-report.json")
+        if isinstance(report, dict):
+            stats = report.get("stats")
+            if isinstance(stats, dict):
+                for key in ("reviewed", "clean", "suspicious", "finding",
+                            "dormant", "error"):
+                    if isinstance(stats.get(key), int):
+                        phase[key] = stats[key]
+            for key in ("findings_count", "gaps_remaining"):
+                if isinstance(report.get(key), int):
+                    phase[key] = report[key]
+        return phase
+    except Exception as e:  # noqa: BLE001 — post-pass must not kill the run
+        logger.exception("audit post-pass crashed unexpectedly")
+        phase["skipped_reason"] = f"unexpected {type(e).__name__}: {e}"
+        phase.setdefault("duration_seconds", round(time.time() - t0, 1))
+        return phase
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="RAPTOR Agentic Security Testing - Scan, Analyse, Exploit, Patch",
@@ -1479,6 +1668,40 @@ Examples:
     )
     parser.add_argument("--validate", action="store_true",
                         help="Run /validate on exploitable/high-confidence findings after analysis")
+    audit_group = parser.add_argument_group(
+        "audit post-pass",
+        "Run the /audit orchestrator over the residual — functions no "
+        "phase reviewed — after analysis completes. Opt-in: per-function "
+        "hypothesis-driven review is the most expensive pass available.",
+    )
+    audit_group.add_argument(
+        "--gap-audit", action="store_true", dest="gap_audit",
+        help="Audit the coverage residual after analysis (sibling /audit "
+             "run; findings join the --validate post-pass when both flags "
+             "are set). Requires an external LLM (--model or a configured "
+             "API key); use /audit directly for the in-session workflow. "
+             "Unrelated to --audit, which is the sandbox audit mode.",
+    )
+    audit_group.add_argument(
+        "--gap-audit-budget", type=int, default=None, metavar="N",
+        help="Max functions the audit post-pass reviews (default: all gaps)",
+    )
+    audit_group.add_argument(
+        "--gap-audit-strategy", default=None, metavar="NAME",
+        help="Restrict the audit post-pass to one strategy (general, "
+             "input_handling, concurrency, memory, auth, crypto, aliasing)",
+    )
+    audit_group.add_argument(
+        "--gap-audit-scope", action="append", default=None, metavar="DIR",
+        help="Restrict the audit post-pass to a subdirectory (repeatable)",
+    )
+    audit_group.add_argument(
+        "--gap-audit-share", type=float, default=0.35, metavar="FRACTION",
+        help="Fraction of --max-cost-usd reserved UP FRONT for the audit "
+             "post-pass (default: 0.35). Analysis phases run under the "
+             "remainder, so the audit keeps its budget even when analysis "
+             "hits its adaptive cutoff. No effect without --max-cost-usd.",
+    )
     parser.add_argument("--sequential", action="store_true",
                        help="Sequential analysis in Phase 3 instead of parallel Phase 4 orchestration")
     parser.add_argument("--verbose", action="store_true",
@@ -1635,6 +1858,21 @@ Examples:
         args.threat_model = True
     if args.threat_model:
         args.understand = True
+
+    # --gap-audit budget reserve: carve the audit share out of
+    # --max-cost-usd UP FRONT so an analysis-phase overrun can't starve
+    # the pass the operator explicitly asked for. args.max_cost_usd is
+    # reduced in place — every downstream consumer (the Phase 4
+    # llm_config cap) sees only the analysis share. Without
+    # --max-cost-usd the audit post-pass runs uncapped, matching a
+    # bare standalone /audit.
+    args.gap_audit_reserved_cost = None
+    if args.gap_audit and getattr(args, "max_cost_usd", None):
+        share = min(max(args.gap_audit_share, 0.05), 0.95)
+        args.gap_audit_reserved_cost = round(args.max_cost_usd * share, 2)
+        args.max_cost_usd = round(
+            args.max_cost_usd - args.gap_audit_reserved_cost, 2,
+        )
 
     # Apply --phase-timeout uniformly. ``0`` is the unbounded
     # sentinel — set RaptorConfig.DEFAULT_TIMEOUT to None so
@@ -2040,6 +2278,27 @@ Examples:
     # markers. The analysis prompt surfaces those markers per finding, so
     # --understand pays off in this run too — not just in any later /validate.
     # ========================================================================
+    # --gap-audit depends on a context map for sink/entry-point priority
+    # ordering. Bridge-search first (co-located, project siblings,
+    # global out/ with hash-freshness ranking) — only enable the
+    # understand pre-pass when nothing usable exists, so projects that
+    # already carry a map don't pay for a re-map.
+    if args.gap_audit and not args.understand:
+        _map_dir = None
+        try:
+            from core.orchestration.understand_bridge import (
+                find_understand_output,
+            )
+            _map_dir, _ = find_understand_output(
+                out_dir, str(original_repo_path),
+            )
+        except Exception:  # noqa: BLE001 — bridge miss = run the map
+            logger.debug("--gap-audit map bridge-search failed", exc_info=True)
+        if _map_dir is None:
+            print("\n  --gap-audit: no /understand map found for this "
+                  "target — enabling the understand pre-pass")
+            args.understand = True
+
     prepass_result = None
     threat_model_phase = {"enabled": bool(args.threat_model), "completed": False}
     if args.understand:
@@ -3088,6 +3347,46 @@ Examples:
         print("  For automated analysis, set an API key or install Claude Code.")
 
     # ========================================================================
+    # POST-PASS: /audit (opt-in via --gap-audit)
+    # Runs the audit orchestrator over the coverage residual — functions
+    # neither the scanners nor the analysis phase reviewed — as a proper
+    # sibling /audit run. The kind-aware gap fold makes "residual" exact:
+    # this run's per-finding analyses never count as function reviews,
+    # but ride into the audit as prior claims (--prior-journal).
+    # ========================================================================
+    audit_postpass: dict = {"enabled": bool(args.gap_audit), "completed": False}
+    audit_dir = None
+    if args.gap_audit:
+        print("\n" + "=" * 70)
+        print("AUDIT POST-PASS")
+        print("=" * 70)
+        if llm_env.external_llm or args.model:
+            audit_postpass = run_audit_postpass(
+                args, original_repo_path, out_dir,
+            )
+            if audit_postpass.get("audit_dir"):
+                audit_dir = Path(audit_postpass["audit_dir"])
+            if audit_postpass.get("completed"):
+                logger.info(
+                    "Audit post-pass reviewed %s functions, %s findings "
+                    "(took %.1fs)",
+                    audit_postpass.get("reviewed", "?"),
+                    audit_postpass.get("findings_count", "?"),
+                    audit_postpass.get("duration_seconds", 0.0),
+                )
+            else:
+                logger.warning(
+                    "Audit post-pass did not complete: %s",
+                    audit_postpass.get("skipped_reason"),
+                )
+        else:
+            audit_postpass["skipped_reason"] = (
+                "requires an external LLM (--model or a configured API "
+                "key); run /audit directly for the in-session workflow"
+            )
+            print(f"\n  ⚠️  --gap-audit skipped: {audit_postpass['skipped_reason']}")
+
+    # ========================================================================
     # POST-PASS: /validate (opt-in via --validate)
     # Selects findings flagged exploitable or high-confidence, runs full
     # validate pipeline against them.
@@ -3184,6 +3483,7 @@ Examples:
                 "completed": False,
                 "mode": "none",
             },
+            "audit": audit_postpass,
         },
         "outputs": {
             "sarif_files": [str(f) for f in sarif_files],
@@ -3203,6 +3503,16 @@ Examples:
             "aggregation_report": str(out_dir / "aggregation.json") if orchestration_result and orchestration_result.get("aggregation") else None,
             "exploits_directory": str(autonomous_out / "exploits") if autonomous_out else None,
             "patches_directory": str(autonomous_out / "patches") if autonomous_out else None,
+            "audit_report": (
+                str(audit_dir / "audit-report.json")
+                if audit_dir and (audit_dir / "audit-report.json").exists()
+                else None
+            ),
+            "audit_findings": (
+                str(audit_dir / "findings.json")
+                if audit_dir and (audit_dir / "findings.json").exists()
+                else None
+            ),
             "exploit_feasibility": str(out_dir / "exploit_feasibility.txt") if mitigation_result else None,
             "enriched_sarif": None,  # populated after --sarif-out write
         }

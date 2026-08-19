@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -42,6 +43,48 @@ from cve_diff.pipeline import Pipeline, PipelineResult  # noqa: F401  (PipelineR
 from cve_diff.report import markdown, osv_schema
 from cve_diff.report.flow import write_flow_files, write_outcome_patches
 from cve_diff.security.validators import validate_cve_id
+
+
+def _install_termination_handlers() -> list[tuple[int, object]]:
+    """Convert SIGTERM/SIGINT into exception unwinding.
+
+    The clone workdir can reach ~2GB. Its cleanup only runs when the
+    interpreter unwinds normally (the ``finally`` in ``run``), but
+    SIGTERM's default action terminates the process with no unwinding
+    — a CI timeout or supervisor kill mid-clone leaked the whole temp
+    tree. Raising from the handler routes both signals through the
+    existing ``finally`` so ``TemporaryDirectory.cleanup()`` fires.
+
+    Returns ``(signum, previous_handler)`` pairs for
+    :func:`_restore_termination_handlers`. Installation is skipped
+    (empty entry) off the main thread, where ``signal.signal`` raises
+    ``ValueError``.
+    """
+    def _sig_to_exc(signum: int, frame: object) -> None:
+        if signum == signal.SIGINT:
+            # Preserve conventional Ctrl-C semantics (typer/click
+            # translate KeyboardInterrupt into their Abort path).
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    restore: list[tuple[int, object]] = []
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            restore.append((signum, signal.signal(signum, _sig_to_exc)))
+        except ValueError:
+            pass
+    return restore
+
+
+def _restore_termination_handlers(
+    restore: list[tuple[int, object]],
+) -> None:
+    """Undo :func:`_install_termination_handlers`."""
+    for signum, previous in restore:
+        try:
+            signal.signal(signum, previous)
+        except (ValueError, TypeError):
+            pass
 
 
 def _echo_flow_md(output_dir: Path, cve_id: str, quiet: bool) -> None:
@@ -359,6 +402,11 @@ def run(
         work_dir.mkdir(parents=True, exist_ok=True)
         work = work_dir
 
+    # A SIGTERM (CI timeout, operator kill) must not leak the temp
+    # clone dir — convert it to unwinding so the finally below cleans
+    # up. Only needed when we own a TemporaryDirectory.
+    sig_restore = _install_termination_handlers() if tmp_ctx is not None else []
+
     if not quiet:
         api_status.print_to_stderr(api_status.render_startup_banner())
 
@@ -560,6 +608,7 @@ def run(
         if not quiet:
             api_status.print_to_stderr(api_status.render_rate_limit_summary())
     finally:
+        _restore_termination_handlers(sig_restore)
         set_sink(None)
         if telemetry_sink.total_records and not quiet:
             typer.echo(telemetry_sink.summary_line(), err=True)

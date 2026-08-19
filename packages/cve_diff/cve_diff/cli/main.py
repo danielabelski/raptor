@@ -392,6 +392,7 @@ def run(
                         progress_callback=progress_cb,
                         agent_budget_multiplier=budget_multiplier,
                         model_id=model_id,
+                        scorecard_enabled=True,
                     )
                     result = pipeline_slot[0].run(cve_id, work)
                     break

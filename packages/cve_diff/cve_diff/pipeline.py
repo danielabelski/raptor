@@ -132,6 +132,12 @@ class Pipeline:
     # pipeline itself never reads env/config so library callers and
     # tests stay hermetic.
     model_id: str | None = None
+    # Feed the model scorecard (core/llm/scorecard) with mechanically
+    # adjudicated discovery outcomes (cve-diff:discovery cells). Opt-in
+    # from the entry points only — library callers, the bench, and
+    # unit tests must never write the operator's scorecard sidecar as
+    # a side effect.
+    scorecard_enabled: bool = False
     # When set, called at each stage transition with
     # (stage_name: str, status: str, info: dict). The CLI's --verbose
     # flag wires this to a stderr-printer; bench leaves it None.
@@ -196,7 +202,7 @@ class Pipeline:
         # noise + cost.
         for attempt in range(_MAX_POST_SUBMIT_RETRIES + 1):
             try:
-                return self._acquire_to_render(
+                result = self._acquire_to_render(
                     cve_id, ref, agent_result, work_dir
                 )
             # Also catch ValueError from commit_resolver (rev-parse failure
@@ -222,6 +228,19 @@ class Pipeline:
                 RuntimeError,
                 _HttpError,
             ) as exc:
+                # Scorecard: only verdict-shaped refutations count.
+                # AnalysisError (rejected diff shape → downstream
+                # mirror pick), IdenticalCommitsError (tag, not a fix
+                # commit), and the resolver's bare ValueError (the
+                # submitted SHA isn't in the acquired repo) mean the
+                # model's pick was mechanically refuted by stages 2-5.
+                # AcquisitionError / RuntimeError / HttpError are
+                # ambiguous (renamed repo, transient network, rate
+                # limit) — recording those as "incorrect" would poison
+                # the reliability cells with infrastructure noise.
+                if isinstance(exc, (AnalysisError, IdenticalCommitsError)) \
+                        or type(exc) is ValueError:
+                    self._record_discovery_outcome(cve_id, verified=False)
                 if attempt == _MAX_POST_SUBMIT_RETRIES:
                     if isinstance(
                         exc,
@@ -255,6 +274,11 @@ class Pipeline:
                     "new_slug": ref.repository_url,
                     "new_sha": ref.fix_commit[:12],
                 })
+            else:
+                # The pick survived acquire → resolve → diff → shape:
+                # mechanical confirmation of the discovery verdict.
+                self._record_discovery_outcome(cve_id, verified=True)
+                return result
         raise AssertionError("unreachable — loop must return or re-raise")
 
     def _acquire_to_render(
@@ -438,6 +462,22 @@ class Pipeline:
     def _model_kw(self) -> dict[str, str]:
         """AgentConfig override for the pipeline's model, when set."""
         return {"model_id": self.model_id} if self.model_id else {}
+
+    def _effective_model(self) -> str:
+        """The model the discovery agent actually runs on."""
+        if self.model_id:
+            return self.model_id
+        return AgentConfig.__dataclass_fields__["model_id"].default
+
+    def _record_discovery_outcome(self, cve_id: str, *, verified: bool) -> None:
+        """Feed one adjudicated pick to the scorecard (opt-in, never raises)."""
+        if not self.scorecard_enabled:
+            return
+        from cve_diff.infra.scorecard import record_discovery_outcome
+
+        record_discovery_outcome(
+            self._effective_model(), cve_id, verified=verified,
+        )
 
     def _scale_budgets(self, config: AgentConfig) -> AgentConfig:
         """Apply ``agent_budget_multiplier`` to the AgentConfig budgets.

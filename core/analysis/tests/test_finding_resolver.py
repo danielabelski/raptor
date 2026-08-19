@@ -483,3 +483,91 @@ class TestDeadColumnPlumbingRemoved:
         finding = _raptor_native(str(src), 1, 3, source_col=5, sink_col=11)
         result = resolve_finding(finding)
         assert isinstance(result, ResolvedFinding)
+
+
+# ---------------------------------------------------------------------------
+# Java sink forwarding (assignment-located findings) and receiver-hop
+# (zero-argument receiver calls) — b33
+# ---------------------------------------------------------------------------
+
+_JAVA_PS_SAFE = """\
+public class T {
+    public void doPost(HttpServletRequest request) throws Exception {
+        String param = request.getHeader("X");
+        String bar = "safe!";
+        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyA", "a_Value");
+        map.put("keyB", param);
+        bar = (String) map.get("keyA");
+        String sql = "SELECT * from USERS where USERNAME='" + bar + "'";
+        java.sql.PreparedStatement statement = connection.prepareStatement(sql);
+        statement.setString(1, "foo");
+        statement.execute();
+    }
+}
+"""
+
+
+def _java_native(path, source_line, sink_line):
+    return {"cwe": "CWE-89", "file_path": str(path),
+            "source_line": source_line, "sink_line": sink_line,
+            "language": "java", "rule_id": "test", "tool": "test"}
+
+
+class TestJavaSinkForwardingAndReceiverHop:
+    def test_assignment_sink_forwards_to_consuming_call(self, tmp_path):
+        f = _write(tmp_path, "T.java", _JAVA_PS_SAFE)
+        r = resolve_finding(_java_native(f, 3, 9))  # sink = concat line
+        assert isinstance(r, ResolvedFinding)
+        assert r.sink_arg == "sql"
+        assert r.sink_node.lineno == 10  # forwarded to prepareStatement
+
+    def test_zero_arg_receiver_call_hops_to_constructor(self, tmp_path):
+        f = _write(tmp_path, "T.java", _JAVA_PS_SAFE)
+        r = resolve_finding(_java_native(f, 3, 12))  # sink = execute()
+        assert isinstance(r, ResolvedFinding)
+        assert r.sink_arg == "sql"
+        assert r.sink_node.lineno == 10
+
+    def test_forwarding_refuses_on_intervening_reassignment(self, tmp_path):
+        src = _JAVA_PS_SAFE.replace(
+            "java.sql.PreparedStatement statement",
+            "sql = sql + param;\n        java.sql.PreparedStatement statement")
+        f = _write(tmp_path, "T.java", src)
+        r = resolve_finding(_java_native(f, 3, 9))
+        assert not isinstance(r, ResolvedFinding)
+
+    def test_forwarding_refuses_when_never_consumed(self, tmp_path):
+        src = _JAVA_PS_SAFE.replace("prepareStatement(sql)",
+                                    "prepareStatement(other)")
+        f = _write(tmp_path, "T.java", src)
+        r = resolve_finding(_java_native(f, 3, 9))
+        assert not isinstance(r, ResolvedFinding)
+
+    def test_receiver_hop_full_reassignment_targets_latest(self, tmp_path):
+        # A straight-line reassignment KILLS the earlier construction —
+        # hopping to the latest one is the sound target.
+        src = _JAVA_PS_SAFE.replace(
+            "statement.setString(1, \"foo\");",
+            "statement = connection.prepareStatement(other);")
+        f = _write(tmp_path, "T.java", src)
+        r = resolve_finding(_java_native(f, 3, 12))
+        assert isinstance(r, ResolvedFinding)
+        assert r.sink_arg == "other"
+
+    def test_receiver_hop_refuses_branch_merged_definers(self, tmp_path):
+        # Two constructions reach the execute on different paths — no
+        # single value identity, the hop must refuse.
+        src = _JAVA_PS_SAFE.replace(
+            "statement.setString(1, \"foo\");",
+            "if (param.length() > 3) { statement = connection.prepareStatement(other); }")
+        f = _write(tmp_path, "T.java", src)
+        r = resolve_finding(_java_native(f, 3, 12))
+        assert not isinstance(r, ResolvedFinding)
+
+    def test_receiver_hop_refuses_multi_arg_constructor(self, tmp_path):
+        src = _JAVA_PS_SAFE.replace("prepareStatement(sql)",
+                                    "prepareStatement(sql, mode)")
+        f = _write(tmp_path, "T.java", src)
+        r = resolve_finding(_java_native(f, 3, 12))
+        assert not isinstance(r, ResolvedFinding)

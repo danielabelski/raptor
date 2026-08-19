@@ -1116,6 +1116,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_config_fixtures()
     fixtures += _java_b27_fixtures()
     fixtures += _java_b28_collection_fixtures()
+    fixtures += _java_b33_sink_shape_fixtures()
     return fixtures
 
 
@@ -1916,3 +1917,48 @@ def _java_b28_collection_fixtures() -> List[CutFixture]:
               + "        out.println(bar);\n    }\n"),
         "public void handle", "out.println(bar)"))
     return j
+
+
+_B33_SAFE_JAVA = (
+    "public class T {\n"
+    "    public void doPost(HttpServletRequest request) throws Exception {\n"
+    "        String param = request.getHeader(\"X\");\n"
+    "        String bar = \"safe!\";\n"
+    "        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();\n"
+    "        map.put(\"keyA\", \"a_Value\");\n"
+    "        map.put(\"keyB\", param);\n"
+    "        bar = (String) map.get(\"keyA\");\n"
+    "        String sql = \"SELECT * from USERS where USERNAME='\" + bar + \"'\";\n"
+    "        java.sql.PreparedStatement statement = connection.prepareStatement(sql);\n"
+    "        statement.setString(1, \"foo\");\n"
+    "        statement.execute();\n"
+    "    }\n"
+    "}\n"
+)
+
+_B33_DECOY_JAVA = _B33_SAFE_JAVA.replace(
+    'bar = (String) map.get(\"keyA\");',
+    'bar = (String) map.get(\"keyB\");')
+
+
+def _java_b33_sink_shape_fixtures() -> List[CutFixture]:
+    """b33 battery: assignment-located and zero-argument-receiver sink
+    shapes (the OWASP concatenated-sql / execute() finding locations).
+    The decoy variants pin that a decoy parameterization (constant
+    binds beside a tainted concatenation) never suppresses through the
+    forwarded/hopped sink — the classic prepared-statement trap.
+    """
+    return [
+        _fx("sqli_assign_sink_constant_selection_java", "sqli", "CWE-89",
+            "assignment_sink_forwarding", LABEL_MAY_SUPPRESS,
+            _B33_SAFE_JAVA, 3, 9, language="java", suffix=".java"),
+        _fx("sqli_execute_hop_constant_selection_java", "sqli", "CWE-89",
+            "receiver_hop_sink", LABEL_MAY_SUPPRESS,
+            _B33_SAFE_JAVA, 3, 12, language="java", suffix=".java"),
+        _fx("sqli_assign_sink_decoy_parameterized_java", "sqli", "CWE-89",
+            "assignment_sink_forwarding", LABEL_MUST_NOT_SUPPRESS,
+            _B33_DECOY_JAVA, 3, 9, language="java", suffix=".java"),
+        _fx("sqli_execute_hop_decoy_parameterized_java", "sqli", "CWE-89",
+            "receiver_hop_sink", LABEL_MUST_NOT_SUPPRESS,
+            _B33_DECOY_JAVA, 3, 12, language="java", suffix=".java"),
+    ]

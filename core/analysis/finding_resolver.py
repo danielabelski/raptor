@@ -664,6 +664,82 @@ def _resolve_source(
     return node, symbols
 
 
+def _forward_assignment_sink_java(cfg, node):
+    """Forward an assignment-located java sink to its consuming call.
+
+    Applies only when the flagged node defines exactly one name and
+    carries no call of its own. The first later call taking that name
+    as a (deep) argument becomes the sink — but only when the flagged
+    assignment is the SOLE reaching definer of the name at that call:
+    any intervening or branch-merged redefinition breaks the value
+    identity the finding flagged, so the first failing candidate
+    refuses outright (a later consumer is strictly worse). Returns
+    ``(None, "")`` on any refusal.
+    """
+    from core.analysis.dataflow import reaching_defs as _rd
+
+    if node is None or node.call_sites or len(node.defs) != 1:
+        return None, ""
+    name = next(iter(node.defs))
+    rd = _rd(cfg)
+    candidates = sorted(
+        (
+            n for n in cfg.nodes()
+            if getattr(n, "lineno", 0) > node.lineno
+            and any(
+                name in cs.arg_names
+                or name in getattr(cs, "arg_deep_names", frozenset())
+                for cs in getattr(n, "call_sites", ())
+            )
+        ),
+        key=lambda n: n.lineno,
+    )
+    for cand in candidates:
+        if rd.at(cand, name) == frozenset({node}):
+            return cand, name
+        return None, ""
+    return None, ""
+
+
+def _receiver_hop_sink_java(cfg, node):
+    """Hop a zero-argument receiver call to its constructing call.
+
+    ``statement.execute()`` carries the sink data in ``statement``'s
+    construction. Requires: the outermost call has no (deep) arguments,
+    the node uses exactly one name (the receiver), that name has
+    exactly one reaching definer here, and the definer assigns the
+    receiver from a call with exactly one bare-name argument (or a
+    single deep name when no bare names exist). Anything else returns
+    ``(None, "")`` — reassigned receivers, multi-use statements, and
+    multi-argument constructors all break the single-value identity.
+    """
+    from core.analysis.dataflow import reaching_defs as _rd
+
+    outermost = node.call_sites[-1]
+    if outermost.arg_names or getattr(outermost, "arg_deep_names",
+                                      frozenset()):
+        return None, ""
+    if len(node.uses) != 1:
+        return None, ""
+    receiver = next(iter(node.uses))
+    definers = _rd(cfg).at(node, receiver)
+    if len(definers) != 1:
+        return None, ""
+    definer = next(iter(definers))
+    if definer is getattr(cfg, "entry_node", None):
+        return None, ""
+    for cs in getattr(definer, "call_sites", ()):
+        if receiver not in cs.assigned_names:
+            continue
+        if len(cs.arg_names) == 1:
+            return definer, next(iter(cs.arg_names))
+        deep = getattr(cs, "arg_deep_names", frozenset())
+        if not cs.arg_names and len(deep) == 1:
+            return definer, next(iter(deep))
+        return None, ""
+    return None, ""
+
+
 def _resolve_sink(
     cfg: PythonCFG,
     sink_line: int,
@@ -795,10 +871,38 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
 
     sink_node = node_at(parsed.sink_lineno)
     if sink_node is None or not sink_node.call_sites:
-        return ResolutionFailure(
-            reason=(
-                f"no sink call at line {parsed.sink_lineno} in {fn_name}"
-            ),
+        # Assignment-located finding (``sql = "..." + bar + "...";`` —
+        # the concatenated-sql / assignment-shaped rule class): no call
+        # exists on the flagged line, but the assigned value flows to a
+        # later consuming call. Forward the sink to that call iff the
+        # flagged assignment is provably the value the call receives
+        # (sole reaching definer) — then the gate asks exactly the
+        # exclusivity question the finding raised.
+        fwd_node, fwd_arg = _forward_assignment_sink_java(cfg, sink_node)
+        if fwd_node is None:
+            return ResolutionFailure(
+                reason=(
+                    f"no sink call at line {parsed.sink_lineno} in {fn_name}"
+                ),
+            )
+        sink_node, sink_arg = fwd_node, fwd_arg
+        inter_proc = _inter_proc_bindings_java(
+            source_text, cfg,
+            (parsed.source_lineno, parsed.sink_lineno), parsed.cwe,
+        )
+        return ResolvedFinding(
+            file=parsed.file,
+            enclosing_function=fn_name,
+            source_lineno=parsed.source_lineno,
+            source_symbols=source_symbols,
+            sink_lineno=parsed.sink_lineno,
+            sink_arg=sink_arg,
+            cwe=parsed.cwe,
+            language=parsed.language,
+            cfg=cfg,
+            source_node=source_node,
+            sink_node=sink_node,
+            inter_proc_bindings=inter_proc,
         )
     sink_arg = ""
     if parsed.sink_arg_hint:
@@ -819,6 +923,15 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
             # exclusivity question. Two or more referenced names stay
             # a refusal: picking one would under-constrain the others.
             sink_arg = next(iter(outermost.arg_deep_names))
+    if not sink_arg:
+        # Zero-argument sink call on a receiver (``statement.execute()``
+        # — the prepared-statement execute shape): the sink data is the
+        # receiver's construction. Hop through the single-use receiver
+        # to its constructing call's single bare argument, provided the
+        # construction is the receiver's sole reaching definer.
+        hop_node, hop_arg = _receiver_hop_sink_java(cfg, sink_node)
+        if hop_node is not None:
+            sink_node, sink_arg = hop_node, hop_arg
     if not sink_arg:
         return ResolutionFailure(
             reason=(

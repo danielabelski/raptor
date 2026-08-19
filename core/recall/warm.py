@@ -51,7 +51,8 @@ def load_suppression_records(path: Path) -> list[dict[str, Any]]:
 
 
 def _record_matches(rec: dict[str, Any], entry: dict[str, Any],
-                    *, line_drift: int) -> bool:
+                    *, line_drift: int,
+                    missing_line_matches: bool = False) -> bool:
     """One suppression record vs one report entry (FP case or hit).
 
     Path suffix agreement is mandatory; rule_id must agree when both
@@ -90,7 +91,15 @@ def _record_matches(rec: dict[str, Any], entry: dict[str, Any],
         return True
     rec_line = rec.get("line")
     if not isinstance(rec_line, int):
-        return False
+        # A record without a line cannot be placed inside a
+        # line-scoped entry. The two consumers need OPPOSITE
+        # conservatism: FP attribution must not over-claim coverage
+        # (no match), but the recall-damage check must not let an
+        # unplaceable suppression silently exonerate itself — a
+        # measured blind spot: 17 suppressions on Juliet ground-truth
+        # bad files read as damage 0 because the records carried no
+        # line (b42).
+        return missing_line_matches
     end = entry.get("line_end") or start
     return start - line_drift <= rec_line <= end + line_drift
 
@@ -162,7 +171,8 @@ def apply_would_suppress(
     true_suppressed: list[dict[str, Any]] = []
     for entry in matched_expected or []:
         hit = next((r for r in live
-                    if _record_matches(r, entry, line_drift=line_drift)),
+                    if _record_matches(r, entry, line_drift=line_drift,
+                                       missing_line_matches=True)),
                    None)
         if hit is not None:
             true_suppressed.append({

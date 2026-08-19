@@ -381,3 +381,92 @@ class TestLearnedSourcePatterns:
         repo, _, sarif_path, out = _write(tmp_path, _SAFE_JAVA)
         base = run_postpass([sarif_path], repo, out)
         assert "learned-source-patterns" not in base["mechanism_counts"]
+
+
+_ENV_SOURCE_JAVA = """public class Test {
+    void run() {
+        String data = System.getenv("ADD");
+        java.io.File f = new java.io.File(data);
+    }
+}
+"""
+
+_ENV_UNION_JAVA = """public class Test {
+    private boolean flag = false;
+    void run() {
+        String data;
+        if (flag) {
+            data = System.getenv("ADD");
+        } else {
+            data = null;
+        }
+        java.io.File f = new java.io.File(data);
+    }
+}
+"""
+
+_SEPARATOR_UNION_JAVA = """import javax.servlet.http.HttpServletRequest;
+public class Test {
+    void doPost(HttpServletRequest request) throws Exception {
+        String p = request.getParameter("q");
+        String data;
+        if (p.length() > 2) {
+            data = java.io.File.separator;
+        } else {
+            data = "/opt";
+        }
+        new java.io.FileInputStream(data);
+    }
+}
+"""
+
+
+class TestTfSystemReadBan:
+    """b42 circularity ban: when a finding's own candidate sources
+    include a system-read kind, taint-freedom must not discharge such
+    reads — measured live as 17 Juliet ground-truth-bad
+    environment-source findings suppressed via the TF tier, invisible
+    to the damage metric because the records carried no line."""
+
+    def test_env_source_finding_never_suppresses(self, tmp_path):
+        repo, _, sarif_path, out = _write(
+            tmp_path, _ENV_SOURCE_JAVA,
+            {"cwe": "cwe-22", "sink_line": 4, "rule_id": "pathtrav"},
+        )
+        stats = run_postpass([sarif_path], repo, out)
+        assert stats["examined"] == 1
+        assert stats["recorded_suppress"] == 0
+        assert not (out / "suppressions.jsonl").exists()
+        assert stats["mechanism_counts"].get(
+            "taint-free:banned-system-read-source") == 1
+
+    def test_env_union_finding_never_suppresses(self, tmp_path):
+        # The b42 union must not resurrect the suppression either:
+        # {getenv, null} unions to taint-free ONLY where getenv is not
+        # this finding's suspected source.
+        repo, _, sarif_path, out = _write(
+            tmp_path, _ENV_UNION_JAVA,
+            {"cwe": "cwe-22", "sink_line": 10, "rule_id": "pathtrav"},
+        )
+        stats = run_postpass([sarif_path], repo, out)
+        assert stats["examined"] == 1
+        assert stats["recorded_suppress"] == 0
+
+    def test_non_source_tf_union_still_suppresses(self, tmp_path):
+        # File.separator is never a locator source kind: a servlet-
+        # source finding whose sink value unions {separator, "/opt"}
+        # keeps the taint-free suppression.
+        repo, _, sarif_path, out = _write(
+            tmp_path, _SEPARATOR_UNION_JAVA,
+            {"cwe": "cwe-22", "sink_line": 11, "rule_id": "pathtrav"},
+        )
+        stats = run_postpass([sarif_path], repo, out)
+        assert stats["examined"] == 1
+        assert stats["recorded_suppress"] == 1
+        records = [
+            json.loads(line)
+            for line in (out / "suppressions.jsonl").read_text().splitlines()
+        ]
+        # b42 record-line fix: the record must place itself at the
+        # sink so line-scoped ground-truth entries can match it.
+        assert records[0]["line"] == 11

@@ -81,10 +81,10 @@ class _FoldExt:
     default everywhere) is byte-for-byte the pre-extension folder."""
 
     __slots__ = ("allow_taint_free", "xfile", "receiver_type",
-                 "union_hits")
+                 "union_hits", "ban_tf_system_reads")
 
     def __init__(self, allow_taint_free: bool = False, xfile=None,
-                 receiver_type=None):
+                 receiver_type=None, ban_tf_system_reads: bool = False):
         self.allow_taint_free = allow_taint_free
         self.xfile = xfile
         # receiver_type(name) -> exact created class name, or None.
@@ -95,6 +95,15 @@ class _FoldExt:
         # taint-free union (audit attribution; empty when the tier is
         # off or every merge agreed).
         self.union_hits: list = []
+        # b42: when the postpass locator classified any of THIS
+        # finding's surviving source candidates as a system-read kind
+        # (environment/properties/file/console/database/socket), a
+        # system read cannot be taint-free FOR THIS FINDING — the read
+        # is the suspected source, and calling it attacker-free is
+        # exactly the circularity the all-candidates discipline
+        # forbids.  Measured live: 17 Juliet ground-truth-bad
+        # environment-source findings suppressed via the TF tier.
+        self.ban_tf_system_reads: bool = ban_tf_system_reads
 
 
 def _tf_or_refuse(val: Any, ext) -> Any:
@@ -304,6 +313,11 @@ def _fold_tf_system_read(node, resolve_name, depth, array_resolver,
     two-arg default must itself fold or be taint-free — either possible
     runtime value is then attacker-uncontrolled."""
     if ext is None or not ext.allow_taint_free:
+        return _REFUSE
+    if ext.ban_tf_system_reads:
+        # This finding's own source candidates include a system-read
+        # kind: the read under fold may BE the suspected source, so
+        # taint-freedom cannot discharge it (b42 circularity ban).
         return _REFUSE
     name_node = node.child_by_field_name("name")
     obj = node.child_by_field_name("object")
@@ -900,6 +914,7 @@ def all_definers_constant(
     array_resolver=None,
     config_resolver=None,
     conduit_resolver=None,
+    ban_tf_system_reads: bool = False,
 ) -> Optional[str]:
     """None when the constancy proof fails; a short reason string when
     every reaching definition of ``sink_arg`` at ``sink`` folds to the
@@ -916,6 +931,8 @@ def all_definers_constant(
         return None
 
     ext = _index_ext(index, allow_taint_free=True)
+    if ext is not None:
+        ext.ban_tf_system_reads = ban_tf_system_reads
     resolve_at = _make_point_resolver(rd, index, array_resolver,
                                       config_resolver, conduit_resolver,
                                       ext)

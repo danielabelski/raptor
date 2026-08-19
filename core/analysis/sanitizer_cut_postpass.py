@@ -73,6 +73,18 @@ _EXT_LANGUAGE = {
 # combined all-must-suppress, so extra candidates make suppression
 # strictly harder — the hazard of a MISSING pattern (the true source
 # unmatched while another line matches) shrinks as coverage grows.
+# Source kinds whose reads the taint-free fold tier could itself
+# discharge (System.getenv / getProperty / file / console / database /
+# socket reads).  When any of THIS finding's surviving candidates
+# carries one of these kinds, the suspected source IS such a read —
+# treating it as attacker-free would be circular, so the gate call
+# bans the TF system-read producer for the finding (b42; measured as
+# 17 environment-source ground-truth-bad Juliet files suppressed).
+_TF_COLLIDING_KINDS = frozenset({
+    "environment", "properties", "file", "console", "database",
+    "socket",
+})
+
 _SOURCE_KINDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     "java": {
         "servlet": {
@@ -518,10 +530,24 @@ def run_postpass(
             stats.refuse("language-unsupported")
             continue
 
+        finding_kinds: set = set()
         trace_line = _dataflow_source_line(finding)
         if trace_line is not None:
             source_lines = [trace_line]
             stats.source_kind("trace")
+            # Classify the trace's own source line so the circularity
+            # ban (below) covers trace-carrying findings too: a
+            # CodeQL flow that STARTS at a system read must not have
+            # that read discharged as taint-free.
+            if language == "java":
+                tk = _candidate_source_lines_with_kinds(
+                    resolved_path, int(sink_line) + 10**9, language,
+                    source_cache,
+                    learned_patterns if language == "java" else (),
+                )
+                for ln, ks in tk:
+                    if ln == trace_line:
+                        finding_kinds |= set(ks)
         else:
             with_kinds = _candidate_source_lines_with_kinds(
                 resolved_path, int(sink_line), language, source_cache,
@@ -550,6 +576,10 @@ def run_postpass(
                         for _i in range(scoped_out):
                             stats.mechanism("cross-method:candidate-scoped")
                         source_lines = in_method
+            surviving = set(source_lines)
+            for ln, ks in with_kinds:
+                if ln in surviving:
+                    finding_kinds |= set(ks)
                     # Caller-mediated taint needs no extra candidate:
                     # the gate's definer-exclusivity condition is
                     # source-agnostic, so a sink argument reachable
@@ -559,6 +589,8 @@ def run_postpass(
         if not source_lines:
             stats.refuse("no-source-candidates")
             continue
+        if finding_kinds & _TF_COLLIDING_KINDS:
+            stats.mechanism("taint-free:banned-system-read-source")
 
         # Evaluate from EVERY candidate source. Suppress only when
         # all candidates suppress (the withheld taint trace started at
@@ -574,6 +606,11 @@ def run_postpass(
                 "file_path": str(resolved_path),
                 "source_line": int(source_line),
                 "sink_line": int(sink_line),
+                # The record writer reads "line": without it every
+                # suppression record carried line=None and could
+                # never be placed inside a line-scoped ground-truth
+                # entry — the damage metric's measured blind spot.
+                "line": int(sink_line),
                 "language": language,
                 "rule_id": finding.get("rule_id") or "",
                 "tool": finding.get("tool") or "",
@@ -606,6 +643,9 @@ def run_postpass(
                     java_source_text=java_text,
                     java_file_path=str(resolved_path),
                     repo_root=str(repo_root),
+                    ban_tf_system_reads=bool(
+                        finding_kinds & _TF_COLLIDING_KINDS
+                    ),
                 )
             except Exception:  # noqa: BLE001 — arbitrary scanned source can break parsing
                 verdicts = ["gate-error"]

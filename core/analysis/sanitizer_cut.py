@@ -586,6 +586,7 @@ def _sink_arg_constant_reason(
     java_file_path: Optional[str] = None,
     repo_root: Optional[str] = None,
     cwe: Optional[str] = None,
+    ban_tf_system_reads: bool = False,
 ) -> Optional[str]:
     """Reason string when the Java constant-folder proves every
     reaching definer of ``sink_arg`` constant AND no other name in
@@ -694,6 +695,7 @@ def _sink_arg_constant_reason(
             rd, sink, sink_arg, index, array_resolver=table_resolver,
             config_resolver=config_resolver,
             conduit_resolver=invocation_hook,
+            ban_tf_system_reads=ban_tf_system_reads,
         )
         if reason is None and cwe:
             # Finite value-set fallback (b40): the definers disagree
@@ -1444,6 +1446,7 @@ def evaluate_finding(
     java_source_text: Optional[str] = None,
     java_file_path: Optional[str] = None,
     repo_root: Optional[str] = None,
+    ban_tf_system_reads: bool = False,
 ) -> SanitizerCutResult:
     """Phase 4 suppression decision for one finding.
 
@@ -1527,6 +1530,7 @@ def evaluate_finding(
             java_file_path=java_file_path,
             repo_root=repo_root,
             cwe=cwe,
+            ban_tf_system_reads=ban_tf_system_reads,
         )
         if const_reason is not None:
             return SanitizerCutResult(

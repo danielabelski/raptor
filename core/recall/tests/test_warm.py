@@ -127,3 +127,46 @@ def test_candidate_records_never_score_as_suppressions():
                                  matched_expected=matched)
     assert warm2["would_suppress_fps"] == 1
     assert warm2["true_finding_damage_count"] == 1
+
+
+class TestMissingLineConservatism:
+    """b42: a record without a line cannot be placed inside a
+    line-scoped entry — the damage direction must match conservatively
+    (an unplaceable suppression must not exonerate itself; measured:
+    17 suppressions on ground-truth bad files read as damage 0), while
+    FP attribution keeps refusing (no over-claimed coverage)."""
+
+    ENTRY = {"id": "X", "file": "a/B.java", "cwe": "CWE-22",
+             "line_start": 28, "line_end": 30}
+    REC = {"file_path": "/repo/a/B.java", "rule_id": "",
+           "cwe": "CWE-22", "line": None,
+           "verdict": "sanitizer_dominated"}
+
+    def test_damage_direction_matches_on_missing_line(self):
+        from core.recall.warm import _record_matches
+        assert _record_matches(self.REC, self.ENTRY, line_drift=2,
+                               missing_line_matches=True)
+
+    def test_fp_direction_refuses_on_missing_line(self):
+        from core.recall.warm import _record_matches
+        assert not _record_matches(self.REC, self.ENTRY, line_drift=2)
+
+    def test_damage_counts_lineless_record(self):
+        from core.recall.warm import apply_would_suppress
+        report = {"clean_region_fps": []}
+        warm = apply_would_suppress(
+            report, [dict(self.REC)],
+            matched_expected=[dict(self.ENTRY)],
+        )
+        assert warm["true_finding_damage_count"] == 1
+
+    def test_family_sibling_cwe_still_counts_as_damage(self):
+        # CWE-22 record vs CWE-36 entry: same path_traversal family —
+        # the discrimination must not exonerate ground-truth children.
+        from core.recall.warm import apply_would_suppress
+        entry = dict(self.ENTRY, cwe="CWE-36")
+        warm = apply_would_suppress(
+            {"clean_region_fps": []}, [dict(self.REC)],
+            matched_expected=[entry],
+        )
+        assert warm["true_finding_damage_count"] == 1

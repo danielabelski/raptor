@@ -3128,6 +3128,62 @@ class TestValidateSpecLanguageFallback:
         err = validate_spec(spec)
         assert err is not None
         assert "dangerous builtin" in err
+# -- return-value comparison ----------------------------------------------------
+
+
+class TestReturnValueComparison:
+    """Return comparison is exact except for cross-language boolean/nil
+    spellings — a blanket case-fold flipped refuted to confirmed for any
+    case-differing string pair."""
+
+    def _returned(self, value):
+        return json.dumps({"status": "returned", "value": value})
+
+    def _spec(self, expected, file="a.go", language="go"):
+        return DarkWitnessSpec(
+            finding_key="f1", file=file, function="F",
+            language=language, expected_return=expected,
+        )
+
+    def test_case_differing_strings_refute(self):
+        r = _classify_output(
+            self._spec("Admin"), self._returned("admin"), "go")
+        assert r.verdict == "refuted"
+
+    def test_case_differing_quoted_strings_refute(self):
+        r = _classify_output(
+            self._spec("admin"), self._returned('"ADMIN"'), "ruby")
+        assert r.verdict == "refuted"
+
+    def test_exact_string_confirms(self):
+        r = _classify_output(
+            self._spec("admin"), self._returned("admin"), "go")
+        assert r.verdict == "confirmed"
+
+    @pytest.mark.parametrize("expected,actual", [
+        ("True", "true"),    # Python-style prediction vs Go %v
+        ("False", "false"),
+        ("Nil", "nil"),
+        ("Null", "null"),
+        ("None", "none"),
+    ])
+    def test_boolean_spellings_fold_case(self, expected, actual):
+        r = _classify_output(
+            self._spec(expected), self._returned(actual), "go")
+        assert r.verdict == "confirmed"
+
+    def test_different_boolean_words_still_refute(self):
+        r = _classify_output(
+            self._spec("None"), self._returned("nil"), "go")
+        assert r.verdict == "refuted"
+
+    def test_python_repr_comparison_is_case_sensitive(self):
+        r = _classify_output(
+            self._spec("abc", file="a.py", language="python"),
+            self._returned("'ABC'"), "python")
+        assert r.verdict == "refuted"
+
+
 # -- execute_witness source-path containment -----------------------------------
 
 

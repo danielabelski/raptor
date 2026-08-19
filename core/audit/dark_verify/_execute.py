@@ -121,6 +121,13 @@ def _module_ref_error(
 # validation error.
 _SUFFIXED_NUMBER_RE = re.compile(r"^-?\d+(?:\.\d+)?[a-zA-Z_][a-zA-Z0-9_]*$")
 
+# Return-value comparison is exact EXCEPT for cross-language boolean/nil
+# spellings (Python "True" vs Go/Ruby "true", "None" vs "nil"/"null"),
+# where only the casing differs by language convention. A blanket
+# case-insensitive compare would flip refuted to confirmed for any
+# case-differing string pair ("admin" vs "ADMIN").
+_BOOLEAN_SPELLINGS = frozenset({"true", "false", "nil", "none", "null"})
+
 _ALLOWED_EXPR_NODES = (
     ast.Expression, ast.Constant,
     ast.Tuple, ast.List, ast.Dict, ast.Set,
@@ -423,7 +430,12 @@ def _classify_json_output(
                     and actual_repr[-1] == actual_repr[0]
                 ):
                     actual_repr = actual_repr[1:-1]
-            if actual_repr.lower() == expected_repr.lower():
+            folded = actual_repr.lower()
+            matches = actual_repr == expected_repr or (
+                folded == expected_repr.lower()
+                and folded in _BOOLEAN_SPELLINGS
+            )
+            if matches:
                 return DarkVerifyResult(
                     finding_key=spec.finding_key, verdict="confirmed",
                     language=language, actual_return=actual_repr,

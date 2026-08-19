@@ -478,7 +478,13 @@ def _fold_stack(graph, java_source_text: str,
         if not linenos:
             return None
         span = (min(linenos), max(linenos))
-        index = JavaConstIndex(java_source_text, span)
+        # java_file_path/repo_root activate the bounded cross-file
+        # static-final/returns-literal resolver inside the index; the
+        # taint-free tier stays opt-in per fold call (only the
+        # taint-freedom consumers enable it).
+        index = JavaConstIndex(java_source_text, span,
+                               java_file_path=java_file_path,
+                               repo_root=repo_root)
         try:
             from core.analysis.value_set_java import build_table_resolver
             table_resolver = build_table_resolver(java_source_text, span)
@@ -563,8 +569,12 @@ def _sink_arg_constant_reason(
         ]
         if not linenos:
             return None
+        # java_file_path/repo_root activate the cross-file resolver
+        # (b37) exactly as in _fold_stack — the two constructions must
+        # not diverge on resolution power.
         index = JavaConstIndex(
             java_source_text, (min(linenos), max(linenos)),
+            java_file_path=java_file_path, repo_root=repo_root,
         )
         rd = reaching_defs(graph)
         try:

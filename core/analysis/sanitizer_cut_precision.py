@@ -71,6 +71,12 @@ class CutFixture:
     # content) — the config-resolution battery ships .properties files
     # the resolver must locate under the fixture's directory.
     aux_files: Dict[str, str] = field(default_factory=dict)
+    # Cross-file batteries (b37): root the fixture in its own
+    # subdirectory and pass it as the finding's repo_root, so the
+    # cross-file resolver sees exactly the fixture's aux .java files —
+    # never a sibling fixture's (the shared work dir would otherwise
+    # cross-contaminate class resolution).
+    use_repo_root: bool = False
 
 
 @dataclass
@@ -136,12 +142,13 @@ class PrecisionReport:
 
 
 def _fx(name, sink_class, cwe, shape, label, source, src_ln, sink_ln,
-        language="python", suffix=".py", aux_files=None) -> CutFixture:
+        language="python", suffix=".py", aux_files=None,
+        use_repo_root=False) -> CutFixture:
     return CutFixture(
         name=name, sink_class=sink_class, cwe=cwe, language=language,
         shape=shape, label=label, source=source,
         source_line=src_ln, sink_line=sink_ln, suffix=suffix,
-        aux_files=aux_files or {},
+        aux_files=aux_files or {}, use_repo_root=use_repo_root,
     )
 
 
@@ -1118,6 +1125,7 @@ def build_corpus() -> List[CutFixture]:
     fixtures += _java_b28_collection_fixtures()
     fixtures += _java_b33_sink_shape_fixtures()
     fixtures += _java_b34_positional_fixtures()
+    fixtures += _java_b37_fixtures()
     return fixtures
 
 
@@ -1414,23 +1422,186 @@ def _java_b27_fixtures() -> List[CutFixture]:
     return j
 
 
+def _java_b37_fixtures() -> List[CutFixture]:
+    """b37 battery: cross-file static-final / returns-literal
+    resolution and the taint-free tier. The prefix trap is the
+    load-bearing must-not: a constant or taint-free directory prefix
+    concatenated with attacker data does NOT neutralise traversal
+    (``../`` escapes any prefix), so const+tainted must never read as
+    suppressible."""
+    hdr = ("import javax.servlet.http.HttpServletRequest;\n"
+           "public class T {\n"
+           "    public void handle(HttpServletRequest request, "
+           "java.io.PrintWriter out) {\n")
+    end = "    }\n}\n"
+
+    def body(*lines: str) -> str:
+        return hdr + "".join(f"        {ln}\n" for ln in lines) + end
+
+    cfg_aux = (
+        "public class Cfg {\n"
+        '    public static final String SAFE = "safe-const";\n'
+        '    public static String MUTABLE = "reassignable";\n'
+        '    public String getTheValue(String p) { return "bar"; }\n'
+        '    public String echo(String p) { return p; }\n'
+        "}\n"
+    )
+    tf_aux = (
+        "import java.io.File;\n"
+        "public class Env {\n"
+        "    public static final String USERDIR = "
+        'System.getProperty("user.dir") + File.separator;\n'
+        "}\n"
+    )
+    j: List[CutFixture] = []
+    j.append(_fx(
+        "java_b37_xfile_static_final", "xss", "CWE-79",
+        "xfile_static_final_const", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = Cfg.SAFE;',
+             'out.println(bar);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={"Cfg.java": cfg_aux}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_xfile_returns_literal", "xss", "CWE-79",
+        "xfile_returns_literal_method", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'Cfg scr = new Cfg();',
+             'String bar = scr.getTheValue("k");',
+             'out.println(bar);'),
+        4, 7, language="java", suffix=".java",
+        aux_files={"Cfg.java": cfg_aux}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_tf_system_read", "xss", "CWE-79",
+        "taint_free_system_read", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String dir = System.getProperty("user.dir");',
+             'out.println(dir);'),
+        4, 6, language="java", suffix=".java", use_repo_root=True))
+    j.append(_fx(
+        "java_b37_tf_prop_no_root", "xss", "CWE-79",
+        "property_read_without_write_proof_refusal_pin",
+        LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String dir = System.getProperty("user.dir");',
+             'out.println(dir);'),
+        4, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_b37_tf_prop_written_key", "xss", "CWE-79",
+        "property_key_runtime_written", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String dir = System.getProperty("user.dir");',
+             'out.println(dir);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={"Writer.java": (
+            "public class Writer {\n"
+            "    void w(String t) { "
+            'System.setProperty("user.dir", t); }\n'
+            "}\n")}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_tf_prop_variable_key_poison", "xss", "CWE-79",
+        "property_variable_key_poisons_all", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String dir = System.getProperty("user.dir");',
+             'out.println(dir);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={"Writer.java": (
+            "public class Writer {\n"
+            "    void w(String k, String t) { "
+            "System.setProperty(k, t); }\n"
+            "}\n")}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_tf_static_final", "xss", "CWE-79",
+        "taint_free_xfile_static_final", LABEL_MAY_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = Env.USERDIR;',
+             'out.println(bar);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={"Env.java": tf_aux}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_prefix_trap", "pathtrav", "CWE-22",
+        "constant_prefix_tainted_suffix", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String path = Env.USERDIR + param;',
+             'java.io.File f = new java.io.File(path);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={"Env.java": tf_aux}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_xfile_non_final", "xss", "CWE-79",
+        "xfile_non_final_field", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = Cfg.MUTABLE;',
+             'out.println(param + bar);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={"Cfg.java": cfg_aux}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_returns_param_lookalike", "xss", "CWE-79",
+        "xfile_returns_param_method", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'Cfg scr = new Cfg();',
+             'String bar = scr.echo(param);',
+             'out.println(bar);'),
+        4, 7, language="java", suffix=".java",
+        aux_files={"Cfg.java": cfg_aux}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_tf_variable_prop_name", "xss", "CWE-79",
+        "variable_property_name", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String v = System.getProperty(param);',
+             'out.println(v);'),
+        4, 6, language="java", suffix=".java"))
+    j.append(_fx(
+        "java_b37_overloaded_method_refusal_pin", "xss", "CWE-79",
+        "xfile_overloaded_method_refusal_pin", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = new Ovl().pick("k");',
+             'out.println(bar);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={"Ovl.java": (
+            "public class Ovl {\n"
+            '    public String pick(String p) { return "a"; }\n'
+            '    public String pick(int p) { return "b"; }\n'
+            "}\n")}, use_repo_root=True))
+    j.append(_fx(
+        "java_b37_ambiguous_class_refusal_pin", "xss", "CWE-79",
+        "xfile_ambiguous_class_refusal_pin", LABEL_MUST_NOT_SUPPRESS,
+        body('String param = request.getParameter("q");',
+             'String bar = Amb.SAFE;',
+             'out.println(bar);'),
+        4, 6, language="java", suffix=".java",
+        aux_files={
+            "a/Amb.java": (
+                "public class Amb {\n"
+                '    public static final String SAFE = "one";\n}\n'),
+            "b/Amb.java": (
+                "public class Amb {\n"
+                '    public static final String SAFE = "two";\n}\n'),
+        }, use_repo_root=True))
+    return j
+
+
 def measure_fixture(fx: CutFixture, work_dir: Path) -> FixtureMeasurement:
     """Run the production gate path over one fixture."""
     from core.dataflow.sanitizer_cut_parity import value_bound_verdict_for
 
-    path = work_dir / f"{fx.name}{fx.suffix}"
+    root = work_dir / fx.name if fx.use_repo_root else work_dir
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{fx.name}{fx.suffix}"
     path.write_text(fx.source, encoding="utf-8")
     for rel, content in fx.aux_files.items():
-        aux = work_dir / rel
+        aux = root / rel
         aux.parent.mkdir(parents=True, exist_ok=True)
         aux.write_text(content, encoding="utf-8")
-    verdict = value_bound_verdict_for({
+    finding = {
         "cwe": fx.cwe,
         "file_path": str(path),
         "source_line": fx.source_line,
         "sink_line": fx.sink_line,
         "language": fx.language,
-    })
+    }
+    if fx.use_repo_root:
+        finding["repo_root"] = str(root)
+    verdict = value_bound_verdict_for(finding)
     return FixtureMeasurement(
         name=fx.name, sink_class=fx.sink_class, shape=fx.shape,
         label=fx.label, verdict=verdict,

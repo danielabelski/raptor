@@ -1332,6 +1332,18 @@ def _fold_journal_into_covered(
       source (see ``_fold_project_index``). A function that changed
       since its review must be re-reviewed, not silently skipped.
 
+    **Kind-aware**: only FUNCTION-GRADE entries (/audit reviews) fold.
+    Finding-grade entries — /agentic's per-finding analyses, stamped
+    ``producer="agentic"`` — never suppress a gap and are never
+    reuse-imported: analysing one scanner finding in a function is not
+    a review of the function. Before the kind gate their fate was
+    accidental: hash-verified entries resurfaced via the reuse
+    screen's strategy-set mismatch, unverifiable ones silently
+    suppressed, and ``--no-verdict-reuse`` flipped everything to
+    suppress. They still contribute file-level tool coverage (the
+    priority tiers) via the coverage records — deprioritised, never
+    skipped.
+
     Deletion note: this replaces the ``checked_by`` read that was
     removed under Phase 3 and the ``recreate_coverage_from_journal``
     shim that was likewise removed. Without one of these bridges,
@@ -1361,8 +1373,11 @@ def _fold_journal_into_covered(
                     source_label="same-run",
                 )
             else:
-                from .journal import reviewed_set
-                covered.update(reviewed_set(out_dir))
+                from .journal import is_function_grade, load_entries
+                covered.update(
+                    e.key for e in load_entries(out_dir)
+                    if e.verdict != "error" and is_function_grade(e)
+                )
         except Exception:
             logger.warning(
                 "journal-fold: failed to read per-run journal at %s — "
@@ -1476,12 +1491,19 @@ def _fold_project_index(
     the plain fold behaviour: suppressed, nothing imported.
     Unverifiable entries are never placed in the sink — reuse
     requires positive hash evidence.
+
+    Kind-aware collapse: the index is read through
+    ``latest_function_grade_index``, not ``load_index`` — the plain
+    latest-per-function collapse would let a newer /agentic
+    finding-analysis shadow the /audit verdict this fold exists to
+    honour (and finding-grade entries never fold; see
+    ``_fold_journal_into_covered``).
     """
-    from .journal import load_index
+    from .journal import latest_function_grade_index
 
     _verify_entries_fold(
         covered,
-        list(load_index(project_dir).values()),
+        list(latest_function_grade_index(project_dir).values()),
         target_path=target_path,
         current_spans=current_spans,
         reuse_sink=reuse_sink,
@@ -1515,10 +1537,16 @@ def _verify_entries_fold(
 
     ``source_label`` names the entry source in log lines
     (``same-run`` / ``prior-run``).
+
+    Finding-grade entries are dropped here as well as at the collapse
+    (belt-and-braces): the same-run resume path feeds this fold from
+    ``latest_entries`` on a run dir that could carry mixed producers.
     """
+    from .journal import is_function_grade
+
     to_verify: dict[str, list] = {}
     for entry in entries:
-        if entry.verdict == "error":
+        if entry.verdict == "error" or not is_function_grade(entry):
             continue
         key = f"{entry.file}:{entry.function}"
         span = current_spans.get(key)

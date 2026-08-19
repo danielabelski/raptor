@@ -363,6 +363,14 @@ def run(
     # single-element list is the simplest closure-friendly mutable slot.
     pipeline_slot: list[Pipeline | None] = [None]
 
+    # Run-local LLM cost telemetry (llm-telemetry.jsonl next to the
+    # other artifacts) — same sink the libexec shim installs, so
+    # operator (bin/cve-diff) and agent (/cve-diff) runs record spend
+    # identically. Emits are no-ops without the sink.
+    from core.llm.telemetry import TELEMETRY_FILENAME, TelemetrySink, set_sink
+    telemetry_sink = TelemetrySink(output_dir / TELEMETRY_FILENAME)
+    set_sink(telemetry_sink)
+
     try:
         budget_multiplier = 1.0
         try:
@@ -531,6 +539,9 @@ def run(
         if not quiet:
             api_status.print_to_stderr(api_status.render_rate_limit_summary())
     finally:
+        set_sink(None)
+        if telemetry_sink.total_records and not quiet:
+            typer.echo(telemetry_sink.summary_line(), err=True)
         if tmp_ctx is not None and not keep_workdir:
             tmp_ctx.cleanup()
 

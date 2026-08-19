@@ -271,3 +271,39 @@ def test_output_dir_resolution_goes_through_shared_resolver(
         "target_name": "CVE-2024-55555",
         "explicit_out": None,
     }
+
+
+def test_telemetry_sink_installed_during_pipeline(tmp_path, monkeypatch):
+    """The shim installs a run-local TelemetrySink (llm-telemetry.jsonl
+    in the output dir) before the pipeline runs and uninstalls it on
+    the way out, so agent-turn and root-cause records land next to the
+    run's other artifacts."""
+    out_dir = tmp_path / "run"
+    calls: list = []
+    seen = {}
+
+    class _SinkProbePipeline:
+        def __init__(self, **_kw):
+            self.agent = type("A", (), {"last_telemetry": None})()
+
+        def run(self, cve_id, work_dir):
+            calls.append(("pipeline", cve_id))
+            from core.llm.telemetry import current_sink
+            sink = current_sink()
+            seen["sink_path"] = str(sink.path) if sink is not None else None
+            from cve_diff.core.exceptions import UnsupportedSource
+            raise UnsupportedSource("test stub")
+
+    rc = _run_shim(
+        ["run", "CVE-2024-66666", "--output-dir", str(out_dir)],
+        _SinkProbePipeline, calls, monkeypatch,
+    )
+
+    assert rc == 4
+    expected = str(out_dir.resolve() / "llm-telemetry.jsonl")
+    assert seen["sink_path"] == expected, (
+        f"sink not installed for the run: {seen}"
+    )
+    # Uninstalled after the run — no leak into the next command.
+    from core.llm.telemetry import current_sink
+    assert current_sink() is None

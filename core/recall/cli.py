@@ -241,6 +241,36 @@ def _cmd_warm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_verify_enforced(args: argparse.Namespace) -> int:
+    from core.recall.verify_enforced import (
+        render_verify_markdown,
+        verify_enforced_paths,
+    )
+
+    try:
+        manifest = load_manifest(args.manifest)
+    except ManifestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    result = verify_enforced_paths(
+        args.suppressions,
+        [e.to_dict() for e in manifest.expected],
+        line_drift=args.line_drift,
+        include_candidates=args.include_candidates,
+    )
+    md = render_verify_markdown(result)
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "verify-enforced.json").write_text(
+            json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        (args.out / "verify-enforced.md").write_text(
+            md, encoding="utf-8")
+    print(md)
+    # Exit 1 when review is required: an enforcement decision gated on
+    # this tool cannot proceed on a non-clean set (the b44 lesson).
+    return 0 if result["clean"] else 1
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     try:
         base = json.loads(args.base.read_text(encoding="utf-8"))
@@ -321,6 +351,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="enables the true-finding damage check")
     warm_p.add_argument("--out", type=Path, default=None)
     warm_p.set_defaults(func=_cmd_warm)
+
+    ve_p = sub.add_parser(
+        "verify-enforced",
+        help="per-finding review of suppression records near expected "
+             "findings (the systematic form of the b44 manual catch); "
+             "exit 1 when review is required")
+    ve_p.add_argument("--suppressions", type=Path, required=True)
+    ve_p.add_argument("--manifest", type=Path, required=True)
+    ve_p.add_argument("--line-drift", type=int, default=2)
+    ve_p.add_argument("--include-candidates", action="store_true",
+                      help="also review candidate-tier records")
+    ve_p.add_argument("--out", type=Path, default=None)
+    ve_p.set_defaults(func=_cmd_verify_enforced)
 
     ow_p = sub.add_parser(
         "owasp-manifest",

@@ -96,11 +96,29 @@ rules:
       - pattern: $M.add($V)
         from: $V
         to: $M
+      # Array initializers (measured FN class: the Benchmark's
+      # String[] args = {"sh", "-c", tainted} / new String[]{...}
+      # shapes) — a tainted element taints the array variable. The
+      # constant-only initializer stays clean: taint only propagates
+      # when an element already carries it.
+      - pattern: String[] $A = { ..., $X, ... };
+        from: $X
+        to: $A
+      - pattern: $A = new String[] { ..., $X, ... }
+        from: $X
+        to: $A
     pattern-sinks:
       - pattern-either:
           # Runtime.exec — string form invokes the shell
           - pattern: Runtime.getRuntime().exec($CMD)
           - pattern: Runtime.getRuntime().exec($CMD, ...)
+          # Variable receiver (Runtime r = Runtime.getRuntime();
+          # r.exec(...)) — the chained spelling misses it (measured:
+          # every OWASP exec miss used a variable receiver). The env
+          # array is a sink position in its own right: attacker-
+          # controlled environment variables reach the child process.
+          - pattern: (Runtime $R).exec($CMD)
+          - pattern: (Runtime $R).exec($CMD, $ENV)
           # ProcessBuilder
           - pattern: new ProcessBuilder($CMD, ...)
           - pattern: new ProcessBuilder(Arrays.asList($CMD, ...))

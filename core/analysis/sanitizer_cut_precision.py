@@ -2134,4 +2134,26 @@ def _java_b34_positional_fixtures() -> List[CutFixture]:
               + "        String bar = l.get(0);\n"
               + "        out.println(bar);\n    }\n"),
         "public void handle", "out.println(bar)"))
+    # Exec-array direction pins: an array passed WHOLE to the sink
+    # unbinds element tracking (b19 rule) — a tainted element must
+    # never suppress, and an all-constant array stays candidate-tier
+    # (whole-array constant proof is out of scope, honestly).
+    j.append(_marked(
+        "java_exec_array_tainted_elem", "cmdi", "CWE-78",
+        "exec_array_tainted_element_whole_pass", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String[] a = {\"sh\", \"-c\", x};\n"
+              + "        Runtime r = Runtime.getRuntime();\n"
+              + "        try { r.exec(a); } catch (Exception e) {}\n"
+              + "    }\n"),
+        "public void handle", "r.exec(a)"))
+    j.append(_marked(
+        "java_exec_array_constant_whole", "cmdi", "CWE-78",
+        "exec_array_constant_whole_pass", LABEL_MUST_NOT_SUPPRESS,
+        cls_t(handle
+              + "        String[] a = {\"ls\", \"-la\"};\n"
+              + "        Runtime r = Runtime.getRuntime();\n"
+              + "        try { r.exec(a); } catch (Exception e) {}\n"
+              + "    }\n"),
+        "public void handle", "r.exec(a)"))
     return j

@@ -63,6 +63,10 @@ _CASES = {
         ["sqli_java_pos.java", "sql_java_multival_pos.java"],
         ["sqli_java_param_neg.java"],
     ),
+    "injection/command-taint-multi.yaml": (
+        ["cmdi_exec_array_pos.java"],
+        ["cmdi_exec_array_neg.java"],
+    ),
 }
 
 pytestmark = pytest.mark.skipif(

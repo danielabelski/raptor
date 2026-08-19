@@ -48,6 +48,22 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from core.sage.config import SageConfig  # noqa: E402
+from core.security.log_sanitisation import escape_nonprintable  # noqa: E402
+
+
+def _safe(text, *, preserve_newlines: bool = False) -> str:
+    """Escape non-printable bytes in store-derived text before printing.
+
+    Memory content, tags, domains, and statuses come back from the SAGE
+    store, which accepts writes derived from scanned (hostile) repos and
+    LLM output. Raw ESC/CSI/OSC bytes in a poisoned row could erase or
+    redraw the interactive listing (hiding the row from the operator's
+    audit) or fire OSC 52 clipboard writes. This display path is exactly
+    where unverified rows are surfaced as hints, so the terminal-safe
+    form is the load-bearing control — same pattern as
+    core/sage/scripts/register_agents.py.
+    """
+    return escape_nonprintable(str(text), preserve_newlines=preserve_newlines)
 
 
 def _get_client(timeout: float = 0):
@@ -117,8 +133,12 @@ def _relative_time(ts_str: str) -> str:
 
 
 def _trunc(text: str, width: int = 80) -> str:
-    """Truncate text to width, adding ellipsis if needed."""
-    text = text.replace("\n", " ").strip()
+    """Truncate text to width, adding ellipsis if needed.
+
+    Escapes non-printable bytes first (see ``_safe``) so the width
+    applies to the inert, reviewable form.
+    """
+    text = _safe(str(text).replace("\n", " ").strip())
     if len(text) <= width:
         return text
     return text[:width - 1] + "…"
@@ -144,7 +164,9 @@ def _print_table(headers, rows, col_gap=2):
     widths = [len(h) for h in headers]
     str_rows = []
     for row in rows:
-        sr = [str(c) for c in row]
+        # Belt-and-braces: cells are store-derived (domain, status,
+        # content); escape here so no caller can forget.
+        sr = [_safe(c) for c in row]
         str_rows.append(sr)
         for i, c in enumerate(sr):
             if i < len(widths):
@@ -197,10 +219,10 @@ def cmd_status(client, args):
 
     print(f"Total memories:  {total}")
     if statuses:
-        parts = [f"{k}: {v}" for k, v in sorted(statuses.items())]
+        parts = [f"{_safe(k)}: {v}" for k, v in sorted(statuses.items())]
         print(f"By status:       {', '.join(parts)}")
     if latest:
-        print(f"Last activity:   {_relative_time(latest)}")
+        print(f"Last activity:   {_safe(_relative_time(latest))}")
     print()
 
     if domains:
@@ -246,8 +268,8 @@ def cmd_recall(client, args):
 
     for i, r in enumerate(results, 1):
         conf = _confidence_pct(getattr(r, "confidence_score", None))
-        domain = _strip_domain_prefix(getattr(r, "domain_tag", ""))
-        content = getattr(r, "content", "")
+        domain = _safe(_strip_domain_prefix(getattr(r, "domain_tag", "")))
+        content = _safe(getattr(r, "content", ""))
         print(f"  {i}. [{conf}] ({domain}) {content}")
     return 0
 
@@ -397,7 +419,7 @@ def cmd_timeline(client, args):
         return 0
 
     for b in buckets:
-        period = getattr(b, "period", "?")
+        period = _safe(getattr(b, "period", "?"))
         count = getattr(b, "count", 0)
         bar = "█" * min(count, 40)
         print(f"  {period:20s} {count:4d} {bar}")
@@ -422,8 +444,8 @@ def cmd_backlog(client, args):
 
     for i, t in enumerate(tasks, 1):
         st = getattr(t, "task_status", "?")
-        status = st.value if hasattr(st, "value") else str(st)
-        domain = _strip_domain_prefix(getattr(t, "domain_tag", ""))
+        status = _safe(st.value if hasattr(st, "value") else str(st))
+        domain = _safe(_strip_domain_prefix(getattr(t, "domain_tag", "")))
         content = _trunc(getattr(t, "content", ""), 100)
         print(f"  {i}. [{status}] ({domain}) {content}")
     return 0
@@ -495,14 +517,16 @@ def cmd_get(client, args):
         print(f"Get failed: {e}", file=sys.stderr)
         return 1
 
-    mid = getattr(m, "memory_id", args.memory_id)
-    domain = _strip_domain_prefix(getattr(m, "domain_tag", ""))
+    mid = _safe(getattr(m, "memory_id", args.memory_id))
+    domain = _safe(_strip_domain_prefix(getattr(m, "domain_tag", "")))
     st = getattr(m, "status", "")
-    status = st.value if hasattr(st, "value") else str(st)
+    status = _safe(st.value if hasattr(st, "value") else str(st))
     conf = _confidence_pct(getattr(m, "confidence_score", None))
     mt = getattr(m, "memory_type", "")
-    mtype = mt.value if hasattr(mt, "value") else str(mt)
-    content = getattr(m, "content", "")
+    mtype = _safe(mt.value if hasattr(mt, "value") else str(mt))
+    # Full-content view: newlines are structural in multi-line prose,
+    # everything else non-printable is escaped.
+    content = _safe(getattr(m, "content", ""), preserve_newlines=True)
     created = getattr(m, "created_at", "")
     tags = getattr(m, "tags", []) or []
 
@@ -512,9 +536,9 @@ def cmd_get(client, args):
     print(f"  Status:     {status}")
     print(f"  Confidence: {conf}")
     if tags:
-        print(f"  Tags:       {', '.join(tags)}")
+        print(f"  Tags:       {', '.join(_safe(t) for t in tags)}")
     if created:
-        print(f"  Created:    {_relative_time(str(created))}")
+        print(f"  Created:    {_safe(_relative_time(str(created)))}")
     print()
     print(content)
     return 0

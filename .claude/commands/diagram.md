@@ -35,13 +35,13 @@ drawn as unchecked flows because a binary xref is not taint proof.
 
 ```
 # Everything from a /understand run
-/diagram .out/code-understanding-20240101/
+/diagram out/understand_<timestamp>/
 
 # Include a target name in the header
-/diagram .out/exploitability-validation-20240101/ --target myapp
+/diagram out/validate_<timestamp>/ --target myapp
 
 # Print to stdout
-/diagram .out/code-understanding-20240101/ --stdout
+/diagram out/understand_<timestamp>/ --stdout
 ```
 
 ## Output

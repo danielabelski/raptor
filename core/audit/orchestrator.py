@@ -1721,11 +1721,31 @@ def review_one_function(
                 exc_info=True,
             )
 
+    # Auth-mode-conditional exposure: convention-independent (the
+    # asymmetry is intra-function), so it runs even when no project
+    # conventions were discovered. Findings ride the same
+    # ctx["negative_space"] channel into the review prompt.
+    auth_mode_findings: list = []
+    try:
+        from .negative_space import check_auth_mode_registration
+        auth_mode_findings = check_auth_mode_registration(
+            gap_with_source, domain_model=shared.domain_model,
+        )
+    except Exception:
+        logger.debug(
+            "auth-mode registration check failed for %s:%s",
+            gap.get("file"), gap.get("name"), exc_info=True,
+        )
+    if auth_mode_findings and not conventions:
+        ctx["negative_space"] = (
+            ctx.get("negative_space", []) + auth_mode_findings
+        )
+
     if conventions:
         strategies = gap.get("strategies", set())
         if isinstance(strategies, (list, tuple)):
             strategies = set(strategies)
-        ns_findings = []
+        ns_findings = list(auth_mode_findings)
         for strat in strategies or {"general"}:
             ns_findings.extend(
                 check_negative_space(gap_with_source, conventions, strat)
@@ -6662,6 +6682,12 @@ def _run_audit_body(
             post_loop_findings.append(nf.to_dict())
         for nf in check_protocol_ambiguity(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
+        from .negative_space import check_auth_mode_registration
+        for g in gaps:
+            for nf in check_auth_mode_registration(
+                g, domain_model=domain_model, target_path=tp,
+            ):
+                post_loop_findings.append(nf.to_dict())
         for nf in check_missing_app_features(gaps, target_path=tp):
             post_loop_findings.append(nf.to_dict())
         for nf in check_signal_safety(

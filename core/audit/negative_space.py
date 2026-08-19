@@ -1756,3 +1756,151 @@ def check_lock_ordering(
                     break
 
     return findings
+
+
+# ------------------------------------------------------------------
+# Auth-mode-conditional exposure
+# ------------------------------------------------------------------
+
+# Generic seed only — the real auth-mode vocabulary (predicate names,
+# mode constants) is learned from the target's domain model
+# (auth_predicates / security_fields), never hardcoded per framework.
+_AUTH_TERM_SEED = frozenset({"auth", "login", "authentication"})
+
+_AMR_CALL_RE = re.compile(r"\b([A-Za-z_][\w.]*)\s*\(")
+_AMR_KEYWORDS = frozenset({
+    "if", "elif", "while", "for", "return", "switch", "sizeof",
+    "assert", "print", "len", "isinstance", "super", "str", "int",
+    "getattr", "hasattr", "setattr",
+})
+_AMR_COND_RE = re.compile(r"^(\s*)(?:el)?if\b(.*)$")
+
+
+def _auth_terms_from_domain_model(domain_model: Any) -> set[str]:
+    """Auth-mode vocabulary: learned predicate/field names + a generic
+    seed. Entries come from the study loop's domain model."""
+    terms = set(_AUTH_TERM_SEED)
+    dm = domain_model or {}
+    for section in ("auth_predicates", "security_fields"):
+        for entry in dm.get(section, []) or []:
+            name = (
+                entry.get("name") if isinstance(entry, dict) else str(entry)
+            )
+            if name and len(name) >= 3:
+                terms.add(str(name).strip().lower())
+    return terms
+
+
+def _amr_callee_tail(callee: str) -> str:
+    return callee.rsplit(".", 1)[-1]
+
+
+def check_auth_mode_registration(
+    gap: dict[str, Any],
+    *,
+    domain_model: Any = None,
+    target_path: Path | None = None,
+) -> list[NegativeSpaceFinding]:
+    """Flag registrations reachable regardless of the auth mode.
+
+    Structural: inside one function, an if/elif chain whose condition
+    references the auth-mode vocabulary gates several calls to some
+    registration-style callee; further calls to the SAME callee sit
+    OUTSIDE the chain and therefore run in every mode. Whether the
+    ungated registration is security-relevant (a password-reset view
+    under OAuth/LDAP) is the reviewer's judgement — this check only
+    surfaces the asymmetry the excerpt makes invisible.
+    """
+    source = gap.get("source", "") or (
+        read_gap_source(gap, target_path) if target_path else ""
+    )
+    if not source or "if" not in source:
+        return []
+    terms = _auth_terms_from_domain_model(domain_model)
+
+    lines = source.splitlines()
+    gated_spans: list[tuple[int, int]] = []  # [start, end) line idx
+    cond_snippets: list[str] = []
+
+    i = 0
+    while i < len(lines):
+        m = _AMR_COND_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        indent, cond = len(m.group(1)), m.group(2).lower()
+        if not any(t in cond for t in terms):
+            i += 1
+            continue
+        # Gated region: subsequent lines with deeper indentation;
+        # elif/else arms at the same indent extend the chain.
+        j = i + 1
+        while j < len(lines):
+            line = lines[j]
+            if not line.strip():
+                j += 1
+                continue
+            line_indent = len(line) - len(line.lstrip())
+            if line_indent > indent:
+                j += 1
+                continue
+            stripped = line.strip()
+            if line_indent == indent and (
+                stripped.startswith(("elif", "else"))
+                or stripped.startswith("} else")
+            ):
+                j += 1
+                continue
+            break
+        gated_spans.append((i, j))
+        cond_snippets.append(cond.strip()[:80])
+        i = j
+
+    if not gated_spans:
+        return []
+
+    def _in_gated(idx: int) -> bool:
+        return any(s < idx < e for s, e in gated_spans)
+
+    gated_calls: dict[str, int] = {}
+    ungated_calls: dict[str, list[int]] = {}
+    for idx, line in enumerate(lines):
+        for callee in _AMR_CALL_RE.findall(line):
+            tail = _amr_callee_tail(callee)
+            if tail in _AMR_KEYWORDS or len(tail) < 3:
+                continue
+            if _in_gated(idx):
+                gated_calls[tail] = gated_calls.get(tail, 0) + 1
+            else:
+                ungated_calls.setdefault(tail, []).append(idx + 1)
+
+    findings: list[NegativeSpaceFinding] = []
+    for tail, gated_count in gated_calls.items():
+        ungated = ungated_calls.get(tail)
+        if gated_count < 2 or not ungated:
+            continue
+        line_refs = ", ".join(str(n) for n in ungated[:4])
+        findings.append(NegativeSpaceFinding(
+            check_type="auth_mode_registration",
+            expected=(
+                f"every security-relevant {tail}() registration is "
+                f"gated on the active auth mode"
+            ),
+            evidence=(
+                f"{gated_count} {tail}() call(s) are gated on an "
+                f"auth-mode conditional ({cond_snippets[0]}), but the "
+                f"{tail}() call(s) at line(s) {line_refs} run "
+                f"REGARDLESS of the mode. If any of them expose an "
+                f"auth-mode-specific capability (password reset/change, "
+                f"local login, registration), they are reachable under "
+                f"every other mode too."
+            ),
+            cwe="CWE-306",
+            confidence="medium",
+            convention="",
+            strategy="protocol_checklist",
+            file=gap.get("file", ""),
+            function=gap.get("name", ""),
+            title=f"auth-mode-unconditional {tail}() registration",
+        ))
+    return findings

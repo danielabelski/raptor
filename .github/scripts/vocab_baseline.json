@@ -485,6 +485,11 @@
   "count": 12,
   "kind": "literal"
  },
+ "core/audit/negative_space.py::_AMR_KEYWORDS": {
+  "count": 17,
+  "kind": "literal",
+  "note": "language keywords / Python builtins excluded from call-name extraction in the auth-mode-registration check - language taxonomy, not target API names"
+ },
  "core/audit/negative_space.py::_NON_REENTRANT_CALLS": {
   "count": 14,
   "kind": "literal"

@@ -1053,3 +1053,89 @@ class TestProtocolEvidenceGate:
         }]
         findings = check_protocol_ambiguity(gaps)
         assert any("CL vs TE" in f.title for f in findings)
+
+
+class TestAuthModeRegistration:
+    """Registrations reachable regardless of the auth mode."""
+
+    def _gap(self, source, name="register_views", file="sec/manager.py"):
+        return {"name": name, "file": file, "source": source}
+
+    _GATED_SOURCE = (
+        "def register_views(self):\n"
+        "    self.appbuilder.add_view(ResetPasswordView, 'x')\n"
+        "    self.appbuilder.add_view(ResetMyPasswordView, 'y')\n"
+        "    if self.auth_type == AUTH_DB:\n"
+        "        self.appbuilder.add_view(LoginDBView, 'l')\n"
+        "        self.appbuilder.add_view(RegisterUserDBView, 'r')\n"
+        "    elif self.auth_type == AUTH_OAUTH:\n"
+        "        self.appbuilder.add_view(LoginOAuthView, 'l')\n"
+        "        self.appbuilder.add_view(RegisterUserOAuthView, 'r')\n"
+        "    self.appbuilder.add_view_no_menu(UserInfoView)\n"
+    )
+
+    def test_ungated_peer_of_gated_registrations_flagged(self):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        findings = check_auth_mode_registration(self._gap(self._GATED_SOURCE))
+        assert findings, "expected the ungated add_view calls flagged"
+        f = findings[0]
+        assert f.check_type == "auth_mode_registration"
+        assert "add_view" in f.title
+        assert "REGARDLESS" in f.evidence
+        assert f.strategy == "protocol_checklist"
+
+    def test_fully_gated_function_silent(self):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        src = (
+            "def register_views(self):\n"
+            "    if self.auth_type == AUTH_DB:\n"
+            "        self.add_view(LoginDBView)\n"
+            "        self.add_view(RegisterUserDBView)\n"
+            "    elif self.auth_type == AUTH_LDAP:\n"
+            "        self.add_view(LoginLDAPView)\n"
+        )
+        assert check_auth_mode_registration(self._gap(src)) == []
+
+    def test_no_auth_conditional_silent(self):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        src = (
+            "def register_views(self):\n"
+            "    if self.debug_mode:\n"
+            "        self.add_view(DebugView)\n"
+            "        self.add_view(TraceView)\n"
+            "    self.add_view(HomeView)\n"
+        )
+        assert check_auth_mode_registration(self._gap(src)) == []
+
+    def test_learned_vocab_extends_seed(self):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        src = (
+            "def register(self):\n"
+            "    if self.credential_mode == MODE_DB:\n"
+            "        self.mount(LoginPage)\n"
+            "        self.mount(SignupPage)\n"
+            "    self.mount(ResetPage)\n"
+            "    self.mount(ResetDonePage)\n"
+        )
+        # Without the learned term nothing references the seed vocab.
+        assert check_auth_mode_registration(self._gap(src)) == []
+        dm = {"auth_predicates": [{"name": "credential_mode"}]}
+        findings = check_auth_mode_registration(
+            self._gap(src), domain_model=dm,
+        )
+        assert findings and "mount" in findings[0].title
+
+    def test_single_gated_call_not_enough(self):
+        from core.audit.negative_space import check_auth_mode_registration
+
+        src = (
+            "def register(self):\n"
+            "    if self.auth_type == AUTH_DB:\n"
+            "        self.add_view(LoginDBView)\n"
+            "    self.add_view(HomeView)\n"
+        )
+        assert check_auth_mode_registration(self._gap(src)) == []

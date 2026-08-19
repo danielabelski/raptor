@@ -2294,6 +2294,13 @@ class AutonomousSecurityAgentV2:
                 body=body,
                 model=model_name,
                 evidence_tools=[getattr(vuln, "tool", None) or "unknown"],
+                # Finding-grade marker: this entry records the analysis
+                # of ONE scanner finding, not a function review. The
+                # audit gap fold keys suppression/reuse off this (see
+                # core.coverage.journal.is_function_grade); the legacy
+                # run_id-prefix heuristic breaks for project runs whose
+                # dir names don't start with "agentic".
+                producer="agentic",
             )
             append_entry(self.out_dir, entry)
             return True

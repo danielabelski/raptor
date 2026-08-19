@@ -178,18 +178,27 @@ class ReviewJournalEntry:
 
     @property
     def index_key(self) -> str:
-        """Index key: (file, function, model, strategy_hash).
+        """Index key: (file, function, model, strategy_hash, producer).
 
         Amendment §1 D1 widens the compaction key from
         ``(file, function)`` to preserve multi-model + multi-strategy
         history — otherwise Phase-5 context-aware staleness has no
         signal to work with.
+
+        The producer segment preserves multi-PRODUCER history: an
+        /agentic finding-analysis and an /audit review of the same
+        function can share model + strategy_hash (default model, empty
+        strategies), and without the segment whichever merged later
+        EVICTED the other from the index — the audit verdict was gone,
+        not merely shadowed. Old-format keys keep loading (entries
+        reconstruct from fields; a re-merge adds a row under the new
+        key and ``load_index`` collapses by timestamp).
         """
         strategy_hash = _canonical_strategy_hash(self.strategies)
         model = self.model or ""
         return (
             f"{encode_key_file(self.file)}:{self.function}"
-            f":{model}:{strategy_hash}"
+            f":{model}:{strategy_hash}:{entry_producer(self)}"
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -381,6 +390,76 @@ def reviewed_set(out_dir: Path) -> set[str]:
     return {e.key for e in load_entries(out_dir) if e.verdict != "error"}
 
 
+# ── Producer kind ────────────────────────────────────────────────────
+#
+# Two producers write journal entries, and they record different KINDS
+# of review. /audit entries are function-grade: the whole function was
+# examined under its inferred strategies, so the entry satisfies "this
+# function was reviewed" and may suppress gaps or be reused as a $0
+# verdict. /agentic entries are finding-grade: they record the analysis
+# of ONE scanner finding located in the function — real examination
+# evidence (they still count as tool coverage and as prior claims), but
+# never a function review. A function whose single XSS finding was
+# analysed has not been reviewed for memory, concurrency, or auth.
+
+PRODUCER_AUDIT = "audit"
+PRODUCER_AGENTIC = "agentic"
+
+#: run_id prefixes that identify /agentic-side producers for legacy
+#: entries written before the ``producer`` field was stamped. Matches
+#: the historical heuristic in ``core.coverage.importer``.
+_AGENTIC_RUN_PREFIXES = ("agentic", "scan")
+
+
+def entry_producer(entry: ReviewJournalEntry) -> str:
+    """Resolve which tool produced a journal entry.
+
+    Prefers the explicit ``producer`` field; legacy entries without it
+    fall back to the run-id prefix convention (any run_id starting with
+    ``agentic`` or ``scan`` labels as agentic; everything else defaults
+    to ``audit``, the historical ``checked_by`` convention).
+    """
+    if entry.producer:
+        return entry.producer
+    run_id = entry.run_id or ""
+    if run_id.startswith(_AGENTIC_RUN_PREFIXES):
+        return PRODUCER_AGENTIC
+    return PRODUCER_AUDIT
+
+
+def is_function_grade(entry: ReviewJournalEntry) -> bool:
+    """True when the entry records a function-grade review.
+
+    Finding-grade (/agentic) entries return False — they must not
+    suppress audit gaps or be imported as reused verdicts. See the
+    producer-kind note above.
+    """
+    return entry_producer(entry) != PRODUCER_AGENTIC
+
+
+def latest_function_grade_index(
+    project_dir: Path,
+) -> dict[str, ReviewJournalEntry]:
+    """Collapse the project index to latest-per-``(file, function)``
+    among FUNCTION-GRADE entries only.
+
+    :func:`load_index`'s plain collapse keeps the newest entry of any
+    kind, so a fresh /agentic finding-analysis would shadow an older
+    /audit verdict for the same function — the gap fold would then
+    either wrongly suppress on a finding-grade entry or wrongly
+    resurface a properly audited function. Kind-aware consumers (the
+    audit gap fold) use this collapse instead.
+    """
+    result: dict[str, ReviewJournalEntry] = {}
+    for entry in load_index_full(project_dir).values():
+        if not is_function_grade(entry):
+            continue
+        existing = result.get(entry.key)
+        if existing is None or entry.ts > existing.ts:
+            result[entry.key] = entry
+    return result
+
+
 def latest_entries(out_dir: Path) -> dict[str, ReviewJournalEntry]:
     """Return the most recent entry per ``file:function`` key.
 
@@ -481,7 +560,8 @@ def load_index(project_dir: Path) -> dict[str, ReviewJournalEntry]:
 
 def load_index_full(project_dir: Path) -> dict[str, ReviewJournalEntry]:
     """Load the full project-level journal index — every entry
-    keyed by ``index_key`` (``file:function:model:strategy_hash``).
+    keyed by ``index_key``
+    (``file:function:model:strategy_hash:producer``).
 
     Preserves the multi-model + multi-strategy history the amendment
     §1 D1 storage layout captures. Used by consumers that need

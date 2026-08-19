@@ -550,12 +550,40 @@ All SAGE operations are wrapped in try/except.  If SAGE is unavailable:
 
 ### Upgrading the sidecar
 
-The SAGE image is version-pinned in `core/sage/docker-compose.yml`.  To
-upgrade: bump the pin, then re-run `libexec/raptor-sage-setup`.  The
-setup run recreates the containers, re-verifies embeddings, re-captures
-the server's boot payload, and re-authorizes it (printing a diff of the
-payload when it changed).  Data volumes carry over untouched; the seed
-and register steps skip everything already present.
+The sidecar images are pinned **by digest** in
+`core/sage/docker-compose.yml` (`tag@sha256:...`).  The digest — not
+the tag — is the trust anchor: the pin is the written justification
+for executing the server-emitted boot payload, and tags are mutable
+(a registry-side repoint of a tag would otherwise swap the running
+code without any local change).  The tag stays in front of the digest
+purely as human-readable documentation.
+
+To upgrade:
+
+1. Resolve the new tag's digest against the registry:
+
+   ```bash
+   docker buildx imagetools inspect ghcr.io/l33tdawg/sage:<new-tag>
+   # or, after pulling:
+   docker pull ghcr.io/l33tdawg/sage:<new-tag>
+   docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/l33tdawg/sage:<new-tag>
+   ```
+
+2. Update the `image:` line to `<repo>:<new-tag>@sha256:<digest>`
+   (same procedure for the two `ollama/ollama` entries).
+
+3. Re-run `libexec/raptor-sage-setup`.  The setup run recreates the
+   containers, re-verifies embeddings, re-captures the server's boot
+   payload, and — because the payload usually changes across versions —
+   asks for explicit confirmation (interactive, or `--reauthorize`)
+   before re-authorizing it, printing a diff of the payload text.
+   Data volumes carry over untouched; the seed and register steps skip
+   everything already present.
+
+The authorization stamp records the RUNNING container's image digest
+alongside the compose tag; `raptor-sage-setup --status` compares the
+live container against it, so a swapped image surfaces even when the
+tag text never changed.
 
 ### Changing the embedding model
 

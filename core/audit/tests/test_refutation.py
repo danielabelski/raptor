@@ -1043,6 +1043,171 @@ class TestRescueSelfRefuted:
         assert r is None
 
 
+class TestRaceProtectedSelfRefutation:
+    """A race-family self-refutation corroborated by mechanical lock
+    protection is accepted, not floored — re-flagging fully serialized
+    kernel code manufactures a false positive. Lifetime CWEs keep the
+    floor: lock protection says nothing about object lifetime."""
+
+    _LOCKED_C = (
+        "void sync_counters(struct gate_state *st)\n"
+        "{\n"
+        "\tunsigned long flags;\n"
+        "\tmutex_lock(&st->gate_mutex);\n"
+        "\traw_spin_lock_irqsave(&st->gate_lock, flags);\n"
+        "\tst->count = st->count + 1;\n"
+        "\tWRITE_ONCE(st->snap, st->count);\n"
+        "\traw_spin_unlock_irqrestore(&st->gate_lock, flags);\n"
+        "\tmutex_unlock(&st->gate_mutex);\n"
+        "}\n"
+    )
+
+    def _race_outcome(self):
+        return _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-362 race on the shared counter",
+                "confidence": "refuted",
+                "counter": "serialized by the gate mutex",
+            }],
+        )
+
+    def test_protected_source_accepts_refutation(self):
+        r = rescue_self_refuted(self._race_outcome(), source=self._LOCKED_C)
+        assert r is None
+
+    def test_without_source_still_floors(self):
+        r = rescue_self_refuted(self._race_outcome())
+        assert r is not None
+        assert r.demote_to == "suspicious"
+
+    def test_unprotected_source_still_floors(self):
+        unlocked = (
+            "void sync_counters(void)\n"
+            "{\n"
+            "\tst->count = st->count + 1;\n"
+            "\tst->snap = st->count;\n"
+            "}\n"
+        )
+        r = rescue_self_refuted(self._race_outcome(), source=unlocked)
+        assert r is not None
+
+    def test_uaf_refutation_unaffected_by_lock_protection(self):
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-416 use after free of the state block",
+                "confidence": "refuted",
+                "counter": "reference held by caller",
+            }],
+        )
+        r = rescue_self_refuted(outcome, source=self._LOCKED_C)
+        assert r is not None
+
+
+class TestDiagnoseRescue:
+    """diagnose_rescue mirrors the Gate-5 precondition chain and names
+    the first broken link, so a silent non-fire is explainable from a
+    durable audit-log row instead of invisible."""
+
+    _RECEIPT = {
+        "check_type": "auth_mode_registration",
+        "function": "handle_packet",
+        "file": "src/net.c",
+    }
+
+    def test_none_when_gate_would_fire(self):
+        from core.audit.refutation import diagnose_rescue
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-362 race between read and write",
+                "confidence": "refuted",
+                "counter": "appears safe",
+            }],
+        )
+        assert diagnose_rescue(outcome) is None
+
+    def test_non_clean_status(self):
+        from core.audit.refutation import diagnose_rescue
+        outcome = _Outcome(status="suspicious")
+        d = diagnose_rescue(outcome)
+        assert d["blocked_on"] == "status"
+
+    def test_no_refuted_hypothesis_with_receipt(self):
+        from core.audit.refutation import diagnose_rescue
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": (
+                    "auth mode gates registration views asymmetrically"
+                ),
+                "confidence": "low",
+                "counter": "views enforce their own permissions",
+            }],
+        )
+        d = diagnose_rescue(outcome, negative_space=[self._RECEIPT])
+        assert d["blocked_on"] == "no_refuted_hypothesis"
+        assert d["receipts"] == ["auth_mode_registration"]
+        assert d["confidences"] == ["low"]
+
+    def test_tool_evidence_blocks(self):
+        from core.audit.refutation import diagnose_rescue
+        outcome = _Outcome(
+            status="clean",
+            evidence_tool="joern:taint",
+            hypotheses=[{
+                "mechanism": "CWE-362 race",
+                "confidence": "refuted",
+                "counter": "safe",
+            }],
+        )
+        d = diagnose_rescue(outcome)
+        assert d["blocked_on"] == "tool_evidence"
+
+    def test_missing_counter_blocks(self):
+        from core.audit.refutation import diagnose_rescue
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-416 use after free",
+                "confidence": "refuted",
+                "counter": "",
+            }],
+        )
+        d = diagnose_rescue(outcome)
+        assert d["blocked_on"] == "no_counter"
+
+    def test_unmatched_receipt_and_cwe(self):
+        from core.audit.refutation import diagnose_rescue
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-190 integer overflow in size",
+                "confidence": "refuted",
+                "counter": "value bounded by caller",
+            }],
+        )
+        d = diagnose_rescue(outcome, negative_space=[self._RECEIPT])
+        assert d["blocked_on"] == "no_matching_receipt_or_cwe"
+
+    def test_receipt_on_other_function_not_counted(self):
+        from core.audit.refutation import diagnose_rescue
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": (
+                    "auth mode gates registration views asymmetrically"
+                ),
+                "confidence": "low",
+                "counter": "some counter",
+            }],
+        )
+        other = dict(self._RECEIPT, function="other_fn")
+        d = diagnose_rescue(outcome, negative_space=[other])
+        assert d["receipts"] == []
+
+
 # ---------------------------------------------------------------------------
 # Gate 6: Callee-inheritance suppression
 # ---------------------------------------------------------------------------

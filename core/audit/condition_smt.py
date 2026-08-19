@@ -1633,6 +1633,14 @@ def _try_z3_auth_bypass(
 # pack instead.
 _LOCK_PAIRS = [
     (re.compile(r"\b(spin_lock(?:_irq(?:save)?|_bh)?)\s*\("), "spin_unlock"),
+    # raw_spinlock_t: `\b` never fires inside raw_spin_unlock (the
+    # underscore is a word char), so this needs its own pair — without
+    # it every raw_spin_lock_irqsave scope is invisible and fully
+    # locked kernel code reads as unprotected.
+    (
+        re.compile(r"\b(raw_spin_lock(?:_irq(?:save)?|_bh)?)\s*\("),
+        "raw_spin_unlock",
+    ),
     (re.compile(r"\b(mutex_lock(?:_interruptible|_killable)?)\s*\("), "mutex_unlock"),
     (re.compile(r"\b(rcu_read_lock)\s*\("), "rcu_read_unlock"),
 ]

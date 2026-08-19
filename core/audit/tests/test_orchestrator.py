@@ -2316,6 +2316,109 @@ class TestRejournalFinalStatuses:
         assert _rejournal_final_statuses(result, config) == 0
 
 
+class TestPostLoopReceiptRescue:
+    """Post-loop structural receipts re-drive the anti-self-refutation
+    gate for clean outcomes, so a receipt that never reached (or did
+    not survive to) the review-time gate still reaches the verdict."""
+
+    def _setup(self, tmp_path: Path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "m.py").write_text("def wire_endpoints():\n    pass\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        return OrchestratorConfig(target_path=target, out_dir=out)
+
+    def _clean_outcome(self, *, confidence="refuted"):
+        return ReviewOutcome(
+            file="m.py", function="wire_endpoints", status="clean",
+            body="reviewed clean", line=800,
+            hypotheses=[{
+                "mechanism": (
+                    "the auth mode flag gates registration endpoints "
+                    "asymmetrically: some stay wired in every mode"
+                ),
+                "confidence": confidence,
+                "counter": "each view enforces its own permission",
+            }],
+        )
+
+    def _receipt(self, check_type="auth_mode_registration"):
+        return {
+            "check_type": check_type,
+            "file": "m.py",
+            "function": "wire_endpoints",
+            "evidence": "calls gated on an auth-mode conditional",
+            "cwe": "CWE-306",
+        }
+
+    def test_matching_receipt_flips_clean_outcome(self, tmp_path: Path):
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+        from core.audit.record import load_audit_log
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome()
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._receipt()], config,
+        )
+        assert flipped == 1
+        assert outcome.status == "suspicious"
+        assert "anti_self_refutation" in outcome.body
+        rows = [
+            e for e in load_audit_log(config.out_dir)
+            if e.get("action") == "refutation_gate"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["stage"] == "post-loop"
+        assert rows[0]["function"] == "wire_endpoints"
+
+    def test_non_structural_receipt_ignored(self, tmp_path: Path):
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome()
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._receipt(check_type="resource_exhaustion")],
+            config,
+        )
+        assert flipped == 0
+        assert outcome.status == "clean"
+
+    def test_unrefuted_hypothesis_not_rescued(self, tmp_path: Path):
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._receipt()], config,
+        )
+        assert flipped == 0
+        assert outcome.status == "clean"
+
+    def test_non_clean_outcomes_untouched(self, tmp_path: Path):
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome()
+        outcome.status = "suspicious"
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._receipt()], config,
+        )
+        assert flipped == 0
+
+
 class TestRelogFinalStatuses:
     """Audit-log twin of the re-journal pass: ``orchestrator_review``
     rows are written mid-loop, pre-resolution — the end-of-run pass

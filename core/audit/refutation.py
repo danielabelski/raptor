@@ -704,6 +704,14 @@ def _receipt_matches_mechanism(check_type: str, mechanism: str) -> bool:
     return sum(1 for s in stems if s in mech) >= 2
 
 
+# Race-family CWEs whose self-refutation a mechanically verified
+# lock-protection receipt can discharge (deliberately excludes
+# CWE-367: a TOCTOU can span lock scopes).
+_LOCK_DISCHARGEABLE_RACE_CWES = frozenset({
+    "CWE-362", "CWE-364", "CWE-366",
+})
+
+
 def rescue_self_refuted(
     outcome,
     *,
@@ -711,6 +719,7 @@ def rescue_self_refuted(
     checklist: Optional[Dict[str, Any]] = None,
     config=None,
     negative_space: Optional[list] = None,
+    source: Optional[str] = None,
 ) -> Optional[RefutationVerdict]:
     """Rescue hypotheses the LLM formed then refuted without evidence.
 
@@ -724,11 +733,28 @@ def rescue_self_refuted(
       - no mechanical tool has confirmed OR denied the hypothesis
       - the hypothesis has a non-empty counter field
 
+    When *source* is provided and every shared-state access in it is
+    mechanically lock-protected (:func:`check_race_protection`), a
+    race-family (CWE-362/364/366) self-refutation is ACCEPTED instead
+    of floored: the refutation is corroborated by the very evidence
+    class this gate exists to demand, so re-flagging it manufactures a
+    false positive (heavily serialized kernel code is the canonical
+    shape). UAF/double-free self-refutations are unaffected — lock
+    protection says nothing about object lifetime.
+
     Returns a verdict that promotes clean → suspicious so the sweep
     pass can attempt mechanical verification.
     """
     if outcome.status != "clean":
         return None
+
+    race_protected = False
+    if source:
+        try:
+            from .condition_smt import check_race_protection
+            race_protected = check_race_protection(source).protected
+        except Exception:
+            logger.debug("race-protection probe failed", exc_info=True)
 
     hypotheses = getattr(outcome, "hypotheses", None) or []
     if not hypotheses:
@@ -762,6 +788,14 @@ def rescue_self_refuted(
 
         mechanism = h.get("mechanism", "")
         cwes = _extract_cwes_from_text(mechanism)
+        if race_protected and cwes and cwes <= _LOCK_DISCHARGEABLE_RACE_CWES:
+            logger.info(
+                "anti-self-refutation: accepting race self-refutation "
+                "for %s — every shared-state access is mechanically "
+                "lock-protected",
+                getattr(outcome, "function", "?"),
+            )
+            continue
         if cwes & _SELF_REFUTATION_CWES:
             return RefutationVerdict(
                 gate="anti_self_refutation",
@@ -790,6 +824,88 @@ def rescue_self_refuted(
             )
 
     return None
+
+
+def diagnose_rescue(
+    outcome,
+    *,
+    negative_space: Optional[list] = None,
+) -> Optional[Dict[str, Any]]:
+    """Explain why :func:`rescue_self_refuted` did not fire.
+
+    Mirrors the gate's precondition chain link by link and reports the
+    first one that broke, so a run leaves a durable receipt whenever a
+    structural negative-space receipt exists on a function the reviewer
+    ruled clean but the rescue stayed silent.  Returns ``None`` when the
+    gate would fire (nothing to explain), otherwise a JSON-safe dict:
+
+    - ``blocked_on``: the first failed precondition
+      (``status`` / ``no_hypotheses`` / ``tool_evidence`` /
+      ``no_refuted_hypothesis`` / ``no_counter`` /
+      ``no_matching_receipt_or_cwe``)
+    - ``receipts``: structural check types on this function
+    - ``confidences``: per-hypothesis confidence values
+    """
+    if outcome.status != "clean":
+        return {"blocked_on": "status", "status": outcome.status}
+
+    hypotheses = getattr(outcome, "hypotheses", None) or []
+    if not hypotheses:
+        rr = outcome.review_result or {}
+        hypotheses = rr.get("hypotheses") or []
+
+    fn_receipts: list = []
+    for nf in negative_space or []:
+        ct = getattr(nf, "check_type", None) or (
+            nf.get("check_type") if isinstance(nf, dict) else None
+        )
+        nf_fn = getattr(nf, "function", None) or (
+            nf.get("function") if isinstance(nf, dict) else None
+        )
+        if ct and nf_fn == outcome.function:
+            fn_receipts.append(ct)
+
+    confidences = [
+        (h.get("confidence") or "").lower()
+        for h in hypotheses if isinstance(h, dict)
+    ]
+    base: Dict[str, Any] = {
+        "receipts": fn_receipts,
+        "confidences": confidences,
+    }
+
+    if not hypotheses:
+        return {"blocked_on": "no_hypotheses", **base}
+
+    from .evidence_grade import is_tool_evidence
+    if is_tool_evidence(outcome.evidence_tool or ""):
+        return {
+            "blocked_on": "tool_evidence",
+            "evidence_tool": outcome.evidence_tool,
+            **base,
+        }
+
+    refuted = [
+        h for h in hypotheses
+        if isinstance(h, dict)
+        and (h.get("confidence") or "").lower() == "refuted"
+    ]
+    if not refuted:
+        return {"blocked_on": "no_refuted_hypothesis", **base}
+    with_counter = [h for h in refuted if h.get("counter")]
+    if not with_counter:
+        return {"blocked_on": "no_counter", **base}
+
+    for h in with_counter:
+        mechanism = h.get("mechanism", "")
+        if _extract_cwes_from_text(mechanism) & _SELF_REFUTATION_CWES:
+            return None
+        if any(
+            _receipt_matches_mechanism(ct, mechanism)
+            for ct in fn_receipts
+        ):
+            return None
+    return {"blocked_on": "no_matching_receipt_or_cwe", **base}
 
 
 # ---------------------------------------------------------------------------

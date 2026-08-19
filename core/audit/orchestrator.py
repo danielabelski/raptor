@@ -2181,11 +2181,43 @@ def review_one_function(
     # ── Anti-self-refutation gate (promotion: clean → suspicious) ────
     if outcome.status == "clean":
         try:
-            from .refutation import rescue_self_refuted
+            from .refutation import diagnose_rescue, rescue_self_refuted
 
-            rv = rescue_self_refuted(
-                outcome, negative_space=ctx.get("negative_space"),
+            # Raw disk span (not the prompt rendering): the gate's
+            # race-protection acceptance needs lock-call syntax intact.
+            _rescue_src = _read_raw_source(
+                config.target_path,
+                gap.get("file", ""),
+                gap.get("line_start", 0),
+                gap.get("line_end"),
             )
+            rv = rescue_self_refuted(
+                outcome,
+                negative_space=ctx.get("negative_space"),
+                source=_rescue_src or None,
+            )
+            if rv is None:
+                # Durable receipt for the non-fire: when a structural
+                # receipt exists on this function (or the reviewer
+                # refuted a hypothesis), record which precondition
+                # blocked the rescue so a miss is diagnosable from the
+                # audit log instead of invisible.
+                diag = diagnose_rescue(
+                    outcome, negative_space=ctx.get("negative_space"),
+                )
+                if diag is not None and (
+                    diag.get("receipts")
+                    or "refuted" in (diag.get("confidences") or [])
+                ):
+                    append_audit_log(config.out_dir, {
+                        "action": "rescue_diagnostic",
+                        "gate": "anti_self_refutation",
+                        "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
+                        "file": outcome.file,
+                        "function": outcome.function,
+                        "stage": "review",
+                        **diag,
+                    })
             if rv is not None:
                 append_audit_log(config.out_dir, {
                     "action": "refutation_gate",
@@ -2207,12 +2239,23 @@ def review_one_function(
                 outcome.body = (
                     f"[{rv.gate}: {rv.reason}]\n\n" + outcome.body
                 )
-        except Exception:
-            logger.debug(
-                "anti-self-refutation error for %s:%s",
-                outcome.file, outcome.function,
+        except Exception as exc:
+            logger.warning(
+                "anti-self-refutation error for %s:%s: %s",
+                outcome.file, outcome.function, exc,
                 exc_info=True,
             )
+            with contextlib.suppress(Exception):
+                append_audit_log(config.out_dir, {
+                    "action": "rescue_diagnostic",
+                    "gate": "anti_self_refutation",
+                    "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
+                    "file": outcome.file,
+                    "function": outcome.function,
+                    "stage": "review",
+                    "blocked_on": "exception",
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
 
     # ── Clean check ───────────────────────────────────────────────────
     if config.clean_check and outcome.status == "clean":
@@ -7061,6 +7104,27 @@ def _run_audit_body(
                     plf_func,
                     exc_info=True,
                 )
+
+    # --- Structural-receipt rescue composition (post-loop) ---
+    #
+    # The review-time anti-self-refutation gate depends on the receipt
+    # surviving in ctx["negative_space"] at gate time. The post-loop
+    # pass re-derives the same structural receipts for every gap, so a
+    # clean outcome whose own hypotheses contradict an active receipt
+    # gets one deterministic re-evaluation here — before the corrective
+    # journal/log passes, which propagate the flipped status.
+    try:
+        n_rescued = _post_loop_receipt_rescue(
+            result, post_loop_findings, config,
+        )
+        if n_rescued:
+            logger.info(
+                "post-loop receipt rescue: %d clean outcomes floored "
+                "to suspicious",
+                n_rescued,
+            )
+    except Exception:
+        logger.debug("post-loop receipt rescue failed", exc_info=True)
 
     # --- Consistency pre-pass outcomes (LLM-free promote path) ---
     #
@@ -12547,7 +12611,15 @@ def _review_items(
             try:
                 from .refutation import rescue_self_refuted
 
-                rv = rescue_self_refuted(outcome)
+                rv = rescue_self_refuted(
+                    outcome,
+                    source=_read_raw_source(
+                        config.target_path,
+                        gap.get("file", ""),
+                        gap.get("line_start", 0),
+                        gap.get("line_end"),
+                    ) or None,
+                )
                 if rv is not None:
                     append_audit_log(config.out_dir, {
                         "action": "refutation_gate",
@@ -19785,6 +19857,87 @@ def _promote_outcome(outcome: ReviewOutcome, tool: str) -> ReviewOutcome:
     if promoted.review_result:
         promoted.review_result["evidence_tool"] = tool
     return promoted
+
+
+# Structural negative-space checkers whose receipts are precise enough
+# to outrank an unverified self-refutation (the same families the
+# review-time gate consumes via ctx["negative_space"]).
+_STRUCTURAL_RECEIPT_CHECKS = frozenset({
+    "auth_mode_registration",
+    "url_boundary_composition",
+    "shared_writer_race",
+})
+
+
+def _post_loop_receipt_rescue(
+    result: OrchestratorResult,
+    post_loop_findings: list,
+    config: OrchestratorConfig,
+) -> int:
+    """Re-run the anti-self-refutation gate with post-loop receipts.
+
+    For every clean outcome on a function that carries a structural
+    negative-space receipt from the post-loop pass, evaluate
+    :func:`rescue_self_refuted` with those receipts. The review-time
+    gate already saw ctx["negative_space"]; this pass is the durable
+    backstop for receipts that did not reach (or survive to) the
+    review-time gate. Fired rescues mutate the outcome in place; the
+    corrective journal/audit-log passes that run afterwards propagate
+    the new status to every last-row-wins consumer.
+
+    Returns the number of outcomes flipped.
+    """
+    receipts_by_fn: dict[tuple[str, str], list] = {}
+    for plf in post_loop_findings:
+        if not isinstance(plf, dict):
+            continue
+        if plf.get("check_type") not in _STRUCTURAL_RECEIPT_CHECKS:
+            continue
+        f, fn = plf.get("file", ""), plf.get("function", "")
+        if f and fn:
+            receipts_by_fn.setdefault((f, fn), []).append(plf)
+    if not receipts_by_fn:
+        return 0
+
+    from .refutation import rescue_self_refuted
+
+    flipped = 0
+    for outcome in result.outcomes:
+        if outcome.status != "clean":
+            continue
+        receipts = receipts_by_fn.get((outcome.file, outcome.function))
+        if not receipts:
+            continue
+        try:
+            rv = rescue_self_refuted(outcome, negative_space=receipts)
+        except Exception:
+            logger.debug(
+                "post-loop rescue failed for %s:%s",
+                outcome.file, outcome.function, exc_info=True,
+            )
+            continue
+        if rv is None:
+            continue
+        append_audit_log(config.out_dir, {
+            "action": "refutation_gate",
+            "gate": rv.gate,
+            "key": f"{outcome.file}:{outcome.function}:{outcome.line or 0}",
+            "file": outcome.file,
+            "function": outcome.function,
+            "reason": rv.reason,
+            "demote_to": rv.demote_to,
+            "original_status": outcome.status,
+            "applied": True,
+            "stage": "post-loop",
+        })
+        logger.info(
+            "anti-self-refutation (post-loop) %s:%s — %s → %s",
+            outcome.file, outcome.function, rv.reason, rv.demote_to,
+        )
+        outcome.status = rv.demote_to
+        outcome.body = f"[{rv.gate}: {rv.reason}]\n\n" + (outcome.body or "")
+        flipped += 1
+    return flipped
 
 
 def _rejournal_final_statuses(

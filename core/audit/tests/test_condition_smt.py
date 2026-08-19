@@ -503,6 +503,22 @@ class TestCheckRaceProtection:
         assert r.protected is False
         assert r.unprotected_accesses > 0
 
+    def test_raw_spinlock_scope_recognised(self):
+        """raw_spin_lock_irqsave has no `\\b` match inside its unlock
+        twin, so it needs its own seed pair — without it fully locked
+        code reads as unprotected."""
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    unsigned long flags;\n"
+            "    raw_spin_lock_irqsave(&b->lock, flags);\n"
+            "    b->count++;\n"
+            "    raw_spin_unlock_irqrestore(&b->lock, flags);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
     def test_lock_sock_recognised(self):
         from core.audit.condition_smt import check_race_protection
         src = (

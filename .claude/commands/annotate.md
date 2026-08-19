@@ -43,7 +43,7 @@ clobber `source=human` notes.
 
 | Option | Purpose |
 |---|---|
-| `--status VALUE` | `clean` / `suspicious` / `finding` / `error` |
+| `--status VALUE` | `clean` / `suspicious` / `finding` / `dormant` / `error` |
 | `--cwe CWE-XX` | CWE identifier |
 | `-m, --body TEXT` | Annotation prose |
 | `--body-file PATH` | Read body from file (`-` for stdin) |

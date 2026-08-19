@@ -373,7 +373,10 @@ def write_markdown_report(
 
     content = "\n".join(lines)
     path = out_dir / "audit-report.md"
-    path.write_text(content)
+    # Pinned encoding: finding titles/bodies carry target-derived text
+    # (often non-ASCII); the platform default (POSIX locale → ASCII)
+    # made the report write crash at run end.
+    path.write_text(content, encoding="utf-8")
     return path
 
 

@@ -1161,3 +1161,72 @@ class TestGetFunctionSourceAndCallees:
         source, callees = _get_function_source_and_callees(outcome, None)
         assert source == ""
         assert callees == []
+
+
+class TestReceiptContradictionRescue:
+    """Self-refutations that contradict an active structural receipt on
+    the same function are rescued regardless of CWE family."""
+
+    def _refuted_auth_outcome(self):
+        return _Outcome(
+            file="app/setup/wiring.py",
+            function="mount_endpoints",
+            status="clean",
+            hypotheses=[{
+                "mechanism": (
+                    "the login-mode chain gates most endpoint "
+                    "registration calls, but two endpoints are "
+                    "registered outside the chain and mount in "
+                    "every mode"
+                ),
+                "confidence": "refuted",
+                "counter": "those views require login at request time",
+            }],
+        )
+
+    def test_matching_receipt_rescues(self):
+        receipts = [{
+            "check_type": "auth_mode_registration",
+            "function": "mount_endpoints",
+        }]
+        r = rescue_self_refuted(
+            self._refuted_auth_outcome(), negative_space=receipts,
+        )
+        assert r is not None
+        assert r.gate == "anti_self_refutation"
+        assert "auth_mode_registration receipt" in r.reason
+        assert r.demote_to == "suspicious"
+
+    def test_receipt_on_other_function_ignored(self):
+        receipts = [{
+            "check_type": "auth_mode_registration",
+            "function": "some_other_setup",
+        }]
+        r = rescue_self_refuted(
+            self._refuted_auth_outcome(), negative_space=receipts,
+        )
+        assert r is None
+
+    def test_unrelated_receipt_family_ignored(self):
+        receipts = [{
+            "check_type": "shared_writer_race",
+            "function": "mount_endpoints",
+        }]
+        r = rescue_self_refuted(
+            self._refuted_auth_outcome(), negative_space=receipts,
+        )
+        assert r is None
+
+    def test_object_shaped_receipts_supported(self):
+        class _NF:
+            check_type = "auth_mode_registration"
+            function = "mount_endpoints"
+
+        r = rescue_self_refuted(
+            self._refuted_auth_outcome(), negative_space=[_NF()],
+        )
+        assert r is not None
+
+    def test_no_receipts_no_rescue(self):
+        r = rescue_self_refuted(self._refuted_auth_outcome())
+        assert r is None

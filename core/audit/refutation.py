@@ -634,19 +634,38 @@ _SELF_REFUTATION_CWES = frozenset({
 })
 
 
+def _receipt_matches_mechanism(check_type: str, mechanism: str) -> bool:
+    """Does a structural receipt's family appear in the hypothesis text?
+
+    Token-stem match: at least two distinct stems of the check_type
+    (``auth_mode_registration`` → auth/mode/regist) must occur in the
+    mechanism, so an unrelated receipt on the same function cannot
+    rescue an unrelated hypothesis.
+    """
+    mech = (mechanism or "").lower()
+    if not mech or not check_type:
+        return False
+    stems = {t[:6] for t in check_type.lower().split("_") if len(t) >= 4}
+    return sum(1 for s in stems if s in mech) >= 2
+
+
 def rescue_self_refuted(
     outcome,
     *,
     domain_model: Optional[Dict[str, Any]] = None,
     checklist: Optional[Dict[str, Any]] = None,
     config=None,
+    negative_space: Optional[list] = None,
 ) -> Optional[RefutationVerdict]:
     """Rescue hypotheses the LLM formed then refuted without evidence.
 
     Fires when ALL of:
       - outcome.status == "clean"
       - at least one hypothesis has confidence == "refuted"
-      - that hypothesis's CWE is in _SELF_REFUTATION_CWES
+      - that hypothesis's CWE is in _SELF_REFUTATION_CWES, OR a
+        structural negative-space receipt on this same function
+        matches the hypothesis's family (the checker flagged the
+        exact shape the reviewer refuted without evidence)
       - no mechanical tool has confirmed OR denied the hypothesis
       - the hypothesis has a non-empty counter field
 
@@ -665,6 +684,17 @@ def rescue_self_refuted(
     if is_tool_evidence(outcome.evidence_tool or ""):
         return None
 
+    fn_receipts: list = []
+    for nf in negative_space or []:
+        ct = getattr(nf, "check_type", None) or (
+            nf.get("check_type") if isinstance(nf, dict) else None
+        )
+        nf_fn = getattr(nf, "function", None) or (
+            nf.get("function") if isinstance(nf, dict) else None
+        )
+        if ct and nf_fn == outcome.function:
+            fn_receipts.append(ct)
+
     for h in hypotheses:
         if not isinstance(h, dict):
             continue
@@ -677,18 +707,32 @@ def rescue_self_refuted(
 
         mechanism = h.get("mechanism", "")
         cwes = _extract_cwes_from_text(mechanism)
-        if not (cwes & _SELF_REFUTATION_CWES):
-            continue
-
-        return RefutationVerdict(
-            gate="anti_self_refutation",
-            reason=(
-                f"hypothesis '{mechanism[:80]}' self-refuted without "
-                f"mechanical evidence; concurrency/lifecycle self-refutations "
-                f"are unreliable"
-            ),
-            demote_to="suspicious",
+        if cwes & _SELF_REFUTATION_CWES:
+            return RefutationVerdict(
+                gate="anti_self_refutation",
+                reason=(
+                    f"hypothesis '{mechanism[:80]}' self-refuted without "
+                    f"mechanical evidence; concurrency/lifecycle "
+                    f"self-refutations are unreliable"
+                ),
+                demote_to="suspicious",
+            )
+        receipt = next(
+            (ct for ct in fn_receipts
+             if _receipt_matches_mechanism(ct, mechanism)),
+            None,
         )
+        if receipt:
+            return RefutationVerdict(
+                gate="anti_self_refutation",
+                reason=(
+                    f"hypothesis '{mechanism[:80]}' self-refuted "
+                    f"against an active {receipt} receipt on this "
+                    f"function; the structural receipt outranks an "
+                    f"unverified self-refutation"
+                ),
+                demote_to="suspicious",
+            )
 
     return None
 

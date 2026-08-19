@@ -64,8 +64,34 @@ CLI:
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable, Dict, Optional, Tuple
+
+# Shared opt-out for the live stderr escalation banner both backends
+# (tracer.py's per-syscall-event hook, seatbelt_audit.py's
+# per-log-line hook) print the moment a HIGH-severity denial pattern
+# is seen live, ahead of the run-end sandbox-triage.json classification.
+# Kept here (rather than duplicated in each backend) because the env
+# var name itself must not drift between the two — a spelling mismatch
+# would silently disable escalation on only one platform.
+#
+# Escalation is print-only (no enforcement change, no auto-kill), so
+# it defaults to on; set to 1/true/yes/on to disable for scripted/CI/
+# batch sandboxed jobs that don't want the extra stderr noise.
+#
+# Truthy-set parsing (mirrors core.config.env_flag's _ENV_FLAG_TRUTHY;
+# inlined rather than imported so this module stays a leaf for the
+# tracer subprocess): a bare bool(value) would treat
+# RAPTOR_SANDBOX_LIVE_ESCALATION_DISABLED=0 as "disabled" — an operator
+# writing =0 to mean "not disabled" would silently turn a security
+# notification off.
+_LIVE_ESCALATION_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def live_escalation_disabled() -> bool:
+    value = os.environ.get("RAPTOR_SANDBOX_LIVE_ESCALATION_DISABLED", "")
+    return value.strip().lower() in _LIVE_ESCALATION_TRUTHY
 
 
 # ---------------------------------------------------------------------

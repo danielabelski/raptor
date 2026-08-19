@@ -41,6 +41,9 @@ REAUTHORIZE="${REAUTHORIZE:-0}"
 capture_boot_payload() {
     printf '%s\\n' "$FAKE_PAYLOAD"
 }
+running_sage_digest() {
+    echo "${FAKE_RUNNING_DIGEST:-none}"
+}
 docker() {
     return 1
 }
@@ -62,11 +65,13 @@ class TestAuthorizeBootPayload(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _run(self, payload: str, *, reauthorize: bool = False):
+    def _run(self, payload: str, *, reauthorize: bool = False,
+             running_digest: str = "none"):
         import os
         env = dict(os.environ)
         env["TEST_AUTHORIZED"] = str(self.authorized)
         env["FAKE_PAYLOAD"] = payload
+        env["FAKE_RUNNING_DIGEST"] = running_digest
         env["REAUTHORIZE"] = "1" if reauthorize else "0"
         return subprocess.run(
             ["bash", "-c", self.driver],
@@ -122,6 +127,16 @@ class TestAuthorizeBootPayload(unittest.TestCase):
         proc = self._run("### initialize.instructions\nchanged payload")
         self.assertIn("-original payload", proc.stdout)
         self.assertIn("+changed payload", proc.stdout)
+
+    def test_stamp_records_running_digest(self):
+        digest = "ghcr.io/l33tdawg/sage@sha256:" + "ab" * 32
+        proc = self._run(
+            "### initialize.instructions\nhello",
+            running_digest=digest,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        content = self.authorized.read_text(encoding="utf-8")
+        self.assertIn(f"# RunningDigest: {digest}", content)
 
 
 if __name__ == "__main__":

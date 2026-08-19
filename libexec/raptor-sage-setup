@@ -775,6 +775,28 @@ capture_boot_payload() {
                  else empty end'
 }
 
+running_sage_digest() {
+    # RepoDigest of the image the RUNNING sage container is executing
+    # ("none" when it cannot be determined). The compose tag STRING in
+    # the stamp documents intent; only the running digest says what was
+    # actually executing at authorization time — a registry-side
+    # repoint of the tag keeps the tag text identical while swapping
+    # the code.
+    local cid img digest
+    cid=$(docker compose -f "$COMPOSE_FILE" ps -q sage 2>/dev/null || true)
+    if [ -z "$cid" ]; then
+        echo "none"
+        return 0
+    fi
+    img=$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null || true)
+    if [ -z "$img" ]; then
+        echo "none"
+        return 0
+    fi
+    digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$img" 2>/dev/null || true)
+    echo "${digest:-none}"
+}
+
 authorize_boot_payload() {
     # Capture the server's boot payload and record it as operator-
     # authorized. Running setup IS the authorization event for the
@@ -797,11 +819,12 @@ authorize_boot_payload() {
         echo "  Once SAGE is responsive, re-run: bin/raptor sage-setup install" >&2
         return 0
     fi
-    local sha image stamp
+    local sha image stamp running_digest
     sha=$(printf '%s\n' "$payload" | sha256sum | awk '{print $1}')
     image=$(docker compose -f "$COMPOSE_FILE" config --images 2>/dev/null \
         | grep sage | head -1 || true)
     image="${image:-unknown}"
+    running_digest=$(running_sage_digest)
     stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if [ -f "$AUTHORIZED_PAYLOAD" ]; then
         local old_sha
@@ -855,6 +878,7 @@ authorize_boot_payload() {
         echo "# SAGE boot payload — operator-authorized"
         echo "# Generated: $stamp by raptor-sage-setup"
         echo "# Image: $image"
+        echo "# RunningDigest: $running_digest"
         echo "# SHA256: $sha"
         echo "# Running raptor-sage-setup constitutes operator authorization of the"
         echo "# payload below. Regenerated on every install; per-machine; gitignored."
@@ -867,6 +891,7 @@ authorize_boot_payload() {
     echo "Recorded operator-authorized SAGE boot payload:"
     echo "  File:    $AUTHORIZED_PAYLOAD"
     echo "  Image:   $image"
+    echo "  Running: $running_digest"
     echo "  SHA256:  $sha"
     echo "  Surfaces: initialize.instructions, sage_inception.message"
 }
@@ -1274,11 +1299,29 @@ status_sage() {
     # script instead of ad-hoc head/sha256sum invocations that would
     # trip permission prompts.
     if [ -f "$AUTHORIZED_PAYLOAD" ]; then
-        local auth_stamp auth_image auth_sha
+        local auth_stamp auth_image auth_sha auth_digest
         auth_stamp=$(sed -n 's/^# Generated: //p' "$AUTHORIZED_PAYLOAD" | head -1)
         auth_image=$(sed -n 's/^# Image: //p' "$AUTHORIZED_PAYLOAD" | head -1)
         auth_sha=$(sed -n 's/^# SHA256: //p' "$AUTHORIZED_PAYLOAD" | head -1)
+        auth_digest=$(sed -n 's/^# RunningDigest: //p' "$AUTHORIZED_PAYLOAD" | head -1)
         echo "  Boot payload: authorized ${auth_stamp:-unknown} (${auth_image:-unknown}, sha256 ${auth_sha:0:12})"
+        # Compare the RUNNING container's image digest against the one
+        # recorded at authorization time — the tag string alone stays
+        # green across a registry-side repoint.
+        local live_digest
+        live_digest=$(running_sage_digest)
+        if [ -z "$auth_digest" ]; then
+            echo "  Image digest: not recorded at authorization (pre-digest stamp) — re-run install to record"
+        elif [ "$live_digest" = "none" ]; then
+            echo "  Image digest: could not determine the running container's digest"
+        elif [ "$live_digest" = "$auth_digest" ]; then
+            echo "  Image digest: running container matches authorization (${auth_digest##*@})"
+        else
+            echo "  Image digest: running container DIFFERS from authorization"
+            echo "    authorized: $auth_digest"
+            echo "    running:    $live_digest"
+            echo "    Review + re-authorize: bin/raptor sage-setup install --reauthorize"
+        fi
         # Compare against what the running server emits now. The payload
         # is state-dependent (first-connection vs steady-state variant),
         # so a mismatch means "look", not "compromised".

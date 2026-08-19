@@ -31,7 +31,14 @@ XSS_SINKS: Sequence[str] = (
     "(HttpServletResponse $RESP).getWriter().print($X)",
     "(HttpServletResponse $RESP).getOutputStream().write(...)",
     "(HttpServletResponse $RESP).getWriter().format(...)",
+    "(HttpServletResponse $RESP).getWriter().printf(...)",
     "(PrintWriter $PW).format(...)",
+    "(PrintWriter $PW).printf(...)",
+    "(java.io.PrintWriter $PW).format(...)",
+    "(java.io.PrintWriter $PW).printf(...)",
+    "(java.io.PrintWriter $PW).write($X)",
+    "(java.io.PrintWriter $PW).println($X)",
+    "(java.io.PrintWriter $PW).print($X)",
     "(PrintWriter $PW).write($X)",
     "(PrintWriter $PW).println($X)",
     "(PrintWriter $PW).print($X)",
@@ -55,6 +62,21 @@ XSS_SANITIZERS: Sequence[str] = (
 COLLECTION_PROPAGATORS: Sequence[dict] = (
     {"pattern": "$M.put($K, $V)", "from": "$V", "to": "$M"},
     {"pattern": "$M.add($V)", "from": "$V", "to": "$M"},
+    {"pattern": "$T[] $A = {..., $V, ...}", "from": "$V", "to": "$A"},
+)
+
+#: Origin: engine/semgrep/rules/injection/xpath-taint.yaml
+#: (raptor.injection.xpath.taint.java) — structured sink blocks with
+#: focus-metavariable, mirrored as sink_blocks.
+XPATH_SINK_BLOCKS: Sequence[dict] = (
+    {"patterns": [{"pattern": "(XPath $XP).compile($E)"},
+                  {"focus-metavariable": "$E"}]},
+    {"patterns": [{"pattern": "(javax.xml.xpath.XPath $XP).compile($E)"},
+                  {"focus-metavariable": "$E"}]},
+    {"patterns": [{"pattern": "(XPath $XP).evaluate($E, ...)"},
+                  {"focus-metavariable": "$E"}]},
+    {"patterns": [{"pattern": "(javax.xml.xpath.XPath $XP).evaluate($E, ...)"},
+                  {"focus-metavariable": "$E"}]},
 )
 
 #: Origin: engine/semgrep/rules/injection/sql-taint.yaml
@@ -201,6 +223,13 @@ def generate_rules_yaml(summaries: Iterable) -> str | None:
             "Untrusted data from a project source-wrapper is stored into "
             "a trusted context (session/servlet context).",
             "CWE-501", sources, TRUST_BOUNDARY_SINKS, (),
+        ),
+        _taint_rule(
+            "raptor.generated.source-wrapper.xpath",
+            "Untrusted data from a project source-wrapper flows into an "
+            "XPath expression.",
+            "CWE-643", sources, (), (),
+            sink_blocks=XPATH_SINK_BLOCKS,
         ),
         _taint_rule(
             "raptor.generated.source-wrapper.sqli",

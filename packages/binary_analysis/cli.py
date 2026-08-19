@@ -27,7 +27,12 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-sys.path.insert(0, os.environ.get("RAPTOR_DIR", str(Path(__file__).resolve().parents[2])))
+# Path setup for direct script execution (`python3 raptor.py binary`
+# spawns this file; `libexec/raptor-binary` imports it with the path
+# already set). RAPTOR_DIR is the canonical project-root marker — hard
+# lookup per the CLAUDE.md path-safety rule: KeyError if unset, no
+# positional-walk fallback that silently imports a different checkout.
+sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 from core.config import RaptorConfig
 from core.json import load_json, save_json

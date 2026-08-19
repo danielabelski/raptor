@@ -755,7 +755,21 @@ def recall_prior_finding_verdict(
     prior verdict exists AND the stored source_hash matches.  Returns
     ``None`` otherwise (no prior, hash mismatch, or non-suppressible
     verdict).
+
+    Operator override: set ``RAPTOR_SAGE_FP_SUPPRESS=0`` to disable
+    this suppression entirely (every finding re-tests). This is the
+    force gate for consumers with no ``--force`` flag of their own —
+    the /agentic analysis loop suppresses pre-LLM through this hook,
+    and without an override a wrong prior verdict would silently
+    persist for its whole TTL. (The audit orchestrator additionally
+    honours ``config.force`` upstream.)
     """
+    if not env_flag("RAPTOR_SAGE_FP_SUPPRESS", default=True):
+        logger.debug(
+            "SAGE finding_verdict: suppression disabled via "
+            "RAPTOR_SAGE_FP_SUPPRESS=0 — re-testing",
+        )
+        return None
     if not source_hash:
         return None
     client = _get_client()

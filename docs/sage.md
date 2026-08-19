@@ -438,6 +438,7 @@ authoritative hook-to-domain table.
 | `SAGE_FORCE_CPU` | unset | Run pipeline hooks on CPU-only hosts |
 | `SAGE_RECALL_WORKERS` | auto (4 GPU / 2 CPU) | Recall concurrency (max 8) |
 | `RAPTOR_SAGE_AFL_PRIOR` | `1` | Set `0` to disable mechanical AFL flag inference |
+| `RAPTOR_SAGE_FP_SUPPRESS` | `1` | Set `0` to disable cross-run FP suppression (force re-test of every finding) |
 | `SAGE_EMBED_MODEL` / `SAGE_EMBED_DIM` | auto-detected | Embedding model override (set before running setup) |
 
 **Container-side** (set in `core/sage/docker-compose.yml`, passed to the

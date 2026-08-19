@@ -651,6 +651,36 @@ class TestFindingVerdictHooks(unittest.TestCase):
         self.assertEqual(result["source_hash"], "deadbeef1234")
 
     @patch("core.sage.hooks._get_client")
+    def test_recall_disabled_by_env_flag(self, mock_get_client):
+        """RAPTOR_SAGE_FP_SUPPRESS=0 forces re-test of every finding."""
+        import os
+        mock_client = MagicMock()
+        mock_client.query.return_value = [self._stamped_verdict_row()]
+        mock_get_client.return_value = mock_client
+
+        from core.sage.hooks import recall_prior_finding_verdict
+        with patch.dict(os.environ, {"RAPTOR_SAGE_FP_SUPPRESS": "0"}):
+            result = recall_prior_finding_verdict(
+                "/repo", "CWE-89", "src/db.py", "run_query", "deadbeef1234")
+        self.assertIsNone(result)
+        mock_client.query.assert_not_called()
+
+    @patch("core.sage.hooks._get_client")
+    def test_recall_enabled_by_default(self, mock_get_client):
+        import os
+        mock_client = MagicMock()
+        mock_client.query.return_value = [self._stamped_verdict_row()]
+        mock_get_client.return_value = mock_client
+
+        from core.sage.hooks import recall_prior_finding_verdict
+        env = dict(os.environ)
+        env.pop("RAPTOR_SAGE_FP_SUPPRESS", None)
+        with patch.dict(os.environ, env, clear=True):
+            result = recall_prior_finding_verdict(
+                "/repo", "CWE-89", "src/db.py", "run_query", "deadbeef1234")
+        self.assertIsNotNone(result)
+
+    @patch("core.sage.hooks._get_client")
     def test_recall_rejects_expired_ttl(self, mock_get_client):
         """A suppressible verdict older than the TTL re-tests."""
         import time as _time

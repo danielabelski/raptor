@@ -71,3 +71,31 @@ stamped `label_class: recall-ground-truth`; consumers must refuse to
 ingest that class into learning stores. `core/recall/` itself never
 imports those stores — pinned by test
 (`core/recall/tests/test_score.py::TestSegregationGuard`).
+
+## FN census (`census --fn`)
+
+The mirror of the FP census: ranks the MISSED expected findings by
+the construct most likely to have broken the taint chain (probes
+derived empirically from the missed cases) and splits them by
+tool-coverage reason — rules fired for the CWE elsewhere in the run
+(a chain break) versus no finding for the CWE class at all (a
+coverage hole). Output: `fn-census.{json,md}`.
+
+## Held-out corpus: Juliet Java (`juliet-manifest`)
+
+Generalization checks only — the binary-oracle holdout discipline
+applied to recall. Detection mechanisms are tuned against the OWASP
+corpus; after each round, the Juliet manifest is run once and
+reported AT FIRST CONTACT. Its numbers are never used to tune probes,
+rules, gates, or thresholds — a mechanism that only moves the OWASP
+numbers has been overfit, and the Juliet delta is the evidence either
+way.
+
+Ground truth comes from Juliet's structure: single-file cases declare
+`bad*` methods before `good*` methods (files violating the ordering
+are refused, not mislabelled); the bad span is one expected entry,
+the good span one clean region. Multi-file flow variants are excluded
+from the v1 manifest and counted in the manifest's `notes`. The suite
+is not bundled — the generator reads an operator-acquired clone of
+the public find-sec-bugs mirror of the NIST suite, sha-pinned like
+every recall corpus.

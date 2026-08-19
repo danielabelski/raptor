@@ -11,6 +11,7 @@ from pathlib import Path
 
 from core.recall.manifest import PROFILES, ManifestError, load_manifest
 from core.recall.matcher import clean_region_hits, match_findings
+from core.recall.juliet_manifest import main as juliet_manifest_main
 from core.recall.owasp_manifest import main as owasp_manifest_main
 from core.recall.runner import (
     RunnerError,
@@ -326,9 +327,17 @@ def main(argv: list[str] | None = None) -> int:
              "pinned clone")
     ow_p.set_defaults(func=None)
 
+    jl_p = sub.add_parser(
+        "juliet-manifest",
+        help="generate the HELD-OUT Juliet Java manifest (generalization "
+             "checks only — never tune against it)")
+    jl_p.set_defaults(func=None)
+
     args, rest = p.parse_known_args(argv)
     if args.cmd == "owasp-manifest":
         return owasp_manifest_main(rest)
+    if args.cmd == "juliet-manifest":
+        return juliet_manifest_main(rest)
     if rest:
         p.error(f"unrecognized arguments: {' '.join(rest)}")
     return args.func(args)

@@ -78,11 +78,14 @@ fi
 
 usage() {
     cat >&2 <<'EOF'
-usage: raptor-sage-setup [install | --uninstall | --status]
+usage: raptor-sage-setup [install | --uninstall | --status] [--reauthorize]
 
-  (default)    install SAGE: bring up sidecar, seed, generate MCP entry.
-  --uninstall  stop SAGE sidecar and remove its MCP entry (data volumes kept).
-  --status     check whether SAGE is running and report health + embedding mode.
+  (default)      install SAGE: bring up sidecar, seed, generate MCP entry.
+  --uninstall    stop SAGE sidecar and remove its MCP entry (data volumes kept).
+  --status       check whether SAGE is running and report health + embedding mode.
+  --reauthorize  accept a CHANGED boot payload non-interactively (install only).
+                 Without it, a changed payload needs interactive confirmation
+                 and is otherwise left unauthorized.
 
 Prereqs: jq, docker + docker compose, python3, pip-installed sage-agent-sdk.
 EOF
@@ -91,6 +94,7 @@ EOF
 
 MODE=install
 MODE_EXPLICIT=0
+REAUTHORIZE=0
 # Pre-fix the parser only knew `--uninstall` (default install).
 # Two ambiguities operators hit:
 #
@@ -136,6 +140,9 @@ for arg in "$@"; do
             fi
             MODE=status
             MODE_EXPLICIT=1
+            ;;
+        --reauthorize)
+            REAUTHORIZE=1
             ;;
         -h|--help|help)
             usage
@@ -770,19 +777,23 @@ capture_boot_payload() {
 
 authorize_boot_payload() {
     # Capture the server's boot payload and record it as operator-
-    # authorized. Running setup IS the authorization event: SAGE is
-    # opt-in, the image is pinned in the compose file, and the operator
-    # deliberately invoked this install — so the payload the pinned
-    # server emits now is what the operator is choosing to trust. No
-    # separate review step; the stamp (time, image, hash) makes the
-    # authorization auditable, and re-running setup after an upgrade
-    # re-authorizes automatically.
-    # Non-fatal: without the recorded file, agents treat server boot
-    # instructions as unreviewed and may ask before executing them.
+    # authorized. Running setup IS the authorization event for the
+    # FIRST capture: SAGE is opt-in, the image is pinned in the compose
+    # file, and the operator deliberately invoked this install — the
+    # payload text is displayed so the authorization is informed. A
+    # CHANGED payload is different: silently re-stamping would let a
+    # registry-side image swap (or a compromised server) self-authorize
+    # on the next routine setup run, so a change requires explicit
+    # confirmation — interactive y/N, or --reauthorize for
+    # non-interactive installs. Refusal keeps the OLD record: the MCP
+    # wrapper (libexec/raptor-sage-mcp-guard) then strips the drifted
+    # payload from live sessions until the operator re-authorizes.
+    # Non-fatal: without the recorded file, the wrapper withholds
+    # server boot instructions from agent sessions.
     local payload
     if ! payload=$(capture_boot_payload) || [ -z "$payload" ]; then
         echo "Warning: could not capture the SAGE boot payload." >&2
-        echo "  Agents will treat server boot instructions as unreviewed." >&2
+        echo "  The MCP wrapper will withhold server boot instructions until one is recorded." >&2
         echo "  Once SAGE is responsive, re-run: bin/raptor sage-setup install" >&2
         return 0
     fi
@@ -792,19 +803,48 @@ authorize_boot_payload() {
         | grep sage | head -1 || true)
     image="${image:-unknown}"
     stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    # Show what changed when re-authorizing a different payload — the
-    # only moment an operator would want to eyeball an upgrade's new
-    # boot text. Informational, never blocking.
     if [ -f "$AUTHORIZED_PAYLOAD" ]; then
         local old_sha
         old_sha=$(sed -n 's/^# SHA256: //p' "$AUTHORIZED_PAYLOAD" | head -1)
-        if [ -n "$old_sha" ] && [ "$old_sha" != "$sha" ]; then
-            echo "SAGE boot payload changed since last authorization:"
+        if [ -n "$old_sha" ] && [ "$old_sha" = "$sha" ]; then
+            echo "SAGE boot payload unchanged since last authorization (sha256 ${sha:0:12})."
+        elif [ -n "$old_sha" ]; then
+            echo "SAGE boot payload CHANGED since last authorization:"
             sed '1,/^# ---$/d' "$AUTHORIZED_PAYLOAD" \
                 | diff -u --label previous --label current - <(printf '%s\n' "$payload") \
                 || true
-            echo "Re-authorized by this setup run."
+            if [ "$REAUTHORIZE" = "1" ]; then
+                echo "Re-authorized (--reauthorize)."
+            elif [ -t 0 ]; then
+                local answer
+                read -r -p "Authorize this NEW boot payload? [y/N] " answer
+                case "$answer" in
+                    y|Y|yes|YES)
+                        echo "Re-authorized by operator confirmation."
+                        ;;
+                    *)
+                        echo "NOT re-authorized. The previous record is kept;" >&2
+                        echo "the MCP wrapper will strip the changed payload from agent sessions." >&2
+                        echo "Review the diff above, then re-run: bin/raptor sage-setup install --reauthorize" >&2
+                        return 0
+                        ;;
+                esac
+            else
+                echo "Refusing to silently re-authorize a changed boot payload (non-interactive)." >&2
+                echo "The previous record is kept; the MCP wrapper will strip the changed" >&2
+                echo "payload from agent sessions. After review, re-run:" >&2
+                echo "  bin/raptor sage-setup install --reauthorize" >&2
+                return 0
+            fi
         fi
+    else
+        # First capture on this machine: show the operator exactly what
+        # they are authorizing.
+        echo "Recording the SAGE boot payload as operator-authorized."
+        echo "Payload text follows:"
+        echo "-----------------------------------------------------------"
+        printf '%s\n' "$payload"
+        echo "-----------------------------------------------------------"
     fi
     # Same-fs mktemp + atomic mv — see enable_sage_env for the rationale.
     mkdir -p "$(dirname "$AUTHORIZED_PAYLOAD")"

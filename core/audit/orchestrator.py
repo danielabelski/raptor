@@ -11146,9 +11146,21 @@ def _drain_study_consumer(
             )
 
     if thread.is_alive():
+        # Abandonment must carry a stop: the run is over, so anything
+        # the consumer produces from here is unusable by design — but
+        # without a stop the still-alive daemon thread keeps
+        # dispatching re-reviews into non-daemon executor workers,
+        # which the interpreter joins at exit. Observed as trailing
+        # LLM retry loops after results were written (dispatcher
+        # request.error ReadErrors after server.stop), up to a manual
+        # kill. The timeout-with-activity path used to be the one
+        # abandonment branch that never requested a stop.
+        if study_queue is not None and not stop_sent:
+            study_queue.request_stop()
         logger.warning(
             "study-consumer: did not drain within %.0fs — abandoning "
-            "(daemon thread; study results for this run are incomplete)",
+            "with stop requested (daemon thread unwinds at its next "
+            "checkpoint; study results for this run are incomplete)",
             time.monotonic() - drain_start,
         )
 

@@ -140,3 +140,35 @@ class TestCweAwareIdiomPrimary:
         from core.recall.census import classify_source
         primary, _ = classify_source("conn.prepareStatement(sql);", "CWE-89")
         assert primary == "prepared_statement"
+
+
+class TestJulietProbeAndWindow:
+    def test_juliet_constant_source_probe(self):
+        from core.recall.census import classify_source
+        primary, matched = classify_source(
+            "/* goodG2B1() - use goodsource and badsink */\n"
+            'String data = "foo"; stmt.execute("SELECT " + data);',
+            "CWE-89")
+        assert primary == "juliet_constant_source_g2b"
+        assert "juliet_constant_source_g2b" in matched
+
+    def test_probe_inert_without_marker(self):
+        from core.recall.census import classify_source
+        primary, _ = classify_source(
+            'stmt.execute("SELECT " + data);', "CWE-89")
+        assert primary != "juliet_constant_source_g2b"
+
+    def test_region_window_slices_by_lines(self, tmp_path):
+        from core.recall.census import _read_clean_source
+        f = tmp_path / "T.java"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 201)))
+        text = _read_clean_source(
+            {"file": str(f), "line_start": 100, "line_end": 100}, None)
+        assert "line100" in text and "line60" in text
+        assert "line1\n" not in text and "line190" not in text
+
+    def test_no_line_info_reads_whole_file(self, tmp_path):
+        from core.recall.census import _read_clean_source
+        f = tmp_path / "T.java"
+        f.write_text("alpha\nomega")
+        assert _read_clean_source({"file": str(f)}, None) == "alpha\nomega"

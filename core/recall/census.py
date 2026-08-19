@@ -50,6 +50,15 @@ _IDIOM_PROBES: list[tuple[str, re.Pattern[str]]] = [
     ("safe_source_trick",
      re.compile(r"getTheValue|getParameterValues|getProperty"
                 r"|SecureRandom")),
+    # Juliet convention: the clean sibling is a goodG2B* function — a
+    # hardcoded-constant source flowing into the dangerous sink shape.
+    # The marker comment/name only exists in Juliet sources, so the
+    # probe is inert on OWASP-style corpora. Measured 2026-08-19:
+    # 1128/1128 of the Juliet clean-region FPs carry this idiom
+    # (sink-shape rules firing regardless of taint), making it the
+    # decisive Juliet probe.
+    ("juliet_constant_source_g2b",
+     re.compile(r"goodG2B")),
 ]
 
 
@@ -86,15 +95,32 @@ def classify_source(text: str, cwe: str = "") -> tuple[str, list[str]]:
     return primary, matched
 
 
+# Window half-height around a line-bounded clean region. Whole-file
+# probing misattributes on corpora whose files hold several variant
+# functions (Juliet keeps good and bad siblings in one file); a
+# bounded window keeps the probe anchored to the flagged region while
+# still catching the enclosing function's marker comment.
+_REGION_WINDOW_LINES = 40
+
+
 def _read_clean_source(entry: dict[str, Any],
                        source_root: Path | None) -> str | None:
     path = Path(entry.get("file", ""))
     if source_root is not None and not path.is_absolute():
         path = source_root / path
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+    start, end = entry.get("line_start"), entry.get("line_end")
+    if not isinstance(start, int) or start <= 0:
+        return text
+    if not isinstance(end, int) or end < start:
+        end = start
+    lines = text.splitlines()
+    lo = max(0, start - 1 - _REGION_WINDOW_LINES)
+    hi = min(len(lines), end + _REGION_WINDOW_LINES)
+    return "\n".join(lines[lo:hi])
 
 
 def build_census(

@@ -2232,77 +2232,38 @@ class AutonomousSecurityAgentV2:
     ) -> bool:
         """Emit a ``ReviewJournalEntry`` for ``vuln`` after analysis.
 
-        Best-effort — any exception is logged and swallowed so journal
-        failures cannot break the analysis loop.
+        Delegates to ``packages.llm_analysis.journal_emit`` (the shared
+        finding-grade emitter, also used by the Phase-4 orchestration
+        tail). Best-effort — any exception is logged and swallowed so
+        journal failures cannot break the analysis loop.
 
         Returns True if an entry was written, False otherwise.
         """
         try:
-            from core.annotations import compute_function_hash
-            from core.coverage.journal import (
-                ReviewJournalEntry,
-                append_entry,
-                now_iso,
+            from packages.llm_analysis.journal_emit import (
+                emit_finding_journal_entry,
             )
-            from core.inventory.lookup import lookup_function
-
-            file_path = getattr(vuln, "file_path", None)
-            start_line = getattr(vuln, "start_line", None)
-            if not file_path or not start_line or not checklist:
-                return False
-
-            func = lookup_function(
-                checklist, file_path, int(start_line),
-                repo_root=str(self.repo_path),
-            )
-            if not func or not func.get("name"):
-                return False
-
-            name = func["name"]
-            vuln.function_name = name
-            line_start = func.get("line_start")
-            line_end = func.get("line_end")
-
-            analysis = getattr(vuln, "analysis", None) or {}
-            verdict = self._derive_verdict(analysis)
-            body = self._build_journal_body(vuln)
-
-            source_hash = ""
-            if file_path and line_start and line_end:
-                src = (Path(self.repo_path) / file_path).resolve()
-                if src.is_relative_to(Path(self.repo_path).resolve()):
-                    source_hash = compute_function_hash(
-                        src, line_start, line_end,
-                    ) or ""
 
             model_name = None
             if self.llm_config and self.llm_config.primary_model:
                 model_name = self.llm_config.primary_model.model_name
 
-            run_id = self.out_dir.name
-
-            entry = ReviewJournalEntry(
-                ts=now_iso(),
-                run_id=run_id,
-                file=file_path,
-                function=name,
-                verdict=verdict,
-                source_hash=source_hash,
-                line_start=line_start or 0,
-                line_end=line_end,
-                cwe=getattr(vuln, "cwe_id", None),
-                body=body,
+            name = emit_finding_journal_entry(
+                out_dir=self.out_dir,
+                repo_path=Path(self.repo_path),
+                checklist=checklist,
+                file_path=getattr(vuln, "file_path", None),
+                start_line=getattr(vuln, "start_line", None),
+                analysis=getattr(vuln, "analysis", None) or {},
+                cwe_id=getattr(vuln, "cwe_id", None),
+                tool=getattr(vuln, "tool", None),
+                message=getattr(vuln, "message", None),
                 model=model_name,
-                evidence_tools=[getattr(vuln, "tool", None) or "unknown"],
-                # Finding-grade marker: this entry records the analysis
-                # of ONE scanner finding, not a function review. The
-                # audit gap fold keys suppression/reuse off this (see
-                # core.coverage.journal.is_function_grade); the legacy
-                # run_id-prefix heuristic breaks for project runs whose
-                # dir names don't start with "agentic".
-                producer="agentic",
+                has_dataflow=getattr(vuln, "has_dataflow", False),
             )
-            append_entry(self.out_dir, entry)
+            if name is None:
+                return False
+            vuln.function_name = name
             return True
         except Exception:
             logger.debug("journal entry emit error", exc_info=True)
@@ -2311,43 +2272,9 @@ class AutonomousSecurityAgentV2:
     @staticmethod
     def _derive_verdict(analysis: dict[str, Any] | None) -> str:
         """Map the analysis dict's verdict bools to the journal
-        verdict enum."""
-        if not analysis:
-            return "error"
-        is_tp = analysis.get("is_true_positive")
-        if is_tp is False:
-            return "clean"
-        if is_tp is True:
-            return "finding" if analysis.get("is_exploitable") else "suspicious"
-        return "error"
-
-    @staticmethod
-    def _build_journal_body(vuln) -> str:
-        """Compose the journal entry body from the LLM's reasoning."""
-        parts: list[str] = []
-        analysis = getattr(vuln, "analysis", None) or {}
-
-        reasoning = analysis.get("reasoning") or analysis.get("explanation")
-        if reasoning:
-            parts.append(str(reasoning).strip())
-
-        severity = analysis.get("severity_assessment")
-        if severity:
-            parts.append(f"Severity: {severity}")
-
-        if getattr(vuln, "has_dataflow", False):
-            dv = analysis.get("dataflow_validation") or {}
-            if dv:
-                fp = dv.get("false_positive")
-                if fp is not None:
-                    parts.append(f"Dataflow validation: false_positive={fp}")
-
-        if not parts:
-            message = getattr(vuln, "message", None)
-            if message:
-                parts.append(f"Scanner message: {message}")
-
-        return "\n\n".join(parts)
+        verdict enum (delegates to the shared emitter)."""
+        from packages.llm_analysis.journal_emit import derive_verdict
+        return derive_verdict(analysis)
 
     def _resolve_prefer_globs(
         self, operator_globs: list[str] | None,

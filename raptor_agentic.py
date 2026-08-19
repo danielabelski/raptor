@@ -3377,6 +3377,26 @@ Examples:
                 allow_unreachable=getattr(args, "allow_unreachable", False),
                 checklist=scan_inventory,
             )
+
+            # Journal the orchestrated per-finding analyses. The
+            # orchestrator has no journal writer of its own, so without
+            # this the review journal carries only the prep phase's
+            # mechanical suppressions in the default mode — downstream
+            # kind-aware consumers (audit prior claims, agentic-labelled
+            # coverage) saw nothing from the actual LLM analyses.
+            if orchestration_result and not args.no_journal:
+                try:
+                    from packages.llm_analysis.journal_emit import (
+                        journal_orchestrated_results,
+                    )
+                    journal_orchestrated_results(
+                        out_dir, original_repo_path,
+                        orchestration_result.get("results") or [],
+                    )
+                except Exception:  # noqa: BLE001 — journaling is best-effort
+                    logger.debug(
+                        "orchestrated journal emit failed", exc_info=True,
+                    )
         else:
             print("\n  No analysis report from Phase 3 — skipping orchestration")
     elif not llm_env.llm_available:

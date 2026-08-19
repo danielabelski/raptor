@@ -17,7 +17,6 @@ import contextlib
 import json as _json
 import logging
 import os
-import pickle
 import re as _re
 import subprocess
 import sys
@@ -1375,15 +1374,6 @@ def run_smt_verb_direct(
     )
 
 
-_SMT_VERB_CHILD_SCRIPT = (
-    "import sys,os,pickle\n"
-    "sys.path.insert(0,os.environ['RAPTOR_DIR'])\n"
-    "from core.audit.sweep import _run_smt_verb_inner\n"
-    "r=_run_smt_verb_inner(**pickle.loads(sys.stdin.buffer.read()))\n"
-    "sys.stdout.buffer.write(pickle.dumps(r))\n"
-)
-
-
 def smt_child_env() -> dict:
     """Env for SMT/Z3 probe children with RAPTOR_DIR pinned to THIS tree.
 
@@ -1404,6 +1394,17 @@ def smt_child_env() -> dict:
         pin_raptor_dir(dict(os.environ)))
 
 
+def _run_smt_verb_inner_json(request: dict) -> dict:
+    """Child-side JSON adapter: kwargs dict in, SweepResult dict out.
+
+    The JSON protocol (see :mod:`core.audit.subproc_json`) carries
+    only plain data across the process boundary — the parent rebuilds
+    the SweepResult from the dict, so child stdout is never unpickled.
+    """
+    from dataclasses import asdict
+    return asdict(_run_smt_verb_inner(**request))
+
+
 def _smt_verb_in_subprocess(
     *,
     file_path: str,
@@ -1416,42 +1417,35 @@ def _smt_verb_in_subprocess(
 ) -> SweepResult:
     """Run SMT verb in an isolated subprocess.
 
-    Uses subprocess.Popen (fork+exec) rather than bare os.fork() so the
-    child gets a clean, single-threaded process image -- safe when the
-    parent has worker threads.
+    fork+exec gives the child a clean, single-threaded process image
+    (safe when the parent has worker threads); the JSON child protocol
+    keeps object deserialisation out of the parent.
     """
-    payload = pickle.dumps({
-        "file_path": file_path,
-        "function_name": function_name,
-        "verb": verb,
-        "source": source,
-        "hypothesis": hypothesis,
-        "target_path": target_path,
-    })
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _SMT_VERB_CHILD_SCRIPT],
-            input=payload, capture_output=True, timeout=timeout,
-            check=False, env=smt_child_env(),
-        )
-        if proc.returncode == 0:
-            # Broad by design: pickle.loads on malformed child stdout
-            # can raise nearly anything (UnpicklingError, EOFError,
-            # AttributeError, ImportError, ...); any failure degrades
-            # to the loud warning below.
-            with contextlib.suppress(Exception):
-                sr = pickle.loads(proc.stdout)
-                if isinstance(sr, SweepResult):
-                    return sr
-        logger.warning(
-            "SMT subprocess exited %d for %s:%s verb=%s",
-            proc.returncode, file_path, function_name, verb,
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            "SMT subprocess timed out for %s:%s verb=%s",
-            file_path, function_name, verb,
-        )
+    from .subproc_json import run_json_child
+
+    out = run_json_child(
+        "core.audit.sweep:_run_smt_verb_inner_json",
+        {
+            "file_path": file_path,
+            "function_name": function_name,
+            "verb": verb,
+            "source": source,
+            "hypothesis": hypothesis,
+            "target_path": target_path,
+        },
+        env=smt_child_env(),
+        timeout=timeout,
+        label=f"smt:{verb}",
+    )
+    if isinstance(out, dict):
+        # Tolerate a child from a slightly different tree revision:
+        # unexpected fields degrade to the crash sentinel below.
+        with contextlib.suppress(TypeError):
+            return SweepResult(**out)
+    logger.warning(
+        "SMT subprocess failed for %s:%s verb=%s",
+        file_path, function_name, verb,
+    )
     return SweepResult(
         tool="smt", file_path=file_path,
         function_name=function_name, outcome="inconclusive",

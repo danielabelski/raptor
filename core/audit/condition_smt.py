@@ -16,11 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
-import pickle
 import re
-import subprocess
-import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -490,29 +487,12 @@ def _try_z3_path_feasibility(
     constraints: list[BoundsConstraint],
 ) -> tuple[bool, str, dict[str, int] | None] | None:
     """Z3 path feasibility check. Returns None if Z3 unavailable."""
-    try:
-        import importlib.util
-        if importlib.util.find_spec("z3") is None:
-            return None
-    except ImportError:
+    if not _z3_importable():
         return None
-
-    payload = pickle.dumps(("path_feasibility", constraints))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
-            input=payload, capture_output=True, timeout=10,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                return pickle.loads(proc.stdout)
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-    except subprocess.TimeoutExpired:
-        logger.debug("z3 child timed out")
-    return None
+    out = _run_z3_child("path_feasibility", {
+        "constraints": [asdict(c) for c in constraints],
+    })
+    return _verdict_tuple_from_child(out)
 
 
 def _arithmetic_path_feasibility(
@@ -608,29 +588,15 @@ def _try_z3_signed_mismatch(
     bit_width: int,
 ) -> SignedMismatchResult | None:
     """Z3 check for signed/unsigned mismatch. Returns None if Z3 unavailable."""
-    try:
-        import importlib.util
-        if importlib.util.find_spec("z3") is None:
-            return None
-    except ImportError:
+    if not _z3_importable():
         return None
-
-    payload = pickle.dumps(("signed_mismatch", variable, operator, bound, bit_width))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
-            input=payload, capture_output=True, timeout=10,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                return pickle.loads(proc.stdout)
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-    except subprocess.TimeoutExpired:
-        logger.debug("z3 child timed out")
-    return None
+    out = _run_z3_child("signed_mismatch", {
+        "variable": variable,
+        "operator": operator,
+        "bound": bound,
+        "bit_width": bit_width,
+    })
+    return _result_from_child(SignedMismatchResult, out)
 
 
 # ---------------------------------------------------------------------------
@@ -782,31 +748,69 @@ def _try_z3_check(
     Runs in a forked subprocess so Z3 assertion failures (segfaults in
     the C++ core) don't kill the parent process.
     """
+    if not _z3_importable():
+        return None
+    out = _run_z3_child("guard_sufficiency", {
+        "constraints": [asdict(c) for c in constraints],
+        "buffer_size": buffer_size,
+        "sink_api": sink_api,
+    })
+    return _verdict_tuple_from_child(out)
+
+
+def _z3_importable() -> bool:
+    """True when the z3 package is installed (child would import it)."""
     try:
         import importlib.util
-        if importlib.util.find_spec("z3") is None:
-            return None
+        return importlib.util.find_spec("z3") is not None
     except ImportError:
+        return False
+
+
+def _run_z3_child(tag: str, args: dict[str, Any], *, timeout: int = 10):
+    """Run one Z3 check in an isolated child over the JSON protocol.
+
+    One parameterised runner for every ``_try_z3_*`` wrapper — the
+    request is ``{"tag": ..., "args": {...}}``, dispatched child-side
+    by :func:`_z3_dispatch_json`. Returns the decoded JSON result or
+    ``None`` on any child failure (crash-isolation semantics unchanged
+    from the former pickle runners).
+    """
+    from .subproc_json import run_json_child
+    return run_json_child(
+        "core.audit.condition_smt:_z3_dispatch_json",
+        {"tag": tag, "args": args},
+        env=_z3_child_env(),
+        timeout=timeout,
+        label=f"z3:{tag}",
+    )
+
+
+def _result_from_child(cls, out):
+    """Rebuild a result dataclass from the child's JSON dict, or None."""
+    if not isinstance(out, dict):
+        return None
+    try:
+        return cls(**out)
+    except TypeError:
+        logger.debug(
+            "z3 child returned unexpected fields for %s", cls.__name__,
+        )
         return None
 
-    return _z3_in_subprocess(constraints, buffer_size, sink_api)
 
-
-_Z3_CHILD_SCRIPT = (
-    "import sys,os,pickle\n"
-    "sys.path.insert(0,os.environ['RAPTOR_DIR'])\n"
-    "from core.audit.condition_smt import _z3_dispatch\n"
-    "r=_z3_dispatch(*pickle.loads(sys.stdin.buffer.read()))\n"
-    "sys.stdout.buffer.write(pickle.dumps(r))\n"
-)
-
-_Z3_CHILD_SCRIPT_V2 = (
-    "import sys,os,pickle\n"
-    "sys.path.insert(0,os.environ['RAPTOR_DIR'])\n"
-    "from core.audit.condition_smt import _z3_dispatch_v2\n"
-    "r=_z3_dispatch_v2(pickle.loads(sys.stdin.buffer.read()))\n"
-    "sys.stdout.buffer.write(pickle.dumps(r))\n"
-)
+def _verdict_tuple_from_child(
+    out,
+) -> tuple[bool, str, dict[str, int] | None] | None:
+    """Rebuild a (verdict, reasoning, witness) tuple from child JSON."""
+    if not isinstance(out, list) or len(out) != 3:
+        return None
+    verdict, reasoning, witness = out
+    if not isinstance(verdict, bool) or not isinstance(reasoning, str):
+        return None
+    if witness is not None and not isinstance(witness, dict):
+        witness = None
+    return (verdict, reasoning, witness)
 
 
 def _z3_child_env() -> dict:
@@ -824,38 +828,6 @@ def _z3_child_env() -> dict:
     from core.config import RaptorConfig, pin_raptor_dir
     return RaptorConfig.strip_llm_env_vars(
         pin_raptor_dir(dict(os.environ)))
-
-
-def _z3_in_subprocess(
-    constraints: list[BoundsConstraint],
-    buffer_size: int | None,
-    sink_api: str,
-    *,
-    timeout: int = 10,
-) -> tuple[bool, str, dict[str, int] | None] | None:
-    """Run Z3 in a subprocess; return None on crash or timeout.
-
-    Uses subprocess.Popen (fork+exec) rather than bare os.fork() so the
-    child gets a clean, single-threaded process image -- safe when the
-    parent has worker threads.
-    """
-    payload = pickle.dumps((constraints, buffer_size, sink_api))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT],
-            input=payload, capture_output=True, timeout=timeout,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                return pickle.loads(proc.stdout)
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-        logger.debug("Z3 subprocess exited with code %d", proc.returncode)
-    except subprocess.TimeoutExpired:
-        logger.debug("Z3 subprocess timed out after %ds", timeout)
-    return None
 
 
 def _z3_dispatch(
@@ -1041,25 +1013,54 @@ def _z3_consistency_check(
     return (False, "constraints are consistent — no insufficiency proven", None)
 
 
-def _z3_dispatch_v2(args: tuple):
-    """Unified v2 dispatcher for new Z3 checks."""
-    tag = args[0]
+def _z3_dispatch_json(request: dict) -> Any:
+    """Child-side dispatcher for the JSON protocol.
+
+    Rebuilds dataclass arguments from the plain dicts the parent sent,
+    routes to the in-process ``_z3_*_check`` implementations, and
+    flattens their results back to JSON-native shapes (lists / dicts /
+    primitives) — only the verdict fields cross the process boundary.
+    """
+    tag = request.get("tag")
+    args = request.get("args") or {}
+    if tag == "guard_sufficiency":
+        constraints = [BoundsConstraint(**c) for c in args["constraints"]]
+        result = _z3_dispatch(
+            constraints, args.get("buffer_size"), args.get("sink_api", ""),
+        )
+        return list(result) if result is not None else None
     if tag == "path_feasibility":
-        return _z3_path_feasibility_check(args[1])
-    elif tag == "signed_mismatch":
-        return _z3_signed_mismatch_check(args[1], args[2], args[3], args[4])
-    elif tag == "auth_bypass":
-        return _z3_auth_bypass_check(args[1], args[2])
-    elif tag == "lock_discipline":
-        return _z3_lock_discipline_check(args[1], args[2], args[3])
-    elif tag == "resource_leak":
-        return _z3_resource_leak_check(args[1], args[2], args[3], args[4], args[5])
-    elif tag == "null_propagation":
-        pass
-    elif tag == "integer_narrowing":
-        return _z3_integer_narrowing_check(args[1], args[2], args[3], args[4])
-    elif tag == "integer_overflow":
-        return _z3_integer_overflow_check(args[1], args[2], args[3])
+        constraints = [BoundsConstraint(**c) for c in args["constraints"]]
+        return list(_z3_path_feasibility_check(constraints))
+    if tag == "signed_mismatch":
+        return asdict(_z3_signed_mismatch_check(
+            args["variable"], args["operator"],
+            args["bound"], args["bit_width"],
+        ))
+    if tag == "auth_bypass":
+        return asdict(_z3_auth_bypass_check(
+            args["guard_text"], list(args.get("bypassed_checks") or []),
+        ))
+    if tag == "lock_discipline":
+        return asdict(_z3_lock_discipline_check(
+            args["guard_text"], args["lock_func"], args["ret_line"],
+        ))
+    if tag == "resource_leak":
+        return asdict(_z3_resource_leak_check(
+            args["guard_text"], args["var_name"], args["alloc_func"],
+            args["alloc_line"], args["ret_line"],
+        ))
+    if tag == "integer_narrowing":
+        return asdict(_z3_integer_narrowing_check(
+            args["var_name"], args["src_type"],
+            args["dest_type"], args["assign_line"],
+        ))
+    if tag == "integer_overflow":
+        result = _z3_integer_overflow_check(
+            args["resolved_types"], args["op_char"],
+            args.get("var_types") or {},
+        )
+        return asdict(result) if result is not None else None
     return None
 
 
@@ -1608,29 +1609,13 @@ def _try_z3_auth_bypass(
     bypassed_checks: list[str],
 ) -> AuthBypassResult | None:
     """Z3 feasibility check on the bypass guard. Returns None if Z3 unavailable."""
-    try:
-        import importlib.util
-        if importlib.util.find_spec("z3") is None:
-            return None
-    except ImportError:
+    if not _z3_importable():
         return None
-
-    payload = pickle.dumps(("auth_bypass", guard_text, bypassed_checks))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
-            input=payload, capture_output=True, timeout=10,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                return pickle.loads(proc.stdout)
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-    except subprocess.TimeoutExpired:
-        logger.debug("z3 child timed out")
-    return None
+    out = _run_z3_child("auth_bypass", {
+        "guard_text": guard_text,
+        "bypassed_checks": list(bypassed_checks),
+    })
+    return _result_from_child(AuthBypassResult, out)
 
 
 # ---------------------------------------------------------------------------
@@ -1953,29 +1938,14 @@ def _try_z3_lock_discipline(
     """Z3 feasibility check on the guard of a lock-held return."""
     if not guard_text:
         return None
-    try:
-        import importlib.util
-        if importlib.util.find_spec("z3") is None:
-            return None
-    except ImportError:
+    if not _z3_importable():
         return None
-
-    payload = pickle.dumps(("lock_discipline", guard_text, lock_func, ret_line))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
-            input=payload, capture_output=True, timeout=10,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                return pickle.loads(proc.stdout)
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-    except subprocess.TimeoutExpired:
-        logger.debug("z3 child timed out")
-    return None
+    out = _run_z3_child("lock_discipline", {
+        "guard_text": guard_text,
+        "lock_func": lock_func,
+        "ret_line": ret_line,
+    })
+    return _result_from_child(LockDisciplineResult, out)
 
 
 def _z3_lock_discipline_check(
@@ -2398,32 +2368,16 @@ def _try_z3_resource_leak(
     """Z3 feasibility check on the guard of a leak-path return."""
     if not guard_text:
         return None
-    try:
-        import importlib.util
-        if importlib.util.find_spec("z3") is None:
-            return None
-    except ImportError:
+    if not _z3_importable():
         return None
-
-    payload = pickle.dumps((
-        "resource_leak", guard_text, var_name, alloc_func,
-        alloc_line, ret_line,
-    ))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
-            input=payload, capture_output=True, timeout=10,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                return pickle.loads(proc.stdout)
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-    except subprocess.TimeoutExpired:
-        logger.debug("z3 child timed out")
-    return None
+    out = _run_z3_child("resource_leak", {
+        "guard_text": guard_text,
+        "var_name": var_name,
+        "alloc_func": alloc_func,
+        "alloc_line": alloc_line,
+        "ret_line": ret_line,
+    })
+    return _result_from_child(ResourceLeakResult, out)
 
 
 def _z3_resource_leak_check(
@@ -3176,31 +3130,15 @@ def _try_z3_integer_narrowing(
     assign_line: int,
 ) -> IntegerNarrowingResult | None:
     """Z3 check: can a value outside dest range reach the narrowing?"""
-    try:
-        import importlib.util
-        if importlib.util.find_spec("z3") is None:
-            return None
-    except ImportError:
+    if not _z3_importable():
         return None
-
-    payload = pickle.dumps((
-        "integer_narrowing", var_name, src_type, dest_type, assign_line,
-    ))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
-            input=payload, capture_output=True, timeout=10,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                return pickle.loads(proc.stdout)
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-    except subprocess.TimeoutExpired:
-        logger.debug("z3 child timed out")
-    return None
+    out = _run_z3_child("integer_narrowing", {
+        "var_name": var_name,
+        "src_type": src_type,
+        "dest_type": dest_type,
+        "assign_line": assign_line,
+    })
+    return _result_from_child(IntegerNarrowingResult, out)
 
 
 def _z3_integer_narrowing_check(
@@ -4464,26 +4402,14 @@ def disprove_integer_overflow(
             reasoning="could not resolve type widths for any variables",
         )
 
-    payload = pickle.dumps((
-        "integer_overflow", resolved_types, op_char, var_types,
-    ))
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _Z3_CHILD_SCRIPT_V2],
-            input=payload, capture_output=True, timeout=10,
-            check=False,
-            env=_z3_child_env(),
-        )
-        if proc.returncode == 0:
-            try:
-                result = pickle.loads(proc.stdout)
-                if result is not None:
-                    return result
-            except Exception:  # malformed child output degrades to None
-                logger.debug("z3 child output unpicklable", exc_info=True)
-        logger.debug("Z3 overflow subprocess exited with code %d", proc.returncode)
-    except subprocess.TimeoutExpired:
-        logger.debug("Z3 overflow subprocess timed out")
+    out = _run_z3_child("integer_overflow", {
+        "resolved_types": resolved_types,
+        "op_char": op_char,
+        "var_types": var_types,
+    })
+    result = _result_from_child(HypothesisDisproofResult, out)
+    if result is not None:
+        return result
 
     return HypothesisDisproofResult(
         hypothesis_class="integer_overflow",

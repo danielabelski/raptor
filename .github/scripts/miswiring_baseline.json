@@ -5,11 +5,11 @@
   "artifacts:orphan_reader::*-metadata.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:orphan_reader::*.label.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-  },
   "artifacts:orphan_reader::*.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:orphan_reader::*.osv.json": {
+   "note": "external-input pattern: cve_bridge.load_cve_run consumes an operator-supplied /cve-diff output directory via glob(\"*.osv.json\"); the writers (packages/cve_diff cli/main.py, cli/bench.py) spell the name f\"{cve_id}.osv.json\", which the artifact indexer normalises to a different key, so the glob reader looks orphaned"
   },
   "artifacts:orphan_reader::*.txt": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -107,6 +107,12 @@
   "artifacts:orphan_reader::requirements*.txt": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:write_only_artifact::.line-check.json": {
+   "note": "operator-facing sidecar next to a crash-analysis report (blamed_lines.check_report): the same summary dict is returned in-process and stamped into the report .md; the sidecar exists for humans/jq, same class as suppressions.jsonl"
+  },
+  "artifacts:write_only_artifact::.model.yml": {
+   "note": "CodeQL data-extension model written into the generated extension pack (core/dataflow/extension_pack.py); consumed by the external codeql CLI when the pack is loaded, not by repo python"
+  },
   "artifacts:write_only_artifact::.project.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -191,6 +197,12 @@
   "artifacts:write_only_artifact::cc-proxy-spend.json": {
    "note": "operator-facing per-run settlement record (reconciled credential-proxy token spend vs budget), same class as suppressions.jsonl: consumed by humans/jq from the run dir, deliberately not by production code."
   },
+  "artifacts:write_only_artifact::census.json": {
+   "note": "raptor-recall-measure census subcommand output: machine-readable dual of census.md, for humans/jq; the rendered markdown is also printed to stdout, same class as suppressions.jsonl"
+  },
+  "artifacts:write_only_artifact::census.md": {
+   "note": "raptor-recall-measure census subcommand output: operator-facing clean-region FP ranking, also printed to stdout at the end of the run"
+  },
   "artifacts:write_only_artifact::changes.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -200,11 +212,11 @@
   "artifacts:write_only_artifact::changes.pr-comment.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::child-env.txt": {
-   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg B): the exact child env, written for human re-verification of the zero-credential grep; the in-memory dict is what the proof asserts on."
-  },
   "artifacts:write_only_artifact::cocci.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:write_only_artifact::codeql-pack.yml": {
+   "note": "pack manifest of the generated CodeQL extension pack (core/dataflow/extension_pack.py); consumed by the external codeql CLI (and scanned by core/security/codeql_trust.py when packs arrive in target repos), not read back by the writer"
   },
   "artifacts:write_only_artifact::compiled-invariants.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -272,8 +284,8 @@
   "artifacts:write_only_artifact::hash-pin.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::mechanical-findings.json": {
-   "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  "artifacts:write_only_artifact::matches.jsonl": {
+   "note": "raptor-variant-sweep output (replay_sweep.write_report): ranked sweep matches for operator review; the path is printed at the end of the run, same class as suppressions.jsonl"
   },
   "artifacts:write_only_artifact::merged.sarif": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -311,6 +323,9 @@
   "artifacts:write_only_artifact::release-order.json": {
    "note": "operator-facing run artifact: release_order channel prepass receipts (core/audit/release_order.py), consumed via /review and manual triage — no production reader by design (the audit-log artifact pattern)"
   },
+  "artifacts:write_only_artifact::report.json": {
+   "note": "operator-facing run reports: raptor-recall-measure writes it and its own census/warm/compare subcommands read it back via the explicit --report flag (path argument, so the reader carries no literal filename); sanitizer-cut-precision writes its gate report under the same name with the verdict also carried in the exit code"
+  },
   "artifacts:write_only_artifact::resource-bounds.json": {
    "note": "operator-facing run artifact: resource_bounds channel prepass receipts (core/audit/resource_bounds.py), consumed via /review and manual triage — no production reader by design (the audit-log artifact pattern)"
   },
@@ -319,6 +334,12 @@
   },
   "artifacts:write_only_artifact::return-census.json": {
    "note": "operator-facing receipt from the consistency channel (return-usage census); read by /review workflows, no in-repo production reader yet"
+  },
+  "artifacts:write_only_artifact::rule-eval-results.json": {
+   "note": "rule_eval outputs: operator-facing results JSON and human summary for the corpus rule-verification runner; read by the operator, never by production code"
+  },
+  "artifacts:write_only_artifact::rule-eval-summary.txt": {
+   "note": "rule_eval outputs: operator-facing results JSON and human summary for the corpus rule-verification runner; read by the operator, never by production code"
   },
   "artifacts:write_only_artifact::rule.yml": {
    "note": "generated Semgrep rule artifact for operator inspection / external semgrep invocation"
@@ -355,6 +376,12 @@
   },
   "artifacts:write_only_artifact::study-report.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:write_only_artifact::study-stale.json": {
+   "note": "operator-facing mirror of the staleness quarantine; the machine-consumed re-derive signal rides the reading list (pending items drained on the next study pass)"
+  },
+  "artifacts:write_only_artifact::summary.json": {
+   "note": "raptor-variant-sweep output (replay_sweep.write_report): per-rule totals + errors for operator review (\"see summary.json\" is printed when a sweep records errors)"
   },
   "artifacts:write_only_artifact::summary.txt": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -400,6 +427,12 @@
   },
   "artifacts:write_only_artifact::verification.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
+  },
+  "artifacts:write_only_artifact::warm.json": {
+   "note": "raptor-recall-measure warm subcommand output: machine-readable dual of warm.md (would-suppress scoring of suppression evidence), for humans/jq"
+  },
+  "artifacts:write_only_artifact::warm.md": {
+   "note": "raptor-recall-measure warm subcommand output: operator-facing would-suppress report, also printed to stdout at the end of the run"
   },
   "artifacts:write_only_artifact::web_scan_report.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -509,9 +542,6 @@
   "dead:dead_method:packages/autonomous/planner.py:FuzzingState.is_finding_crashes": {
    "note": "kept: feature seed — autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
-  "dead:dead_method:packages/checker_synthesis/library.py:RuleLibrary.active_entries": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_method:packages/exploit_feasibility/analyzer.py:FeasibilityAnalyzer.quick_check": {
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers — revisit"
   },
@@ -590,9 +620,6 @@
   "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.create_from_directory": {
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
-  "dead:dead_method:packages/joern/server.py:JoernServer.run_taint_queries_batch": {
-   "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_method:packages/web/client.py:WebClient.get_cookies": {
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
@@ -616,15 +643,6 @@
   },
   "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
    "note": "kept: autonomous fuzzing loop feature seed (operator decision 2026-08-16; re-affirmed 2026-08-17 config-orphan pass — goal_progress and strategies_tried deleted as shadowed by Goal.progress / successful_strategies). This is the natural input the wired loop derives coverage_plateau_duration from."
-  },
-  "artifacts:write_only_artifact::study-stale.json": {
-   "note": "operator-facing mirror of the staleness quarantine; the machine-consumed re-derive signal rides the reading list (pending items drained on the next study pass)"
-  },
-  "artifacts:write_only_artifact::rule-eval-results.json": {
-   "note": "rule_eval outputs: operator-facing results JSON and human summary for the corpus rule-verification runner; read by the operator, never by production code"
-  },
-  "artifacts:write_only_artifact::rule-eval-summary.txt": {
-   "note": "rule_eval outputs: operator-facing results JSON and human summary for the corpus rule-verification runner; read by the operator, never by production code"
   }
  }
 }

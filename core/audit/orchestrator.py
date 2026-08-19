@@ -3551,6 +3551,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     entry_points = extract_context_map_set(context_map, "entry_points")
 
+    _ops_eps: set = set()
     try:
         from .ops_struct import collect_ops_entry_points
 
@@ -3906,6 +3907,15 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             logger.debug(
                 "semantic-consistency routing failed", exc_info=True,
             )
+
+    # Ops-struct reachability receipts: a function reached through an
+    # ops-struct member (file_operations, net_device_ops, ...) is an
+    # indirect entry point — the collector only widened entry_points,
+    # so the channel fired without ever leaving a receipt and could
+    # not be attributed. Route a detector record through the standard
+    # mechanical-findings channel for every reviewed gap it covers.
+    if _ops_eps:
+        _route_ops_struct_receipts(gaps, _ops_eps, mechanical_findings)
 
     # Route perlasm generated-asm leads through the same channel:
     # the zero-length-loop-entry check runs over inventory records
@@ -7807,6 +7817,39 @@ class _InjectModeResolver:
 
         self._cache[key] = findings
         return findings
+
+
+def _route_ops_struct_receipts(
+    gaps: list[dict[str, Any]],
+    ops_eps: set,
+    mechanical_findings: dict[str, list[dict[str, Any]]],
+) -> int:
+    """Detector receipts for ops-struct-reached functions.
+
+    The collector only widened ``entry_points``, so the channel fired
+    without ever leaving a receipt: nothing downstream (review prompt,
+    mechanical-findings.json, attribution) could see that a function
+    is reachable through a function-pointer table. Returns the number
+    of receipts routed.
+    """
+    routed = 0
+    for gap in gaps:
+        gk = f"{gap.get('file', '')}:{gap.get('name', '')}"
+        if gk not in ops_eps:
+            continue
+        mechanical_findings.setdefault(gk, []).append({
+            "file": gap.get("file", ""),
+            "function": gap.get("name", ""),
+            "detector": "ops_struct",
+            "line": gap.get("line_start", 0),
+            "description": (
+                "reached indirectly via an ops-struct member "
+                "registration (function pointer table) — an entry "
+                "point regardless of direct callers"
+            ),
+        })
+        routed += 1
+    return routed
 
 
 def _run_mechanical_detectors(

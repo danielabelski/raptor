@@ -141,3 +141,33 @@ class TestCollectOpsEntryPoints:
         }
         eps = collect_ops_entry_points(sources)
         assert "include/ops.h:my_probe" in eps
+
+
+class TestOpsStructReceiptRouting:
+    """Ops-struct entry points leave a mechanical-findings receipt."""
+
+    def test_covered_gap_gets_receipt(self):
+        from core.audit.orchestrator import _route_ops_struct_receipts
+
+        gaps = [
+            {"file": "fs/timerfd.c", "name": "timerfd_release",
+             "line_start": 230},
+            {"file": "fs/timerfd.c", "name": "helper", "line_start": 10},
+        ]
+        mf: dict = {}
+        n = _route_ops_struct_receipts(
+            gaps, {"fs/timerfd.c:timerfd_release"}, mf,
+        )
+        assert n == 1
+        rec = mf["fs/timerfd.c:timerfd_release"][0]
+        assert rec["detector"] == "ops_struct"
+        assert "fs/timerfd.c:helper" not in mf
+
+    def test_no_ops_eps_no_receipts(self):
+        from core.audit.orchestrator import _route_ops_struct_receipts
+
+        mf: dict = {}
+        assert _route_ops_struct_receipts(
+            [{"file": "a.c", "name": "f"}], set(), mf,
+        ) == 0
+        assert mf == {}

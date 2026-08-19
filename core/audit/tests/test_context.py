@@ -757,6 +757,50 @@ class TestFindCallers:
         assert len(result) == 1
 
 
+class TestFindCallees:
+    """Context-map fallback — mirror of the _find_callers fallback.
+
+    Delivery of callee-derived sections (most visibly "Callee CPG
+    summaries") depends on ctx["callees"]; on hosts whose inventory
+    carries no call edges the context map is the only edge source."""
+
+    def test_context_map_fallback_finds_callees(self):
+        from core.audit.context import _find_callees
+        cm = {
+            "call_edges": [
+                {"caller_file": "net.c", "caller": "handle_request",
+                 "callee": "parse_header", "callee_file": "net.c"},
+            ],
+        }
+        result = _find_callees(None, "net.c", "handle_request", 0, cm)
+        assert len(result) == 1
+        assert result[0]["file"] == "net.c"
+        assert result[0]["name"] == "parse_header"
+
+    def test_other_files_edges_ignored(self):
+        from core.audit.context import _find_callees
+        cm = {
+            "call_edges": [
+                {"caller_file": "other.c", "caller": "handle_request",
+                 "callee": "parse_header", "callee_file": "other.c"},
+            ],
+        }
+        result = _find_callees(None, "net.c", "handle_request", 0, cm)
+        assert result == []
+
+    def test_deduplicates_callees(self):
+        from core.audit.context import _find_callees
+        edge = {"caller_file": "x.c", "caller": "a",
+                "callee": "b", "callee_file": "x.c"}
+        cm = {"call_edges": [dict(edge), dict(edge)]}
+        result = _find_callees(None, "x.c", "a", 0, cm)
+        assert len(result) == 1
+
+    def test_no_context_map_no_inventory(self):
+        from core.audit.context import _find_callees
+        assert _find_callees(None, "a.c", "foo", 0, None) == []
+
+
 class TestEnrichCalleesWithSource:
     def test_adds_source_snippet(self, tmp_path: Path):
         src = tmp_path / "util.c"

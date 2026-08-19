@@ -215,7 +215,9 @@ def assemble_context(
     _enrich_callers_with_call_sites(
         ctx["callers"], target_path, function_name,
     )
-    ctx["callees"] = _find_callees(inventory, file_path, function_name, line_start)
+    ctx["callees"] = _find_callees(
+        inventory, file_path, function_name, line_start, context_map,
+    )
     _enrich_callees_with_source(ctx["callees"], target_path, checklist)
     ctx["existing_annotation"] = _load_existing_annotation(
         annotations_dir, file_path, function_name,
@@ -2209,42 +2211,67 @@ def _find_callees(
     file_path: str,
     function_name: str,
     line_start: int = 0,
+    context_map: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Find 1-hop callees via reachability API."""
-    if not inventory:
-        return []
+    """Find 1-hop callees via reachability API.
 
-    try:
-        from core.analysis.reachability import (
-            ExternalFunction,
-            InternalFunction,
-            callees_of,
-        )
-        source = InternalFunction(
-            file_path=file_path, name=function_name, line=line_start,
-        )
-        result = callees_of(inventory, source, exclude_test_files=True)
-        out = []
-        for c in result.definitive:
-            if isinstance(c, InternalFunction):
+    Falls back to the context map's ``call_edges`` when the inventory
+    yields nothing — the mirror of :func:`_find_callers`. Without the
+    fallback, hosts whose inventory carries no call edges (optional
+    tree-sitter grammars absent, regex extraction) drop every
+    callee-derived prompt section — most visibly the "Callee CPG
+    summaries" delivery, whose candidate DISCOVERY already accepts
+    context-map edges as a documented second source.
+    """
+    out: list[dict[str, Any]] = []
+    if inventory:
+        try:
+            from core.analysis.reachability import (
+                ExternalFunction,
+                InternalFunction,
+                callees_of,
+            )
+            source = InternalFunction(
+                file_path=file_path, name=function_name, line=line_start,
+            )
+            result = callees_of(inventory, source, exclude_test_files=True)
+            for c in result.definitive:
+                if isinstance(c, InternalFunction):
+                    out.append({
+                        "file": c.file_path,
+                        "name": c.name,
+                        "line_start": c.line,
+                    })
+                elif isinstance(c, ExternalFunction):
+                    out.append({
+                        "file": "(external)",
+                        "name": c.qualified_name,
+                        "line_start": 0,
+                    })
+        except Exception:
+            logger.debug(
+                "callees_of failed for %s:%s", file_path, function_name,
+                exc_info=True,
+            )
+
+    if context_map and not out:
+        seen = set()
+        for edge in context_map.get("call_edges", []):
+            if edge.get("caller") != function_name or not edge.get("callee"):
+                continue
+            caller_file = edge.get("caller_file", "")
+            if caller_file and file_path and caller_file != file_path:
+                continue
+            callee_key = (edge.get("callee_file", ""), edge["callee"])
+            if callee_key not in seen:
+                seen.add(callee_key)
                 out.append({
-                    "file": c.file_path,
-                    "name": c.name,
-                    "line_start": c.line,
-                })
-            elif isinstance(c, ExternalFunction):
-                out.append({
-                    "file": "(external)",
-                    "name": c.qualified_name,
+                    "file": edge.get("callee_file", ""),
+                    "name": edge["callee"],
                     "line_start": 0,
                 })
-        return out
-    except Exception:
-        logger.debug(
-            "callees_of failed for %s:%s", file_path, function_name,
-            exc_info=True,
-        )
-        return []
+
+    return out
 
 
 _OPERATOR_NOTE_MAX_BYTES = 16 * 1024

@@ -217,7 +217,7 @@ def _print_table(results: list[_ProbeResult]) -> None:
           f"{'Time':<8} {'Versions':<10}")
     print("-" * 90)
     for r in results:
-        status = "OK" if r.ok else "FAIL"
+        status = "Ok" if r.ok else "Fail"
         print(f"{r.ecosystem:<12} {r.probe:<40} {status:<10} "
               f"{r.elapsed_ms:<8} {r.versions_returned:<10}")
         if r.error and not r.ok:

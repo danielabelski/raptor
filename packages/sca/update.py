@@ -385,7 +385,7 @@ def _run_external_validation(manifest: Path, out_dir: Path) -> None:
         }, indent=2),
         encoding="utf-8",
     )
-    verb = "validates" if result.success else "FAILS"
+    verb = "validates" if result.success else "fails"
     print(f"raptor-sca fix --cve-only --validate-against: {manifest.name} {verb} via "
           f"{eco} resolver. Detail: {out_dir}/validate-against.json")
 

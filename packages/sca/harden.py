@@ -1326,14 +1326,14 @@ def _run_self_test(
         print(f"raptor-sca fix --harden --self-test: post-apply candidates → {post_path}")
 
         if post_actionable > 0:
-            print(f"raptor-sca fix --harden --self-test: REGRESSION — {post_actionable} "
+            print(f"raptor-sca fix --harden --self-test: Regression — {post_actionable} "
                   f"candidate(s) still actionable after apply. The chosen "
                   f"versions may have advisories the planner missed, or "
                   f"the rewriter didn't pin every dep. Inspect "
                   f"{post_path}.", file=sys.stderr)
             return 7
 
-        print("raptor-sca fix --harden --self-test: PASS — applying the patch closes "
+        print("raptor-sca fix --harden --self-test: Pass — applying the patch closes "
               "every actionable candidate.")
         return 0
     finally:

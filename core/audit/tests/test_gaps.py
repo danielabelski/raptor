@@ -547,3 +547,53 @@ class TestCoveredKeyInjectivity:
         remaining = {(g["file"], g["name"]) for g in gaps}
         assert ("src/a.c", "evil:f") in remaining
         assert ("src/a.c:evil", "f") not in remaining
+
+
+class TestModernRecordCoveredSet:
+    """functions_analysed from per-tool records suppresses gaps.
+
+    Pre-fix only the legacy files{...functions{}} shape was parsed, so an
+    operator --mark (coverage-llm.json) or a coverage-journal.json review
+    never suppressed the reviewed function.
+    """
+
+    def test_functions_analysed_suppresses(self):
+        records = [{
+            "tool": "llm",
+            "functions_analysed": [
+                {"file": "src/handler.c", "function": "parse_request"},
+            ],
+        }]
+        gaps = compute_gaps(_sample_checklist(), records)
+        names = {g["name"] for g in gaps}
+        assert "parse_request" not in names
+        assert "handle_error" in names
+
+    def test_scanned_depth_labels_never_suppress(self):
+        # read / understand are llm-extent but scanned depth — review
+        # targets, not reviews. Unknown labels are conservative too.
+        for tool in ("read", "understand", "mystery-tool"):
+            records = [{
+                "tool": tool,
+                "functions_analysed": [
+                    {"file": "src/handler.c", "function": "parse_request"},
+                ],
+            }]
+            gaps = compute_gaps(_sample_checklist(), records)
+            assert "parse_request" in {g["name"] for g in gaps}, tool
+
+    def test_files_examined_alone_never_suppresses(self):
+        records = [{"tool": "llm", "files_examined": ["src/handler.c"]}]
+        gaps = compute_gaps(_sample_checklist(), records)
+        assert "parse_request" in {g["name"] for g in gaps}
+
+    def test_error_status_entries_do_not_suppress(self):
+        records = [{
+            "tool": "journal",
+            "functions_analysed": [
+                {"file": "src/handler.c", "function": "parse_request",
+                 "status": "error"},
+            ],
+        }]
+        gaps = compute_gaps(_sample_checklist(), records)
+        assert "parse_request" in {g["name"] for g in gaps}

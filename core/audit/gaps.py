@@ -1278,10 +1278,33 @@ def _build_covered_set(
     suppresses only one same-named item per covered key instead of
     all of them.
     """
+    from core.coverage.registry import CATEGORY_LLM, DEPTH_ANALYSED, classify
+
     covered = set()
     for record in records:
+        # Legacy coverage-record.json shape (files{...functions{}}).
         for file_path, file_data in record.get("files", {}).items():
             for func_name in file_data.get("functions", {}):
+                covered.add(make_function_key(file_path, func_name))
+        # Modern per-tool records carry function-level review marks in
+        # functions_analysed (operator --mark, coverage-llm.json,
+        # coverage-journal.json). Pre-fix only the legacy shape was
+        # parsed, so an operator's --mark never suppressed a gap. Only
+        # review-grade labels count: files_examined (whole-file, any
+        # depth) and scanned-depth marks (read / understand) must not
+        # suppress review gaps.
+        if classify(record.get("tool", "")) != (CATEGORY_LLM, DEPTH_ANALYSED):
+            continue
+        for fa in record.get("functions_analysed") or []:
+            if not isinstance(fa, dict):
+                continue
+            if fa.get("status") == "error":
+                # A review that errored is not coverage — same discipline
+                # as import_journal's error-verdict skip.
+                continue
+            file_path = fa.get("file") or ""
+            func_name = fa.get("function") or ""
+            if file_path and func_name:
                 covered.add(make_function_key(file_path, func_name))
     return covered
 

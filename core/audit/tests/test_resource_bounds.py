@@ -488,3 +488,17 @@ class TestNamingStemBinding:
         assert leads and "ossl_list_incoming_ch_insert_tail" in (
             leads[0]["mechanism"]
         )
+
+
+class TestCallerWalkDeadline:
+    def test_expired_deadline_stops_the_walk(self):
+        from core.audit.resource_bounds import _caller_bound_search
+
+        witness, receipts = _caller_bound_search(
+            "insert_fn",
+            {"a.c": "void caller(void)\n{\n    insert_fn(x);\n}\n"},
+            "a.c", None, frozenset(), "c",
+            deadline=0.0,
+        )
+        assert witness is None
+        assert receipts == []

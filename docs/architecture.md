@@ -943,7 +943,7 @@ All package agents follow a consistent CLI pattern:
 ### Package-Specific Arguments
 
 **static-analysis/scanner.py**:
-- `--policy_groups`: Comma-separated policy groups (e.g., `secrets,owasp`)
+- `--policy-groups`: Comma-separated policy groups (e.g., `secrets,injection`)
 
 **llm_analysis/agent.py**:
 - `--sarif`: SARIF file(s) to analyse (can specify multiple)

@@ -610,6 +610,20 @@ class TestCcSubprocessEnv:
         assert "PATH" in env
         assert "HOME" in env
 
+    def test_children_stamped_non_interactive(self):
+        """Dispatched CLI children are unattended by definition: the
+        AskUserQuestion gate's explicit override must be present so a
+        sub-agent session never raises an operator prompt. Also pins
+        the module-local constant to the gate's canonical name."""
+        from core.llm.cc_adapter import (
+            _NONINTERACTIVE_ENV,
+            cc_subprocess_env,
+        )
+        from core.ux.interactivity import NONINTERACTIVE_ENV
+        assert _NONINTERACTIVE_ENV == NONINTERACTIVE_ENV
+        env = cc_subprocess_env()
+        assert env[_NONINTERACTIVE_ENV] == "1"
+
     def test_operator_proxy_propagated(self, monkeypatch):
         """Mandatory-egress-proxy hosts: the CLI child has no route to
         any backend unless the operator's proxy env survives."""
@@ -788,6 +802,12 @@ class TestCcSubprocessEnvProxyMode:
         assert env["no_proxy"] == env["NO_PROXY"]
         # Operator proxy still available for anything non-loopback.
         assert env["HTTPS_PROXY"] == "http://proxy.example:3128"
+
+    def test_proxy_mode_children_stamped_non_interactive(self):
+        """The zero-credential posture must not lose the unattended
+        marker — proxy-mode children are dispatched sub-agents too."""
+        env = self._proxy_env()
+        assert env["RAPTOR_NONINTERACTIVE"] == "1"
 
     def test_proxy_mode_requires_route_and_token(self):
         import pytest

@@ -32,6 +32,16 @@ _CC_BACKEND_ENV_PREFIXES = (
     "CLAUDE_CODE_", "ANTHROPIC_", "RAPTOR_BEDROCK_", "RAPTOR_CC_",
 )
 
+# Interactivity marker for dispatched CLI children. Every claude child
+# RAPTOR spawns is unattended by definition — no operator will answer a
+# structured prompt it raises — so cc_subprocess_env stamps the
+# explicit non-interactive override the AskUserQuestion gate
+# (core/ux/interactivity.py, libexec/raptor-may-ask) checks first.
+# String literal rather than an import: this module must not grow a
+# core.ux import edge for one constant; the pinning test in
+# core/llm/tests/test_cc_adapter.py keeps the two in sync.
+_NONINTERACTIVE_ENV = "RAPTOR_NONINTERACTIVE"
+
 # AWS names a Bedrock-backed CLI child needs, passed ONLY when
 # CLAUDE_CODE_USE_BEDROCK is set. An explicit allowlist, NOT the AWS_*
 # prefix: the previous blanket copy swept every ambient AWS_* value —
@@ -193,7 +203,9 @@ def cc_subprocess_env(
             f"got {credential_mode!r}"
         )
     if credential_mode == "proxy":
-        return _cc_proxy_mode_env(proxy_base_url, proxy_auth_token)
+        env = _cc_proxy_mode_env(proxy_base_url, proxy_auth_token)
+        env[_NONINTERACTIVE_ENV] = "1"
+        return env
     if proxy_base_url or proxy_auth_token:
         raise ValueError(
             "proxy_base_url/proxy_auth_token are only valid with "
@@ -248,6 +260,7 @@ def cc_subprocess_env(
             env.get("NO_PROXY") or env.get("no_proxy") or "")
         env["NO_PROXY"] = merged
         env["no_proxy"] = merged
+    env[_NONINTERACTIVE_ENV] = "1"
     return env
 
 

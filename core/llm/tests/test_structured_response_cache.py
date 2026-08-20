@@ -485,11 +485,12 @@ class TestCacheEnableSwitch:
 
     def test_client_honours_the_switch(self, monkeypatch, tmp_path):
         monkeypatch.setenv("RAPTOR_LLM_CACHE", "off")
-        from core.llm.client import LLMClient
         from core.llm.config import LLMConfig
-        cfg = LLMConfig()
-        cfg.cache_dir = tmp_path / "cache"
-        client = LLMClient.__new__(LLMClient)
-        client.config = cfg
+        # The switch lands on the config; the client consults it on
+        # every cache read. Split assertion so a regression names the
+        # failing half. Client built via the shared substrate builder
+        # (core.testing) — see test_adoption_driftguard.
+        assert LLMConfig().enable_caching is False
+        client = _client(tmp_path, enable_caching=False)
         assert client._get_cached_response("deadbeef") is None
         assert client._get_cached_structured_response("deadbeef") is None

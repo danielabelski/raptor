@@ -18793,11 +18793,23 @@ def _promote_clean_refuted(
             if not confirmed:
                 continue
 
-            high_prec = [t for t in confirmed if not _is_detection_only(t)]
+            high_prec = [
+                t for t in confirmed
+                if not _is_detection_only(t)
+                # The fail-open channel's registry-grade confirm proves
+                # the callee is fallible and its return discarded --
+                # exactly the facts the model weighed when it REFUTED
+                # the hypothesis (intentional cleanup-path discards are
+                # the canonical counter). Re-arming the verdict off the
+                # same channel that seeded the lead is circular: the
+                # channel corroborates standing findings, it does not
+                # overturn a completed model refutation on its own.
+                and not t.startswith("fail_open:")
+            ]
             if not high_prec:
                 logger.info(
                     "refuted-hypothesis promotion blocked %s:%s — only "
-                    "detection-role rules (%s)",
+                    "detection-role/seeding-channel rules (%s)",
                     outcome.file, outcome.function, "+".join(confirmed),
                 )
                 continue

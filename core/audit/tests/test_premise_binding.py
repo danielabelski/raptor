@@ -330,6 +330,78 @@ class TestSweepValidatePremiseGate:
         assert validated.evidence_tool == "joern:flow"
 
 
+class TestSeedingChannelCannotOverturnRefutation:
+    """The fail-open channel's registry-grade confirm proves fallible
+    callee + discarded return — the exact facts the model weighed when
+    it refuted the (channel-seeded) hypothesis. It corroborates
+    standing findings; it may not overturn a completed refutation."""
+
+    def _run(self, tmp_path, monkeypatch, confirms):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.go").write_text("package a\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+        outcome = ReviewOutcome(
+            file="a.go", function="Cancel", status="clean",
+            body="clean after refutation",
+            hypothesis="",
+            hypotheses=[{
+                "mechanism": "ignored error from the close call leaves "
+                             "the failure unhandled",
+                "confidence": "refuted",
+                "counter": "cleanup path: the discard is deliberate and "
+                           "idempotent",
+                "counter_scope": "local",
+            }],
+            line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        result.clean = 1
+        checklist = {
+            "files": [{
+                "path": "a.go",
+                "items": [
+                    {"name": "Cancel", "line_start": 1, "line_end": 1},
+                ],
+            }],
+        }
+        monkeypatch.setattr(
+            orch, "_hypothesis_to_smt_verb", lambda m: None,
+        )
+        monkeypatch.setattr(
+            orch, "_hypothesis_to_tool_chain",
+            lambda *a, **k: [{"type": "fail_open", "config": {}}],
+        )
+        monkeypatch.setattr(
+            orch, "_run_tool_chain", lambda *a, **k: list(confirms),
+        )
+        monkeypatch.setattr(
+            orch, "_check_sink_guarded_cached",
+            lambda *a, **k: "unguarded",
+        )
+        _promote_clean_refuted(result, config, checklist=checklist)
+        return result
+
+    def test_fail_open_confirm_does_not_overturn(
+        self, tmp_path, monkeypatch,
+    ):
+        result = self._run(
+            tmp_path, monkeypatch, ["fail_open:ignored-return"],
+        )
+        assert result.outcomes[0].status == "clean"
+
+    def test_independent_confirm_still_promotes(
+        self, tmp_path, monkeypatch,
+    ):
+        result = self._run(
+            tmp_path, monkeypatch, ["coccinelle:use_after_free"],
+        )
+        assert result.outcomes[0].status == "suspicious"
+
+
 class TestPromoteSuspiciousPremiseGate:
     """Primary-hypothesis sweep premise binding: a local confirm may
     not promote suspicious → finding past a cross-function counter the

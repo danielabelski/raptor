@@ -291,6 +291,77 @@ _LIVE_RESOLVED_IP_BANNER_CAP = 8
 _lock = threading.Lock()
 _instance: Optional["EgressProxy"] = None
 
+# One-shot guard for the SIGTERM cleanup hook (see
+# _install_sigterm_cleanup). Module-level so a stop/restart of the
+# singleton doesn't stack handlers.
+_sigterm_hook_installed = False
+
+
+def _install_sigterm_cleanup() -> None:
+    """Best-effort SIGTERM hook so the proxy tears down on TERM.
+
+    ``atexit`` only runs on normal interpreter exit — a SIGTERM'd
+    RAPTOR (operator Ctrl-backslash-less kill, CI timeout, systemd
+    stop) died without closing listeners or unlinking the unix-lane
+    ``.sock`` files, stranding them in output dirs / $TMPDIR. The hook
+    runs ``stop(drain_timeout=0)`` (which unbinds + unlinks every unix
+    lane) and then re-delivers the signal so the process still dies
+    with the default TERM disposition, or chains to a pre-existing
+    handler when one was installed before us.
+
+    Constraints, all deliberate:
+
+    - main-thread only: ``signal.signal`` raises ValueError elsewhere;
+      when ``get_proxy`` first runs off the main thread the hook is
+      simply skipped (atexit still covers normal exit).
+    - never clobbers SIG_IGN: an operator who ignored TERM keeps that.
+    - installed once per process; a callable prior handler is chained
+      after our cleanup rather than replaced.
+    - SIGKILL residual: nothing can run on KILL — stale lane sockets
+      are then bounded by the per-run output dir / $TMPDIR hygiene,
+      and the random per-context socket names mean a later run never
+      collides with a stale file.
+    """
+    global _sigterm_hook_installed
+    if _sigterm_hook_installed:
+        return
+    import signal as _signal
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(
+            "egress proxy: get_proxy() first called off the main "
+            "thread — SIGTERM cleanup hook not installed (atexit "
+            "still covers normal exit)"
+        )
+        return
+    try:
+        prev = _signal.getsignal(_signal.SIGTERM)
+    except (ValueError, OSError):
+        return
+    if prev is _signal.SIG_IGN:
+        return
+
+    def _on_sigterm(signum, frame):
+        inst = _instance
+        if inst is not None:
+            with contextlib.suppress(Exception):
+                inst.stop(drain_timeout=0)
+        if callable(prev) and prev not in (_signal.SIG_DFL,
+                                           _signal.SIG_IGN):
+            prev(signum, frame)
+        else:
+            # Restore the default disposition and re-deliver so the
+            # process exits with the conventional killed-by-TERM
+            # status instead of swallowing the signal.
+            with contextlib.suppress(ValueError, OSError):
+                _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
+            os.kill(os.getpid(), _signal.SIGTERM)
+
+    try:
+        _signal.signal(_signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):
+        return
+    _sigterm_hook_installed = True
+
 
 def _record_proxy_denial(host: str, port: int, resolved_ip: str | None,
                          would_deny: str) -> None:
@@ -2588,6 +2659,12 @@ def get_proxy(
                                     no_proxy=no_proxy,
                                     audit_enforce=audit_enforce)
             atexit.register(_instance.stop)
+            # atexit never fires on SIGTERM — add the signal-aware
+            # teardown (closes listeners, unlinks unix-lane sockets)
+            # with the default disposition re-delivered afterwards.
+            # SIGKILL remains uncatchable; see the hook's docstring
+            # for the residual.
+            _install_sigterm_cleanup()
             if upstream:
                 logger.info(
                     f"egress proxy: tunnelling via upstream {upstream} "

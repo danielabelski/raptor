@@ -2008,6 +2008,17 @@ _LOCK_PAIRS = [
         "raw_spin_unlock",
     ),
     (re.compile(r"\b(mutex_lock(?:_interruptible|_killable)?)\s*\("), "mutex_unlock"),
+    # rwlock_t: same word-boundary blindness as raw_spinlock — without
+    # these pairs a write_lock_irq(&tasklist_lock) scope is invisible
+    # and fully serialized kernel code reads as unprotected.
+    (
+        re.compile(r"\b(write_lock(?:_irq(?:save)?|_bh)?)\s*\("),
+        "write_unlock",
+    ),
+    (
+        re.compile(r"\b(read_lock(?:_irq(?:save)?|_bh)?)\s*\("),
+        "read_unlock",
+    ),
     (re.compile(r"\b(rcu_read_lock)\s*\("), "rcu_read_unlock"),
 ]
 

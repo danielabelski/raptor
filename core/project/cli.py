@@ -652,26 +652,46 @@ def main():
                     ))
                     return
                 resolved = str(resolved_path)
-                if resolved in p.binaries:
-                    print(f"Already present: {resolved}")
-                else:
-                    p.binaries.append(resolved)
-                    save_json(project_file, p.to_dict())
-                    print(_green(f"Added: {resolved}"))
+                # RMW under the project-file lock (re-load inside it)
+                # so a concurrent mutator's write isn't dropped.
+                from .project import project_file_lock
+                with project_file_lock(project_file):
+                    p = mgr.load(name)
+                    if not p:
+                        print(_red(f"Project '{name}' not found."))
+                        return
+                    if resolved in p.binaries:
+                        print(f"Already present: {resolved}")
+                    else:
+                        p.binaries.append(resolved)
+                        save_json(project_file, p.to_dict())
+                        print(_green(f"Added: {resolved}"))
             elif args.action == "remove":
                 if not args.path:
                     print(_red("remove requires a <path> argument"))
                     return
                 resolved = str(Path(args.path).resolve())
-                if resolved not in p.binaries:
-                    print(f"Not present: {resolved}")
-                else:
-                    p.binaries.remove(resolved)
-                    save_json(project_file, p.to_dict())
-                    print(_green(f"Removed: {resolved}"))
+                from .project import project_file_lock
+                with project_file_lock(project_file):
+                    p = mgr.load(name)
+                    if not p:
+                        print(_red(f"Project '{name}' not found."))
+                        return
+                    if resolved not in p.binaries:
+                        print(f"Not present: {resolved}")
+                    else:
+                        p.binaries.remove(resolved)
+                        save_json(project_file, p.to_dict())
+                        print(_green(f"Removed: {resolved}"))
             elif args.action == "clear":
-                p.binaries = []
-                save_json(project_file, p.to_dict())
+                from .project import project_file_lock
+                with project_file_lock(project_file):
+                    p = mgr.load(name)
+                    if not p:
+                        print(_red(f"Project '{name}' not found."))
+                        return
+                    p.binaries = []
+                    save_json(project_file, p.to_dict())
                 print(_green(f"Cleared binaries for '{name}'"))
 
         elif args.subcommand in ("trust", "untrust"):

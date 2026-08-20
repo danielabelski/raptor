@@ -5,6 +5,7 @@ directory. Project files live in ~/.raptor/projects/<name>.json.
 Output directories live wherever the user specifies (default: out/projects/<name>/).
 """
 
+import contextlib
 import os
 import re
 import shutil
@@ -15,6 +16,12 @@ from typing import ClassVar
 
 from core.json import load_json, save_json
 from core.logging import get_logger
+
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:                                    # pragma: no cover
+    _HAS_FCNTL = False
 
 logger = get_logger()
 
@@ -104,6 +111,44 @@ def split_setting_key(key: str):
         + ", ".join(sorted(SETTINGS_REGISTRY))
         + " (per-language: build-command.<lang>)"
     )
+
+
+@contextlib.contextmanager
+def project_file_lock(project_file: Path):
+    """Cross-process exclusive lock guarding a project-JSON
+    read-modify-write window.
+
+    Same idiom as ``core.run.metadata._metadata_lock``: flock a sibling
+    ``.lock`` file (not the JSON itself, which ``save_json`` atomically
+    replaces), hold it across the whole load → mutate → save window,
+    degrade to a no-op without fcntl. Without it, concurrent mutators
+    (``/project binary add`` racing ``/project trust``, two parallel
+    ``set`` invocations) last-writer-wins and one update is silently
+    dropped.
+
+    The ``.lock`` file is deliberately left behind — unlinking after
+    unlock races and can split lockers across two inodes.
+    """
+    if not _HAS_FCNTL:
+        yield
+        return
+    path = Path(project_file)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    try:
+        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        # Lock file uncreatable (read-only dir, ENOSPC) — proceed
+        # unserialised rather than failing the mutation.
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _validate_trust_marker(marker: str) -> str:
@@ -730,39 +775,48 @@ class ProjectManager:
             raise ValueError(f"Project '{name}' not found")
         return project
 
+    def _mutation_lock(self, name: str):
+        """Project-JSON RMW lock for the mutators below."""
+        return project_file_lock(self.projects_dir / f"{name}.json")
+
     def set_trust_marker(self, name: str, marker: str) -> str:
         """Set a trust marker on a project. Returns the timestamp.
         Raises ValueError for unknown projects or markers. NEVER call
         this from detection heuristics — operator intent only."""
-        project = self._load_or_raise(name)
-        ts = project.set_trust(marker)
-        self._save(project)
+        with self._mutation_lock(name):
+            project = self._load_or_raise(name)
+            ts = project.set_trust(marker)
+            self._save(project)
         logger.info("Project '%s': trust marker '%s' set", name, marker)
         return ts
 
     def clear_trust_marker(self, name: str, marker: str) -> bool:
         """Remove a trust marker. Returns True if it was set."""
-        project = self._load_or_raise(name)
-        removed = project.clear_trust(marker)
+        with self._mutation_lock(name):
+            project = self._load_or_raise(name)
+            removed = project.clear_trust(marker)
+            if removed:
+                self._save(project)
         if removed:
-            self._save(project)
             logger.info("Project '%s': trust marker '%s' removed",
                         name, marker)
         return removed
 
     def update_setting(self, name: str, key: str, value: str) -> Project:
         """Registry-validated setting write on a project."""
-        project = self._load_or_raise(name)
-        project.set_setting(key, value)
-        self._save(project)
+        with self._mutation_lock(name):
+            project = self._load_or_raise(name)
+            project.set_setting(key, value)
+            self._save(project)
         return project
 
     def remove_setting(self, name: str, key: str) -> bool:
         """Remove a setting. Returns True if it was set."""
-        project = self._load_or_raise(name)
-        removed = project.unset_setting(key)
-        if removed:
-            self._save(project)
+        with self._mutation_lock(name):
+            project = self._load_or_raise(name)
+            removed = project.unset_setting(key)
+            if removed:
+                self._save(project)
         return removed
 
     def update_notes(self, name: str, notes: str) -> Project:

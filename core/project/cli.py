@@ -14,7 +14,13 @@ from pathlib import Path
 
 from core.run.output import unique_run_suffix
 
-from .project import ProjectManager
+from .oplock import OpLockContention, project_op_lock
+from .project import DEFAULT_OUTPUT_BASE, ProjectManager
+
+# Help text for the shared --wait flag on mutating subcommands.
+_WAIT_HELP = ("Block until a concurrent project operation releases the "
+              "lock (default: 3s silent grace, then error naming the "
+              "holder)")
 
 
 def _c(text, code):
@@ -225,6 +231,7 @@ def main():
               "targets or stale catalog drift BEFORE any LLM cost. "
               "On mismatch the project is NOT created."),
     )
+    p_create.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
     # binary — per-project binary management
     p_bin = sub.add_parser(
@@ -244,6 +251,7 @@ def main():
     p_bin.add_argument(
         "name", nargs="?", default=None,
         help="Project name (default: active)")
+    p_bin.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
     # trust / untrust — per-project trust markers
     p_trust = sub.add_parser(
@@ -261,6 +269,7 @@ def main():
     p_trust.add_argument(
         "name", nargs="?", default=None,
         help="Project name (default: active)")
+    p_trust.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
     p_untrust = sub.add_parser(
         "untrust",
@@ -273,6 +282,7 @@ def main():
     p_untrust.add_argument(
         "name", nargs="?", default=None,
         help="Project name (default: active)")
+    p_untrust.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
     # set / unset / get — registry-validated project settings
     p_set = sub.add_parser(
@@ -292,6 +302,7 @@ def main():
     p_set.add_argument(
         "name", nargs="?", default=None,
         help="Project name (default: active)")
+    p_set.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
     p_unset = sub.add_parser(
         "unset",
@@ -303,6 +314,7 @@ def main():
     p_unset.add_argument(
         "name", nargs="?", default=None,
         help="Project name (default: active)")
+    p_unset.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
     p_get = sub.add_parser(
         "get",
@@ -523,6 +535,7 @@ def main():
                               "(provably lossless), ignoring --keep")
     p_clean.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
     p_clean.add_argument("--yes", action="store_true", help="Skip confirmation")
+    p_clean.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
     # correlate
     p_correlate = sub.add_parser("correlate", help="Cross-run finding correlation",
@@ -563,7 +576,16 @@ def main():
 
     mgr = ProjectManager()
 
+    _op_guard = None
     try:
+        # Operation-granular project lock: mutating subcommands hold
+        # <project_dir>/.op.lock for the mutation's duration so two
+        # sessions' concurrent mutations serialise instead of
+        # interleaving. Read-only subcommands never lock — two
+        # sessions merely having a project active is NOT contention.
+        # Acquired inside the try so OpLockContention gets the same
+        # one-line "Error: ..." + exit-1 treatment as ValueError.
+        _op_guard = _acquire_mutation_lock(mgr, args)
         if args.subcommand == "help":
             if args.topic:
                 # Find the subparser and print its help
@@ -1121,12 +1143,82 @@ def main():
                 return
             _do_merge(p, args.type, args.yes)
 
-    except (ValueError, FileExistsError) as e:
+    except (ValueError, FileExistsError, OpLockContention) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         print("\nCancelled.")
         sys.exit(130)
+    finally:
+        if _op_guard is not None:
+            _op_guard.__exit__(None, None, None)
+
+
+def _mutation_lock_target(mgr, args):
+    """Resolve ``(project_output_dir, operation)`` for subcommands that
+    mutate project state; ``None`` for read-only invocations.
+
+    Mirrors each handler's ergonomics so listing forms never lock:
+    ``trust`` with no marker (or a project name in the marker slot)
+    lists; ``set`` without a value lists (or the ``set <name>`` form);
+    ``binary list`` reads. The lock keys on the project OUTPUT dir —
+    the same directory run-start contention keys on — so a mutation
+    and a run start contend on one lock file.
+    """
+    sc = args.subcommand
+    if sc == "create":
+        # Validate the name BEFORE deriving a path from it — a hostile
+        # name must not mkdir outside the output base. Invalid names
+        # skip the lock; create itself re-validates and errors.
+        try:
+            ProjectManager._validate_name(args.name)
+        except ValueError:
+            return None
+        out = args.output_dir or str(
+            (DEFAULT_OUTPUT_BASE / args.name).resolve())
+        return Path(out), "project create"
+    name = getattr(args, "name", None)
+    if sc == "binary":
+        if args.action not in ("add", "remove", "clear"):
+            return None
+        # Same positional shuffle the handler applies for
+        # ``binary clear <project>`` (no path argument).
+        if args.action == "clear" and args.path and not name:
+            name = args.path
+    elif sc == "trust":
+        from core.project.project import VALID_TRUST_MARKERS
+        if getattr(args, "marker", None) not in VALID_TRUST_MARKERS:
+            return None  # listing form (no marker / project-name slot)
+    elif sc == "set":
+        if not getattr(args, "key", None) or args.value is None:
+            return None  # listing form
+    elif sc not in ("unset", "untrust", "clean"):
+        return None
+    name = name or _get_active_project()
+    if not name:
+        return None
+    p = mgr.load(name)
+    if not p or not p.output_dir:
+        return None
+    return Path(p.output_dir), f"project {sc}"
+
+
+def _acquire_mutation_lock(mgr, args):
+    """Enter the op lock for a mutating subcommand.
+
+    Returns the entered context manager (caller exits it in main()'s
+    ``finally``) or ``None`` when the invocation is read-only /
+    unresolvable. Raises ``OpLockContention`` after the silent grace
+    when another operation holds the lock and ``--wait`` wasn't given.
+    """
+    target = _mutation_lock_target(mgr, args)
+    if target is None:
+        return None
+    project_dir, operation = target
+    cm = project_op_lock(project_dir, operation,
+                         wait=getattr(args, "wait", False))
+    cm.__enter__()
+    return cm
 
 
 def _get_active_project():

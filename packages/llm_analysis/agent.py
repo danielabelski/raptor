@@ -2821,6 +2821,9 @@ class AutonomousSecurityAgentV2:
                 # the LLM call entirely.
                 sage_fp_skipped_this = False
                 try:
+                    from core.analysis.reach_chokepoint import (
+                        coerce_manual_override,
+                    )
                     from core.sage.hooks import (
                         compute_finding_source_hash,
                         recall_prior_finding_verdict,
@@ -2833,6 +2836,13 @@ class AutonomousSecurityAgentV2:
                     _rule = (finding.get("rule_id")
                              or finding.get("check_id") or "")
                     _line = int(finding.get("line") or 0)
+                    # Per-finding operator opt-out — the same
+                    # manual_override the sibling chokepoints honour
+                    # (reachability suppression); previously only the
+                    # run-wide env kill switch applied here.
+                    if coerce_manual_override(
+                            finding.get("manual_override")):
+                        _rel = ""
                     if _rel and _fn and _rule and _line > 0:
                         _src_hash = compute_finding_source_hash(
                             Path(self.repo_path) / _rel, _line)

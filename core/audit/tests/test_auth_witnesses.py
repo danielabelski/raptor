@@ -60,11 +60,11 @@ class TestSyncEscape:
 
 
 _FILE_WITH_GETTER = textwrap.dedent("""\
-    public abstract class Realm {
-        protected abstract String getPassword(String username);
+    public abstract class AuthStore {
+        protected abstract String getStoredSecret(String username);
 
-        protected String getDigest(String username, String realmName) {
-            String digestValue = username + ":" + realmName + ":" + getPassword(username);
+        protected String computeDigest(String username, String realmName) {
+            String digestValue = username + ":" + realmName + ":" + getStoredSecret(username);
             byte[] valueBytes = digestValue.getBytes();
             return HexUtils.toHexString(MessageDigest.digest("MD5", valueBytes));
         }
@@ -75,17 +75,17 @@ _FILE_WITH_GETTER = textwrap.dedent("""\
 class TestNullConcat:
     def test_nullable_getter_into_digest_fires(self):
         ng = _nullable_getters(_FILE_WITH_GETTER)
-        assert "getPassword" in ng
+        assert "getStoredSecret" in ng
         body = "\n".join(_FILE_WITH_GETTER.split("\n")[3:8])
-        findings = scan_null_concat("Realm.java", "getDigest", body, ng)
+        findings = scan_null_concat("AuthStore.java", "computeDigest", body, ng)
         assert len(findings) == 1
         assert findings[0].detector == "null_concat"
         assert "literal" in findings[0].description
 
     def test_null_checked_result_does_not_fire(self):
         src = textwrap.dedent("""\
-            protected String getDigest(String u, String r) {
-                String p = getPassword(u);
+            protected String computeDigest(String u, String r) {
+                String p = getStoredSecret(u);
                 if (p == null) {
                     return null;
                 }
@@ -94,21 +94,21 @@ class TestNullConcat:
             }
         """)
         # The concat uses the checked local, not the raw call — no
-        # direct `+ getPassword(` concat, nothing fires.
+        # direct `+ getStoredSecret(` concat, nothing fires.
         findings = scan_null_concat(
-            "Realm.java", "getDigest", src, {"getPassword"},
+            "AuthStore.java", "computeDigest", src, {"getStoredSecret"},
         )
         assert findings == []
 
     def test_concat_without_digest_sink_does_not_fire(self):
         src = textwrap.dedent("""\
             protected String describe(String u) {
-                String s = "user " + getPassword(u);
+                String s = "user " + getStoredSecret(u);
                 return s;
             }
         """)
         assert scan_null_concat(
-            "Realm.java", "describe", src, {"getPassword"},
+            "AuthStore.java", "describe", src, {"getStoredSecret"},
         ) == []
 
 

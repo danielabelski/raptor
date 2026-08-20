@@ -9,7 +9,8 @@ struct declaration says. Code that then accesses a slot through
 item instead of ``ASN1_ANY``, the decoder produced an ``ASN1_STRING``
 and the access reinterprets its length field as a type discriminator
 and its data pointer as a union of struct pointers (the CVE-2023-0286
-GENERAL_NAME x400Address shape).
+shape: an ASN.1 CHOICE member declared as a concrete SEQUENCE but
+compared as ANY).
 
 This is a mechanical, detection-grade witness: both facts are read
 from the SAME translation unit (template table + access site), no
@@ -84,7 +85,7 @@ def _template_types(source: str) -> dict[str, tuple[str, str]]:
     """Map each template member field to (declared_type, struct).
 
     Keyed by the full member path as spelled in the template
-    (``d.x400Address``) AND its tail component (``x400Address``) so an
+    (``d.someMember``) AND its tail component (``someMember``) so an
     access spelled through intermediate members still joins.
     """
     out: dict[str, tuple[str, str]] = {}

@@ -82,8 +82,13 @@ def emit_finding_journal_entry(
     message: str | None = None,
     model: str | None = None,
     has_dataflow: bool = False,
+    verdict: str | None = None,
 ) -> str | None:
     """Emit one finding-grade ``ReviewJournalEntry`` into ``out_dir``.
+
+    ``verdict`` overrides the derivation from ``analysis`` — panel
+    records (multi_model_analyses) carry no ``is_true_positive``, so
+    their verdicts are mapped by the caller.
 
     Returns the resolved function name on success, None otherwise.
     Best-effort — any exception is logged and swallowed so journal
@@ -113,7 +118,8 @@ def emit_finding_journal_entry(
         line_start = func.get("line_start")
         line_end = func.get("line_end")
 
-        verdict = derive_verdict(analysis)
+        if verdict is None:
+            verdict = derive_verdict(analysis)
         body = build_journal_body(
             analysis, message=message, has_dataflow=has_dataflow,
         )
@@ -150,6 +156,29 @@ def emit_finding_journal_entry(
     except Exception:
         logger.debug("journal entry emit error", exc_info=True)
         return None
+
+
+def _panel_verdict(analysis: dict[str, Any]) -> str | None:
+    """Verdict for one panel member's ``multi_model_analyses`` record.
+
+    Panel records carry ``is_exploitable`` + ``ruling`` + ``reasoning``
+    but no ``is_true_positive``: exploitable maps to ``finding``; not
+    exploitable maps to ``clean`` when the ruling names a false
+    positive, else ``suspicious`` (true positive, not exploitable —
+    matching :func:`derive_verdict`'s split); an absent boolean means
+    the member produced no verdict and is skipped.
+    """
+    is_exploitable = analysis.get("is_exploitable")
+    if is_exploitable is True:
+        return "finding"
+    if is_exploitable is not False:
+        return None
+    ruling = analysis.get("ruling")
+    status = ruling.get("status") if isinstance(ruling, dict) else ruling
+    s = str(status or "").strip().lower()
+    if "false_positive" in s or "not_a_vulnerability" in s or s == "fp":
+        return "clean"
+    return "suspicious"
 
 
 #: Result statuses that represent a completed analysis worth journaling.
@@ -225,8 +254,44 @@ def journal_orchestrated_results(
             model=result.get("analysed_by") or result.get("model"),
             has_dataflow=bool(result.get("dataflow_validation")),
         )
-        if name is not None:
-            emitted += 1
+        if name is None:
+            continue
+        emitted += 1
+
+        # Multi-model runs: journal each panel member's own verdict
+        # too. The index key includes the model, so per-model history
+        # is preserved instead of collapsing to the merged verdict —
+        # a disagreeing second model's clean/finding stays queryable.
+        panel = result.get("multi_model_analyses")
+        if not isinstance(panel, list) or len(panel) < 2:
+            continue
+        primary_model = result.get("analysed_by") or result.get("model")
+        for member in panel:
+            if not isinstance(member, dict):
+                continue
+            member_model = member.get("model")
+            if not member_model or member_model == primary_model:
+                # The primary's post-pipeline verdict is the entry
+                # emitted above; re-journaling its dispatch-time
+                # record would double-count (and can be stale).
+                continue
+            member_verdict = _panel_verdict(member)
+            if member_verdict is None:
+                continue
+            if emit_finding_journal_entry(
+                out_dir=Path(out_dir),
+                repo_path=Path(repo_path),
+                checklist=checklist,
+                file_path=result.get("file_path") or result.get("file"),
+                start_line=result.get("start_line") or result.get("line"),
+                analysis={"reasoning": member.get("reasoning")},
+                cwe_id=result.get("cwe_id"),
+                tool=result.get("tool"),
+                message=result.get("message"),
+                model=member_model,
+                verdict=member_verdict,
+            ) is not None:
+                emitted += 1
     if emitted:
         logger.info(
             "journaled %d orchestrated per-finding analyses into %s",

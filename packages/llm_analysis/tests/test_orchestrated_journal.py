@@ -181,3 +181,72 @@ class TestVerdictAndBodyHelpers:
         assert "false_positive=True" in build_journal_body(
             analysis, has_dataflow=True,
         )
+
+
+class TestPanelJournaling:
+    """Multi-model runs journal each panel member's own verdict."""
+
+    def _panel_result(self):
+        return _result(multi_model_analyses=[
+            {"model": "test-model", "is_exploitable": True,
+             "ruling": "validated", "reasoning": "primary says yes"},
+            {"model": "second-model", "is_exploitable": False,
+             "ruling": {"status": "false_positive"},
+             "reasoning": "second says sanitized"},
+            {"model": "third-model", "is_exploitable": False,
+             "ruling": "validated", "reasoning": "real but unreachable"},
+        ])
+
+    def test_disagreeing_members_journaled_with_own_verdicts(
+        self, tmp_path,
+    ):
+        target = _target(tmp_path)
+        out = tmp_path / "out"
+        out.mkdir()
+
+        emitted = journal_orchestrated_results(
+            out, target, [self._panel_result()],
+            checklist=_checklist(target),
+        )
+
+        assert emitted == 3
+        entries = load_entries(out)
+        by_model = {e.model: e for e in entries}
+        # Primary carries the merged post-pipeline verdict, not its
+        # dispatch-time panel record.
+        assert by_model["test-model"].verdict == "finding"
+        assert by_model["second-model"].verdict == "clean"
+        assert "sanitized" in by_model["second-model"].body
+        assert by_model["third-model"].verdict == "suspicious"
+        # Distinct index identities per model — merging preserves all.
+        assert len({e.index_key for e in entries}) == 3
+        assert all(e.producer == "agentic" for e in entries)
+
+    def test_verdictless_member_skipped(self, tmp_path):
+        target = _target(tmp_path)
+        out = tmp_path / "out"
+        out.mkdir()
+        result = _result(multi_model_analyses=[
+            {"model": "test-model", "is_exploitable": True,
+             "reasoning": "yes"},
+            {"model": "erroring-model", "is_exploitable": None,
+             "reasoning": ""},
+        ])
+        emitted = journal_orchestrated_results(
+            out, target, [result], checklist=_checklist(target),
+        )
+        assert emitted == 1
+
+    def test_single_member_panel_not_double_journaled(self, tmp_path):
+        target = _target(tmp_path)
+        out = tmp_path / "out"
+        out.mkdir()
+        result = _result(multi_model_analyses=[
+            {"model": "test-model", "is_exploitable": True,
+             "reasoning": "yes"},
+        ])
+        emitted = journal_orchestrated_results(
+            out, target, [result], checklist=_checklist(target),
+        )
+        assert emitted == 1
+        assert len(load_entries(out)) == 1

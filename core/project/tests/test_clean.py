@@ -149,6 +149,32 @@ class TestClean(unittest.TestCase):
             self.assertEqual(plan["by_type"]["validate"]["delete"], 1)
 
 
+class TestExecuteCleanContainment(unittest.TestCase):
+    """Containment is anchored on the caller-supplied project output
+    dir — a corrupted plan pointing outside it must be refused."""
+
+    def test_refuses_delete_outside_output_path(self):
+        from core.project.clean import execute_clean
+        with TemporaryDirectory() as d:
+            output = Path(d) / "project_output"
+            output.mkdir()
+            victim = Path(d) / "unrelated"
+            victim.mkdir()
+            plan = {"delete_dirs": [victim]}
+            with self.assertRaises(RuntimeError):
+                execute_clean(plan, output_path=output)
+            self.assertTrue(victim.exists())
+
+    def test_deletes_inside_output_path(self):
+        from core.project.clean import execute_clean
+        with TemporaryDirectory() as d:
+            output = Path(d) / "project_output"
+            run = output / "scan-1"
+            run.mkdir(parents=True)
+            execute_clean({"delete_dirs": [run]}, output_path=output)
+            self.assertFalse(run.exists())
+
+
 class TestLiveRunExclusion(unittest.TestCase):
     """Clean/dedup must never plan a live run (running + alive worker)."""
 

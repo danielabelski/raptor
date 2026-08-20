@@ -2260,8 +2260,9 @@ def _do_clean(project, keep, dry_run, yes, dedup=False):
     # clean/examined coverage; flips sole-source findings to found_then_lost).
     _apply_clean_coverage(project, plan, consequences)
 
-    # Execute the exact plan that was shown — no re-query
-    execute_clean(plan)
+    # Execute the exact plan that was shown — no re-query. Containment
+    # anchored on the project's own output dir, not the plan's paths.
+    execute_clean(plan, output_path=project.output_path)
     for name in plan["deleted"]:
         print(_red(f"  Deleted: {name}"))
     print(f"Done. {len(plan['deleted'])} runs deleted ({freed_mb:.1f}MB freed)")

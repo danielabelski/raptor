@@ -155,36 +155,44 @@ def plan_dedup(project) -> Dict[str, Any]:
     return stats
 
 
-def execute_clean(plan: Dict[str, Any]) -> None:
+def execute_clean(plan: Dict[str, Any],
+                  output_path: Path | None = None) -> None:
     """Execute a clean plan by deleting the planned directories.
 
     Per-dir containment check before delete: refuse to rmtree any
     path that resolves outside the project's expected output area.
-    Pre-fix `execute_clean` trusted whatever paths the planner
-    produced — but `delete_dirs` can be operator-supplied (a future
+    `delete_dirs` can be operator-supplied (a future
     `--delete-dirs path1,path2,...` flag) or planner-corrupted (a
     bug elsewhere produces a path with `..` that escapes the
     project root). `shutil.rmtree` would happily walk anywhere
     its argument resolved to.
 
-    Worst case the unguarded rmtree could hit operator data outside
-    `~/.raptor/projects/<name>/`. The containment check refuses any
-    delete that, after `resolve()`, is not under the plan's expected
-    parent (the plan dir is the union of all `delete_dirs`'
-    common parent — operator can override with explicit env var
-    if their layout has a non-standard root).
+    ``output_path`` is the containment root — the project's output
+    directory, passed by the caller that planned against it. Pre-fix
+    the root was derived from the delete paths themselves (the
+    closest common ancestor of ``delete_dirs``' parents), which is a
+    tautology: a plan whose every path pointed at the same wrong tree
+    contained itself perfectly. The self-derived ancestor is kept
+    only as a fallback for legacy callers that don't pass a root.
     """
     delete_dirs = plan["delete_dirs"]
     if not delete_dirs:
         return
-    # The expected containment root is the closest common ancestor
-    # of all paths in `delete_dirs`. A delete that resolves outside
-    # that ancestor is almost certainly a bug.
-    try:
-        roots = [Path(d).resolve().parent for d in delete_dirs]
-        common = Path(os.path.commonpath([str(r) for r in roots]))
-    except (OSError, ValueError):
-        common = None
+    common = None
+    if output_path is not None:
+        try:
+            common = Path(output_path).resolve()
+        except OSError:
+            common = None
+    if common is None:
+        # Legacy fallback: closest common ancestor of the plan's own
+        # paths. Weaker (self-referential) but still catches a single
+        # corrupted entry escaping its siblings.
+        try:
+            roots = [Path(d).resolve().parent for d in delete_dirs]
+            common = Path(os.path.commonpath([str(r) for r in roots]))
+        except (OSError, ValueError):
+            common = None
     for d in delete_dirs:
         if not d.exists():
             continue
@@ -196,7 +204,7 @@ def execute_clean(plan: Dict[str, Any]) -> None:
             try:
                 real.relative_to(common)
             except ValueError:
-                # Resolved path escapes the common parent. Refuse.
+                # Resolved path escapes the containment root. Refuse.
                 raise RuntimeError(
                     f"execute_clean refusing to rmtree {d!r}: resolved "
                     f"path {real!r} escapes containment root {common!r}"
@@ -215,5 +223,5 @@ def clean_project(project, keep=1, dry_run=False) -> Dict[str, Any]:
     """
     stats = plan_clean(project, keep=keep)
     if not dry_run:
-        execute_clean(stats)
+        execute_clean(stats, output_path=project.output_path)
     return stats

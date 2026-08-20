@@ -94,10 +94,19 @@ def read_holder(lock_path: Path) -> dict:
 
 
 def describe_holder(holder: dict) -> str:
-    pid = holder.get("pid", "unknown")
-    op = holder.get("operation", "unknown")
-    since = holder.get("since", "unknown")
-    return f"pid {pid}, op {op}, held since {since}"
+    """One operator-facing line. The stamp is FILE CONTENT (any writer
+    in the project dir can forge it), so every field is terminal-
+    sanitised and the pid coerced — no raw escape bytes or floods
+    reach the operator's terminal via a contention message."""
+    from core.security.log_sanitisation import sanitise_for_terminal
+    pid = holder.get("pid")
+    pid_s = str(pid) if isinstance(pid, int) and not isinstance(pid, bool) \
+        else "unknown"
+    op = sanitise_for_terminal(str(holder.get("operation") or "unknown"),
+                               max_len=64)
+    since = sanitise_for_terminal(str(holder.get("since") or "unknown"),
+                                  max_len=64)
+    return f"pid {pid_s}, op {op}, held since {since}"
 
 
 def _stamp_holder(fd: int, operation: str) -> None:

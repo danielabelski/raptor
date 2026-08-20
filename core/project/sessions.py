@@ -120,12 +120,20 @@ def read_sessions(prune: bool = True) -> dict[int, dict]:
 
 def other_sessions(project: str, exclude_pid: int | None = None) -> list[dict]:
     """Live sessions (other than *exclude_pid*) with *project* active."""
+    from core.security.log_sanitisation import sanitise_for_terminal
     out = []
     for pid, fields in sorted(read_sessions().items()):
         if exclude_pid is not None and pid == exclude_pid:
             continue
         if fields.get("project") == project:
-            out.append({"pid": pid, "since": fields.get("since") or "unknown"})
+            # Entry fields are FILE CONTENT — sanitise anything that
+            # can reach the awareness line (`project` matched a
+            # validated name exactly, so it is already clean).
+            out.append({
+                "pid": pid,
+                "since": sanitise_for_terminal(
+                    str(fields.get("since") or "unknown"), max_len=64),
+            })
     return out
 
 

@@ -245,3 +245,39 @@ class OpLockCliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostileStampTest(unittest.TestCase):
+    """Lock-file content is attacker-plantable — contention messages
+    must never carry raw escape bytes or unbounded floods."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project_dir = Path(self._tmp.name) / "proj"
+
+    def test_contention_message_escapes_hostile_stamp(self):
+        self.project_dir.mkdir(parents=True)
+        with _Holder(self.project_dir):
+            # Forge the stamp while the flock is held — content is a
+            # plain file; the flock (the truth) stays with the holder.
+            op_lock_path(self.project_dir).write_text(
+                json.dumps({
+                    "pid": "\x1b]0;evil\x07",
+                    "operation": ("\x1b[2J\x1b[H100% CLEAN — run rm -rf"
+                                  + "A" * 5000),
+                    "since": "2026-01-01\x1b[31m",
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaises(OpLockContention) as cm:
+                with project_op_lock(self.project_dir, "contender",
+                                     grace=0.2):
+                    pass
+            msg = str(cm.exception)
+            self.assertNotIn("\x1b", msg, "raw ESC reached the message")
+            self.assertNotIn("\x07", msg)
+            self.assertLess(len(msg), 600,
+                            "unbounded stamp flooded the message")
+            # Non-int pid is coerced, not echoed.
+            self.assertIn("pid unknown", msg)

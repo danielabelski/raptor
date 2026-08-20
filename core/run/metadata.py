@@ -349,11 +349,17 @@ def _live_conflicting_run(project_dir: Path, self_dir: Path,
             continue
         if not _pid_alive(owner):
             continue
+        # Sibling metadata is FILE CONTENT another workspace user can
+        # plant — terminal-sanitise every field that reaches the
+        # contention message (pid is already validated as an int).
+        from core.security.log_sanitisation import sanitise_for_terminal
         return {
             "pid": owner,
-            "operation": meta.get("command") or "run",
-            "since": meta.get("timestamp") or "unknown",
-            "run_dir": d.name,
+            "operation": sanitise_for_terminal(
+                str(meta.get("command") or "run"), max_len=64),
+            "since": sanitise_for_terminal(
+                str(meta.get("timestamp") or "unknown"), max_len=64),
+            "run_dir": sanitise_for_terminal(d.name, max_len=128),
         }
     return None
 

@@ -513,9 +513,13 @@ if mkdir -p "$_sessions_dir" 2>/dev/null; then
             continue
         fi
         if [ "$_fpid" != "$$" ] && [ -n "$_active_proj" ]; then
-            _fproj="$(sed -n 's/^project=//p' "$_f" 2>/dev/null | head -n 1)"
+            _fproj="$(_rp sed -n 's/^project=//p' "$_f" 2>/dev/null | _rp head -n 1)"
             if [ "$_fproj" = "$_active_proj" ]; then
-                _fsince="$(sed -n 's/^since=//p' "$_f" 2>/dev/null | head -n 1)"
+                _fsince="$(_rp sed -n 's/^since=//p' "$_f" 2>/dev/null | _rp head -n 1)"
+                # Entry fields are file content: strip non-printables
+                # and bound length (builtins) before echoing.
+                _fsince="${_fsince//[![:print:]]/}"
+                _fsince="${_fsince:0:64}"
                 echo "raptor: project $_active_proj is also active in session pid $_fpid (since ${_fsince:-unknown})" >&2
             fi
         fi

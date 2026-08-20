@@ -88,6 +88,17 @@ class SessionsRegistryTest(unittest.TestCase):
         # Different project doesn't match.
         self.assertEqual(sessions.other_sessions("otherapp"), [])
 
+    def test_hostile_since_field_is_escaped_and_bounded(self):
+        """Entry fields are file content — no raw escapes or floods in
+        the awareness line."""
+        self._write_entry(os.getpid(), "myapp",
+                          since="2026\x1b[2J\x07" + "C" * 4000)
+        lines = sessions.awareness_lines("myapp")
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("\x1b", lines[0])
+        self.assertNotIn("\x07", lines[0])
+        self.assertLess(len(lines[0]), 400)
+
     def test_awareness_line_wording(self):
         self._write_entry(os.getpid(), "myapp",
                           since="2026-08-20T01:00:00+00:00")
@@ -234,6 +245,30 @@ class LauncherAwarenessTest(unittest.TestCase):
             self.assertEqual(len(own), 1, list(sessions_dir.iterdir()))
             self.assertIn("project=myapp",
                           own[0].read_text(encoding="utf-8"))
+
+    def test_launcher_awareness_escapes_hostile_since(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            home = root / "home"
+            home.mkdir()
+            tmpdir = root / "tmp"
+            tmpdir.mkdir()
+            mgr = ProjectManager(projects_dir=home / ".raptor" / "projects")
+            mgr.create("myapp", str(home),
+                       output_dir=str(root / "out" / "myapp"))
+            mgr.set_active("myapp")
+            sessions_dir = home / ".local" / "share" / "raptor" / "sessions.d"
+            sessions_dir.mkdir(parents=True)
+            (sessions_dir / str(os.getpid())).write_text(
+                "project=myapp\nsince=2026\x1b[2J\x07" + "C" * 4000 + "\n",
+                encoding="utf-8")
+            r = self._launch(home, tmpdir)
+            self.assertIn("also active in session pid", r.stderr)
+            self.assertNotIn("\x1b", r.stderr, "raw ESC reached stderr")
+            self.assertNotIn("\x07", r.stderr)
+            line = next(ln for ln in r.stderr.splitlines()
+                        if "also active" in ln)
+            self.assertLess(len(line), 300, "since field flooded the line")
 
 
 if __name__ == "__main__":

@@ -210,3 +210,25 @@ class StartRunGateTest(RunContentionBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostileSiblingMetadataTest(RunContentionBase):
+    """Sibling run metadata is plantable file content — the contention
+    message must never carry raw escape bytes or floods."""
+
+    def test_contention_message_escapes_hostile_fields(self):
+        self._write_sibling(
+            name="scan\x1b[2J_20260101",
+            command="\x1b]0;evil\x07scan" + "B" * 4000,
+        )
+        d = self.project_out / "scan\x1b[2J_20260101"
+        meta = load_json(d / RUN_METADATA_FILE)
+        meta["timestamp"] = "2026-01-01\x1b[31mT00:00:00"
+        save_json(d / RUN_METADATA_FILE, meta)
+        out = self.project_out / "agentic_20260102_000000"
+        with self.assertRaises(ProjectRunContention) as cm:
+            start_run(out, "agentic")
+        msg = str(cm.exception)
+        self.assertNotIn("\x1b", msg, "raw ESC reached the message")
+        self.assertNotIn("\x07", msg)
+        self.assertLess(len(msg), 800, "unbounded field flooded the message")

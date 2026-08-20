@@ -1783,7 +1783,8 @@ Examples:
     audit_group.add_argument(
         "--gap-audit-strategy", default=None, metavar="NAME",
         help="Restrict the audit post-pass to one strategy (general, "
-             "input_handling, concurrency, memory, auth, crypto, aliasing)",
+             "input_handling, concurrency, memory, auth, crypto, "
+             "aliasing, integer)",
     )
     audit_group.add_argument(
         "--gap-audit-scope", action="append", default=None, metavar="DIR",

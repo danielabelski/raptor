@@ -2532,6 +2532,41 @@ class TestPostLoopReceiptRescue:
         flipped = _post_loop_receipt_rescue(result, [receipt], config)
         assert flipped == 0
 
+    def test_detector_findings_refloor_clobbered_verdict(
+        self, tmp_path: Path,
+    ):
+        """A later re-review can clobber a mid-loop detector floor
+        (its synthetic context lacks the injection); the post-loop
+        pass re-applies the deterministic receipt."""
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+        from core.audit.record import load_audit_log
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        outcome.hypotheses[0]["mechanism"] = (
+            "uninitialized ret: the switch has no default case so ret "
+            "is left unset on unexpected values"
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [], config,
+            mechanical_findings={
+                "m.py:wire_endpoints": [
+                    {"detector": "cocci:uninitialized_return"},
+                ],
+            },
+        )
+        assert flipped == 1
+        assert outcome.status == "suspicious"
+        rows = [
+            e for e in load_audit_log(config.out_dir)
+            if e.get("action") == "refutation_gate"
+        ]
+        assert rows[0]["gate"] == "anti_self_refutation"
+        assert rows[0]["stage"] == "post-loop"
+
     def test_tool_evidence_blocks_corroboration_floor(
         self, tmp_path: Path,
     ):

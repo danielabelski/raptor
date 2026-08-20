@@ -7125,6 +7125,7 @@ def _run_audit_body(
     try:
         n_rescued = _post_loop_receipt_rescue(
             result, post_loop_findings, config,
+            mechanical_findings=mechanical_findings,
         )
         if n_rescued:
             logger.info(
@@ -20013,6 +20014,7 @@ def _post_loop_receipt_rescue(
     result: OrchestratorResult,
     post_loop_findings: list,
     config: OrchestratorConfig,
+    mechanical_findings: dict | None = None,
 ) -> int:
     """Re-run the anti-self-refutation gate with post-loop receipts.
 
@@ -20036,7 +20038,7 @@ def _post_loop_receipt_rescue(
         f, fn = plf.get("file", ""), plf.get("function", "")
         if f and fn:
             receipts_by_fn.setdefault((f, fn), []).append(plf)
-    if not receipts_by_fn:
+    if not receipts_by_fn and not mechanical_findings:
         return 0
 
     from .refutation import rescue_self_refuted
@@ -20046,17 +20048,29 @@ def _post_loop_receipt_rescue(
         if outcome.status != "clean":
             continue
         receipts = receipts_by_fn.get((outcome.file, outcome.function))
-        if not receipts:
+        detectors = (mechanical_findings or {}).get(
+            f"{outcome.file}:{outcome.function}",
+        )
+        if not receipts and not detectors:
             continue
         try:
-            rv = rescue_self_refuted(outcome, negative_space=receipts)
+            # Detector findings ride along: a mid-loop floor can be
+            # clobbered by a later re-review whose synthetic context
+            # lacks the detector injection — the receipts themselves
+            # are deterministic, so this pass re-applies them to
+            # whatever verdict is current.
+            rv = rescue_self_refuted(
+                outcome,
+                negative_space=receipts or [],
+                detector_findings=detectors or None,
+            )
         except Exception:
             logger.debug(
                 "post-loop rescue failed for %s:%s",
                 outcome.file, outcome.function, exc_info=True,
             )
             continue
-        if rv is None:
+        if rv is None and receipts:
             rv = _receipt_corroborated_hypothesis(outcome, receipts)
         if rv is None:
             continue

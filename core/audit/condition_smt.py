@@ -1874,25 +1874,76 @@ def _extract_success_returns(lines: list[str]) -> list[int]:
     return results
 
 
+def _extract_if_condition(stripped: str) -> str:
+    """The parenthesised condition of an ``if (...)`` line."""
+    paren_start = stripped.index("(")
+    paren_depth = 0
+    cond = []
+    for ch in stripped[paren_start:]:
+        if ch == "(":
+            paren_depth += 1
+        elif ch == ")":
+            paren_depth -= 1
+        cond.append(ch)
+        if paren_depth == 0:
+            break
+    return "".join(cond)
+
+
+def _only_blank_or_comment_between(
+    lines: list[str], start: int, end: int,
+) -> bool:
+    """True when every line strictly between start and end is blank or
+    a comment."""
+    for j in range(start + 1, end):
+        s = lines[j].strip()
+        if s and not s.startswith(("//", "/*", "*")):
+            return False
+    return True
+
+
 def _find_enclosing_guard(lines: list[str], ret_line: int) -> str:
-    """Walk backwards from ret_line to find the enclosing if-condition."""
+    """Walk backwards from ret_line to find the enclosing if-condition.
+
+    Brace depth decides enclosure: an ``if`` encloses the return only
+    when its opening brace is still unmatched at the return (depth goes
+    negative), or when it is braceless and the return is the very next
+    statement.  The previous version computed the depth and ignored it,
+    so a return AFTER a closed ``if (..) { .. }`` block inherited that
+    block's condition as its guard — the downstream Z3 feasibility
+    calls then reasoned about a condition that does not gate the
+    return at all.
+
+    An ``else`` boundary at depth 0 aborts the walk: the return lives
+    in the else branch, where the if-condition holds with INVERTED
+    polarity — returning it as-is would flip the feasibility question.
+    """
     depth = 0
     for i in range(ret_line - 1, max(ret_line - 15, -1), -1):
         stripped = lines[i].strip()
-        depth += stripped.count("}") - stripped.count("{")
+        opens = stripped.count("{")
+        closes = stripped.count("}")
+        new_depth = depth + closes - opens
+
+        if depth == 0 and re.search(r"\belse\b", stripped):
+            return ""
+
         if stripped.startswith("if") and "(" in stripped:
-            paren_start = stripped.index("(")
-            paren_depth = 0
-            cond = []
-            for ch in stripped[paren_start:]:
-                if ch == "(":
-                    paren_depth += 1
-                elif ch == ")":
-                    paren_depth -= 1
-                cond.append(ch)
-                if paren_depth == 0:
-                    break
-            return "".join(cond)
+            if opens:
+                if new_depth < 0:
+                    return _extract_if_condition(stripped)
+                # Balanced: the if-block closed above the return.
+            elif depth == 0 and _only_blank_or_comment_between(
+                lines, i, ret_line,
+            ):
+                # Braceless if directly guarding the return.
+                return _extract_if_condition(stripped)
+        elif new_depth < 0:
+            # Unmatched opener that is not an if (while/for/switch/
+            # function).  Continue at the next enclosing level.
+            new_depth = 0
+
+        depth = max(new_depth, 0)
     return ""
 
 

@@ -694,6 +694,87 @@ class TestSignedMismatch:
         assert declared_signedness("missing", src) is None
 
 
+class TestFindEnclosingGuard:
+    """Scope-aware guard attribution (verdict soundness): a return
+    after a CLOSED if-block used to inherit that block's condition,
+    and the downstream Z3 feasibility calls reasoned about a guard
+    that does not gate the return."""
+
+    def _find(self, src: str, ret_line: int) -> str:
+        from core.audit.condition_smt import _find_enclosing_guard
+        return _find_enclosing_guard(src.split("\n"), ret_line)
+
+    def test_braced_if_encloses_return(self):
+        src = "int f(void) {\nif (n > 5) {\nreturn 0;\n}\n}\n"
+        # return on line index 2
+        assert self._find(src, 2) == "(n > 5)"
+
+    def test_closed_block_does_not_leak_guard(self):
+        src = (
+            "int f(void) {\n"
+            "if (n > 5) {\n"
+            "do_stuff();\n"
+            "}\n"
+            "return 0;\n"
+            "}\n"
+        )
+        # return on line index 4 is OUTSIDE the if-block
+        assert self._find(src, 4) == ""
+
+    def test_braceless_if_still_found(self):
+        src = "int f(void) {\nif (x < 0)\nreturn -1;\n}\n"
+        assert self._find(src, 2) == "(x < 0)"
+
+    def test_braceless_if_not_adjacent_not_used(self):
+        src = (
+            "int f(void) {\n"
+            "if (x < 0)\n"
+            "log();\n"
+            "return -1;\n"
+            "}\n"
+        )
+        assert self._find(src, 3) == ""
+
+    def test_else_branch_does_not_inherit_condition(self):
+        src = (
+            "int f(void) {\n"
+            "if (a > 0) {\n"
+            "work();\n"
+            "} else {\n"
+            "return 0;\n"
+            "}\n"
+            "}\n"
+        )
+        # Returning "(a > 0)" here would invert the polarity of the
+        # feasibility question.
+        assert self._find(src, 4) == ""
+
+    def test_nested_closed_block_inside_enclosing_if(self):
+        src = (
+            "int f(void) {\n"
+            "if (a < 10) {\n"
+            "if (b) {\n"
+            "x();\n"
+            "}\n"
+            "return 0;\n"
+            "}\n"
+            "}\n"
+        )
+        assert self._find(src, 5) == "(a < 10)"
+
+    def test_if_through_non_if_scope(self):
+        src = (
+            "int f(void) {\n"
+            "if (a < 10) {\n"
+            "while (x) {\n"
+            "return 0;\n"
+            "}\n"
+            "}\n"
+            "}\n"
+        )
+        assert self._find(src, 3) == "(a < 10)"
+
+
 # ── Off-by-one detection ─────────────────────────────────────────────
 
 

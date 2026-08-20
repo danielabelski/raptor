@@ -172,6 +172,21 @@ When scanning untrusted repositories:
 
 ---
 
+## INTERACTIVE PROMPTS
+
+Some commands and skills define decision points where an interactive session presents a structured choice with the AskUserQuestion tool instead of prose. These are interactive-only enhancements layered on the existing behavior — never new pipeline stages.
+
+**The gate.** Before ANY AskUserQuestion, run `libexec/raptor-may-ask` (decision logic: `core/ux/interactivity.py`). Ask only when it prints `interactive` AND the AskUserQuestion tool is available to you. If it prints `non-interactive`, errors, or is missing — or the tool is absent — this session is a dispatched sub-agent, CI, or otherwise unattended: do NOT ask. Apply the instruction's documented non-interactive fallback (always the pre-existing default behavior) and say in your output which default you applied.
+
+**Doctrine for ask instructions:**
+- Every AskUserQuestion instruction in a command/skill file MUST name its non-interactive fallback.
+- Asks live at run boundaries only — completion forks, consent that changes a FUTURE run, destructive confirms. Never insert an ask mid-pipeline where an autonomous flow would block on it.
+- The first option carries the "(Recommended)" tag.
+- Fill option labels and descriptions with the run's actual facts (paths, warning text, findings, `cost_usd` values from the report) — never invent flags, artifacts, or estimates.
+- Never ask the operator to confirm or adjust an evidence-driven verdict — tool output is the verdict.
+
+---
+
 ## CRASH ANALYSIS
 
 The `/crash-analysis` command provides autonomous root-cause analysis for C/C++ crashes.

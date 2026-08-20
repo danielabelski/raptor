@@ -918,6 +918,35 @@ class TestFindingIdDiscipline(unittest.TestCase):
             self.assertNotEqual(f["finding_id"], "rule-x")
 
 
+class TestDeduplicateFindingsIdentity(unittest.TestCase):
+    """deduplicate_findings must keep distinct same-line findings
+    (different column / fingerprint → different finding_id) while
+    still collapsing true duplicates."""
+
+    def test_distinct_same_line_findings_survive(self):
+        from core.sarif.parser import deduplicate_findings
+        base = {
+            "file": "a.c", "startLine": 10, "endLine": 10,
+            "rule_id": "buffer-overflow",
+        }
+        f1 = dict(base, finding_id="hash-col-5")
+        f2 = dict(base, finding_id="hash-col-30")
+        self.assertEqual(len(deduplicate_findings([f1, f2])), 2)
+
+    def test_true_duplicates_collapse(self):
+        from core.sarif.parser import deduplicate_findings
+        f = {
+            "file": "a.c", "startLine": 10, "endLine": 10,
+            "rule_id": "buffer-overflow", "finding_id": "hash-1",
+        }
+        self.assertEqual(len(deduplicate_findings([f, dict(f)])), 1)
+
+    def test_legacy_findings_without_finding_id_still_dedupe(self):
+        from core.sarif.parser import deduplicate_findings
+        f = {"file": "a.c", "startLine": 1, "endLine": 1, "rule_id": "r"}
+        self.assertEqual(len(deduplicate_findings([f, dict(f)])), 1)
+
+
 class TestCollidedIdNotStampedOut(unittest.TestCase):
     """Writers must not re-emit a collided (== rule_id) finding_id as
     the matchBasedId/v1 fingerprint."""

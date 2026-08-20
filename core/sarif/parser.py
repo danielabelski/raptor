@@ -148,6 +148,17 @@ def deduplicate_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
     ``partialFingerprints`` — that lives in :func:`_result_key`, the
     raw-result dedup used by :func:`merge_sarif`.
 
+    Identity key: (file, startLine, endLine, rule_id, finding_id).
+    Pre-fix the key stopped at rule_id, which was COARSER than the
+    raw-result discipline in :func:`_result_key` — two distinct
+    same-line findings (different column, different tool
+    fingerprint) survived ``merge_sarif`` only to be collapsed here.
+    ``finding_id`` (parse-time identity: tool fingerprint or the
+    location/fingerprint hash) carries exactly the column +
+    fingerprint distinction, so including it aligns the two dedup
+    layers. Findings from producers that set no finding_id key
+    degrade to the legacy behaviour (None in that slot).
+
     Args:
         findings: List of finding dictionaries
 
@@ -158,12 +169,13 @@ def deduplicate_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
     unique: list[dict[str, Any]] = []
 
     for finding in findings:
-        # Identity key from location + rule
+        # Create fingerprint from location + rule + parse identity
         fp = (
             finding.get("file"),
             finding.get("startLine"),
             finding.get("endLine"),
             finding.get("rule_id"),
+            finding.get("finding_id"),
         )
 
         if fp not in seen:

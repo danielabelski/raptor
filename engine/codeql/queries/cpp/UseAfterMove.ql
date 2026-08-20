@@ -33,6 +33,22 @@ class MoveCall extends FunctionCall {
 }
 
 /**
+ * Holds if `va` re-establishes a known state for its variable: the
+ * left-hand side of a built-in assignment, or the qualifier of a call
+ * to an assignment operator. Class types — the common moved-from case
+ * — assign through `operator=` (a FunctionCall), not an AssignExpr,
+ * so both forms must count as reassignment.
+ */
+predicate isReassignmentAccess(VariableAccess va) {
+  exists(AssignExpr assign | assign.getLValue() = va)
+  or
+  exists(FunctionCall fc |
+    fc.getQualifier() = va and
+    fc.getTarget().getName() = "operator="
+  )
+}
+
+/**
  * An access to a variable (read or non-const method call) that is NOT
  * an assignment (which would re-establish a known state) and NOT a
  * call to `.clear()`, `.reset()`, or destructor (which are safe
@@ -40,8 +56,8 @@ class MoveCall extends FunctionCall {
  */
 class UnsafePostMoveAccess extends VariableAccess {
   UnsafePostMoveAccess() {
-    // Not the left-hand side of an assignment (re-initialisation is safe)
-    not exists(AssignExpr assign | assign.getLValue() = this) and
+    // Not a reassignment (re-initialisation is safe)
+    not isReassignmentAccess(this) and
     // Not a call to a known-safe resetter
     not exists(FunctionCall fc |
       fc.getQualifier() = this and
@@ -61,8 +77,9 @@ where
   // The use is after the move (by source location — conservative)
   useAccess.getLocation().getStartLine() > moveCall.getLocation().getStartLine() and
   // Exclude cases where the variable is reassigned between move and use
-  not exists(AssignExpr reassign |
-    reassign.getLValue().(VariableAccess).getTarget() = v and
+  not exists(VariableAccess reassign |
+    isReassignmentAccess(reassign) and
+    reassign.getTarget() = v and
     reassign.getLocation().getStartLine() > moveCall.getLocation().getStartLine() and
     reassign.getLocation().getStartLine() < useAccess.getLocation().getStartLine()
   ) and

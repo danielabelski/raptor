@@ -1331,7 +1331,7 @@ class AutonomousSecurityAgentV2:
                         if validation.get('false_positive'):
                             logger.info(
                                 "⚠️  Validation marked as "
-                                "FALSE POSITIVE:"
+                                "False Positive:"
                             )
                             logger.info(
                                 "    Reason: %s",
@@ -1344,7 +1344,7 @@ class AutonomousSecurityAgentV2:
                         elif not validation.get('is_exploitable'):
                             logger.info(
                                 "⚠️  Validation determined "
-                                "NOT EXPLOITABLE:"
+                                "Not Exploitable:"
                             )
                             reason = (
                                 validation.get(
@@ -1364,7 +1364,7 @@ class AutonomousSecurityAgentV2:
                             vuln.exploitability_score = _conf * 0.5
                         else:
                             # Validation confirms exploitability
-                            logger.info("✓ Validation confirms EXPLOITABLE")
+                            logger.info("✓ Validation confirms Exploitable")
                             # Use validation confidence to refine score —
                             # fall back to existing score if missing OR
                             # explicit null (max(float, None) → TypeError).

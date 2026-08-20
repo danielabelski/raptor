@@ -557,3 +557,40 @@ class TestHardenIdentityKeyPerms(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInstallScriptsClampIdentityKey(unittest.TestCase):
+    """The install-time scripts provision the identity BEFORE any
+    clamped call site runs — the exact mechanism that produced the
+    observed group-readable key. Pin the wiring: both scripts clamp
+    the umask across creation and harden afterwards."""
+
+    _SCRIPTS = (
+        "core/sage/scripts/register_agents.py",
+        "core/sage/scripts/seed_sage_knowledge.py",
+    )
+
+    def _source(self, rel):
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[3]
+        return (root / rel).read_text(encoding="utf-8")
+
+    def test_umask_clamped_across_identity_creation(self):
+        for rel in self._SCRIPTS:
+            src = self._source(rel)
+            umask_at = src.index("umask(0o077)")
+            create_at = src.index("AgentIdentity.default()")
+            self.assertLess(
+                umask_at, create_at,
+                f"{rel}: umask clamp must precede identity creation",
+            )
+
+    def test_harden_called_after_creation(self):
+        for rel in self._SCRIPTS:
+            src = self._source(rel)
+            create_at = src.index("AgentIdentity.default()")
+            harden_at = src.index("harden_identity_key_perms()")
+            self.assertGreater(
+                harden_at, create_at,
+                f"{rel}: harden must follow identity creation",
+            )

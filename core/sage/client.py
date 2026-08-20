@@ -34,6 +34,9 @@ def harden_identity_key_perms(identity_path=None) -> None:
     observed group-readable. Anyone who can read the seed can sign
     requests as this agent. Until the SDK hardens its own write path,
     every RAPTOR call site that loads or auto-provisions the identity
+    (this client, libexec/raptor-sage, and the install-time
+    register/seed scripts, which additionally clamp the umask to 0o077
+    across creation so a fresh key is never umask-wide even briefly)
     calls this immediately after the ``AgentIdentity`` call: chmod the
     key to 0600 (and its directory to 0700), warning when group/other
     bits were set — the same posture ``core/sage/rowmac.py`` applies to

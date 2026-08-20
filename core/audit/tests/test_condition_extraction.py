@@ -494,10 +494,15 @@ def _deeply_nested_c(n: int = 20000) -> tuple[str, int]:
     return "\n".join(lines) + "\n", n + 2
 
 
+@pytest.mark.slow
 class TestDeepNesting:
     """CST depth tracks source nesting depth — the line/call/sink
     walkers must not recurse per level (regression: 20k-deep nesting
-    raised RecursionError in all three)."""
+    raised RecursionError in all three).
+
+    slow: parsing a 20k-deep CST costs ~15-25s per test — genuine
+    tree-sitter work, over the default tier's 10s budget. The nightly
+    slow tier (`pytest -m slow`) keeps the regression pinned."""
 
     def test_sink_names_mode_survives(self):
         src, sink_line = _deeply_nested_c()

@@ -3043,7 +3043,25 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             _dk["pass_fds"] = (
                                 tuple(_dk.get("pass_fds") or ()) + (_death_r,)
                             )
-                            _denv = dict(_dk.get("env") if _dk.get("env") is not None else os.environ)
+                            # kwargs["env"] is ALWAYS populated by the
+                            # env staging at the top of run() (None is
+                            # replaced with get_safe_env()). The old
+                            # `else os.environ` fallback here was a
+                            # latent fail-open: dead code today, but a
+                            # future refactor of the staging would have
+                            # silently handed the sandboxed child the
+                            # full unsanitised parent environment.
+                            # Fail loudly instead.
+                            _denv_base = _dk.get("env")
+                            if _denv_base is None:
+                                raise RuntimeError(
+                                    "sandbox run(): env staging "
+                                    "invariant violated — kwargs['env'] "
+                                    "unset at the death-pipe spawn "
+                                    "path; refusing to fall back to "
+                                    "os.environ for a sandboxed child."
+                                )
+                            _denv = dict(_denv_base)
                             _denv["_RAPTOR_DEATH_FD"] = str(_death_r)
                             _dk["env"] = _denv
                             try:

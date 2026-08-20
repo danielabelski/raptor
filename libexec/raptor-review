@@ -674,6 +674,36 @@ def cmd_compact(args):
 
 # ── Argument parsing ─────────────────────────────────────────────────
 
+# Flags that consume a following value. The default-subcommand sniffer
+# must skip those values — pre-fix `raptor-review --project /x stats`
+# picked `/x` (a flag VALUE) as the first positional, decided it wasn't
+# a known subcommand, and prepended "show", so `stats` was parsed as
+# show's <file> argument.
+_VALUE_FLAGS = frozenset({
+    "--out", "--project", "--target", "--status", "--base",
+    "--source", "-m", "--body",
+})
+
+
+def _first_positional(argv_rest: list) -> str | None:
+    """First true positional, skipping values consumed by flags.
+
+    ``--flag value`` consumes the next token; ``--flag=value`` carries
+    its value inline and consumes nothing.
+    """
+    skip = False
+    for a in argv_rest:
+        if skip:
+            skip = False
+            continue
+        if a.startswith("-") and a != "-":
+            if a in _VALUE_FLAGS:
+                skip = True
+            continue
+        return a
+    return None
+
+
 def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--out", default=None, help="Output directory")
@@ -741,7 +771,7 @@ def main():
         "note", "edit", "stale", "compact", "coverage",
     }
     argv_rest = sys.argv[1:]
-    first_positional = next((a for a in argv_rest if not a.startswith("-")), None)
+    first_positional = _first_positional(argv_rest)
 
     if first_positional and first_positional not in known_commands:
         argv_rest = ["show"] + argv_rest

@@ -29,6 +29,8 @@ from core.dataflow.injection_prescreen import (
 # ---------------------------------------------------------------------------
 
 # Line numbers (1-based) are load-bearing for the AST dominance checks.
+# The refuting charset is DOTLESS: '.' is a pathtrav danger char ('.'
+# builds '..' segments), so dot-admitting charsets must decline.
 GUARD_APP = """\
 import os
 import re
@@ -36,7 +38,7 @@ import re
 
 def handler(request):
     name = request.args.get('name')
-    if not re.match(r'^[A-Za-z0-9_.+-]+$', name):
+    if not re.match(r'^[A-Za-z0-9_+-]+$', name):
         return None
     cfg = os.path.join('/etc/app', name)
     open(cfg)
@@ -44,6 +46,11 @@ def handler(request):
 GUARD_SOURCE_LINE = 6
 GUARD_VALIDATOR_LINE = 7
 GUARD_SINK_LINE = 10
+
+# The historical whoogle shape admits '.' — sound for the join-shape
+# seen there, but the charset proof has no join-shape model, so the
+# prescreen must not refute pathtrav on it.
+GUARD_APP_WHOOGLE = GUARD_APP.replace("[A-Za-z0-9_+-]", "[A-Za-z0-9_.+-]")
 
 
 SUB_APP = """\
@@ -53,7 +60,7 @@ import re
 
 def handler(request):
     name = request.args.get('name')
-    name = re.sub(r'[/\\\\]+', '', name)
+    name = re.sub(r'[/\\\\.]+', '', name)
     open('/etc/app/' + name)
 """
 SUB_SOURCE_LINE = 6
@@ -138,7 +145,7 @@ class TestSinkClassMapping:
 
 
 class TestGuardFormRefutation:
-    def test_whoogle_shape_refutes(self, guard_repo):
+    def test_dotless_charset_shape_refutes(self, guard_repo):
         verdict = prescreen_finding(
             paths=[_guard_path()], repo_root=guard_repo,
             rule_id="py/path-injection",
@@ -153,10 +160,20 @@ class TestGuardFormRefutation:
         assert ev["sink_classes"] == ["pathtrav"]
         assert verdict.solver_ms >= 0
 
+    def test_whoogle_dot_charset_declines_pathtrav(self, tmp_path):
+        # '.' is in the pathtrav danger model ('..' segments) and the
+        # charset proof carries no join-shape model — a dot-admitting
+        # charset must not refute a pathtrav finding.
+        repo = _write_app(tmp_path, GUARD_APP_WHOOGLE)
+        assert prescreen_finding(
+            paths=[_guard_path()], repo_root=repo,
+            rule_id="py/path-injection",
+        ) is None
+
     def test_insufficient_charset_no_refutation(self, tmp_path):
         # Charset PERMITS '/' — the danger char survives; the Z3 proof
         # comes back sat and the prescreen must not refute.
-        app = GUARD_APP.replace("[A-Za-z0-9_.+-]", "[A-Za-z0-9_./+-]")
+        app = GUARD_APP.replace("[A-Za-z0-9_+-]", "[A-Za-z0-9_/+-]")
         repo = _write_app(tmp_path, app)
         assert prescreen_finding(
             paths=[_guard_path()], repo_root=repo,
@@ -176,8 +193,8 @@ class TestGuardFormRefutation:
         # fullmatch has no trailing-newline quirk, so a charset
         # excluding every cmdi danger char may refute a cmdi finding.
         app = GUARD_APP.replace(
-            "re.match(r'^[A-Za-z0-9_.+-]+$', name)",
-            "re.fullmatch(r'[A-Za-z0-9_.+-]+', name)",
+            "re.match(r'^[A-Za-z0-9_+-]+$', name)",
+            "re.fullmatch(r'[A-Za-z0-9_+-]+', name)",
         ).replace("os.path.join('/etc/app', name)", "'ls ' + name")
         repo = _write_app(tmp_path, app)
         verdict = prescreen_finding(
@@ -195,15 +212,15 @@ class TestGuardFormRefutation:
 class TestLiftabilityConservatism:
     @pytest.mark.parametrize("validator_line", [
         # re.search constrains nothing about the whole string.
-        "    if not re.search(r'^[A-Za-z0-9_.+-]+$', name):",
+        "    if not re.search(r'^[A-Za-z0-9_+-]+$', name):",
         # Unanchored re.match — suffix unconstrained.
-        "    if not re.match(r'[A-Za-z0-9_.+-]+', name):",
+        "    if not re.match(r'[A-Za-z0-9_+-]+', name):",
         # Partial anchor (no $) — suffix unconstrained.
-        "    if not re.match(r'^[A-Za-z0-9_.+-]+', name):",
+        "    if not re.match(r'^[A-Za-z0-9_+-]+', name):",
         # Flags argument changes matching semantics (e.g. MULTILINE
         # turns $ into a line anchor) — call must close after the var.
-        "    if not re.match(r'^[A-Za-z0-9_.+-]+$', name, re.MULTILINE):",
-        "    if not re.match(r'^[A-Za-z0-9_.+-]+$', name, re.I):",
+        "    if not re.match(r'^[A-Za-z0-9_+-]+$', name, re.MULTILINE):",
+        "    if not re.match(r'^[A-Za-z0-9_+-]+$', name, re.I):",
         # Negated class inverts the language.
         "    if not re.match(r'^[^/\\\\]+$', name):",
         # Shorthand classes are not literal charsets.
@@ -222,8 +239,8 @@ class TestLiftabilityConservatism:
         # count=1 strips only the first occurrence — later danger
         # chars survive, so the strip claim is false.
         app = SUB_APP.replace(
-            "re.sub(r'[/\\\\]+', '', name)",
-            "re.sub(r'[/\\\\]+', '', name, 1)",
+            "re.sub(r'[/\\\\.]+', '', name)",
+            "re.sub(r'[/\\\\.]+', '', name, 1)",
         )
         repo = _write_app(tmp_path, app)
         assert prescreen_finding(
@@ -249,7 +266,7 @@ class TestLiftabilityConservatism:
         app = (
             "def handler(request)\n"
             "  name = params[:name]\n"
-            "  return nil unless name =~ /^[A-Za-z0-9_.+-]+$/\n"
+            "  return nil unless name =~ /^[A-Za-z0-9_+-]+$/\n"
             "  File.open('/etc/app/' + name)\n"
             "end\n"
         )
@@ -281,8 +298,8 @@ class TestDominanceConservatism:
             "    name = request.args.get('name')\n"
             "    other = request.args.get('other')",
         ).replace(
-            "re.match(r'^[A-Za-z0-9_.+-]+$', name)",
-            "re.match(r'^[A-Za-z0-9_.+-]+$', other)",
+            "re.match(r'^[A-Za-z0-9_+-]+$', name)",
+            "re.match(r'^[A-Za-z0-9_+-]+$', other)",
         )
         repo = _write_app(tmp_path, app)
         # Lines shift by one after the inserted assignment.

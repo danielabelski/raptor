@@ -178,11 +178,49 @@ def test_find_validator_line_none_when_absent():
 # ---------------------------------------------------------------------------
 
 def test_prove_unsat_for_whoogle_charset_vs_pathtrav():
-    spec = sb.ValidatorSpec("charset", "name", "A-Za-z0-9_.+-", "+...", 0)
+    # Soundness: '.' is now in the pathtrav danger model ('..' segments
+    # escape via multi-component joins the charset model cannot see),
+    # so the sound charset excludes it.
+    spec = sb.ValidatorSpec("charset", "name", "A-Za-z0-9_+-", "+...", 0)
     v = sb.prove_neutralizes(spec, "pathtrav")
     assert v.sound is True
     assert v.counterexample is None
     assert "UNSAT" in v.reasoning
+
+
+def test_prove_sat_for_dot_admitting_charset_vs_pathtrav():
+    """Regression (danger-model completeness): a '.'-admitting charset
+    can build '..' segments; whether that traverses depends on the
+    join shape downstream, which the charset model cannot see — the
+    verdict must decline rather than suppress."""
+    spec = sb.ValidatorSpec("charset", "name", "A-Za-z0-9_.+-", "+...", 0)
+    v = sb.prove_neutralizes(spec, "pathtrav")
+    assert v.sound is False
+    assert v.counterexample == "."
+
+
+def test_prove_sat_for_digits_and_space_charset_vs_sqli():
+    """Regression: digits-and-space charsets are NOT sound for sqli —
+    in an unquoted numeric context ``1 OR 1`` needs no quote chars."""
+    spec = sb.ValidatorSpec("charset", "id_", "0-9 ", "+...", 0)
+    v = sb.prove_neutralizes(spec, "sqli")
+    assert v.sound is False
+
+
+def test_prove_digits_only_charset_still_sound_for_sqli():
+    """Boost value preserved: a pure numeric charset is provably safe
+    in both quoted and unquoted SQL contexts."""
+    spec = sb.ValidatorSpec("charset", "id_", "0-9", "+...", 0)
+    v = sb.prove_neutralizes(spec, "sqli")
+    assert v.sound is True
+
+
+def test_prove_sat_for_redirect_admitting_charset_vs_cmdi():
+    """Regression: '>' needs no separator to redirect (``foo>x``)."""
+    spec = sb.ValidatorSpec("charset", "arg", "A-Za-z0-9>", "+...", 0)
+    v = sb.prove_neutralizes(spec, "cmdi")
+    assert v.sound is False
+    assert v.counterexample == ">"
 
 
 def test_prove_sat_for_weak_validator():
@@ -191,7 +229,7 @@ def test_prove_sat_for_weak_validator():
     spec = sb.ValidatorSpec("charset", "name", "A-Za-z0-9_./+-", "+...", 0)
     v = sb.prove_neutralizes(spec, "pathtrav")
     assert v.sound is False
-    assert v.counterexample == "/"
+    assert v.counterexample in {"/", "."}
     assert "SAT" in v.reasoning
 
 
@@ -222,8 +260,10 @@ def test_extract_charset_sub_rebind():
     assert spec is not None
     assert spec.kind == "charset_sub"
     assert spec.var_name == "x"
-    # `\\` in the pattern unescapes to `\`; `/` stays as-is.
-    assert spec.forbidden == "/\\"
+    # The RAW class body is stored; _expand_charset_body interprets
+    # the `\\` escape exactly once, at proof time.
+    assert spec.forbidden == "/\\\\"
+    assert sb._expand_charset_body(spec.forbidden) == {"/", "\\"}
 
 
 def test_extract_charset_sub_handles_escaped_quotes_in_pattern():
@@ -242,20 +282,23 @@ def test_extract_charset_sub_handles_escaped_quotes_in_pattern():
     assert spec is not None, "Bug B regression: pattern with escaped quotes must extract"
     assert spec.kind == "charset_sub"
     assert spec.var_name == "project_name"
-    # After unescape, the forbidden set should include all stripped chars
-    assert "!" in spec.forbidden
-    assert ";" in spec.forbidden       # in cmdi danger
-    assert "$" in spec.forbidden       # in cmdi danger
+    # The expanded forbidden set should include all stripped chars
+    expanded = sb._expand_charset_body(spec.forbidden)
+    assert "!" in expanded
+    assert ";" in expanded             # in cmdi danger
+    assert "$" in expanded             # in cmdi danger
 
 
-def test_extract_charset_sub_unescapes_unnecessary_escapes():
+def test_extract_charset_sub_keeps_raw_over_escaped_body():
     """Author over-escapes inside the char class (Gerapy-style); the
-    unescape pass returns the true literal char set."""
+    raw body is stored and expansion yields the true literal char
+    set (``\\X`` -> ``X`` for non-shorthand escapes)."""
     diff = "+    x = re.sub('[\\!\\@\\#\\$\\;]+', '', x)\n"
     spec = sb.extract_validator(diff)
     assert spec is not None
     assert spec.kind == "charset_sub"
-    assert spec.forbidden == "!@#$;"
+    assert spec.forbidden == "\\!\\@\\#\\$\\;"
+    assert sb._expand_charset_body(spec.forbidden) == set("!@#$;")
 
 
 def test_extract_charset_sub_requires_same_var_rebind():
@@ -275,9 +318,10 @@ def test_extract_charset_sub_requires_empty_replacement():
 
 
 def test_prove_charset_sub_sound_when_danger_subset_of_forbidden():
-    """Path-traversal danger is just ['/', '\\\\']. If the substitution
-    strips both, every danger char is removed -> SOUND."""
-    spec = sb.ValidatorSpec("charset_sub", "x", source_line="+...", forbidden="/\\")
+    """Path-traversal danger is ['/', '\\\\', '.'].  If the substitution
+    strips all of them, every danger char is removed -> SOUND."""
+    spec = sb.ValidatorSpec(
+        "charset_sub", "x", source_line="+...", forbidden="/\\\\.")
     v = sb.prove_neutralizes(spec, "pathtrav")
     assert v.sound is True
     assert v.counterexample is None
@@ -395,14 +439,14 @@ def test_try_tier0_sound_on_charset_sub_archetype(tmp_path: Path):
     (tmp_path / "app.py").write_text(
         "def f():\n"                            # line 1
         "    x = req()\n"                       # line 2
-        "    x = re.sub('[/\\\\]+', '', x)\n"   # line 3 — substitution
+        "    x = re.sub('[/\\\\\\\\.]+', '', x)\n"   # line 3 — substitution
         "    return open(x)\n"                  # line 4 — sink
     )
     diff = (
         "@@ -1,3 +1,4 @@\n"
         " def f():\n"
         "     x = req()\n"
-        "+    x = re.sub('[/\\\\]+', '', x)\n"
+        "+    x = re.sub('[/\\\\\\\\.]+', '', x)\n"
         "     return open(x)\n"
     )
     r = sb.try_tier0(
@@ -410,7 +454,8 @@ def test_try_tier0_sound_on_charset_sub_archetype(tmp_path: Path):
         sink_uri="app.py", sink_line=4, sink_class="pathtrav",
     )
     assert r.status is sb.Tier0Status.SOUND
-    assert r.artifact == "smt:charset_sub:[/\\]@app.py:3"
+    # Artifact carries the RAW class body as spelled in the source.
+    assert r.artifact == "smt:charset_sub:[/\\\\\\\\.]@app.py:3"
     assert "set inclusion" in r.reasoning
 
 
@@ -769,7 +814,7 @@ def test_try_tier0_sound_when_validated_var_threads_through_assignment(tmp_path:
     rejected this — the most common real-world Tier 0 case."""
     (tmp_path / "app.py").write_text(
         "def f(name):\n"                                                # line 1
-        '    if not re.match(r"^[A-Za-z0-9_.+-]+$", name):\n'           # line 2
+        '    if not re.match(r"^[A-Za-z0-9_+-]+$", name):\n'           # line 2
         "        return error()\n"                                       # line 3
         "    cfg = os.path.join(BASE, name)\n"                           # line 4 — derive cfg from name
         "    return open(cfg)\n"                                         # line 5 = sink, references cfg
@@ -777,7 +822,7 @@ def test_try_tier0_sound_when_validated_var_threads_through_assignment(tmp_path:
     diff = (
         "@@ -1,3 +1,5 @@\n"
         " def f(name):\n"
-        '+    if not re.match(r"^[A-Za-z0-9_.+-]+$", name):\n'
+        '+    if not re.match(r"^[A-Za-z0-9_+-]+$", name):\n'
         "+        return error()\n"
         "     cfg = os.path.join(BASE, name)\n"
         "     return open(cfg)\n"
@@ -1041,7 +1086,7 @@ def test_validator_block_with_specific_except_class_still_dominates(tmp_path: Pa
     (tmp_path / "app.py").write_text(
         "def f(x):\n"
         "    try:\n"
-        '        if not re.match(r"^[A-Za-z0-9_.+-]+$", x):\n'
+        '        if not re.match(r"^[A-Za-z0-9_+-]+$", x):\n'
         "            raise ValueError\n"
         "    except OSError:\n"                                        # different exception class
         "        pass\n"
@@ -1051,7 +1096,7 @@ def test_validator_block_with_specific_except_class_still_dominates(tmp_path: Pa
         "@@ -1,3 +1,7 @@\n"
         " def f(x):\n"
         "+    try:\n"
-        '+        if not re.match(r"^[A-Za-z0-9_.+-]+$", x):\n'
+        '+        if not re.match(r"^[A-Za-z0-9_+-]+$", x):\n'
         "+            raise ValueError\n"
         "+    except OSError:\n"
         "+        pass\n"
@@ -1070,7 +1115,7 @@ def test_validator_with_return_inside_try_still_dominates(tmp_path: Path):
     (tmp_path / "app.py").write_text(
         "def f(x):\n"
         "    try:\n"
-        '        if not re.match(r"^[A-Za-z0-9_.+-]+$", x):\n'
+        '        if not re.match(r"^[A-Za-z0-9_+-]+$", x):\n'
         "            return error()\n"                                 # return, not raise
         "    except Exception:\n"
         "        pass\n"
@@ -1080,7 +1125,7 @@ def test_validator_with_return_inside_try_still_dominates(tmp_path: Path):
         "@@ -1,3 +1,7 @@\n"
         " def f(x):\n"
         "+    try:\n"
-        '+        if not re.match(r"^[A-Za-z0-9_.+-]+$", x):\n'
+        '+        if not re.match(r"^[A-Za-z0-9_+-]+$", x):\n'
         "+            return error()\n"
         "+    except Exception:\n"
         "+        pass\n"
@@ -1136,14 +1181,14 @@ def test_try_tier0_sound_on_js_archetype(tmp_path: Path):
     """End-to-end JS: guard-and-exit + path-traversal sink -> SOUND."""
     (tmp_path / "app.js").write_text(
         "function get_config(name) {\n"                                    # line 1
-        "  if (!/^[A-Za-z0-9_.+-]+$/.test(name)) return error();\n"        # line 2
+        "  if (!/^[A-Za-z0-9_+-]+$/.test(name)) return error();\n"        # line 2
         "  return fs.readFile(path.join(BASE, name));\n"                   # line 3
         "}\n"
     )
     diff = (
         "@@ -1,2 +1,3 @@\n"
         " function get_config(name) {\n"
-        "+  if (!/^[A-Za-z0-9_.+-]+$/.test(name)) return error();\n"
+        "+  if (!/^[A-Za-z0-9_+-]+$/.test(name)) return error();\n"
         "   return fs.readFile(path.join(BASE, name));\n"
     )
     r = sb.try_tier0(
@@ -1158,14 +1203,14 @@ def test_try_tier0_sound_on_js_archetype(tmp_path: Path):
 def test_try_tier0_sound_on_java_archetype(tmp_path: Path):
     (tmp_path / "App.java").write_text(
         "void load(String name) {\n"                                                       # line 1
-        '    if (!name.matches("^[A-Za-z0-9_.+-]+$")) throw new IllegalArgumentException();\n'  # line 2
+        '    if (!name.matches("^[A-Za-z0-9_+-]+$")) throw new IllegalArgumentException();\n'  # line 2
         "    Files.readAllBytes(Paths.get(BASE, name));\n"                                 # line 3
         "}\n"
     )
     diff = (
         "@@ -1,2 +1,3 @@\n"
         " void load(String name) {\n"
-        '+    if (!name.matches("^[A-Za-z0-9_.+-]+$")) throw new IllegalArgumentException();\n'
+        '+    if (!name.matches("^[A-Za-z0-9_+-]+$")) throw new IllegalArgumentException();\n'
         "     Files.readAllBytes(Paths.get(BASE, name));\n"
     )
     r = sb.try_tier0(
@@ -1178,15 +1223,15 @@ def test_try_tier0_sound_on_java_archetype(tmp_path: Path):
 
 def test_try_tier0_sound_on_ruby_archetype(tmp_path: Path):
     (tmp_path / "app.rb").write_text(
-        "def get_config(name)\n"                                            # line 1
-        "  raise ArgumentError unless name =~ /\\A[A-Za-z0-9_.+-]+\\z/\n"   # line 2
-        "  File.open(File.join(BASE, name))\n"                              # line 3
+        "def get_config(name)\n"                                           # line 1
+        "  raise ArgumentError unless name =~ /\\A[A-Za-z0-9_+-]+\\z/\n"   # line 2
+        "  File.open(File.join(BASE, name))\n"                             # line 3
         "end\n"
     )
     diff = (
         "@@ -1,2 +1,3 @@\n"
         " def get_config(name)\n"
-        "+  raise ArgumentError unless name =~ /\\A[A-Za-z0-9_.+-]+\\z/\n"
+        "+  raise ArgumentError unless name =~ /\\A[A-Za-z0-9_+-]+\\z/\n"
         "   File.open(File.join(BASE, name))\n"
     )
     r = sb.try_tier0(
@@ -1254,7 +1299,7 @@ _WHOOGLE_DIFF = (
     "@@ -1,4 +1,6 @@\n"
     " def get_config():\n"
     "     name = os.path.normpath(request.args.get('name'))\n"
-    '+    if not re.match(r"^[A-Za-z0-9_.+-]+$", name):\n'
+    '+    if not re.match(r"^[A-Za-z0-9_+-]+$", name):\n'
     "+        return error()\n"
     "     return open(os.path.join(CONFIG_PATH, name))\n"
 )
@@ -1268,7 +1313,7 @@ def _write_post_fix_repo(tmp_path: Path) -> Path:
     src.write_text(
         "def get_config():\n"                                                  # line 1
         "    name = os.path.normpath(request.args.get('name'))\n"              # line 2
-        '    if not re.match(r"^[A-Za-z0-9_.+-]+$", name):\n'                  # line 3
+        '    if not re.match(r"^[A-Za-z0-9_+-]+$", name):\n'                  # line 3
         "        return error()\n"                                             # line 4
         "    return open(os.path.join(CONFIG_PATH, name))\n"                   # line 5
     )
@@ -1283,7 +1328,7 @@ def test_try_tier0_sound_on_whoogle_archetype(tmp_path: Path):
         fix_diff=_WHOOGLE_DIFF, repo_root=repo,
         sink_uri="app/routes.py", sink_line=5, sink_class="pathtrav")
     assert r.status is sb.Tier0Status.SOUND
-    assert r.artifact == "smt:charset:[A-Za-z0-9_.+-]+@app/routes.py:3"
+    assert r.artifact == "smt:charset:[A-Za-z0-9_+-]+@app/routes.py:3"
     assert r.extras == {"validator_line": 3, "var_name": "name"}
     assert "UNSAT" in r.reasoning
 
@@ -1309,7 +1354,7 @@ def test_try_tier0_declined_when_validator_allows_danger(tmp_path: Path):
         fix_diff=diff, repo_root=tmp_path,
         sink_uri="app.py", sink_line=5, sink_class="pathtrav")
     assert r.status is sb.Tier0Status.DECLINED
-    assert r.counterexample == "/"
+    assert r.counterexample in {"/", "."}
 
 
 def test_try_tier0_not_applicable_when_no_validator(tmp_path: Path):
@@ -1380,7 +1425,8 @@ def test_try_tier0_z3_unavailable_degrades(monkeypatch, tmp_path: Path):
 
 
 @pytest.mark.parametrize("sink_class,charset,expect_sound", [
-    ("pathtrav", "A-Za-z0-9_.+-", True),   # whoogle archetype
+    ("pathtrav", "A-Za-z0-9_+-", True),    # whoogle archetype (dotless)
+    ("pathtrav", "A-Za-z0-9_.+-", False),  # '.' builds '..' segments
     ("cmdi",     "A-Za-z0-9_.-",  True),   # excludes shell metachars
     ("pathtrav", "A-Za-z0-9_./",  False),  # permits '/'
     ("cmdi",     "A-Za-z0-9; ",   False),  # permits ';'

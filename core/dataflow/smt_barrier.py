@@ -8,9 +8,14 @@ FIRST on any case where the fix adds a charset/regex-shaped validator.
 The whoogle archetype is::
 
     name = request.args.get('name')
-    if not re.match(r'^[A-Za-z0-9_.+-]+$', name):
+    if not re.match(r'^[A-Za-z0-9_+-]+$', name):
         return error()
     open(os.path.join(CONFIG_PATH, name))            # CWE-22 sink
+
+(The historical whoogle charset also admitted '.'; the pathtrav danger
+model now includes '.' — '..' segments escape via multi-component
+joins the charset model cannot see — so a dot-admitting charset is
+DECLINED, not SOUND.)
 
 The Tier 2 LLM keeps failing to express that as a CodeQL barrier-guard;
 Z3 dispatches it directly by proving the validator's language and the
@@ -79,21 +84,32 @@ from core.smt_solver import z3_available as _z3_available
 # Tier 2.
 # --------------------------------------------------------------------------
 _DANGER_CHARS = {
-    # Path separators are the load-bearing chars for traversal.  Without '/'
-    # (or '\') the value can't escape os.path.join's base directory or name
-    # an absolute path.  Conservative — a lone '..' without separators
-    # resolves to a directory, not an arbitrary file.
-    "pathtrav": ["/", "\\"],
-    # Shell metachars that introduce command separation, substitution, or
-    # backgrounding.  Newlines included because they terminate a command in
-    # most shell contexts.
-    "cmdi":     [";", "|", "&", "$", "`", "\n"],
-    # SQL quote / comment / statement-terminator chars.  Wider than strict
-    # SQLi exploits need (a lone '-' isn't an exploit), so the verdict here
-    # will more often be DECLINED than for pathtrav/cmdi.  Honest scope.
-    "sqli":     ["'", '"', ";", "-"],
-    # XSS tag- and attribute-breakers.  Same fuzziness caveat as SQLi.
-    "xss":      ["<", ">", '"', "'"],
+    # Path separators are the load-bearing chars for traversal, and '.'
+    # builds '..' segments.  Whether a bare '..' (no separator) is
+    # dangerous depends on how the value is joined downstream —
+    # ``join(base, name, "x")`` escapes via name=".." — which the
+    # charset model cannot see, so '.' must be excluded for the
+    # verdict to be sound.
+    "pathtrav": ["/", "\\", "."],
+    # Shell metachars that introduce command separation, substitution,
+    # backgrounding, or redirection.  Newlines included because they
+    # terminate a command in most shell contexts; '<' / '>' because
+    # redirects need no separator (``foo>x`` clobbers x).  Residual
+    # known gap: option injection (a leading '-') is argument-position
+    # dependent and out of scope for a charset model.
+    "cmdi":     [";", "|", "&", "$", "`", "\n", "<", ">"],
+    # SQL quote / comment / statement-terminator chars PLUS the chars
+    # that suffice in an UNQUOTED (numeric) context, where no quote is
+    # needed to change the query: whitespace and grouping/comparison
+    # chars (``1 OR 1``, ``1)--``).  The charset model cannot see the
+    # interpolation context, so both contexts must be covered for the
+    # verdict to be sound.  Digits-only charsets remain provably safe.
+    "sqli":     ["'", '"', ";", "-", " ", "\t", "\n", "\r",
+                 "=", "(", ")"],
+    # XSS tag- and attribute-breakers PLUS unquoted-attribute-context
+    # injectors: whitespace and '=' add new attributes without any of
+    # <>"' (``x onmouseover=...``), '`' breaks IE-legacy attributes.
+    "xss":      ["<", ">", '"', "'", " ", "\t", "\n", "=", "`"],
 }
 
 
@@ -341,24 +357,6 @@ def _charset_body_is_safe(body: str) -> bool:
     return _ALPHA_BACKSLASH_ESCAPE.search(body) is None
 
 
-def _unescape_charclass(chars: str) -> str:
-    """Strip backslash escapes from a regex character-class body.
-
-    Inside ``[...]`` only ``]``, ``\\``, and a leading ``^`` need real
-    escaping; other escape sequences (``\\!``, ``\\@``, ...) are
-    unnecessary but legal, and the unescaped character is what the
-    pattern actually matches.  Stripping them gives us the true
-    member-set of the class.
-
-    Used by the ``re.sub`` extractor where authors often over-escape
-    (e.g. Gerapy's
-    ``'[\\!\\@\\#\\$\\;\\&\\*\\~\\"\\'\\{\\}\\]\\[\\-\\+\\%\\^]+'``).
-    """
-    # Preserve \- : stripping it produces a bare hyphen that
-    # _expand_charset_body / _charclass_to_re misread as a range operator.
-    return _re.sub(r"\\([^-])", r"\1", chars)
-
-
 def _try_charset_validator(line: str) -> ValidatorSpec | None:
     """Match the whole-string `re.match`/`re.fullmatch` over `^[chars]+$`
     pattern.  Returns ``None`` on no match so the caller can try other
@@ -390,10 +388,13 @@ def _try_charset_sub_validator(line: str) -> ValidatorSpec | None:
     cs = _SUB_CHARSET.match(pattern)
     if not cs or not _charset_body_is_safe(cs.group(1)):
         return None
-    forbidden = _unescape_charclass(cs.group(1))
+    # Store the RAW class body: _expand_charset_body is the single
+    # escape interpreter.  Unescaping here and expanding later double-
+    # processes the body — a stored ``\\`` swallows the following char
+    # (``[/\\.]`` lost the backslash from the forbidden set).
     return ValidatorSpec(
         kind="charset_sub", var_name=m.group("var"),
-        forbidden=forbidden, source_line=line.strip(),
+        forbidden=cs.group(1), source_line=line.strip(),
     )
 
 

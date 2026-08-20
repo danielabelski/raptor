@@ -324,16 +324,16 @@ def test_sound_via_charset_with_llm_pointing_at_line(tmp_path: Path):
     the kind+charset, and the existing Z3 path produces SOUND."""
     (tmp_path / "app.py").write_text(
         "def f(name):\n"
-        '    if not re.match(r"^[A-Za-z0-9_.+-]+$", name):\n'
+        '    if not re.match(r"^[A-Za-z0-9_+-]+$", name):\n'
         "        return error()\n"
         "    return open(name)\n"
     )
-    diff = '+    if not re.match(r"^[A-Za-z0-9_.+-]+$", name):\n'
+    diff = '+    if not re.match(r"^[A-Za-z0-9_+-]+$", name):\n'
     reply = json.dumps({
         "kind": "charset",
-        "validator_source_line": 'if not re.match(r"^[A-Za-z0-9_.+-]+$", name):',
+        "validator_source_line": 'if not re.match(r"^[A-Za-z0-9_+-]+$", name):',
         "variable_name": "name",
-        "charset": "A-Za-z0-9_.+-",
+        "charset": "A-Za-z0-9_+-",
         "forbidden": "", "library_call": "",
     })
     r = t1.try_tier1b(

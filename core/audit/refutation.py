@@ -820,6 +820,13 @@ def rescue_self_refuted(
         fam = det.rsplit(":", 1)[-1]
         if fam in _DETECTOR_FAMILY_HYP_RES:
             detector_families.append((det, _DETECTOR_FAMILY_HYP_RES[fam]))
+    # The pre-loop screen's parsed-int/integer-narrowing receipt is a
+    # detector receipt in everything but plumbing: same family
+    # semantics, same dismissal modes (refuted OR low).
+    if pre_evidence and any(
+        t in pre_evidence for t in _INT_CONTRACT_PRE_EVIDENCE
+    ):
+        detector_families.append((pre_evidence, _INT_FAMILY_HYP_RE))
 
     if detector_families:
         for h in hypotheses:
@@ -870,21 +877,6 @@ def rescue_self_refuted(
                     f"hypothesis '{mechanism[:80]}' self-refuted without "
                     f"mechanical evidence; concurrency/lifecycle "
                     f"self-refutations are unreliable"
-                ),
-                demote_to="suspicious",
-            )
-        if (
-            pre_evidence
-            and any(t in pre_evidence for t in _INT_CONTRACT_PRE_EVIDENCE)
-            and _INT_FAMILY_HYP_RE.search(mechanism)
-        ):
-            return RefutationVerdict(
-                gate="anti_self_refutation",
-                reason=(
-                    f"hypothesis '{mechanism[:80]}' self-refuted "
-                    f"against the pre-loop screen receipt "
-                    f"{pre_evidence}; the mechanical contract check "
-                    f"outranks an unverified self-refutation"
                 ),
                 demote_to="suspicious",
             )

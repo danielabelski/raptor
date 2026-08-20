@@ -1129,7 +1129,17 @@ class TestPreEvidenceCorroboratedRefutation:
         )
         assert r is not None
         assert r.demote_to == "suspicious"
-        assert "pre-loop screen receipt" in r.reason
+        assert "smt:check-parsed-int-contract" in r.reason
+
+    def test_low_dismissal_also_floored(self):
+        o = self._outcome(
+            "huge parsed values overflow int32 storage downstream",
+        )
+        o.hypotheses[0]["confidence"] = "low"
+        r = rescue_self_refuted(
+            o, pre_evidence="smt:check-parsed-int-contract",
+        )
+        assert r is not None
 
     def test_no_screen_receipt_no_floor(self):
         o = self._outcome(

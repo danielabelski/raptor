@@ -656,6 +656,43 @@ class TestSignedMismatch:
         result = check_signed_mismatch(g, var_is_unsigned=True, bit_width=32)
         assert result.mismatch is False
 
+    def test_unknown_signedness_makes_no_claim(self):
+        # Regression (verdict soundness): the old default assumed every
+        # variable unsigned, stamping a witness-carrying
+        # signed_mismatch finding per resolvable upper-bound guard.
+        g = _guard("size < 1024", resolvable=True, concrete_values={})
+        result = check_signed_mismatch(g)
+        assert result.mismatch is False
+        assert result.witness is None
+
+    def test_declared_unsigned_type_enables_check(self):
+        g = _guard("size < 1024", resolvable=True, concrete_values={})
+        src = "int f(size_t size) { if (size < 1024) use(size); }"
+        result = check_signed_mismatch(g, source=src)
+        assert result.mismatch is True
+        assert result.variable == "size"
+
+    def test_declared_signed_type_suppresses_claim(self):
+        g = _guard("size < 1024", resolvable=True, concrete_values={})
+        src = "int f(int size) { if (size < 1024) use(size); }"
+        result = check_signed_mismatch(g, source=src)
+        assert result.mismatch is False
+
+    def test_declared_signedness_helper(self):
+        from core.audit.condition_smt import declared_signedness
+        src = (
+            "int f(size_t a, int b, unsigned int c, u32 d, s64 e) {\n"
+            "    long g;\n"
+            "}\n"
+        )
+        assert declared_signedness("a", src) is True
+        assert declared_signedness("b", src) is False
+        assert declared_signedness("c", src) is True
+        assert declared_signedness("d", src) is True
+        assert declared_signedness("e", src) is False
+        assert declared_signedness("g", src) is False
+        assert declared_signedness("missing", src) is None
+
 
 # ── Off-by-one detection ─────────────────────────────────────────────
 

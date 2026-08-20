@@ -633,25 +633,93 @@ def _arithmetic_path_feasibility(
 # ---------------------------------------------------------------------------
 
 
+# Unsigned C/kernel integer type names (beyond the ``unsigned`` keyword).
+_UNSIGNED_TYPE_NAMES = frozenset({
+    "size_t", "uintptr_t",
+    "u8", "u16", "u32", "u64",
+    "__u8", "__u16", "__u32", "__u64",
+    "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+})
+
+_SIGNED_TYPE_NAMES = frozenset({
+    "int", "long", "short", "char", "long long",
+    "ssize_t", "off_t", "loff_t", "ptrdiff_t",
+    "s8", "s16", "s32", "s64",
+    "__s8", "__s16", "__s32", "__s64",
+    "int8_t", "int16_t", "int32_t", "int64_t",
+})
+
+
+def declared_signedness(var_name: str, source: str) -> bool | None:
+    """Signedness of ``var_name``'s declared type in ``source``.
+
+    Returns True (unsigned), False (signed), or None when no
+    declaration is found — the caller must treat None as unknown, not
+    guess.
+    """
+    if not source or not var_name:
+        return None
+    type_re = re.compile(
+        r"\b((?:unsigned\s+)?(?:int|long(?:\s+long)?|short|char)"
+        r"|[su]?int(?:8|16|32|64)_t"
+        r"|__[su](?:8|16|32|64)"
+        r"|[su](?:8|16|32|64)"
+        r"|size_t|ssize_t|off_t|loff_t|uintptr_t|ptrdiff_t)"
+        r"\s+\**\s*" + re.escape(var_name) + r"\b",
+    )
+    m = type_re.search(source)
+    if not m:
+        return None
+    type_str = m.group(1).strip()
+    if type_str.startswith("unsigned") or type_str in _UNSIGNED_TYPE_NAMES:
+        return True
+    if type_str in _SIGNED_TYPE_NAMES:
+        return False
+    return None
+
+
 def check_signed_mismatch(
     guard: GuardCondition,
     *,
-    var_is_unsigned: bool = True,
+    var_is_unsigned: bool | None = None,
     bit_width: int = 32,
+    source: str = "",
 ) -> SignedMismatchResult:
     """Detect signed comparison on an unsigned variable.
 
     Pattern: ``if ((int)size < MAX)`` where size is size_t —
     negative int values pass the guard but wrap to huge unsigned values.
+
+    Signedness must be ESTABLISHED, not defaulted: ``var_is_unsigned``
+    wins when the caller passes it; otherwise the declared type is
+    looked up in ``source``.  When the signedness is unknown, no
+    mismatch is claimed — the old ``var_is_unsigned=True`` default
+    stamped a witness-carrying signed_mismatch finding on every
+    resolvable upper-bound guard.
     """
     from .safety_contract import assert_boost_only
     assert_boost_only("condition_smt")
 
-    if not var_is_unsigned:
+    if var_is_unsigned is False:
         return SignedMismatchResult(reasoning="variable is signed — no mismatch")
+
+    if not _boolean_structure_tractable(guard.text):
+        return SignedMismatchResult(
+            reasoning=(
+                "guard boolean structure (||/!/ternary) not modeled — "
+                "no mismatch claim"
+            ),
+        )
 
     constraints = extract_bounds_constraints(guard)
     for c in constraints:
+        unsigned = var_is_unsigned
+        if unsigned is None:
+            unsigned = declared_signedness(c.variable, source)
+        if unsigned is not True:
+            # Signed or unknown signedness: no witness-stamped
+            # mismatch finding without type evidence.
+            continue
         if c.operator in ("<", "<=") and c.bound_value >= 0:
             z3_result = _try_z3_signed_mismatch(
                 c.variable, c.operator, c.bound_value, bit_width,
@@ -673,7 +741,12 @@ def check_signed_mismatch(
                     witness={c.variable: -1},
                 )
 
-    return SignedMismatchResult(reasoning="no signed/unsigned mismatch detected")
+    return SignedMismatchResult(
+        reasoning=(
+            "no signed/unsigned mismatch detected (unsigned-typed "
+            "variables with resolvable upper bounds only)"
+        ),
+    )
 
 
 def _try_z3_signed_mismatch(

@@ -23,6 +23,8 @@ from packages.codeql.dataflow_validator import (
     DataflowValidator,
 )
 
+# The refuting charset is DOTLESS: '.' is a pathtrav danger char ('.'
+# builds '..' segments), so dot-admitting charsets must decline.
 GUARD_APP = """\
 import os
 import re
@@ -30,7 +32,7 @@ import re
 
 def handler(request):
     name = request.args.get('name')
-    if not re.match(r'^[A-Za-z0-9_.+-]+$', name):
+    if not re.match(r'^[A-Za-z0-9_+-]+$', name):
         return None
     cfg = os.path.join('/etc/app', name)
     open(cfg)

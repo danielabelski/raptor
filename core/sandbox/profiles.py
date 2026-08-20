@@ -135,6 +135,10 @@ _SANDBOX_KWARGS = frozenset({
     # paths — pip --user, pyenv, homebrew — are visible inside
     # the sandbox). Passing to inner run() would silently no-op.
     "tool_paths",
+    # rootfs is sandbox()-level (each run() pivots into the image
+    # tree, but the fail-closed engagement gates are decided from
+    # context-creation state). A per-call value would silently no-op.
+    "rootfs",
     # Audit kwargs — included so run_trusted rejects them. Audit
     # mode is incoherent with profile="none" (no enforcement to
     # compare against), so passing audit=True to run_trusted is

@@ -239,6 +239,16 @@ def run_sandboxed(cmd: list[str], *,
                   # profile). macOS sandbox-exec doesn't use mount-ns;
                   # accepted + ignored for signature parity.
                   skip_mount_ns=False,
+                  # rootfs: Linux-only — mount-ns pivot into an unpacked
+                  # container-image tree. Accepted for signature parity
+                  # but NOT ignored like the kwargs above: those are
+                  # protection extras whose absence weakens nothing the
+                  # SBPL profile promised, whereas rootfs names the
+                  # execution SUBSTRATE — ignoring it would run the
+                  # command against the HOST filesystem. context.py's
+                  # fail-closed gate raises before dispatch ever reaches
+                  # darwin; the body-level raise is defence in depth.
+                  rootfs: str | None = None,
                   # proxy_unix_socket / proxy_forwarder_port: Linux-only
                   # — used by _spawn to fork a TCP-to-Unix relay inside
                   # the child's empty netns for proxy enforcement on
@@ -305,6 +315,14 @@ def run_sandboxed(cmd: list[str], *,
     are bounded by core.sandbox.audit_budget.AuditBudget's per-
     category caps + 1-in-N sampling so the JSONL doesn't bloat.
     """
+    if rootfs is not None:
+        from .errors import SandboxSetupError
+        raise SandboxSetupError(
+            "sandbox(rootfs=...) requires the Linux mount-namespace "
+            "backend; macOS sandbox-exec cannot pivot into an image "
+            "rootfs — refusing to run against the host filesystem.",
+            "run image-rootfs sandboxes on a Linux host.",
+        )
     # 0. Validate audit-mode + audit_run_dir invariant. Mirrors
     # core/sandbox/_spawn.py for parity — caller asking for audit
     # without giving the tracer a place to write JSONL is almost

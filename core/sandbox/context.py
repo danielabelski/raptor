@@ -449,7 +449,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             etc_overlay: dict | None = None,
             degraded_net_deny: bool = True,
             loopback_unix_bridges: dict | None = None,
-            omit_proc_reads: bool = False):
+            omit_proc_reads: bool = False,
+            rootfs: str | None = None):
     """Context manager for sandboxed subprocess execution.
 
     Each run() call inside the context runs the target command with the
@@ -586,6 +587,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  with EACCES; extend `readable_paths=` for specific
                  needs. Inert when `restrict_reads` is off (no read
                  allowlist exists).
+        rootfs: Directory holding an unpacked container-image filesystem
+                 (e.g. `docker create` + `docker export`). When set, the
+                 mount namespace pivots into THAT tree instead of the
+                 tmpfs-of-host-system-dirs — the command runs against
+                 the image's own /usr, /lib, /etc with per-namespace
+                 /dev, /proc, /sys, /tmp, /run on top, ns-local pids
+                 (an in-process PID-1 waiter reaps and mirrors exit
+                 status), and a subuid/subgid RANGE map so image
+                 entrypoints can chown/setuid to non-root uids.
+                 FAIL-CLOSED: rootfs requires the Linux mount-ns spawn
+                 backend — every degradation that other calls tolerate
+                 (Landlock-only fallback, seatbelt, profile 'none',
+                 pass_fds/input kwargs) raises SandboxSetupError
+                 instead, because "degraded" here means the command
+                 would run against the HOST filesystem while the caller
+                 believes it is containerised. The rootfs directory is
+                 the sacrificial writable upper layer: the environment
+                 writes into it host-side; treat it as consumed after
+                 the run. target/output binds, readable_paths,
+                 audit/observe, and network policy compose unchanged.
 
     Landlock activation: engaged when any of `target`, `output`, or
     `allowed_tcp_ports` is set. Default filesystem policy is read-
@@ -606,6 +627,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         network-only: network blocked + rlimits only (no Landlock, no seccomp)
         none:         rlimits only, no isolation
     """
+    # Rootfs pre-flight: cheap shape errors raise here (caller bug,
+    # ValueError); "the backend can't honour rootfs on this host/config"
+    # raises SandboxSetupError at the use_mount decision below.
+    if rootfs is not None:
+        rootfs = os.path.abspath(rootfs)
+        if not os.path.isdir(rootfs):
+            raise ValueError(f"sandbox(rootfs=...): not a directory: {rootfs}")
+
     # Initialize seccomp from the default profile. When the caller passes
     # a specific `profile=`, the value below is overridden; otherwise we
     # apply the default full-seccomp blocklist as a safety default. This
@@ -1126,6 +1155,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             target = None
             output = None
             allowed_tcp_ports = None
+        if rootfs is not None and not p["use_landlock"]:
+            # Rootfs fail-closed gate #0: 'none' and 'network-only'
+            # are no-mount-ns-by-contract profiles. target/output are
+            # silently DISCARDED above (warned, nulled) because they
+            # are protection requests — dropping them weakens nothing
+            # the profile promised. rootfs is different: it is the
+            # EXECUTION SUBSTRATE ("run against this image tree"), and
+            # discarding it would run the command against the host
+            # filesystem while the caller believes it is containerised.
+            # Raise instead — whichever of the caller kwarg / CLI
+            # --sandbox flag chose this profile must be reconciled by
+            # the operator, not silently overridden in either direction.
+            from .errors import SandboxSetupError
+            raise SandboxSetupError(
+                f"sandbox(rootfs=...) is incompatible with profile "
+                f"{profile!r} (no mount namespace under this profile) "
+                f"— refusing to run against the host filesystem.",
+                "use profile 'full'/'strict'/'debug' (or drop the "
+                "--sandbox override) for image-rootfs runs.",
+            )
     if block_network is _UNSET:
         # Bare sandbox() (no profile=, no block_network=) follows the
         # documented default profile: 'full' blocks network. Seccomp
@@ -1155,8 +1204,27 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         use_seatbelt = use_sandbox
     else:
         use_sandbox = not effectively_disabled and check_net_available()
-        use_mount = use_sandbox and bool(target or output) and check_mount_available()
+        use_mount = (use_sandbox and bool(target or output or rootfs)
+                     and check_mount_available())
         use_seatbelt = False
+
+    # Rootfs fail-closed gate #1 (context setup): rootfs is meaningless
+    # without the Linux mount-ns backend — every other execution path
+    # runs the command against the HOST filesystem, which for a caller
+    # that asked for an image rootfs is a silent contract violation, not
+    # a degradation. Covers: darwin/seatbelt, profile 'none'/disabled,
+    # missing userns/mount capability.
+    if rootfs is not None and not use_mount:
+        from .errors import SandboxSetupError
+        raise SandboxSetupError(
+            "sandbox(rootfs=...) requires the Linux mount-namespace "
+            "backend, which cannot engage here (platform, profile "
+            "'none'/disabled, or missing unprivileged-userns/mount "
+            "capability) — refusing to run against the host filesystem.",
+            "check `sysctl kernel.unprivileged_userns_clone` / AppArmor "
+            "userns restrictions, and do not combine rootfs= with "
+            "disabled=True or profile='none'.",
+        )
 
     # Degraded-mode network fallback. block_network=True is normally
     # enforced by the network namespace; when no namespace backend is
@@ -2212,6 +2280,20 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                           and (_kwarg_plumb_native
                                or (not kwargs.get("pass_fds")
                                    and kwargs.get("input") is None)))
+        # Rootfs fail-closed gate #2 (per-call): the kwarg-compat gate
+        # above routes pass_fds/input= callers to the Landlock-only
+        # subprocess path, which for a rootfs run means executing
+        # against the HOST filesystem. Refuse instead.
+        if rootfs is not None and not spawn_eligible:
+            from .errors import SandboxSetupError
+            raise SandboxSetupError(
+                "sandbox(rootfs=...).run() cannot engage the mount-ns "
+                "spawn backend for this call (pass_fds= / input= are "
+                "not plumbed through the fork-based spawn path) — "
+                "refusing to run against the host filesystem.",
+                "drop pass_fds=/input= (write stdin via stdin=<fd> "
+                "instead) or run without rootfs=.",
+            )
         # Track the audit-degraded reason so the audit-mode degraded
         # diagnostic block (further down) can attribute correctly.
         # B fallback and speculative-cache hit are NEW failure paths
@@ -2232,7 +2314,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # macOS sandbox-exec doesn't change the filesystem view, so
         # this check + the speculative-C cache it feeds are skipped
         # on Darwin (use_mount is always False there).
-        if spawn_eligible and use_mount and cmd:
+        # Both per-cmd Landlock-only demotions below (B fallback,
+        # speculative-C cache) reason about the HOST-mode bind tree;
+        # in rootfs mode cmd[0] resolves inside the IMAGE filesystem
+        # (its /bin/sh, its entrypoint script), so the host visibility
+        # check would demote perfectly valid commands — and demotion
+        # is forbidden for rootfs anyway (gate #2). Skip both.
+        if spawn_eligible and use_mount and cmd and rootfs is None:
             _all_extra = list(effective_read_paths or []) + list(tool_paths or [])
             _resolved = shutil.which(cmd[0]) or cmd[0]
             # B fallback: cmd[0] not in mount-ns bind tree → skip
@@ -2470,6 +2558,20 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             elif spawn_eligible:
                 try:
                     from . import _spawn as _spawn_mod
+                    if rootfs is not None and not _spawn_mod.mount_ns_available():
+                        # Rootfs fail-closed gate #3: use_mount passed at
+                        # context setup but the spawn backend's own probe
+                        # disagrees — the Landlock-only fallback below
+                        # would run against the host filesystem.
+                        from .errors import SandboxSetupError
+                        raise SandboxSetupError(
+                            "sandbox(rootfs=...): mount-ns spawn backend "
+                            "unavailable — refusing to run against the "
+                            "host filesystem.",
+                            "check unprivileged-userns support "
+                            "(kernel.unprivileged_userns_clone, AppArmor "
+                            "userns restrictions) and uidmap tooling.",
+                        )
                     if _spawn_mod.mount_ns_available():
                         # Union readable_paths + tool_paths into the
                         # single readable_paths list _spawn forwards as
@@ -2522,6 +2624,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         result = _spawn_mod.run_sandboxed(
                             cmd,
                             target=target, output=output,
+                            rootfs=rootfs,
                             block_network=block_network,
                             nproc_limit=nproc_limit,
                             limits=effective_limits,
@@ -2621,6 +2724,28 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         # no longer defeat OR forge this via stderr; the old
                         # rc==126/127 + empty-stderr heuristic could be both).
                         if _setup_status is not None and _setup_status[0] in ("M", "X"):
+                            # Rootfs fail-closed gate #4: an M/X status
+                            # for a rootfs run means the image pivot or
+                            # the exec inside the image failed. The
+                            # Landlock-only retry below would re-run the
+                            # command against the HOST filesystem —
+                            # forbidden. Raise with the child's detail;
+                            # 'X' usually means cmd[0] doesn't exist in
+                            # the image (wrong entrypoint path) or its
+                            # interpreter/loader is missing there.
+                            if rootfs is not None:
+                                from .errors import SandboxSetupError
+                                raise SandboxSetupError(
+                                    f"sandbox(rootfs=...): mount-ns "
+                                    f"setup or exec inside the image "
+                                    f"rootfs failed: {_setup_status[1]} "
+                                    f"— refusing the Landlock-only "
+                                    f"host-filesystem fallback.",
+                                    "verify the rootfs is a complete "
+                                    "unpacked image (loader + libs "
+                                    "present) and cmd[0] names a path "
+                                    "that exists INSIDE the image.",
+                                )
                             # Populate the per-cmd cache so future
                             # calls for the same binary skip mount-ns
                             # directly (saves the doubled subprocess
@@ -2751,6 +2876,21 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     # degradation ladder: fail loudly instead of
                     # silently trading away mount-ns containment AND
                     # the requested audit evidence.
+                    #
+                    # Rootfs fail-closed gate #5: same principle for
+                    # rootfs runs — a spawn-setup failure must not
+                    # degrade to running the command on the host fs.
+                    if rootfs is not None:
+                        from .errors import SandboxSetupError
+                        raise SandboxSetupError(
+                            f"sandbox(rootfs=...): mount-ns spawn setup "
+                            f"failed ({_spawn_err.__class__.__name__}: "
+                            f"{_spawn_err}) — refusing the Landlock-only "
+                            f"host-filesystem fallback.",
+                            "fix the host (uidmap package, userns "
+                            "sysctl, /etc/subuid+/etc/subgid allotment) "
+                            "to restore the mount-ns tier.",
+                        ) from _spawn_err
                     _vanished = _audit_target_dir_problem()
                     if _vanished:
                         from .errors import SandboxSetupError
@@ -3511,6 +3651,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         degraded_net_deny: bool = True,
         loopback_unix_bridges: dict | None = None,
         omit_proc_reads: bool = False,
+        rootfs: str | None = None,
         **kwargs) -> subprocess.CompletedProcess:
     """Run a single command in a sandbox. Convenience wrapper.
 
@@ -3543,7 +3684,8 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
                  etc_overlay=etc_overlay,
                  degraded_net_deny=degraded_net_deny,
                  loopback_unix_bridges=loopback_unix_bridges,
-                 omit_proc_reads=omit_proc_reads) as _run:
+                 omit_proc_reads=omit_proc_reads,
+                 rootfs=rootfs) as _run:
         return _run(cmd, **kwargs)
 
 

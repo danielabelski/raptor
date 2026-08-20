@@ -9424,7 +9424,7 @@ def _multi_pass_review(
                     return {"file": file_path, "function": function_name,
                             "status": "error",
                             "body": "blocked by content filter"}
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     if _is_budget_exceeded(exc):
                         raise
                     logger.warning(
@@ -9506,7 +9506,7 @@ def _multi_pass_review(
             status="error",
             body="blocked by content filter",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if _is_budget_exceeded(exc):
             raise
         logger.warning(

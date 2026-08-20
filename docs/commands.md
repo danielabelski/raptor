@@ -6,9 +6,10 @@ either a Python entry point (`raptor.py`), a shell script under `libexec/`, or
 a multi-step skill.  The [Python CLI](python-cli.md) documents the `raptor.py`
 modes directly; this page covers the slash-command surface.
 
-All path arguments respect the [default target resolution
-order](commands.md): active project target, then `$RAPTOR_CALLER_DIR`,
-then prompt.  Output directories are managed by the [run
+All path arguments respect the default target resolution order:
+active project target, then `$RAPTOR_CALLER_DIR`, then prompt.
+Flag tables are curated; the dispatch target's own `--help` is the
+authoritative, complete flag list for every command.  Output directories are managed by the [run
 lifecycle](architecture.md) unless noted otherwise.
 
 ---
@@ -293,7 +294,7 @@ Coverage-guided fuzzing with automatic harness generation.
 | `--no-record-witnesses` | Skip witness recording |
 | `--execute-exploits` | Execute generated exploits |
 | `--execute-timeout <secs>` | Execution timeout for exploits |
-| `--execute-sanitizers` | Run exploits with sanitisers |
+| `--execute-sanitizers <list>` | Run exploits with sanitisers (e.g. `address`) |
 
 **Sandbox and audit**
 
@@ -395,9 +396,10 @@ code as vulnerable -- tool output is the verdict.
 
 | Flag | Description |
 |------|-------------|
-| `--strategy <name>` | Filter to one strategy: general, input_handling, concurrency, memory, auth, crypto, aliasing |
+| `--strategy <name>` | Filter to one strategy: general, input_handling, concurrency, memory, auth, crypto, aliasing, integer |
 | `--budget <N>` | Maximum functions to review (default: all gaps) |
 | `--scope <dir>` | Restrict to a subdirectory (repeatable; successive scoped runs accumulate) |
+| `--pin <file:function>` | Guarantee a review slot ahead of the `--budget` cut (repeatable) |
 | `--out <dir>` | Output directory |
 | `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep (repeatable — one per language; dispatch routes by file language) |
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
@@ -406,7 +408,7 @@ code as vulnerable -- tool output is the verdict.
 | `--review-passes <N>` | Independent review passes per function for self-consistency |
 | `--subsystem-depth <N>` | Directory grouping depth for subsystem-ordered review (default: 0) |
 | `--max-propagation-depth <N>` | Override adaptive constraint propagation depth (default: auto-calibrated) |
-| `--include-kinds <list>` | Extra item kinds beyond functions/methods: `top_level`, `macro`, `global` |
+| `--include-kinds <list>` | Item kinds beyond functions/methods (default: `top_level`, `macro`, `global` — already on).  A positive list overrides the defaults, `-kind` opts one out, `none` restricts to functions/methods |
 | `--batch-sloc-threshold <N>` | Batch small functions per file into combined reviews (default 15; 0 disables) |
 | `--no-verdict-reuse` | Disable cross-run verdict reuse for unchanged functions |
 | `--schedule {cost,priority}` | Parallel review ordering |
@@ -615,7 +617,7 @@ Find vulnerable dependencies, gate CI, fix and pin.  Alias: `/raptor-sca`.
 |------|-------------|
 | `--skip-review` | Skip LLM review of findings |
 | `--skip-triage` | Skip LLM triage |
-| `--fail-on-severity {critical,high,medium,low}` | Fail if any finding meets or exceeds severity |
+| `--fail-on-severity {info,low,medium,high,critical}` | Fail if any finding meets or exceeds severity |
 | `--fail-on-kev` | Fail if any finding is in the Known Exploited Vulnerabilities catalogue |
 | `--offline` | Offline mode (use cached data only) |
 
@@ -925,7 +927,7 @@ Markdown files mirroring the source tree, with `## function_name` sections.
 
 | Flag | Description |
 |------|-------------|
-| `--status {clean,suspicious,finding,dormant,error}` | Annotation status |
+| `--status {clean,suspicious,finding,dormant,error,sink,entry_point}` | Annotation status (`sink`/`entry_point` are role markers consumed by IRIS spec promotion) |
 | `--cwe <CWE-XX>` | Associated CWE identifier |
 | `-m` / `--body <text>` | Annotation body text |
 | `--body-file <path>` | Read annotation body from file |
@@ -1172,7 +1174,7 @@ Send a free-form prompt to any configured LLM model and print the response.  Dev
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model NAME` | *(required)* | Model to query (e.g. `gemini-2.5-pro`, `claude-opus-4-7`) |
+| `--model NAME` | configured default model | Model to query (e.g. `gemini-2.5-pro`, `claude-opus-4-7`) |
 | `--system TEXT` | *(none)* | System prompt |
 | `--file PATH` | *(none)* | Prepend file contents as context (repeatable) |
 | `--max-tokens N` | `4096` | Maximum output tokens |
@@ -1180,7 +1182,7 @@ Send a free-form prompt to any configured LLM model and print the response.  Dev
 | `--json-schema PATH` | *(none)* | Path to a JSON schema file for structured output |
 | `--system-file PATH` | *(none)* | Load system prompt from a file |
 | `--raw` | off | Print response text only (compact JSON for structured output) |
-| `--debug` | off | Show model metadata, cost, provider logging, and scorecard summary |
+| `--debug` | off | Show model metadata, cost, and provider logging |
 
 By default only the model's response text is printed — no logging, no scorecard line, no metadata.  Pass `--debug` to see the full diagnostic output.
 

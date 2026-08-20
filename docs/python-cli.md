@@ -52,7 +52,7 @@ These sandbox flags apply to every mode. Pass them **after** the mode name:
 ```
 
 `--trust-repo` (mark the target repo as trusted) is mode-specific: it exists
-on `agentic` and `sca`, not on every mode. `--version` is top-level only —
+on `agentic`, `codeql`, and `sca`, not on every mode. `--version` is top-level only —
 `python3 raptor.py --version`, before any mode name.
 
 

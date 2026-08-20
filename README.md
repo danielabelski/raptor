@@ -127,7 +127,7 @@ The simplest thing you can do:
 /scan /path/to/code
 ```
 
-This runs Semgrep (and CodeQL if installed) against the target, deduplicates findings, and writes a SARIF report. No LLM analysis, no API keys beyond Claude Code. Takes a few minutes on a typical repository.
+This runs Semgrep (plus Coccinelle when `spatch` is installed; add `--codeql` for CodeQL) against the target, deduplicates findings, and writes a SARIF report. No LLM analysis, no API keys beyond Claude Code. Takes a few minutes on a typical repository.
 
 To add LLM-powered validation:
 
@@ -318,13 +318,13 @@ CodeQL needs network access only during initial setup to download the CLI and qu
 
 ## Custom rules
 
-RAPTOR ships 192 custom static analysis rules, adversarially tested to eliminate false positives:
+RAPTOR ships over 200 custom static analysis rules, adversarially tested to eliminate false positives:
 
-- **Semgrep (123 rules)** — taint-tracking and pattern rules for Python, Go, Java, and JS/TS. Covers SQLi, XSS, SSRF, SSTI, command injection, deserialisation, XXE, LDAP/NoSQL injection, path traversal, open redirect, log/header injection, eval injection, ReDoS, prototype pollution, JWT misconfiguration, weak crypto, insecure TLS, and hardcoded secrets.
-- **Coccinelle (61 rules)** — structural matching for C/C++. Memory safety (double free, use-after-free, free of non-base pointer, free of stack array, mmap'd memory, use-after-close), integer bugs (overflow, sign extension, double sizeof), resource leaks (popen/fclose mismatch, fdopendir double close), buffer handling (strncpy without NUL, copy_user size mismatch, malloc/strlen off-by-one), signal handler safety, API misuse (fcntl flag domain, SIGKILL/SIGSTOP, double byte-swap, inet_ntoa static buffer), compiler dead-store elimination, kernel IS_ERR/PTR_ERR confusion, format string injection, TOCTOU races, and more.
+- **Semgrep (145 rules)** — taint-tracking and pattern rules for Python, Go, Java, and JS/TS. Covers SQLi, XSS, SSRF, SSTI, command injection, deserialisation, XXE, LDAP/NoSQL injection, path traversal, open redirect, log/header injection, eval injection, ReDoS, prototype pollution, JWT misconfiguration, weak crypto, insecure TLS, and hardcoded secrets.
+- **Coccinelle (63 rules)** — structural matching for C/C++. Memory safety (double free, use-after-free, free of non-base pointer, free of stack array, mmap'd memory, use-after-close), integer bugs (overflow, sign extension, double sizeof), resource leaks (popen/fclose mismatch, fdopendir double close), buffer handling (strncpy without NUL, copy_user size mismatch, malloc/strlen off-by-one), signal handler safety, API misuse (fcntl flag domain, SIGKILL/SIGSTOP, double byte-swap, inet_ntoa static buffer), compiler dead-store elimination, kernel IS_ERR/PTR_ERR confusion, format string injection, TOCTOU races, and more.
 - **CodeQL (8 queries)** — interprocedural taint tracking for C++ (format string injection, integer truncation, use-after-move, iterator invalidation) and Java (XXE, insecure deserialisation, log injection, Spring SSRF).
 
-Browse the rules directly: `engine/semgrep/rules/`, `engine/coccinelle/rules/`, `engine/codeql/queries/`. These complement the registry packs (`p/security-audit`, `p/owasp-top-ten`, `p/0xdea`, `p/trailofbits`) which provide ~950 additional rules — overlap is minimal.
+Browse the rules directly: `engine/semgrep/rules/`, `engine/coccinelle/rules/`, `engine/codeql/queries/`. These complement the Semgrep registry packs RAPTOR pulls in (`p/security-audit`, `p/owasp-top-ten`, `p/secrets` always; per-policy-group packs like `p/command-injection`, `p/jwt`, `p/xss` on top) — overlap is minimal.
 
 ---
 

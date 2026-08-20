@@ -49,7 +49,7 @@ When a `/command` fires:
 /diagram - Mermaid visual maps — `libexec/raptor-render-diagrams <out-dir> [args]`
 /audit - Hypothesis-driven code audit — `dispatch: skill`, see below
 /review - Navigate audit results — `libexec/raptor-review $ARGUMENTS`
-/annotate - Per-function prose annotations (human-only) — `libexec/raptor-annotate <subcommand> [args]`
+/annotate - Per-function prose annotations (human notes get authority; agent notes are hint-tier) — `libexec/raptor-annotate <subcommand> [args]`
 
 **Coverage:** When asked about coverage, run `libexec/raptor-coverage-summary` (no args = active project). Use `--detailed` for per-file table, `--gaps` for unreviewed functions. See `.claude/skills/coverage.md` for mark/unmark and the full API.
 

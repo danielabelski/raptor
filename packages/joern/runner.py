@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -465,6 +466,13 @@ def build_cpg(
         raise ValueError(f"target must be a directory: {target}")
 
     if output_dir is None:
+        # Reaper-visible scratch: register the prefix so a dir
+        # orphaned by a crashed run (build succeeded, caller never
+        # reached cleanup_cpg) is reclaimed by a later run's sweep in
+        # the same process family, instead of accumulating under
+        # /tmp forever.
+        from core.run import tmp_reaper
+        tmp_reaper.register_dir_prefix("raptor-joern-cpg-")
         output_dir = Path(tempfile.mkdtemp(prefix="raptor-joern-cpg-"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -767,11 +775,19 @@ def run_query(
                 block_network=True,
             )
         except TypeError:
+            # Runner without the sandbox kwargs (injected stubs,
+            # bare subprocess.run). Still pass an explicit cwd:
+            # importCpg copies the CPG into a `workspace/` under the
+            # process cwd — without this the copies landed in
+            # whatever directory the CALLER happened to run from
+            # (observed: a workspace/ full of CPG copies in the
+            # repo root).
             proc = runner(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=str(cpg.path.parent),
             )
     except subprocess.TimeoutExpired:
         return JoernResult(
@@ -1189,10 +1205,22 @@ def build_cpg_cached(
 
 
 def cleanup_cpg(cpg: JoernCPG) -> None:
-    """Remove the CPG binary from disk."""
+    """Remove the CPG binary from disk, plus the ``workspace/`` copy
+    ``importCpg`` leaves next to it.
+
+    ``run_query`` executes joern with cwd = the CPG's directory, and
+    importCpg copies the CPG into ``<cwd>/workspace/``. Pre-fix the
+    cleanup unlinked only ``cpg.bin`` — the workspace copy survived,
+    the ``rmdir`` below always failed on the non-empty dir, and the
+    duplicated CPGs accumulated for the life of the host."""
     try:
         cpg.path.unlink(missing_ok=True)
         parent = cpg.path.parent
+        workspace = parent / "workspace"
+        # rmtree only a real directory we own the layout of — never
+        # follow a symlink planted at that name.
+        if workspace.is_dir() and not workspace.is_symlink():
+            shutil.rmtree(workspace, ignore_errors=True)
         try:
             parent.rmdir()
         except OSError:

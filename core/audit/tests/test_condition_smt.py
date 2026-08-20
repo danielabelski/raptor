@@ -129,8 +129,11 @@ class TestCheckGuardSufficiency:
         assert r.guard_sufficient is False
 
     def test_guard_sufficient_for_buffer(self):
+        # Soundness: an upper bound alone is NOT sufficient — a signed
+        # len = -1 passes ``len < 128`` and wraps to SIZE_MAX at the
+        # sink.  Sufficiency requires a non-negative lower bound too.
         g = _guard(
-            "len < BUF_SIZE",
+            "len >= 0 && len < BUF_SIZE",
             resolvable=True,
             concrete_values={"BUF_SIZE": "128"},
         )
@@ -140,6 +143,22 @@ class TestCheckGuardSufficiency:
         r = results[0]
         assert r.feasible is False  # overflow NOT feasible
         assert r.guard_sufficient is True
+
+    def test_upper_bound_alone_not_sufficient_signed_wrap(self):
+        # Regression: the old z3.Int model had no wrap, so
+        # ``len < 1024`` with a 4096-byte buffer came back 'guard
+        # sufficient' while len = -1 reaches memcpy as SIZE_MAX.
+        g = _guard(
+            "len < MAXSZ",
+            resolvable=True,
+            concrete_values={"MAXSZ": "1024"},
+        )
+        sg = _sg("memcpy", [g])
+        results = check_guard_sufficiency(sg, buffer_size=4096)
+        assert len(results) >= 1
+        r = results[0]
+        assert r.feasible is True
+        assert r.guard_sufficient is False
 
     def test_no_resolvable_guards(self):
         g = _guard("len < limit", resolvable=False, concrete_values={})
@@ -162,11 +181,15 @@ class TestCheckGuardSufficiency:
         assert r.concrete_values
 
     def test_multiple_constraints_tightest_wins(self):
-        """Guard with two upper bounds — tightest determines sufficiency."""
-        # "len < 4096 && len < 256" with buffer=256
+        """Guard with two upper bounds — tightest determines sufficiency.
+
+        A non-negative lower bound is also required (soundness: signed
+        negative values wrap to huge size_t at the sink).
+        """
+        # "len >= 0 && len < 4096 && len < 256" with buffer=256
         # Tightest: max_allowed=255 <= 256 → sufficient
         g = _guard(
-            "len < MAX_SIZE && len < LIMIT",
+            "len >= 0 && len < MAX_SIZE && len < LIMIT",
             resolvable=True,
             concrete_values={"MAX_SIZE": "4096", "LIMIT": "256"},
         )
@@ -215,7 +238,12 @@ class TestCheckGuardSufficiency:
 class TestCheckAllSufficiency:
     def test_batch_with_sizes(self):
         g1 = _guard("len < MAX", resolvable=True, concrete_values={"MAX": "4096"})
-        g2 = _guard("n <= SIZE", resolvable=True, concrete_values={"SIZE": "128"})
+        # Sufficiency needs the non-negative lower bound (signed-wrap
+        # soundness) — see test_upper_bound_alone_not_sufficient_signed_wrap.
+        g2 = _guard(
+            "n > 0 && n <= SIZE",
+            resolvable=True, concrete_values={"SIZE": "128"},
+        )
         guards = [_sg("memcpy", [g1], line=10), _sg("memcpy", [g2], line=20)]
         results = check_all_sufficiency(
             guards,
@@ -226,6 +254,69 @@ class TestCheckAllSufficiency:
         assert results[0][0].feasible is True
         # Second: 128 <= 256 → sufficient
         assert results[1][0].feasible is False
+
+
+class TestNonProofsAreInconclusive:
+    """Non-proofs (consistency SAT, vacuous single-variable alloc
+    check) must never come back as guard_sufficient=True."""
+
+    def test_consistency_check_is_not_a_sufficiency_verdict(self):
+        # Non-memcpy/non-alloc sinks have no sufficiency model; the
+        # consistency check used to return feasible=False (== guard
+        # sufficient) for EVERY resolvable guard.
+        g = _guard(
+            "x < LIMIT", resolvable=True, concrete_values={"LIMIT": "10"},
+        )
+        sg = _sg("system", [g])
+        results = check_guard_sufficiency(sg)
+        assert len(results) >= 1
+        for r in results:
+            assert r.guard_sufficient is not True
+
+    def test_alloc_single_var_is_inconclusive(self):
+        # One constrained variable gives the multiplication-overflow
+        # model nothing to check — the old code declared the guard
+        # sufficient from that vacuum.
+        g = _guard(
+            "n > N0", resolvable=True, concrete_values={"N0": "0"},
+        )
+        sg = _sg("malloc", [g])
+        results = check_guard_sufficiency(sg)
+        assert len(results) >= 1
+        for r in results:
+            assert r.guard_sufficient is not True
+
+    def test_alloc_signed_guard_not_encoded_unsigned(self):
+        import pytest
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import (
+            BoundsConstraint,
+            _z3_alloc_overflow_check,
+        )
+        # ``n > -1 && m > -1`` are signed guards; the old unsigned
+        # encoding (UGT(n, 0xFF..FF)) was unsatisfiable, so the
+        # multiplication query was vacuously UNSAT and the check said
+        # 'cannot overflow'.  Signed encoding admits huge values.
+        out = _z3_alloc_overflow_check([
+            BoundsConstraint("n", ">", -1, "n > -1"),
+            BoundsConstraint("m", ">", -1, "m > -1"),
+        ])
+        assert out[0] is True
+
+    def test_alloc_genuine_no_overflow_proof_kept(self):
+        import pytest
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import (
+            BoundsConstraint,
+            _z3_alloc_overflow_check,
+        )
+        out = _z3_alloc_overflow_check([
+            BoundsConstraint("n", ">", 0, "n > 0"),
+            BoundsConstraint("n", "<", 100, "n < 100"),
+            BoundsConstraint("m", ">", 0, "m > 0"),
+            BoundsConstraint("m", "<", 100, "m < 100"),
+        ])
+        assert out[0] is False
 
 
 # ── Safety contract compliance ──────────────────────────────────────────
@@ -271,8 +362,11 @@ class TestBlindSpotSufficientGuardIsBoost:
     """
 
     def test_sufficient_guard_is_not_feasible(self):
+        # Non-negative lower bound included: sufficiency requires
+        # excluding the signed-negative wrap case, not just the upper
+        # bound.
         g = _guard(
-            "n <= LIMIT",
+            "n >= 0 && n <= LIMIT",
             resolvable=True,
             concrete_values={"LIMIT": "128"},
         )

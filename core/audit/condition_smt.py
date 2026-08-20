@@ -857,7 +857,7 @@ def _try_z3_check(
     constraints: list[BoundsConstraint],
     buffer_size: int | None,
     sink_api: str,
-) -> tuple[bool, str, dict[str, int] | None] | None:
+) -> tuple[bool | None, str, dict[str, int] | None] | None:
     """Try Z3 SMT check. Returns None if Z3 unavailable.
 
     Runs in a forked subprocess so Z3 assertion failures (segfaults in
@@ -916,12 +916,19 @@ def _result_from_child(cls, out):
 
 def _verdict_tuple_from_child(
     out,
-) -> tuple[bool, str, dict[str, int] | None] | None:
-    """Rebuild a (verdict, reasoning, witness) tuple from child JSON."""
+) -> tuple[bool | None, str, dict[str, int] | None] | None:
+    """Rebuild a (verdict, reasoning, witness) tuple from child JSON.
+
+    ``verdict`` may be ``None`` — an inconclusive check (no sufficiency
+    model applies, insufficient variables) that must produce neither a
+    "guard sufficient" nor a "guard insufficient" claim.
+    """
     if not isinstance(out, list) or len(out) != 3:
         return None
     verdict, reasoning, witness = out
-    if not isinstance(verdict, bool) or not isinstance(reasoning, str):
+    if verdict is not None and not isinstance(verdict, bool):
+        return None
+    if not isinstance(reasoning, str):
         return None
     if witness is not None and not isinstance(witness, dict):
         witness = None
@@ -949,7 +956,7 @@ def _z3_dispatch(
     constraints: list[BoundsConstraint],
     buffer_size: int | None,
     sink_api: str,
-) -> tuple[bool, str, dict[str, int] | None] | None:
+) -> tuple[bool | None, str, dict[str, int] | None] | None:
     """Route to the appropriate Z3 check."""
     memcpy_sinks = {
         "memcpy", "memmove", "strncpy", "strncat", "bcopy",
@@ -970,68 +977,119 @@ def _z3_dispatch(
     return _z3_consistency_check(constraints)
 
 
+_OVERFLOW_BV_WIDTH = 64
+
+
+def _bv_signed(value: int, width: int = _OVERFLOW_BV_WIDTH) -> int:
+    """Signed interpretation of an unsigned bitvector model value."""
+    if value >= (1 << (width - 1)):
+        return value - (1 << width)
+    return value
+
+
 def _z3_overflow_check(
     constraints: list[BoundsConstraint],
     buffer_size: int,
 ) -> tuple[bool, str, dict[str, int] | None]:
-    """Z3: Can length still overflow given the guard constraints?"""
+    """Z3: Can length still overflow given the guard constraints?
+
+    Bitvector model with explicit signedness.  Guard atoms use SIGNED
+    comparisons — without declared-type evidence a C comparison like
+    ``len < 1024`` must be assumed signed, because assuming unsigned
+    silently rules out the negative-value case.  The overflow question
+    uses the UNSIGNED interpretation (the copy length parameter is
+    ``size_t``): a signed ``len = -1`` that passes ``len < 1024``
+    reaches ``memcpy`` as ``SIZE_MAX``.  The previous ``z3.Int`` model
+    had no wrap at all and declared such guards sufficient.
+    """
     import z3
 
     solver = z3.Solver()
     solver.set("timeout", 5000)
 
-    # Create variables for each constraint's subject
-    vars_map: dict[str, z3.ArithRef] = {}
+    vars_map: dict[str, z3.BitVecRef] = {}
     for c in constraints:
         if c.variable not in vars_map:
-            vars_map[c.variable] = z3.Int(c.variable)
+            vars_map[c.variable] = z3.BitVec(c.variable, _OVERFLOW_BV_WIDTH)
 
-    # Add guard constraints
+    # Guard constraints — z3py's overloaded comparisons on bitvectors
+    # are signed (BVSLT/BVSLE/...).
     for c in constraints:
         v = vars_map[c.variable]
+        bv_val = z3.BitVecVal(c.bound_value, _OVERFLOW_BV_WIDTH)
         if c.operator == "<":
-            solver.add(v < c.bound_value)
+            solver.add(v < bv_val)
         elif c.operator == "<=":
-            solver.add(v <= c.bound_value)
+            solver.add(v <= bv_val)
         elif c.operator == ">":
-            solver.add(v > c.bound_value)
+            solver.add(v > bv_val)
         elif c.operator == ">=":
-            solver.add(v >= c.bound_value)
+            solver.add(v >= bv_val)
         elif c.operator == "==":
-            solver.add(v == c.bound_value)
+            solver.add(v == bv_val)
         elif c.operator == "!=":
-            solver.add(v != c.bound_value)
+            solver.add(v != bv_val)
 
-    # Ask: can any constrained variable exceed buffer_size?
-    for v in vars_map.values():
+    bv_buffer = z3.BitVecVal(buffer_size, _OVERFLOW_BV_WIDTH)
+
+    # Ask: can any constrained variable, as the sink's size_t argument,
+    # exceed buffer_size?
+    for name, v in vars_map.items():
         solver.push()
-        solver.add(v > buffer_size)
+        solver.add(z3.UGT(v, bv_buffer))
         result = solver.check()
         if result == z3.sat:
             model = solver.model()
-            val = model[v]
-            solver.pop()
-            witness = {}
+            witness: dict[str, int] = {}
             for wname, wv in vars_map.items():
                 wval = model[wv]
                 if wval is not None:
                     try:
-                        witness[wname] = wval.as_long()
+                        witness[wname] = _bv_signed(wval.as_long())
                     except AttributeError:
                         pass
-            return (True, f"overflow possible: {v} can be {val} > {buffer_size}", witness or None)
+            solver.pop()
+            shown = witness.get(name)
+            wrap_note = (
+                " (negative value wraps to a huge size_t)"
+                if shown is not None and shown < 0 else ""
+            )
+            return (
+                True,
+                (
+                    f"overflow possible: {name} can be {shown} with "
+                    f"unsigned interpretation > {buffer_size}{wrap_note}"
+                ),
+                witness or None,
+            )
         if result == z3.unknown:
             solver.pop()
             return (True, "solver timeout — conservatively assume guard insufficient", None)
         solver.pop()
 
-    return (False, f"guard sufficient: all constrained vars ≤ {buffer_size}", None)
+    return (
+        False,
+        (
+            f"guard sufficient: all constrained vars ≤ {buffer_size} "
+            f"(unsigned interpretation, signed guard atoms)"
+        ),
+        None,
+    )
 
 
 def _z3_alloc_overflow_check(
     constraints: list[BoundsConstraint],
-) -> tuple[bool, str, dict[str, int] | None]:
-    """Z3: Can an allocation size integer-overflow given the constraints?"""
+) -> tuple[bool | None, str, dict[str, int] | None]:
+    """Z3: Can an allocation size integer-overflow given the constraints?
+
+    Guard atoms are encoded with SIGNED comparisons: source guards on
+    C integer variables must be assumed signed absent declared-type
+    evidence.  The previous unsigned encoding turned ``n > -1`` into
+    ``UGT(n, 0xFF..FF)`` — unsatisfiable — so every follow-on
+    multiplication query came back UNSAT and the check declared
+    "allocation size cannot overflow" from a mis-modeled guard.  The
+    wrap question itself stays on the unsigned (size_t) product.
+    """
     import z3
 
     solver = z3.Solver()
@@ -1042,17 +1100,18 @@ def _z3_alloc_overflow_check(
         if c.variable not in vars_map:
             vars_map[c.variable] = z3.BitVec(c.variable, 64)
 
+    # z3py's overloaded comparisons on bitvectors are signed.
     for c in constraints:
         v = vars_map[c.variable]
         bv_val = z3.BitVecVal(c.bound_value, 64)
         if c.operator == "<":
-            solver.add(z3.ULT(v, bv_val))
+            solver.add(v < bv_val)
         elif c.operator == "<=":
-            solver.add(z3.ULE(v, bv_val))
+            solver.add(v <= bv_val)
         elif c.operator == ">":
-            solver.add(z3.UGT(v, bv_val))
+            solver.add(v > bv_val)
         elif c.operator == ">=":
-            solver.add(z3.UGE(v, bv_val))
+            solver.add(v >= bv_val)
         elif c.operator == "==":
             solver.add(v == bv_val)
         elif c.operator == "!=":
@@ -1089,13 +1148,32 @@ def _z3_alloc_overflow_check(
                     return (True, "solver timeout — conservatively assume overflow possible", None)
         return (False, "allocation size cannot overflow given constraints", None)
 
-    return (False, "insufficient variables for multiplication overflow check", None)
+    # A single constrained variable gives the multiplication model
+    # nothing to check — that is the ABSENCE of an analysis, not a
+    # proof that the allocation size cannot overflow.  Returning False
+    # here used to stamp guard_sufficient=True vacuously.
+    return (
+        None,
+        (
+            "insufficient variables for multiplication overflow check "
+            "— inconclusive"
+        ),
+        None,
+    )
 
 
 def _z3_consistency_check(
     constraints: list[BoundsConstraint],
-) -> tuple[bool, str, dict[str, int] | None]:
-    """Z3: Are the constraints internally consistent?"""
+) -> tuple[bool | None, str, dict[str, int] | None]:
+    """Z3: Are the constraints internally consistent?
+
+    Consistency is NOT sufficiency: a satisfiable guard says nothing
+    about whether the guard prevents the bug class at this sink.  This
+    check therefore never produces a verdict — it exists only to keep
+    the dispatch total for sink classes without a sufficiency model.
+    Returning False here used to stamp guard_sufficient=True for every
+    non-memcpy/non-alloc sink with any resolvable guard.
+    """
     import z3
 
     solver = z3.Solver()
@@ -1123,9 +1201,22 @@ def _z3_consistency_check(
 
     result = solver.check()
     if result == z3.unsat:
-        return (False, "constraints are contradictory — dead path", None)
-    # SAT or unknown: constraints are consistent (or inconclusive)
-    return (False, "constraints are consistent — no insufficiency proven", None)
+        return (
+            None,
+            (
+                "constraints are contradictory — no sufficiency model "
+                "for this sink class; inconclusive"
+            ),
+            None,
+        )
+    return (
+        None,
+        (
+            "constraints are consistent — consistency is not a "
+            "sufficiency proof; inconclusive"
+        ),
+        None,
+    )
 
 
 def _z3_dispatch_json(request: dict) -> Any:
@@ -1447,6 +1538,31 @@ def _arithmetic_check(
                 f"but buffer is only {buffer_size} bytes"
             ),
             concrete_values=guard.concrete_values,
+        )
+
+    # Same signedness rule as the Z3 bitvector model: an upper bound
+    # alone does not exclude negative values, and a signed negative
+    # length wraps to a huge size_t at the sink.  Sufficiency needs a
+    # non-negative lower bound on the same variable.
+    has_lower = any(
+        c.variable == tightest_var
+        and (
+            (c.operator in (">", ">=") and c.bound_value >= 0)
+            or (c.operator == "==" and 0 <= c.bound_value <= buffer_size)
+        )
+        for c in constraints
+    )
+    if not has_lower:
+        return SmtSufficiencyResult(
+            guard_text=guard.text,
+            feasible=True,
+            reasoning=(
+                f"guard limits {tightest_var} to ≤{tightest_max} but has "
+                f"no non-negative lower bound — a negative (signed) value "
+                f"passes the guard and wraps to a huge size_t at the sink"
+            ),
+            concrete_values=guard.concrete_values,
+            witness={tightest_var: -1},
         )
 
     return SmtSufficiencyResult(

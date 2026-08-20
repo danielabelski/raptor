@@ -8327,7 +8327,17 @@ def _run_mechanical_detectors(
                                     f"for {sg.sink_api}: {detail}"
                                 ),
                             ))
-                    if not has_insufficient:
+                    # Clearing a sink guard (skipping the CPG
+                    # decorative-guard round) requires a GENUINE
+                    # sufficiency proof (feasible is False).  Empty
+                    # result lists and inconclusive checks (feasible is
+                    # None: no sufficiency model, unmodeled boolean
+                    # structure, insufficient variables) are the
+                    # absence of an analysis, not a proof.
+                    has_proof = any(
+                        sr.feasible is False for sr in results
+                    )
+                    if not has_insufficient and has_proof:
                         _smt_cleared.add(idx)
             except Exception:
                 logger.debug("condition_smt failed for %s", fp, exc_info=True)

@@ -525,6 +525,78 @@ class TestProxyNetnsContextWiring:
             assert result.returncode == 0
             assert result.sandbox_info.get("proxy_enforcement") == "landlock_tcp"
 
+    def test_tier2_port_pin_warns_and_records_evidence(self, caplog):
+        """Tier-2 engagement (Landlock TCP port pin) must be
+        operator-visible — a WARNING naming the weaker port-scoped
+        guarantee (pre-fix it was DEBUG-silent) — and the reduced
+        guarantee must land in the per-run sandbox_info evidence."""
+        import logging
+
+        from core.sandbox import sandbox
+
+        abi = 4
+        with mock.patch(
+            "core.sandbox.context._get_landlock_abi", return_value=abi,
+        ), mock.patch(
+            "core.sandbox.context.check_landlock_available",
+            return_value=True,
+        ), mock.patch(
+            "core.sandbox.context.check_net_available",
+            return_value=False,
+        ), caplog.at_level(logging.WARNING, logger="core.sandbox.context"):
+            with sandbox(
+                target=self.out,
+                output=self.out,
+                use_egress_proxy=True,
+                proxy_hosts=["example.com"],
+            ) as run:
+                result = run(
+                    ["echo", "tier2-warn-test"],
+                    capture_output=True, text=True, timeout=15,
+                )
+        assert result.returncode == 0
+        assert result.sandbox_info.get("proxy_enforcement") == "landlock_tcp"
+        tier2_warnings = [
+            r for r in caplog.records
+            if "Landlock TCP port pin" in r.getMessage()
+            and "ANY address" in r.getMessage()
+        ]
+        assert tier2_warnings, (
+            "tier-2 engagement must emit an operator-visible WARNING "
+            "naming the any-address-on-port weakening")
+        evidence = result.sandbox_info.get("evidence", "")
+        assert "landlock_tcp port pin" in evidence
+        assert "any address on the proxy port" in evidence
+
+    def test_tier2_warning_is_once_per_process(self, caplog):
+        """Two tier-2 contexts → exactly one WARNING (warn_once)."""
+        import logging
+
+        from core.sandbox import sandbox
+
+        with mock.patch(
+            "core.sandbox.context._get_landlock_abi", return_value=4,
+        ), mock.patch(
+            "core.sandbox.context.check_landlock_available",
+            return_value=True,
+        ), mock.patch(
+            "core.sandbox.context.check_net_available",
+            return_value=False,
+        ), caplog.at_level(logging.WARNING, logger="core.sandbox.context"):
+            for _ in range(2):
+                with sandbox(
+                    target=self.out,
+                    output=self.out,
+                    use_egress_proxy=True,
+                    proxy_hosts=["example.com"],
+                ):
+                    pass
+        tier2_warnings = [
+            r for r in caplog.records
+            if "Landlock TCP port pin" in r.getMessage()
+        ]
+        assert len(tier2_warnings) == 1
+
     def test_fallback_on_unix_bind_failure(self):
         """If bind_unix fails, falls back to TCP-only without crash."""
         from core.sandbox import sandbox

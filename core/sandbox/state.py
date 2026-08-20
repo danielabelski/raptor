@@ -130,6 +130,10 @@ _net_and_tcp_allowlist_warned = False
 # namespace backend): engaged / cannot-engage one-shot warnings.
 _degraded_tcp_deny_warned = False
 _degraded_tcp_deny_unavailable_warned = False
+# Egress-proxy tier 2 engaged (Landlock TCP port pin, no netns bridge):
+# the pin is port-scoped, not (host, port)-scoped — weaker guarantee
+# than the netns tier; warned once per process at engagement.
+_proxy_tier2_port_pin_warned = False
 _seccomp_arch_missing_warned = False
 _mount_unavailable_warned = False
 _ptrace_unavailable_warned = False

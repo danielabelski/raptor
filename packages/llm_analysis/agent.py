@@ -14,6 +14,7 @@ This agent provides TRUE agentic behaviour with NO templates:
 import argparse
 import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -21,8 +22,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-# Also run as standalone subprocess: python3 packages/llm_analysis/agent.py
-sys.path.insert(0, str(Path(__file__).parents[2]))  # repo root
+if __name__ == "__main__":
+    # Standalone subprocess (python3 packages/llm_analysis/agent.py,
+    # spawned by raptor.py which pins RAPTOR_DIR into the child env).
+    # Hard lookup by policy — KeyError if unset; never a guessed
+    # fallback path (see CLAUDE.md: Python path safety).
+    sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 from core.config import RaptorConfig
 from core.inventory.lookup import lookup_function as _lookup_function

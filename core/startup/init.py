@@ -17,7 +17,10 @@ from pathlib import Path
 from . import REPO_ROOT
 from .banner import format_banner, read_logo, read_random_quote
 
-sys.path.insert(0, str(REPO_ROOT))
+# No sys.path mutation here: this module is only importable when the
+# repo root is already importable (relative imports above prove it),
+# so the former module-level insert was pure global state pollution
+# for every importer.
 OUTPUT_FILE = REPO_ROOT / ".startup-output"
 
 

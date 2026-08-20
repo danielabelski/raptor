@@ -10998,6 +10998,78 @@ def _mark_batch_reading_list(
                 domain_model, cl or spot_l, tail or spot_l,
             ) is not None
             concept_id = f"spotcheck:{spot.identifier}"
+            # A spot-check answer that CONTRADICTS the question's
+            # asserted value (matches is False — the assertion the
+            # reviewing LLM staked its hypothesis on) does not get
+            # unconditional trust: the regex extractor is
+            # deterministic but can read the wrong statement.  Same
+            # agreement gate as any other flip-causing answer.
+            # Displacing a domain-model summary with an AGREEING or
+            # open-question value is precedence, not contradiction —
+            # it keeps the deterministic exemption.
+            contradicts = spot.matches is False
+            agreement = {
+                "agreed": True,
+                "reason": "mechanical answer — deterministic, "
+                          "gate skipped",
+            }
+            if contradicts:
+                if study_client is None or source_root is None:
+                    agreement = {
+                        "agreed": False,
+                        "reason": "no verification client available",
+                    }
+                else:
+                    try:
+                        from core.concepts.answer_gate import (
+                            verify_flip_answer,
+                        )
+                        snippets = [
+                            it for it in study_items
+                            if isinstance(it, dict)
+                            and (it.get("name") or "").lower()
+                            in (spot_l, tail, cl)
+                        ] or study_items[:4]
+                        agreement = verify_flip_answer(
+                            req.question, snippets,
+                            spot.receipt.to_dict(),
+                            study_client, Path(source_root),
+                            tier="mechanical",
+                            contradicts_llm=True,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "spot-check agreement gate failed",
+                            exc_info=True,
+                        )
+                        agreement = {
+                            "agreed": False,
+                            "reason": "verification call failed",
+                        }
+            if not agreement.get("agreed"):
+                logger.info(
+                    "study-consumer: contradicting spot-check answer "
+                    "quarantined (%s): %s",
+                    agreement.get("reason"), req.question,
+                )
+                _record_study_scorecard(
+                    scorecard_model, False,
+                    agreement.get("reason") or "",
+                )
+                ledger.append(StudyAnswer(
+                    question=req.question,
+                    source_file=req.source_file,
+                    source_function=req.source_function,
+                    assumption=req.context or "",
+                    answer=spot.answer,
+                    tier="mechanical",
+                    receipt=spot.receipt.to_dict(),
+                    status="inconclusive",
+                    reason=agreement.get("reason") or "",
+                    spot_check_override=overrode,
+                    agreement=agreement,
+                ))
+                continue
             item.resolve(concept_id)
             changed = True
             eligible.add(fn_key)
@@ -11020,11 +11092,7 @@ def _mark_batch_reading_list(
                 status="resolved",
                 resolved_concept_id=concept_id,
                 spot_check_override=overrode,
-                agreement={
-                    "agreed": True,
-                    "reason": "mechanical answer — deterministic, "
-                              "gate skipped",
-                },
+                agreement=agreement,
             ))
             continue
 

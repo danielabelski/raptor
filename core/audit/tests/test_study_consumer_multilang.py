@@ -314,6 +314,55 @@ class TestMarkBatchReadingList:
             (tmp_path / "study-answers.json").read_text())["answers"]
         assert "DOES NOT match" in answers[0]["answer"]
 
+    def test_contradicting_spot_check_is_gated_not_trusted(
+        self, tmp_path,
+    ) -> None:
+        """A spot-check that CONTRADICTS the question's asserted value
+        is flip-causing: without a verification client for the
+        agreement gate it must quarantine (fail closed), not resolve
+        on unconditional mechanical trust."""
+        sl = self._corpus(tmp_path, [{
+            "name": "MAX_FRAME", "kind": "macro", "file": "lib.rs",
+            "line": 2,
+            "definition": "pub const MAX_FRAME: usize = 4096;",
+        }])
+        q = "Is MAX_FRAME equal to 8192?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "lib.rs",
+        }])
+        _mark_batch_reading_list(
+            tmp_path, [_req("lib.rs", q)], None, {},
+            study_list_path=sl,
+        )
+        item = _load_rl(tmp_path)["items"][0]
+        assert not item.get("resolved")
+        answers = json.loads(
+            (tmp_path / "study-answers.json").read_text())["answers"]
+        assert answers[0]["status"] == "inconclusive"
+        assert answers[0]["agreement"]["agreed"] is False
+
+    def test_agreeing_spot_check_keeps_mechanical_trust(
+        self, tmp_path,
+    ) -> None:
+        sl = self._corpus(tmp_path, [{
+            "name": "MAX_FRAME", "kind": "macro", "file": "lib.rs",
+            "line": 2,
+            "definition": "pub const MAX_FRAME: usize = 4096;",
+        }])
+        q = "Is MAX_FRAME 4096?"
+        _seed_reading_list(tmp_path, [{
+            "question": q, "source_file": "lib.rs",
+        }])
+        _mark_batch_reading_list(
+            tmp_path, [_req("lib.rs", q)], None, {},
+            study_list_path=sl,
+        )
+        item = _load_rl(tmp_path)["items"][0]
+        assert item["resolved"]
+        answers = json.loads(
+            (tmp_path / "study-answers.json").read_text())["answers"]
+        assert answers[0]["status"] == "resolved"
+
     def test_no_extracted_snippet_is_unresolvable(self, tmp_path) -> None:
         """Extract-then-answer enforcement: when extraction produced
         nothing for the identifier, the LLM is never allowed to

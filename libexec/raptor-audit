@@ -1415,6 +1415,19 @@ def _finalize_run(
         print(cost_line, flush=True)
     print(f"Report: {report_path}", flush=True)
     print(f"Terminated: {result.terminated_by}", flush=True)
+
+    # Deferred pipeline tail (resumed segments only): a launcher that
+    # ran this audit with --no-validate to validate the findings
+    # itself has completed by the time a resume finishes — surface the
+    # remaining tail steps instead of silently dropping them.
+    if segment:
+        try:
+            from core.audit.resume import pipeline_tail_hint
+            hint = pipeline_tail_hint(out_dir, result.findings or 0)
+            if hint:
+                print(f"\n{hint}", flush=True)
+        except Exception:  # noqa: BLE001 — hint is best-effort
+            pass
     # Scoped-run slot allocation (see gaps.truncate_gaps_to_budget):
     # zero-slot in-scope files are the silent-failure mode — always
     # state the allocation when a scope was set.

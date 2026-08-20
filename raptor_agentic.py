@@ -1296,6 +1296,22 @@ def run_audit_postpass(args, target: Path, out_dir: Path) -> dict:
                     "raptor-audit will rebuild it", e,
                 )
 
+        # Stage the deferred-tail marker: this audit runs with
+        # --no-validate because the parent pipeline validates the
+        # findings itself. If the audit is interrupted and resumed
+        # later, the parent has completed — the marker lets
+        # `raptor-audit resume` tell the operator which tail steps
+        # remain (see core.audit.resume.pipeline_tail_hint).
+        try:
+            save_json(audit_dir / "pipeline-tail.json", {
+                "parent_run": str(out_dir),
+                "deferred": ["validate", "feedback"],
+                "reason": "validation unified in the parent /agentic "
+                          "run (--gap-audit)",
+            })
+        except Exception:  # noqa: BLE001 — marker is best-effort
+            logger.debug("pipeline-tail marker write failed", exc_info=True)
+
         cmd = _build_audit_postpass_cmd(args, target, audit_dir, out_dir)
         # No wall timeout here: the audit self-bounds via --max-cost /
         # its own supervisor bound, and a wall kill would waste the

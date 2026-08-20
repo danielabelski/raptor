@@ -219,6 +219,11 @@ class TestRunAuditPostpass:
         assert calls["timeout"] == 0
         # The agentic checklist is provisioned for reuse.
         assert (audit_dir / "checklist.json").is_file()
+        # Deferred-tail marker staged for a potential later resume.
+        tail = json.loads(
+            (audit_dir / "pipeline-tail.json").read_text())
+        assert tail["deferred"] == ["validate", "feedback"]
+        assert tail["parent_run"] == str(out_dir)
 
     def test_failure_backstops_lifecycle(self, tmp_path, _postpass_env):
         audit_dir, calls, fails = _postpass_env

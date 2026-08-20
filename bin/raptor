@@ -7,6 +7,61 @@
 
 set -euo pipefail
 
+# ── PATH pre-scrub (shell builtins ONLY; runs before any external
+# command) ──────────────────────────────────────────────────────────
+# Empty/relative PATH entries resolve through the cwd, so with
+# `cd /untrusted/repo && raptor` even this script's own helpers
+# (dirname, readlink, stat below) would execute repo binaries. Drop
+# them here with builtins only; the full scrub below adds the
+# world-writable check. Same messages and RAPTOR_ALLOW_UNSAFE_PATH
+# keep-with-warning semantics; the full scrub honours the pre-pass
+# decision silently (no second warning).
+if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
+    _scrubbed=""
+    _rest="${PATH:-}"
+    _last=""
+    while [ -z "$_last" ]; do
+        case "$_rest" in
+            *:*) _entry="${_rest%%:*}"; _rest="${_rest#*:}" ;;
+            *)   _entry="$_rest"; _last=1 ;;
+        esac
+        _drop_reason=""
+        _shown="$_entry"
+        if [ -z "$_entry" ]; then
+            _drop_reason="empty entry (resolves as cwd)"
+            _shown="(empty)"
+        elif [ "${_entry#/}" = "$_entry" ]; then
+            _drop_reason="relative entry"
+        fi
+        if [ -n "$_drop_reason" ]; then
+            if [ -n "${RAPTOR_ALLOW_UNSAFE_PATH:-}" ]; then
+                echo "raptor: WARNING: keeping unsafe PATH entry ($_drop_reason; RAPTOR_ALLOW_UNSAFE_PATH set): $_shown" >&2
+                _scrubbed="$_scrubbed$_entry:"
+            else
+                echo "raptor: dropped unsafe PATH entry ($_drop_reason): $_shown" >&2
+            fi
+        else
+            _scrubbed="$_scrubbed$_entry:"
+        fi
+    done
+    PATH="${_scrubbed%:}"
+    export PATH
+    unset _scrubbed _rest _last _entry _shown _drop_reason
+fi
+
+# Pinned-PATH resolver for the hardening machinery's OWN helpers
+# (dirname, readlink, stat, id, mkdir, rm, ...): system dirs first,
+# the pre-scrubbed PATH only as fallback for unusual layouts. The
+# hardening must never resolve its own helpers through an entry it
+# has not vetted — or one the operator kept via
+# RAPTOR_ALLOW_UNSAFE_PATH. Under the opt-out, plain resolution (the
+# opt-out means exact legacy behaviour).
+if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
+    _rp() { PATH="/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}" command "$@"; }
+else
+    _rp() { command "$@"; }
+fi
+
 # Resolve symlinks to find the real script location
 SCRIPT="$0"
 _symhops=0
@@ -16,12 +71,12 @@ while [ -L "$SCRIPT" ]; do
         echo "raptor: symlink hop limit exceeded resolving $0" >&2
         exit 1
     fi
-    DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
-    SCRIPT="$(readlink "$SCRIPT")"
+    DIR="$(cd "$(_rp dirname "$SCRIPT")" && pwd)"
+    SCRIPT="$(_rp readlink "$SCRIPT")"
     [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
 done
 unset _symhops
-RAPTOR_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+RAPTOR_DIR="$(cd "$(_rp dirname "$SCRIPT")/.." && pwd)"
 
 if [ ! -d "$RAPTOR_DIR/core" ]; then
     echo "raptor: cannot find RAPTOR installation at $RAPTOR_DIR" >&2
@@ -56,19 +111,23 @@ if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
             *)   _entry="$_rest"; _last=1 ;;
         esac
         _drop_reason=""
-        _shown="$_entry"
-        if [ -z "$_entry" ]; then
-            _drop_reason="empty entry (resolves as cwd)"
-            _shown="(empty)"
-        elif [ "${_entry#/}" = "$_entry" ]; then
-            _drop_reason="relative entry"
+        if [ -z "$_entry" ] || [ "${_entry#/}" = "$_entry" ]; then
+            # Already decided by the builtins-only pre-pass (dropped,
+            # or kept-with-warning under RAPTOR_ALLOW_UNSAFE_PATH) —
+            # honour that decision silently.
+            if [ -n "${RAPTOR_ALLOW_UNSAFE_PATH:-}" ]; then
+                _scrubbed="$_scrubbed$_entry:"
+            fi
+            continue
         elif [ ! -d "$_entry" ]; then
             : # nonexistent — keep silently, nothing to inspect
         else
             # GNU stat first, BSD stat (macOS) fallback. Unreadable
             # perms → keep (can't verify; PATH scrub is best-effort).
-            _perm="$(stat -Lc '%a' "$_entry" 2>/dev/null \
-                     || stat -Lf '%Lp' "$_entry" 2>/dev/null \
+            # _rp-pinned: stat must not resolve through the very
+            # entry under inspection.
+            _perm="$(_rp stat -Lc '%a' "$_entry" 2>/dev/null \
+                     || _rp stat -Lf '%Lp' "$_entry" 2>/dev/null \
                      || echo '')"
             if [ -n "$_perm" ] && [ "$(( 0$_perm & 2 ))" -ne 0 ]; then
                 _drop_reason="world-writable dir"
@@ -76,10 +135,10 @@ if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
         fi
         if [ -n "$_drop_reason" ]; then
             if [ -n "${RAPTOR_ALLOW_UNSAFE_PATH:-}" ]; then
-                echo "raptor: WARNING: keeping unsafe PATH entry ($_drop_reason; RAPTOR_ALLOW_UNSAFE_PATH set): $_shown" >&2
+                echo "raptor: WARNING: keeping unsafe PATH entry ($_drop_reason; RAPTOR_ALLOW_UNSAFE_PATH set): $_entry" >&2
                 _scrubbed="$_scrubbed$_entry:"
             else
-                echo "raptor: dropped unsafe PATH entry ($_drop_reason): $_shown" >&2
+                echo "raptor: dropped unsafe PATH entry ($_drop_reason): $_entry" >&2
             fi
         else
             _scrubbed="$_scrubbed$_entry:"
@@ -87,23 +146,26 @@ if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
     done
     PATH="${_scrubbed%:}"
     export PATH
-    unset _scrubbed _rest _last _entry _shown _drop_reason _perm
+    unset _scrubbed _rest _last _entry _drop_reason _perm
 
     # Warn (don't drop) when claude resolves under a world-writable
     # ANCESTOR — the per-entry check above can't see parents.
     _claude_path="$(command -v claude 2>/dev/null || true)"
     if [ -n "$_claude_path" ]; then
-        _dir="$(dirname "$_claude_path")"
+        _dir="$(_rp dirname "$_claude_path")"
         _hops=0
         while [ -n "$_dir" ] && [ "$_dir" != "/" ] && [ "$_hops" -lt 64 ]; do
-            _perm="$(stat -Lc '%a' "$_dir" 2>/dev/null \
-                     || stat -Lf '%Lp' "$_dir" 2>/dev/null \
+            _perm="$(_rp stat -Lc '%a' "$_dir" 2>/dev/null \
+                     || _rp stat -Lf '%Lp' "$_dir" 2>/dev/null \
                      || echo '')"
             if [ -n "$_perm" ] && [ "$(( 0$_perm & 2 ))" -ne 0 ]; then
                 echo "raptor: WARNING: claude resolves under a world-writable tree: $_claude_path (writable ancestor: $_dir)" >&2
                 break
             fi
-            _dir="$(dirname "$_dir")"
+            # Parameter expansion, not dirname(1) — no external
+            # command per hop.
+            _dir="${_dir%/*}"
+            [ -n "$_dir" ] || _dir="/"
             _hops=$((_hops + 1))
         done
         unset _dir _hops _perm
@@ -116,12 +178,12 @@ if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
     # EXIT trap survives — removing session dirs whose pid is dead;
     # pid reuse only delays cleanup a cycle (safe direction).
     _tmp_base="${TMPDIR:-/tmp}"
-    _tmp_base="${_tmp_base%/}/raptor-$(id -u)"
-    mkdir -p -m 700 "$_tmp_base" 2>/dev/null || true
+    _tmp_base="${_tmp_base%/}/raptor-$(_rp id -u)"
+    _rp mkdir -p -m 700 "$_tmp_base" 2>/dev/null || true
     # Squat check: base must be a non-symlink dir owned by us
     # (mkdir -p "succeeds" on an existing attacker-created dir).
     if [ ! -L "$_tmp_base" ] && [ -d "$_tmp_base" ] && [ -O "$_tmp_base" ]; then
-        chmod 700 "$_tmp_base" 2>/dev/null || true
+        _rp chmod 700 "$_tmp_base" 2>/dev/null || true
         for _d in "$_tmp_base"/session-*; do
             [ -e "$_d" ] || continue      # unmatched glob
             [ -L "$_d" ] && continue      # never follow symlinks
@@ -132,17 +194,17 @@ if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
                 if ! kill -0 "$_spid" 2>/dev/null; then
                     # Depth bound: refuse suspiciously deep trees
                     # (planted junk). find is -P: no symlink follow.
-                    if [ -n "$(find "$_d" -mindepth 24 -print -quit 2>/dev/null)" ]; then
+                    if [ -n "$(_rp find "$_d" -mindepth 24 -print -quit 2>/dev/null)" ]; then
                         echo "raptor: skipping suspiciously deep stale session dir: $_d" >&2
                         continue
                     fi
-                    rm -rf -- "$_d"
+                    _rp rm -rf -- "$_d"
                 fi
             fi
         done
         unset _d _name _spid
         # Advisory only — live sessions' scratch counts too.
-        _kb="$(du -sk "$_tmp_base" 2>/dev/null | cut -f1)"
+        _kb="$(_rp du -sk "$_tmp_base" 2>/dev/null | _rp cut -f1)"
         if [ -n "$_kb" ] && [ "$_kb" -gt 5242880 ] 2>/dev/null; then
             echo "raptor: note: $_tmp_base holds >5G of session scratch — stale dirs sweep on each launch; live ones may need manual cleanup" >&2
         fi
@@ -151,7 +213,7 @@ if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
         _try=0
         while [ "$_try" -lt 5 ]; do
             _sess="$_tmp_base/session-$$-$RANDOM"
-            if mkdir -m 700 "$_sess" 2>/dev/null; then
+            if _rp mkdir -m 700 "$_sess" 2>/dev/null; then
                 export TMPDIR="$_sess"
                 break
             fi

@@ -171,6 +171,96 @@ def test_opt_out_skips_all_hardening(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The hardening's own helpers must not resolve through unvetted PATH
+# ---------------------------------------------------------------------------
+
+
+def _hostile_helpers(dirpath: Path, log: Path, *tools: str) -> None:
+    dirpath.mkdir(parents=True, exist_ok=True)
+    for tool in tools:
+        stub = dirpath / tool
+        stub.write_text(
+            f"#!/bin/sh\necho PWNED-{tool} >> {log}\n"
+            f"exec /usr/bin/{tool} \"$@\"\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+
+def test_hostile_cwd_helpers_never_execute(tmp_path):
+    """A leading empty (or relative) PATH entry + hostile stat/dirname/
+    readlink in the cwd must never execute: the builtins-only pre-pass
+    drops those entries before ANY external command runs, and the
+    pinned resolver covers the hardening's own helpers."""
+    log = tmp_path / "pwned.log"
+    evil = tmp_path / "evil"
+    _hostile_helpers(evil, log, "stat", "dirname", "readlink")
+    for path_prefix in ["", "evil-rel"]:
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        r = subprocess.run(
+            ["bash", str(LAUNCHER), "-h"],
+            capture_output=True, text=True, timeout=120, check=False,
+            env={
+                "PATH": ":".join([path_prefix] + _system_path_dirs()),
+                "HOME": str(home), "TERM": "xterm",
+                "TMPDIR": str(tmp_path / "tmp"),
+            },
+            cwd=str(evil),
+        )
+        assert r.returncode == 0, r.stderr
+        assert "dropped unsafe PATH entry" in r.stderr
+        assert not log.exists(), (
+            f"hostile helper executed (PATH prefix {path_prefix!r}): "
+            f"{log.read_text()}"
+        )
+
+
+def test_world_writable_entry_cannot_shadow_stat(tmp_path):
+    """The stat(1) inspecting a world-writable PATH entry must not
+    itself resolve through that entry."""
+    log = tmp_path / "pwned.log"
+    ww = tmp_path / "ww"
+    _hostile_helpers(ww, log, "stat")
+    ww.chmod(0o777)
+    r = _run_launcher(tmp_path, "-h", path_entries=[str(ww)])
+    assert r.returncode == 0, r.stderr
+    assert f"world-writable dir): {ww}" in r.stderr
+    assert not log.exists(), "fake stat inside the inspected entry ran"
+
+
+def test_kept_empty_entry_warns_exactly_once(tmp_path):
+    """Pre-pass warns; the full scrub honours that decision silently."""
+    r = _run_launcher(
+        tmp_path, "-h", path_entries=[""],
+        extra_env={"RAPTOR_ALLOW_UNSAFE_PATH": "1"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stderr.count("empty entry") == 1, r.stderr
+
+
+def test_symlinked_launcher_still_resolves(tmp_path):
+    """The pinned-resolver rewrite must not break symlink installs."""
+    link_dir = tmp_path / "linkbin"
+    link_dir.mkdir()
+    (link_dir / "raptor").symlink_to(LAUNCHER)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    r = subprocess.run(
+        ["bash", str(link_dir / "raptor"), "-h"],
+        capture_output=True, text=True, timeout=120, check=False,
+        env={
+            "PATH": ":".join(_system_path_dirs()),
+            "HOME": str(home), "TERM": "xterm",
+            "TMPDIR": str(tmp_path / "tmp"),
+        },
+        cwd=str(home),
+    )
+    assert r.returncode == 0, r.stderr
+    assert "Usage: raptor" in r.stdout
+
+
+# ---------------------------------------------------------------------------
 # Session TMPDIR + stale-sibling sweep (raptor -h)
 # ---------------------------------------------------------------------------
 

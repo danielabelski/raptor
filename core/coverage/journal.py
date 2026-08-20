@@ -442,6 +442,17 @@ def reviewed_set(out_dir: Path) -> set[str]:
 
 PRODUCER_AUDIT = "audit"
 PRODUCER_AGENTIC = "agentic"
+#: /validate-derived entries (the feedback loop journaling a validated
+#: finding in a function no audit ever reviewed). Like /agentic
+#: entries these are finding-grade: a deep-dive of ONE finding is not
+#: a function review. Never inferred from run_id — only stamped
+#: explicitly by the feedback writer.
+PRODUCER_VALIDATE = "validate"
+
+#: Producers whose entries record per-FINDING work, not function
+#: reviews. Everything else (audit, unknown-but-legacy) is
+#: function-grade.
+_FINDING_GRADE_PRODUCERS = frozenset({PRODUCER_AGENTIC, PRODUCER_VALIDATE})
 
 #: run_id prefixes that identify /agentic-side producers for legacy
 #: entries written before the ``producer`` field was stamped. Matches
@@ -468,11 +479,12 @@ def entry_producer(entry: ReviewJournalEntry) -> str:
 def is_function_grade(entry: ReviewJournalEntry) -> bool:
     """True when the entry records a function-grade review.
 
-    Finding-grade (/agentic) entries return False — they must not
-    suppress audit gaps or be imported as reused verdicts. See the
-    producer-kind note above.
+    Finding-grade entries (/agentic analyses, /validate-derived
+    corrections for functions no audit reviewed) return False — they
+    must not suppress audit gaps or be imported as reused verdicts.
+    See the producer-kind note above.
     """
-    return entry_producer(entry) != PRODUCER_AGENTIC
+    return entry_producer(entry) not in _FINDING_GRADE_PRODUCERS
 
 
 def latest_function_grade_index(

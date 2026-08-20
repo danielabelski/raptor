@@ -1297,3 +1297,103 @@ class TestPriorHasToolEvidence:
     def test_none_prior(self):
         from core.audit.feedback import _prior_has_tool_evidence
         assert _prior_has_tool_evidence(None) is False
+
+
+class TestFeedbackProducerKind:
+    """Kind-aware producer stamping on feedback-written entries."""
+
+    def test_no_prior_claim_stays_skipped(self, tmp_path: Path):
+        """A validated finding with NO prior claim of any kind is a
+        new signal for the next audit run, not feedback — the
+        deliberate skip must survive the kind-aware change."""
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+
+        report_path = tmp_path / "findings.json"
+        report_path.write_text(json.dumps([{
+            "file": "src/new.c",
+            "function": "never_reviewed",
+            "ruling": {"status": "exploitable"},
+            "is_true_positive": True,
+        }]))
+
+        result = import_validation_results(
+            validation_report=report_path,
+            annotations_dir=ann_dir,
+            audit_out_dir=audit_out,
+        )
+
+        assert result["skipped"] == 1
+        assert _latest_journal_entry(
+            audit_out, "src/new.c", "never_reviewed") is None
+
+    def test_machine_annotation_prior_correction_is_finding_grade(
+        self, tmp_path: Path,
+    ):
+        """When the only prior claim is a machine-tier annotation (no
+        journal entry), the correction records per-finding /validate
+        evidence about a function no audit reviewed — it must be
+        finding-grade, not fabricated function-review coverage."""
+        from core.coverage.journal import is_function_grade
+
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _write_annotation(ann_dir, "src/new.c", "never_reviewed",
+                          "clean", "Legacy LLM note, looks safe")
+
+        report_path = tmp_path / "findings.json"
+        report_path.write_text(json.dumps([{
+            "file": "src/new.c",
+            "function": "never_reviewed",
+            "ruling": {"status": "exploitable"},
+            "is_true_positive": True,
+        }]))
+
+        import_validation_results(
+            validation_report=report_path,
+            annotations_dir=ann_dir,
+            audit_out_dir=audit_out,
+        )
+
+        entry = _latest_journal_entry(audit_out, "src/new.c",
+                                      "never_reviewed")
+        assert entry is not None
+        assert entry.verdict == "finding"
+        assert entry.producer == "validate"
+        assert not is_function_grade(entry)
+
+    def test_correction_to_audit_review_stays_function_grade(
+        self, tmp_path: Path,
+    ):
+        from core.coverage.journal import is_function_grade
+
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        audit_out = tmp_path / "audit-out"
+        audit_out.mkdir()
+        _seed_journal_entry(audit_out, "src/safe.c", "safe_fn",
+                            "clean", "Reviewed, looks safe")
+
+        report_path = tmp_path / "findings.json"
+        report_path.write_text(json.dumps([{
+            "file": "src/safe.c",
+            "function": "safe_fn",
+            "ruling": {"status": "exploitable"},
+            "is_true_positive": True,
+        }]))
+
+        import_validation_results(
+            validation_report=report_path,
+            annotations_dir=ann_dir,
+            audit_out_dir=audit_out,
+        )
+
+        entry = _latest_journal_entry(audit_out, "src/safe.c", "safe_fn")
+        assert entry is not None
+        assert entry.verdict == "finding"
+        assert entry.producer == "audit"
+        assert is_function_grade(entry)

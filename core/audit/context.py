@@ -1447,9 +1447,11 @@ def format_context_for_prompt(
         # target-derived surface.
         pfa = ["\n### Prior finding-grade analyses (claims, not verdicts)"]
         pfa.append(
-            "Earlier /agentic runs analysed individual scanner findings "
-            "located in this function — one finding each, not a function "
-            "review. Treat each as a prior claim from another reviewer: "
+            "Earlier pipeline runs analysed individual findings located "
+            "in this function (/agentic scanner-finding analyses, "
+            "/validate-confirmed findings) — one finding each, not a "
+            "function review. Treat each as a prior claim from another "
+            "reviewer: "
             "verify independently against THIS function's code, never "
             "inherit a verdict, and still review the whole function, "
             "not just the claimed line."

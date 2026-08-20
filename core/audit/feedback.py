@@ -462,8 +462,17 @@ def import_validation_results(
             validate_verdict=validate_verdict,
             validate_reason=reason or None,
             source_drifted=source_drifted if source_drifted else None,
-            producer=(prior_entry.producer if prior_entry else None)
-                     or "audit",
+            # Kind-aware producer: a correction to an existing review
+            # inherits its grade (legacy audit entries without the
+            # stamp default to audit). A validated finding in a
+            # function the audit NEVER reviewed is finding-grade
+            # evidence about one finding — stamped producer="validate"
+            # so it feeds prior claims and coverage labels without
+            # satisfying the gap fold's "reviewed" predicate.
+            producer=(
+                (prior_entry.producer or "audit") if prior_entry
+                else "validate"
+            ),
         )
         try:
             append_entry(audit_out_dir or annotations_dir.parent, new_entry)

@@ -66,6 +66,13 @@ class TestIsFunctionGrade:
         assert not is_function_grade(_entry(producer="agentic"))
         assert not is_function_grade(_entry(run_id="agentic_x"))
 
+    def test_validate_entries_are_finding_grade(self):
+        """Feedback-written entries for functions no audit reviewed:
+        one validated finding is not a function review."""
+        assert not is_function_grade(_entry(producer="validate"))
+        # Never inferred from run_id — explicit stamp only.
+        assert is_function_grade(_entry(run_id="validate_20260101"))
+
 
 class TestLatestFunctionGradeIndex:
     def test_finding_grade_entries_excluded(self, tmp_path):

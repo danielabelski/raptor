@@ -90,9 +90,18 @@ _BATCH_CHUNK_SIZE = 500
 _DEFAULT_QUERY_TTL = 24 * 3600
 _DEFAULT_VULN_TTL = 24 * 3600
 
-# OSV severity types we accept; the winner among matching entries is
-# picked by highest numeric score, not by position in this tuple.
-_CVSS_TYPES = ("CVSS_V3", "CVSS_V31")
+# OSV severity types scored by the in-repo v3.x calculator; the winner
+# among matching entries is picked by highest numeric score, not by
+# position in this tuple. OSV tags both 3.0 and 3.1 vectors with the
+# ``CVSS_V3`` type — the old ``CVSS_V31`` entry here was a no-op (that
+# type never appears on the wire).
+_CVSS_TYPES = ("CVSS_V3",)
+
+# CVSS v4 vectors are scored via the optional ``cvss`` PyPI package
+# (see ``_cvss_v4_base_score``); when it's absent, v4-only advisories
+# fall back to the GHSA-provided severity label and finally to the
+# findings layer's blanket ``medium``.
+_CVSS_V4_TYPE = "CVSS_V4"
 
 # OSV ecosystem identifiers diverge from RAPTOR's internal names in
 # one place: Rust. OSV uses ``crates.io`` (the registry domain) and
@@ -559,8 +568,29 @@ def parse_osv_record(record: dict[str, Any]) -> Advisory:
 def _record_to_advisory(rec: OsvRecord) -> Advisory:
     affected = _affected_from_record(rec)
     fixed_versions = _collect_fixed_versions(affected)
-    severity = _highest_cvss_v3(rec)
+    severity = _highest_cvss(rec)
     refs = [r.url for r in rec.references]
+
+    # CVSS_V4-only advisories (GHSA started publishing these in 2024)
+    # used to degrade straight to the findings layer's blanket
+    # ``medium``. When no CVSS entry could be scored numerically but a
+    # v4 vector IS present, fall back to the record's own
+    # ``database_specific.severity`` label so a CRITICAL v4-only
+    # advisory gates as critical. The label rides on
+    # ``Advisory.severity_fallback`` (no fabricated numeric score);
+    # when even that is absent, log which advisory degraded.
+    severity_fallback: str | None = None
+    if severity is None and any(
+        e.type == _CVSS_V4_TYPE for e in rec.severity
+    ):
+        severity_fallback = _severity_label_from_raw(rec)
+        if severity_fallback is None:
+            logger.info(
+                "sca.osv: advisory %s carries only CVSS_V4 severity and "
+                "no database_specific.severity label — findings will "
+                "degrade it to medium (install the 'cvss' package to "
+                "score v4 vectors numerically)", rec.id,
+            )
 
     # Stash anything else under ecosystem_specific for downstream access
     # (Go function-level reachability uses ``ecosystem_specific.imports``).
@@ -602,6 +632,7 @@ def _record_to_advisory(rec: OsvRecord) -> Advisory:
         ecosystem_specific=ecosystem_specific,
         informational=informational,
         cwe_ids=_cwe_ids_from_record(rec),
+        severity_fallback=severity_fallback,
     )
 
 
@@ -659,18 +690,29 @@ def _collect_fixed_versions(affected: list[AffectedRange]) -> list[str]:
     return deduped
 
 
-def _highest_cvss_v3(rec: OsvRecord) -> CVSSScore | None:
-    """Pick the highest CVSS v3.x entry; compute numeric score from vector.
+def _highest_cvss(rec: OsvRecord) -> CVSSScore | None:
+    """Pick the highest-scoring CVSS entry; compute numeric score from
+    the vector.
 
-    ``packages.cvss.calculator`` accepts vectors with optional temporal
-    or environmental extensions (e.g. Log4Shell's ``…/A:H/E:H``); we
-    pass them through verbatim and the base-only score is returned.
+    v3.x vectors go through ``packages.cvss.calculator`` (accepts
+    optional temporal / environmental extensions — e.g. Log4Shell's
+    ``…/A:H/E:H`` — and returns the base-only score). v4.0 vectors go
+    through the optional ``cvss`` PyPI package when it's installed;
+    without it they score as ``None`` here and the caller falls back to
+    the record's database-provided severity label (see
+    ``_severity_label_from_raw``).
     """
     best: tuple[float, str, str] | None = None
     for entry in rec.severity:
-        if entry.type not in _CVSS_TYPES:
+        if entry.type in _CVSS_TYPES:
+            score, severity_label = compute_score_safe(entry.score)
+        elif entry.type == _CVSS_V4_TYPE:
+            score = _cvss_v4_base_score(entry.score)
+            severity_label = (
+                _bucket_score(score) if score is not None else None
+            )
+        else:
             continue
-        score, severity_label = compute_score_safe(entry.score)
         if score is None or severity_label is None:
             continue
         if best is None or score > best[0]:
@@ -682,6 +724,49 @@ def _highest_cvss_v3(rec: OsvRecord) -> CVSSScore | None:
     if severity_label not in valid_levels:
         severity_label = _bucket_score(score)
     return CVSSScore(score=score, vector=vector, severity=severity_label)  # type: ignore[arg-type]
+
+
+def _cvss_v4_base_score(vector: str) -> float | None:
+    """Score a CVSS v4.0 vector via the optional ``cvss`` PyPI package.
+
+    v4.0 scoring is a MacroVector table lookup with distance
+    interpolation — far too much machinery to reimplement here, so we
+    delegate to the reference implementation when it's installed and
+    degrade gracefully when it isn't (returns ``None``; the caller then
+    tries the database-provided severity label).
+    """
+    try:
+        from cvss import CVSS4  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    try:
+        return float(CVSS4(vector).base_score)
+    except Exception as exc:                       # noqa: BLE001
+        logger.debug("sca.osv: unparseable CVSS_V4 vector %r: %s",
+                     vector, exc)
+        return None
+
+
+# GHSA (and OSV mirrors of it) put a coarse severity label on the raw
+# record's top-level ``database_specific.severity``.
+_DB_SEVERITY_LABELS = {
+    "CRITICAL": "critical",
+    "HIGH": "high",
+    "MODERATE": "medium",
+    "MEDIUM": "medium",
+    "LOW": "low",
+}
+
+
+def _severity_label_from_raw(rec: OsvRecord) -> str | None:
+    """Map ``database_specific.severity`` to our severity enum."""
+    ds = rec.raw.get("database_specific")
+    if not isinstance(ds, dict):
+        return None
+    label = ds.get("severity")
+    if not isinstance(label, str):
+        return None
+    return _DB_SEVERITY_LABELS.get(label.strip().upper())
 
 
 def _bucket_score(score: float) -> str:

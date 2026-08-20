@@ -141,6 +141,83 @@ def test_parse_osv_record_unknown_severity_type_skipped() -> None:
     assert a.severity is None
 
 
+_V4_ONLY_VECTOR = (
+    "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/"
+    "VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+)
+
+
+def _v4_only_record(db_severity: str | None = "CRITICAL") -> dict:
+    record = dict(_LOG4J_RECORD)
+    record["severity"] = [{"type": "CVSS_V4", "score": _V4_ONLY_VECTOR}]
+    if db_severity is not None:
+        record["database_specific"] = {"severity": db_severity}
+    else:
+        record.pop("database_specific", None)
+    return record
+
+
+def test_v4_only_advisory_uses_database_severity_label(monkeypatch) -> None:
+    """Without the optional ``cvss`` package the v4 vector can't be
+    scored — the GHSA database_specific.severity label carries the
+    severity instead of degrading to medium."""
+    import packages.sca.osv as osv_mod
+    monkeypatch.setattr(osv_mod, "_cvss_v4_base_score", lambda v: None)
+    a = parse_osv_record(_v4_only_record("CRITICAL"))
+    assert a.severity is None            # no fabricated numeric score
+    assert a.severity_fallback == "critical"
+    a2 = parse_osv_record(_v4_only_record("MODERATE"))
+    assert a2.severity_fallback == "medium"
+
+
+def test_v4_only_advisory_without_label_degrades(monkeypatch) -> None:
+    import packages.sca.osv as osv_mod
+    monkeypatch.setattr(osv_mod, "_cvss_v4_base_score", lambda v: None)
+    a = parse_osv_record(_v4_only_record(db_severity=None))
+    assert a.severity is None
+    assert a.severity_fallback is None   # findings layer degrades to medium
+
+
+def test_v4_vector_scored_numerically_when_scorer_available(
+    monkeypatch,
+) -> None:
+    """When a v4 base score is computable it competes in the normal
+    highest-score selection and buckets like a v3 score."""
+    import packages.sca.osv as osv_mod
+    monkeypatch.setattr(osv_mod, "_cvss_v4_base_score", lambda v: 9.3)
+    a = parse_osv_record(_v4_only_record("CRITICAL"))
+    assert a.severity is not None
+    assert a.severity.score == 9.3
+    assert a.severity.severity == "critical"
+    assert a.severity.vector == _V4_ONLY_VECTOR
+    assert a.severity_fallback is None
+
+
+def test_v4_base_score_via_cvss_package() -> None:
+    """Exercise the real optional-dependency path when it's installed."""
+    pytest.importorskip("cvss")
+    from packages.sca.osv import _cvss_v4_base_score
+    score = _cvss_v4_base_score(_V4_ONLY_VECTOR)
+    assert score is not None and 9.0 <= score <= 10.0
+    assert _cvss_v4_base_score("not a vector") is None
+
+
+def test_v3_entry_still_wins_alongside_unscoreable_v4(monkeypatch) -> None:
+    """A record carrying both CVSS_V3 and CVSS_V4 keeps its computed v3
+    severity; the label fallback only engages when nothing scored."""
+    import packages.sca.osv as osv_mod
+    monkeypatch.setattr(osv_mod, "_cvss_v4_base_score", lambda v: None)
+    record = dict(_LOG4J_RECORD)
+    record["severity"] = list(record["severity"]) + [
+        {"type": "CVSS_V4", "score": _V4_ONLY_VECTOR},
+    ]
+    record["database_specific"] = {"severity": "LOW"}
+    a = parse_osv_record(record)
+    assert a.severity is not None
+    assert a.severity.severity == "critical"
+    assert a.severity_fallback is None
+
+
 def test_parse_osv_record_invalid_dates_become_none() -> None:
     record = dict(_LOG4J_RECORD)
     record["modified"] = "not-a-date"

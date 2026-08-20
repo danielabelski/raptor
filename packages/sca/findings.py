@@ -278,6 +278,13 @@ def _severity_for_advisory(advisory: Advisory) -> Severity:
         s = advisory.severity.severity
         if s in ("none", "low", "medium", "high", "critical"):
             return s             # type: ignore[return-value]
+    # No scoreable CVSS vector — use the database-provided label when
+    # the OSV layer derived one (CVSS_V4-only advisories with a GHSA
+    # ``database_specific.severity``) before degrading.
+    if advisory.severity_fallback in (
+        "none", "low", "medium", "high", "critical",
+    ):
+        return advisory.severity_fallback  # type: ignore[return-value]
     # No CVSS — degrade to "medium" since the advisory exists at all.
     return "medium"
 
@@ -692,6 +699,11 @@ def _advisory_summary(a: Advisory | None) -> dict[str, Any] | None:
         "published": a.published.isoformat() if a.published else None,
         "modified": a.modified.isoformat() if a.modified else None,
     }
+    if a.severity_fallback:
+        # Label-only severity (CVSS_V4-only advisory scored via the
+        # database-provided label) — surfaced so consumers can tell a
+        # derived label from a computed CVSS bucket.
+        out["severity_fallback"] = a.severity_fallback
     if a.informational:
         # RUSTSEC "unsound" / "unmaintained" / "notice" markers,
         # and similar non-security flags on other ecos. Surface

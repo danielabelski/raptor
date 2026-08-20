@@ -19,6 +19,27 @@ def get_finding_id(finding: Dict[str, Any]) -> Optional[str]:
     return finding.get("id") or finding.get("finding_id")
 
 
+def safe_run_mtime(path: Path) -> float:
+    """``st_mtime`` of a run dir, or 0.0 when it has vanished.
+
+    Run dirs can disappear between enumeration and the stat — an
+    operator runs ``/project clean``, a parallel pruner unlinks an old
+    run, the dir sat on a flaky network mount. Pre-fix callers ran a
+    bare ``d.stat()`` inside a sort key and the whole correlate/report
+    pass crashed with FileNotFoundError. Treat unstattable dirs as
+    mtime 0 (they sort oldest) and log so the operator sees the
+    disappearance.
+    """
+    try:
+        return path.stat().st_mtime
+    except OSError as exc:
+        logger.warning(
+            "project: run dir %s vanished during scan (%s) — treating as oldest",
+            path.name, exc,
+        )
+        return 0.0
+
+
 def finding_file(finding: Dict[str, Any]) -> str:
     """File path for a finding, tolerant of both serialised shapes.
 

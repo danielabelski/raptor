@@ -241,6 +241,20 @@ class TestNewAndResolved(TestCase):
         self.assertEqual(len(result["new_findings"]), 0)
         self.assertEqual(len(result["potentially_resolved"]), 0)
 
+    def test_vanished_run_dir_does_not_crash(self):
+        """A run dir deleted mid-correlation (`/project clean` racing
+        the pass) must sort as oldest, not raise FileNotFoundError."""
+        dirs = self._make_run_dirs(["validate-001", "validate-002"])
+        dirs.append(dirs[0].parent / "validate-gone")  # never created
+        findings = {
+            "validate-001": [],
+            "validate-002": [_make_finding(final_status="exploitable")],
+        }
+        types = {"validate-001": "validate", "validate-002": "validate",
+                 "validate-gone": "validate"}
+        result = _find_new_and_resolved(findings, dirs, types)
+        self.assertEqual(len(result["new_findings"]), 1)
+
     def test_finding_in_all_runs_not_new(self):
         dirs = self._make_run_dirs(["validate-001", "validate-002", "validate-003"])
         f = _make_finding(final_status="exploitable")

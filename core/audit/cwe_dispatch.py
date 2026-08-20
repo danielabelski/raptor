@@ -284,7 +284,10 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
     # the channel's dynamic-receipt escalator.
     "CWE-416": {
         "smt": "check-early-release",
-        "cocci": "use_after_free.cocci",
+        # Two standing witness shapes: sequential free-then-use, and
+        # the teardown race (async callback cancel then free of the
+        # callback container).
+        "cocci": ["use_after_free.cocci", "teardown_lifetime.cocci"],
         "joern": True,
         "codeql": "cpp/use-after-free",
         "sinks": ["kfree", "kfree_rcu", "free", "vfree", "kvfree",
@@ -674,11 +677,27 @@ def smt_verb_for_cwe(cwe: str) -> str | None:
 
 
 def cocci_rule_for_cwe(cwe: str) -> str | None:
-    """Return the Coccinelle rule filename for a CWE, or None."""
+    """Return the primary Coccinelle rule filename for a CWE, or None.
+
+    A dispatch entry may carry a list of rule filenames; the first is
+    the primary (back-compat single-rule consumers). Use
+    :func:`cocci_rules_for_cwe` to get all of them.
+    """
+    rules = cocci_rules_for_cwe(cwe)
+    return rules[0] if rules else None
+
+
+def cocci_rules_for_cwe(cwe: str) -> list[str]:
+    """Return ALL Coccinelle rule filenames for a CWE (possibly [])."""
     entry = lookup(cwe)
     if entry is None:
-        return None
-    return entry.get("cocci")
+        return []
+    val = entry.get("cocci")
+    if not val:
+        return []
+    if isinstance(val, (list, tuple)):
+        return [v for v in val if v]
+    return [val]
 
 
 def codeql_query_for_cwe(cwe: str) -> str | None:

@@ -8621,6 +8621,30 @@ def _run_mechanical_detectors(
     except Exception:
         logger.debug("mechanical: callback_lifetime failed", exc_info=True)
 
+    # --- ASN.1 template declared-vs-accessed type witness ---
+    try:
+        from .asn1_template_mismatch import scan_sources as _asn1_scan
+
+        for am in _asn1_scan(source_texts):
+            func_name = ""
+            for gap in gaps:
+                if gap.get("file") != am.file:
+                    continue
+                gs = gap.get("line_start", 0)
+                ge = gap.get("line_end", gs)
+                if gs <= am.line <= (ge or gs):
+                    func_name = gap.get("name", "")
+                    break
+            if func_name:
+                _add(
+                    am.file, func_name, "asn1_template_mismatch",
+                    am.line, am.description(),
+                )
+    except Exception:
+        logger.debug(
+            "mechanical: asn1_template_mismatch failed", exc_info=True,
+        )
+
     # --- Standing Coccinelle templates ---
     try:
         from packages.coccinelle.runner import (
@@ -8638,8 +8662,15 @@ def _run_mechanical_detectors(
             standing_rules: set[str] = set()
             for entry in CWE_TO_TOOL_DISPATCH.values():
                 cocci_name = entry.get("cocci")
-                if cocci_name:
-                    rule_path = rules_dir / cocci_name
+                # A dispatch entry carries one rule filename or a list
+                # of them (a CWE family with more than one standing
+                # witness shape).
+                cocci_names = (
+                    cocci_name if isinstance(cocci_name, (list, tuple))
+                    else [cocci_name] if cocci_name else []
+                )
+                for one_name in cocci_names:
+                    rule_path = rules_dir / one_name
                     if rule_path.is_file():
                         standing_rules.add(str(rule_path))
             if standing_rules:
@@ -13806,7 +13837,7 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     try:
         from .cwe_dispatch import (
-            cocci_rule_for_cwe,
+            cocci_rules_for_cwe,
             codeql_query_for_cwe,
             joern_applicable,
             sinks_for_cwe,
@@ -13896,8 +13927,7 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
     if smt_verb:
         chain.append({"type": "smt", "config": {"verb": smt_verb}})
 
-    cocci_rule = cocci_rule_for_cwe(cwe)
-    if cocci_rule:
+    for cocci_rule in cocci_rules_for_cwe(cwe):
         chain.append({"type": "coccinelle", "config": {"rule": cocci_rule}})
 
     codeql_query = codeql_query_for_cwe(cwe)

@@ -216,6 +216,16 @@ class TestComputeGaps:
         gaps = compute_gaps(_sample_checklist(), [], scope="nonexistent/")
         assert gaps == []
 
+    def test_scope_target_root_means_whole_tree(self):
+        # "." is the parent of a repo-root file (a top-level
+        # index.js / main.c); the prefix matcher can never match it, so a
+        # root entry silently excluded EVERY gap — corpus groups with
+        # repo-root labels reviewed 0 functions
+        # (error:not_reviewed:pin_matched_no_gap).
+        for scope in (".", "./", ["."], [".", "src/auth"]):
+            gaps = compute_gaps(_sample_checklist(), [], scope=scope)
+            assert len(gaps) == 4, scope
+
     def test_binary_absent_deprioritized(self):
         checklist = {
             "files": [

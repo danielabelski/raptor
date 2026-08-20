@@ -309,6 +309,68 @@ class TestLabelPinning:
             )
 
 
+class TestScopePrep:
+    """Repo-root labels must not scope the audit to nothing.
+
+    Regression: a label on a repo-root file (a top-level index.js /
+    main.c) produced scope_dirs == ["."], the gap scope matcher
+    matched nothing, and the whole group reviewed 0 functions.
+    """
+
+    def _label_for(self, fid, file, line=1):
+        return SimpleNamespace(
+            function_id=fid,
+            bug_class="auth",
+            expected_status="clean",
+            expected_mechanism="",
+            expected_mode_results={},
+            source=SimpleNamespace(
+                repo="test", sha="x", file=file,
+                line_start=line, line_end=line + 5,
+            ),
+        )
+
+    def _opts_for(self, tmp_path, monkeypatch, labels):
+        import core.audit.pipeline as pipeline
+
+        captured = []
+        monkeypatch.setattr(
+            pipeline, "run_audit_pipeline", captured.append,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_build_checklist", lambda t, o: True,
+        )
+        src = tmp_path / "repo"
+        src.mkdir(exist_ok=True)
+        (src / "a.c").write_text("int f(void) { return 0; }\n")
+        run_corpus._run_audit_on_target(
+            src, labels, out_dir=tmp_path / "out", mode="security",
+        )
+        assert len(captured) == 1
+        return captured[0]
+
+    def test_root_label_means_no_scope(self, tmp_path, monkeypatch):
+        opts = self._opts_for(
+            tmp_path, monkeypatch, [self._label_for("a.c:f", "a.c")],
+        )
+        assert opts.scope is None
+
+    def test_mixed_root_and_subdir_label_means_no_scope(
+        self, tmp_path, monkeypatch,
+    ):
+        opts = self._opts_for(tmp_path, monkeypatch, [
+            self._label_for("a.c:f", "a.c"),
+            self._label_for("sub/b.c:g", "sub/b.c"),
+        ])
+        assert opts.scope is None
+
+    def test_subdir_labels_keep_scope(self, tmp_path, monkeypatch):
+        opts = self._opts_for(tmp_path, monkeypatch, [
+            self._label_for("sub/b.c:g", "sub/b.c"),
+        ])
+        assert opts.scope == ["sub"]
+
+
 def _write_checklist(audit_dir: Path, entries):
     """Write a minimal checklist.json with (file, name) entries."""
     files: dict = {}

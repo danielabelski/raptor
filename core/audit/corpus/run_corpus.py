@@ -1003,9 +1003,17 @@ def _run_audit_on_target(
 
     _build_checklist(target_dir, out_dir)
 
-    scope_dirs: list[str] = sorted({
+    # A repo-root label (a top-level ``index.js`` / ``main.c``) has parent
+    # ``"."`` — that scopes the WHOLE tree, so pass no scope at all:
+    # the gap scope matcher is prefix-based and a literal "." entry
+    # matched nothing, silently dropping every gap in the group (the
+    # labels then scored ``error:not_reviewed:pin_matched_no_gap``).
+    _scope_parents = {
         str(Path(label.source.file).parent) for label in labels
-    })
+    }
+    scope_dirs: list[str] = (
+        [] if "." in _scope_parents else sorted(_scope_parents)
+    )
 
     fn_specs: list[str] = []
     pin_specs: list[str] = []

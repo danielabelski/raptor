@@ -243,8 +243,15 @@ def compute_gaps(
     scope_list: list[str] | None = None
     if scope:
         scope_list = [scope] if isinstance(scope, str) else list(scope)
+        # A target-root entry ("." / "./" / "") means the whole tree.
+        # The prefix matcher below can never match it ("index.js" is
+        # neither equal to "." nor startswith("./")), so a root entry
+        # used to silently exclude EVERY gap — observed as corpus
+        # groups with repo-root labeled files reviewing 0 functions.
+        if any(s.rstrip("/") in ("", ".") for s in scope_list):
+            scope_list = None
         target_path = checklist.get("target_path", "")
-        if target_path:
+        if scope_list and target_path:
             normalised = target_path.rstrip("/")
             scope_list = [
                 s for s in scope_list

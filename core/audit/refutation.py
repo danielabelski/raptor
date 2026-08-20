@@ -716,6 +716,16 @@ _LOCK_DISCHARGEABLE_RACE_CWES = frozenset({
 # same-family self-refutation, and the hypothesis-text family matcher.
 _INT_CONTRACT_PRE_EVIDENCE = ("check-parsed-int-contract",
                               "check-integer-narrowing")
+
+# Mechanical detector families whose per-function receipt corroborates
+# a same-family hypothesis the reviewer raised then dismissed or
+# refuted. Keyed by the detector name's last path segment.
+_DETECTOR_FAMILY_HYP_RES: Dict[str, re.Pattern] = {
+    "uninitialized_return": re.compile(
+        r"uninitiali[sz]|no default|left unset|garbage|indetermin|"
+        r"without (?:being )?initiali[sz]", re.IGNORECASE,
+    ),
+}
 _INT_FAMILY_HYP_RE = re.compile(
     r"overflow|narrow|truncat|wraps?\b|int(?:8|16|32|64)\b|width",
     re.IGNORECASE,
@@ -731,6 +741,7 @@ def rescue_self_refuted(
     negative_space: Optional[list] = None,
     source: Optional[str] = None,
     pre_evidence: Optional[str] = None,
+    detector_findings: Optional[list] = None,
 ) -> Optional[RefutationVerdict]:
     """Rescue hypotheses the LLM formed then refuted without evidence.
 
@@ -751,6 +762,13 @@ def rescue_self_refuted(
     talked itself out of (same philosophy as the structural
     negative-space clause; the CWE allowlist cannot carry this case
     because integer CWEs are not in it).
+
+    When *detector_findings* (this function's mechanical detector
+    hits, as injected into the review prompt) contain a detector whose
+    family matches a hypothesis the reviewer raised then REFUTED OR
+    DISMISSED at low confidence, the detector receipt outranks the
+    dismissal — the reviewer named the mechanical finding's exact
+    defect and talked itself out of it without tool evidence.
 
     When *source* is provided and every shared-state access in it is
     mechanically lock-protected (:func:`check_race_protection`), a
@@ -794,6 +812,36 @@ def rescue_self_refuted(
         )
         if ct and nf_fn == outcome.function:
             fn_receipts.append(ct)
+
+    detector_families: list = []
+    for df in detector_findings or []:
+        det = (df.get("detector") if isinstance(df, dict)
+               else getattr(df, "detector", "")) or ""
+        fam = det.rsplit(":", 1)[-1]
+        if fam in _DETECTOR_FAMILY_HYP_RES:
+            detector_families.append((det, _DETECTOR_FAMILY_HYP_RES[fam]))
+
+    if detector_families:
+        for h in hypotheses:
+            if not isinstance(h, dict):
+                continue
+            conf = (h.get("confidence") or "").lower()
+            if conf not in ("refuted", "low"):
+                continue
+            mechanism = h.get("mechanism", "")
+            for det, fam_re in detector_families:
+                if fam_re.search(mechanism):
+                    return RefutationVerdict(
+                        gate="anti_self_refutation",
+                        reason=(
+                            f"hypothesis '{mechanism[:80]}' raised then "
+                            f"dismissed ({conf}) against an active {det} "
+                            f"detector receipt on this function; the "
+                            f"mechanical receipt outranks an unverified "
+                            f"dismissal"
+                        ),
+                        demote_to="suspicious",
+                    )
 
     for h in hypotheses:
         if not isinstance(h, dict):

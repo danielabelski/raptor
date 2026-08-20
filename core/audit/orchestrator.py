@@ -2197,6 +2197,7 @@ def review_one_function(
                 negative_space=ctx.get("negative_space"),
                 source=_rescue_src or None,
                 pre_evidence=gap.get("_smt_pre_evidence"),
+                detector_findings=ctx.get("mechanical_detector_findings"),
             )
             if rv is None:
                 # Durable receipt for the non-fire: when a structural

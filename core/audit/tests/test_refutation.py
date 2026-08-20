@@ -1156,6 +1156,67 @@ class TestPreEvidenceCorroboratedRefutation:
         assert r is None
 
 
+class TestDetectorCorroboratedDismissal:
+    """A mechanical detector receipt on this function outranks a
+    same-family hypothesis the reviewer raised then dismissed at low
+    confidence or refuted."""
+
+    _DETECTORS = [{"detector": "cocci:uninitialized_return"}]
+
+    def _outcome(self, conf="low", mechanism=None):
+        return _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": mechanism or (
+                    "uninitialized ret read: the switch has no default "
+                    "case, so an unexpected value leaves ret unset"
+                ),
+                "confidence": conf,
+                "counter": "only two enum values are ever assigned",
+            }],
+        )
+
+    def test_low_dismissal_floored(self):
+        r = rescue_self_refuted(
+            self._outcome("low"), detector_findings=self._DETECTORS,
+        )
+        assert r is not None
+        assert r.gate == "anti_self_refutation"
+        assert "detector receipt" in r.reason
+
+    def test_refuted_dismissal_floored(self):
+        r = rescue_self_refuted(
+            self._outcome("refuted"), detector_findings=self._DETECTORS,
+        )
+        assert r is not None
+
+    def test_medium_confidence_not_consumed(self):
+        r = rescue_self_refuted(
+            self._outcome("medium"), detector_findings=self._DETECTORS,
+        )
+        assert r is None
+
+    def test_unrelated_family_hypothesis_not_floored(self):
+        r = rescue_self_refuted(
+            self._outcome("low", "refcount imbalance on the pm runtime"),
+            detector_findings=self._DETECTORS,
+        )
+        assert r is None
+
+    def test_unmapped_detector_not_consumed(self):
+        r = rescue_self_refuted(
+            self._outcome("low"),
+            detector_findings=[{"detector": "stale_alias_candidate"}],
+        )
+        assert r is None
+
+    def test_tool_evidence_blocks(self):
+        o = self._outcome("low")
+        o.evidence_tool = "joern:flow"
+        r = rescue_self_refuted(o, detector_findings=self._DETECTORS)
+        assert r is None
+
+
 class TestDiagnoseRescue:
     """diagnose_rescue mirrors the Gate-5 precondition chain and names
     the first broken link, so a silent non-fire is explainable from a

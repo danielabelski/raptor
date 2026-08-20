@@ -793,6 +793,19 @@ capture_boot_payload() {
     # spuriously after a fresh install. The guard compares whole
     # content objects, closing the injected-extra-block / extra-key
     # channels a message-only comparison left open.
+    #
+    # Fail-closed: every extraction below goes through jq, so a
+    # missing jq (or a server whose inception result carries no
+    # content) would otherwise emit a stamp whose sections are all
+    # EMPTY with rc=0 — a poisoned record that authorizes nothing,
+    # making the guard strip every real session's payload until the
+    # operator re-authorizes. Returning non-zero instead routes
+    # authorize_boot_payload to its explicit could-not-capture
+    # warning path.
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "raptor-sage-setup: capture_boot_payload requires jq; refusing to record an empty boot-payload stamp" >&2
+        return 1
+    fi
     local r1 r2
     r1=$(run_boot_probe || true)
     r2=$(run_boot_probe || true)
@@ -805,6 +818,10 @@ capture_boot_payload() {
     msg1=$(printf '%s\n' "$r1" | jq -r 'select(.id == 2) | ((try (.result.content[0].text | fromjson | .message) catch "") // "")' 2>/dev/null || true)
     content1=$(printf '%s\n' "$r1" | jq -c 'select(.id == 2) | .result.content // empty' 2>/dev/null || true)
     content2=$(printf '%s\n' "$r2" | jq -c 'select(.id == 2) | .result.content // empty' 2>/dev/null || true)
+    if [ -z "$content1" ] && [ -z "$content2" ]; then
+        echo "raptor-sage-setup: boot probes answered but no sage_inception content could be extracted; refusing to record an empty boot-payload stamp" >&2
+        return 1
+    fi
     printf '### initialize.instructions\n%s\n' "$init1"
     printf '### initialize.instructions.json\n'
     jq -cn --arg t "$init1" '$t'

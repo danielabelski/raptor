@@ -18,6 +18,7 @@ Round-2 coverage for the enforcement shim:
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -379,7 +380,7 @@ class TestCaptureAuthorizeGuardIntegration(_V2Harness):
     text) escaped precisely because capture_boot_payload was stubbed.
     """
 
-    def _capture(self):
+    def _capture(self, *, tool_content_json=None):
         driver = (
             "set -uo pipefail\n"
             f'MCP_WRAPPER="$FAKE_WRAPPER"\n'
@@ -398,13 +399,29 @@ class TestCaptureAuthorizeGuardIntegration(_V2Harness):
         env["FAKE_WRAPPER"] = str(wrapper)
         env["FAKE_SERVER"] = str(server)
         env["FIX_INSTR"] = PAYLOAD_CLEAN
-        env["FIX_TOOL_CONTENT"] = json.dumps([BLOCK_CLEAN])
+        env["FIX_TOOL_CONTENT"] = (
+            json.dumps([BLOCK_CLEAN]) if tool_content_json is None
+            else tool_content_json
+        )
         env.pop("RAPTOR_SAGE_BOOT_CAPTURE", None)
         return subprocess.run(
             ["bash", "-c", driver],
             capture_output=True, text=True, timeout=60, env=env,
         )
 
+    def test_capture_fails_closed_when_no_content_extracted(self):
+        """A capture that extracts NO inception content must return
+        non-zero and emit no stamp sections — an rc=0 empty-sections
+        stamp is poison (the guard would then strip every real
+        session's payload). Covers both a server whose tools/call
+        result carries no content and an environment without jq; this
+        test itself does not require jq."""
+        proc = self._capture(tool_content_json="null")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn("### ", proc.stdout)
+        self.assertIn("refusing to record", proc.stderr)
+
+    @unittest.skipUnless(shutil.which("jq"), "capture roundtrip needs jq")
     def test_capture_records_the_real_payload_not_the_warning(self):
         proc = self._capture()
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -412,6 +429,7 @@ class TestCaptureAuthorizeGuardIntegration(_V2Harness):
         self.assertIn("### sage_inception.content", proc.stdout)
         self.assertNotIn("WARNING: stripped", proc.stdout)
 
+    @unittest.skipUnless(shutil.which("jq"), "capture roundtrip needs jq")
     def test_captured_stamp_verifies_on_a_real_session(self):
         capture = self._capture()
         self.assertEqual(capture.returncode, 0, capture.stderr)

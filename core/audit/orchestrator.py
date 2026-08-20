@@ -20486,7 +20486,7 @@ def _resolve_gate_demoted(
         if outcome.status != "suspicious":
             continue
         gate_demoted = outcome.body.startswith(_GATE_DEMOTED_PREFIXES)
-        if not gate_demoted and _is_counter_escalated(outcome):
+        if not gate_demoted and _is_machine_raised(outcome):
             # Counter-escalation evidence floor. This suspicious was
             # machine-raised off the review's own counter_hypothesis:
             # the model's verdict was clean, with a completed
@@ -20513,22 +20513,23 @@ def _resolve_gate_demoted(
             # never carry the flag and are untouched.
             if _is_verification_evidence_for_gate(outcome):
                 continue
-            if _probe_backed_suspicious(outcome):
-                logger.info(
-                    "counter-escalation floor: %s:%s stays suspicious "
-                    "— probe-backed",
-                    outcome.file,
-                    outcome.function,
-                )
-                continue
+            # A detection-role probe receipt does NOT retain a
+            # machine-raised row: the escalation was created to force
+            # verification, and a lexical/heuristic "confirmed" merely
+            # echoes the speculation the model already adjudicated
+            # clean (observed corpus family: anti-self-refutation +
+            # heuristic smt confirm shipped a cluster of kernel FPs
+            # that no lane could demote). Model-emitted suspicious
+            # keeps the demotion-referee floor unchanged — there the
+            # probe corroborates a conviction the model itself holds.
             resolved = ReviewOutcome(
                 file=outcome.file,
                 function=outcome.function,
                 status="clean",
                 body=(
-                    "[counter-escalation resolution: machine-raised "
-                    "suspicious earned no receipt — model verdict "
-                    "clean restored]\n\n" + outcome.body
+                    "[machine-escalation resolution: machine-raised "
+                    "suspicious earned no verification-grade receipt "
+                    "— model verdict clean restored]\n\n" + outcome.body
                 ),
                 hypothesis=outcome.hypothesis,
                 hypotheses=outcome.hypotheses,
@@ -21109,6 +21110,19 @@ def _is_verification_evidence_for_gate(outcome: ReviewOutcome) -> bool:
 
 
 _COUNTER_ESCALATION_PREFIX = "[counter-hypothesis escalation:"
+_ANTI_SELF_REFUTATION_PREFIX = "[anti_self_refutation:"
+
+
+def _is_machine_raised(outcome: ReviewOutcome) -> bool:
+    """True when this suspicious verdict was machine-raised from a
+    model-clean verdict — by the counter-hypothesis escalation OR the
+    anti-self-refutation gate. Both lanes exist to force verification
+    of a claim the model talked itself out of; neither is a model
+    conviction, so end-of-run retention demands verification-grade
+    evidence (see the resolution pass)."""
+    if _is_counter_escalated(outcome):
+        return True
+    return (outcome.body or "").startswith(_ANTI_SELF_REFUTATION_PREFIX)
 
 
 def _is_counter_escalated(outcome: ReviewOutcome) -> bool:

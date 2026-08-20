@@ -30,6 +30,7 @@ from core.audit.orchestrator import (
     OrchestratorResult,
     ReviewOutcome,
     _is_counter_escalated,
+    _is_machine_raised,
     _resolve_gate_demoted,
 )
 
@@ -125,7 +126,7 @@ class TestCounterEscalationFloor:
         )
         assert result.outcomes[0].status == "clean"
         assert result.outcomes[0].body.startswith(
-            "[counter-escalation resolution:",
+            "[machine-escalation resolution:",
         )
         assert result.suspicious == 0
         assert result.clean == 1
@@ -168,12 +169,35 @@ class TestCounterEscalationFloor:
         assert result.outcomes[0].status == "suspicious"
         assert result.suspicious == 1
 
-    def test_fired_probe_retains_suspicious(self, tmp_path: Path):
-        """Demotion-referee floor preserved: a probe that FIRED during
-        the review (llm-claimed receipt with a dispatch witness) is a
-        tool observation the floor must not erase."""
+    def test_detection_probe_does_not_retain_machine_raised(
+        self, tmp_path: Path,
+    ):
+        """Doctrine update (corpus-verified): a machine-raised
+        suspicious retains ONLY on verification-grade evidence. An
+        llm-claimed probe reference (or a detection-role heuristic
+        confirm) merely echoes the speculation the model already
+        adjudicated clean — the observed kernel FP family was exactly
+        this shape, unresolvable by any later lane."""
         outcome = _escalated_outcome(
             evidence_tool="llm-claimed:smt: overflow condition sat",
+        )
+        outcome.tools_dispatched = {"smt"}
+        result = _make_result(outcome)
+        _resolve_gate_demoted(
+            result, _config(tmp_path),
+            sarif_cache=None, checklist=_CHECKLIST,
+            available_tools={"joern": True},
+            mechanical_findings=None,
+        )
+        assert result.outcomes[0].status == "clean"
+
+    def test_verification_receipt_retains_machine_raised(
+        self, tmp_path: Path,
+    ):
+        """Verification-role evidence still retains: the demotion
+        referee for authoritative receipts is unchanged."""
+        outcome = _escalated_outcome(
+            evidence_tool="smt:check-overflow",
         )
         outcome.tools_dispatched = {"smt"}
         result = _make_result(outcome)
@@ -314,3 +338,37 @@ class TestReviewPathStampsFlag:
         assert outcome.body.startswith("[counter-hypothesis escalation:")
         assert outcome.review_result["counter_escalated"] is True
         assert _is_counter_escalated(outcome)
+
+
+class TestAntiSelfRefutationRows:
+    """The anti-self-refutation gate's escalations are machine-raised
+    too — same producer class (model-clean, machine-suspicious), same
+    end-of-run doctrine."""
+
+    ASR_BODY = (
+        "[anti_self_refutation: hypothesis 'use after free of the ctx' "
+        "self-refuted without mechanical evidence; concurrency/"
+        "lifecycle self-refutations are unreliable]\n\nVerdict: clean."
+    )
+
+    def test_prefix_counts_as_machine_raised(self):
+        o = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body=self.ASR_BODY,
+        )
+        assert _is_machine_raised(o)
+        assert not _is_counter_escalated(o)
+
+    def test_receiptless_asr_row_resolves_clean(self, tmp_path: Path):
+        o = ReviewOutcome(
+            file="copy.c", function="bounded_copy", status="suspicious",
+            body=self.ASR_BODY,
+        )
+        result = _make_result(o)
+        _resolve_gate_demoted(
+            result, _config(tmp_path),
+            sarif_cache=None, checklist=_CHECKLIST,
+            available_tools={"joern": True},
+            mechanical_findings=None,
+        )
+        assert result.outcomes[0].status == "clean"

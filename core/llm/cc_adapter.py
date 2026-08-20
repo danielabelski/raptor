@@ -1034,20 +1034,31 @@ def run_cc_streaming(
         cwd=cwd if cwd is not None else neutral_cwd(),
     )
 
-    if proc.stdin:
-        # A child that exits at startup (bad flag, missing backend)
-        # closes its end before consuming the prompt — the write then
-        # raises BrokenPipeError. Swallow it so control reaches the
-        # returncode path below, which reports "claude -p exited N"
-        # with the child's stderr instead of crashing the caller.
+    # Feed the prompt through the SAME deadline-governed select loop
+    # that drains stdout/stderr, in non-blocking chunks. Pre-fix the
+    # full prompt was written in ONE blocking call before the loop
+    # started: a prompt larger than the pipe buffer (64KB) sent to a
+    # child that is itself blocked writing to stdout/stderr — which
+    # nothing was draining yet — deadlocks both processes, and the
+    # write sat outside timeout coverage, so the call hung forever
+    # instead of raising TimeoutExpired. The stdin fd joins the
+    # writable select set until the prompt is fully drained, then
+    # closes (EOF for the child); the deadline covers every chunk.
+    stdin_data = prompt.encode("utf-8")
+    stdin_pos = 0
+    stdin_fd = proc.stdin.fileno() if proc.stdin else None
+    if stdin_fd is not None:
+        os.set_blocking(stdin_fd, False)
+
+    def _close_stdin() -> None:
+        nonlocal stdin_fd
+        if stdin_fd is None:
+            return
+        stdin_fd = None
         try:
-            proc.stdin.write(prompt)
             proc.stdin.close()
         except (BrokenPipeError, OSError):
-            try:
-                proc.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
+            pass
 
     collected: list[str] = []
     # Drain stderr WHILE the child runs. A child that writes more
@@ -1066,13 +1077,31 @@ def run_cc_streaming(
         if deadline is not None:
             remaining = deadline - _time.monotonic()
             if remaining <= 0:
+                _close_stdin()
                 proc.kill()
                 proc.wait()
                 raise subprocess.TimeoutExpired(cmd, timeout_s or 0)
         read_set = [s for s in (proc.stdout, proc.stderr) if s]
-        ready, _, _ = select.select(
-            read_set, [], [], min(remaining or 1.0, 1.0),
+        write_set = [stdin_fd] if stdin_fd is not None else []
+        ready, writable, _ = select.select(
+            read_set, write_set, [], min(remaining or 1.0, 1.0),
         )
+        if stdin_fd is not None and stdin_fd in writable:
+            try:
+                stdin_pos += os.write(
+                    stdin_fd, stdin_data[stdin_pos:stdin_pos + 65536],
+                )
+            except BlockingIOError:
+                pass
+            except (BrokenPipeError, OSError):
+                # A child that exits at startup (bad flag, missing
+                # backend) closes its end before consuming the prompt.
+                # Swallow so control reaches the returncode path below,
+                # which reports "claude -p exited N" with the child's
+                # stderr instead of crashing the caller.
+                _close_stdin()
+            if stdin_fd is not None and stdin_pos >= len(stdin_data):
+                _close_stdin()
         if proc.stdout in ready:
             line = proc.stdout.readline()
             if line:
@@ -1081,6 +1110,10 @@ def run_cc_streaming(
             chunk = os.read(stderr_fd, 65536)
             if chunk:
                 stderr_chunks.append(chunk)
+
+    # Child exited — if it did so without consuming the whole prompt,
+    # release our end so nothing lingers.
+    _close_stdin()
 
     if proc.stdout:
         collected.extend(proc.stdout)

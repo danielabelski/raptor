@@ -41,7 +41,13 @@ Safety hooks baked in:
 - Host validation: resolve the CONNECT target once per tunnel, reject
   if the resolved IP is loopback, private (RFC 1918), link-local, or
   multicast. Stops a compromised child from using the proxy to reach
-  internal services on the host's LAN.
+  internal services on the host's LAN. Applies on BOTH connect paths:
+  the direct path vets the addresses we dial; the upstream-proxy path
+  vets a literal-IP target outright and pre-vets hostname targets with
+  a local resolve before forwarding the CONNECT (residual: the
+  upstream proxy resolves independently, so a resolver that answers
+  differently for the upstream can still steer the tunnel — see
+  _vet_upstream_target).
 - DNS pinning: one resolve per tunnel, then connect to that exact IP.
   No mid-tunnel re-resolution — removes the DNS-rebinding window.
 - Idle timeout: 300s. Total tunnel duration cap: 3600s. Either bound
@@ -596,10 +602,12 @@ class EgressProxy:
         # connect path — operator workflows that hit gate 1 keep working
         # but the policy violation is logged. Gate 2 (resolved-IP block)
         # is the proxy's DNS-rebinding/DNS-poisoning defense and stays
-        # ENFORCING regardless: it has no legitimate-workflow false
-        # positives (an allowlisted hostname resolving to a private/
-        # loopback IP is purely an attack signal). In audit mode gate 2
-        # additionally records the deny into the summary.
+        # ENFORCING regardless — on the direct path AND on the
+        # upstream-proxy path (see _vet_upstream_target): it has no
+        # legitimate-workflow false positives (an allowlisted hostname
+        # resolving to a private/loopback IP is purely an attack
+        # signal). In audit mode gate 2 additionally records the deny
+        # into the summary.
         #
         # Scope: this global flag now governs ONLY connections with
         # no lane — i.e. the shared main TCP listener that in-process
@@ -623,7 +631,8 @@ class EgressProxy:
         # the unset variable) leaves audit-mode in its default log-only
         # behaviour. The env-var parse lives at the `get_proxy()` read
         # below; this kwarg accepts the already-parsed bool.
-        # Gate 2 is always enforcing regardless of this flag.
+        # Gate 2 is always enforcing regardless of this flag — on the
+        # direct path and on the upstream-proxy path alike.
         self._audit_enforce = audit_enforce
         # Ref-count for concurrent acquire/release. Each audit-mode
         # sandbox via use_egress_proxy=True acquires on entry, releases
@@ -1431,6 +1440,70 @@ class EgressProxy:
         self._dns_cache[key] = (now + _DNS_CACHE_TTL, addrinfo)
         return addrinfo
 
+    async def _vet_upstream_target(self, host: str, port: int) -> str | None:
+        """Gate 2 (blocked-IP defense) for the upstream-proxy path.
+
+        Returns the offending address when the CONNECT must be denied,
+        or None when it may be forwarded to the upstream. Pre-fix the
+        upstream branch forwarded every allowlist-passing CONNECT with
+        NO IP vetting at all — a child on a corporate-proxy host could
+        CONNECT to ``10.0.0.5:443`` or ``169.254.169.254:443`` and the
+        upstream (which legitimately reaches private space) would
+        happily complete the pivot that gate 2 exists to stop.
+
+        Two cases:
+
+        - literal-IP target: judged directly by ``_ip_is_blocked`` —
+          no resolver involved, no TOCTOU, unconditional.
+        - hostname target: resolved LOCALLY and every returned address
+          is vetted; any blocked record denies the CONNECT
+          (fail-closed on mixed public/private answers, because we
+          cannot control which record the upstream dials).
+
+        Documented residual (TOCTOU vs the upstream resolver): the
+        upstream proxy resolves the hostname independently, so a DNS
+        server that answers differently for the upstream (split-horizon
+        or an active rebinding attack timed between our resolve and
+        the upstream's) can still steer the tunnel to a private
+        address from the upstream's vantage point. Closing that fully
+        would require the upstream to accept pre-resolved IP CONNECTs,
+        which HTTP proxies do not offer. Local resolution failure
+        (NXDOMAIN/timeout) proceeds WITH a warning rather than
+        denying: on locked-down corporate networks external names
+        often resolve only at the upstream proxy, and failing closed
+        there would break the entire upstream path. In that case the
+        upstream proxy's own egress policy is the remaining control.
+
+        Like the direct-path gate 2, this is ENFORCING in audit mode
+        too — an allowlisted target vetting to a private/loopback/
+        metadata address is purely an attack signal, never a
+        legitimate-workflow false positive.
+        """
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            literal_ip = False
+        else:
+            literal_ip = True
+        if literal_ip:
+            return host if _ip_is_blocked(host) else None
+        try:
+            addrinfo = await self._cached_getaddrinfo(host, port)
+        except (asyncio.TimeoutError, socket.gaierror) as e:
+            logger.warning(
+                "egress proxy: could not resolve %s locally to vet the "
+                "upstream-path CONNECT (%s) — forwarding; the upstream "
+                "proxy's own egress policy is the remaining control "
+                "for this tunnel.",
+                host, e.__class__.__name__,
+            )
+            return None
+        for entry in (addrinfo or []):
+            candidate = entry[4][0]
+            if _ip_is_blocked(candidate):
+                return candidate
+        return None
+
     async def _happy_eyeballs_connect(
         self, addrinfo: list, port: int,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, str]:
@@ -1987,10 +2060,43 @@ class EgressProxy:
                         and not _host_in_no_proxy(host, self._no_proxy_patterns))
 
         if use_upstream:
-            # Tunnel through the user's upstream HTTPS_PROXY. The upstream
-            # handles DNS of the target host; we just CONNECT to the
-            # upstream's (host, port) directly. Upstream IP is trusted
-            # — corporate proxies legitimately live on private IPs.
+            # Tunnel through the user's upstream HTTPS_PROXY. The
+            # upstream PROXY itself is trusted to live on a private IP
+            # (corporate proxies legitimately do), but the TARGET is
+            # not: gate 2 vets it here before any bytes reach the
+            # upstream — literal non-global IPs are denied outright,
+            # hostnames are locally resolved and every returned
+            # address checked. See _vet_upstream_target for the
+            # documented residual vs the upstream's own resolver.
+            # Blocking (not log-only) in audit mode as well, matching
+            # the direct-path gate 2.
+            blocked_ip = await self._vet_upstream_target(host, port)
+            if blocked_ip is not None:
+                logger.warning(
+                    "egress proxy: DENY %s:%s — upstream path, target "
+                    "vets to blocked IP %s",
+                    host, port, blocked_ip,
+                )
+                event["resolved_ip"] = blocked_ip
+                event.update(
+                    result="denied_resolved_ip",
+                    reason=(f"resolved to blocked range: {blocked_ip} "
+                            f"(upstream path)"),
+                    duration=time.monotonic() - t_start,
+                )
+                self._record(event)
+                # Same audit-mode summary routing as the direct-path
+                # gate 2: the deny stays enforcing, but the attack
+                # signal also lands in sandbox-summary.json.
+                with self._audit_lock:
+                    _audit_now = (lane.audit_log_only
+                                  if lane is not None
+                                  else self._audit_log_only)
+                if _audit_now:
+                    _record_proxy_denial(host, port, blocked_ip,
+                                         "resolved_ip_blocked")
+                await self._write_error(writer, 403, "Forbidden")
+                return
             up_host, up_port = self._upstream
             event["resolved_ip"] = f"{up_host}:{up_port} (upstream)"
             try:

@@ -1001,6 +1001,61 @@ class TestHypothesisDisproof:
         assert m is not None
         assert "count" in m.group(1)
 
+    def test_unconstrained_model_is_inconclusive_not_sat_evidence(self):
+        # Regression (verdict soundness): the old model asserted only
+        # UGT(product, max) with no guard constraints — SAT was
+        # guaranteed and got stamped as smt:disproof:sat evidence,
+        # while the disproved=True suppression branch was unreachable.
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the multiplication `count * element_size`",
+            "uint32_t count; uint32_t element_size;\n"
+            "void f(void) { p = malloc(count * element_size); }",
+        )
+        assert r.disproved is None
+        assert "vacuous" in r.reasoning or "inconclusive" in r.reasoning
+
+    def test_guarded_unsat_disproves(self):
+        # The suppression branch is now reachable: guards that
+        # genuinely rule out the wrap produce disproved=True.
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the multiplication `count * element_size`",
+            "uint32_t count; uint32_t element_size;\n"
+            "if (count < 1000) { if (element_size < 1000) {\n"
+            "    p = malloc(count * element_size); } }",
+        )
+        assert r.disproved is True
+
+    def test_guarded_sat_within_value_space(self):
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the multiplication `count * element_size`",
+            "uint32_t count; uint32_t element_size;\n"
+            "if (count < 100000000) { if (element_size < 100000) {\n"
+            "    p = malloc(count * element_size); } }",
+        )
+        assert r.disproved is False
+
+    def test_mixed_operators_inconclusive(self):
+        # Regression: the first operator used to be applied to the
+        # whole chain, modeling a different expression.
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the calculation `a + b * c`",
+            "uint32_t a; uint32_t b; uint32_t c; if (a < 10) {}",
+        )
+        assert r.disproved is None
+        assert "mixed" in r.reasoning
+
 
 # ── Fix A: callee-contract evidence gate (orchestrator) ────────────
 

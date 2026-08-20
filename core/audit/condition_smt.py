@@ -1334,12 +1334,6 @@ def _z3_dispatch_json(request: dict) -> Any:
             args["var_name"], args["src_type"],
             args["dest_type"], args["assign_line"],
         ))
-    if tag == "integer_overflow":
-        result = _z3_integer_overflow_check(
-            args["resolved_types"], args["op_char"],
-            args.get("var_types") or {},
-        )
-        return asdict(result) if result is not None else None
     return None
 
 
@@ -4868,10 +4862,25 @@ def disprove_integer_overflow(
         )
 
     expr_text = m.group(1).strip("`").strip()
-    op_match = re.search(r"\s*([*+\-])\s*", expr_text)
-    op_char = op_match.group(1) if op_match else "*"
+    ops_in_expr = set(re.findall(r"[*+\-]", expr_text))
+    if len(ops_in_expr) > 1:
+        # ``a + b * c`` — the old code applied the FIRST operator to
+        # the whole chain, modeling a different expression than the
+        # hypothesis names.
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning=(
+                f"mixed arithmetic operators in '{expr_text}' — cannot "
+                f"model as a single-operator chain; inconclusive"
+            ),
+        )
+    op_char = ops_in_expr.pop() if ops_in_expr else "*"
     parts = re.split(r"\s*[*+\-]\s*", expr_text)
     var_names = [p.strip() for p in parts if p.strip() and re.match(r"[a-zA-Z_]", p.strip())]
+    literal_operands = [
+        p.strip() for p in parts
+        if p.strip() and re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|\d+)", p.strip())
+    ]
 
     if not var_names:
         return HypothesisDisproofResult(
@@ -4901,85 +4910,78 @@ def disprove_integer_overflow(
             reasoning="could not resolve type widths for any variables",
         )
 
-    out = _run_z3_child("integer_overflow", {
-        "resolved_types": resolved_types,
-        "op_char": op_char,
-        "var_types": var_types,
-    })
-    result = _result_from_child(HypothesisDisproofResult, out)
-    if result is not None:
-        return result
+    # Guard premises: without source-level constraints on the operands
+    # the model is vacuous — SAT merely restates that unconstrained
+    # bitvector arithmetic can wrap (no evidence value), and the UNSAT
+    # branch is unreachable.  Same premise machinery as the sweep's
+    # check-overflow verb.
+    width = max(resolved_types.values())
+    profile = f"uint{width}" if width in (8, 16, 32, 64) else "uint64"
+    try:
+        from .sweep import _extract_comparison_premises, _premise_gate
+    except Exception:  # noqa: BLE001 — sweep unavailable, no premises
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning="premise extraction unavailable — inconclusive",
+        )
+    premises = _extract_comparison_premises(var_names, source_context)
+    gate = _premise_gate(premises, profile)
+    if gate is not None:
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning=f"inconclusive: {gate}",
+        )
 
+    operands = var_names + literal_operands
+    if len(operands) < 2:
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning=(
+                f"fewer than two operands in '{expr_text}' — "
+                f"inconclusive"
+            ),
+        )
+
+    try:
+        from packages.exploit_feasibility.smt_verbs import check_overflow
+        result = check_overflow(
+            operands, op_char, profile=profile, guards=premises,
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to inconclusive
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning="overflow verb failed — inconclusive",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    feasible = result.get("feasible")
+    if feasible is False:
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            disproved=True,
+            reasoning=(
+                f"Z3 UNSAT: {op_char}-chain over {var_names} cannot "
+                f"wrap at {width}-bit within the extracted guard "
+                f"premises {premises} — hypothesis disproved"
+            ),
+        )
+    if feasible is True:
+        model = result.get("model")
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            disproved=False,
+            reasoning=(
+                f"Z3 SAT: overflow IS feasible for {var_names} at "
+                f"{width}-bit within the guarded value space"
+            ),
+            witness=model if isinstance(model, dict) else None,
+        )
     return HypothesisDisproofResult(
         hypothesis_class="integer_overflow",
-        reasoning="Z3 subprocess inconclusive",
+        reasoning=(
+            "Z3 inconclusive: "
+            + "; ".join(result.get("unknown_reasons") or ["solver punted"])
+        ),
     )
 
 
-def _z3_integer_overflow_check(
-    resolved_types: dict[str, int],
-    op_char: str,
-    var_types: dict[str, str],
-) -> HypothesisDisproofResult | None:
-    """Z3: check whether an arithmetic overflow is feasible."""
-    import z3
-
-    width = max(resolved_types.values())
-
-    z3_vars = {}
-    solver = z3.Solver()
-    solver.set("timeout", 2000)
-
-    for vn, w in resolved_types.items():
-        z3_vars[vn] = z3.BitVec(vn, w)
-
-    _OP_LABEL = {"*": "multiplication", "+": "addition", "-": "subtraction"}
-
-    if len(z3_vars) >= 2:
-        vals = list(z3_vars.values())
-
-        full_bits = width * 2
-        acc = z3.ZeroExt(full_bits - vals[0].size(), vals[0])
-        for v in vals[1:]:
-            ext = z3.ZeroExt(full_bits - v.size(), v)
-            if op_char == "+":
-                acc = acc + ext
-            elif op_char == "-":
-                acc = acc - ext
-            else:
-                acc = acc * ext
-        max_val = (1 << width) - 1
-        solver.add(z3.UGT(acc, max_val))
-
-        result = solver.check()
-        op_label = _OP_LABEL.get(op_char, op_char)
-        if result == z3.unsat:
-            return HypothesisDisproofResult(
-                hypothesis_class="integer_overflow",
-                disproved=True,
-                reasoning=(
-                    f"Z3 UNSAT: {op_label} of {list(resolved_types.keys())} "
-                    f"cannot overflow {width}-bit — hypothesis disproved"
-                ),
-            )
-        elif result == z3.sat:
-            model = solver.model()
-            witness = {}
-            for vn, bv in z3_vars.items():
-                val = model[bv]
-                if val is not None:
-                    try:
-                        witness[vn] = val.as_long()
-                    except AttributeError:
-                        pass
-            return HypothesisDisproofResult(
-                hypothesis_class="integer_overflow",
-                disproved=False,
-                reasoning=(
-                    f"Z3 SAT: overflow IS feasible for "
-                    f"{list(resolved_types.keys())} at {width}-bit"
-                ),
-                witness=witness if witness else None,
-            )
-
-    return None

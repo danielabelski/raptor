@@ -35,8 +35,11 @@ def _outcome(status="suspicious", evidence="", dispatched=None, **kw):
 
 class TestProbeBackedSuspicious:
     def test_bare_tool_receipt_qualifies(self):
+        # Exemplar is a verification-role verb; the lexical heuristics
+        # (check-toctou / check-early-release ...) are detection-role
+        # and no longer qualify alone.
         assert _probe_backed_suspicious(
-            _outcome(evidence="smt:check-toctou"),
+            _outcome(evidence="smt:check-overflow"),
         )
 
     def test_composite_detection_receipt_qualifies(self):
@@ -207,8 +210,19 @@ class TestSingleDetectionReceiptFloor:
 
     def test_verification_receipt_still_qualifies(self):
         assert _probe_backed_suspicious(
-            _outcome(evidence="smt:check-early-release"),
+            _outcome(evidence="smt:check-null-deref"),
         )
+
+    def test_demoted_heuristic_verbs_do_not_qualify_alone(self):
+        # The corpus FP family: lexical flow heuristics held
+        # verification role and their lone receipts retained
+        # machine-raised suspicious rows forever.
+        for verb in ("check-early-release", "check-toctou",
+                     "check-auth-bypass", "check-resource-leak",
+                     "check-null-propagation"):
+            assert not _probe_backed_suspicious(
+                _outcome(evidence=f"smt:{verb}"),
+            ), verb
 
     def test_same_namespace_detection_pair_does_not_qualify(self):
         assert not _probe_backed_suspicious(

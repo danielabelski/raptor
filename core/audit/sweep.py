@@ -1091,14 +1091,25 @@ _SMT_VERB_ROLES = {
     "check-overflow-to-oob": "detection",
     "check-negative-bypass": "detection",
     "validate-path": "verification",
-    "check-auth-bypass": "verification",
+    # Demoted to detection (corpus-verified): these verbs "confirm"
+    # from lexical flow/ordering heuristics — check-early-release and
+    # check-toctou never touch the solver, check-auth-bypass /
+    # check-resource-leak / check-null-propagation use Z3 only to
+    # feasibility-check text fragments, not to model the semantics
+    # their confirmation asserts (refcounts, RCU grace periods,
+    # intentional permission-tier short-circuits). Their receipts
+    # backed a cluster of machine-raised kernel false positives while
+    # every true positive they touched also survives at detection
+    # grade (a fired probe still corroborates and seeds; it no longer
+    # convicts on its own).
+    "check-auth-bypass": "detection",
     "check-lock-discipline": "verification",
-    "check-resource-leak": "verification",
-    "check-null-propagation": "verification",
+    "check-resource-leak": "detection",
+    "check-null-propagation": "detection",
     "check-integer-narrowing": "verification",
-    "check-early-release": "verification",
+    "check-early-release": "detection",
     "check-lock-domain": "detection",
-    "check-toctou": "verification",
+    "check-toctou": "detection",
 }
 
 

@@ -262,7 +262,7 @@ class TestSweepValidatePremiseGate:
         )
         monkeypatch.setattr(
             orch, "_run_tool_chain",
-            lambda *a, **k: ["smt:check-resource-leak"],
+            lambda *a, **k: ["smt:check-overflow"],
         )
         tier_counters = orch._make_tier_counters()
         validated = orch._sweep_validate(
@@ -283,7 +283,7 @@ class TestSweepValidatePremiseGate:
             "premise_blocked_confirms",
         )
         assert blocked and blocked[0]["evidence_tool"] == (
-            "smt:check-resource-leak"
+            "smt:check-overflow"
         )
         assert getattr(
             tiers["sweep_validate"], "premise_blocked", 0,
@@ -299,7 +299,7 @@ class TestSweepValidatePremiseGate:
         validated, _config, _tiers = self._run(
             self._finding("local"), tmp_path, monkeypatch,
         )
-        assert validated.evidence_tool == "smt:check-resource-leak"
+        assert validated.evidence_tool == "smt:check-overflow"
 
     def test_cross_function_channel_still_grounds(
         self, tmp_path, monkeypatch,
@@ -391,7 +391,7 @@ class TestPromoteSuspiciousPremiseGate:
         )
         monkeypatch.setattr(
             orch, "_run_tool_chain",
-            lambda *a, **k: ["smt:check-resource-leak"],
+            lambda *a, **k: ["smt:check-overflow"],
         )
         monkeypatch.setattr(
             orch, "_check_sink_guarded_cached",

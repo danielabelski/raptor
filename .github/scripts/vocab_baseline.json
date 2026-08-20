@@ -1930,6 +1930,11 @@
   "count": 13,
   "kind": "literal"
  },
+ "packages/sca/findings.py::_scan_health_to_row": {
+  "count": 13,
+  "kind": "literal",
+  "note": "findings.json row-schema keys (same class as the other baselined row/to_dict builders), not function-name vocabulary"
+ },
  "packages/sca/findings.py::_supply_chain_finding_to_row": {
   "count": 13,
   "kind": "literal"

@@ -59,9 +59,10 @@ legitimate inputs. This is the largest remaining gap.
 ### 3. .claude/settings.json Trojan
 
 A target repo contains a crafted `.claude/settings.json` with dangerous
-entries: `LD_PRELOAD`, `PYTHONPATH`, hooks that exfiltrate credentials,
-stdio MCP servers, or `RAPTOR_*`/`SAGE_*` env vars that forge trust
-overrides.
+entries: `LD_PRELOAD`, `PYTHONPATH`, `PATH`/`HOME` redirection (both
+command-execution primitives on par with `LD_PRELOAD`), hooks that
+exfiltrate credentials, stdio MCP servers, or `RAPTOR_*`/`SAGE_*` env
+vars that forge trust overrides.
 
 **Defences:** `cc_trust.py` scans `.claude/settings.json`,
 `.claude/settings.local.json`, and `.mcp.json` before any dispatch.
@@ -110,11 +111,14 @@ injection surviving the envelope could write backdoors, modify Semgrep
 rules, overwrite reports, plant malicious code, or exfiltrate
 credentials.
 
-**Defences:** The Rule of Two gate (`rule_of_two.py`) blocks
-`--validate` and `--understand` agentic passes in non-interactive (CI)
-mode entirely -- no TTY means no Claude Code permission prompt as the
-human-in-the-loop gate. In interactive mode, every `Write`/`Bash` action
-surfaces a permission prompt. The [sandbox](sandbox.md) isolates child
+**Defences:** The Rule of Two gate (`rule_of_two.py`) requires a human
+in the loop **or** an effective sandbox for `--validate` and
+`--understand` agentic passes: only the non-interactive-AND-no-sandbox
+quadrant is blocked. The human-attended probe requires a controlling
+TTY with recent activity (`RAPTOR_HITL_TTY_MAX_AGE_S`, default 24 h --
+see [environment.md](environment.md)), so a detached/nohup'd session
+does not count as attended indefinitely. In interactive mode, every
+`Write`/`Bash` action surfaces a permission prompt. The [sandbox](sandbox.md) isolates child
 processes so they cannot write outside `OUTPUT_DIR` even if the LLM
 instructs them to.
 
@@ -143,7 +147,7 @@ replay them to pass this gate.
 | `.claude/` hooks/env trojans | `cc_trust.py` pre-flight scan | Env sanitisation strips dangerous vars |
 | Module shadowing via `PYTHONPATH` | `python3 -I` isolated mode | `sys.path` policy (CLAUDE.md) |
 | Autofetch exfiltration via input | Autofetch markup stripping | Null-byte pre-strip |
-| Write/Bash confused deputy | Rule of Two (CI gate) | Permission prompt (interactive) |
+| Write/Bash confused deputy | Rule of Two (human or sandbox) | Permission prompt (interactive) |
 | Direct libexec invocation | Trusted-caller marker | Exits before sys.path modified |
 | Network exfil from child process | Network namespace / SBPL | Egress proxy hostname allowlist |
 | Filesystem writes outside output | Landlock / SBPL file-write deny | seccomp closes AF_UNIX/AF_NETLINK |
@@ -366,8 +370,8 @@ table):
 The callsite census above is historical (it motivated the envelope
 work); the current state is lint-enforced rather than hand-counted:
 
-- `core/security/prompt_envelope_audit.py` registers **32 prompt-
-  construction files**; every interpolation in them is either
+- `core/security/prompt_envelope_audit.py` registers every prompt-
+  construction file; every interpolation in them is either
   envelope-constructed (`build_prompt` with UntrustedBlocks and slots)
   or carries an audited allowlist entry with a written justification.
   The lint fails on any unregistered interpolation, so the census
@@ -542,6 +546,8 @@ never raises.
   -- repo YAML never loads as Semgrep configuration
 - Environment sanitisation failure (`env_sanitisation_failed`) during
   validation-stage binary discovery
+- Sandbox isolation waived via the allow-unsandboxed override
+  (`unsandboxed_tool_fallback`)
 
 **Where it lands:** the framework-level JSONL audit trail under
 `out/logs/raptor_<timestamp>_pid<pid>_<nnnn>.jsonl` (not the per-run

@@ -2174,6 +2174,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # setup fails — adaptive so we still get Landlock-only when
         # mount-ns is unusable.
         used_spawn = False
+        # Reason string when the mount-ns spawn path was ATTEMPTED but
+        # fell back (exec failure retry, setup exception). Distinct
+        # from "never eligible": a caller that relied on mount-ns
+        # semantics (map_root pivot_root, per-ns /tmp, binds) can
+        # check result.sandbox_info["mount_ns_degraded"] instead of
+        # scraping stderr warnings.
+        _mount_ns_degraded = None
         _audit_landlock_engaged = False
         # Why audit could not engage for this call, for the degrade
         # marker / audit_required raise at the no-audit bottleneck
@@ -2714,6 +2721,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     instructions=_audit_no_engage_instr,
                                 )
                             used_spawn = False
+                            _mount_ns_degraded = (
+                                f"exec failed in mount-ns (rc="
+                                f"{result.returncode}); retried via "
+                                "Landlock-only path")
                             # Fall through to subprocess path below.
                 except (FileNotFoundError, RuntimeError, OSError) as _spawn_err:
                     # _spawn raised mid-setup (uidmap uninstalled,
@@ -2766,10 +2777,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             "failure; fix the host (uidmap package, "
                             "userns sysctl) to restore the mount-ns "
                             "audit tier.")
+                    _mount_ns_degraded = f"spawn setup failed: {_spawn_err}"
                     logger.warning(
                         "Sandbox: mount-ns spawn path failed (%s); "
-                        "falling back to Landlock-only subprocess path.",
+                        "falling back to Landlock-only subprocess path."
+                        "%s",
                         _spawn_err,
+                        (" Caller passed map_root/target and relied on "
+                         "mount-ns semantics (pivot_root, per-ns /tmp, "
+                         "binds) — those are LOST for this call."
+                         if (map_root or target) else ""),
                     )
             if not used_spawn:
                 if _exec_pid_callback is not None:
@@ -3122,6 +3139,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         result.sandbox_info["mount_ns_active"] = bool(
             used_spawn and use_mount and not _skip_mount_ns
         )
+        if _mount_ns_degraded:
+            result.sandbox_info["mount_ns_degraded"] = _mount_ns_degraded
         # restrict_reads is enforced on every engaged path: mount-ns via
         # the bind tree + Landlock, skip_mount_ns and Landlock-only via
         # the Landlock read allowlist alone.

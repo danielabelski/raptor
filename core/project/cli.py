@@ -832,6 +832,8 @@ def main():
             if args.name == "none":
                 prev = mgr.get_active()
                 mgr.set_active(None)
+                from .sessions import record_session
+                record_session(None)  # clear this session's registry entry
                 if prev:
                     print(f"Cleared active project: {prev}")
                 else:
@@ -844,6 +846,14 @@ def main():
             mgr.set_active(args.name)
             print(f"Active project: {p.name} ({p.target})")
             print(f"  Output dir: {p.output_dir}")
+            # Session-awareness (advisory, never lock-based): project
+            # switch is one of exactly two places this line surfaces —
+            # the other is launcher startup. Contention messages never
+            # repeat it.
+            from .sessions import awareness_lines, record_session
+            _own_pid = record_session(args.name)
+            for _line in awareness_lines(args.name, exclude_pid=_own_pid):
+                print(f"  note: {_line}")
 
         elif args.subcommand == "delete":
             p = mgr.load(args.name)

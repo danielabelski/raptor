@@ -504,6 +504,46 @@ cd "$RAPTOR_DIR" || { echo "raptor: cannot cd to $RAPTOR_DIR" >&2; exit 1; }
 # Pre-flight: auto-detect project, -p flag, mismatch prompt
 "$RAPTOR_DIR/libexec/raptor-startup-check" "${STARTUP_ARGS[@]}"
 
+# Session-awareness registry (advisory, never lock-based):
+# ~/.local/share/raptor/sessions.d/<pid> binds this session ($$
+# survives the exec) to its active project; dead-pid entries prune at
+# read time. Runs AFTER startup-check so -p/auto-detect is what
+# registers. Format shared with core/project/sessions.py.
+_sessions_dir="$HOME/.local/share/raptor/sessions.d"
+if mkdir -p "$_sessions_dir" 2>/dev/null; then
+    _active_proj=""
+    _active_link="$(readlink "$HOME/.raptor/projects/.active" 2>/dev/null || true)"
+    case "$_active_link" in
+        */*|*'\'*) ;;  # path-shaped target — not a project name; skip
+        *.json) _active_proj="${_active_link%.json}" ;;
+    esac
+    for _f in "$_sessions_dir"/*; do
+        [ -f "$_f" ] || continue
+        _fpid="${_f##*/}"
+        case "$_fpid" in
+            ''|*[!0-9]*) continue ;;  # not a pid-named entry — not ours
+        esac
+        if ! kill -0 "$_fpid" 2>/dev/null; then
+            rm -f -- "$_f"
+            continue
+        fi
+        if [ "$_fpid" != "$$" ] && [ -n "$_active_proj" ]; then
+            _fproj="$(sed -n 's/^project=//p' "$_f" 2>/dev/null | head -n 1)"
+            if [ "$_fproj" = "$_active_proj" ]; then
+                _fsince="$(sed -n 's/^since=//p' "$_f" 2>/dev/null | head -n 1)"
+                echo "raptor: project $_active_proj is also active in session pid $_fpid (since ${_fsince:-unknown})" >&2
+            fi
+        fi
+    done
+    if [ -n "$_active_proj" ]; then
+        printf 'project=%s\nsince=%s\n' "$_active_proj" \
+            "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
+            > "$_sessions_dir/$$" 2>/dev/null || true
+    fi
+    unset _f _fpid _fproj _fsince _active_proj _active_link
+fi
+unset _sessions_dir
+
 # Load coverage tracking plugin if available
 PLUGIN_ARGS=()
 if [ -d "$RAPTOR_DIR/plugins/coverage" ]; then

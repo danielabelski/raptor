@@ -181,3 +181,40 @@ class TestPromptRendering:
         del ctx["prior_finding_analyses"]
         text = format_context_for_prompt(ctx)
         assert "Prior finding-grade analyses" not in text
+
+
+class TestTunables:
+    def test_cap_zero_disables_injection(self, tmp_path):
+        run = tmp_path / "agentic_run"
+        run.mkdir()
+        append_entry(run, _entry())
+        config = _config(
+            tmp_path, prior_journal_dirs=[run],
+            prior_claims_per_function=0,
+        )
+        assert _build_prior_finding_analyses(config, None) is None
+
+    def test_cap_honoured(self, tmp_path):
+        run = tmp_path / "agentic_run"
+        run.mkdir()
+        for i in range(4):
+            append_entry(run, _entry(body=f"claim {i}"))
+        config = _config(
+            tmp_path, prior_journal_dirs=[run],
+            prior_claims_per_function=2,
+        )
+        claims = _build_prior_finding_analyses(config, None)
+        group = claims["src/a.c:f"]
+        assert len(group) == 2
+        assert group[0]["body"] == "claim 3"
+
+    def test_bodies_excerpted_at_collection(self, tmp_path):
+        run = tmp_path / "agentic_run"
+        run.mkdir()
+        append_entry(run, _entry(body="x" * 2000))
+        config = _config(
+            tmp_path, prior_journal_dirs=[run],
+            prior_claim_excerpt_chars=100,
+        )
+        claims = _build_prior_finding_analyses(config, None)
+        assert len(claims["src/a.c:f"][0]["body"]) == 100

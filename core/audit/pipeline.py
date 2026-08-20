@@ -179,6 +179,10 @@ class AuditPipelineOpts:
     # (--prior-journal, repeatable). Covers journals not yet merged
     # into the project index.
     prior_journal_dirs: list[Path] | None = None
+    # Per-function cap on prior finding-grade claims in review context
+    # (--prior-claims; 0 disables) and the per-claim body excerpt.
+    prior_claims_per_function: int = 3
+    prior_claim_excerpt_chars: int = 600
 
 
 
@@ -331,6 +335,8 @@ def _build_orchestrator_config(
         prior_cost_breakdown=opts.prior_cost_breakdown,
         resume_segment=opts.resume_segment,
         prior_journal_dirs=opts.prior_journal_dirs,
+        prior_claims_per_function=opts.prior_claims_per_function,
+        prior_claim_excerpt_chars=opts.prior_claim_excerpt_chars,
         llm_budget_client=client,
         llm_client=client,
     )

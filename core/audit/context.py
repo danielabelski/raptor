@@ -1463,10 +1463,12 @@ def format_context_for_prompt(
             if pa.get("model"):
                 head += f" by {pa['model']}"
             pfa.append(head)
+            # Bodies are excerpted at collection time
+            # (prior_claim_excerpt_chars) — one bound, every consumer.
             body = (pa.get("body") or "").strip()
             if body:
                 pfa.append(wrap_untrusted(
-                    body[:600],
+                    body,
                     kind="prior_finding_analysis",
                     origin=f"agentic:{pa.get('run_id') or 'unknown'}",
                 ))

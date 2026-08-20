@@ -60,6 +60,7 @@ full flag table.
 | `--no-verdict-reuse` | Disable cross-run verdict reuse (importing prior-run journal verdicts for unchanged functions) |
 | `--schedule {cost,priority}` | Parallel review ordering: `cost` packs predicted-longest reviews first, `priority` reviews most promising first |
 | `--prior-journal <run-dir>` | Run dir whose review journal feeds prior finding-grade claims into review context (repeatable; used by `/agentic --gap-audit`) |
+| `--prior-claims <N>` | Max prior finding-grade claims injected per function (default 3; 0 disables) |
 | `--dynamic` / `--no-dynamic` | Enable/disable dynamic validation (Frida observation / target execution) for confirmed findings |
 | `--binary <path>` / `--binary-auto` / `--no-binary-oracle` | Binary-oracle reachability enrichment of the inventory |
 | `--annotations-dir <dir>` | Annotations directory (default: project-level `annotations/`, falling back to `<out>/annotations`) |

@@ -609,6 +609,12 @@ class OrchestratorConfig:
     # ``_build_context`` as prior claims. Kind-gated OUT of coverage
     # by the gap fold; kind-gated INTO the prompt here.
     prior_finding_analyses: dict[str, list] | None = None
+    # Newest-first cap on prior finding-grade claims per function
+    # (``--prior-claims``; 0 disables the injection entirely) and the
+    # per-claim body excerpt length. Defaults are starting points, not
+    # measured optima — tune per target density.
+    prior_claims_per_function: int = 3
+    prior_claim_excerpt_chars: int = 600
 
 
 @dataclass
@@ -8743,12 +8749,6 @@ def _codeql_db_for(config, file_path):
     return config.codeql_db_path
 
 
-#: Newest-first cap on prior finding-grade claims kept per function —
-#: a finding-dense function (many scanner hits) must not flood the
-#: review prompt with near-duplicate per-finding narratives.
-_MAX_PRIOR_FINDING_CLAIMS = 3
-
-
 def _build_prior_finding_analyses(
     config: OrchestratorConfig,
     project_dir: Path | None,
@@ -8761,10 +8761,20 @@ def _build_prior_finding_analyses(
     qualify: function-grade priors already reach the prompt through
     the verdict-reuse / prior_verdict machinery.
 
+    The per-function cap (newest first) keeps a finding-dense function
+    from flooding the review prompt with near-duplicate per-finding
+    narratives; bodies are excerpted here so every consumer sees the
+    same bound. ``config.prior_claims_per_function == 0`` disables the
+    injection entirely.
+
     Best-effort — a missing or corrupt journal costs the claims, never
     the run. Returns None when nothing qualifies so callers can gate
     on truthiness.
     """
+    cap = getattr(config, "prior_claims_per_function", 3)
+    if cap <= 0:
+        return None
+    excerpt = max(int(getattr(config, "prior_claim_excerpt_chars", 600)), 0)
     from core.coverage.journal import (
         is_function_grade,
         load_entries,
@@ -8803,9 +8813,9 @@ def _build_prior_finding_analyses(
                 "model": e.model,
                 "run_id": e.run_id,
                 "ts": e.ts,
-                "body": e.body or "",
+                "body": (e.body or "")[:excerpt],
             }
-            for e in group[:_MAX_PRIOR_FINDING_CLAIMS]
+            for e in group[:cap]
         ]
     return out
 

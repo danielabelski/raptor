@@ -1322,6 +1322,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             [Path(p) for p in args.prior_journal]
             if args.prior_journal else None
         ),
+        prior_claims_per_function=args.prior_claims,
     )
 
     # Persist the resolved run configuration BEFORE the pipeline
@@ -1854,6 +1855,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
             [Path(p) for p in run_cfg["prior_journal_dirs"]]
             if run_cfg.get("prior_journal_dirs") else None
         ),
+        prior_claims_per_function=int(
+            run_cfg.get("prior_claims_per_function", 3)
+        ),
     )
 
     print(f"\nResuming audit of {target_path}", flush=True)
@@ -1955,6 +1959,7 @@ def _run_config_from_args(
         "probe_determine_value": args.probe_determine_value,
         "deepen_reserve_fraction": args.deepen_reserve,
         "prior_journal_dirs": args.prior_journal,
+        "prior_claims_per_function": args.prior_claims,
         # Informational: the self-bound applied to segment 1 (the
         # operator's explicit max_seconds above stays authoritative
         # for resume; each segment re-derives its own bound).
@@ -2253,6 +2258,12 @@ def main() -> int:
                             "promising functions first (fastest first "
                             "finding). Serial runs always use priority "
                             "order")
+    p_run.add_argument("--prior-claims", type=int, default=3,
+                       metavar="N",
+                       help="Max prior finding-grade claims injected "
+                            "per function into review context, newest "
+                            "first (default: 3; 0 disables the "
+                            "injection entirely)")
     p_run.add_argument("--prior-journal", action="append", default=None,
                        metavar="RUN_DIR",
                        help="Run directory whose review-journal.jsonl "

@@ -22,6 +22,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
        [--review-passes <N>] [--subsystem-depth <N>] [--batch-sloc-threshold <N>]
        [--include-kinds <list>] [--max-propagation-depth <N>] [--adversarial]
        [--no-verdict-reuse] [--schedule {cost,priority}] [--prior-journal <run-dir>]
+       [--prior-claims <N>]
        [--dynamic | --no-dynamic]
        [--binary <path> ...] [--binary-auto] [--no-binary-oracle]
        [--annotations-dir <path>] [--no-validate] [--model <name> ...]
@@ -43,6 +44,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--no-verdict-reuse` — disable cross-run verdict reuse (importing prior-run journal verdicts for functions whose source is unchanged)
 - `--schedule {cost,priority}` — parallel review ordering: `cost` packs predicted-longest reviews first (shortest wall time), `priority` reviews the most promising functions first (fastest first finding)
 - `--prior-journal <run-dir>` — run directory whose `review-journal.jsonl` feeds prior finding-grade claims (/agentic per-finding analyses) into review context (repeatable). Covers journals not yet merged into the project index — the `/agentic --gap-audit` post-pass passes its parent run dir here
+- `--prior-claims <N>` — max prior finding-grade claims injected per function, newest first (default: 3; 0 disables the injection)
 - `--dynamic` / `--no-dynamic` — enable/disable dynamic validation (Frida observation / target execution) for confirmed findings; `--no-dynamic` also overrides the project's `dynamic` trust marker
 - `--binary <path>` — debug binary for binary-oracle enrichment (repeatable); `--binary-auto` auto-detects under common build dirs; `--no-binary-oracle` disables the oracle for this run
 - `--annotations-dir <path>` — annotations directory for team workflows or cross-run review (default: project-level `annotations/` for lifecycle runs, else `$OUTPUT_DIR/annotations`)

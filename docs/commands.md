@@ -411,6 +411,7 @@ code as vulnerable -- tool output is the verdict.
 | `--no-verdict-reuse` | Disable cross-run verdict reuse for unchanged functions |
 | `--schedule {cost,priority}` | Parallel review ordering |
 | `--prior-journal <run-dir>` | Run dir whose review journal feeds prior finding-grade claims into review context (repeatable) |
+| `--prior-claims <N>` | Max prior finding-grade claims injected per function (default 3; 0 disables) |
 | `--dynamic` / `--no-dynamic` | Enable/disable dynamic validation for confirmed findings |
 | `--binary <path>` / `--binary-auto` / `--no-binary-oracle` | Binary-oracle reachability enrichment |
 | `--model <name>` | Model ID (repeatable for multi-model consensus) |

@@ -1576,6 +1576,27 @@ class TestRefireLoop:
         assert "Refire deltas" not in capsys.readouterr().out
 
 
+class TestRaptorDirPin:
+    """main() pins RAPTOR_DIR to this tree for its OWN process — the
+    in-process orchestrator resolves engine assets (standing cocci
+    rules) through os.environ, and an ambient value from the launching
+    shell can point at a different checkout (whose rule set would then
+    silently replace this tree's)."""
+
+    def test_main_pins_own_tree(self, monkeypatch, tmp_path):
+        import os
+
+        import core.config as cfg
+
+        monkeypatch.setenv("RAPTOR_DIR", str(tmp_path / "other-checkout"))
+        # Label loading happens after the pin; an unmatched --label
+        # exits non-zero without spending anything.
+        rc = run_corpus.main(["--dry-run", "--label", "no/such:label"])
+        assert rc != 0
+        own = str(Path(cfg.__file__).resolve().parents[2])
+        assert os.environ["RAPTOR_DIR"] == own
+
+
 class TestLlmCacheKnob:
     """--no-llm-cache must arm RAPTOR_LLM_CACHE=off before the audit
     runs (every LLMConfig constructed downstream reads it) and record

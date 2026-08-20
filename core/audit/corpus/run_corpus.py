@@ -2907,6 +2907,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Pin RAPTOR_DIR to THIS tree for the runner's OWN process, not
+    # just spawned children. The in-process orchestrator resolves
+    # engine assets (standing coccinelle rules) via
+    # os.environ["RAPTOR_DIR"]; an ambient value inherited from the
+    # launching shell can point at a DIFFERENT checkout, silently
+    # loading that tree's rule set — observed as a refire worktree's
+    # new standing rules never running while every python-imported
+    # detector (same modules, no env lookup) fired normally.
+    from core.config import pin_raptor_dir_in_environ
+    pin_raptor_dir_in_environ()
+
     # Cache bypass must be armed before ANY LLMConfig is constructed
     # (clients read the switch at construction time), so set it right
     # after parse — probe mode, dispatcher children, and the in-

@@ -673,3 +673,68 @@ class TestDetectCodeqlCli:
         assert got == "/usr/local/bin/codeql"
         assert not [r for r in caplog.records
                     if "CODEQL_CLI" in r.getMessage()]
+
+
+class TestRepoHashDirtyTree:
+    """compute_repo_hash must invalidate on uncommitted edits — HEAD
+    alone kept serving the stale database for the whole cache TTL."""
+
+    @staticmethod
+    def _git(repo, *args):
+        sp.run(
+            ["git", "-c", "user.email=t@example.invalid",
+             "-c", "user.name=t", *args],
+            cwd=repo, check=True, capture_output=True,
+            env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null",
+                 "GIT_CONFIG_SYSTEM": "/dev/null"},
+        )
+
+    def _git_repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.py").write_text("x = 1\n")
+        self._git(repo, "init", "-q")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "init")
+        return repo
+
+    def test_clean_tree_hash_is_stable(self, db_manager, tmp_path):
+        repo = self._git_repo(tmp_path)
+        h1 = db_manager.compute_repo_hash(repo)
+        h2 = db_manager.compute_repo_hash(repo)
+        assert h1 == h2
+
+    def test_uncommitted_edit_changes_hash(self, db_manager, tmp_path):
+        repo = self._git_repo(tmp_path)
+        clean = db_manager.compute_repo_hash(repo)
+        (repo / "a.py").write_text("x = 2\n")
+        dirty = db_manager.compute_repo_hash(repo)
+        assert clean != dirty
+
+    def test_edit_to_already_dirty_file_changes_hash(
+        self, db_manager, tmp_path,
+    ):
+        repo = self._git_repo(tmp_path)
+        (repo / "a.py").write_text("x = 2\n")
+        first = db_manager.compute_repo_hash(repo)
+        time.sleep(0.02)  # ensure mtime_ns moves
+        (repo / "a.py").write_text("x = 3\n")
+        second = db_manager.compute_repo_hash(repo)
+        assert first != second
+
+    def test_untracked_file_changes_hash(self, db_manager, tmp_path):
+        repo = self._git_repo(tmp_path)
+        clean = db_manager.compute_repo_hash(repo)
+        (repo / "new.py").write_text("y = 1\n")
+        assert db_manager.compute_repo_hash(repo) != clean
+
+    def test_non_git_fallback_detects_size_preserving_edit(
+        self, db_manager, tmp_path,
+    ):
+        repo = tmp_path / "plain"
+        repo.mkdir()
+        (repo / "a.py").write_text("x = 1\n")
+        h1 = db_manager.compute_repo_hash(repo)
+        (repo / "a.py").write_text("x = 2\n")  # same size, new content
+        h2 = db_manager.compute_repo_hash(repo)
+        assert h1 != h2

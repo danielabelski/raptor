@@ -387,8 +387,21 @@ class DatabaseManager:
             )
             if result.returncode == 0:
                 git_hash = result.stdout.strip()
-                # Combine with repo path to ensure uniqueness
+                # Combine with repo path to ensure uniqueness.
+                #
+                # HEAD alone ignores the WORKING TREE: uncommitted
+                # edits produced the same cache key as the pristine
+                # checkout, so an operator iterating on a fix kept
+                # getting the stale database (for up to the 7-day
+                # TTL). Fold in a digest of the dirty state — the
+                # porcelain listing plus size/mtime of each dirty
+                # path, so re-editing an already-dirty file also
+                # invalidates. Clean tree → digest is None → key is
+                # unchanged from before (cache continuity).
                 combined = f"{repo_path}:{git_hash}"
+                dirty_digest = self._dirty_tree_digest(repo_path)
+                if dirty_digest:
+                    combined = f"{combined}:dirty:{dirty_digest}"
                 return sha256_string(combined)[:16]
         except (subprocess.SubprocessError, OSError) as exc:
             # Narrowed from bare Exception. ``subprocess.run`` raises
@@ -421,8 +434,9 @@ class DatabaseManager:
         #     `touch`-style write that didn't change content
         #     (`make` rebuilds, editor saves with same content,
         #     git checkout updates mtimes wholesale). Drop mtime;
-        #     keep (name, size) — same files at same sizes
-        #     produce the same hash regardless of touch noise.
+        #     keep (name, size) plus a bounded content sample —
+        #     touch noise doesn't change the hash, real edits
+        #     (including size-preserving ones) do.
         #   * No filtering of known noise directories. Skip
         #     .git / node_modules / .venv / __pycache__ / .tox /
         #     dist / build / target — none are source-of-truth
@@ -458,11 +472,72 @@ class DatabaseManager:
                     )
                     try:
                         hasher.update(str(file_path.stat().st_size).encode())
+                        # Bounded content sample: (name, size) alone
+                        # missed size-preserving edits, so the cache
+                        # served a stale database after e.g. flipping
+                        # a constant. 4 KiB per file keeps the walk
+                        # cheap (<= 4 MiB total at the 1000-file cap)
+                        # and stays touch-noise-immune (unlike mtime).
+                        with file_path.open("rb") as fh:
+                            hasher.update(fh.read(4096))
                     except OSError:
                         pass
         except Exception as e:  # noqa: BLE001 — best-effort; never fail the run
             logger.debug("Error hashing repository: %s", e)
 
+        return hasher.hexdigest()[:16]
+
+    def _dirty_tree_digest(self, repo_path: Path) -> str | None:
+        """Short digest of the working tree's uncommitted state, or
+        None when the tree is clean / the probe fails.
+
+        Mixes the ``git status --porcelain`` listing (which files are
+        dirty and how) with each dirty path's size and mtime_ns (so a
+        further edit to an ALREADY-dirty file still changes the
+        digest — the porcelain line alone would not). mtime noise is
+        confined to the dirty set: a clean tree keeps the pure
+        HEAD-based key.
+        """
+        try:
+            status = subprocess.run(
+                safe_git_command("status", "--porcelain"),
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                env=get_safe_git_env(),
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.debug(
+                "codeql DM: git status failed for %s: %s", repo_path, exc,
+            )
+            return None
+        if status.returncode != 0 or not status.stdout.strip():
+            return None
+        hasher = hashlib.sha256()
+        hasher.update(
+            status.stdout.encode("utf-8", errors="surrogateescape"),
+        )
+        for line in status.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            path_part = line[3:]
+            # Rename lines read "old -> new"; the new path is live.
+            if " -> " in path_part:
+                path_part = path_part.split(" -> ", 1)[1]
+            path_part = path_part.strip().strip('"')
+            try:
+                st = (repo_path / path_part).stat()
+            except (OSError, ValueError):
+                # Deleted / unstat-able path — the porcelain line
+                # above already reflects its state.
+                continue
+            hasher.update(
+                f"{path_part}:{st.st_size}:{st.st_mtime_ns}".encode(
+                    "utf-8", errors="surrogateescape",
+                ),
+            )
         return hasher.hexdigest()[:16]
 
     def get_database_dir(self, repo_hash: str, language: str) -> Path:

@@ -101,10 +101,13 @@ time.sleep(30)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
-def test_sigterm_unlinks_lane_socket(tmp_path):
+def test_sigterm_unlinks_lane_socket(short_sock_dir):
     """End-to-end: TERM a process holding a unix lane — the socket
     file must be unlinked and the process must still die by TERM."""
-    sock = tmp_path / "lane.sock"
+    # short_sock_dir, not tmp_path: AF_UNIX paths must fit sun_path
+    # (~104 bytes on macOS), which pytest's tmp_path exceeds on CI
+    # runners (see the conftest fixture).
+    sock = short_sock_dir / "lane.sock"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(_RAPTOR_DIR)
     proc = subprocess.Popen(

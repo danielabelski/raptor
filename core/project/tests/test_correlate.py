@@ -133,6 +133,37 @@ class TestFindDisagreements(TestCase):
         self.assertIn("gpt-4o", models)
         self.assertIn("claude-3-opus", models)
 
+    def test_scan_vs_orchestrated_shape_same_location(self):
+        """A scan-shaped finding (`file`) and an orchestrated agentic
+        finding (`file_path`) at the same location must share a dedup
+        key so cross-run-type disagreements fire."""
+        findings = {
+            "scan-001": [_make_finding(file="src/a.c", function="fn",
+                                       line=7, final_status="confirmed")],
+            "agentic-001": [{
+                "file_path": "src/a.c", "function": "fn", "line": 7,
+                "vuln_type": "bof", "is_true_positive": False,
+            }],
+        }
+        result = _find_disagreements(findings, {})
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["disagreement_type"], "positive_vs_negative")
+        self.assertEqual(result[0]["file"], "src/a.c")
+
+    def test_orchestrated_findings_do_not_collide_across_files(self):
+        """Same-named functions in different files stay distinct even
+        when the path arrives as file_path."""
+        findings = {
+            "agentic-001": [
+                {"file_path": "src/a.c", "function": "fn", "line": 7,
+                 "vuln_type": "bof", "is_exploitable": True},
+                {"file_path": "src/b.c", "function": "fn", "line": 7,
+                 "vuln_type": "bof", "is_true_positive": False},
+            ],
+        }
+        # Different files → different keys → no verdict set mixes both.
+        self.assertEqual(_find_disagreements(findings, {}), [])
+
     def test_model_from_analysed_by_field(self):
         findings = {
             "run-A": [_make_finding(final_status="exploitable", analysed_by="gpt-4o")],
@@ -266,6 +297,23 @@ class TestBuildToolGaps(TestCase):
             "validate-001": [_make_finding(file="x.c")],
         }
         types = {"scan-001": "scan", "validate-001": "validate"}
+        result = _build_tool_gaps(dirs, findings, types)
+        self.assertEqual(result["scanned_not_validated"], [])
+        self.assertEqual(result["validated_not_scanned"], [])
+
+    def test_agentic_file_path_counts_as_llm_coverage(self):
+        """Orchestrated agentic findings carry file_path; they must
+        register as LLM coverage so scanned files aren't reported as
+        never-validated."""
+        dirs = self._make_run_dirs(["scan-001", "agentic-001"])
+        findings = {
+            "scan-001": [_make_finding(file="x.c")],
+            "agentic-001": [{
+                "file_path": "x.c", "function": "fn", "line": 1,
+                "vuln_type": "bof", "is_true_positive": True,
+            }],
+        }
+        types = {"scan-001": "scan", "agentic-001": "agentic"}
         result = _build_tool_gaps(dirs, findings, types)
         self.assertEqual(result["scanned_not_validated"], [])
         self.assertEqual(result["validated_not_scanned"], [])

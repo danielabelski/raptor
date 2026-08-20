@@ -5,7 +5,7 @@ to avoid duplication across diff.py, merge.py, and coverage.
 """
 
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.json import load_json
@@ -19,9 +19,33 @@ def get_finding_id(finding: Dict[str, Any]) -> Optional[str]:
     return finding.get("id") or finding.get("finding_id")
 
 
+def finding_file(finding: Dict[str, Any]) -> str:
+    """File path for a finding, tolerant of both serialised shapes.
+
+    Scan-shaped findings carry ``file``; orchestrated /agentic results
+    carry ``file_path`` (see ``core/run/orchestrated_report_schema.py``).
+    Pre-fix ``dedup_key`` read only ``file``, so every agentic finding
+    keyed as ``("", fn, line)`` — cross-run-type disagreement detection
+    never fired, tool-gap analysis skipped agentic findings entirely,
+    and same-named functions in different files collided.
+
+    The path is lightly normalised (``./``-prefixes and redundant
+    separators collapsed) so the same relative location keys
+    identically regardless of which producer wrote it.
+    """
+    fp = finding.get("file") or finding.get("file_path") or ""
+    if not isinstance(fp, str) or not fp:
+        return ""
+    return str(PurePosixPath(fp))
+
+
 def dedup_key(finding: Dict[str, Any]) -> Tuple[str, str, int]:
-    """Dedup key for a finding: (file, function, line). More stable than ID."""
-    return (finding.get("file", ""), finding.get("function", ""), finding.get("line") or 0)
+    """Dedup key for a finding: (file, function, line). More stable than ID.
+
+    Uses :func:`finding_file` so scan-shaped (``file``) and orchestrated
+    (``file_path``) findings at the same location share a key.
+    """
+    return (finding_file(finding), finding.get("function", ""), finding.get("line") or 0)
 
 
 def group_key(finding: Dict[str, Any]) -> Tuple[str, str, str]:

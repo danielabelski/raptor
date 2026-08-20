@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 from core.json import load_json
 from core.run import load_run_metadata
 
-from .findings_utils import dedup_key, load_findings_from_dir
+from .findings_utils import dedup_key, finding_file, load_findings_from_dir
 
 # --- Status normalization ---
 
@@ -243,7 +243,7 @@ def _find_disagreements(
         f = key_to_finding[k]
         scores = [v["score"] for v in verdicts if v["score"] is not None]
         disagreements.append({
-            "file": f.get("file", ""),
+            "file": finding_file(f),
             "function": f.get("function", ""),
             "line": f.get("line") or 0,
             "vuln_type": f.get("vuln_type", ""),
@@ -304,7 +304,7 @@ def _find_new_and_resolved(
             if first_run != earliest:
                 status = get_finding_status(f)
                 new_findings.append({
-                    "file": f.get("file", ""),
+                    "file": finding_file(f),
                     "function": f.get("function", ""),
                     "line": f.get("line") or 0,
                     "vuln_type": f.get("vuln_type", ""),
@@ -324,7 +324,7 @@ def _find_new_and_resolved(
                     and run_order.index(r) > run_order.index(last_run)
                 ]
                 potentially_resolved.append({
-                    "file": f.get("file", ""),
+                    "file": finding_file(f),
                     "function": f.get("function", ""),
                     "line": f.get("line") or 0,
                     "vuln_type": f.get("vuln_type", ""),
@@ -353,7 +353,12 @@ def _build_tool_gaps(
     for run_name, findings in findings_by_run.items():
         cmd = run_types.get(run_name, "unknown")
         for f in findings:
-            fp = f.get("file", "")
+            # finding_file handles both scan-shaped (`file`) and
+            # orchestrated (`file_path`) findings — pre-fix agentic
+            # findings were silently skipped here, so LLM coverage
+            # never registered and every scanned file looked
+            # "never LLM-validated".
+            fp = finding_file(f)
             if not fp:
                 continue
             k = dedup_key(f)
@@ -511,7 +516,7 @@ def _find_persistent(
             continue
         f = key_to_finding[k]
         persistent.append({
-            "file": f.get("file", ""),
+            "file": finding_file(f),
             "function": f.get("function", ""),
             "line": f.get("line") or 0,
             "vuln_type": f.get("vuln_type", ""),
@@ -568,7 +573,7 @@ def _build_tool_coverage(run_dirs: List[Path]) -> Dict[str, List[str]]:
         tool = (meta if isinstance(meta, dict) else {}).get("command", "unknown")
         findings = load_findings_from_dir(d)
         for f in findings:
-            fp = f.get("file", "")
+            fp = finding_file(f)
             if fp:
                 tool_files[tool].add(fp)
 

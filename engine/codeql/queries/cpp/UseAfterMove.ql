@@ -63,6 +63,11 @@ class UnsafePostMoveAccess extends VariableAccess {
       fc.getQualifier() = this and
       fc.getTarget().getName() = ["clear", "reset", "resize", "assign", "swap", "emplace"]
     ) and
+    // Not the qualifier of a destructor call — destroying a
+    // moved-from object is well-defined. This covers the implicit
+    // end-of-scope destructor calls the extractor synthesises at the
+    // closing brace, which otherwise flag every moved-from local.
+    not exists(DestructorCall dc | dc.getQualifier() = this) and
     // Not inside a destructor for this variable
     not this.getEnclosingFunction() instanceof Destructor
   }

@@ -22,12 +22,11 @@
 
 services:
   ollama:
-    # Digest pin pending: this tag is not resolvable from every
-    # network posture (Docker Hub egress). Resolve it from a host that
-    # can reach the registry —
-    #   docker buildx imagetools inspect ollama/ollama:0.32.14
-    # (or docker pull + docker inspect --format
-    # '{{index .RepoDigests 0}}') — and append @sha256:<digest> here.
+    # Digest-pinned (tag is documentation; the digest is what docker
+    # resolves). Bump: resolve the new digest with
+    #   docker buildx imagetools inspect ollama/ollama:<tag>
+    # and update BOTH this entry and ollama-init below — they share
+    # the image so the init CLI can never skew from the server.
     image: ollama/ollama:0.32.14@sha256:9d30908e41144b1f1da89b9d8e33c07e4aeb43ff41a8660241b1686e2cc330ad
     ports:
       # Loopback-bound: every in-repo consumer targets localhost, and
@@ -63,7 +62,10 @@ services:
     #           capabilities: [gpu]
 
   ollama-init:
-    image: ollama/ollama:0.32.5@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131
+    # Same image as the ollama service (this container only runs the
+    # `ollama pull` CLI against it): one digest to bump, no version
+    # skew, and no extra image download.
+    image: ollama/ollama:0.32.14@sha256:9d30908e41144b1f1da89b9d8e33c07e4aeb43ff41a8660241b1686e2cc330ad
     depends_on:
       ollama:
         condition: service_healthy

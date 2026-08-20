@@ -165,3 +165,28 @@ class TestGapQualifiedName:
         by_name = {g["name"]: g for g in gaps}
         assert by_name["Scan"]["qualified_name"] == "NullBool.Scan"
         assert "qualified_name" not in by_name["free_fn"]
+
+
+class TestLearnedAliasCanonicalization:
+    """An unqualified late row (post-loop re-review, promotion clone)
+    must update the qualified alias learned from earlier rows —
+    otherwise a real status flip is invisible to a qualified label."""
+
+    def test_late_unqualified_row_updates_qualified_alias(self, tmp_path):
+        import json
+
+        from core.audit.corpus.run_corpus import (
+            _parse_audit_log_outcomes,
+        )
+        log = tmp_path / ".audit-log.jsonl"
+        rows = [
+            {"action": "orchestrator_review", "key": "a/l.go:Ensure:24",
+             "status": "clean", "function_qualified": "snap.Ensure"},
+            {"action": "orchestrator_review", "key": "a/l.go:Ensure:24",
+             "status": "suspicious"},
+        ]
+        log.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        o, _ = _parse_audit_log_outcomes(log)
+        assert o["a/l.go:snap.Ensure"]["status"] == "suspicious"
+        assert o["a/l.go:snap.Ensure:24"]["status"] == "suspicious"
+        assert o["a/l.go:Ensure"]["status"] == "suspicious"

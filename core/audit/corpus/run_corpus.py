@@ -1139,6 +1139,17 @@ def _parse_audit_log_outcomes(
     # kept (log order breaks ties) so a real finding is never shadowed by a
     # clean sibling.
     derived_bare_entries: dict[str, dict[str, Any]] = {}
+
+    # Alias canonicalization pre-pass: several post-loop lanes append
+    # status rows WITHOUT function_qualified (re-reviews from synthetic
+    # gaps, promotion clones). Under last-row-wins, such a row updates
+    # only the bare key while the qualified alias keeps pointing at the
+    # earlier (qualified) mid-loop row — a real status flip becomes
+    # invisible to a receiver-qualified label id. Learn the
+    # bare→qualified mapping from every row that DOES carry it, then
+    # let unqualified rows update the qualified aliases too.
+    qualified_by_bare: dict[str, str] = {}
+    raw_entries: list[dict[str, Any]] = []
     if log_path.exists():
         with open(log_path) as f:
             for raw in f:
@@ -1154,28 +1165,47 @@ def _parse_audit_log_outcomes(
                 key = entry.get("key", "")
                 if not key:
                     continue
-                outcomes_by_id[key] = entry
-                head, _, tail = key.rpartition(":")
-                if head and tail.isdigit():
-                    outcomes_by_id[head] = entry
-                    best = derived_bare_entries.get(head)
-                    if best is None or (
-                        _STATUS_RANK.get(entry.get("status", ""), 0)
-                        > _STATUS_RANK.get(best.get("status", ""), 0)
-                    ):
-                        derived_bare_entries[head] = entry
-                else:
-                    bare_key_entries[key] = entry
+                raw_entries.append(entry)
                 qualified = entry.get("function_qualified") or ""
                 if qualified:
+                    head, _, tail = key.rpartition(":")
                     base = head if (head and tail.isdigit()) else key
                     file_part = base.rsplit(":", 1)[0]
                     if file_part:
-                        outcomes_by_id[f"{file_part}:{qualified}"] = entry
-                        if head and tail.isdigit():
-                            outcomes_by_id[
-                                f"{file_part}:{qualified}:{tail}"
-                            ] = entry
+                        qualified_by_bare[base] = (
+                            f"{file_part}:{qualified}"
+                        )
+
+    for entry in raw_entries:
+        key = entry.get("key", "")
+        outcomes_by_id[key] = entry
+        head, _, tail = key.rpartition(":")
+        if head and tail.isdigit():
+            outcomes_by_id[head] = entry
+            best = derived_bare_entries.get(head)
+            if best is None or (
+                _STATUS_RANK.get(entry.get("status", ""), 0)
+                > _STATUS_RANK.get(best.get("status", ""), 0)
+            ):
+                derived_bare_entries[head] = entry
+        else:
+            bare_key_entries[key] = entry
+        base = head if (head and tail.isdigit()) else key
+        qualified = entry.get("function_qualified") or ""
+        qualified_key = ""
+        if qualified:
+            file_part = base.rsplit(":", 1)[0]
+            if file_part:
+                qualified_key = f"{file_part}:{qualified}"
+        elif base in qualified_by_bare:
+            # Learned alias: an unqualified row on a function some
+            # other row qualified — keep the qualified alias current
+            # under last-row-wins.
+            qualified_key = qualified_by_bare[base]
+        if qualified_key:
+            outcomes_by_id[qualified_key] = entry
+            if head and tail.isdigit():
+                outcomes_by_id[f"{qualified_key}:{tail}"] = entry
 
     for bare, entry in derived_bare_entries.items():
         bare_key_entries.setdefault(bare, entry)

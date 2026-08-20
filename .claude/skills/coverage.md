@@ -27,8 +27,12 @@ Each tool writes a `coverage-<tool>.json` in the run output directory:
 | `coverage-read.json` | Lifecycle end (any status) | files the LLM read (from `.reads-manifest`) |
 | `coverage-llm.json` | `/validate` stage 1; operator/agent `--mark` | items analysed (from findings + marks) |
 | `coverage-journal.json` | `/agentic` | functions reviewed (from review-journal entries) |
+| `coverage-fuzz.json` | `/fuzz` (gcov-instrumented targets) | per-function runtime reach (never counts as review) |
 
-Records are written automatically — no manual action needed.
+Records are written automatically — no manual action needed. The summary
+ends with a `Read tracking:` health line (did the LLM-read capture leg
+ever engage?) and, in project mode, a `Progress:` trend line from
+`coverage-progress.jsonl` (one row appended per completed run).
 
 ## Coverage Store
 
@@ -105,21 +109,24 @@ From file (many functions — preferred for `/understand` and `/validate`):
 libexec/raptor-coverage-summary <run_dir> --mark-file "$OUTPUT_DIR/reviewed-items.json"
 ```
 
-The JSON file is a flat array of `{file, item}` objects. The `item` key matches any inventory item (function, global, struct, macro). `function` is accepted as a backwards-compatible alias.
+The JSON file is a flat array of `{file, item}` objects. The `item` key matches any inventory item (function, global, struct, macro). `function` is accepted as a backwards-compatible alias. An optional `status` (`clean` / `suspicious` / `finding` / `dormant`) sets the journaled verdict; default `clean`.
 ```json
 [
     {"file": "src/auth.c", "item": "check_pw"},
-    {"file": "src/auth.c", "item": "credentials"},
+    {"file": "src/auth.c", "item": "credentials", "status": "suspicious"},
     {"file": "src/db.c", "item": "query"}
 ]
 ```
 
 Write this file using the Write tool, then pass it to `--mark-file`.
 
+**Durability:** in a project context (run dir under a project with a checklist), every mark is ALSO journaled into the project's `review-journal-index.json` as a review assertion (`producer=mark`, `model=operator`) with a source hash. Journaled marks survive run deletion, suppress `/audit` gaps cross-run through the hash-verified fold, and resurface automatically when the function's source drifts. On a standalone run dir the mark stays record-only (same-run suppression only).
+
 **Remove from reviewed** (undo incorrect mark):
 ```bash
 libexec/raptor-coverage-summary <run_dir> --unmark src/auth.c:check_pw
 ```
+Unmark also withdraws any journaled mark (an error-verdict entry replaces it in the index), so the function returns to the gap list.
 
 **Import external runtime coverage:**
 ```bash

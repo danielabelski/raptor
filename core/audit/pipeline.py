@@ -84,6 +84,8 @@ class AuditPipelineOpts:
     inventory: dict[str, Any] | None = None
     annotations_dir: Path | None = None
     codeql_db_path: str | None = None
+    # Repeatable --codeql-db (one database per language).
+    codeql_db_paths: list[str] | None = None
     threat_model: dict[str, Any] | None = None
     joern_overrides: dict[str, Any] | None = None
     joern_server: Any | None = None
@@ -296,6 +298,7 @@ def _build_orchestrator_config(
         binary_verdicts=opts.binary_verdicts,
         inventory=opts.inventory,
         codeql_db_path=opts.codeql_db_path,
+        codeql_db_paths=opts.codeql_db_paths,
         threat_model=opts.threat_model,
         annotations_dir=opts.annotations_dir,
         functions=opts.functions,

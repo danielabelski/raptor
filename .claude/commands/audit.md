@@ -32,7 +32,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--budget <N>` — max functions to review (default: all gaps)
 - `--scope <dir>` — restrict to a subdirectory (e.g. `ipc/`, `net/ipv4/`). Annotations and coverage still write to the project-level output dir, so successive scoped runs accumulate
 - `--out <dir>` — output directory (default: resolved by lifecycle)
-- `--codeql-db <path>` — path to a CodeQL database for query dispatch and pre-sweep
+- `--codeql-db <path>` — CodeQL database for query dispatch and pre-sweep (repeatable — one per language for multi-language targets; per-function dispatch routes by the file's language)
 - `--max-cost <USD>` — stop after spending this many dollars on LLM calls
 - `--deepen-reserve <fraction>` — slice of `--max-cost` held back for the deepen phase so announced re-reviews can execute (default 0.15; 0 disables)
 - `--max-time <seconds>` — stop after this many wall-clock seconds

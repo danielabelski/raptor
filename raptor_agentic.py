@@ -1106,18 +1106,17 @@ def _build_completion_manifest(orch_meta, import_result, import_sarif_files,
 # AUDIT POST-PASS (opt-in via --gap-audit)
 # ============================================================================
 
-def _discover_codeql_db(out_dir: Path) -> str | None:
-    """Path of the single successfully-created CodeQL database from
-    this run's codeql phase, or None.
+def _discover_codeql_dbs(out_dir: Path) -> list:
+    """Successfully-created CodeQL database paths from this run's
+    codeql phase (one per language).
 
-    ``raptor-audit run`` takes exactly one ``--codeql-db``; when the
-    scan phase built databases for multiple languages there is no
-    principled single choice, so the post-pass proceeds without one
-    (the audit's own SARIF corroboration still sees the scan results).
+    ``raptor-audit run`` takes ``--codeql-db`` repeatably and routes
+    per-function dispatch by the file's language, so every database
+    the scan phase built is handed over.
     """
     report = load_json(out_dir / "codeql" / "codeql_report.json")
     if not isinstance(report, dict):
-        return None
+        return []
     dbs = []
     for result in (report.get("databases_created") or {}).values():
         if not isinstance(result, dict):
@@ -1125,14 +1124,7 @@ def _discover_codeql_db(out_dir: Path) -> str | None:
         db_path = result.get("database_path")
         if db_path and result.get("success", True) and Path(db_path).is_dir():
             dbs.append(db_path)
-    if len(dbs) == 1:
-        return dbs[0]
-    if len(dbs) > 1:
-        logger.info(
-            "audit post-pass: %d CodeQL databases exist — proceeding "
-            "without --codeql-db (no single choice)", len(dbs),
-        )
-    return None
+    return dbs
 
 
 def _build_audit_postpass_cmd(
@@ -1189,8 +1181,7 @@ def _build_audit_postpass_cmd(
         cmd.append("--binary-auto")
     if getattr(args, "no_binary_oracle", False):
         cmd.append("--no-binary-oracle")
-    codeql_db = _discover_codeql_db(agentic_out)
-    if codeql_db:
+    for codeql_db in _discover_codeql_dbs(agentic_out):
         cmd += ["--codeql-db", codeql_db]
     return cmd
 

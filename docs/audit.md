@@ -44,7 +44,7 @@ full flag table.
 | `--budget <N>` | Maximum functions to review (default: all gaps) |
 | `--scope <dir>` | Restrict to a subdirectory (repeatable; successive scoped runs accumulate) |
 | `--out <dir>` | Output directory |
-| `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep |
+| `--codeql-db <path>` | CodeQL database for query dispatch and pre-sweep (repeatable — one per language; dispatch routes by file language) |
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
 | `--deepen-reserve <fraction>` | Slice of `--max-cost` held back for the deepen phase so announced re-reviews can execute (default 0.15; 0 disables) |
 | `--max-time <seconds>` | Wall-clock time limit |

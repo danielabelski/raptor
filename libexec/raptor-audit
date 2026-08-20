@@ -1303,7 +1303,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         binary_verdicts=binary_verdicts,
         inventory=checklist_data,
         annotations_dir=Path(args.annotations_dir) if args.annotations_dir else None,
-        codeql_db_path=args.codeql_db,
+        codeql_db_path=(args.codeql_db[0] if args.codeql_db else None),
+        codeql_db_paths=args.codeql_db,
         threat_model=threat_model,
         on_progress=on_progress,
         # Tri-state: explicit negative > explicit positive > None
@@ -1816,6 +1817,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
             if run_cfg.get("annotations_dir") else None
         ),
         codeql_db_path=run_cfg.get("codeql_db_path"),
+        codeql_db_paths=(
+            run_cfg.get("codeql_db_paths")
+            or ([run_cfg["codeql_db_path"]]
+                if run_cfg.get("codeql_db_path") else None)
+        ),
         threat_model=threat_model,
         on_progress=on_progress,
         dynamic_validation=(
@@ -1925,7 +1931,8 @@ def _run_config_from_args(
         "validate": not args.no_validate,
         "no_binary_oracle": bool(getattr(args, "no_binary_oracle", False)),
         "annotations_dir": args.annotations_dir,
-        "codeql_db_path": args.codeql_db,
+        "codeql_db_path": (args.codeql_db[0] if args.codeql_db else None),
+        "codeql_db_paths": args.codeql_db,
         "dynamic": args.dynamic,
         "no_dynamic": args.no_dynamic,
         "verdict_reuse": not args.no_verdict_reuse,
@@ -2155,8 +2162,13 @@ def main() -> int:
                        help="Enable adversarial reviewer for positive verdicts")
     p_run.add_argument("--max-propagation-depth", type=int, default=None,
                        help="Override adaptive constraint propagation depth")
-    p_run.add_argument("--codeql-db", default=None,
-                       help="Path to CodeQL database for query dispatch")
+    p_run.add_argument("--codeql-db", action="append", default=None,
+                       metavar="PATH",
+                       help="CodeQL database for query dispatch and "
+                            "the pre-sweep. Repeatable — one per "
+                            "language for multi-language targets; "
+                            "per-function dispatch routes by the "
+                            "file's language")
     p_run.add_argument("--max-cost", type=float, default=None,
                        help="Maximum cost in USD before stopping")
     p_run.add_argument("--deepen-reserve", type=float, default=None,

@@ -20,7 +20,7 @@ from core.json import save_json
 from raptor_agentic import (
     _audit_run_status,
     _build_audit_postpass_cmd,
-    _discover_codeql_db,
+    _discover_codeql_dbs,
     run_audit_postpass,
 )
 
@@ -118,7 +118,7 @@ class TestBuildCmd:
         assert "--no-binary-oracle" in cmd
 
 
-class TestDiscoverCodeqlDb:
+class TestDiscoverCodeqlDbs:
     def _report(self, out_dir: Path, dbs: dict) -> None:
         (out_dir / "codeql").mkdir(parents=True, exist_ok=True)
         save_json(out_dir / "codeql" / "codeql_report.json",
@@ -130,9 +130,9 @@ class TestDiscoverCodeqlDb:
         self._report(tmp_path, {
             "python": {"success": True, "database_path": str(db)},
         })
-        assert _discover_codeql_db(tmp_path) == str(db)
+        assert _discover_codeql_dbs(tmp_path) == [str(db)]
 
-    def test_multiple_databases_yield_none(self, tmp_path):
+    def test_multiple_databases_all_returned(self, tmp_path):
         db1 = tmp_path / "db-python"
         db2 = tmp_path / "db-cpp"
         db1.mkdir()
@@ -141,7 +141,7 @@ class TestDiscoverCodeqlDb:
             "python": {"success": True, "database_path": str(db1)},
             "cpp": {"success": True, "database_path": str(db2)},
         })
-        assert _discover_codeql_db(tmp_path) is None
+        assert set(_discover_codeql_dbs(tmp_path)) == {str(db1), str(db2)}
 
     def test_failed_or_missing_databases_ignored(self, tmp_path):
         db = tmp_path / "db-python"
@@ -153,10 +153,10 @@ class TestDiscoverCodeqlDb:
             "go": {"success": True,
                    "database_path": str(tmp_path / "gone")},
         })
-        assert _discover_codeql_db(tmp_path) == str(db)
+        assert _discover_codeql_dbs(tmp_path) == [str(db)]
 
-    def test_no_report_yields_none(self, tmp_path):
-        assert _discover_codeql_db(tmp_path) is None
+    def test_no_report_yields_empty(self, tmp_path):
+        assert _discover_codeql_dbs(tmp_path) == []
 
 
 class TestRunStatus:

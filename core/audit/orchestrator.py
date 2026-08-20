@@ -410,6 +410,13 @@ class OrchestratorConfig:
     no_binary_oracle: bool = False
     inventory: dict[str, Any] | None = None
     codeql_db_path: str | None = None
+    # Repeatable ``--codeql-db``: one database per language for
+    # multi-language targets. Normalised at run start into
+    # ``codeql_db_router`` (see core.audit.codeql_dbs); after
+    # normalisation ``codeql_db_path`` holds the router's primary.
+    codeql_db_paths: list[str] | None = None
+    # Derived at run start (never set by callers).
+    codeql_db_router: Any | None = None
     threat_model: dict[str, Any] | None = None
     validate: bool = True
     prefilter: bool = True
@@ -1079,6 +1086,19 @@ def run_orchestrator(
     # INFO line per disabled gate; clears annotations_dir when
     # annotation reads are off).
     _apply_profile_gates(config)
+
+    # CodeQL database routing: normalise the single-path and
+    # multi-path config fields into one router. Per-function dispatch
+    # goes through _codeql_db_for (language match on multi-database
+    # runs); single-database consumers (IRIS runner, capability flag)
+    # read config.codeql_db_path, which becomes the router's primary.
+    from .codeql_dbs import CodeqlDbRouter
+    config.codeql_db_router = CodeqlDbRouter(
+        config.codeql_db_paths
+        or ([config.codeql_db_path] if config.codeql_db_path else []),
+    )
+    config.codeql_db_paths = config.codeql_db_router.paths or None
+    config.codeql_db_path = config.codeql_db_router.primary
 
     # Reset per-run shutdown state BEFORE installing the handler (see
     # _reset_shutdown_state): a prior in-process run's stop request or
@@ -3167,8 +3187,12 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         except Exception:
             logger.debug("baseline pre-scan failed", exc_info=True)
 
-    if config.codeql_db_path and not sarif_cache:
-        _codeql_pre_sweep_raw(config.codeql_db_path, config.out_dir, sarif_cache)
+    if config.codeql_db_paths and not sarif_cache:
+        # One suite per database; run_suite writes per-language SARIF
+        # (codeql_<language>.sarif), so multi-database runs don't
+        # clobber each other's output.
+        for _db in config.codeql_db_paths:
+            _codeql_pre_sweep_raw(_db, config.out_dir, sarif_cache)
 
     sarif_clean_files: set[str] = set()
     if sarif_cache:
@@ -5781,6 +5805,7 @@ def _run_audit_body(
             operator_override=config.max_propagation_depth,
         ),
         codeql_db_path=config.codeql_db_path,
+        codeql_db_for=(lambda f: _codeql_db_for(config, f)),
         target_path=config.target_path,
         binary_verdicts=config.binary_verdicts,
         inventory=config.inventory,
@@ -8704,6 +8729,18 @@ def _merge_stale(
     except Exception:
         logger.warning("stale detection failed", exc_info=True)
     return gaps
+
+
+def _codeql_db_for(config, file_path):
+    """CodeQL database for ``file_path`` via the run's router.
+
+    Falls back to the single configured path when the router is absent
+    (unit tests driving internals without run_orchestrator's
+    normalisation)."""
+    router = getattr(config, "codeql_db_router", None)
+    if router is not None:
+        return router.for_file(file_path)
+    return config.codeql_db_path
 
 
 #: Newest-first cap on prior finding-grade claims kept per function —
@@ -14826,7 +14863,8 @@ def _run_tool_chain(
                     )
 
             elif tool_type == "codeql":
-                if not config.codeql_db_path:
+                _tool_db = _codeql_db_for(config, file_path)
+                if not _tool_db:
                     # Startup already recorded this degradation
                     # (codeql → semgrep taint mode); honour it at
                     # dispatch instead of erroring at run time — the
@@ -14847,7 +14885,7 @@ def _run_tool_chain(
                     file_path=file_path,
                     function_name=function_name,
                     query_path=tool_cfg["query"],
-                    database_path=config.codeql_db_path,
+                    database_path=_tool_db,
                     line_start=line_start,
                     line_end=_checklist_line_end(
                         config, file_path, function_name)
@@ -15359,7 +15397,8 @@ def _sweep_validate(
 
     # CodeQL bespoke dataflow validation (when LLM claims a source→sink
     # flow and no standard tool confirmed it)
-    if not is_binary and config.codeql_db_path and "codeql" not in dispatched:
+    _outcome_db = _codeql_db_for(config, outcome.file)
+    if not is_binary and _outcome_db and "codeql" not in dispatched:
         try:
             from .codeql_validation import (
                 extract_claims_from_review,
@@ -15370,7 +15409,7 @@ def _sweep_validate(
             for claim in claims:
                 vr = validate_dataflow_claim(
                     claim,
-                    db_path=Path(config.codeql_db_path),
+                    db_path=Path(_outcome_db),
                     target_path=config.target_path,
                 )
                 if vr.smt_pruned and tier_counters:
@@ -15655,7 +15694,8 @@ def _proactive_validate(
             elif tier_counters:
                 _increment_tier_dict(tier_counters, "joern", "refuted")
 
-    if _has_cwe_dispatch and "codeql" not in dispatched and config.codeql_db_path:
+    _cwe_db = _codeql_db_for(config, outcome.file)
+    if _has_cwe_dispatch and "codeql" not in dispatched and _cwe_db:
         sinks = sinks_for_cwe(cwe)
         if sinks:
             try:
@@ -15668,7 +15708,7 @@ def _proactive_validate(
                         file_path=outcome.file,
                         function_name=outcome.function,
                         query_path=f"cwe-{cwe.lower()}-{sink}",
-                        database_path=config.codeql_db_path,
+                        database_path=_cwe_db,
                         line_start=outcome.line,
                         line_end=outcome.line + 50 if outcome.line else 0,
                     )

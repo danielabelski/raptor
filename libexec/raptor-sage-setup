@@ -751,17 +751,15 @@ smoke_test_mcp() {
     fi
 }
 
-capture_boot_payload() {
-    # Fetch the two instruction surfaces the SAGE server injects into
-    # agents at connection time: the MCP initialize `instructions`
-    # field and the sage_inception result message. These are prompt
-    # surfaces — an agent cannot otherwise distinguish them from
-    # untrusted runtime text, so authorize_boot_payload records them
-    # for core/sage/CLAUDE.md's trust declaration to point at.
-    # The payload text is state-dependent (first connection returns an
-    # "Auto-Inception" variant with boot safeguards; later connections
-    # a shorter "Auto-Connect" variant) — whichever the server emits
-    # NOW is what gets recorded.
+run_boot_probe() {
+    # One capture probe against the live server; raw newline-delimited
+    # JSON on stdout. RAPTOR_SAGE_BOOT_CAPTURE=1 takes the wrapper's
+    # sanctioned guard bypass: the guard strips both instruction
+    # surfaces when no stamp exists yet, so the very capture that
+    # CREATES the stamp must not run through enforcement — it would
+    # record the guard's own warning text and every real session would
+    # mismatch forever. Agent sessions can never set this variable
+    # (Claude Code spawns the wrapper with its own environment).
     local timeout_cmd=""
     if command -v timeout >/dev/null 2>&1; then
         timeout_cmd="timeout 15"
@@ -772,10 +770,55 @@ capture_boot_payload() {
         '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"raptor-sage-setup","version":"1.0.0"}}}' \
         '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sage_inception","arguments":{}}}' \
-        | CLAUDECODE=1 $timeout_cmd "$MCP_WRAPPER" 2>/dev/null \
-        | jq -r 'if .id == 1 then "### initialize.instructions\n" + (.result.instructions // "")
-                 elif .id == 2 then "### sage_inception.message\n" + ((try (.result.content[0].text | fromjson | .message) catch "") // "")
-                 else empty end'
+        | CLAUDECODE=1 RAPTOR_SAGE_BOOT_CAPTURE=1 $timeout_cmd "$MCP_WRAPPER" 2>/dev/null
+}
+
+capture_boot_payload() {
+    # Record the instruction surfaces the SAGE server injects into
+    # agents at connection time, in the v2 stamp format the MCP guard
+    # enforces:
+    #   ### initialize.instructions        first probe's text (v1
+    #                                      compat + human readability)
+    #   ### initialize.instructions.json   every observed variant,
+    #                                      JSON-encoded, one per line
+    #   ### sage_inception.message         first probe's message (v1
+    #                                      compat + human readability)
+    #   ### sage_inception.content         every observed variant's
+    #                                      ENTIRE result.content as
+    #                                      one JSON line
+    # The payload is state-dependent (first connection returns an
+    # "Auto-Inception" variant with boot safeguards; later connections
+    # a shorter "Auto-Connect" variant), so TWO probes run and both
+    # variants are recorded — steady-state sessions must not warn
+    # spuriously after a fresh install. The guard compares whole
+    # content objects, closing the injected-extra-block / extra-key
+    # channels a message-only comparison left open.
+    local r1 r2
+    r1=$(run_boot_probe || true)
+    r2=$(run_boot_probe || true)
+    if [ -z "$r1" ] && [ -z "$r2" ]; then
+        return 1
+    fi
+    local init1 init2 msg1 content1 content2
+    init1=$(printf '%s\n' "$r1" | jq -r 'select(.id == 1) | .result.instructions // ""' 2>/dev/null || true)
+    init2=$(printf '%s\n' "$r2" | jq -r 'select(.id == 1) | .result.instructions // ""' 2>/dev/null || true)
+    msg1=$(printf '%s\n' "$r1" | jq -r 'select(.id == 2) | ((try (.result.content[0].text | fromjson | .message) catch "") // "")' 2>/dev/null || true)
+    content1=$(printf '%s\n' "$r1" | jq -c 'select(.id == 2) | .result.content // empty' 2>/dev/null || true)
+    content2=$(printf '%s\n' "$r2" | jq -c 'select(.id == 2) | .result.content // empty' 2>/dev/null || true)
+    printf '### initialize.instructions\n%s\n' "$init1"
+    printf '### initialize.instructions.json\n'
+    jq -cn --arg t "$init1" '$t'
+    if [ -n "$init2" ] && [ "$init2" != "$init1" ]; then
+        jq -cn --arg t "$init2" '$t'
+    fi
+    printf '### sage_inception.message\n%s\n' "$msg1"
+    printf '### sage_inception.content\n'
+    if [ -n "$content1" ]; then
+        printf '%s\n' "$content1"
+    fi
+    if [ -n "$content2" ] && [ "$content2" != "$content1" ]; then
+        printf '%s\n' "$content2"
+    fi
 }
 
 running_sage_digest() {
@@ -896,7 +939,7 @@ authorize_boot_payload() {
     echo "  Image:   $image"
     echo "  Running: $running_digest"
     echo "  SHA256:  $sha"
-    echo "  Surfaces: initialize.instructions, sage_inception.message"
+    echo "  Surfaces: initialize.instructions(+.json), sage_inception.message, sage_inception.content"
 }
 
 ensure_rowmac_key() {

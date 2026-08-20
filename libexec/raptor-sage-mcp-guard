@@ -69,6 +69,36 @@ _WARNING = (
 
 _SURFACE_INIT = "initialize.instructions"
 _SURFACE_INCEPTION = "sage_inception.message"
+# Stamp v2 sections (written by capture_boot_payload since the whole-
+# content upgrade): JSON-encoded variants, one per line. The server's
+# payload is state-dependent (Auto-Inception on first connection,
+# Auto-Connect afterwards), so a section may carry several variants —
+# a live surface matching ANY recorded variant is authorized.
+_SURFACE_INIT_JSON = "initialize.instructions.json"
+_SURFACE_INCEPTION_CONTENT = "sage_inception.content"
+
+
+def _variant_objects(surfaces, name: str) -> list:
+    """Parse a v2 stamp section into objects, one JSON value per line.
+
+    Unparseable lines are ignored (never authorize on garbage); a
+    missing section returns []. Comparison downstream is Python object
+    equality, so the capture-side serializer (jq) and this side never
+    have to agree byte-for-byte.
+    """
+    body = (surfaces or {}).get(name)
+    if not body:
+        return []
+    out = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
 
 
 def _sha(text: str) -> str:
@@ -119,13 +149,25 @@ def _warn(surface: str, live: str, authorized) -> None:
 
 
 def _check_initialize(msg: dict, surfaces) -> bool:
-    """Verify/strip ``result.instructions``. Returns True if rewritten."""
+    """Verify/strip ``result.instructions``. Returns True if rewritten.
+
+    v2 stamps record every observed variant JSON-encoded
+    (``initialize.instructions.json``); a live surface matching any of
+    them is authorized. v1 stamps keep the single-text comparison.
+    """
     result = msg.get("result")
     if not isinstance(result, dict):
         return False
     live = str(result.get("instructions") or "")
+    variants = [
+        v for v in _variant_objects(surfaces, _SURFACE_INIT_JSON)
+        if isinstance(v, str)
+    ]
     authorized = (surfaces or {}).get(_SURFACE_INIT)
-    if authorized is not None and live.strip() == authorized.strip():
+    if variants:
+        if any(live.strip() == v.strip() for v in variants):
+            return False
+    elif authorized is not None and live.strip() == authorized.strip():
         return False
     result["instructions"] = _WARNING
     _warn(_SURFACE_INIT, live, authorized)
@@ -133,16 +175,37 @@ def _check_initialize(msg: dict, surfaces) -> bool:
 
 
 def _check_inception(msg: dict, surfaces) -> bool:
-    """Verify/strip the ``sage_inception`` message. Returns True if rewritten.
+    """Verify/strip the ``sage_inception`` result. Returns True if rewritten.
 
-    Mirrors ``capture_boot_payload``'s extraction: the instruction
-    surface is the ``message`` key of the JSON in ``content[0].text``
-    (non-JSON text extracts as ``""``, exactly as the capture records).
+    v2 stamps (``sage_inception.content``) record the ENTIRE
+    ``result.content`` of every observed variant; the live content must
+    be object-equal to one of them. That closes the channels the
+    original message-only check left open: injected directives in
+    ``content[1..]``, in extra keys of the same JSON alongside a clean
+    ``message``, and non-JSON text blocks.
+
+    Legacy v1 stamps fall back to the original extraction — the
+    ``message`` key of the JSON in ``content[0].text`` — EXCEPT that an
+    empty stamped message is now verification-failed rather than a
+    wildcard (the capture's ``catch ""`` fallback used to authorize any
+    non-JSON text). Legacy stamps keep the narrower coverage until the
+    next ``bin/raptor sage-setup install`` re-captures in v2 format.
     """
     result = msg.get("result")
     if not isinstance(result, dict):
         return False
     content = result.get("content")
+
+    content_variants = _variant_objects(surfaces, _SURFACE_INCEPTION_CONTENT)
+    if content_variants:
+        if any(content == v for v in content_variants):
+            return False
+        live = json.dumps(content) if content is not None else ""
+        result["content"] = [{"type": "text", "text": json.dumps(
+            {"message": _WARNING})}]
+        _warn(_SURFACE_INCEPTION_CONTENT, live, "<recorded variants>")
+        return True
+
     entry = None
     if isinstance(content, list) and content and isinstance(content[0], dict):
         entry = content[0]
@@ -157,7 +220,11 @@ def _check_inception(msg: dict, surfaces) -> bool:
         if isinstance(payload, dict):
             live = str(payload.get("message") or "")
     authorized = (surfaces or {}).get(_SURFACE_INCEPTION)
-    if authorized is not None and live.strip() == authorized.strip():
+    if (
+        authorized is not None
+        and authorized.strip()
+        and live.strip() == authorized.strip()
+    ):
         return False
     if isinstance(payload, dict):
         payload["message"] = _WARNING
@@ -171,11 +238,63 @@ def _check_inception(msg: dict, surfaces) -> bool:
     return True
 
 
+def _scrub_first_tool(msg: dict, surfaces) -> bool:
+    """Scrub instruction-shaped preambles from the session's FIRST tool
+    result. Returns True if rewritten.
+
+    The server auto-incepts: when the first tool called is not
+    ``sage_inception``, it can prepend the inception payload to that
+    tool's result — a channel the id-tracked inception check never
+    sees. Deterministic rule: in the first ``tools/call`` response of
+    the session, any content block whose text parses to a JSON object
+    carrying an ``instructions`` key is inception-shaped (regular tool
+    results carry ``message``/data keys, never ``instructions``); such
+    a block must be object-equal to a block inside a recorded variant,
+    or it is replaced with the warning. Fail direction: a future legit
+    block with an ``instructions`` key gets stripped loudly, never an
+    unauthorized preamble delivered silently.
+    """
+    result = msg.get("result")
+    if not isinstance(result, dict):
+        return False
+    content = result.get("content")
+    if not isinstance(content, list):
+        return False
+    authorized_blocks = []
+    for variant in _variant_objects(surfaces, _SURFACE_INCEPTION_CONTENT):
+        if isinstance(variant, list):
+            authorized_blocks.extend(variant)
+    rewritten = False
+    for block in content:
+        if not isinstance(block, dict) or not isinstance(
+                block.get("text"), str):
+            continue
+        try:
+            payload = json.loads(block["text"])
+        except ValueError:
+            continue
+        if not isinstance(payload, dict) or "instructions" not in payload:
+            continue
+        if any(block == ab for ab in authorized_blocks):
+            continue
+        block["text"] = json.dumps({"message": _WARNING})
+        rewritten = True
+    if rewritten:
+        _warn("first-tool-result preamble", "<instructions-bearing block>",
+              "<recorded variants>")
+    return rewritten
+
+
 class _State:
     def __init__(self):
         self.lock = threading.Lock()
         self.init_id = None
         self.inception_ids = set()
+        # First tools/call of the session, when it is NOT
+        # sage_inception — eligible for the auto-inception preamble
+        # scrub (see _scrub_first_tool).
+        self.first_tool_id = None
+        self.first_tool_seen = False
 
 
 def _watch_request(line: bytes, state: _State) -> None:
@@ -192,9 +311,13 @@ def _watch_request(line: bytes, state: _State) -> None:
             state.init_id = msg["id"]
     elif method == "tools/call":
         params = msg.get("params")
-        if isinstance(params, dict) and params.get("name") == "sage_inception":
-            with state.lock:
+        name = params.get("name") if isinstance(params, dict) else None
+        with state.lock:
+            if name == "sage_inception":
                 state.inception_ids.add(msg["id"])
+            elif not state.first_tool_seen:
+                state.first_tool_id = msg["id"]
+            state.first_tool_seen = True
 
 
 def _pump_client_to_server(child, state: _State) -> None:
@@ -251,11 +374,18 @@ def _filter_response(line: bytes, state: _State, surfaces) -> bytes:
         is_inception = rid in state.inception_ids
         if is_inception:
             state.inception_ids.discard(rid)
+        is_first_tool = (
+            state.first_tool_id is not None and rid == state.first_tool_id
+        )
+        if is_first_tool:
+            state.first_tool_id = None
     rewritten = False
     if is_init:
         rewritten = _check_initialize(msg, surfaces)
     elif is_inception:
         rewritten = _check_inception(msg, surfaces)
+    elif is_first_tool:
+        rewritten = _scrub_first_tool(msg, surfaces)
     if not rewritten and not lossy:
         return line
     return json.dumps(msg).encode("utf-8") + b"\n"

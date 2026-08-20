@@ -60,16 +60,31 @@ if ! docker info >/dev/null 2>&1; then
     exit 3
 fi
 
+CHILD=(docker compose
+    -f "$RAPTOR_DIR/core/sage/docker-compose.yml"
+    exec -T
+    -e "SAGE_HOME=/root/.sage"
+    -e "SAGE_API_URL=http://localhost:8080"
+    -e "SAGE_PROVIDER=${SAGE_PROVIDER:-claude-code}"
+    -e "SAGE_PROJECT=${SAGE_PROJECT:-raptor}"
+    -e "SAGE_IDENTITY_PATH=${SAGE_IDENTITY_PATH:-/root/.sage/agents/raptor-claude-code/agent.key}"
+    sage
+    /usr/local/bin/sage-gui mcp)
+
+# Sanctioned capture bypass — raptor-sage-setup's capture_boot_payload
+# ONLY. The guard (correctly) strips both instruction surfaces when no
+# authorized stamp exists yet, so piping the very capture that CREATES
+# the stamp through enforcement deadlocks bootstrap: the guard's own
+# warning text gets recorded and every later session mismatches
+# forever. Reachability: Claude Code spawns this wrapper with its own
+# environment for agent sessions (.mcp.json carries no env), so a
+# normal session can never take this branch — the variable is set only
+# inside the setup's capture pipeline.
+if [ "${RAPTOR_SAGE_BOOT_CAPTURE:-}" = "1" ]; then
+    exec "${CHILD[@]}"
+fi
+
 exec python3 "$RAPTOR_DIR/libexec/raptor-sage-mcp-guard" \
     --authorized "$RAPTOR_DIR/.sage/boot-payload.authorized" \
     -- \
-    docker compose \
-    -f "$RAPTOR_DIR/core/sage/docker-compose.yml" \
-    exec -T \
-    -e "SAGE_HOME=/root/.sage" \
-    -e "SAGE_API_URL=http://localhost:8080" \
-    -e "SAGE_PROVIDER=${SAGE_PROVIDER:-claude-code}" \
-    -e "SAGE_PROJECT=${SAGE_PROJECT:-raptor}" \
-    -e "SAGE_IDENTITY_PATH=${SAGE_IDENTITY_PATH:-/root/.sage/agents/raptor-claude-code/agent.key}" \
-    sage \
-    /usr/local/bin/sage-gui mcp
+    "${CHILD[@]}"

@@ -125,6 +125,9 @@ _SANDBOX_KWARGS = frozenset({
     # is compiled into the preexec at sandbox() setup); a per-call
     # override would silently no-op.
     "degraded_net_deny",
+    # omit_proc_reads is context-level too (the read allowlist is
+    # compiled into the preexec at sandbox() setup).
+    "omit_proc_reads",
     "caller_label",
     "fake_home",
     # tool_paths is sandbox()-level (extra dirs to bind-mount in

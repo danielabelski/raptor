@@ -448,7 +448,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             require_sanitisation: bool = False,
             etc_overlay: dict | None = None,
             degraded_net_deny: bool = True,
-            loopback_unix_bridges: dict | None = None):
+            loopback_unix_bridges: dict | None = None,
+            omit_proc_reads: bool = False):
     """Context manager for sandboxed subprocess execution.
 
     Each run() call inside the context runs the target command with the
@@ -570,6 +571,21 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  a workload genuinely needs loopback TCP on a degraded
                  host and the operator accepts open egress. No effect
                  when a namespace backend is available or on macOS.
+        omit_proc_reads: (default False) Remove `/proc` from the
+                 default read allowlist computed under
+                 `restrict_reads=True`. Set by `run_untrusted()` /
+                 `run_untrusted_networked()` on hosts where the PID
+                 namespace cannot engage (no unprivileged userns) and
+                 the operator overrode the fail-closed refusal via
+                 RAPTOR_ALLOW_DEGRADED_UNTRUSTED: without a pid-ns, a
+                 compromised child in the HOST pid namespace can read
+                 `/proc/<pid>/environ` of any same-UID process — the
+                 credential-exfil channel the untrusted contract
+                 exists to close. Cost: tools that read `/proc/self/*`
+                 (ASAN, IFUNC dispatch, runtime CPU detection) fail
+                 with EACCES; extend `readable_paths=` for specific
+                 needs. Inert when `restrict_reads` is off (no read
+                 allowlist exists).
 
     Landlock activation: engaged when any of `target`, `output`, or
     `allowed_tcp_ports` is set. Default filesystem policy is read-
@@ -1431,13 +1447,19 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     # the namespace tier never engages, so run_untrusted() FAILS
     # CLOSED there instead of degrading (see
     # _require_userns_or_optin; RAPTOR_ALLOW_DEGRADED_UNTRUSTED is
-    # the explicit operator override).
+    # the explicit operator override). Under that override the
+    # whole-of-/proc grant — and with it the same-UID environ
+    # channel — is withdrawn per call via omit_proc_reads; the
+    # per-call warning at the run_untrusted entry names the tool
+    # breakage this trades for.
     effective_read_paths: list | None = None
     if restrict_reads:
         effective_read_paths = [
             "/usr", "/lib", "/lib64", "/bin", "/sbin",
             "/etc", "/proc", "/sys",
         ]
+        if omit_proc_reads:
+            effective_read_paths.remove("/proc")
         # The pid-1 shim file ONLY (not the whole libexec/ dir).
         # Without this, execvp of the shim fails with EACCES (rc=126)
         # and every run_untrusted() call under restrict_reads=True
@@ -3444,6 +3466,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         etc_overlay: dict | None = None,
         degraded_net_deny: bool = True,
         loopback_unix_bridges: dict | None = None,
+        omit_proc_reads: bool = False,
         **kwargs) -> subprocess.CompletedProcess:
     """Run a single command in a sandbox. Convenience wrapper.
 
@@ -3475,7 +3498,8 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
                  require_sanitisation=require_sanitisation,
                  etc_overlay=etc_overlay,
                  degraded_net_deny=degraded_net_deny,
-                 loopback_unix_bridges=loopback_unix_bridges) as _run:
+                 loopback_unix_bridges=loopback_unix_bridges,
+                 omit_proc_reads=omit_proc_reads) as _run:
         return _run(cmd, **kwargs)
 
 
@@ -3505,7 +3529,7 @@ def run_trusted(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return run(cmd, profile="none", **kwargs)
 
 
-def _require_userns_or_optin(entry: str) -> None:
+def _require_userns_or_optin(entry: str, restrict_reads=True) -> bool:
     """Fail closed when the untrusted-execution contract cannot hold.
 
     The contract's credential-exfil defence is the PID/user namespace:
@@ -3520,22 +3544,46 @@ def _require_userns_or_optin(entry: str) -> None:
     explicit operator acknowledgement that Landlock/seccomp-only
     containment is acceptable on this host. macOS is exempt — the
     seatbelt tier provides the isolation contract there.
+
+    Returns True when the override engaged degraded mode AND the read
+    allowlist is in force — callers then pass omit_proc_reads=True so
+    the whole-of-/proc grant (and with it the same-UID environ
+    credential channel) is withdrawn for that call. The override
+    warning fires on EVERY degraded call (deliberately not warn_once):
+    each such call runs ATTACKER-DERIVED code with a reduced contract,
+    and an operator watching a long run must see every instance, not
+    just the first. With restrict_reads=False there is no read
+    allowlist to withdraw /proc from, so the warning names the open
+    exposure instead and False is returned.
     """
     if sys.platform == "darwin":
-        return
+        return False
     if check_net_available():
-        return
+        return False
     if os.environ.get(
         "RAPTOR_ALLOW_DEGRADED_UNTRUSTED", "",
     ).strip().lower() in ("1", "true", "yes", "on"):
+        if restrict_reads is not _UNSET and not restrict_reads:
+            logger.warning(
+                "%s: unprivileged user namespaces unavailable — running "
+                "UNTRUSTED code with Landlock/seccomp-only containment "
+                "(operator override RAPTOR_ALLOW_DEGRADED_UNTRUSTED) "
+                "AND restrict_reads=False: same-UID /proc/<pid>/environ "
+                "credential reads are NOT blocked for this call.", entry,
+            )
+            return False
         logger.warning(
             "%s: unprivileged user namespaces unavailable — running "
             "UNTRUSTED code with Landlock/seccomp-only containment "
             "(operator override RAPTOR_ALLOW_DEGRADED_UNTRUSTED). "
-            "Same-UID /proc credential reads are NOT blocked in this "
-            "mode.", entry,
+            "/proc is dropped from the read allowlist for this call "
+            "so same-UID /proc/<pid>/environ credential reads stay "
+            "blocked; tools that read /proc/self/* (ASAN, IFUNC "
+            "dispatch, runtime CPU detection) may fail with EACCES — "
+            "pass readable_paths= for specific needs, or fix the "
+            "host's userns restriction.", entry,
         )
-        return
+        return True
     from .errors import SandboxSetupError
     raise SandboxSetupError(
         f"{entry}: this host cannot create unprivileged user "
@@ -3624,7 +3672,14 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
             "output= so Landlock actually engages. Pass a read-only target "
             "dir and/or a writable output dir."
         )
-    _require_userns_or_optin("run_untrusted")
+    # Fail closed on namespace-less hosts; under the explicit operator
+    # override the helper warns on EVERY call (attacker-derived code
+    # under a reduced contract) and returns True so the /proc read
+    # grant is withdrawn — keeping the same-UID environ credential
+    # channel closed. See _require_userns_or_optin.
+    _degraded_no_pidns = _require_userns_or_optin(
+        "run_untrusted", restrict_reads,
+    )
     _UNTRUSTED_ALLOWED_KWARGS = frozenset({
         "env", "cwd", "timeout", "capture_output", "text",
         "encoding", "errors",
@@ -3688,6 +3743,7 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
                readable_paths=readable_paths,
                writable_paths=writable_paths,
                fake_home=fake_home,
+               omit_proc_reads=_degraded_no_pidns,
                strict_env=True,
                strip_trust_markers=True,
                **kwargs)
@@ -3783,7 +3839,12 @@ def run_untrusted_networked(
             "the egress allowlist is mandatory; callers wanting unrestricted "
             "network should use sandbox() directly."
         )
-    _require_userns_or_optin("run_untrusted_networked")
+    # Same degraded-host handling as run_untrusted: fail closed, and
+    # under the operator override warn per call + withdraw the /proc
+    # read grant.
+    _degraded_no_pidns = _require_userns_or_optin(
+        "run_untrusted_networked", restrict_reads,
+    )
     _NETWORKED_ALLOWED_KWARGS = frozenset({
         "env", "cwd", "timeout", "capture_output", "text",
         "encoding", "errors",
@@ -3828,6 +3889,7 @@ def run_untrusted_networked(
         use_egress_proxy=True,
         proxy_hosts=list(proxy_hosts),
         allowed_tcp_ports=[443],
+        omit_proc_reads=_degraded_no_pidns,
         strict_env=True,
         strip_trust_markers=not keep_trust_markers,
         loopback_unix_bridges=loopback_unix_bridges,

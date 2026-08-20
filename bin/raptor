@@ -202,9 +202,9 @@ esac
 export RAPTOR_CALLER_DIR="$_caller_dir"
 unset _caller_dir
 export RAPTOR_DIR
-# Trust marker - libexec/ scripts refuse to run without one of
-# CLAUDECODE, _RAPTOR_TRUSTED, or RAPTOR_DIR. We've stripped env above
-# and resolved RAPTOR_DIR; mark this invocation as trusted.
+# Trust marker - libexec scripts refuse to run without one of
+# CLAUDECODE or _RAPTOR_TRUSTED. We've just stripped the env, so
+# direct invocation through this launcher is the safe path.
 export _RAPTOR_TRUSTED=1
 
 # Parse RAPTOR-specific args, collect Claude args

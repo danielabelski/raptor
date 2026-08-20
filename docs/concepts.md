@@ -152,7 +152,7 @@ add <path>`) so you do not need to pass `--binary` on every run.  See
 A finding moves through a defined sequence from discovery to verdict:
 
 ```
-scanner  →  dedup  →  prep  →  analysis (A-D)  →  validation (0-1)  →  exploit / patch
+scanner  →  dedup  →  prep  →  analysis (A-D)  →  validation (0, A-F, 1)  →  exploit / patch
 ```
 
 1. **Discovery** -- a scanner (Semgrep, CodeQL, Coccinelle) emits a SARIF
@@ -165,8 +165,8 @@ scanner  →  dedup  →  prep  →  analysis (A-D)  →  validation (0-1)  → 
 4. **Analysis (Stages A--D)** -- the LLM assesses whether the finding is real,
    reachable, and exploitable.  See [agentic](agentic.md#analysis-stages-a--d)
    for stage details.
-5. **Validation (Stages 0--1)** -- optional deeper pipeline that independently
-   proves exploitability.  See [validation](validation.md).
+5. **Validation (Stages 0, A--F, 1)** -- optional deeper pipeline that
+   independently proves exploitability.  See [validation](validation.md).
 6. **Exploit / patch** -- for findings that survive, PoC exploit code and a
    secure patch are generated.
 
@@ -324,8 +324,8 @@ RAPTOR's capabilities degrade gracefully without network access:
 
 | Component | Online | Offline |
 |-----------|--------|---------|
-| Custom rules (192 across Semgrep, Coccinelle, CodeQL) | works | works |
-| Registry Semgrep packs (~950 rules) | fetched from semgrep.dev | requires pre-cached bundle (see below) |
+| Custom rules (200+ across Semgrep, Coccinelle, CodeQL) | works | works |
+| Registry Semgrep packs | fetched from semgrep.dev | requires pre-cached bundle (see below) |
 | Analysis dispatch (Ollama) | not needed | works (free, local) |
 | Analysis dispatch (cloud LLM) | works | unavailable |
 | SCA advisory matching | fetches from OSV/KEV | unavailable |

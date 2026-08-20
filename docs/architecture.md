@@ -1,27 +1,25 @@
 # RAPTOR Modular Architecture
 
-**Updated**: 2026-08-13
+This page is developer-facing: it maps the code layout for people
+working on RAPTOR itself.  Operators should start at
+[README](README.md) and [commands](commands.md).  The directory and
+module listings here are illustrative, not exhaustive -- the tree is
+authoritative.
 
-See also: [README](README.md), [security](security.md), [sandbox](sandbox.md).
-
-
+See also: [security](security.md), [sandbox](sandbox.md).
 
 ## Table of Contents
 
 1. [Overview](#overview)
 2. [Architecture Principles](#architecture-principles)
-3. [Directory Structure](#directory-structure)
-4. [Core Layer](#core-layer)
-5. [Packages Layer](#packages-layer)
-6. [Analysis Engines](#analysis-engines)
-7. [Tiered Expertise System](#tiered-expertise-system)
-8. [Entry Points](#entry-points)
-9. [Import Patterns](#import-patterns)
-10. [Output Structure](#output-structure)
-11. [CLI Interfaces](#cli-interfaces)
-12. [Comparison with Original](#comparison-with-original)
-13. [Dependencies](#dependencies)
-14. [LLM Quality Considerations](#llm-quality-considerations)
+3. [Core Layer](#core-layer)
+4. [Packages Layer](#packages-layer)
+5. [Analysis Engines](#analysis-engines)
+6. [Tiered Expertise System](#tiered-expertise-system)
+7. [Entry Points](#entry-points)
+8. [CLI Interfaces](#cli-interfaces)
+9. [LLM Quality Considerations](#llm-quality-considerations)
+10. [Dependencies](#dependencies)
 
 
 ## Overview
@@ -37,7 +35,7 @@ bar where it needs to be regardless of who — or what — wrote the code.
 
 ### Modes
 
-The framework operates in three distinct modes:
+The framework operates in six distinct modes:
 
 1. **Source Code Analysis Mode**: Static analysis of source code using Semgrep (`raptor_agentic.py`)
 2. **Deep CodeQL Analysis Mode**: Advanced static analysis with dataflow validation (`raptor_codeql.py`)
@@ -48,7 +46,7 @@ The framework operates in three distinct modes:
 
 All modes are accessible via the unified `raptor.py` launcher or via Claude Code slash commands (`/scan`, `/agentic`, `/codeql`, `/fuzz`, `/web`, `/sca`, `/validate`, `/understand`, etc.).
 
-The modular architecture refactors the original monolithic structure into a clean, hierarchical design:
+The modular architecture refactors the original monolithic structure into a clean, hierarchical design (abridged -- `ls libexec/` and `ls core/` for the full lists):
 
 ```
 raptor/
@@ -143,6 +141,7 @@ raptor/
 │   ├── orchestration/     # Pipeline orchestration helpers
 │   ├── progress/          # Progress bar and status tracking
 │   ├── project/           # Project workspace management
+│   ├── recall/            # Detector-recall measurement harness (see recall.md)
 │   ├── reporting/         # Report generation and formatting
 │   ├── run/               # Per-run lifecycle (output dir, metadata)
 │   ├── sage/              # SAGE inception client + hooks (memory layer)
@@ -325,10 +324,10 @@ python3 packages/static-analysis/scanner.py \
 ```
 
 **Responsibilities**:
-- Run Semgrep scans with configured policy groups
+- Run Semgrep scans with configured policy groups (plus the Coccinelle
+  stage and optional CodeQL overlap -- see [static-analysis](static-analysis.md))
 - Parse and normalise SARIF outputs
 - Generate scan metrics (files scanned, findings count, severities)
-- (Future: CodeQL integration)
 
 **Outputs**:
 - `semgrep_<policy>.sarif` - SARIF 2.1.0 findings per policy group
@@ -460,7 +459,7 @@ The existing `is_exploitable`, `multi_model_analyses`, and `ruling` fields are u
 
 The step is unconditional: it is purely additive (only ever adds the `calibrated_aggregation` field), so there is no opt-out to maintain. The attach step (`_attach_calibrated_aggregation` in `orchestrator.py`) is wrapped in a `try / except` -- if D--S fails for any reason, the field is dropped, a `WARNING` is logged, and the failure is recorded under `orchestration.calibrated_aggregation.failed` in `orchestrated_report.json`.
 
-**Phase 4 (deferred, follow-up PR)**: the posterior-weighted scorecard update is *not* in this PR. `core/llm/scorecard/consensus.py` still grades dissenters against the majority vote via `record_event` on the single `multi_model_consensus` slot. The follow-up -- gated on replay-harness validation because the Phase-1a audit returned no-data -- will collapse to one consensus mode that always records *soft* credits (the legacy discrete update being the `correct=1.0, incorrect=0.0` special case), grade against the Dawid--Skene posterior (`correct_credit = p if verdict else (1-p)`), and draw its priors from `/validate` ground truth rather than the scorecard. See `core/llm/scorecard/calibrated_aggregation.py` Phase 4.
+**Phase 4 (deferred, follow-up PR)**: the posterior-weighted scorecard update is *not* in this PR. `core/llm/scorecard/consensus.py` still grades dissenters against the majority vote via `record_event` on the single `multi_model_consensus` slot. The follow-up -- gated on replay-harness validation because the Phase-1a audit returned no-data -- will collapse to one consensus mode that always records *soft* credits (the legacy discrete update being the `correct=1.0, incorrect=0.0` special case), grade against the Dawid--Skene posterior (`correct_credit = p if verdict else (1-p)`), and draw its priors from `/validate` ground truth rather than the scorecard. See `core/llm/multi_model/calibrated_aggregation.py` and `core/llm/scorecard/consensus.py`.
 
 **LLM Abstraction**:
 ```
@@ -571,7 +570,7 @@ python3 raptor.py sca --repo /path/to/code --out /path/to/output
 
 Sub-commands (`fix`, `check`, `upgrade`, `diff`, `verify`, `health`,
 `purl`, `render`, `clean-cache`, `dt-push`, `suppress`, `bump`,
-`fingerprint`, `triage`) are documented in
+`fingerprint`, `triage`, `fix-diff`) are documented in
 `.claude/commands/raptor-sca.md`. Threshold-based CI gating is exposed
 via `--fail-on-severity` / `--fail-on-kev` / `--fail-on-supply-chain` /
 `--fail-on-hygiene` flags on the main scan and on `render`.
@@ -731,7 +730,19 @@ python3 packages/web/scanner.py \
 
 **Usage**: Consumed by `packages/static-analysis/scanner.py` for Semgrep scanning
 
-**Design Rationale**: Separating analysis engines from packages allows for centralised rule management and easier rule updates without modifying package code.
+
+### `engine/coccinelle/`
+
+**Purpose**: Coccinelle semantic-patch rules for C/C++
+
+**Contents**:
+- `rules/` - `.cocci` rule files (memory safety, integer bugs, API misuse, ...)
+- `source_intel/` - Crypto API packs and source-intel rules
+- `prereqs/` - Inventory and prerequisite patches
+
+**Usage**: Consumed by `packages/coccinelle/` during `/scan` and by the audit tool chain
+
+**Design Rationale**: Separating analysis engines from packages allows for centralised rule management and easier rule updates without modifying package code.  `engine/` also carries `negative_controls/` (rule anti-fixtures) and `schemas/`.
 
 
 ## Tiered Expertise System
@@ -765,41 +776,19 @@ while providing deep expertise when needed.
 
 ## Entry Points
 
-### `raptor.py` - Main Launcher (Claude Code Integration)
+### `bin/raptor` and `raptor.py` - Launchers
 
-**Purpose**: Interactive launcher with Claude Code integration for conversational security testing
+Two distinct entry points:
 
-**Usage**:
-```bash
-# Run with Claude Code
-claude-code raptor.py
-
-# Interactive session with progressive loading
-```
-
-**Features**:
-- Claude Code integration for interactive analysis
-- Progressive loading of expert personas from `tiers/`
-- Slash command support (/scan, /fuzz, /web, /agentic, /codeql, /analyze, /exploit, /patch)
-- On-demand loading of specialised guidance
-- ASCII art and inspirational security quotes on startup
-- Session-based workflow management
-
-**Workflow**:
-1. Display banner and available commands
-2. Load appropriate persona based on user request
-3. Execute requested command (scan, fuzz, analyse, etc.)
-4. Load analysis guidance or recovery protocols as needed
-5. Provide interactive follow-up and recommendations
-
-**Key Features**:
-- Conversational interface via Claude Code
-- Context-aware persona loading (e.g., load `fuzzing_strategist.md` for /fuzz)
-- Progressive expertise loading to manage context window
-- Integration with all RAPTOR packages
-- Safe operations execute immediately, dangerous operations require confirmation
-
-**Design Rationale**: Provides a conversational, user-friendly interface for security testing workflows while leveraging Claude Code's capabilities for interactive analysis and multi-turn reasoning.
+- **`bin/raptor`** (bash) launches the interactive Claude Code session:
+  banner (`core/startup/banner.py`), progressive persona loading from
+  `tiers/`, slash-command dispatch, permission wiring.  It also routes
+  a few commands directly without Claude (`raptor project`,
+  `raptor doctor`, `raptor frida`, `raptor sage-setup`).
+- **`raptor.py`** (python) is the non-interactive unified CLI:
+  `python3 raptor.py <mode>` with modes scan, sca, binary, fuzz, web,
+  agentic, codeql, analyze, describe, doctor, frida.  Slash commands
+  dispatch into it; it manages the run lifecycle for its modes.
 
 
 ### `raptor_codeql.py` - CodeQL Workflow Orchestrator
@@ -863,8 +852,9 @@ python3 raptor_agentic.py \
 **Workflow**:
 1. **Phase 1**: Scan code with Semgrep/CodeQL (`packages/static-analysis/scanner.py`)
 2. **Phase 2**: Exploitability validation (`packages/exploitability_validation/`)
-3. **Phase 3**: Autonomous analysis (`packages/llm_analysis/agent.py`) -- full with external LLM, or prep-only when Phase 4 will orchestrate
+3. **Phase 3**: Autonomous analysis (`packages/llm_analysis/agent.py`) -- full with external LLM, or prep-only when Phase 4 will orchestrate (`--sequential` keeps everything in Phase 3)
 4. **Phase 4**: Orchestration (`packages/llm_analysis/orchestrator.py`) -- dispatches claude -p sub-agents when no external LLM configured
+5. **Phase 5**: Fuzzing integration (dynamic confirmation, with `--fuzz`)
 
 **Outputs**:
 - `raptor_agentic_report.json` - End-to-end summary

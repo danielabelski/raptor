@@ -178,6 +178,8 @@ python3 raptor.py fuzz --binary <path> [flags]
 | `--use-showmap` | Run `afl-showmap` after fuzzing for coverage analysis |
 | `--export-seed-corpus <dir>` | Export RAPTOR's built-in seed corpus to a directory and exit |
 | `--seed-profile <name>` | Select a built-in seed corpus profile (default: `default`) |
+| `--from-smt-witness <dir>` | Synthesize AFL seeds and dictionary tokens from an audit/validate run's SMT witnesses |
+| `--prepare-corpus` / `--seed-out <dir>` / `--seed-max-size <n>` / `--seed-include-lockfiles` | Build a seed corpus from the target repo without fuzzing |
 
 ### Goal options
 
@@ -370,5 +372,9 @@ out/fuzz_<binary>_<timestamp>/
       crash_*_exploit.c       -- Generated exploit PoCs
   witnesses/                  -- Crash Witness objects
   binary-context-map.json     -- radare2 binary analysis (when enabled)
+  coverage-fuzz.json          -- Function-precise runtime coverage record
+                                 (gcov-instrumented targets; reaches the
+                                 durable coverage store as reachability
+                                 evidence — never counts as review)
   fuzzing_report.json         -- Campaign summary report
 ```

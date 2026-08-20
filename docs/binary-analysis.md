@@ -33,8 +33,8 @@ PE) and builds a structured evidence layer without requiring source code.
 | `harness <run-dir>` | Turn a recovered ingress candidate into a harness plan. Emits source only when the ABI contract is explicit. |
 | `fuzz <binary>` | Hand off to the `/fuzz` orchestrator for crash witnesses. |
 | `graph <run-dir>` | Query the persistent binary graph (SQLite). |
-| `report <run-dir>` | Regenerate the human-readable report from an existing run. |
-| `handoff <run-dir>` | Regenerate the validation handoff record. |
+| `report <run-dir>` | Print the investigation report from an existing run (the map report when no investigation exists). |
+| `handoff <run-dir>` | Print the validation handoff JSON. |
 | `diagram <run-dir>` | Render Mermaid diagrams from a binary run's JSON outputs. |
 
 ### Usage and Flags
@@ -279,6 +279,11 @@ auto-detection. This defends against:
 
 The operator can bypass this via explicit `--binary <path>` when they
 have verified provenance.
+
+The gate runs *before* any parsing: tracked binaries are filtered out
+ahead of the DWARF probe, non-ELF candidates are rejected on the magic
+bytes, and the probe itself runs inside the sandbox -- a planted binary
+is never parsed at all.
 
 ### Source-Coverage Floor
 

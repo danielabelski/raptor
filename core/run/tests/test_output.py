@@ -113,7 +113,34 @@ class TestTargetMismatch(unittest.TestCase):
                     get_output_dir("scan", target_path=other)
                 self.assertIn("outside project", str(ctx.exception))
                 self.assertIn("/project create", str(ctx.exception))
+                # Remediation must activate the new project (the old
+                # text said create-then-'use none', which changed
+                # nothing) and offer the standalone escape hatch.
+                self.assertIn("/project use <name>", str(ctx.exception))
                 self.assertIn("/project use none", str(ctx.exception))
+
+    def test_url_target_skips_check(self):
+        """/web targets are URLs, not paths — never a mismatch."""
+        with TemporaryDirectory() as d:
+            with _mock_project(d):
+                get_output_dir("web", target_path="https://example.com")
+                get_output_dir("web", target_path="http://10.0.0.1:8080/x")
+
+    def test_fuzz_out_of_tree_binary_warns_not_raises(self):
+        """Fuzz binaries routinely live outside the source tree."""
+        with TemporaryDirectory() as d:
+            with _mock_project(d):
+                other = str(Path(d) / "build" / "app")
+                with self.assertLogs("core.run.output", level="WARNING") as cm:
+                    get_output_dir("fuzz", target_path=other)
+                self.assertTrue(
+                    any("outside project" in m for m in cm.output))
+
+    def test_fuzz_in_tree_binary_ok_silently(self):
+        with TemporaryDirectory() as d:
+            with _mock_project(d) as target:
+                binary = str(Path(target) / "build" / "app")
+                get_output_dir("fuzz", target_path=binary)
 
     def test_no_project_target_skips_check(self):
         with TemporaryDirectory() as d:

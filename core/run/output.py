@@ -6,6 +6,7 @@ Checks (in order): explicit --out argument, active project, default out/ dir.
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -159,7 +160,8 @@ def get_output_dir(command: str, target_name: str = "",
         # Validate target matches the project
         effective_target = target_path or os.environ.get("RAPTOR_CALLER_DIR")
         if effective_target and project_target:
-            _check_target_mismatch(effective_target, project_name, project_target)
+            _check_target_mismatch(effective_target, project_name,
+                                   project_target, command=command)
 
         # Project mode: command-YYYYMMDD-HHMMSS-pidNNNNN (hyphens throughout).
         # See unique_run_suffix() for the collision-prevention rationale.
@@ -177,9 +179,24 @@ def get_output_dir(command: str, target_name: str = "",
     return RaptorConfig.get_out_dir() / dirname
 
 
+_URL_SCHEME_RE = re.compile(r"\A[a-zA-Z][a-zA-Z0-9+.-]*://")
+
+
 def _check_target_mismatch(target_path: str, project_name: str,
-                           project_target: str) -> None:
-    """Raise TargetMismatchError if target is outside the active project's target."""
+                           project_target: str, command: str = "") -> None:
+    """Raise TargetMismatchError if target is outside the active project's target.
+
+    URL-shaped targets (``/web`` scans) are not filesystem paths —
+    resolving ``https://example.com`` against the cwd and comparing it
+    to a project directory is meaningless, so they skip the check.
+
+    ``fuzz`` targets are binaries that routinely live OUTSIDE the
+    project source tree (build dirs, installed paths, fuzzing
+    harnesses); an out-of-tree binary warns instead of raising.
+    """
+    if _URL_SCHEME_RE.match(target_path):
+        return
+
     resolved = Path(target_path).resolve()
     project_resolved = Path(project_target).resolve()
 
@@ -189,6 +206,15 @@ def _check_target_mismatch(target_path: str, project_name: str,
         return
     except ValueError:
         pass
+
+    if command == "fuzz":
+        logger.warning(
+            "fuzz target %s is outside project %s (%s) — binaries often "
+            "live out-of-tree; proceeding, but check the active project "
+            "if this is unexpected",
+            target_path, project_name, project_target,
+        )
+        return
 
     # Operator-facing error: show the paths the operator actually
     # typed, not the resolved forms. Pre-fix the message printed
@@ -202,9 +228,14 @@ def _check_target_mismatch(target_path: str, project_name: str,
     # the rewritten path, which works but reads as cargo-cult.
     # Echo the operator's strings instead; the resolved forms only
     # exist for the comparison.
+    #
+    # Remediation: pre-fix the hint said create-then-'/project use
+    # none', which leaves the just-created project inactive AND the
+    # mismatching one active — following it verbatim changed nothing.
     raise TargetMismatchError(
         f"target {target_path} is outside project {project_name} ({project_target})\n"
         f"  A project tracks one target. To analyze a different codebase:\n"
         f"    /project create <name> --target {target_path}\n"
-        f"    /project use none"
+        f"    /project use <name>\n"
+        f"  Or run without a project: /project use none"
     )

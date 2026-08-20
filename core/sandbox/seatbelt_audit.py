@@ -109,9 +109,27 @@ _SANDBOX_EXEC_FALLBACK = "/usr/bin/sandbox-exec"
 # Sandbox kext eventMessage format. Spike #4 confirmed:
 #   "Sandbox: <ProcessName>(<PID>) <verdict> <action> <path>"
 # verdict ∈ {allow, deny}; action is file-* / network-* / etc.
+# Tolerated variants beyond the spike's canonical shape:
+#   * repeat-count verdicts — the kernel coalesces repeated events as
+#     "deny(12) file-read-data ..." — matched and discarded via the
+#     optional (?:\(\d+\)) group;
+#   * process names containing spaces or parentheses ("Google Chrome
+#     Helper (Renderer)") — the name is a non-greedy (.+?) anchored by
+#     the "(<PID>) <verdict>" tail, so the LAST "(digits)" before the
+#     verdict is always the PID.
+# Pre-fix, both shapes silently failed the match and their records
+# were dropped from the audit trail.
 _LOG_LINE_RE = re.compile(
-    r"Sandbox:\s+(\S+)\((\d+)\)\s+(allow|deny)\s+(\S+)\s+(.+)$"
+    r"Sandbox:\s+(.+?)\((\d+)\)\s+(allow|deny)(?:\(\d+\))?\s+(\S+)\s+(.+)$"
 )
+
+# Parse-ratio diagnostic thresholds (see LogStreamer.stop). When at
+# least this many kext-sender lines were seen and fewer than this
+# fraction parsed into records, emit a loud "parsed M of N" warning —
+# the likely cause is a kernel eventMessage format drift that the
+# regex above no longer matches.
+_PARSE_DIAG_MIN_LINES = 10
+_PARSE_DIAG_MIN_RATIO = 0.5
 
 
 # Live-escalation: credential-path matching is shared with triage.py's
@@ -306,6 +324,12 @@ class LogStreamer:
         # terminal. One banner per distinct path per run — mirrors
         # tracer.py's per-syscall-name dedup.
         self._escalated_paths: set = set()
+        # Parse-ratio bookkeeping for the "parsed M of N kext lines"
+        # diagnostic (kernel eventMessage format drift detector).
+        # Mutated only on the reader thread; read at stop() after the
+        # reader join, so no lock needed.
+        self._kext_lines_seen = 0
+        self._kext_lines_parsed = 0
 
     def register_target_pid(self, pid: int) -> None:
         """Mark ``pid`` — and its process group, when resolvable —
@@ -651,6 +675,8 @@ class LogStreamer:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if entry.get("senderImagePath") == SANDBOX_KEXT_SENDER:
+                    self._kext_lines_seen += 1
                 record = parse_log_entry(
                     entry,
                     observe_mode=self._observe_mode,
@@ -658,6 +684,10 @@ class LogStreamer:
                 )
                 if record is None:
                     continue
+                # Counted before the scope filter: "parsed" measures
+                # regex/format health only — foreign-but-well-formed
+                # events dropped by scoping must not read as drift.
+                self._kext_lines_parsed += 1
                 if not self._record_in_scope(record):
                     # Host-wide kext event from a process outside the
                     # registered scope — a sibling sandboxed run or an
@@ -805,12 +835,32 @@ class LogStreamer:
         # zero counts — operators can distinguish it from
         # "summary file missing entirely" (streamer never even
         # constructed).
+        # Parse-ratio diagnostic: a high drop ratio on kext-sender
+        # lines means the eventMessage format drifted away from
+        # _LOG_LINE_RE — the audit trail is silently incomplete and
+        # operators must see it. Counters are stable here (reader
+        # joined or abandoned above; a straggler under-counts at
+        # worst, never crashes).
+        seen = self._kext_lines_seen
+        parsed = self._kext_lines_parsed
+        if (seen >= _PARSE_DIAG_MIN_LINES
+                and parsed < seen * _PARSE_DIAG_MIN_RATIO):
+            logger.warning(
+                "seatbelt audit: parsed %d of %d kext log lines — "
+                "the kernel Sandbox log format may have drifted from "
+                "_LOG_LINE_RE; the audit JSONL is likely incomplete",
+                parsed, seen,
+            )
         try:
             # Hold the lock across summary_record + append so the
             # snapshot read and the JSONL write are atomic with
             # respect to any reader thread still draining.
             with self._append_lock:
                 summary = self._budget.summary_record()
+                # Parse-ratio surface for operators reading the JSONL
+                # (extra keys tolerated by consumers per contract).
+                summary["kext_lines_seen"] = seen
+                summary["kext_lines_parsed"] = parsed
                 # Stamp nonce on the summary so an observe-mode
                 # parser attributes it to this run and rejects one
                 # spoofed by a target binary writing a fake summary

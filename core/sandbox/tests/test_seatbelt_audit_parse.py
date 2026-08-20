@@ -125,6 +125,105 @@ def test_parse_handles_path_with_spaces():
     assert rec["path"] == "/Users/Bob/Library/Application Support/x"
 
 
+def test_parse_repeat_count_verdict_shape():
+    """The kernel coalesces repeated events as `deny(N) <action>`.
+    Pre-fix the regex required a bare verdict and dropped these
+    records entirely."""
+    entry = _kext_entry(
+        msg="Sandbox: ls(99) deny(12) file-read-data /etc/passwd"
+    )
+    rec = seatbelt_audit.parse_log_entry(entry)
+    assert rec is not None
+    assert rec["verdict"] == "deny"
+    assert rec["syscall"] == "file-read-data"
+    assert rec["path"] == "/etc/passwd"
+    assert rec["target_pid"] == 99
+
+
+def test_parse_process_name_with_spaces():
+    """Process names with spaces are common on macOS (helper apps).
+    Pre-fix the \\S+ name arm failed the match."""
+    entry = _kext_entry(
+        msg="Sandbox: Google Chrome Helper(4242) deny file-read-data /x"
+    )
+    rec = seatbelt_audit.parse_log_entry(entry)
+    assert rec is not None
+    assert rec["process_name"] == "Google Chrome Helper"
+    assert rec["target_pid"] == 4242
+
+
+def test_parse_process_name_with_parens():
+    """Names containing parentheses must not confuse the PID capture —
+    the LAST `(digits)` before the verdict is the PID."""
+    entry = _kext_entry(
+        msg="Sandbox: Helper (Renderer)(77) allow(3) file-write-create /tmp/y"
+    )
+    rec = seatbelt_audit.parse_log_entry(entry)
+    assert rec is not None
+    assert rec["process_name"] == "Helper (Renderer)"
+    assert rec["target_pid"] == 77
+    assert rec["verdict"] == "allow"
+    assert rec["path"] == "/tmp/y"
+
+
+class _FakeLogProc:
+    """Stand-in for the `log stream` Popen: stdout is a plain list of
+    ndjson lines; terminate/wait are no-ops."""
+
+    def __init__(self, lines):
+        self.stdout = list(lines)
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_parse_ratio_diagnostic_on_high_drop(tmp_path, caplog):
+    """When most kext-sender lines fail to parse (format drift), stop()
+    must emit a 'parsed M of N' warning and stamp the counters on the
+    audit_summary record."""
+    import logging
+
+    good = json.dumps(_kext_entry(
+        msg="Sandbox: foo(1) deny file-read-data /etc/passwd"))
+    bad = json.dumps(_kext_entry(msg="Sandbox format drifted entirely"))
+    streamer = seatbelt_audit.LogStreamer(tmp_path)
+    streamer._proc = _FakeLogProc([good] + [bad] * 19)
+    streamer._read_loop()
+    with caplog.at_level(logging.WARNING,
+                         logger="core.sandbox.seatbelt_audit"):
+        streamer.stop()
+    assert any("parsed 1 of 20 kext log lines" in rec.message
+               for rec in caplog.records)
+    lines = (tmp_path / evidence_mod.AUDIT_SUBDIR
+             / seatbelt_audit.DENIALS_FILE).read_text().splitlines()
+    summary = next(json.loads(line) for line in lines
+                   if json.loads(line).get("type") == "audit_summary")
+    assert summary["kext_lines_seen"] == 20
+    assert summary["kext_lines_parsed"] == 1
+
+
+def test_parse_ratio_no_diagnostic_when_healthy(tmp_path, caplog):
+    """A healthy parse ratio must NOT trip the drift warning."""
+    import logging
+
+    good = json.dumps(_kext_entry(
+        msg="Sandbox: foo(1) deny file-read-data /etc/passwd"))
+    streamer = seatbelt_audit.LogStreamer(tmp_path)
+    streamer._proc = _FakeLogProc([good] * 20)
+    streamer._read_loop()
+    with caplog.at_level(logging.WARNING,
+                         logger="core.sandbox.seatbelt_audit"):
+        streamer.stop()
+    assert not any("kext log lines" in rec.message
+                   for rec in caplog.records)
+
+
 def test_parse_uses_entry_timestamp():
     """The kernel-supplied timestamp is preserved when present —
     important for ordering against host-side events. Falls back to

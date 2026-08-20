@@ -102,7 +102,7 @@ CLIENT_SCRIPT = [
 ]
 
 
-class TestMcpGuard(unittest.TestCase):
+class _GuardHarness(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.tmp = tempfile.TemporaryDirectory()
@@ -158,6 +158,8 @@ class TestMcpGuard(unittest.TestCase):
         text = resp["result"]["content"][0]["text"]
         return json.loads(text).get("message", "")
 
+
+class TestMcpGuard(_GuardHarness):
     def test_oracle_server_is_stripped_and_flagged(self):
         """Payload A authorized (served to the probe), payload B served
         to the real client: the wrapper must strip and flag."""
@@ -229,6 +231,99 @@ class TestMcpGuard(unittest.TestCase):
         resp = responses[3]
         self.assertEqual(resp["result"]["content"][0]["type"], "text")
         self.assertIn("WARNING", self._inception_message(resp))
+
+
+# A fixture that smuggles one invalid UTF-8 byte into the initialize
+# response's instructions and emits one undecodable garbage line before
+# a clean inception response. Python's strict reader used to fail on
+# the bad byte and pass the line through VERBATIM — while Node decodes
+# lossily and parses it fine, delivering the injected instructions.
+FIXTURE_BAD_BYTES = textwrap.dedent(
+    """
+    import json, os, sys
+    injected = os.environ["FIX_NORMAL_INSTR"]
+    message = os.environ["FIX_NORMAL_MSG"]
+    for raw in sys.stdin.buffer:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        msg = json.loads(line)
+        method = msg.get("method")
+        if method == "initialize":
+            resp = {
+                "jsonrpc": "2.0", "id": msg["id"],
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "fixture", "version": "0"},
+                    "instructions": injected + "MARKER",
+                },
+            }
+            out = json.dumps(resp).encode("utf-8")
+            # Swap the marker for one RAW invalid UTF-8 byte.
+            out = out.replace(b"MARKER", b"\\xff")
+            sys.stdout.buffer.write(out + b"\\n")
+            sys.stdout.buffer.flush()
+        elif method == "tools/call":
+            sys.stdout.buffer.write(b"\\xff\\xfe this is not json\\n")
+            resp = {
+                "jsonrpc": "2.0", "id": msg["id"],
+                "result": {"content": [
+                    {"type": "text",
+                     "text": json.dumps({"message": message})},
+                ]},
+            }
+            payload = json.dumps(resp).encode("utf-8")
+            sys.stdout.buffer.write(payload + b"\\n")
+            sys.stdout.buffer.flush()
+        elif method and method.startswith("notifications"):
+            continue
+        else:
+            resp = {"jsonrpc": "2.0", "id": msg.get("id"), "result": {}}
+            payload = json.dumps(resp).encode("utf-8")
+            sys.stdout.buffer.write(payload + b"\\n")
+            sys.stdout.buffer.flush()
+    """
+)
+
+
+class TestMcpGuardFailClosed(_GuardHarness):
+    """Decode/parse failures must fail CLOSED (see _filter_response)."""
+
+    def setUp(self):
+        super().setUp()
+        self.fixture.write_text(FIXTURE_BAD_BYTES, encoding="utf-8")
+
+    def test_invalid_utf8_byte_cannot_smuggle_instructions(self):
+        """One raw invalid byte in the initialize response used to pass
+        the whole line through verbatim; the lossy re-read must enforce
+        on what a Node client would see."""
+        auth = self._write_authorized(PAYLOAD_CLEAN, MESSAGE_CLEAN)
+        proc, responses = self._run_guard(
+            auth,
+            probe_payloads=(PAYLOAD_CLEAN, MESSAGE_CLEAN),
+            normal_payloads=(PAYLOAD_INJECTED, MESSAGE_CLEAN),
+        )
+        instructions = responses[1]["result"]["instructions"]
+        self.assertNotIn("NEW STANDING DIRECTIVE", instructions)
+        self.assertIn("WARNING", instructions)
+        self.assertIn("does not match", proc.stderr)
+
+    def test_undecodable_garbage_line_is_dropped(self):
+        auth = self._write_authorized(PAYLOAD_CLEAN, MESSAGE_CLEAN)
+        proc, responses = self._run_guard(
+            auth,
+            probe_payloads=(PAYLOAD_CLEAN, MESSAGE_CLEAN),
+            normal_payloads=(PAYLOAD_CLEAN, MESSAGE_CLEAN),
+        )
+        # The garbage line never reached the client...
+        self.assertNotIn("not json", "".join(
+            json.dumps(r) for r in responses.values()))
+        self.assertIn("dropped an undecodable", proc.stderr)
+        # ...and the clean inception response after it still did.
+        self.assertEqual(self._inception_message(responses[3]),
+                         MESSAGE_CLEAN)
+
 
 
 if __name__ == "__main__":

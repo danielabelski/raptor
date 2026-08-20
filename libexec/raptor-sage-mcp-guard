@@ -214,12 +214,36 @@ def _pump_client_to_server(child, state: _State) -> None:
 
 
 def _filter_response(line: bytes, state: _State, surfaces) -> bytes:
-    """Enforce the authorized payload on one server→client line."""
+    """Enforce the authorized payload on one server→client line.
+
+    Decode/parse failures fail CLOSED. Python decodes UTF-8 strictly
+    while Node-side MCP clients decode lossily (U+FFFD) and parse the
+    result fine — so a single invalid byte smuggled into a response
+    used to slip the whole line past enforcement verbatim. Mirror the
+    lossy reader: retry with errors="replace" and enforce on what the
+    client would actually see; when even that is not JSON, drop the
+    line entirely (the module contract is "never silent execution",
+    guard header above — an unverifiable line never reaches the
+    client). Lossily-decoded lines are always re-serialized so the
+    bytes forwarded are exactly the bytes that were verified.
+    """
+    lossy = False
     try:
         msg = json.loads(line.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        return line
+        try:
+            msg = json.loads(line.decode("utf-8", errors="replace"))
+            lossy = True
+        except ValueError:
+            sys.stderr.write(
+                f"{_PROG}: dropped an undecodable/unparseable server "
+                "line (fail-closed; enforcement cannot verify it)\n"
+            )
+            sys.stderr.flush()
+            return b""
     if not isinstance(msg, dict) or "id" not in msg or "method" in msg:
+        if lossy:
+            return json.dumps(msg).encode("utf-8") + b"\n"
         return line
     rid = msg["id"]
     with state.lock:
@@ -232,7 +256,7 @@ def _filter_response(line: bytes, state: _State, surfaces) -> bytes:
         rewritten = _check_initialize(msg, surfaces)
     elif is_inception:
         rewritten = _check_inception(msg, surfaces)
-    if not rewritten:
+    if not rewritten and not lossy:
         return line
     return json.dumps(msg).encode("utf-8") + b"\n"
 

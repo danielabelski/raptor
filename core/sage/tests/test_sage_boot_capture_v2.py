@@ -18,6 +18,7 @@ Round-2 coverage for the enforcement shim:
 
 import json
 import re
+import os
 import shutil
 import subprocess
 import sys
@@ -372,6 +373,27 @@ _FAKE_SERVER = textwrap.dedent(
 )
 
 
+
+def _jq_gate():
+    """Roundtrip tests need jq (a hard prereq of raptor-sage-setup).
+    Locally its absence skips; in CI it FAILS — jq is baked into the
+    ci-deps image, so absence there is image drift, and the deadlock
+    regression tests must never silently stop running in CI."""
+    if shutil.which("jq"):
+        return lambda f: f
+    if os.environ.get("CI") or os.environ.get("RAPTOR_CI"):
+        def _fail_wrap(f):
+            import functools
+            @functools.wraps(f)
+            def _fail(self, *a, **k):
+                self.fail("jq missing in CI - the ci-deps image must "
+                          "provide it; boot-capture roundtrip regression "
+                          "tests cannot run")
+            return _fail
+        return _fail_wrap
+    return unittest.skip("capture roundtrip needs jq")
+
+
 class TestCaptureAuthorizeGuardIntegration(_V2Harness):
     """Real capture → authorize-format stamp → real guard.
 
@@ -421,7 +443,7 @@ class TestCaptureAuthorizeGuardIntegration(_V2Harness):
         self.assertNotIn("### ", proc.stdout)
         self.assertIn("refusing to record", proc.stderr)
 
-    @unittest.skipUnless(shutil.which("jq"), "capture roundtrip needs jq")
+    @_jq_gate()
     def test_capture_records_the_real_payload_not_the_warning(self):
         proc = self._capture()
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -429,7 +451,7 @@ class TestCaptureAuthorizeGuardIntegration(_V2Harness):
         self.assertIn("### sage_inception.content", proc.stdout)
         self.assertNotIn("WARNING: stripped", proc.stdout)
 
-    @unittest.skipUnless(shutil.which("jq"), "capture roundtrip needs jq")
+    @_jq_gate()
     def test_captured_stamp_verifies_on_a_real_session(self):
         capture = self._capture()
         self.assertEqual(capture.returncode, 0, capture.stderr)

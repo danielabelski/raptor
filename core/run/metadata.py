@@ -306,6 +306,38 @@ def _contention_project_dir(output_dir: Path) -> Path | None:
     return None
 
 
+def _gate_session_alive(pid: int) -> bool:
+    """Liveness probe for the run-start contention gate ONLY.
+
+    :func:`_pid_alive` treats an unsignallable pid (EPERM) as alive —
+    conservative and correct for cleanup (skip rather than sweep), but
+    a DoS primitive for the GATE: planted sibling metadata with
+    ``session_pid=1`` reads as a live session forever, refusing every
+    start (and queueing ``--wait`` indefinitely). Here EPERM falls
+    through to the ``/proc/<pid>/comm`` cross-check, which is world-
+    readable on Linux — another operator's real claude session still
+    counts as live (contention preserved cross-user), while init or a
+    root daemon does not. Without a readable comm (non-Linux), only a
+    signallable pid is accepted: unverifiable never blocks a start.
+    """
+    if pid <= 0:
+        return False
+    signallable = True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        signallable = False
+    proc_comm = Path(f"/proc/{pid}/comm")
+    try:
+        comm = proc_comm.read_text(
+            encoding="utf-8", errors="replace").strip().lower()
+    except OSError:
+        return signallable
+    return "claude" in comm
+
+
 def _live_conflicting_run(project_dir: Path, self_dir: Path,
                           self_session_pid: int | None) -> dict | None:
     """Find a sibling run that makes a new start contention.
@@ -347,7 +379,7 @@ def _live_conflicting_run(project_dir: Path, self_dir: Path,
             continue
         if self_session_pid is not None and owner == self_session_pid:
             continue
-        if not _pid_alive(owner):
+        if not _gate_session_alive(owner):
             continue
         # Sibling metadata is FILE CONTENT another workspace user can
         # plant — terminal-sanitise every field that reaches the

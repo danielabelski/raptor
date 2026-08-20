@@ -42,7 +42,15 @@ OTHER_SESSION = 22222
 
 
 class RunContentionBase(unittest.TestCase):
-    """Temp project registry + a managed project output dir."""
+    """Temp project registry + a managed project output dir.
+
+    Liveness is patched by default (OTHER_SESSION alive, all else
+    dead) for BOTH probes — the gate's and _cleanup_abandoned's — so
+    fake siblings neither sweep nor contend for the wrong reason.
+    Set ``LIVENESS_PATCHES = False`` to exercise the real probes.
+    """
+
+    LIVENESS_PATCHES = True
 
     def setUp(self):
         self._tmp = TemporaryDirectory()
@@ -57,13 +65,17 @@ class RunContentionBase(unittest.TestCase):
 
         self._patches = [
             patch("core.project.project.PROJECTS_DIR", self.projects_dir),
-            # Liveness: OTHER_SESSION alive, everything else dead.
-            patch("core.run.metadata._pid_alive",
-                  lambda pid: pid == OTHER_SESSION),
             # We are SELF_SESSION.
             patch("core.run.metadata._get_session_pid",
                   lambda: SELF_SESSION),
         ]
+        if self.LIVENESS_PATCHES:
+            self._patches += [
+                patch("core.run.metadata._gate_session_alive",
+                      lambda pid: pid == OTHER_SESSION),
+                patch("core.run.metadata._pid_alive",
+                      lambda pid: pid == OTHER_SESSION),
+            ]
         for p in self._patches:
             p.start()
             self.addCleanup(p.stop)
@@ -210,6 +222,35 @@ class StartRunGateTest(RunContentionBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnsignallablePidGateTest(RunContentionBase):
+    """A recorded session pid we cannot signal must not read as a live
+    session: planted metadata with session_pid=1 (init — EPERM on
+    kill(0), comm is not claude) was a PERMANENT run-start DoS under
+    the cleanup-oriented probe, and --wait queued forever. Real
+    probes on purpose: _pid_alive(1) is True (EPERM = alive), so the
+    planted sibling survives _cleanup_abandoned and the GATE alone
+    must decline it."""
+
+    LIVENESS_PATCHES = False
+
+    def test_planted_init_pid_does_not_block_start(self):
+        self._write_sibling(session_pid=1)
+        out = self.project_out / "agentic_20260102_000000"
+        start_run(out, "agentic")  # must not raise
+        self.assertTrue((out / RUN_METADATA_FILE).exists())
+
+    def test_gate_probe_semantics(self):
+        from core.run.metadata import _gate_session_alive
+        self.assertFalse(_gate_session_alive(1), "init read as a session")
+        self.assertFalse(_gate_session_alive(-5))
+        self.assertFalse(_gate_session_alive(999999999))
+        # Our own (python) pid is signallable but comm isn't claude —
+        # on Linux the comm gate rejects it too.
+        import os
+        if Path(f"/proc/{os.getpid()}/comm").exists():
+            self.assertFalse(_gate_session_alive(os.getpid()))
 
 
 class HostileSiblingMetadataTest(RunContentionBase):

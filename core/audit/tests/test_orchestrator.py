@@ -2352,6 +2352,28 @@ class TestPostLoopReceiptRescue:
             "cwe": "CWE-306",
         }
 
+    def test_strong_stem_floors_without_call_overlap(
+        self, tmp_path: Path,
+    ):
+        """Reviewer used the receipt's own vocabulary (auth/mode/
+        registration) without naming the call site — still floors."""
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        outcome.hypotheses[0]["mechanism"] = (
+            "views registered unconditionally regardless of the auth mode; "
+            "under external auth modes the endpoints stay reachable"
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [self._call_site_receipt()], config,
+        )
+        assert flipped == 1
+        assert outcome.status == "suspicious"
+
     def test_matching_receipt_flips_clean_outcome(self, tmp_path: Path):
         from core.audit.orchestrator import _post_loop_receipt_rescue
         from core.audit.record import load_audit_log
@@ -2460,7 +2482,7 @@ class TestPostLoopReceiptRescue:
         ]
         assert rows[0]["gate"] == "receipt_corroborated_hypothesis"
 
-    def test_low_confidence_without_call_site_overlap_untouched(
+    def test_low_confidence_unrelated_hypothesis_untouched(
         self, tmp_path: Path,
     ):
         from core.audit.orchestrator import _post_loop_receipt_rescue
@@ -2468,7 +2490,7 @@ class TestPostLoopReceiptRescue:
         config = self._setup(tmp_path)
         outcome = self._clean_outcome(confidence="low")
         outcome.hypotheses[0]["mechanism"] = (
-            "auth mode gates some registration behaviour asymmetrically"
+            "session cookie flags are permissive on the login response"
         )
         result = OrchestratorResult()
         result.outcomes = [outcome]

@@ -19978,14 +19978,21 @@ def _receipt_corroborated_hypothesis(outcome, receipts):
             if not isinstance(h, dict):
                 continue
             mechanism = h.get("mechanism", "") or ""
-            if not (
-                _receipt_matches_mechanism(check_type, mechanism)
-                or (family_re and family_re.search(mechanism))
-            ):
-                continue
-            if not any(
+            call_overlap = any(
                 re.search(rf"\b{re.escape(c)}\b", mechanism)
                 for c in called
+            )
+            # Two corroboration routes: the check-type's own token
+            # stems in the hypothesis (strong — reviewer used the
+            # receipt's vocabulary), or the concrete call-site overlap
+            # plus the family keyword bridge (natural phrasing).
+            strong_stem = _receipt_matches_mechanism(
+                check_type, mechanism,
+            )
+            if not (
+                strong_stem
+                or (call_overlap and family_re
+                    and family_re.search(mechanism))
             ):
                 continue
             return RefutationVerdict(

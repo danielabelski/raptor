@@ -147,8 +147,19 @@ def _load_cached_index(
     # real bug — earns_suppression=False on this witness prevents
     # finding-suppression, but censorship via misattribution is still
     # within reach without this check).
+    # The field must be PRESENT and match. Accepting a record that
+    # merely omits ``binary_path`` (or carries a non-string) would let
+    # a pre-poisoned cache file bypass the collision check entirely —
+    # missing/None is a cache miss, not a pass.
     cached_path = payload.get("binary_path")
-    if isinstance(cached_path, str) and cached_path != binary_path:
+    if not isinstance(cached_path, str):
+        logger.warning(
+            "binary_oracle_edges: cache entry for %s lacks a valid "
+            "binary_path field; treating as cache miss",
+            binary_path,
+        )
+        return None
+    if cached_path != binary_path:
         logger.warning(
             "binary_oracle_edges: cache build_id collision; cached "
             "path=%s wanted=%s; treating as cache miss",

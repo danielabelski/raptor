@@ -1687,10 +1687,16 @@ def _handle_waitpid_event(
                         "allowed_tcp_ports", [])
                     if port in allowed_ports:
                         should_log = False
-                # For seccomp blocklist syscalls (ptrace, bpf, etc.)
-                # we don't filter — they're rare and ALWAYS
+                # For seccomp blocklist syscalls that still reach the
+                # tracer we don't filter — they're rare and ALWAYS
                 # would-be-blocked under enforcement, so the audit
-                # signal is exactly what the operator wants.
+                # signal is exactly what the operator wants. Note the
+                # escape-primitive subset (ptrace, process_vm_*,
+                # keyring, bpf, userfaultfd, io_uring_* — see
+                # seccomp._AUDIT_HARD_DENY_SYSCALLS) never arrives
+                # here: those keep SCMP_ACT_ERRNO even in audit mode,
+                # so the child sees EPERM instead of the tracer
+                # seeing an event.
 
             if should_log:
                 # socket()/ioctl() are blocked on specific argument

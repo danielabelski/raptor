@@ -163,6 +163,11 @@ def main():
             help="Per-run USD budget cap; pre-flight gate refuses "
                  "to start when scorecard estimate exceeds the cap",
         )
+        parser.add_argument(
+            "--wait", action="store_true",
+            help="Queue behind an in-progress run on the same project "
+                 "instead of refusing immediately",
+        )
         # `sys.argv[2:]` so the `start` subcommand isn't re-parsed.
         # On bad args argparse raises SystemExit after printing a
         # clean usage message to stderr.
@@ -181,7 +186,17 @@ def main():
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
-        start_run(out_dir, args.command, target=target_path)
+        # Run-start contention (managed project dirs only): a live run
+        # owned by another session refuses IMMEDIATELY with the holder
+        # named; --wait queues. Crashed runs (dead recorded pid) never
+        # block — see core.run.metadata._live_conflicting_run.
+        from core.project.oplock import OpLockContention
+        try:
+            start_run(out_dir, args.command, target=target_path,
+                      wait_for_project=args.wait)
+        except OpLockContention as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
 
         # Pre-flight cost gate (scorecard-derived). When
         # --max-cost-usd is set, compare against the scorecard

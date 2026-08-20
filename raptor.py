@@ -487,7 +487,19 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
             # extracted tree, not the archive file.
             target = _extract_target(args)
 
-    start_run(out_dir, command, target=target, target_identity=target_identity)
+    # Run-start contention (managed project dirs only): another
+    # session's live run refuses the start with the holder named. The
+    # pre-created (still empty) run dir is removed so a refused start
+    # leaves nothing behind.
+    from core.project.oplock import OpLockContention
+    try:
+        start_run(out_dir, command, target=target,
+                  target_identity=target_identity)
+    except OpLockContention as e:
+        with contextlib.suppress(OSError):
+            out_dir.rmdir()
+        print(f"✗ {e}", file=sys.stderr)
+        return 1
 
     # Surface the target's license at lifecycle start, BEFORE any
     # tool actually runs — operators about to use CodeQL get the

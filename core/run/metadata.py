@@ -289,10 +289,142 @@ def _metadata_lock(meta_path: Path):
         os.close(fd)
 
 
+def _contention_project_dir(output_dir: Path) -> Path | None:
+    """The directory run-start contention keys on, or ``None``.
+
+    Only managed project output dirs contend — standalone timestamped
+    runs under ``out/`` never did and still don't. Lazy import: the
+    check resolves through the project registry.
+    """
+    parent = Path(output_dir).parent
+    try:
+        from core.project.project import is_project_output_dir
+        if is_project_output_dir(parent):
+            return parent
+    except Exception:  # noqa: BLE001 — contention is a QoL gate, never
+        pass           # a reason a run can't start
+    return None
+
+
+def _live_conflicting_run(project_dir: Path, self_dir: Path,
+                          self_session_pid: int | None) -> dict | None:
+    """Find a sibling run that makes a new start contention.
+
+    A sibling contends when its metadata says ``status=running`` AND
+    its recorded ``session_pid`` is a live claude session belonging to
+    a DIFFERENT session than ours. Everything else is explicitly not
+    contention:
+
+    * dead recorded pid — a crashed run; detectable, must never block
+      forever (this is why run-in-progress lives in metadata rather
+      than a flock: the stub start/complete flow spans processes, so
+      no single process could hold a lock for the run's duration);
+    * same session — parallel runs from one session stay legal (the
+      `_cleanup_abandoned` freshness doctrine already supports them);
+    * no recorded pid (legacy metadata) — unverifiable; never block on
+      what can't be checked.
+    """
+    self_name = Path(self_dir).name
+    try:
+        children = list(Path(project_dir).iterdir())
+    except OSError:
+        return None
+    for d in children:
+        try:
+            if (not d.is_dir() or d.name.startswith((".", "_"))
+                    or d.name == self_name):
+                continue
+            meta_path = d / RUN_METADATA_FILE
+            if not meta_path.exists():
+                continue
+            meta = load_json(meta_path)
+        except OSError:
+            continue
+        if not isinstance(meta, dict) or meta.get("status") != STATUS_RUNNING:
+            continue
+        owner = meta.get("session_pid")
+        if not isinstance(owner, int) or isinstance(owner, bool):
+            continue
+        if self_session_pid is not None and owner == self_session_pid:
+            continue
+        if not _pid_alive(owner):
+            continue
+        return {
+            "pid": owner,
+            "operation": meta.get("command") or "run",
+            "since": meta.get("timestamp") or "unknown",
+            "run_dir": d.name,
+        }
+    return None
+
+
+@contextlib.contextmanager
+def _project_run_gate(project_dir: Path, output_dir: Path, command: str,
+                      session_pid: int | None, wait: bool = False):
+    """Run-start contention gate for managed project dirs.
+
+    Holds the project op lock (``.op.lock``) across the whole
+    [contention check → metadata write] window so two simultaneous
+    starts can't both pass the check; the flock guards only that
+    read-modify-write, NOT the run itself. Run-in-progress is the run
+    metadata (``status=running`` + live ``session_pid``) — see
+    ``_live_conflicting_run`` for why.
+
+    On contention: raises ``ProjectRunContention`` IMMEDIATELY (no
+    grace — a live run holds the project for minutes-to-hours, so a
+    silent retry window would just add latency to the refusal) with
+    the holder named. ``wait=True`` queues instead: poll until the
+    live run finishes or dies.
+    """
+    import time as _time
+
+    from core.project.oplock import ProjectRunContention, project_op_lock
+
+    # Re-entrant stamp: raptor.py's lifecycle wrapper start_run()s the
+    # run dir, then the child (raptor_agentic.py) start_run()s the SAME
+    # dir to enrich metadata. The second call is not a new run start —
+    # gating it against siblings could kill a run whose parent already
+    # passed the gate.
+    with contextlib.suppress(OSError):
+        own = load_json(Path(output_dir) / RUN_METADATA_FILE)
+        if isinstance(own, dict) and own.get("status") == STATUS_RUNNING:
+            yield
+            return
+
+    waiting_printed = False
+    while True:
+        with contextlib.ExitStack() as stack:
+            # Blocking flock: op-lock holders (mutations, other starts'
+            # RMW windows) are short-lived, unlike the run itself.
+            stack.enter_context(project_op_lock(
+                project_dir, f"run-start:{command}", wait=True))
+            holder = _live_conflicting_run(project_dir, output_dir,
+                                           session_pid)
+            if holder is None:
+                yield
+                return
+            if not wait:
+                raise ProjectRunContention(
+                    f"a run is already in progress on this project: "
+                    f"{holder['operation']} (session pid {holder['pid']}, "
+                    f"since {holder['since']}, run {holder['run_dir']}) — "
+                    f"let it finish or pass --wait to queue",
+                    holder,
+                )
+        if not waiting_printed:
+            import sys as _sys
+            print(f"  waiting for in-progress {holder['operation']} run "
+                  f"(session pid {holder['pid']}) to finish...",
+                  file=_sys.stderr)
+            waiting_printed = True
+        _time.sleep(2.0)
+
+
 def start_run(output_dir: Path, command: str,
               extra: dict[str, Any] | None = None,
               target: str | None = None,
-              target_identity: dict[str, Any] | None = None) -> Path:
+              target_identity: dict[str, Any] | None = None,
+              wait_for_project: bool = False) -> Path:
     """Write initial .raptor-run.json with status=running.
 
     Call this at the start of a command. Returns the output_dir (for chaining).
@@ -302,12 +434,16 @@ def start_run(output_dir: Path, command: str,
     Records the session PID so sweep can check if the session is still alive.
     Also marks any abandoned runs from the same session and command type as
     failed (handles the Esc-then-retry scenario).
+
+    In a managed project dir, a live run owned by ANOTHER session is
+    contention: raises ``core.project.oplock.ProjectRunContention``
+    immediately (``wait_for_project=True`` queues instead). Crashed
+    runs (status=running, dead recorded pid) never block.
     """
     from core.run.safe_io import safe_run_mkdir
 
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-    safe_run_mkdir(output_dir)
 
     session_pid = _get_session_pid()
 
@@ -331,47 +467,58 @@ def start_run(output_dir: Path, command: str,
     reap_stale_logs()
     reap_stale_runs(output_dir.parent)
 
-    # Seal the provenance manifest NOW, before any analysis runs. The
-    # source-control snapshot in particular must be taken here — the tree
-    # can change mid-run or after, and the only honest record of what
-    # produced this run is the state at its start. complete_run merges in
-    # end-of-run facts (models that fired, engine versions).
-    from core.run.provenance import build_start_manifest
+    with contextlib.ExitStack() as _gate:
+        # Contention gate BEFORE the run dir is created, so a refused
+        # start leaves nothing behind (the raptor.py wrapper pre-creates
+        # the dir on its own path and rmdir()s it on refusal).
+        project_dir = _contention_project_dir(output_dir)
+        if project_dir is not None:
+            _gate.enter_context(_project_run_gate(
+                project_dir, output_dir, command, session_pid,
+                wait=wait_for_project))
+        safe_run_mkdir(output_dir)
 
-    metadata = {
-        "version": 2,
-        "command": command,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "status": STATUS_RUNNING,
-        "manifest": build_start_manifest(target=target, target_identity=target_identity),
-        "extra": extra or {},
-    }
-    if session_pid is not None:
-        metadata["session_pid"] = session_pid
-        metadata["tool_pid"] = os.getppid()
-    if target:
-        metadata["target_path"] = str(target)
-    # Order: persist metadata FIRST, then mark as active.
-    #
-    # Pre-fix `set_active_run_dir(output_dir)` ran BEFORE `save_json`.
-    # If `save_json` crashed (disk full, EIO, permission flip), the
-    # "active run dir" pointer was already set to a directory with
-    # no metadata file. Subsequent sandbox-summary writes (and any
-    # other consumer that resolves "the active run") would target
-    # a directory the rest of the system can't recognise as a real
-    # run — `is_run_directory()` returns False, recovery / sweep
-    # logic doesn't see it.
-    #
-    # Persist first; mark active only on success. The original
-    # justification (sandbox calls inside `_setup_checklist_symlink`
-    # need the active dir set) still holds for those — they run
-    # AFTER the active-dir set, which now happens AFTER the
-    # metadata write, so the timing window for that case is
-    # unchanged.
-    #
-    # Lazy import to avoid circular core.sandbox load on metadata import.
-    from core.sandbox.summary import set_active_run_dir
-    save_json(output_dir / RUN_METADATA_FILE, metadata)
+        # Seal the provenance manifest NOW, before any analysis runs. The
+        # source-control snapshot in particular must be taken here — the tree
+        # can change mid-run or after, and the only honest record of what
+        # produced this run is the state at its start. complete_run merges in
+        # end-of-run facts (models that fired, engine versions).
+        from core.run.provenance import build_start_manifest
+
+        metadata = {
+            "version": 2,
+            "command": command,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": STATUS_RUNNING,
+            "manifest": build_start_manifest(target=target, target_identity=target_identity),
+            "extra": extra or {},
+        }
+        if session_pid is not None:
+            metadata["session_pid"] = session_pid
+            metadata["tool_pid"] = os.getppid()
+        if target:
+            metadata["target_path"] = str(target)
+        # Order: persist metadata FIRST, then mark as active.
+        #
+        # Pre-fix `set_active_run_dir(output_dir)` ran BEFORE `save_json`.
+        # If `save_json` crashed (disk full, EIO, permission flip), the
+        # "active run dir" pointer was already set to a directory with
+        # no metadata file. Subsequent sandbox-summary writes (and any
+        # other consumer that resolves "the active run") would target
+        # a directory the rest of the system can't recognise as a real
+        # run — `is_run_directory()` returns False, recovery / sweep
+        # logic doesn't see it.
+        #
+        # Persist first; mark active only on success. The original
+        # justification (sandbox calls inside `_setup_checklist_symlink`
+        # need the active dir set) still holds for those — they run
+        # AFTER the active-dir set, which now happens AFTER the
+        # metadata write, so the timing window for that case is
+        # unchanged.
+        #
+        # Lazy import to avoid circular core.sandbox load on metadata import.
+        from core.sandbox.summary import set_active_run_dir
+        save_json(output_dir / RUN_METADATA_FILE, metadata)
     set_active_run_dir(output_dir)
     _setup_checklist_symlink(output_dir)
     return output_dir

@@ -1728,7 +1728,12 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    start_run(out_dir, "validate", target=target)
+    from core.project.oplock import OpLockContention
+    try:
+        start_run(out_dir, "validate", target=target)
+    except OpLockContention as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Resolve + persist the sanitizer-cut mode so the per-stage
     # subprocesses reload it (review #4, PR #794). Persist only when the

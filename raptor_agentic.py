@@ -2241,6 +2241,16 @@ Examples:
         from core.run import start_run
         start_run(out_dir, "agentic", target=str(original_repo_path))
     except Exception as e:  # noqa: BLE001
+        # Run-start contention must not be swallowed like an optional
+        # metadata failure: another session's live run owns the project.
+        # (When raptor.py's lifecycle wrapper drove this run, it already
+        # stamped the dir and this start_run is a re-entrant enrich —
+        # the gate skips those, so reaching here means a DIRECT
+        # raptor_agentic.py invocation raced a live run.)
+        from core.project.oplock import OpLockContention
+        if isinstance(e, OpLockContention):
+            print(f"✗ {e}", file=sys.stderr)
+            sys.exit(1)
         logger.debug("Run metadata: %s", e)  # Optional — don't fail the pipeline
 
     logger.info("=" * 70)

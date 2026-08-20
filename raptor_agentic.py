@@ -4240,7 +4240,13 @@ Examples:
 
     extra_sections = []
     if audit_postpass.get("enabled"):
-        extra_sections.append(_build_audit_report_section(audit_postpass))
+        extra_sections.append(_build_audit_report_section(
+            audit_postpass,
+            validate_dir=(
+                postpass_result.validate_dir
+                if postpass_result and postpass_result.ran else None
+            ),
+        ))
     if threat_model_phase.get("completed"):
         extra_sections.append(_build_threat_model_report_section(threat_model_phase))
     if aggregation:
@@ -4304,9 +4310,44 @@ Examples:
             logger.debug("Failed to clean temp git dir: %s", e)
 
 
-def _build_audit_report_section(audit_phase):
-    """Render the --gap-audit post-pass outcome for the final report."""
+#: Cap on gap-audit finding rows inlined into the agentic report —
+#: the full list stays in the audit run's findings.json.
+_AUDIT_REPORT_FINDINGS_CAP = 10
+
+
+def _load_validate_outcomes(validate_dir) -> dict:
+    """``finding id → Title Case outcome`` from a validate run's
+    findings.json. Best-effort; empty when absent or unreadable."""
+    if not validate_dir:
+        return {}
+    data = load_json(Path(validate_dir) / "findings.json")
+    if isinstance(data, dict):
+        data = data.get("findings")
+    outcomes: dict = {}
+    for f in data if isinstance(data, list) else []:
+        if not isinstance(f, dict) or not f.get("id"):
+            continue
+        status = f.get("final_status") or f.get("status")
+        if not status:
+            ruling = f.get("ruling")
+            status = ruling.get("status") if isinstance(ruling, dict) else ruling
+        if status:
+            outcomes[str(f["id"])] = str(status).replace("_", " ").title()
+    return outcomes
+
+
+def _build_audit_report_section(audit_phase, validate_dir=None):
+    """Render the --gap-audit post-pass outcome for the final report.
+
+    The audit's findings live in a sibling run dir; without inlining
+    them here the main report reduces the whole pass to counts and a
+    pointer, and the operator has to open a second report to learn
+    WHAT was found. Rows come from the sibling's audit-report.json
+    (journal-verdict-corrected findings), joined with the merged
+    validate pass's per-finding outcome when one ran.
+    """
     from core.reporting import ReportSection
+    from core.security.prompt_output_sanitise import sanitise_string
 
     if not audit_phase.get("completed"):
         content = (
@@ -4325,6 +4366,65 @@ def _build_audit_report_section(audit_phase):
     ]
     if audit_phase.get("audit_dir"):
         lines.append(f"- Run directory: `{audit_phase['audit_dir']}`")
+
+    findings = []
+    if audit_phase.get("audit_dir"):
+        report = load_json(
+            Path(audit_phase["audit_dir"]) / "audit-report.json")
+        if isinstance(report, dict) and isinstance(
+                report.get("findings"), list):
+            findings = [f for f in report["findings"] if isinstance(f, dict)]
+
+    if findings:
+        severities = {}
+        for f in findings:
+            sev = str(f.get("severity") or "medium").lower()
+            severities[sev] = severities.get(sev, 0) + 1
+        roll_up = ", ".join(
+            f"{severities[s]} {s}"
+            for s in ("critical", "high", "medium", "low")
+            if s in severities
+        )
+        if roll_up:
+            lines.append(f"- Severity: {roll_up}")
+
+        outcomes = _load_validate_outcomes(validate_dir)
+        header = "| Finding | Location | Severity | Evidence |"
+        divider = "|---|---|---|---|"
+        if outcomes:
+            header += " Validation |"
+            divider += "---|"
+        lines.append("")
+        lines.append(header)
+        lines.append(divider)
+
+        def _cell(value, cap=120):
+            return sanitise_string(
+                str(value or "").strip(), max_chars=cap,
+            ).replace("|", "\\|").replace("\n", " ")
+
+        for f in findings[:_AUDIT_REPORT_FINDINGS_CAP]:
+            location = f"{f.get('file', '?')}:{f.get('function', '?')}"
+            evidence = ", ".join(
+                str(t.get("tool") or t)
+                for t in (f.get("tool_evidence") or [])[:2]
+                if t
+            ) or f.get("cwe") or f.get("vuln_type") or ""
+            row = (
+                f"| {_cell(f.get('title') or f.get('id'))} "
+                f"| `{_cell(location, cap=100)}` "
+                f"| {_cell(f.get('severity') or 'medium', cap=20)} "
+                f"| {_cell(evidence, cap=60)} |"
+            )
+            if outcomes:
+                row += f" {_cell(outcomes.get(str(f.get('id'))) or '—', cap=30)} |"
+            lines.append(row)
+        if len(findings) > _AUDIT_REPORT_FINDINGS_CAP:
+            lines.append(
+                f"\n{len(findings) - _AUDIT_REPORT_FINDINGS_CAP} more in "
+                f"`{audit_phase.get('audit_dir')}/findings.json`."
+            )
+
     return ReportSection(
         title="Gap Audit Post-Pass",
         content="\n".join(lines),

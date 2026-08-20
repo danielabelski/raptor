@@ -389,3 +389,81 @@ class TestGapAuditGate:
             block_cc_dispatch=False,
         )
         assert reason and "no LLM available" in reason
+
+
+class TestReportFindingsTable:
+    """The gap-audit section inlines the sibling run's findings so the
+    main report tells the whole story, not counts + a pointer."""
+
+    def _phase(self, audit_dir):
+        return {
+            "enabled": True, "completed": True, "reviewed": 5,
+            "findings_count": 2, "suspicious": 0, "clean": 3,
+            "dormant": 0, "gaps_remaining": 1,
+            "audit_dir": str(audit_dir),
+        }
+
+    def _audit_report(self, audit_dir, findings):
+        save_json(audit_dir / "audit-report.json", {
+            "stats": {"reviewed": 5}, "findings": findings,
+        })
+
+    def _finding(self, n=1, **kw):
+        base = {
+            "id": f"AUDIT-{n:03d}",
+            "file": "src/a.c",
+            "function": "f",
+            "title": "unchecked length before memcpy",
+            "severity": "high",
+            "cwe": "CWE-120",
+            "tool_evidence": [{"tool": "smt"}],
+        }
+        base.update(kw)
+        return base
+
+    def test_findings_rows_and_severity_rollup(self, tmp_path):
+        from raptor_agentic import _build_audit_report_section
+        audit_dir = tmp_path / "audit"
+        audit_dir.mkdir()
+        self._audit_report(audit_dir, [
+            self._finding(1), self._finding(2, severity="medium"),
+        ])
+        section = _build_audit_report_section(self._phase(audit_dir))
+        assert "unchecked length before memcpy" in section.content
+        assert "`src/a.c:f`" in section.content
+        assert "1 high, 1 medium" in section.content
+        assert "smt" in section.content
+
+    def test_validate_outcomes_joined(self, tmp_path):
+        from raptor_agentic import _build_audit_report_section
+        audit_dir = tmp_path / "audit"
+        audit_dir.mkdir()
+        validate_dir = tmp_path / "validate"
+        validate_dir.mkdir()
+        self._audit_report(audit_dir, [self._finding(1)])
+        save_json(validate_dir / "findings.json", {"findings": [
+            {"id": "AUDIT-001", "final_status": "confirmed"},
+        ]})
+        section = _build_audit_report_section(
+            self._phase(audit_dir), validate_dir=validate_dir,
+        )
+        assert "Validation |" in section.content
+        assert "Confirmed" in section.content
+
+    def test_truncation_names_the_full_list(self, tmp_path):
+        from raptor_agentic import _build_audit_report_section
+        audit_dir = tmp_path / "audit"
+        audit_dir.mkdir()
+        self._audit_report(
+            audit_dir, [self._finding(i) for i in range(1, 14)])
+        section = _build_audit_report_section(self._phase(audit_dir))
+        assert "3 more in" in section.content
+        assert "findings.json" in section.content
+
+    def test_missing_report_degrades_to_counts(self, tmp_path):
+        from raptor_agentic import _build_audit_report_section
+        audit_dir = tmp_path / "audit"
+        audit_dir.mkdir()
+        section = _build_audit_report_section(self._phase(audit_dir))
+        assert "Functions reviewed: **5**" in section.content
+        assert "| Finding |" not in section.content

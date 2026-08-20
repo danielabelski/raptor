@@ -1956,6 +1956,32 @@ STAGES = {
 }
 
 
+def _flag_value(args, flag):
+    """Value of ``flag`` from ``--flag value`` or ``--flag=value``.
+
+    Last occurrence wins (matching argparse). Pre-fix the walker only
+    understood the space-separated form (``--target=PATH`` was
+    silently ignored) and blindly took the next token as the value —
+    ``--target --out /d`` consumed ``--out`` as the target and NO
+    stage saw an error. Errors loudly for every stage when the value
+    is missing or looks like another flag.
+    """
+    value = None
+    n = len(args)
+    for i, a in enumerate(args):
+        if a == flag:
+            if i + 1 >= n or args[i + 1].startswith("-"):
+                print(f"ERROR: {flag} requires a value", file=sys.stderr)
+                sys.exit(1)
+            value = args[i + 1]
+        elif a.startswith(flag + "="):
+            value = a[len(flag) + 1:]
+            if not value or value.startswith("-"):
+                print(f"ERROR: {flag} requires a value", file=sys.stderr)
+                sys.exit(1)
+    return value
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] not in STAGES:
@@ -1963,23 +1989,11 @@ def main():
         sys.exit(1)
 
     stage = args[0]
-    target = None
-    explicit_out = None
-    if "--target" in args:
-        idx = args.index("--target")
-        if idx + 1 < len(args):
-            target = args[idx + 1]
-    if "--out" in args:
-        idx = args.index("--out")
-        if idx + 1 < len(args):
-            explicit_out = args[idx + 1]
+    target = _flag_value(args, "--target")
+    explicit_out = _flag_value(args, "--out")
     # Ambient harness model the agent passes (only it knows /model); stage 1
     # records it into models[]. Omitted when absent.
-    model = None
-    if "--model" in args:
-        idx = args.index("--model")
-        if idx + 1 < len(args):
-            model = args[idx + 1]
+    model = _flag_value(args, "--model")
     no_bridge = "--no-bridge" in args
     # Witness-execution gate (stage E): tri-state. None = no explicit
     # choice (project 'dynamic' trust marker decides); --no-dynamic
@@ -1989,28 +2003,16 @@ def main():
         dynamic = False
     elif "--dynamic" in args:
         dynamic = True
-    findings_path = None
-    if "--findings" in args:
-        idx = args.index("--findings")
-        if idx + 1 < len(args):
-            findings_path = args[idx + 1]
-            if not Path(findings_path).is_file():
-                print(f"ERROR: findings file not found: {findings_path}",
-                      file=sys.stderr)
-                sys.exit(1)
+    findings_path = _flag_value(args, "--findings")
+    if findings_path is not None and not Path(findings_path).is_file():
+        print(f"ERROR: findings file not found: {findings_path}",
+              file=sys.stderr)
+        sys.exit(1)
 
     # Sanitizer-cut mode (review #4, PR #794). Stage 0 resolves +
     # persists it; later stages reload it. None means "not passed".
-    sanitizer_cut_mode = None
-    if "--sanitizer-cut" in args:
-        idx = args.index("--sanitizer-cut")
-        if idx + 1 < len(args):
-            sanitizer_cut_mode = args[idx + 1]
-    sanitizer_cut_parity_log = None
-    if "--sanitizer-cut-parity-log" in args:
-        idx = args.index("--sanitizer-cut-parity-log")
-        if idx + 1 < len(args):
-            sanitizer_cut_parity_log = args[idx + 1]
+    sanitizer_cut_mode = _flag_value(args, "--sanitizer-cut")
+    sanitizer_cut_parity_log = _flag_value(args, "--sanitizer-cut-parity-log")
 
     # Stage 0 creates its own workdir
     if stage == "0":

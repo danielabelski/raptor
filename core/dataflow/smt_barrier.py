@@ -1235,38 +1235,61 @@ def _python_chain_reaches_sink(
 
     Chain growth: any Assign/AnnAssign/AugAssign between validator and
     sink whose RHS references a chain variable adds its target name(s)
-    to the chain.  Conservative w.r.t. control flow (every assignment
-    is treated as reachable) — soundness for the Tier 0 verdict still
-    rests on the SMT proof + the dominance check; this is just the
-    soundness layer that the validator's constraint applies to what
-    reaches the sink.
+    to the chain.
+
+    Chain KILL: an assignment whose target is a chain member and whose
+    RHS references NO chain member REBINDS that variable to a fresh
+    value — the validator's constraint no longer applies to it.
+    Without the kill, ``y = name; y = request.args.get('raw')`` left
+    ``y`` "validated" at the sink and the Tier 0 verdict suppressed a
+    live flow.  Assignments are processed in source order (single
+    forward pass) so a later rebind wins over earlier derivation;
+    loop-carried back-edges are not modeled, which can only SHRINK the
+    chain (fewer SOUND verdicts — the conservative direction).
+
+    Conservative w.r.t. control flow (every assignment is treated as
+    reachable) — soundness for the Tier 0 verdict still rests on the
+    SMT proof + the dominance check; this is the soundness layer that
+    the validator's constraint applies to what reaches the sink.
     """
     chain: set = {start_var}
-    # Iterate multiple passes — a derived variable assigned later might
-    # itself feed a still-later assignment.  Fixed point on a small
-    # chain is cheap (at most ~function-line-count iterations).
-    changed = True
-    while changed:
-        changed = False
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-                continue
-            node_line = getattr(node, "lineno", None) or 0
-            if not (validator_line <= node_line <= sink_line):
-                continue
-            value = node.value
-            if value is None:
-                continue
-            rhs_names = {n.id for n in ast.walk(value) if isinstance(n, ast.Name)}
-            if not (chain & rhs_names):
-                continue
-            targets = (list(node.targets) if isinstance(node, ast.Assign)
-                       else [node.target])
-            before = len(chain)
-            for t in targets:
-                _collect_target_names(t, chain)
-            if len(chain) > before:
-                changed = True
+    assigns = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign))
+        and validator_line <= (getattr(node, "lineno", None) or 0) <= sink_line
+        and node.value is not None
+    ]
+    assigns.sort(key=lambda n: (n.lineno, n.col_offset))
+    for node in assigns:
+        rhs_names = {
+            n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)
+        }
+        targets = (list(node.targets) if isinstance(node, ast.Assign)
+                   else [node.target])
+        target_names: set = set()
+        for t in targets:
+            _collect_target_names(t, target_names)
+        # The validator line's own assignment BINDS the validated
+        # value (``abs_path = safe_join(...)``, ``x = re.sub(...)``) —
+        # it must not be treated as a rebind of the start variable.
+        at_validator = node.lineno == validator_line
+        if isinstance(node, ast.AugAssign):
+            # ``x += rhs`` mixes the old value with the RHS.  It never
+            # ADDS to the chain (the old target value may be
+            # unvalidated), and it kills a chain member when the RHS
+            # references any non-chain name (the mixed-in data is not
+            # covered by the validator's constraint).
+            if rhs_names - chain and not at_validator:
+                chain -= target_names
+            continue
+        if chain & rhs_names:
+            chain |= target_names
+        elif not at_validator:
+            # Rebind from non-chain RHS: the target no longer carries
+            # the validated value.
+            chain -= target_names
+    if not chain:
+        return False
     for var in chain:
         if _re.search(rf"\b{_re.escape(var)}\b", sink_line_text):
             return True

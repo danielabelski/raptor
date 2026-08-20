@@ -15,7 +15,6 @@ import pytest
 
 from core.dataflow import smt_barrier as sb
 
-
 # ---------------------------------------------------------------------------
 # Validator extractor.
 # ---------------------------------------------------------------------------
@@ -820,6 +819,93 @@ def test_chain_does_not_grow_through_unrelated_assignment():
     assert sb._python_chain_reaches_sink(
         tree, "x", 2, 4, "    return open(y)",
     ) is False
+
+
+def test_chain_kills_rebound_variable():
+    """Rebind kill (verdict soundness): a chain member reassigned from
+    a non-chain RHS carries FRESH data — leaving it 'validated' let a
+    Tier 0 SOUND verdict suppress a live flow
+    (``y = name; y = request.args.get('raw'); open(join(base, y))``)."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def serve(request):\n"
+        "    name = request.args.get('name')\n"
+        "    if not re.match(r'^[A-Za-z0-9_]+$', name):\n"
+        "        return 'bad'\n"
+        "    y = name\n"
+        "    y = request.args.get('raw')\n"
+        "    return open(os.path.join('/data', y))\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 3, 7, "    return open(os.path.join('/data', y))",
+    ) is False
+
+
+def test_chain_kills_start_var_on_rebind():
+    """Even the validated variable itself loses its status when
+    rebound to fresh taint after the validator."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def serve(request):\n"
+        "    name = request.args.get('name')\n"
+        "    if not re.match(r'^[A-Za-z0-9_]+$', name):\n"
+        "        return 'bad'\n"
+        "    name = request.args.get('raw')\n"
+        "    return open(os.path.join('/data', name))\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 3, 6, "    return open(os.path.join('/data', name))",
+    ) is False
+
+
+def test_chain_augassign_with_taint_kills():
+    """``name += tainted`` mixes unvalidated data into the chain
+    member — the charset constraint no longer holds."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def serve(request):\n"
+        "    name = request.args.get('name')\n"
+        "    if not re.match(r'^[A-Za-z0-9_]+$', name):\n"
+        "        return 'bad'\n"
+        "    name += request.args.get('suffix')\n"
+        "    return open(os.path.join('/data', name))\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 3, 6, "    return open(os.path.join('/data', name))",
+    ) is False
+
+
+def test_chain_rebind_from_chain_member_survives():
+    """Boost value preserved: rebinding from ANOTHER chain member is
+    still the validated value."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def serve(request):\n"
+        "    name = request.args.get('name')\n"
+        "    if not re.match(r'^[A-Za-z0-9_]+$', name):\n"
+        "        return 'bad'\n"
+        "    y = name\n"
+        "    y = y.lower()\n"
+        "    return open(os.path.join('/data', y))\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 3, 7, "    return open(os.path.join('/data', y))",
+    ) is True
+
+
+def test_chain_validator_line_binding_not_killed():
+    """The validator line's own assignment binds the validated value
+    (``abs_path = safe_join(BASE, path)``) — it is a binding, not a
+    rebind."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def f(path):\n"
+        "    abs_path = safe_join(BASE, path)\n"
+        "    return open(abs_path)\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "abs_path", 2, 3, "    return open(abs_path)",
+    ) is True
 
 
 def test_try_tier0_variable_match_uses_word_boundary(tmp_path: Path):

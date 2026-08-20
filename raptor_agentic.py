@@ -1127,6 +1127,21 @@ def _discover_codeql_dbs(out_dir: Path) -> list:
     return dbs
 
 
+def _gap_audit_adversarial(args) -> bool:
+    """Whether the post-pass enables the adversarial reviewer.
+
+    Auto-enabled when two or more analysis models are configured (the
+    reviewer needs a second model to challenge positive verdicts);
+    --gap-audit-no-adversarial opts out. The decision is recorded in
+    the run report so the auto-enable's value can be measured across
+    runs instead of staying an unexamined default.
+    """
+    models = args.model or []
+    return len(models) >= 2 and not getattr(
+        args, "gap_audit_no_adversarial", False,
+    )
+
+
 def _build_audit_postpass_cmd(
     args, target: Path, audit_dir: Path, agentic_out: Path,
 ) -> list:
@@ -1171,9 +1186,7 @@ def _build_audit_postpass_cmd(
     models = args.model or []
     for model in models:
         cmd += ["--model", model]
-    if len(models) >= 2:
-        # Two or more analysis models: the adversarial reviewer that
-        # challenges positive verdicts becomes available — enable it.
+    if _gap_audit_adversarial(args):
         cmd.append("--adversarial")
     for binary in args.binary or []:
         cmd += ["--binary", str(binary)]
@@ -1311,6 +1324,15 @@ def run_audit_postpass(args, target: Path, out_dir: Path) -> dict:
             })
         except Exception:  # noqa: BLE001 — marker is best-effort
             logger.debug("pipeline-tail marker write failed", exc_info=True)
+
+        # Record the adversarial decision: on this surface every
+        # enable is the auto rule (2+ models), so the flag's value can
+        # be measured across runs rather than staying an unexamined
+        # default. adversarial_opted_out marks runs where the operator
+        # suppressed an enable the rule would have made.
+        phase["adversarial"] = _gap_audit_adversarial(args)
+        if len(args.model or []) >= 2 and not phase["adversarial"]:
+            phase["adversarial_opted_out"] = True
 
         cmd = _build_audit_postpass_cmd(args, target, audit_dir, out_dir)
         # No wall timeout here: the audit self-bounds via --max-cost /
@@ -1766,6 +1788,13 @@ Examples:
     audit_group.add_argument(
         "--gap-audit-scope", action="append", default=None, metavar="DIR",
         help="Restrict the audit post-pass to a subdirectory (repeatable)",
+    )
+    audit_group.add_argument(
+        "--gap-audit-no-adversarial", action="store_true",
+        help="Do not auto-enable the adversarial reviewer when two or "
+             "more --model values are configured. The auto-enable is "
+             "recorded in the run report either way, so its value can "
+             "be measured across runs.",
     )
     audit_group.add_argument(
         "--gap-audit-share", type=float, default=0.35, metavar="FRACTION",

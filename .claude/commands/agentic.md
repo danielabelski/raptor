@@ -41,7 +41,7 @@ By default, `/agentic` scans and analyses findings in isolation. Three optional 
 | `--validate` | After the agentic pipeline completes, runs `/validate` on findings flagged `is_exploitable: true` or `confidence: "high"`. Creates a sibling validate run; the bridge auto-discovers any `/understand` sibling produced by `--understand`. |
 | `--gap-audit` | After analysis, runs the `/audit` orchestrator over the coverage residual — functions no phase reviewed — as a sibling audit run. Inherits the run's checklist, CodeQL database, binaries, and models (2+ models enable the adversarial reviewer); the run's own per-finding analyses ride in as prior claims, never as coverage. Uses the configured external LLM (`--model` or API key); with only Claude Code available it runs on the claudecode transport, gated on the repo trust check. With `--validate`, audit findings join the same validate pass and the validation verdicts feed back into the audit journal; without it, the run ends with a loud UNVALIDATED warning. NOTE: `--audit` (no prefix) is the sandbox audit mode — a different feature. |
 
-Sub-flags for the gap audit: `--gap-audit-budget N` (max functions), `--gap-audit-strategy NAME`, `--gap-audit-scope DIR` (repeatable), `--gap-audit-share FRACTION` (slice of `--max-cost-usd` reserved up front for the audit, default 0.35).
+Sub-flags for the gap audit: `--gap-audit-budget N` (max functions), `--gap-audit-strategy NAME`, `--gap-audit-scope DIR` (repeatable), `--gap-audit-share FRACTION` (slice of `--max-cost-usd` reserved up front for the audit, default 0.35), `--gap-audit-no-adversarial` (suppress the 2+-model adversarial auto-enable; the decision is recorded in the report either way).
 
 You can use the flags independently or combine them:
 

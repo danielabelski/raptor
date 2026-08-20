@@ -32,6 +32,7 @@ def _args(**kw) -> argparse.Namespace:
         "gap_audit_strategy": None,
         "gap_audit_scope": None,
         "gap_audit_share": 0.35,
+        "gap_audit_no_adversarial": False,
         "gap_audit_reserved_cost": None,
         "max_cost_usd": None,
         "model": [],
@@ -104,6 +105,14 @@ class TestBuildCmd:
     def test_single_model_no_adversarial(self, tmp_path):
         cmd = _build_audit_postpass_cmd(
             _args(model=["model-a"]), tmp_path, tmp_path, tmp_path,
+        )
+        assert "--adversarial" not in cmd
+
+    def test_adversarial_opt_out(self, tmp_path):
+        cmd = _build_audit_postpass_cmd(
+            _args(model=["model-a", "model-b"],
+                  gap_audit_no_adversarial=True),
+            tmp_path, tmp_path, tmp_path,
         )
         assert "--adversarial" not in cmd
 
@@ -219,6 +228,8 @@ class TestRunAuditPostpass:
         assert calls["timeout"] == 0
         # The agentic checklist is provisioned for reuse.
         assert (audit_dir / "checklist.json").is_file()
+        # The adversarial decision is recorded even when off.
+        assert phase["adversarial"] is False
         # Deferred-tail marker staged for a potential later resume.
         tail = json.loads(
             (audit_dir / "pipeline-tail.json").read_text())

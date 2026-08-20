@@ -165,6 +165,7 @@ patches.
 | `--gap-audit-strategy <name>` | Restrict the gap-audit post-pass to one strategy |
 | `--gap-audit-scope <dir>` | Restrict the gap-audit post-pass to a subdirectory (repeatable) |
 | `--gap-audit-share <fraction>` | Slice of `--max-cost-usd` reserved up front for the gap audit (default 0.35) |
+| `--gap-audit-no-adversarial` | Suppress the 2+-model adversarial auto-enable in the gap audit |
 | `--fuzz` | Run [fuzzing](#fuzz) on applicable targets |
 | `--fuzz-duration <secs>` | Fuzz duration in seconds |
 | `--fuzz-corpus <path>` | Fuzz seed corpus directory |

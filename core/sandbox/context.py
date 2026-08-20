@@ -2891,6 +2891,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     env=(kwargs.get("env")
                                          if need_unshare
                                          else _env_for_target),
+                                    # Orphan-teardown parity with the
+                                    # non-audit need_unshare branch
+                                    # below: when full_cmd carries the
+                                    # pid1 shim, plumb the death pipe
+                                    # so a hard-killed orchestrator
+                                    # still cascades the pid-ns down.
+                                    install_death_fd=need_unshare,
                                     cwd=kwargs.get("cwd"),
                                     timeout=kwargs.get("timeout"),
                                     capture_output=kwargs.get(

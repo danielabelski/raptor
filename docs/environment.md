@@ -140,6 +140,7 @@ AWS credentials alone never select Bedrock.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `RAPTOR_LLM_CACHE` | on | LLM response cache kill-switch: `off`/`none`/`0`/`false`/`no` disables the cache entirely (no reads, no writes). Use when re-measuring model behaviour — cached completions replay verbatim. The corpus runner's `--no-llm-cache` sets this for the whole run. |
 | `RAPTOR_LLM_CACHE_TTL_S` | `86400` (24 h) | TTL of the on-disk LLM response cache (guards against same-name model drift). `none`/`off`/`0`/non-positive disables expiry entirely; garbled values fall back to 24 h. |
 | `RAPTOR_SCORECARD_PATH` | `out/llm_scorecard.json` | Per-model reliability scorecard location (feeds `/scorecard` and cross-model merge weights). Set by tests/sandboxed runs for isolation. |
 | `RAPTOR_SCORECARD_TEST_FLUSH` | unset | Test-harness escape hatch. Under pytest the process-exit scorecard flush is suppressed (per-test isolation is torn down before atexit; flushing would corrupt real reliability data with mock usage). Any non-empty value opts the atexit flush back in — for tests exercising that path against an isolated `RAPTOR_SCORECARD_PATH`. No effect outside pytest. |
@@ -213,11 +214,12 @@ See "Egress proxy" and "Upstream proxy support" in
 | `RAPTOR_SANITIZER_CUT` | off | Legacy env interface for the sanitizer vertex-cut gate; truthy `1`/`true`/`on`/`yes`. **Prefer the `--sanitizer-cut off\|on\|strict\|shadow` flag** on `/agentic`, `/validate`, `/codeql`; the flag always wins. The pipeline also re-exports the resolved value to its own workers (internal transport). |
 | `RAPTOR_SANITIZER_CUT_NO_LEXICAL` | off | Disables the lexical fallback (strict mode). Footgun-guarded: set without `RAPTOR_SANITIZER_CUT` it warns on stderr and is ignored — suppression never silently turns off. |
 | `RAPTOR_SANITIZER_CUT_PARITY_LOG` | off | Parity-telemetry log path; boolean-style values resolve to the default filename `sanitizer_cut_parity.jsonl` rather than creating a file named `1`. |
+| `RAPTOR_SANITIZER_CUT_AUDIT_DIR` | unset | Run directory where the value-bound gate writes its `suppressions.jsonl` audit records. Set by the pipeline for its own workers (internal transport, like the resolved `RAPTOR_SANITIZER_CUT` re-export); ignored when the gate is off. |
 | `RAPTOR_NO_PERLASM` | unset | Any non-empty value (including `0`) disables the perlasm generated-asm inventory enrichment pass (`core.inventory.perlasm`); the `PERLASM_INVENTORY` config gate disables it too. Enrichment is best-effort — failures never break the inventory build. |
 | `RAPTOR_PERLASM_CACHE_DIR` | `<repo>/.cache/perlasm` | Generated-asm cache root for the perlasm pass (build-ID-cache resolution precedent: env > default). Set to share or relocate the cache. |
 | `RAPTOR_SCAN_THIN_COVERAGE_THRESHOLD` | `25` | Minimum unique applicable Semgrep rule count below which the thin-coverage hint fires (`packages/static-analysis`). `0` disables the hint; non-integer/negative warns and uses 25. |
 | `RAPTOR_PATCH_GATE_SCOPE_SLACK` | `40` | Hunk slack (lines around the finding span) the patch gate tolerates (`packages/llm_analysis.patch_gate`). Per-call argument > env > default; malformed/negative values warn and use 40. |
-| `RAPTOR_CORPUS_HISTORY` | `~/.local/share/raptor/corpus-history.jsonl` | Path of the append-only corpus run-history store (`core.audit.corpus.history`). Each corpus run appends a run header plus per-label verdict records after results.json is finalized; a write failure warns and never fails the run. Reporting-only: the store is read exclusively by the `python3 -m core.audit.corpus.history` CLI (`runs`/`compare`/`trend`/`stability`/`import`) — nothing in the audit/corpus pipeline reads it to alter behavior. Tests must point this at a temporary path. |
+| `RAPTOR_CORPUS_HISTORY` | `~/.local/share/raptor/corpus-history.jsonl` | Path of the append-only corpus run-history store (`core.audit.corpus.history`). Each corpus run appends a run header plus per-label verdict records after results.json is finalized; a write failure warns and never fails the run. Run headers record the run's profile (`cold`/`deployed`); `compare` warns across differing profiles. Reporting-only: the read side is the `python3 -m core.audit.corpus.history` CLI (`runs`/`compare`/`trend`/`stability`/`import`) plus one post-run operator report — nothing reads it to alter behavior. Tests must point this at a temporary path. |
 
 One more knob lives in `core/build/build_detector.py` (a directory the
 inventory scanner currently skips, so prose rather than a row):
@@ -299,6 +301,11 @@ is listed as prose:
 
 Config-file path: `RAPTOR_EF_CONFIG` (chain: explicit arg >
 `RAPTOR_EF_CONFIG` > `./.raptor.json` > `~/.config/raptor/config.json`).
+
+The numeric/boolean knobs above pass through `get_safe_env()` into
+sandboxed subprocesses; the exec-path-class variables
+(`RAPTOR_EF_*_PATH`, `RAPTOR_EF_CONFIG`, `RAPTOR_EF_CACHE_DIR`) are
+deliberately scrubbed and only apply in the direct session environment.
 Historically this package read `RAPTOR_CONFIG` for the same purpose —
 that name now belongs exclusively to `core.llm`'s models config (see
 Core runtime); pointing `RAPTOR_CONFIG` at analysis settings is a
@@ -315,7 +322,7 @@ Prose and the container-side variables: [SAGE](sage.md),
 | `SAGE_URL` | `http://localhost:8090` | SAGE node base URL. |
 | `SAGE_TIMEOUT` | `30.0` | API request timeout in seconds (float); non-float or non-positive warns and uses the default. |
 | `SAGE_OLLAMA_URL` | `http://localhost:11435` | Ollama URL for the direct-embed path (CPU hosts bypassing the Go-side embed timeout). Read once at module import. |
-| `SAGE_EMBED_MODEL` | auto-detected by setup | Embedding model override — set **before running `raptor-sage-setup`** (GPU hosts auto-select `snowflake-arctic-embed:m`, CPU `nomic-embed-text`); changing it later without re-running setup desyncs client and container. |
+| `SAGE_EMBED_MODEL` | auto-detected by setup | Embedding model override — set **before running `raptor-sage-setup`** (GPU hosts auto-select `nomic-embed-text`, CPU `snowflake-arctic-embed:m`); changing it later without re-running setup desyncs client and container. |
 | `SAGE_FORCE_CPU` | unset | Pipeline hooks are disabled on CPU-only Ollama by default (fail-closed for latency); truthy forces them on. Shared toggle spellings — `0`/`false`/`no`/`off` no longer force; unrecognised values warn and leave them disabled. |
 | `SAGE_PROPOSE_DELAY_MS` | `0` | Safety-valve delay between SAGE proposes, capped at 300 000 ms; invalid values silently mean 0. Rarely needed. |
 | `SAGE_RECALL_WORKERS` | auto (4 GPU / 2 CPU) | Recall concurrency, clamped 1–8; malformed falls back to auto. |
@@ -499,6 +506,7 @@ setting them manually either does nothing or weakens a boundary.
 | `SAGE_ENABLED` | `raptor-sage-setup` | Written as `true` into `.claude/settings.local.json` so sessions enable SAGE; default `false`, truthy `true`/`1`/`yes` (fail-closed). Removed by teardown. |
 | `SAGE_IDENTITY_PATH`, `SAGE_PROJECT`, `SAGE_PROVIDER` | `raptor-sage-setup` → `.mcp.json` | Agent identity/namespace for the SAGE MCP wrapper (container-internal defaults). |
 | `SAGE_EMBED_DIM` | `raptor-sage-setup` | Compose-time embedding dimension (default 768); no Python reads it at runtime — pairs with `SAGE_EMBED_MODEL` before setup. |
+| `RAPTOR_SAGE_BOOT_CAPTURE` | `raptor-sage-setup` (boot-payload capture) | Setup-only bypass letting the capture probe talk to the SAGE MCP process directly instead of through the boot-payload guard shim. Setting it manually disables the guard's instruction-surface verification for that session. |
 
 Namespace look-alikes that are **not** environment variables: grep
 also surfaces `RAPTOR_GD_*` / `RAPTOR_FLOW_*` (Joern guard-dominance

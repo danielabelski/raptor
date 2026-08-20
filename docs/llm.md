@@ -6,8 +6,9 @@ model selection, multi-model workflows, and cost management.
 
 ## Supported Providers
 
-Seven providers are supported. RAPTOR probes for configured providers in this order
-and uses the first one found:
+Eight providers are supported. RAPTOR probes for configured providers in this order
+and uses the first one found (the resumable Claude Code variant is never
+auto-selected — pick it explicitly in `models.json`):
 
 | Provider | Auth | SDK | Default Model |
 |----------|------|-----|---------------|
@@ -18,6 +19,12 @@ and uses the first one found:
 | AWS Bedrock | `AWS_BEARER_TOKEN_BEDROCK` or SigV4 chain | `anthropic` + dispatcher | (per config) |
 | Ollama | None (local) | `openai` | auto-detected |
 | Claude Code | None (`claude` CLI on PATH) | None | (session model) |
+| Claude Code (resumable) | None (`claude` CLI on PATH) | None | (session model) |
+
+`claudecode-resumable` (`"provider": "claudecode-resumable"` in
+`models.json`) reuses one Claude Code session across calls via
+`--resume`, so turn 2+ pays near-zero input cost on long multi-turn
+workloads; a stale session resets and retries as fresh.
 
 See [dependencies](dependencies.md) for SDK installation.
 
@@ -351,9 +358,10 @@ Certain task types (`verdict_binary`, `classify`) automatically use cheaper mode
 
 ## Multi-Model Workflows
 
-The [/agentic](commands.md#agentic), [/codeql](commands.md#codeql), and
-[/analyze](commands.md#analyze) commands support multi-model configurations
-via repeatable flags:
+The [/agentic](commands.md#agentic) and [/analyze](commands.md#analyze)
+commands support multi-model configurations via repeatable flags (for
+multi-model verdicts on CodeQL findings, run `/agentic` or `/analyze`
+over the CodeQL SARIF):
 
 | Flag | Role | Description |
 |------|------|-------------|
@@ -570,8 +578,9 @@ the two transports with real failure modes need a deliberate one:
   connections under the client's proxy *mounts* (not the default
   transport pool); their `info()` strings report `HTTP/2` once a
   request has flowed.
-- **Benchmarking pitfalls:** vary prompts with a per-run nonce or the
-  LLM response cache serves repeats in ~1 ms and fakes a win; and
+- **Benchmarking pitfalls:** vary prompts with a per-run nonce — or set
+  `RAPTOR_LLM_CACHE=off` — otherwise the LLM response cache serves
+  repeats in ~1 ms and fakes a win; and
   give thinking-tier models an adequate `max_tokens` — a tiny budget
   is consumed by the thinking block and returns zero text with
   `stop_reason=max_tokens`.
@@ -602,6 +611,7 @@ behavior, and credential-isolation details — is
 | `RAPTOR_CC_MAX_WORKERS` | Claude Code subprocess concurrency cap (default 4) |
 | `RAPTOR_CC_EFFORT` / `RAPTOR_CC_FALLBACK_MODEL` | Claude Code child effort / fallback model |
 | `RAPTOR_CC_PROBE_WARM` | `0` skips the run-start probe warm |
+| `RAPTOR_LLM_CACHE` | `off` disables the LLM response cache entirely |
 | `RAPTOR_LLM_CACHE_TTL_S` | LLM response cache TTL override (default 24 h) |
 | `RAPTOR_HTTP_KEEPALIVE_S` | SDK transport idle keepalive expiry (default 60) |
 | `RAPTOR_HTTP_MAX_KEEPALIVE` | SDK transport pooled idle connections (default 20) |

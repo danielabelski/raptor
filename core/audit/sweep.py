@@ -1342,6 +1342,21 @@ def _verb_vocab(target_path: str | None):
         return _EMPTY_VOCAB
 
 
+def _negative_outcome(result) -> str:
+    """Outcome for a detector that found nothing.
+
+    A detector whose prerequisites were absent (``result.applicable``
+    is False — e.g. 'no auth checks found', 'no lock acquires found')
+    never tested the hypothesis; recording 'refuted' for that model
+    miss would clear tool confirmations on the strength of an analysis
+    that did not run.  Only an APPLIED detector that scanned its
+    pattern space and found nothing counts as a refutation.
+    """
+    if getattr(result, "applicable", True):
+        return "refuted"
+    return "inconclusive"
+
+
 def run_smt_verb_direct(
     *,
     file_path: str,
@@ -1587,7 +1602,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(auth_result),
                 rule_id=f"smt:{verb}",
                 details=auth_result.to_dict(),
             )
@@ -1609,7 +1625,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(narr_result),
                 rule_id=f"smt:{verb}",
                 details=narr_result.to_dict(),
             )
@@ -1631,7 +1648,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(lock_result),
                 rule_id=f"smt:{verb}",
                 details=lock_result.to_dict(),
             )
@@ -1653,7 +1671,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(null_result),
                 rule_id=f"smt:{verb}",
                 details=null_result.to_dict(),
             )
@@ -1675,7 +1694,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(leak_result),
                 rule_id=f"smt:{verb}",
                 details=leak_result.to_dict(),
             )
@@ -1697,7 +1717,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(er_result),
                 rule_id=f"smt:{verb}",
                 details=er_result.to_dict(),
             )
@@ -1719,7 +1740,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(ld_result),
                 rule_id=f"smt:{verb}",
                 details=ld_result.to_dict(),
             )
@@ -1741,7 +1763,8 @@ def _run_smt_verb_inner(
                 )
             return SweepResult(
                 tool="smt", file_path=file_path,
-                function_name=function_name, outcome="refuted",
+                function_name=function_name,
+                outcome=_negative_outcome(tt_result),
                 rule_id=f"smt:{verb}",
                 details=tt_result.to_dict(),
             )

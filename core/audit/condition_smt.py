@@ -1726,6 +1726,11 @@ _DENY_RETURN_RE = re.compile(
 class AuthBypassResult:
     """Result of checking for auth check bypass via early return."""
 
+    #: False when the detector's prerequisites were absent (no auth
+    #: checks / lock acquires / allocations / ... in the source) — the
+    #: model did not APPLY, which is not a refutation.  Consumers must
+    #: map inapplicable negatives to inconclusive, never to refuted.
+    applicable: bool = True
     bypass_found: bool = False
     early_return_line: int = 0
     guard_text: str = ""
@@ -1738,6 +1743,8 @@ class AuthBypassResult:
             "bypass_found": self.bypass_found,
             "reasoning": self.reasoning,
         }
+        if not self.applicable:
+            d["applicable"] = False
         if self.early_return_line:
             d["early_return_line"] = self.early_return_line
         if self.guard_text:
@@ -1771,11 +1778,17 @@ def check_auth_bypass(
 
     auth_checks = _extract_auth_checks(lines, vocab)
     if not auth_checks:
-        return AuthBypassResult(reasoning="no auth checks found in source")
+        return AuthBypassResult(
+            applicable=False,
+            reasoning="no auth checks found in source",
+        )
 
     success_returns = _extract_success_returns(lines)
     if not success_returns:
-        return AuthBypassResult(reasoning="no success returns found")
+        return AuthBypassResult(
+            applicable=False,
+            reasoning="no success returns found",
+        )
 
     last_auth_line = max(c[0] for c in auth_checks)
 
@@ -2009,6 +2022,11 @@ _LABEL_RE = re.compile(r"^(\w+)\s*:", re.MULTILINE)
 class LockDisciplineResult:
     """Result of checking lock acquire/release discipline."""
 
+    #: False when the detector's prerequisites were absent (no auth
+    #: checks / lock acquires / allocations / ... in the source) — the
+    #: model did not APPLY, which is not a refutation.  Consumers must
+    #: map inapplicable negatives to inconclusive, never to refuted.
+    applicable: bool = True
     violation_found: bool = False
     lock_type: str = ""
     acquire_line: int = 0
@@ -2021,6 +2039,8 @@ class LockDisciplineResult:
             "violation_found": self.violation_found,
             "reasoning": self.reasoning,
         }
+        if not self.applicable:
+            d["applicable"] = False
         if self.lock_type:
             d["lock_type"] = self.lock_type
         if self.acquire_line:
@@ -2048,7 +2068,10 @@ def check_lock_discipline(
     lines = source.split("\n")
     acquires = _extract_lock_acquires(lines, vocab)
     if not acquires:
-        return LockDisciplineResult(reasoning="no lock acquires found")
+        return LockDisciplineResult(
+            applicable=False,
+            reasoning="no lock acquires found",
+        )
 
     returns = _extract_returns(lines)
     goto_targets = _extract_goto_targets(lines)
@@ -2440,6 +2463,11 @@ _ERROR_RETURN_RE = re.compile(
 class ResourceLeakResult:
     """Result of checking error-path resource leak."""
 
+    #: False when the detector's prerequisites were absent (no auth
+    #: checks / lock acquires / allocations / ... in the source) — the
+    #: model did not APPLY, which is not a refutation.  Consumers must
+    #: map inapplicable negatives to inconclusive, never to refuted.
+    applicable: bool = True
     leak_found: bool = False
     alloc_var: str = ""
     alloc_func: str = ""
@@ -2453,6 +2481,8 @@ class ResourceLeakResult:
             "leak_found": self.leak_found,
             "reasoning": self.reasoning,
         }
+        if not self.applicable:
+            d["applicable"] = False
         if self.alloc_var:
             d["alloc_var"] = self.alloc_var
         if self.alloc_func:
@@ -2477,11 +2507,17 @@ def check_resource_leak(
     lines = source.split("\n")
     allocs = _extract_allocs(lines, vocab)
     if not allocs:
-        return ResourceLeakResult(reasoning="no allocations found")
+        return ResourceLeakResult(
+            applicable=False,
+            reasoning="no allocations found",
+        )
 
     error_returns = _extract_error_returns(lines)
     if not error_returns:
-        return ResourceLeakResult(reasoning="no error returns found")
+        return ResourceLeakResult(
+            applicable=False,
+            reasoning="no error returns found",
+        )
 
     goto_targets = _extract_goto_targets(lines)
     labels = _extract_labels(lines)
@@ -2866,6 +2902,11 @@ _DEREF_RE_TEMPLATE = r"(?:{var}\s*->|(?:\*\s*{var})\b)"
 class NullPropagationResult:
     """Result of checking null propagation."""
 
+    #: False when the detector's prerequisites were absent (no auth
+    #: checks / lock acquires / allocations / ... in the source) — the
+    #: model did not APPLY, which is not a refutation.  Consumers must
+    #: map inapplicable negatives to inconclusive, never to refuted.
+    applicable: bool = True
     null_deref_found: bool = False
     var_name: str = ""
     source_func: str = ""
@@ -2878,6 +2919,8 @@ class NullPropagationResult:
             "null_deref_found": self.null_deref_found,
             "reasoning": self.reasoning,
         }
+        if not self.applicable:
+            d["applicable"] = False
         if self.var_name:
             d["var_name"] = self.var_name
         if self.source_func:
@@ -2899,7 +2942,10 @@ def check_null_propagation(
     lines = source.split("\n")
     assigns = _extract_nullable_assigns(lines, vocab=vocab)
     if not assigns:
-        return NullPropagationResult(reasoning="no nullable assignments found")
+        return NullPropagationResult(
+            applicable=False,
+            reasoning="no nullable assignments found",
+        )
 
     for assign_line, var_name, source_func in assigns:
         null_check = _find_null_check(lines, var_name, assign_line)
@@ -3742,6 +3788,11 @@ def _z3_integer_narrowing_check(
 class EarlyReleaseResult:
     """Result of checking for early lock release (use-after-unlock)."""
 
+    #: False when the detector's prerequisites were absent (no auth
+    #: checks / lock acquires / allocations / ... in the source) — the
+    #: model did not APPLY, which is not a refutation.  Consumers must
+    #: map inapplicable negatives to inconclusive, never to refuted.
+    applicable: bool = True
     early_release_found: bool = False
     lock_type: str = ""
     acquire_line: int = 0
@@ -3755,6 +3806,8 @@ class EarlyReleaseResult:
             "early_release_found": self.early_release_found,
             "reasoning": self.reasoning,
         }
+        if not self.applicable:
+            d["applicable"] = False
         if self.lock_type:
             d["lock_type"] = self.lock_type
         if self.acquire_line:
@@ -3978,7 +4031,10 @@ def _check_early_release_c(
                     release_only.append((0, "caller_held", unlock_name))
                     break
         if not release_only:
-            return EarlyReleaseResult(reasoning="no lock acquires found")
+            return EarlyReleaseResult(
+                applicable=False,
+                reasoning="no lock acquires found",
+            )
         acquires = release_only
 
     for acq_line, lock_func, unlock_name, *_ in acquires:
@@ -4098,6 +4154,11 @@ def _check_early_release_c(
 class LockDomainResult:
     """Result of checking for cross-lock-domain field access."""
 
+    #: False when the detector's prerequisites were absent (no auth
+    #: checks / lock acquires / allocations / ... in the source) — the
+    #: model did not APPLY, which is not a refutation.  Consumers must
+    #: map inapplicable negatives to inconclusive, never to refuted.
+    applicable: bool = True
     mismatch_found: bool = False
     field: str = ""
     lock1: str = ""
@@ -4113,6 +4174,8 @@ class LockDomainResult:
             "mismatch_found": self.mismatch_found,
             "reasoning": self.reasoning,
         }
+        if not self.applicable:
+            d["applicable"] = False
         if self.field:
             d["field"] = self.field
         if self.lock1:
@@ -4177,7 +4240,10 @@ def _check_lock_domain_go(lines: list[str]) -> LockDomainResult:
         i += 1
 
     if len(lock_scopes) < 2:
-        return LockDomainResult(reasoning="fewer than 2 lock scopes found")
+        return LockDomainResult(
+            applicable=False,
+            reasoning="fewer than 2 lock scopes found",
+        )
 
     field_accesses: dict[str, list[tuple[int, str]]] = {}
     for scope_start, scope_end, lock_type in lock_scopes:
@@ -4320,6 +4386,12 @@ def _check_lock_domain_c(
         r"\b(smp_load_acquire|atomic_read"
         r"|atomic_long_read|smp_store_release)\s*\("
     )
+    if not lock_scopes:
+        return LockDomainResult(
+            applicable=False,
+            reasoning="no lock scopes found",
+        )
+
     if lock_scopes:
         for scope_start, scope_end, lock_func, _ in lock_scopes:
             for j in range(scope_start + 1, scope_end):
@@ -4409,6 +4481,11 @@ def _check_lock_domain_c(
 class TocTouResult:
     """Result of TOCTOU pattern detection."""
 
+    #: False when the detector's prerequisites were absent (no auth
+    #: checks / lock acquires / allocations / ... in the source) — the
+    #: model did not APPLY, which is not a refutation.  Consumers must
+    #: map inapplicable negatives to inconclusive, never to refuted.
+    applicable: bool = True
     toctou_found: bool = False
     check_call: str = ""
     check_line: int = 0
@@ -4418,7 +4495,7 @@ class TocTouResult:
     reasoning: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "toctou_found": self.toctou_found,
             "check_call": self.check_call,
             "check_line": self.check_line,
@@ -4427,6 +4504,9 @@ class TocTouResult:
             "variable": self.variable,
             "reasoning": self.reasoning,
         }
+        if not self.applicable:
+            d["applicable"] = False
+        return d
 
 
 _TOCTOU_C_CHECKS = re.compile(
@@ -4600,7 +4680,7 @@ def check_toctou(source: str) -> TocTouResult:
     from .safety_contract import assert_boost_only
     assert_boost_only("condition_smt")
     if not source or not source.strip():
-        return TocTouResult(reasoning="empty source")
+        return TocTouResult(applicable=False, reasoning="empty source")
 
     lines = source.splitlines()
 

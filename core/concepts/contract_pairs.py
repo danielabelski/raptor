@@ -552,15 +552,22 @@ def save_project_verbs(
     from pathlib import Path
 
     out = Path(path) / "verb-contracts.json"
+    # Deterministic order: the caller dedups via a set (frozenset
+    # tuples), whose iteration order varies per process — an otherwise
+    # unchanged vocabulary rewrote verb-contracts.json in a different
+    # order every run, defeating diffing and content-hash comparisons.
     data: dict[str, Any] = {
-        "discovered_verbs": [
-            {
-                "producers": sorted(prods),
-                "consumers": sorted(cons),
-                "kind": kind.value,
-            }
-            for prods, cons, kind in discovered
-        ],
+        "discovered_verbs": sorted(
+            (
+                {
+                    "producers": sorted(prods),
+                    "consumers": sorted(cons),
+                    "kind": kind.value,
+                }
+                for prods, cons, kind in discovered
+            ),
+            key=lambda e: (e["producers"], e["consumers"], e["kind"]),
+        ),
     }
     if callgraph_pairs:
         data["callgraph_pairs"] = [g.to_dict() for g in callgraph_pairs]

@@ -81,14 +81,28 @@ fi
 # help request exits 0.
 usage() {
     cat >&2 <<'EOF'
-usage: raptor-sage-setup [install | --uninstall | --status] [--reauthorize]
+usage: raptor-sage-setup [install | --uninstall | --status | review] [--reauthorize] [--approve]
 
   (default)      install SAGE: bring up sidecar, seed, generate MCP entry.
   --uninstall    stop SAGE sidecar and remove its MCP entry (data volumes kept).
   --status       check whether SAGE is running and report health + embedding mode.
+  review         capture the live boot payload, diff each instruction surface
+                 against the operator-authorized stamp, and record the
+                 operator's decision. Approve MERGES the reviewed variants into
+                 the stamp (union — previously authorized variants are kept, so
+                 state-dependent payloads stop flapping); reject records them
+                 as denied (the guard keeps them out of sessions with a calm
+                 note, and review/status stop flagging them as pending).
+                 Exit 0 = nothing pending review, 4 = undecided variant(s).
+  --approve      approve the reviewed variants non-interactively (review only).
+                 Approves every live variant, including previously rejected
+                 ones — this is also the un-reject path.
+  --reject       reject the unauthorized live variants non-interactively
+                 (review only).
   --reauthorize  accept a CHANGED boot payload non-interactively (install only).
                  Without it, a changed payload needs interactive confirmation
-                 and is otherwise left unauthorized.
+                 and is otherwise left unauthorized. Unlike review, install
+                 REPLACES the stamp with the fresh capture.
 
 Prereqs: jq, docker + docker compose, python3, pip-installed sage-agent-sdk.
 EOF
@@ -98,6 +112,8 @@ EOF
 MODE=install
 MODE_EXPLICIT=0
 REAUTHORIZE=0
+APPROVE=0
+REJECT=0
 # Pre-fix the parser only knew `--uninstall` (default install).
 # Two ambiguities operators hit:
 #
@@ -143,6 +159,20 @@ for arg in "$@"; do
             fi
             MODE=status
             MODE_EXPLICIT=1
+            ;;
+        --review|review)
+            if [ "$MODE_EXPLICIT" = "1" ] && [ "$MODE" != "review" ]; then
+                echo "raptor-sage-setup: conflicting modes: $arg vs --$MODE" >&2
+                exit 3
+            fi
+            MODE=review
+            MODE_EXPLICIT=1
+            ;;
+        --approve)
+            APPROVE=1
+            ;;
+        --reject)
+            REJECT=1
             ;;
         --reauthorize)
             REAUTHORIZE=1
@@ -959,6 +989,119 @@ authorize_boot_payload() {
     echo "  Surfaces: initialize.instructions(+.json), sage_inception.message, sage_inception.content"
 }
 
+review_boot_payload() {
+    # Operator review path for boot-payload drift: diff every live
+    # instruction surface against the authorized stamp and, on
+    # approval, MERGE the new variants into the stamp. Merge (union),
+    # not replace: the payload is server-state-dependent, so a fresh
+    # capture can observe a variant set disjoint from an earlier one —
+    # install's replace semantics would flap authorization between
+    # states. Comparison semantics come from the guard module itself
+    # (core/sage/boot_payload_review.py imports it), so a "review says
+    # clean" verdict is exactly a "guard will not strip" verdict.
+    local reviewer="$RAPTOR_DIR/core/sage/boot_payload_review.py"
+    if [ "$APPROVE" = "1" ] && [ "$REJECT" = "1" ]; then
+        echo "review: --approve and --reject conflict" >&2
+        return 3
+    fi
+    if [ ! -f "$AUTHORIZED_PAYLOAD" ]; then
+        echo "No operator-authorized boot payload recorded yet." >&2
+        echo "First authorization shows the full payload text:" >&2
+        echo "  libexec/raptor-sage-setup install" >&2
+        return 3
+    fi
+    local live
+    if ! live=$(capture_boot_payload) || [ -z "$live" ]; then
+        echo "Error: could not capture the live SAGE boot payload." >&2
+        echo "  Is the SAGE sidecar up? Check: libexec/raptor-sage-setup status" >&2
+        return 3
+    fi
+    local tmp_live
+    tmp_live=$(mktemp); _RAPTOR_TMP_FILES+=("$tmp_live")
+    printf '%s\n' "$live" > "$tmp_live"
+    echo "Boot-payload review — live server vs $AUTHORIZED_PAYLOAD"
+    echo
+    local rc=0
+    python3 "$reviewer" compare \
+        --authorized "$AUTHORIZED_PAYLOAD" --live "$tmp_live" || rc=$?
+    echo
+    if [ "$rc" = "0" ]; then
+        echo "Nothing pending review: every live surface is authorized or"
+        echo "already rejected by the operator."
+        return 0
+    elif [ "$rc" != "4" ]; then
+        return "$rc"
+    fi
+    echo "The variants marked \"Not Authorized\" above are undecided: the MCP"
+    echo "guard strips them from live agent sessions until you decide."
+    echo
+    local decision=""
+    if [ "$APPROVE" = "1" ]; then
+        decision=merge
+        echo "Approving (--approve)."
+    elif [ "$REJECT" = "1" ]; then
+        decision=deny
+        echo "Rejecting (--reject)."
+    elif [ -t 0 ]; then
+        local answer
+        read -r -p "Approve or reject these variants? [a=approve / r=reject / N=decide later] " answer
+        case "$answer" in
+            a|A) decision=merge ;;
+            r|R) decision=deny ;;
+            *)
+                echo "No decision recorded. The stamp is unchanged; review will" >&2
+                echo "flag these variants again." >&2
+                return 4
+                ;;
+        esac
+    else
+        echo "Non-interactive and no decision flag: the stamp is unchanged." >&2
+        echo "  approve: libexec/raptor-sage-setup review --approve" >&2
+        echo "  reject:  libexec/raptor-sage-setup review --reject" >&2
+        return 4
+    fi
+    local merged
+    if ! merged=$(python3 "$reviewer" "$decision" \
+            --authorized "$AUTHORIZED_PAYLOAD" --live "$tmp_live"); then
+        echo "Error: recording the decision failed; the stamp is unchanged." >&2
+        return 3
+    fi
+    # Header + atomic write — same shape authorize_boot_payload stamps
+    # (kept inline: the reauthorize tests extract that function alone).
+    local sha image stamp running_digest
+    sha=$(printf '%s' "$merged" | sha256sum | awk '{print $1}')
+    image=$(docker compose -f "$COMPOSE_FILE" config --images 2>/dev/null \
+        | grep sage | head -1 || true)
+    image="${image:-unknown}"
+    running_digest=$(running_sage_digest)
+    stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local tmp
+    tmp=$(mktemp "$(dirname "$AUTHORIZED_PAYLOAD")/.tmp.payload.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
+    {
+        echo "# SAGE boot payload — operator-authorized"
+        echo "# Generated: $stamp by raptor-sage-setup (review)"
+        echo "# Image: $image"
+        echo "# RunningDigest: $running_digest"
+        echo "# SHA256: $sha"
+        echo "# Running raptor-sage-setup constitutes operator authorization of the"
+        echo "# payload below. Regenerated on every install; per-machine; gitignored."
+        echo "# Trust semantics: core/sage/CLAUDE.md."
+        echo "# ---"
+        printf '%s' "$merged"
+    } > "$tmp"
+    mv "$tmp" "$AUTHORIZED_PAYLOAD"
+    echo "Recorded the decision in the operator-authorized stamp:"
+    echo "  File:   $AUTHORIZED_PAYLOAD"
+    echo "  SHA256: $sha"
+    if [ "$decision" = "merge" ]; then
+        echo "New sessions will receive the approved variants intact."
+    else
+        echo "The guard keeps the rejected variants out of sessions (with a"
+        echo "calm note instead of the warning); review and status stop"
+        echo "flagging them as pending."
+    fi
+}
+
 ensure_rowmac_key() {
     # Generate the per-install row-MAC key used by core/sage/rowmac.py
     # to authenticate SAGE rows that drive mechanical decisions.
@@ -1409,4 +1552,5 @@ case "$MODE" in
     install)   install_sage ;;
     uninstall) uninstall_sage ;;
     status)    status_sage ;;
+    review)    review_boot_payload ;;
 esac

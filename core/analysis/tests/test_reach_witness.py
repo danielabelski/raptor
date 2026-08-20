@@ -180,6 +180,31 @@ def test_binary_oracle_absent_picks_innermost_enclosing_on_collision():
     assert rv.witness.kind is WitnessKind.BINARY_ORACLE_ABSENT
 
 
+def test_select_item_by_line_closest_start_fallback():
+    """The shared disambiguation helper implements the DOCUMENTED
+    fallback: when no candidate's [line_start, line_end] range contains
+    the query line (under-reported line_end), pick the item whose
+    line_start is the closest one <= the line — not blindly the first
+    candidate. Query lines preceding every candidate keep the legacy
+    first-item tie-break; line=0 / single candidate are no-ops."""
+    from core.analysis.reachability import _select_item_by_line
+
+    a = {"name": "helper", "line_start": 10, "line_end": 20}
+    b = {"name": "helper", "line_start": 100, "line_end": 120}
+
+    # Line 150 is past BOTH ranges — closest preceding start wins (b).
+    assert _select_item_by_line([a, b], 150) == [b]
+    # Line 50 is past a's range only, before b — a is the closest <=.
+    assert _select_item_by_line([a, b], 50) == [a]
+    # Containment still beats the fallback.
+    assert _select_item_by_line([a, b], 110) == [b]
+    # Query before every candidate: legacy first-item tie-break.
+    assert _select_item_by_line([a, b], 5) == [a]
+    # No line / single candidate: pass-through.
+    assert _select_item_by_line([a, b], 0) == [a, b]
+    assert _select_item_by_line([b], 150) == [b]
+
+
 def test_binary_oracle_inlined_does_not_demote_function():
     """An ``inlined`` classification is REACHABLE evidence (function ran,
     just merged into its caller). The accessor must NOT return absent for

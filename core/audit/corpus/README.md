@@ -160,7 +160,7 @@ python3 -m core.audit.corpus.corpus_metrics results-v2.json --diff results.json
 Splice semantics: rows for the re-run labels replace their old rows;
 every other row is kept verbatim, including its attribution
 annotations. The merged file's `meta` records `spliced_from` and
-`new_count`. A missing `--splice` file fails fast (exit 2) before any
+`new_count`. A missing `--splice` file fails fast (exit 1) before any
 cost is spent.
 
 ## Run history (compare, trend, stability)

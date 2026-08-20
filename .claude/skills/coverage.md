@@ -61,8 +61,10 @@ Tool labels are classified by category and depth (`core/coverage/registry.py`):
 |----------|-------|-------|
 | static | scanned | semgrep, coccinelle, codeql |
 | llm | scanned | read, understand |
-| llm | analysed | claude, audit, validate, agentic, annotations |
-| runtime | runtime-tested | gcov, lcov, afl, fuzz, coverage.py, frida, sancov |
+| llm | analysed | claude, llm, audit, validate, agentic, journal, mark, annotations |
+| runtime | runtime-tested | gcov, lcov, llvm-cov, afl, fuzz, bincov, drcov, frida, sancov, coverage.py, pytest |
+
+The registry source is authoritative for the full label set.
 
 A file the LLM merely read (`read`) is `scanned`, not `analysed` — it does not count as "reviewed". Review requires depth >= `analysed`.
 
@@ -267,7 +269,7 @@ Semgrep policy groups are compared against `RaptorConfig.POLICY_GROUP_TO_SEMGREP
 `core/audit/gaps.py:compute_gaps` determines which functions still need review. Coverage sources, in priority order:
 
 1. **Review journal** — `review-journal.jsonl` (per-run) and `review-journal-index.json` (project-level). This is the primary mid-run and cross-run source.
-2. **Coverage records** — per-tool `coverage-*.json` in the run dir: review-grade `functions_analysed` entries (an operator `--mark`, `coverage-llm.json`, `coverage-journal.json`) suppress gaps; scanned-depth labels (`read`, `understand`) and whole-file `files_examined` never do. Legacy `coverage-record.json` still loads for pre-per-tool-split runs.
+2. **Coverage records** — per-tool `coverage-*.json` in the run dir: review-grade `functions_analysed` entries (an operator `--mark`, `coverage-llm.json`, `coverage-journal.json`) suppress gaps; scanned-depth labels (`read`, `understand`), whole-file `files_examined`, and runtime records (`coverage-fuzz.json` is reachability evidence, not review) never do. Legacy `coverage-record.json` still loads for pre-per-tool-split runs.
 
 A function is a gap when it has no entry in either source. The durable
 `coverage.json` store is a query-time projection (summaries, `--gaps`),

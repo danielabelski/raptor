@@ -4708,18 +4708,26 @@ def check_race_protection(
 
     field_re = re.compile(r"(\w+)->(\w+)")
 
-    # Build lock scopes
+    # Build lock scopes.  Each scope carries the lock OBJECT (first
+    # argument of the acquire) so that multi-access protection claims
+    # can require the SAME lock: holding a->lock here and b->lock
+    # there does not serialise accesses to one shared field.
     if vocab is None:
         vocab = _EMPTY_VOCAB
     acquires = _extract_lock_acquires(lines, vocab)
     lock_scopes: list[tuple[int, int]] = []
-    for acq_line, _lock_func, unlock_name, *_ in acquires:
+    lock_scope_objects: list[tuple[int, int, str]] = []
+    for acq_line, lock_func, unlock_name, lock_obj in acquires:
+        if lock_func.startswith("rcu_read_lock"):
+            # Handled by the RCU accessor rule, not as a lock scope.
+            continue
         unlock_re = re.compile(
             r"\b" + re.escape(unlock_name) + r"(?:_irq(?:restore)?|_bh)?\s*\("
         )
         for j in range(acq_line + 1, min(len(lines), acq_line + 200)):
             if unlock_re.search(lines[j]):
                 lock_scopes.append((acq_line, j))
+                lock_scope_objects.append((acq_line, j, lock_obj))
                 break
 
     # rcu_read_lock..rcu_read_unlock scopes
@@ -4732,7 +4740,9 @@ def check_race_protection(
                 if rcu_unlock_re.search(lines[j]):
                     rcu_scopes.append((i, j))
                     break
-    lock_scopes.extend(rcu_scopes)
+    # RCU read-side sections are NOT generic lock scopes: a plain
+    # p->field inside rcu_read_lock()..unlock() is only protected when
+    # p came from rcu_dereference (handled by the accessor rule below).
 
     # preempt_disable / local_irq_save scopes (needed for per-CPU safety)
     preempt_scopes: list[tuple[int, int]] = []
@@ -4750,16 +4760,58 @@ def check_race_protection(
                 if preempt_rel_re.search(lines[j]):
                     preempt_scopes.append((i, j))
                     break
-    lock_scopes.extend(preempt_scopes)
+    # Preempt-disable sections likewise only protect per-CPU accessors
+    # (SMP peers still run) — they are not generic lock scopes.
 
     def _in_lock_scope(line_idx: int) -> bool:
         return any(start <= line_idx <= end for start, end in lock_scopes)
+
+    def _covering_lock_objects(line_idx: int) -> set[str]:
+        """Lock objects of the mutex/spinlock scopes covering a line.
+
+        RCU / preempt scopes are excluded — they are separate
+        protection kinds handled by their own accessor rules.
+        """
+        return {
+            obj for start, end, obj in lock_scope_objects
+            if start <= line_idx <= end
+        }
 
     def _in_rcu_scope(line_idx: int) -> bool:
         return any(start <= line_idx <= end for start, end in rcu_scopes)
 
     def _in_preempt_scope(line_idx: int) -> bool:
         return any(start <= line_idx <= end for start, end in preempt_scopes)
+
+    def _call_arg_spans(line: str, call_re: re.Pattern) -> list[tuple[int, int]]:
+        """(start, end) spans of the argument lists of *call_re* calls
+        on *line* — used to bind accessor protection to the accessed
+        expression itself instead of to anything on the same line."""
+        spans: list[tuple[int, int]] = []
+        for m in call_re.finditer(line):
+            depth = 0
+            for k in range(m.end() - 1, len(line)):
+                if line[k] == "(":
+                    depth += 1
+                elif line[k] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        spans.append((m.end() - 1, k + 1))
+                        break
+            else:
+                spans.append((m.end() - 1, len(line)))
+        return spans
+
+    # Variables bound from rcu_dereference*() — only THEIR
+    # dereferences are RCU-protected inside an RCU read-side section.
+    rcu_deref_vars: set[str] = set()
+    rcu_bind_re = re.compile(
+        r"(\w+)\s*=\s*rcu_dereference(?:_protected|_check|_raw)?\s*\(",
+    )
+    for line in lines:
+        m = rcu_bind_re.search(line)
+        if m:
+            rcu_deref_vars.add(m.group(1))
 
     # Init dereferences of function parameters before any lock.
     # Pattern: `type *var = param->field;` where param is a function arg.
@@ -4784,8 +4836,10 @@ def check_race_protection(
                 init_lines.add(i)
 
     total = 0
-    protected = 0
-    unprotected_lines: list[int] = []
+    # (line_idx, base, field, protection kind) per access
+    access_records: list[tuple[int, str, str, str]] = []
+    # (base, field) -> covering-lock-object sets, one per lock-kind access
+    expr_lock_objs: dict[tuple[str, str], list[set[str]]] = {}
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
@@ -4798,12 +4852,65 @@ def check_race_protection(
         if not accesses:
             continue
 
-        for _fm in accesses:
+        # Accessor protection binds to the accessed EXPRESSION, not to
+        # the line: atomic_read(&a->cnt) on a line that also touches
+        # b->data protects only a->cnt.
+        atomic_spans = _call_arg_spans(line, _ATOMIC_ACCESSOR_RE)
+        in_rcu = _in_rcu_scope(i)
+        rcu_spans = _call_arg_spans(line, _RCU_ACCESSOR_RE) if in_rcu else []
+        percpu_spans = (
+            _call_arg_spans(line, _PER_CPU_RE)
+            if _in_preempt_scope(i) else []
+        )
+
+        for fm in accesses:
             total += 1
-            if _in_lock_scope(i) or _ATOMIC_ACCESSOR_RE.search(line) or _RCU_ACCESSOR_RE.search(line) and _in_rcu_scope(i) or _PER_CPU_RE.search(line) and _in_preempt_scope(i) or i in init_lines:
-                protected += 1
-            else:
-                unprotected_lines.append(i + 1)
+            base, fieldname = fm.group(1), fm.group(2)
+            pos = fm.start()
+            kind = ""
+            if i in init_lines:
+                kind = "init"
+            elif any(s <= pos < e for s, e in atomic_spans):
+                kind = "atomic"
+            elif in_rcu and (
+                base in rcu_deref_vars
+                or any(s <= pos < e for s, e in rcu_spans)
+            ):
+                # RCU read-side sections only protect pointers obtained
+                # via rcu_dereference — a plain p->field inside
+                # rcu_read_lock()..unlock() is not thereby serialised.
+                kind = "rcu"
+            elif any(s <= pos < e for s, e in percpu_spans):
+                kind = "percpu"
+            elif _in_lock_scope(i):
+                kind = "lock"
+                expr_lock_objs.setdefault((base, fieldname), []).append(
+                    _covering_lock_objects(i),
+                )
+            access_records.append((i, base, fieldname, kind))
+
+    # Same-lock-object rule: when the SAME expression is accessed in
+    # multiple lock scopes, the protection claim needs one common,
+    # identifiable lock object across all of them.  Different (or
+    # unparseable) lock objects do not serialise the accesses.
+    inconsistent_exprs: set[tuple[str, str]] = set()
+    for expr, cover_sets in expr_lock_objs.items():
+        if len(cover_sets) < 2:
+            continue
+        named_sets = [{o for o in s if o} for s in cover_sets]
+        common = set.intersection(*named_sets) if named_sets else set()
+        if not common:
+            inconsistent_exprs.add(expr)
+
+    protected = 0
+    unprotected_lines: list[int] = []
+    for i, base, fieldname, kind in access_records:
+        if kind == "lock" and (base, fieldname) in inconsistent_exprs:
+            kind = ""
+        if kind:
+            protected += 1
+        else:
+            unprotected_lines.append(i + 1)
 
     unprotected_count = total - protected
 
@@ -4821,8 +4928,12 @@ def check_race_protection(
             unprotected_accesses=0,
             lock_scopes=len(lock_scopes),
             reasoning=(
-                f"all {total} field accesses are inside lock scopes "
-                f"or use atomic/RCU/per-CPU accessors"
+                f"all {total} field accesses in this function are "
+                f"inside lock scopes or use atomic/RCU/per-CPU "
+                f"accessors (lexical heuristic: lock identity and "
+                f"accessor binding checked textually within this "
+                f"function only — cross-function access sites and "
+                f"aliasing are not analysed)"
             ),
         )
 

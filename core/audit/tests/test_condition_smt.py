@@ -855,6 +855,97 @@ class TestWitnessInToDict:
         assert d["witness"] == {"size": -1}
 
 
+class TestRaceProtectionIdentity:
+    """Race-protection claims must respect lock identity, accessor
+    binding, and RCU derivation — the previous version counted ANY
+    lock scope, ANY atomic call on the line, and ANY line inside an
+    RCU section as protection for every access."""
+
+    def test_different_lock_objects_do_not_protect_shared_field(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *a, struct bar *b, struct shared *s) {\n"
+            "    spin_lock(&a->lock);\n"
+            "    s->count++;\n"
+            "    spin_unlock(&a->lock);\n"
+            "    spin_lock(&b->lock);\n"
+            "    s->count--;\n"
+            "    spin_unlock(&b->lock);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        # a->lock and b->lock are different locks: the two s->count
+        # accesses are NOT serialised against each other.
+        assert r.protected is False
+
+    def test_same_lock_object_protects_shared_field(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct shared *s) {\n"
+            "    spin_lock(&s->lock);\n"
+            "    s->count++;\n"
+            "    spin_unlock(&s->lock);\n"
+            "    spin_lock(&s->lock);\n"
+            "    s->count--;\n"
+            "    spin_unlock(&s->lock);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
+    def test_atomic_on_line_does_not_protect_other_access(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *a, struct bar *b) {\n"
+            "    int v = atomic_read(&a->cnt) + b->data;\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        # b->data is not inside the atomic accessor's arguments.
+        assert r.protected is False
+        assert r.unprotected_accesses >= 1
+
+    def test_plain_deref_in_rcu_scope_not_protected(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    rcu_read_lock();\n"
+            "    int v = b->count;\n"
+            "    rcu_read_unlock();\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        # b was not obtained via rcu_dereference — the RCU section
+        # does not serialise b->count.
+        assert r.protected is False
+
+    def test_rcu_dereferenced_pointer_protected(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    rcu_read_lock();\n"
+            "    struct baz *p = rcu_dereference(b->ptr);\n"
+            "    int v = p->count;\n"
+            "    rcu_read_unlock();\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+
+    def test_protected_reasoning_labels_residual_uncertainty(self):
+        from core.audit.condition_smt import check_race_protection
+        src = (
+            "void foo(struct bar *b) {\n"
+            "    spin_lock(&b->lock);\n"
+            "    b->count++;\n"
+            "    spin_unlock(&b->lock);\n"
+            "}\n"
+        )
+        r = check_race_protection(src)
+        assert r.protected is True
+        assert "heuristic" in r.reasoning
+
+
 class TestCheckRaceProtection:
     def test_all_inside_spinlock(self):
         from core.audit.condition_smt import check_race_protection

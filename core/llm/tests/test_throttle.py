@@ -13,6 +13,21 @@ from core.llm.throttle import (
 )
 
 
+class _FakeMonotonic:
+    """Deterministic clock for cooldown choreography — the real-time
+    version flaked on loaded CI runners whenever scheduling delay
+    between a signal and its assert exceeded the 100ms cooldown."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, dt: float) -> None:
+        self.now += dt
+
+
 class TestAdaptiveThrottle:
     def test_initial_state(self):
         t = AdaptiveThrottle(8, auto_register=False)
@@ -55,28 +70,32 @@ class TestAdaptiveThrottle:
         t.signal_rate_limit()
         assert t.effective_workers == 1
 
-    def test_restore_after_cooldown(self):
+    def test_restore_after_cooldown(self, monkeypatch):
+        clk = _FakeMonotonic()
+        monkeypatch.setattr(time, "monotonic", clk)
         t = AdaptiveThrottle(8, cooldown_s=0.05, auto_register=False)
         t.signal_rate_limit()
         assert t.effective_workers == 4
-        time.sleep(0.06)
+        clk.advance(0.06)
         assert t.effective_workers == 8
         assert not t.is_throttled
 
-    def test_signal_resets_cooldown(self):
+    def test_signal_resets_cooldown(self, monkeypatch):
+        clk = _FakeMonotonic()
+        monkeypatch.setattr(time, "monotonic", clk)
         t = AdaptiveThrottle(8, cooldown_s=0.1, auto_register=False)
         t.signal_rate_limit()
         assert t.effective_workers == 4
-        time.sleep(0.06)
+        clk.advance(0.06)
         t.signal_rate_limit()
         assert t.effective_workers == 2
-        time.sleep(0.06)
+        clk.advance(0.06)
         assert t.effective_workers == 2
-        time.sleep(0.06)
+        clk.advance(0.06)
         # One quiet interval elapsed -> ONE doubling (2 -> 4), not a
         # snap to 8: the snap restore re-tripped real 429 storms.
         assert t.effective_workers == 4
-        time.sleep(0.11)
+        clk.advance(0.11)
         assert t.effective_workers == 8
 
     def test_recovery_ramps_one_doubling_per_interval(self):

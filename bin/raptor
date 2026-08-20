@@ -71,8 +71,8 @@ while [ -L "$SCRIPT" ]; do
         echo "raptor: symlink hop limit exceeded resolving $0" >&2
         exit 1
     fi
-    DIR="$(cd "$(_rp dirname "$SCRIPT")" && pwd)"
-    SCRIPT="$(_rp readlink "$SCRIPT")"
+    DIR="$(cd "$(command -p dirname "$SCRIPT")" && pwd)"
+    SCRIPT="$(command -p readlink "$SCRIPT")"
     [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
 done
 unset _symhops

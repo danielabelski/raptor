@@ -254,7 +254,23 @@ _CC_TRUST_EXTRA_ECHO = (
 SYMLINK_LOOPS = {
     "bin/cve-diff": [("cve-diff", 1, ())],
     "bin/raptor": [
-        ("raptor", 1, ()),
+        # main self-resolution loop: `command -p` so dirname/readlink
+        # resolve via the system default PATH, immune to a hostile
+        # ambient PATH before the scrub runs — and self-contained
+        # under behavioural extraction (no helper functions).
+        r'''SCRIPT="$0"
+_symhops=0
+while [ -L "$SCRIPT" ]; do
+    _symhops=$((_symhops + 1))
+    if [ "$_symhops" -gt 32 ]; then
+        echo "raptor: symlink hop limit exceeded resolving $0" >&2
+        exit 1
+    fi
+    DIR="$(cd "$(command -p dirname "$SCRIPT")" && pwd)"
+    SCRIPT="$(command -p readlink "$SCRIPT")"
+    [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
+done
+unset _symhops''',
         # env-strip self-resolution loop: namespaced variables because
         # it runs in the operator's launcher scope before RAPTOR_DIR
         # exists; cd -P + BASH_SOURCE by design (BSD readlink lacks -f).

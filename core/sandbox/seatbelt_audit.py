@@ -8,7 +8,12 @@ appends RAPTOR-format records to the run's evidence directory —
 ``<run_dir>/.audit/.sandbox-denials.jsonl`` (see
 core/sandbox/evidence.py) — matching the JSONL schema produced by the
 Linux ptrace tracer so the existing ``summarize_and_write``
-aggregation works unchanged. The seatbelt profile denies the target
+aggregation works unchanged. macOS records additionally carry a
+``verdict`` field (``allow`` under the audit profile's
+allow-with-report clauses, ``deny`` for genuine blocks);
+``summarize_and_write`` counts only deny-verdict — or verdict-less
+Linux — records as denials and buckets allow-verdict records into a
+separate informational section. The seatbelt profile denies the target
 all writes beneath ``<run_dir>/.audit`` (seatbelt.build_profile's
 ``audit_evidence_dir``), so only this parent-side streamer can touch
 the file; appends go through a held fd whose inode is verified when

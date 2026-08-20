@@ -481,7 +481,7 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         # return. WARNING noise would obscure the actual outcome.
         return None
 
-    denials = []
+    records = []
     try:
         with open(tmp, "r", encoding="utf-8") as f:
             for line in f:
@@ -494,7 +494,7 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
                     continue  # skip malformed lines, keep going
                 if not isinstance(record, dict):
                     continue
-                denials.append(record)
+                records.append(record)
     except OSError:
         # WARNING (F071 W21 promote): we successfully renamed the
         # JSONL into our private tmp, then failed to read it. This
@@ -522,8 +522,20 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         # leaves a leftover file but doesn't affect summary output.
         pass
 
-    if not denials:
+    if not records:
         return None
+
+    # Verdict split. macOS audit mode records ALLOWED operations too —
+    # ``(allow X (with report))`` stamps them ``verdict: "allow"`` —
+    # and pre-fix they were counted as denials, inflating
+    # total_denials with operations that actually succeeded. Only
+    # verdict "deny" records, or records with no verdict field at all
+    # (the Linux tracer and record_denial never set one — every event
+    # they emit IS an enforcement/would-block event), count as
+    # denials. Allow-verdict records are surfaced separately below as
+    # informational allowed-report counts + records.
+    denials = [r for r in records if r.get("verdict") != "allow"]
+    allowed_reports = [r for r in records if r.get("verdict") == "allow"]
 
     # Enrich tracer-emitted records with `suggested_fix` if they lack it
     # (the tracer subprocess doesn't have the suggestion logic;
@@ -556,6 +568,19 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         "by_type": by_type,
         "denials": denials,
     }
+    if allowed_reports:
+        # Informational section: operations the macOS audit profile
+        # ALLOWED and reported. Kept out of the denial counts (they
+        # succeeded) but preserved so operators can review what the
+        # workload touched. Keys only appear when such records exist,
+        # so Linux-produced summaries are unchanged.
+        allowed_by_type: dict[str, int] = {}
+        for r in allowed_reports:
+            t = r.get("type", "unknown")
+            allowed_by_type[t] = allowed_by_type.get(t, 0) + 1
+        summary["total_allowed_reports"] = len(allowed_reports)
+        summary["allowed_by_type"] = allowed_by_type
+        summary["allowed_reports"] = allowed_reports
     # Provenance stamp over the denial payload (content hash) so a
     # target-planted or target-edited sandbox-summary.json fails
     # triage verification: the summariser only writes when denials

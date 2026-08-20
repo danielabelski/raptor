@@ -29,9 +29,12 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 ```
 
 - `<target_path>` — path to codebase to review (required on first run; resolved per DEFAULT TARGET DIRECTORY if omitted)
-- `--strategy <name>` — filter to one strategy: general, input_handling, concurrency, memory, auth, crypto, aliasing
+- `--strategy <name>` — filter to one strategy: general, input_handling, concurrency, memory, auth, crypto, aliasing, integer
 - `--budget <N>` — max functions to review (default: all gaps)
 - `--scope <dir>` — restrict to a subdirectory (e.g. `ipc/`, `net/ipv4/`). Annotations and coverage still write to the project-level output dir, so successive scoped runs accumulate
+- `--pin <file:function>` — guarantee a review slot for this function ahead of the `--budget` cut (repeatable)
+- `--scope-floor` / `--no-scope-floor` — every in-scope file keeps at least one review slot under `--budget` (default: on)
+- `--pre-scan` — bounded Semgrep baseline when the run has no scan SARIF, feeding the SARIF-corroboration channels
 - `--out <dir>` — output directory (default: resolved by lifecycle)
 - `--codeql-db <path>` — CodeQL database for query dispatch and pre-sweep (repeatable — one per language for multi-language targets; per-function dispatch routes by the file's language)
 - `--max-cost <USD>` — stop after spending this many dollars on LLM calls
@@ -97,7 +100,7 @@ If the operator passed `--scope`, still map the full target (the map covers the 
 libexec/raptor-audit run "$TARGET_PATH" --out "$OUTPUT_DIR"
 ```
 
-Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--deepen-reserve`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`, `--include-kinds`, `--no-verdict-reuse`, `--schedule`, `--prior-journal`, `--dynamic`, `--no-dynamic`, `--binary`, `--binary-auto`, `--no-binary-oracle`).
+Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--pin`, `--scope-floor`, `--no-scope-floor`, `--pre-scan`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--deepen-reserve`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`, `--include-kinds`, `--no-verdict-reuse`, `--schedule`, `--prior-journal`, `--prior-claims`, `--dynamic`, `--no-dynamic`, `--binary`, `--binary-auto`, `--no-binary-oracle`).
 
 The orchestrator handles everything from here: gap computation, context assembly, LLM review, tool chain dispatch, Joern background build, sweep validation, constraint propagation, Mode 2 checker synthesis, /validate post-pass, report generation, and lifecycle completion.
 
@@ -148,7 +151,7 @@ These tools are available for hypothesis validation. The orchestrator invokes th
 
 **SMT verbs:** `check-overflow`, `check-oob`, `check-null-deref`, `check-overflow-to-oob`, `check-negative-bypass`, `validate-path`
 
-**Orchestrator-only channels** (not `sweep --tool` choices): fail-open (`fail_open:*`), consistency (`consistency:*`, peer census + contract witnesses), API-boundary caller contracts (`api_boundary:caller-contract`), SMT invariant preservation (`smt:invariant-preservation`). See `docs/audit.md` for semantics.
+**Orchestrator-only channels** (not `sweep --tool` choices): fail-open (`fail_open:*`), consistency (`consistency:*`, peer census + contract witnesses), API-boundary caller contracts (`api_boundary:caller-contract`), SMT invariant preservation (`smt:invariant-preservation`), plus the ptr-lifecycle, lock-region, resource-bounds, release-order, and protocol-state channels. See `docs/audit.md` for semantics.
 
 **Manual sweep logging** (for tools not yet auto-executed):
 ```bash

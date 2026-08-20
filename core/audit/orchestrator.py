@@ -8621,6 +8621,20 @@ def _run_mechanical_detectors(
     except Exception:
         logger.debug("mechanical: callback_lifetime failed", exc_info=True)
 
+    # --- Check-then-create compound (keyed registration race) ---
+    try:
+        from .check_then_create import scan_gaps as _ctc_scan
+
+        for cf in _ctc_scan(gaps, source_texts):
+            _add(
+                cf.file, cf.function, "check_then_create",
+                cf.write_line, cf.description(),
+            )
+    except Exception:
+        logger.debug(
+            "mechanical: check_then_create failed", exc_info=True,
+        )
+
     # --- ASN.1 template declared-vs-accessed type witness ---
     try:
         from .asn1_template_mismatch import scan_sources as _asn1_scan

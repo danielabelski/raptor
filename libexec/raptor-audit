@@ -1464,7 +1464,19 @@ def _finalize_run(
     ]
     if model_id:
         lifecycle_args.extend(["--model", model_id])
-    subprocess.run(lifecycle_args, capture_output=True, check=False)
+    # Surface the child's stderr on failure — pre-fix capture_output
+    # swallowed it, so a failed complete (corrupt metadata, journal
+    # merge error) left the run stuck in 'running' with no signal.
+    lifecycle_cp = subprocess.run(
+        lifecycle_args, capture_output=True, text=True, check=False,
+    )
+    if lifecycle_cp.returncode != 0:
+        detail = (lifecycle_cp.stderr or "").strip()
+        print(
+            f"lifecycle complete failed (exit {lifecycle_cp.returncode})"
+            + (f": {detail}" if detail else ""),
+            file=sys.stderr, flush=True,
+        )
 
     return _exit_code_for(result.terminated_by)
 

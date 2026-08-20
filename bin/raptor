@@ -28,6 +28,143 @@ if [ ! -d "$RAPTOR_DIR/core" ]; then
     exit 1
 fi
 
+# ── Exec-boundary hardening ─────────────────────────────────────────
+# Runs BEFORE any binary is resolved via PATH; every exec below
+# inherits the result. RAPTOR_NO_LAUNCHER_HARDENING=1 skips the block.
+if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
+    # Core dumps off (a session crash dump can contain API keys).
+    # SOFT only, on purpose: the crash-analysis/fuzz legs re-raise
+    # the limit for their target processes (rr / AFL++ need dumps).
+    ulimit -S -c 0 2>/dev/null || true
+
+    # umask floor: always mask group/other write; never loosen a
+    # stricter operator mask.
+    umask "$(printf '%04o' "$(( $(umask) | 022 ))")"
+
+    # PATH scrub — a hostile entry can shadow python3/claude. Drop,
+    # one stderr line each: empty entries (resolve as cwd), relative
+    # entries (same hazard), world-writable dirs (o+w drops even with
+    # sticky — sticky doesn't stop planting a NEW binary). Skip
+    # nonexistent dirs silently. RAPTOR_ALLOW_UNSAFE_PATH=1 keeps
+    # flagged entries, with a warning each.
+    _scrubbed=""
+    _rest="${PATH:-}"
+    _last=""
+    while [ -z "$_last" ]; do
+        case "$_rest" in
+            *:*) _entry="${_rest%%:*}"; _rest="${_rest#*:}" ;;
+            *)   _entry="$_rest"; _last=1 ;;
+        esac
+        _drop_reason=""
+        _shown="$_entry"
+        if [ -z "$_entry" ]; then
+            _drop_reason="empty entry (resolves as cwd)"
+            _shown="(empty)"
+        elif [ "${_entry#/}" = "$_entry" ]; then
+            _drop_reason="relative entry"
+        elif [ ! -d "$_entry" ]; then
+            : # nonexistent — keep silently, nothing to inspect
+        else
+            # GNU stat first, BSD stat (macOS) fallback. Unreadable
+            # perms → keep (can't verify; PATH scrub is best-effort).
+            _perm="$(stat -Lc '%a' "$_entry" 2>/dev/null \
+                     || stat -Lf '%Lp' "$_entry" 2>/dev/null \
+                     || echo '')"
+            if [ -n "$_perm" ] && [ "$(( 0$_perm & 2 ))" -ne 0 ]; then
+                _drop_reason="world-writable dir"
+            fi
+        fi
+        if [ -n "$_drop_reason" ]; then
+            if [ -n "${RAPTOR_ALLOW_UNSAFE_PATH:-}" ]; then
+                echo "raptor: WARNING: keeping unsafe PATH entry ($_drop_reason; RAPTOR_ALLOW_UNSAFE_PATH set): $_shown" >&2
+                _scrubbed="$_scrubbed$_entry:"
+            else
+                echo "raptor: dropped unsafe PATH entry ($_drop_reason): $_shown" >&2
+            fi
+        else
+            _scrubbed="$_scrubbed$_entry:"
+        fi
+    done
+    PATH="${_scrubbed%:}"
+    export PATH
+    unset _scrubbed _rest _last _entry _shown _drop_reason _perm
+
+    # Warn (don't drop) when claude resolves under a world-writable
+    # ANCESTOR — the per-entry check above can't see parents.
+    _claude_path="$(command -v claude 2>/dev/null || true)"
+    if [ -n "$_claude_path" ]; then
+        _dir="$(dirname "$_claude_path")"
+        _hops=0
+        while [ -n "$_dir" ] && [ "$_dir" != "/" ] && [ "$_hops" -lt 64 ]; do
+            _perm="$(stat -Lc '%a' "$_dir" 2>/dev/null \
+                     || stat -Lf '%Lp' "$_dir" 2>/dev/null \
+                     || echo '')"
+            if [ -n "$_perm" ] && [ "$(( 0$_perm & 2 ))" -ne 0 ]; then
+                echo "raptor: WARNING: claude resolves under a world-writable tree: $_claude_path (writable ancestor: $_dir)" >&2
+                break
+            fi
+            _dir="$(dirname "$_dir")"
+            _hops=$((_hops + 1))
+        done
+        unset _dir _hops _perm
+    fi
+    unset _claude_path
+
+    # Per-session TMPDIR: <base>/raptor-<uid>/session-<pid>-<rand>
+    # (0700; <base> = operator TMPDIR or /tmp). Keeps tool scratch
+    # private and sweepable. Sweep runs at LAUNCH — exec means no
+    # EXIT trap survives — removing session dirs whose pid is dead;
+    # pid reuse only delays cleanup a cycle (safe direction).
+    _tmp_base="${TMPDIR:-/tmp}"
+    _tmp_base="${_tmp_base%/}/raptor-$(id -u)"
+    mkdir -p -m 700 "$_tmp_base" 2>/dev/null || true
+    # Squat check: base must be a non-symlink dir owned by us
+    # (mkdir -p "succeeds" on an existing attacker-created dir).
+    if [ ! -L "$_tmp_base" ] && [ -d "$_tmp_base" ] && [ -O "$_tmp_base" ]; then
+        chmod 700 "$_tmp_base" 2>/dev/null || true
+        for _d in "$_tmp_base"/session-*; do
+            [ -e "$_d" ] || continue      # unmatched glob
+            [ -L "$_d" ] && continue      # never follow symlinks
+            [ -d "$_d" ] || continue
+            _name="${_d##*/}"
+            if [[ "$_name" =~ ^session-([0-9]+)-[0-9]+$ ]]; then
+                _spid="${BASH_REMATCH[1]}"
+                if ! kill -0 "$_spid" 2>/dev/null; then
+                    # Depth bound: refuse suspiciously deep trees
+                    # (planted junk). find is -P: no symlink follow.
+                    if [ -n "$(find "$_d" -mindepth 24 -print -quit 2>/dev/null)" ]; then
+                        echo "raptor: skipping suspiciously deep stale session dir: $_d" >&2
+                        continue
+                    fi
+                    rm -rf -- "$_d"
+                fi
+            fi
+        done
+        unset _d _name _spid
+        # Advisory only — live sessions' scratch counts too.
+        _kb="$(du -sk "$_tmp_base" 2>/dev/null | cut -f1)"
+        if [ -n "$_kb" ] && [ "$_kb" -gt 5242880 ] 2>/dev/null; then
+            echo "raptor: note: $_tmp_base holds >5G of session scratch — stale dirs sweep on each launch; live ones may need manual cleanup" >&2
+        fi
+        unset _kb
+        # $$ survives the exec, so the name tracks the session.
+        _try=0
+        while [ "$_try" -lt 5 ]; do
+            _sess="$_tmp_base/session-$$-$RANDOM"
+            if mkdir -m 700 "$_sess" 2>/dev/null; then
+                export TMPDIR="$_sess"
+                break
+            fi
+            _try=$((_try + 1))
+        done
+        unset _try _sess
+    else
+        echo "raptor: warning: $_tmp_base is not a directory owned by this user — session TMPDIR disabled for this launch" >&2
+    fi
+    unset _tmp_base
+fi
+# ── end exec-boundary hardening ─────────────────────────────────────
+
 # Fast path: print the framework version and exit without launching a session.
 case "${1:-}" in
     --version|-V|version)

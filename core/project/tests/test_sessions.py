@@ -88,6 +88,13 @@ class SessionsRegistryTest(unittest.TestCase):
         # Different project doesn't match.
         self.assertEqual(sessions.other_sessions("otherapp"), [])
 
+    def test_registry_dir_is_private(self):
+        """0700 on the registry dir — including tightening a
+        pre-existing looser one."""
+        self.sessions_dir.mkdir(parents=True, mode=0o755)
+        sessions.record_session("myapp", pid=os.getpid())
+        self.assertEqual(self.sessions_dir.stat().st_mode & 0o777, 0o700)
+
     def test_hostile_since_field_is_escaped_and_bounded(self):
         """Entry fields are file content — no raw escapes or floods in
         the awareness line."""
@@ -245,6 +252,8 @@ class LauncherAwarenessTest(unittest.TestCase):
             self.assertEqual(len(own), 1, list(sessions_dir.iterdir()))
             self.assertIn("project=myapp",
                           own[0].read_text(encoding="utf-8"))
+            self.assertEqual(sessions_dir.stat().st_mode & 0o777, 0o700,
+                             "registry dir readable by other users")
 
     def test_launcher_awareness_escapes_hostile_since(self):
         with TemporaryDirectory() as d:

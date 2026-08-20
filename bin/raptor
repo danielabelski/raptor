@@ -494,8 +494,11 @@ cd "$RAPTOR_DIR" || { echo "raptor: cannot cd to $RAPTOR_DIR" >&2; exit 1; }
 # survives the exec) to its active project; dead-pid entries prune at
 # read time. Runs AFTER startup-check so -p/auto-detect is what
 # registers. Format shared with core/project/sessions.py.
+# 0700: which project each session works on is not for other local
+# users; chmod tightens a dir an older writer created looser.
 _sessions_dir="$HOME/.local/share/raptor/sessions.d"
-if mkdir -p "$_sessions_dir" 2>/dev/null; then
+if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
+    _rp chmod 700 "$_sessions_dir" 2>/dev/null || true
     _active_proj=""
     _active_link="$(readlink "$HOME/.raptor/projects/.active" 2>/dev/null || true)"
     case "$_active_link" in

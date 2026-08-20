@@ -68,7 +68,12 @@ def record_session(project: str | None, pid: int | None = None) -> int | None:
     if pid is None:
         return None
     try:
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        # 0700: which project each session is working on is operator
+        # telemetry — not for other local users. chmod covers a dir
+        # created looser by an older writer (mkdir mode only applies
+        # at creation).
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        SESSIONS_DIR.chmod(0o700)
         entry = SESSIONS_DIR / str(pid)
         if project is None:
             entry.unlink(missing_ok=True)

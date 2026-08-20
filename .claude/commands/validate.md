@@ -102,19 +102,21 @@ When present, use it as operator-owned context throughout all LLM stages (A-D, F
    Merges stage-d.json, validates Stage D output, auto-discovers binaries in the target directory.
 2. **Analysis:** For each binary group found by prep, run feasibility:
    ```bash
-   libexec/raptor-run-feasibility <binary_path> "$OUTPUT_DIR/findings.json" "$OUTPUT_DIR"
+   libexec/raptor-run-feasibility <binary_path> "$OUTPUT_DIR/findings.json" "$OUTPUT_DIR" --target "$TARGET_PATH"
    ```
    This analyzes the binary, maps constraints to findings, and updates findings.json.
+   `--target` enables the empirical mitigation map; without it that analysis is silently skipped.
 
 3. **Output:** Findings are updated automatically with feasibility verdicts and `final_status`:
 
 | Feasibility Verdict | `final_status` |
 |---------------------|----------------|
-| likely / likely_exploitable | `exploitable` |
+| likely / likely_exploitable | `likely_exploitable` |
+| exploitable | `exploitable` |
 | difficult | `confirmed_constrained` |
 | unlikely | `confirmed_blocked` |
 | not_applicable | `confirmed` (unchanged) |
-| binary_not_found | `confirmed_unverified` |
+| unknown / error / binary_not_found | `confirmed_unverified` |
 
 Skip Stage E if `--skip-feasibility` or no memory corruption findings.
 

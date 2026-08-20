@@ -57,6 +57,7 @@ autonomous analysis pipeline.
 | `--sanitizer-cut-parity-log <path>` | auto | Parity-log path for `--sanitizer-cut shadow` (default: `<run_dir>/sanitizer_cut_parity.jsonl`) |
 | `--no-iris-tier1` | off | Skip IRIS Tier 1 in-repo LocalFlowSource pack analysis |
 | `--no-curated-queries` | off | Skip the curated in-repo query pass (`engine/codeql/queries/<lang>/`) |
+| `--no-learned-models` | off | Skip the learned-models measurement pass (IRIS taint specs emitted as a models-as-data pack; baseline vs augmented diff) |
 | `--threat-models <csv>` | `local` | Threat models enabled on the standard suite (`--threat-model=<name>` per entry) |
 | `--no-threat-models` | off | Pass no `--threat-model` flag (stock remote-only source models) |
 | `--sandbox <profile>` | full | [Sandbox](sandbox.md) profile (`full` / `strict` / `debug` / `target_run` / `frida` / `network-only` / `none`) |
@@ -131,7 +132,7 @@ same repository.
 
 Implemented in `packages/codeql/database_manager.py`.
 
-**Buildless C/C++ and Java (default).** C/C++ and Java databases are
+**Buildless C/C++, Java, and C# (default).** These databases are
 created with `--build-mode=none`: the extractor parses source without
 invoking any build system, so no repo-controlled code executes during
 `database create`. This is the untrusted-repo posture — a build
@@ -141,11 +142,14 @@ construction: `database create` runs with the sandbox network
 blocked, so an autobuild that needs to fetch dependencies always
 fails, while buildless extraction proceeds with unresolved
 dependencies at reduced type fidelity. Version floors: CLI >= 2.16
-for C/C++, >= 2.16.4 for Java; older CLIs get a clear skip, never a
-silent fallback to a traced build. When an operator's explicit
-traced build (`--traced-build` / `--build-command`) fails for a
-buildless-capable language, one buildless retry runs with a loud
-degradation warning and a provenance note on the result.
+for C/C++, >= 2.16.4 for Java, >= 2.17.1 for C#; older CLIs get a
+clear skip, never a silent fallback to a traced build. When an
+operator's explicit traced build (`--traced-build` /
+`--build-command`) fails for a buildless-capable language, one
+buildless retry runs with a loud degradation warning and a
+provenance note on the result. Languages with no buildless mode
+(Go, Swift, Kotlin) run the extractor's autobuild, disclosed with a
+loud untrusted-traced-build banner and a run-metadata record.
 
 The trade-off is accuracy: buildless extraction cannot see
 build-generated headers (`config.h`, yacc/protobuf output), so TUs
@@ -214,7 +218,7 @@ TypeScript reuses the JavaScript suite; Kotlin reuses the Java suite.
 
 If a required query pack is not installed locally, the runner
 automatically downloads it via `codeql pack download` with up to
-three retries and exponential backoff.
+three attempts and exponential backoff (1s, 2s).
 
 **IRIS LocalFlowSource pass:** After the standard suite, RAPTOR runs
 in-repo query packs (`packages/llm_analysis/codeql_packs/`) that
@@ -242,6 +246,13 @@ IRIS pass and threat models ran, the agent logs a per-(language, CWE)
 standard-vs-IRIS finding-count comparison and records it as
 `threat_model_overlap` in `codeql_report.json` — data for deciding
 whether individual IRIS queries are subsumed.
+
+**Learned-models measurement pass:** IRIS taint specs learned for the
+target are emitted as a CodeQL models-as-data extension pack and the
+suite is re-run with it, recording a baseline-vs-augmented finding
+diff -- data for whether learned specs widen real coverage. Disable
+with `--no-learned-models` (or
+`RaptorConfig.CODEQL_LEARNED_MODELS_ENABLED`).
 
 ### Phase 5 -- Reporting
 
@@ -443,18 +454,20 @@ CodeQL suite coverage across both suite tiers:
 | Kotlin | yes | yes | Reuses Java suite |
 | Rust | yes | yes | |
 
-Language auto-detection covers 10 languages (all except Rust, which
-has no detection pattern but can be specified via `--languages rust`).
+Language auto-detection covers all 11 languages. Rust is additionally
+extractor-probed (`codeql resolve languages`), so CLIs without the
+Rust extractor get a clear skip.
 
 
 ## Prerequisites
 
 - **CodeQL CLI** -- must be on `PATH` or specified via `--codeql-cli`.
   Query packs are auto-downloaded on first use.
-- **Build toolchain** -- for compiled languages (C/C++, Java, C#, Go,
-  Swift, Kotlin), the appropriate compiler or build tool must be
-  installed. Interpreted languages (Python, JavaScript, TypeScript,
-  Ruby) use no-build extraction.
+- **Build toolchain** -- only for traced builds (`--traced-build` /
+  `--build-command`) and for the autobuild languages (Go, Swift,
+  Kotlin). C/C++, Java, and C# default to buildless extraction, and
+  interpreted languages (Python, JavaScript, TypeScript, Ruby) use
+  no-build extraction -- neither needs a compiler.
 - **z3-solver** (optional) -- `pip install z3-solver` to enable SMT
   path feasibility checks. Without it, the SMT stage is silently
   skipped and all findings proceed to full LLM analysis.

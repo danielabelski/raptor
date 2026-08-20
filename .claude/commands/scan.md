@@ -31,7 +31,7 @@ You are helping the user run RAPTOR's autonomous security scanning on a code rep
 
 ## Example Commands
 
-Full autonomous workflow (Semgrep + LLM analysis; add `--codeql` to include CodeQL):
+Full autonomous workflow (Semgrep + CodeQL + LLM analysis; pass `--no-codeql` to skip CodeQL):
 ```bash
 libexec/raptor-agentic --repo /path/to/code --max-findings 10
 ```
@@ -45,10 +45,10 @@ python3 raptor.py scan --repo /path/to/code --policy-groups secrets,injection
 
 - Always use absolute paths for repositories
 - The scan outputs go to `out/` directory
-- RAPTOR generates:
-  - SARIF files with findings
-  - Exploit PoC code (in `exploits/` directory)
-  - Secure patches (in `patches/` directory)
-  - Detailed analysis reports
+- `/scan` itself is mechanical: SARIF files with findings, scan metrics,
+  coverage records — no LLM analysis
+- The agentic workflow additionally generates exploit PoC code
+  (`autonomous/exploits/`), secure patches (`autonomous/patches/`), and
+  detailed analysis reports
 
 Be helpful and explain security concepts clearly!

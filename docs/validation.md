@@ -154,8 +154,9 @@ paths.  Tools include `raptor-smt-validate-path` (general-purpose path
 condition checking), `raptor-smt-check-overflow` (CWE-190), `raptor-smt-check-oob`
 (CWE-125/787), and `raptor-smt-check-null-deref` (CWE-476).  An `unsat`
 verdict caps PROXIMITY at 1 and moves the hypothesis to `disproven.json`; a
-`sat` verdict with a concrete witness model floors PROXIMITY at 6 and provides
-PoC input values directly.
+`sat` verdict with a concrete witness model binding named locals floors
+PROXIMITY at 6 and provides PoC input values directly (a model containing
+`_anon_N` free variables is a soft signal only and does not floor).
 
 Stage B also annotates attack paths with [Frida](frida.md) runtime evidence
 when available.  If a function was observed executing at runtime, reachability
@@ -456,7 +457,8 @@ out/validate_<target>_<timestamp>/     (project mode: <project>/validate-<timest
   diagrams.md               -- Mermaid visual maps (Stage 1)
   summary.txt               -- Tabular summary (Stage 1)
   build/                    -- Compiled PoCs (Stage A)
-  coverage-llm.json         -- Coverage tracking data (Stage 1)
+  coverage-llm.json         -- Coverage record: items analysed (Stage 1)
+  coverage-read.json        -- Coverage record: files read (Stage 1)
 ```
 
 ### Validation gates

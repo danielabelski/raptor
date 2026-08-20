@@ -91,7 +91,11 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
     # Integer
     "CWE-190": {
         "smt": "check-overflow",
-        "cocci": "integer_overflow_alloc.cocci",
+        # Two standing shapes: multiplication overflow feeding an
+        # allocation, and a 32-bit division-derived count whose
+        # round-up wraps before the allocator sees the size.
+        "cocci": ["integer_overflow_alloc.cocci",
+                  "alloc_narrow_count.cocci"],
         "joern": False,
         "codeql": "cpp/integer-overflow",
         "sinks": [],

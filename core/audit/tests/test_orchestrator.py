@@ -2594,6 +2594,41 @@ class TestQualifiedIdentityCarry:
         assert result.outcomes[0].function_qualified == "Recv.SetVal"
 
 
+class TestVerdictFinalizationLatch:
+    """After the corrective passes, a straggler commit (abandoned
+    study re-review finishing late) must not append — it would land
+    after the corrective rows and win last-row-wins with a verdict the
+    export never saw."""
+
+    def test_late_commit_suppressed(self, tmp_path: Path):
+        from core.audit.journal import latest_entries
+        from core.audit.orchestrator import _commit_outcome
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.c").write_text("int f(void) { return 0; }\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        config = OrchestratorConfig(target_path=target, out_dir=out)
+
+        early = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="b", line=1,
+        )
+        _commit_outcome(config, early, {"line_start": 1})
+        config._verdicts_finalized = True
+        late = ReviewOutcome(
+            file="a.c", function="f", status="clean",
+            body="late re-review", line=1,
+        )
+        _commit_outcome(config, late, {"line_start": 1})
+
+        entries = latest_entries(out)
+        assert len(entries) == 1
+        (entry,) = entries.values()
+        assert entry.verdict == "suspicious"
+
+
 class TestRelogFinalStatuses:
     """Audit-log twin of the re-journal pass: ``orchestrator_review``
     rows are written mid-loop, pre-resolution — the end-of-run pass

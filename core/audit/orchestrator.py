@@ -486,6 +486,12 @@ class OrchestratorConfig:
     # unchanged reviewed functions are suppressed, nothing imported.
     # ``force=True`` bypasses both (everything re-reviews).
     verdict_reuse: bool = True
+    # Set by the end-of-run corrective passes: once final statuses are
+    # re-journaled/re-logged, any straggler commit (an abandoned study
+    # re-review finishing after the drain gave up on it) must not
+    # append — it would land after the corrective rows and win the
+    # last-row-wins read with a verdict the export never saw.
+    _verdicts_finalized: bool = False
     # ── Accumulated-knowledge gates ────────────────────────────────
     # Every gate below defaults ON — today's production behaviour.
     # The corpus runner's cold profile turns them off so a
@@ -7372,6 +7378,7 @@ def _run_audit_body(
         logger.debug("re-journal pass failed", exc_info=True)
     try:
         _relog_final_statuses(result, config)
+        config._verdicts_finalized = True
     except Exception:
         logger.debug("re-log pass failed", exc_info=True)
 
@@ -7554,6 +7561,7 @@ def _sigterm_salvage(
         logger.debug("salvage: re-journal pass failed", exc_info=True)
     try:
         _relog_final_statuses(result, config)
+        config._verdicts_finalized = True
     except Exception:
         logger.debug("salvage: re-log pass failed", exc_info=True)
 
@@ -8858,6 +8866,14 @@ def _commit_outcome(
     completion; consumers wanting per-function verdict/context read
     the journal directly.
     """
+    if config._verdicts_finalized:
+        logger.warning(
+            "late commit after verdict finalization suppressed for "
+            "%s:%s (status %s) — the run's exports are already cut",
+            outcome.file, outcome.function, outcome.status,
+        )
+        return
+
     checked_by = ["audit"]
     if outcome.model:
         checked_by.append(outcome.model)

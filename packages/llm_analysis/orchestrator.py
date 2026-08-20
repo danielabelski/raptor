@@ -793,11 +793,14 @@ def orchestrate(
             return None
 
         def dispatch_fn(prompt, schema, system_prompt, temperature, model):
-            # CC's invoke_cc_simple has no separate system_prompt slot — everything
-            # goes via stdin. Prepend the system prompt so the bundle migration's
-            # role-separated build_prompt (user-only) doesn't lose its instructions.
-            full = (system_prompt + "\n\n" + prompt) if system_prompt else prompt
-            return invoke_cc_simple(full, schema, repo_path, claude_bin, out_dir)
+            # Route the system prompt through CC's dedicated
+            # `--system-prompt` channel (CCDispatchConfig.system_prompt).
+            # Pre-fix it was folded into the user prompt via stdin,
+            # regressing the documented trust separation — operator
+            # instructions and finding-derived content arrived on the
+            # SAME channel from the model's perspective.
+            return invoke_cc_simple(prompt, schema, repo_path, claude_bin,
+                                    out_dir, system_prompt=system_prompt)
 
         dispatch_mode = "cc_dispatch"
 
@@ -975,8 +978,10 @@ def orchestrate(
             dispatch_mode = "cc_fallback"
 
             def dispatch_fn(prompt, schema, system_prompt, temperature, model):
-                full = (system_prompt + "\n\n" + prompt) if system_prompt else prompt
-                return invoke_cc_simple(full, schema, repo_path, claude_bin, out_dir)
+                # Same dedicated system-prompt channel as the primary
+                # CC dispatch path above — never fold into user content.
+                return invoke_cc_simple(prompt, schema, repo_path, claude_bin,
+                                        out_dir, system_prompt=system_prompt)
 
             # Carry the per-model intersected profile into the
             # CC-fallback AnalysisTask. Pre-fix `AnalysisTask()`

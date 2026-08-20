@@ -34,10 +34,16 @@ CC_BUDGET_PER_FINDING = "1.00"  # string — passed as CLI arg to --max-budget-u
 
 
 def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
-                     timeout=CC_TIMEOUT):
+                     timeout=CC_TIMEOUT, system_prompt=None):
     """CC invocation with pre-built prompt. Returns DispatchResult.
 
     Used as a dispatch_fn callable by dispatch_task().
+
+    ``system_prompt`` routes through CCDispatchConfig.system_prompt
+    (the ``--system-prompt`` flag) — never fold it into ``prompt``:
+    concatenation sends operator instructions on the same channel as
+    finding-derived user content, dropping the role separation CC's
+    prompt-injection defences key off (see CCDispatchConfig).
     """
     # Use the caller's schema. Pre-fix this was
     # `build_schema() if schema else None`, which IGNORED the
@@ -62,6 +68,7 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
         budget_usd=CC_BUDGET_PER_FINDING,
         timeout_s=timeout,
         json_schema=effective_schema,
+        system_prompt=system_prompt,
     )
     cmd = build_cc_command(config)
 

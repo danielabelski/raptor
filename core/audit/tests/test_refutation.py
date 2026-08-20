@@ -1092,7 +1092,15 @@ class TestRaceProtectedSelfRefutation:
         r = rescue_self_refuted(self._race_outcome(), source=unlocked)
         assert r is not None
 
-    def test_uaf_refutation_unaffected_by_lock_protection(self):
+    def test_uaf_refutation_accepted_when_locked_and_nothing_freed(self):
+        # Doctrine update (corpus-verified): a lifetime self-refutation
+        # on FULLY lock-protected source that frees NOTHING is
+        # mechanically corroborated — the claimed hazard has no local
+        # mechanism and no concurrent window in scope. Flooring it
+        # manufactured a family of kernel false positives (the model
+        # concluded clean, the floor shipped suspicious, and no
+        # verification channel could ever adjudicate the lifetime
+        # claim).
         outcome = _Outcome(
             status="clean",
             hypotheses=[{
@@ -1102,7 +1110,76 @@ class TestRaceProtectedSelfRefutation:
             }],
         )
         r = rescue_self_refuted(outcome, source=self._LOCKED_C)
+        assert r is None
+
+    _BARE_FREE_C = (
+        "void teardown(struct dev_priv *priv)\n"
+        "{\n"
+        "\tkfree(priv->buf);\n"
+        "\tpriv->buf = NULL;\n"
+        "}\n"
+    )
+
+    def test_uaf_refutation_still_floored_over_bare_free(self):
+        # A bare free with no visible teardown ordering: the witness
+        # grades unsafe, so the self-refutation is NOT accepted.
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-416 use after free of the buffer",
+                "confidence": "refuted",
+                "counter": "no concurrent access believed possible",
+            }],
+        )
+        r = rescue_self_refuted(outcome, source=self._BARE_FREE_C)
         assert r is not None
+        assert r.demote_to == "suspicious"
+
+    _ASYNC_CANCEL_FREE_C = (
+        "void disconnect(struct outer *dev)\n"
+        "{\n"
+        "\tstruct dev_priv *priv = dev->private;\n"
+        "\ttimer_delete(&priv->timer);\n"
+        "\tkfree(dev->private);\n"
+        "}\n"
+    )
+
+    def test_uaf_refutation_still_floored_over_async_cancel_free(self):
+        # The async-cancel-then-free race shape grades UNSAFE — a
+        # reviewer talking itself out of the real teardown race stays
+        # floored.
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-416 use after free via the timer callback",
+                "confidence": "refuted",
+                "counter": "timer_delete cancels the pending timer",
+            }],
+        )
+        r = rescue_self_refuted(outcome, source=self._ASYNC_CANCEL_FREE_C)
+        assert r is not None
+
+    _SYNC_TEARDOWN_C = (
+        "void release(struct ctx *c)\n"
+        "{\n"
+        "\thrtimer_cancel(&c->tmr);\n"
+        "\tkfree_rcu(c, rcu);\n"
+        "}\n"
+    )
+
+    def test_uaf_refutation_accepted_over_waiting_teardown(self):
+        # Waiting cancel + RCU-deferred reclamation corroborate the
+        # reviewer's lifetime self-refutation.
+        outcome = _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": "CWE-416 use after free if the callback re-arms",
+                "confidence": "refuted",
+                "counter": "hrtimer_cancel waits; kfree_rcu defers",
+            }],
+        )
+        r = rescue_self_refuted(outcome, source=self._SYNC_TEARDOWN_C)
+        assert r is None
 
 
 class TestPreEvidenceCorroboratedRefutation:

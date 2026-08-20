@@ -711,6 +711,14 @@ _LOCK_DISCHARGEABLE_RACE_CWES = frozenset({
     "CWE-362", "CWE-364", "CWE-366",
 })
 
+# Lifetime families the safe-teardown witness can discharge
+# (callback_lifetime.check_safe_teardown): a UAF/double-free
+# self-refutation corroborated by waiting-cancel / RCU-deferred /
+# no-deallocation evidence is accepted instead of floored.
+_TEARDOWN_DISCHARGEABLE_CWES = frozenset({
+    "CWE-415", "CWE-416",
+})
+
 
 # Pre-loop screen families whose injected evidence can corroborate a
 # same-family self-refutation, and the hypothesis-text family matcher.
@@ -786,12 +794,26 @@ def rescue_self_refuted(
         return None
 
     race_protected = False
+    teardown_safe = False
+    teardown_reason = ""
     if source:
         try:
             from .condition_smt import check_race_protection
             race_protected = check_race_protection(source).protected
         except Exception:
             logger.debug("race-protection probe failed", exc_info=True)
+        try:
+            from .callback_lifetime import check_safe_teardown
+            _st = check_safe_teardown(source)
+            teardown_safe = _st.safe
+            teardown_reason = _st.reason
+            # The no-deallocation arm alone is too weak to discharge a
+            # lifetime claim (the free may live elsewhere); demand the
+            # serialization witness on top of it.
+            if _st.no_dealloc and not race_protected:
+                teardown_safe = False
+        except Exception:
+            logger.debug("safe-teardown probe failed", exc_info=True)
 
     hypotheses = getattr(outcome, "hypotheses", None) or []
     if not hypotheses:
@@ -862,12 +884,31 @@ def rescue_self_refuted(
 
         mechanism = h.get("mechanism", "")
         cwes = _extract_cwes_from_text(mechanism)
-        if race_protected and cwes and cwes <= _LOCK_DISCHARGEABLE_RACE_CWES:
+        # Mechanically-discharged CWE families: a self-refutation whose
+        # every claimed class is covered by a corroborating witness is
+        # ACCEPTED — re-flagging it manufactures a false positive.
+        discharged: set = set()
+        if race_protected:
+            discharged |= _LOCK_DISCHARGEABLE_RACE_CWES
+        if teardown_safe:
+            # Lifetime self-refutations are corroborated by the
+            # safe-teardown witness (waiting cancel / RCU-deferred
+            # reclamation / self-handler / no deallocation in scope).
+            # The async-cancel-then-free shape grades UNSAFE, so a
+            # reviewer talking itself out of that real race is still
+            # floored.
+            discharged |= _TEARDOWN_DISCHARGEABLE_CWES
+        if cwes and cwes <= discharged:
             logger.info(
-                "anti-self-refutation: accepting race self-refutation "
-                "for %s — every shared-state access is mechanically "
-                "lock-protected",
+                "anti-self-refutation: accepting self-refutation for "
+                "%s — mechanically corroborated (%s)",
                 getattr(outcome, "function", "?"),
+                "; ".join(
+                    ([("race: full lock protection")] if race_protected
+                     and cwes & _LOCK_DISCHARGEABLE_RACE_CWES else [])
+                    + ([f"lifetime: {teardown_reason}"] if teardown_safe
+                       and cwes & _TEARDOWN_DISCHARGEABLE_CWES else [])
+                ),
             )
             continue
         if cwes & _SELF_REFUTATION_CWES:

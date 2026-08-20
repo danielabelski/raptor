@@ -20257,6 +20257,14 @@ def _post_loop_receipt_rescue(
 
     from .refutation import rescue_self_refuted
 
+    spans_by_fn: dict[tuple[str, str], tuple[int, int]] = {}
+    for g in gaps or []:
+        gf, gn = g.get("file", ""), g.get("name", "")
+        if gf and gn and g.get("line_start"):
+            spans_by_fn.setdefault(
+                (gf, gn), (g["line_start"], g.get("line_end") or 0),
+            )
+
     flipped = 0
     for outcome in result.outcomes:
         if outcome.status != "clean":
@@ -20267,6 +20275,20 @@ def _post_loop_receipt_rescue(
         pre_evidence = pre_evidence_by_fn.get(fn_key)
         if not receipts and not detectors and not pre_evidence:
             continue
+        # Raw disk span, same as the review-time gate: without it the
+        # gate's mechanical acceptance probes (race protection, safe
+        # teardown) cannot run, so this backstop RE-FLOORED exactly the
+        # self-refutations the mid-loop gate had accepted with source
+        # in hand.
+        _span = spans_by_fn.get((outcome.file, outcome.function))
+        _rescue_src = (
+            _read_raw_source(
+                config.target_path, outcome.file, _span[0],
+                _span[1] or None,
+            )
+            if _span
+            else None
+        )
         try:
             # Detector findings and screen receipts ride along: a
             # mid-loop floor can be clobbered by a later re-review
@@ -20278,6 +20300,7 @@ def _post_loop_receipt_rescue(
                 negative_space=receipts or [],
                 detector_findings=detectors or None,
                 pre_evidence=pre_evidence,
+                source=_rescue_src or None,
             )
         except Exception:
             logger.debug(

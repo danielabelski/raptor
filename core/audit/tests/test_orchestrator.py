@@ -2397,6 +2397,59 @@ class TestPostLoopReceiptRescue:
         assert rows[0]["stage"] == "post-loop"
         assert rows[0]["function"] == "wire_endpoints"
 
+    def test_source_reaches_gate_for_mechanical_acceptance(
+        self, tmp_path: Path,
+    ):
+        """The post-loop backstop threads the raw source span to the
+        gate: without it the mechanical acceptance probes (safe
+        teardown / race protection) cannot run and this pass RE-FLOORED
+        the very self-refutations the mid-loop gate had accepted."""
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        src_file = config.target_path / "t.c"
+        src_file.write_text(
+            "static int release_ctx(struct ctx *c)\n"
+            "{\n"
+            "\thrtimer_cancel(&c->tmr);\n"
+            "\tkfree_rcu(c, rcu);\n"
+            "\treturn 0;\n"
+            "}\n",
+        )
+        outcome = ReviewOutcome(
+            file="t.c", function="release_ctx", status="clean",
+            body="reviewed clean", line=1,
+            hypotheses=[{
+                "mechanism": (
+                    "CWE-416 use after free: kfree_rcu frees the ctx "
+                    "while a callback may still walk it"
+                ),
+                "confidence": "refuted",
+                "counter": "hrtimer_cancel waits; kfree_rcu defers",
+            }],
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        detectors = {
+            "t.c:release_ctx": [{
+                "file": "t.c", "function": "release_ctx",
+                "detector": "typestate", "line": 4,
+                "description": "free of tracked pointer",
+            }],
+        }
+        gaps = [{
+            "file": "t.c", "name": "release_ctx",
+            "line_start": 1, "line_end": 6,
+        }]
+        flipped = _post_loop_receipt_rescue(
+            result, [], config,
+            mechanical_findings=detectors, gaps=gaps,
+        )
+        # The waiting-teardown witness discharges the lifetime
+        # self-refutation — no re-floor.
+        assert flipped == 0
+        assert outcome.status == "clean"
+
     def test_non_structural_receipt_ignored(self, tmp_path: Path):
         from core.audit.orchestrator import _post_loop_receipt_rescue
 

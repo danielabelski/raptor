@@ -210,9 +210,15 @@ def _build_taint_approx(
         if scope else None
     )
 
+    # Same per-file size ceiling as the inventory builder — a multi-MB
+    # generated/vendored source file costs seconds of parse time for
+    # approximations nobody reads.
+    from core.inventory.builder import MAX_FILE_BYTES
+
     results: dict[str, Any] = {}
     c_exts = {".c", ".h"}
     cpp_exts = {".cc", ".cpp", ".cxx", ".hpp"}
+    skipped_large = 0
 
     for path in target_path.rglob("*"):
         if not path.is_file():
@@ -224,20 +230,36 @@ def _build_taint_approx(
             continue
 
         try:
+            if path.stat().st_size > MAX_FILE_BYTES:
+                skipped_large += 1
+                continue
             content = path.read_text(errors="replace")
         except OSError:
             continue
 
         rel = str(path.relative_to(target_path))
 
-        if suffix in c_exts:
-            approxes = extract_taint_approx_c(content)
-        else:
-            approxes = extract_taint_approx_cpp(content)
+        # Per-file guard: one pathological file (parser crash, walker
+        # bug, RecursionError from an extreme tree) must not sink the
+        # taint pass for the whole target — log and move on.
+        try:
+            if suffix in c_exts:
+                approxes = extract_taint_approx_c(content)
+            else:
+                approxes = extract_taint_approx_cpp(content)
+        except Exception as e:  # noqa: BLE001 — skip one file, keep the pass
+            logger.warning(
+                "taint_approx: extraction failed for %s; skipping file "
+                "(%s: %s)", rel, e.__class__.__name__, e)
+            continue
 
         for func_name, approx in approxes.items():
             results[f"{rel}:{func_name}"] = approx
 
+    if skipped_large:
+        logger.info(
+            "taint_approx: %d file(s) skipped (larger than %d bytes)",
+            skipped_large, MAX_FILE_BYTES)
     if results:
         logger.info("taint_approx: %d functions analysed", len(results))
     return results or None

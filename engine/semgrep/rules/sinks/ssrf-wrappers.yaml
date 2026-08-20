@@ -62,13 +62,20 @@ rules:
     severity: CRITICAL
     mode: taint
     pattern-sources:
-      - pattern-either:
-          - pattern: $REQ.query.$PROP
-          - pattern: $REQ.query[...]
-          - pattern: $REQ.params.$PROP
-          - pattern: $REQ.params[...]
-          - pattern: $REQ.body.$PROP
-          - pattern: $REQ.body[...]
+      # Express — receiver-name anchored: a bare $REQ matches ANY
+      # object, so fully hardcoded code self-taints (same fix as the
+      # Express sources in sinks/ssrf.yaml).
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query.$PROP
+              - pattern: $REQ.query[...]
+              - pattern: $REQ.params.$PROP
+              - pattern: $REQ.params[...]
+              - pattern: $REQ.body.$PROP
+              - pattern: $REQ.body[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: '(?i)^(req|request)$'
     pattern-propagators:
       - pattern: $U.searchParams.set($K, $V)
         from: $V

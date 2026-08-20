@@ -416,6 +416,13 @@ The verdict flows through the existing reachability chokepoint: /codeql + /agent
 - `--binary-edges` — Inc 2b Tier 1/2: extract direct call edges + vtable resolution via r2 (single-invocation script-file mode; cached per-build-id with cross-target collision check). Slow (~10-30s per binary, then cached). Required for the `binary_call_edge` REACHABLE promote witness (rescues functions the source-graph thought were dead).
 - For `--target-kind=hybrid` deployments (library + application both shipped), declare MULTIPLE binaries — a function is `absent` only when EVERY declared binary lacks it. Tier-weighted combine: when full-DWARF and symbol-only disagree, full-DWARF wins (`alive-in-any` rule only applies same-tier).
 
+**Provenance-drop consent (interactive sessions only, after the run completes — never mid-pipeline):** when a run's output shows the `binary-oracle: N repo-committed binary(s) ignored (provenance unverified — could be planted or stale)` warning, offer the trust decision as a structured choice (see INTERACTIVE PROMPTS; gate with `libexec/raptor-may-ask` first). Options:
+1. **Stay safe (Recommended)** — keep the drop. Verdicts continue to come only from locally-built (git-untracked) binaries; a committed binary can be attacker-planted or stale and would steer `absent` verdicts toward suppressing real findings.
+2. **Trust for this run** — re-run with `--binary <path>` naming the dropped binary(s); list the exact paths from the warning in the description. Grants: bypasses the git-tracked provenance filter for that one run; the binary's DWARF/symbol data then drives `absent`-verdict suppression.
+3. **Persist via `/project binary add <path>`** — one add per dropped binary. Grants: auto-loaded by every subsequent `/agentic`, `/codeql`, `/validate` run on the active project — the same trust as option 2, standing.
+
+**Non-interactive fallback:** current behavior — the binaries stay dropped; surface the warning plus the `--binary <path>` / `/project binary add` escape hatches in the run summary.
+
 **Persistent per-project config**:
 - `/project binary add <path>` — persist a binary path on the active project. Auto-loaded by every subsequent /agentic / /codeql / /validate run. `is_file()`-validated at add time.
 - `/project binary list` / `remove` / `clear` — manage the persisted list.

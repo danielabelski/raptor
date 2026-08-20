@@ -277,6 +277,11 @@
   "count": 13,
   "kind": "literal"
  },
+ "core/audit/condition_smt.py::_SIGNED_TYPE_NAMES": {
+  "count": 20,
+  "kind": "literal",
+  "note": "signed C/kernel integer type names for declared-signedness evidence (language taxonomy, not target API names)"
+ },
  "core/audit/condition_smt.py::_TOCTOU_C_CHECKS": {
   "count": 10,
   "kind": "alternation"
@@ -288,6 +293,11 @@
  "core/audit/condition_smt.py::_TOCTOU_GO_USES": {
   "count": 14,
   "kind": "alternation"
+ },
+ "core/audit/condition_smt.py::_UNSIGNED_TYPE_NAMES": {
+  "count": 14,
+  "kind": "literal",
+  "note": "unsigned C/kernel integer type names for declared-signedness evidence (language taxonomy, not target API names)"
  },
  "core/audit/condition_smt.py::_TOCTOU_PY_USES": {
   "count": 13,

@@ -9,6 +9,15 @@ import os
 from pathlib import Path
 from typing import ClassVar
 
+# Imported at module level DELIBERATELY (stdlib-only leaf module, no
+# cycle risk): get_safe_env() runs inside post-fork sandbox children
+# (_spawn.run_sandboxed's env=None default), where a lazy first-time
+# import would need filesystem reads the child's Landlock read
+# allowlist does not grant — the child died ModuleNotFoundError
+# whenever the parent process had not already imported the module.
+from core.security.env_sanitisation import normalise_proxy_url, strip_env_vars
+from core.security.rule_of_two import is_ci
+
 
 class classproperty:
     """Descriptor that works like @property but on the class itself."""
@@ -934,7 +943,6 @@ class RaptorConfig:
         explicitly after calling get_safe_env(), or pass their own env=
         to subprocess.run() to bypass this filter entirely.
         """
-        from core.security.env_sanitisation import strip_env_vars
         allowlist = RaptorConfig.SAFE_ENV_ALLOWLIST
         prefixes = RaptorConfig.SAFE_ENV_PREFIXES
         env = {}
@@ -949,11 +957,9 @@ class RaptorConfig:
         # scrub (allowlist churn must not be able to reopen the
         # CI-with-pseudo-TTY bypass). RAPTOR_CI is itself a recognised
         # marker in core.security.rule_of_two.
-        from core.security.rule_of_two import is_ci
         if is_ci():
             env["RAPTOR_CI"] = "1"
         if preserve_proxy:
-            from core.security.env_sanitisation import normalise_proxy_url
             for pv in RaptorConfig.PROXY_ENV_VARS:
                 val = os.environ.get(pv)
                 if val is not None:

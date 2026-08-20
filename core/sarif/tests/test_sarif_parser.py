@@ -824,5 +824,145 @@ class TestValidateSchemaError(unittest.TestCase):
             )
 
 
+class TestFindingIdDiscipline(unittest.TestCase):
+    """finding_id must be per-finding, never the bare ruleId.
+
+    Regression: CodeQL results carry ``partialFingerprints`` (not
+    ``fingerprints``), so the pre-fix ``fingerprint or ruleId or sha``
+    chain gave EVERY CodeQL finding of one rule the same finding_id —
+    per-finding artifact files overwrote each other, dispatch keyed on
+    finding_id collided, and by_id maps dropped findings.
+    """
+
+    @staticmethod
+    def _codeql_result(line, column=5, fingerprint=None):
+        """Shape mirrors the CodeQL corpus fixture
+        (owasp_BenchmarkTest02612_codeql_…): ruleId +
+        partialFingerprints, no ``fingerprints`` member."""
+        result = {
+            "ruleId": "java/command-line-injection-local",
+            "message": {"text": "This command line depends on a user-provided value."},
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": "src/BenchmarkTest.java"},
+                    "region": {"startLine": line, "startColumn": column},
+                }
+            }],
+        }
+        if fingerprint is not None:
+            result["partialFingerprints"] = {
+                "primaryLocationLineHash": fingerprint,
+            }
+        return result
+
+    @staticmethod
+    def _parse(results):
+        from core.sarif.parser import parse_sarif_findings
+        sarif = {
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {"driver": {"name": "CodeQL", "rules": []}},
+                "results": results,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "codeql.sarif"
+            path.write_text(json.dumps(sarif))
+            return parse_sarif_findings(path)
+
+    def test_same_rule_different_locations_get_distinct_ids(self):
+        findings = self._parse([
+            self._codeql_result(line=81, fingerprint="aaaa:1"),
+            self._codeql_result(line=142, fingerprint="bbbb:1"),
+        ])
+        self.assertEqual(len(findings), 2)
+        ids = {f["finding_id"] for f in findings}
+        self.assertEqual(len(ids), 2, "same-rule findings collided on finding_id")
+        for f in findings:
+            self.assertNotEqual(f["finding_id"], f["rule_id"])
+
+    def test_same_rule_no_fingerprints_still_distinct(self):
+        """Location alone must disambiguate when the tool supplies no
+        fingerprints at all."""
+        findings = self._parse([
+            self._codeql_result(line=81),
+            self._codeql_result(line=142),
+        ])
+        ids = {f["finding_id"] for f in findings}
+        self.assertEqual(len(ids), 2)
+
+    def test_finding_id_stable_across_parses(self):
+        results = [self._codeql_result(line=81, fingerprint="aaaa:1")]
+        first = self._parse(results)[0]["finding_id"]
+        second = self._parse(results)[0]["finding_id"]
+        self.assertEqual(first, second)
+
+    def test_semgrep_match_based_id_preserved(self):
+        """Semgrep supplies fingerprints.matchBasedId/v1 — those IDs
+        must pass through unchanged (downstream correlation depends
+        on them)."""
+        result = self._codeql_result(line=10)
+        result["fingerprints"] = {"matchBasedId/v1": "semgrep-mbid-123"}
+        findings = self._parse([result])
+        self.assertEqual(findings[0]["finding_id"], "semgrep-mbid-123")
+
+    def test_no_location_no_fingerprint_falls_back_to_content_sha(self):
+        """Two location-less results differing only in message must
+        not collapse to the ruleId."""
+        r1 = {"ruleId": "rule-x", "message": {"text": "first"}}
+        r2 = {"ruleId": "rule-x", "message": {"text": "second"}}
+        findings = self._parse([r1, r2])
+        ids = {f["finding_id"] for f in findings}
+        self.assertEqual(len(ids), 2)
+        for f in findings:
+            self.assertNotEqual(f["finding_id"], "rule-x")
+
+
+class TestCollidedIdNotStampedOut(unittest.TestCase):
+    """Writers must not re-emit a collided (== rule_id) finding_id as
+    the matchBasedId/v1 fingerprint."""
+
+    def test_enriched_writer_skips_rule_id_shaped_finding_id(self):
+        from core.sarif.enriched_writer import build_enriched_sarif
+        doc = build_enriched_sarif([{
+            "finding_id": "java/sql-injection",
+            "rule_id": "java/sql-injection",
+            "file": "a.java",
+            "startLine": 3,
+            "message": "m",
+            "tool": "codeql",
+        }], tool_version="test")
+        result = doc["runs"][0]["results"][0]
+        self.assertNotIn("fingerprints", result)
+
+    def test_enriched_writer_keeps_genuine_finding_id(self):
+        from core.sarif.enriched_writer import build_enriched_sarif
+        doc = build_enriched_sarif([{
+            "finding_id": "deadbeef" * 8,
+            "rule_id": "java/sql-injection",
+            "file": "a.java",
+            "startLine": 3,
+            "message": "m",
+            "tool": "codeql",
+        }], tool_version="test")
+        result = doc["runs"][0]["results"][0]
+        self.assertEqual(
+            result["fingerprints"]["matchBasedId/v1"], "deadbeef" * 8,
+        )
+
+    def test_findings_to_sarif_skips_rule_id_shaped_finding_id(self):
+        from core.sarif.import_normalizer import findings_to_sarif
+        doc = findings_to_sarif([{
+            "finding_id": "java/sql-injection",
+            "rule_id": "java/sql-injection",
+            "file": "a.java",
+            "startLine": 3,
+            "message": "m",
+            "tool": "codeql",
+        }])
+        result = doc["runs"][0]["results"][0]
+        self.assertNotIn("fingerprints", result)
+
+
 if __name__ == "__main__":
     unittest.main()

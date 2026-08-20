@@ -629,23 +629,28 @@ def parse_sarif_findings(
             # finding_id resolution:
             #   1. SARIF tool-supplied fingerprint (best — survives
             #      reformatting / line-shifts that the tool tracked).
-            #   2. ruleId (cheap, but collides across multiple findings
-            #      of the same rule type — only useful when the run has
-            #      one finding per rule).
+            #      Semgrep emits `fingerprints["matchBasedId/v1"]`, so
+            #      semgrep finding_ids are unchanged by this logic.
+            #   2. Deterministic hash of the same identity material
+            #      `_result_key` uses (ruleId, uri, startLine, endLine,
+            #      startColumn, partialFingerprints) — stable across
+            #      runs, distinct per location.
             #   3. Deterministic hash of the canonicalised result.
             #
-            # Pre-fix the fallback was `str(hash(json.dumps(result)))`.
-            # Two problems:
-            #   * Python's `hash()` is randomised per-process by default
-            #     (PYTHONHASHSEED) for security against hash-flooding,
-            #     so the SAME finding produced a DIFFERENT finding_id
-            #     on every invocation. Downstream consumers tracking
-            #     findings across runs (deduplication, regression
-            #     detection, fix verification) couldn't correlate.
-            #   * `json.dumps` without `sort_keys=True` is also non-
-            #     deterministic across dict insertion orders.
-            # `hashlib.sha256(json.dumps(..., sort_keys=True))` fixes
-            # both: identical input always yields the same hex digest.
+            # NEVER bare ruleId. Pre-fix the chain was
+            # `fingerprint or ruleId or sha` — CodeQL results carry no
+            # `fingerprints` member (they use `partialFingerprints`),
+            # so EVERY CodeQL finding of one rule fell back to the
+            # ruleId and shared a single finding_id. Downstream that
+            # collided per-finding artifact files (later findings
+            # overwrote earlier ones), misrouted dispatch keyed on
+            # finding_id, and dropped findings from by_id maps.
+            #
+            # The content-sha fallback uses
+            # `hashlib.sha256(json.dumps(..., sort_keys=True))`:
+            # `hash()` is randomised per-process (PYTHONHASHSEED) and
+            # unsorted dumps depend on dict insertion order, so
+            # neither is stable across invocations.
             try:
                 canonical = json.dumps(result, sort_keys=True, default=str)
             except (TypeError, ValueError):
@@ -655,9 +660,21 @@ def parse_sarif_findings(
             if not isinstance(rule_id, str):
                 rule_id = None
             fingerprint = _as_dict(result.get("fingerprints")).get("matchBasedId/v1")
-            if not isinstance(fingerprint, str):
-                fingerprint = None
-            finding_id = fingerprint or rule_id or sha
+            if isinstance(fingerprint, str) and fingerprint:
+                finding_id = fingerprint
+            else:
+                key = _result_key(result)
+                # Use the key-derived hash only when it carries
+                # distinguishing material beyond the ruleId (a
+                # location or a partialFingerprint). A bare
+                # rule-only key would re-introduce the collision,
+                # so fall through to the content sha instead.
+                if any(key[1:]):
+                    finding_id = hashlib.sha256(
+                        "\x1f".join(str(part) for part in key).encode("utf-8")
+                    ).hexdigest()
+                else:
+                    finding_id = sha
 
             locs = result.get("locations")
             first_loc = _as_dict(locs[0]) if isinstance(locs, list) and locs else {}

@@ -367,6 +367,76 @@ def _normalise_lane_hosts(hosts) -> "frozenset[str] | None":
     return frozenset(h.lower() for h in hosts if h)
 
 
+def _hex_v4(ip: str) -> str:
+    """/proc/net/tcp spelling of an IPv4 address (little-endian hex)."""
+    return socket.inet_aton(ip)[::-1].hex().upper()
+
+
+def _hex_v6(ip: str) -> str:
+    """/proc/net/tcp6 spelling of an IPv6 address — four 32-bit words,
+    each printed as the little-endian hex of its raw bytes."""
+    raw = socket.inet_pton(socket.AF_INET6, ip)
+    return b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4)).hex().upper()
+
+
+def _loopback_peer_uid(peer, sockname) -> "int | None":
+    """Best-effort UID of a connected loopback TCP peer.
+
+    TCP sockets have no SO_PEERCRED, so the equivalent is the kernel's
+    per-socket table: find the peer's socket row in /proc/net/tcp{,6}
+    (its local_address == the peer's addr:port, its rem_address == our
+    listener-side addr:port) and read the uid column.
+
+    Only ESTABLISHED rows (st == 01) are matched: TIME_WAIT rows
+    report uid 0 regardless of who created the socket, and a peer we
+    are still serving holds an established socket by definition.
+
+    Returns None when the UID cannot be determined — non-Linux hosts
+    (no /proc/net), malformed peername tuples, or a row that vanished
+    because the peer closed mid-lookup. Callers treat None as
+    "unknown, allow": this is a defense-in-depth gate layered on the
+    loopback-only bind + hostname allowlist, and failing closed on a
+    lookup miss would break macOS and add a kernel-race denial mode.
+    Residual: a same-UID process can still hand its connected fd to
+    another principal (SCM_RIGHTS); no /proc view defends that.
+
+    Cost: one bounded /proc read per inbound loopback TCP connection
+    (unix-socket lanes never reach this). The scan stops at the first
+    matching established row.
+    """
+    try:
+        peer_ip, peer_port = peer[0], peer[1]
+        local_ip, local_port = sockname[0], sockname[1]
+    except (TypeError, IndexError):
+        return None
+    try:
+        if ":" in peer_ip:
+            table = "/proc/net/tcp6"
+            local_hex = f"{_hex_v6(peer_ip)}:{peer_port:04X}"
+            rem_hex = f"{_hex_v6(local_ip)}:{local_port:04X}"
+        else:
+            table = "/proc/net/tcp"
+            local_hex = f"{_hex_v4(peer_ip)}:{peer_port:04X}"
+            rem_hex = f"{_hex_v4(local_ip)}:{local_port:04X}"
+    except OSError:
+        return None
+    try:
+        with open(table, encoding="ascii") as f:
+            next(f, None)  # column header
+            for line in f:
+                cols = line.split()
+                if len(cols) < 8 or cols[3] != "01":
+                    continue
+                if cols[1] == local_hex and cols[2] == rem_hex:
+                    try:
+                        return int(cols[7])
+                    except ValueError:
+                        return None
+    except OSError:
+        return None
+    return None
+
+
 def _ip_is_blocked(ip_str: str) -> bool:
     """Reject any address that isn't routable on the public Internet.
 
@@ -1829,6 +1899,28 @@ class EgressProxy:
             logger.warning("egress proxy: rejecting non-loopback peer %s", client_ip)
             writer.close()
             return
+
+        # Same-UID gate for loopback TCP peers (main listener AND TCP
+        # lanes; unix lanes are already mode-0600 via bind_unix's
+        # umask). Loopback is shared with EVERY local user — without
+        # this, any other account on the host could ride the proxy's
+        # allowlisted egress. TCP has no SO_PEERCRED, so the peer's
+        # UID comes from its /proc/net/tcp{,6} socket row; an
+        # undeterminable UID (None) is allowed by design — see
+        # _loopback_peer_uid for the fail-open rationale + residuals.
+        if client_ip != "unix" and isinstance(peer, tuple) and len(peer) >= 2:
+            peer_uid = _loopback_peer_uid(
+                peer, writer.get_extra_info("sockname"),
+            )
+            if peer_uid is not None and peer_uid != os.geteuid():
+                logger.warning(
+                    "egress proxy: rejecting loopback peer %s:%s owned "
+                    "by uid %d (proxy runs as uid %d) — cross-user "
+                    "loopback connections are refused",
+                    client_ip, peer[1], peer_uid, os.geteuid(),
+                )
+                writer.close()
+                return
 
         # Aggregate tunnel cap. Enforced best-effort — a race between
         # check and increment can let 65+ through momentarily, but the

@@ -918,6 +918,64 @@ class TestFindingIdDiscipline(unittest.TestCase):
             self.assertNotEqual(f["finding_id"], "rule-x")
 
 
+class TestMergeSarifUriBaseConflict(unittest.TestCase):
+    """merge_sarif must warn when same-tool runs define the same
+    originalUriBaseIds id with different uris (later wins; earlier
+    runs' relative URIs then resolve against the wrong root)."""
+
+    @staticmethod
+    def _sarif(base_uri):
+        return {
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {"driver": {"name": "codeql"}},
+                "originalUriBaseIds": {"SRCROOT": {"uri": base_uri}},
+                "results": [],
+            }],
+        }
+
+    def _merge(self, docs):
+        from core.sarif.parser import merge_sarif
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = []
+            for i, doc in enumerate(docs):
+                p = Path(tmpdir) / f"run{i}.sarif"
+                p.write_text(json.dumps(doc))
+                paths.append(str(p))
+            return merge_sarif(paths)
+
+    def test_conflicting_base_definitions_warn(self):
+        from unittest.mock import patch
+        with patch("core.sarif.parser.logger") as mock_logger:
+            merged = self._merge([
+                self._sarif("file:///repo-a/"),
+                self._sarif("file:///repo-b/"),
+            ])
+        warnings = [
+            c for c in mock_logger.warning.call_args_list
+            if "originalUriBaseIds" in str(c)
+        ]
+        self.assertEqual(len(warnings), 1)
+        # Later definition wins.
+        self.assertEqual(
+            merged["runs"][0]["originalUriBaseIds"]["SRCROOT"]["uri"],
+            "file:///repo-b/",
+        )
+
+    def test_identical_base_definitions_do_not_warn(self):
+        from unittest.mock import patch
+        with patch("core.sarif.parser.logger") as mock_logger:
+            self._merge([
+                self._sarif("file:///repo-a/"),
+                self._sarif("file:///repo-a/"),
+            ])
+        warnings = [
+            c for c in mock_logger.warning.call_args_list
+            if "originalUriBaseIds" in str(c)
+        ]
+        self.assertEqual(warnings, [])
+
+
 class TestDeduplicateFindingsIdentity(unittest.TestCase):
     """deduplicate_findings must keep distinct same-line findings
     (different column / fingerprint → different finding_id) while

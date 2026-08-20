@@ -300,8 +300,28 @@ def merge_sarif(sarif_paths: list[str]) -> dict[str, Any]:
             # latest-occurrence-wins semantic the result dedup uses).
             tool_runs[tool_name]["rules_by_id"].update(get_rules(run))
             # Merge originalUriBaseIds — keyed dict, later wins.
+            # Same-tool runs from different working trees can define
+            # the SAME base id (e.g. %SRCROOT%) with DIFFERENT uris;
+            # the merged run keeps only one, so relative URIs from the
+            # other run(s) resolve against the wrong root. SARIF has
+            # no per-result base table, so keeping per-run bases would
+            # mean keeping the runs separate — not worth breaking the
+            # one-run-per-tool merge shape. Detect the conflict and
+            # warn the operator instead of silently mis-resolving.
             for base_id, base in _as_dict(run.get("originalUriBaseIds")).items():
                 if isinstance(base, dict):
+                    existing = tool_runs[tool_name]["uri_bases"].get(base_id)
+                    if existing is not None and existing != base:
+                        logger.warning(
+                            "SARIF merge: conflicting originalUriBaseIds "
+                            "definition for %r while merging %s "
+                            "(%r vs %r); later definition wins — "
+                            "relative URIs from earlier runs of tool "
+                            "%r may resolve against the wrong root",
+                            base_id, sarif_path,
+                            existing.get("uri"), base.get("uri"),
+                            tool_name,
+                        )
                     tool_runs[tool_name]["uri_bases"][base_id] = base
             # Append invocations — each input run is its own
             # invocation record; multiple legitimately coexist.

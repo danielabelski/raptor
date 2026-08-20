@@ -19390,27 +19390,23 @@ def _pre_loop_smt_screen(
                             all_infeasible = False
                             break
                     if all_infeasible:
-                        outcome = ReviewOutcome(
-                            file=file_path,
-                            function=func_name,
-                            status="dormant",
-                            body=(
-                                "[pre-loop SMT screen: all sink paths "
-                                "infeasible] Z3 proved every path to a "
-                                "dangerous sink is unreachable."
-                            ),
-                            evidence_tool="smt:dead-path",
-                            line=line_start,
-                        )
-                        result.outcomes.append(outcome)
-                        result.dormant += 1
-                        result.reviewed += 1
+                        # Safety contract: condition_smt is NOT in
+                        # SUPPRESS_SOURCES, so a dead-path verdict may
+                        # only BOOST/INFORM — it must never resolve the
+                        # function without LLM review.  Inject the
+                        # evidence and keep the gap in the workqueue;
+                        # the reviewer sees the infeasibility proof as
+                        # context and decides the verdict.
+                        gap["_smt_pre_evidence"] = "smt:dead-path"
                         screened += 1
                         logger.info(
-                            "pre-loop SMT screen: %s:%s → dormant "
-                            "(all sink paths infeasible)",
+                            "pre-loop SMT screen: %s:%s → dead-path "
+                            "evidence injected (all sink paths "
+                            "infeasible per conjunctive guard model); "
+                            "kept in workqueue per safety contract",
                             file_path, func_name,
                         )
+                        kept.append(gap)
                         continue
 
         if is_c and not tool_hit:

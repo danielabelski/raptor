@@ -419,20 +419,97 @@ def _flip_operator(op: str) -> str | None:
 
 _NEGATE_OP = {"<": ">=", "<=": ">", ">": "<=", ">=": "<", "==": "!=", "!=": "=="}
 
+# Logical NOT that is not the first char of ``!=``.
+_LOGICAL_NOT_RE = re.compile(r"!(?!=)")
+
+# Python/word-form boolean operators (``or`` / ``not``) — same modeling
+# hazard as ``||`` / ``!`` in C-family guards.
+_WORD_BOOL_RE = re.compile(r"\b(?:or|not)\b")
+
+
+def _boolean_structure_tractable(text: str) -> bool:
+    """True when the guard text is a plain conjunction of comparisons.
+
+    The constraint extractor models a guard as the CONJUNCTION of every
+    comparison it can parse.  That model is only faithful when the
+    guard's boolean structure actually is a conjunction: disjunctions
+    (``n == 0 || n == 1``), logical negation (``!(len < max)``), and
+    ternaries select between alternatives that a flat conjunction
+    cannot represent — conjoining their atoms fabricates contradictions
+    (``n == 0 AND n == 1`` is UNSAT while the guard is trivially
+    satisfiable).  Per the safety contract, callers must treat
+    non-tractable guards as inconclusive — never as UNSAT proofs.
+    """
+    if "||" in text or "?" in text:
+        return False
+    if _LOGICAL_NOT_RE.search(text):
+        return False
+    return not _WORD_BOOL_RE.search(text)
+
+
+def _constraints_from_guard_text(
+    guard_text: str,
+) -> list[BoundsConstraint] | None:
+    """Conjunction atoms parsed from a raw guard text.
+
+    Returns ``None`` when the guard's boolean structure cannot be
+    modeled as a conjunction of comparisons (``||`` / ``!`` / ternary)
+    — callers must NOT feed such guards to a conjunctive solver query,
+    because a resulting UNSAT would be an artifact of the mis-model,
+    not a proof about the code.
+    """
+    if not _boolean_structure_tractable(guard_text):
+        return None
+    constraints: list[BoundsConstraint] = []
+    for var, op, val_str in _COMPARISON_RE.findall(guard_text):
+        val = _try_parse_int(val_str)
+        if val is not None:
+            constraints.append(BoundsConstraint(var, op, val, guard_text))
+    for val_str, op, var in _COMPARISON_REV_RE.findall(guard_text):
+        val = _try_parse_int(val_str)
+        if val is not None:
+            flipped = _flip_operator(op)
+            if flipped:
+                constraints.append(
+                    BoundsConstraint(var, flipped, val, guard_text)
+                )
+    return constraints
+
 
 def constraints_for_guard(
     guard: GuardCondition,
     *,
     respect_polarity: bool = True,
-) -> list[BoundsConstraint]:
+) -> list[BoundsConstraint] | None:
     """Extract constraints with polarity awareness.
 
     When polarity is "excluded" (sink is in the else-branch), the
     guard condition is negated: ``len < 1024`` becomes ``len >= 1024``.
+
+    Returns ``None`` when the constraints cannot faithfully represent
+    the guard:
+
+    * the guard text contains ``||`` / ``!`` / ternary structure the
+      flat conjunction cannot model, or
+    * polarity is "excluded" and more than one atom was extracted —
+      by De Morgan ``NOT (A AND B)`` is ``NOT A OR NOT B``, a
+      disjunction; negating the atoms individually would instead
+      assert ``NOT A AND NOT B``, which is strictly stronger and
+      yields false "dead path" proofs.
     """
+    if not _boolean_structure_tractable(guard.text):
+        return None
     raw = extract_bounds_constraints(guard)
     if not respect_polarity or guard.polarity != "excluded":
         return raw
+    if len(raw) > 1 or "&&" in guard.text or re.search(
+        r"\band\b", guard.text,
+    ):
+        # Negation of a conjunction is a disjunction — not
+        # representable as a constraint list.  This also covers the
+        # partially-extracted case (``flag && a < 10`` extracts one
+        # atom but negating it alone over-constrains).  Inconclusive.
+        return None
     negated = []
     for c in raw:
         neg_op = _NEGATE_OP.get(c.operator)
@@ -461,13 +538,31 @@ def check_path_feasibility(
     assert_boost_only("condition_smt")
 
     all_constraints: list[BoundsConstraint] = []
+    unmodeled = 0
     for g in guards:
-        all_constraints.extend(constraints_for_guard(g, respect_polarity=True))
+        cs = constraints_for_guard(g, respect_polarity=True)
+        if cs is None:
+            # Guard has boolean structure (||, !, ternary, negated
+            # conjunction) the flat conjunction cannot represent.
+            # Dropping its atoms keeps the remaining conjunction a
+            # weakening of the real path condition — an UNSAT on the
+            # rest is still a sound infeasibility proof — but the
+            # dropped guard itself never contributes atoms, so it can
+            # never manufacture a false contradiction.
+            unmodeled += 1
+            continue
+        all_constraints.extend(cs)
 
     if not all_constraints:
+        reason = (
+            "guard boolean structure (||/!/ternary) not modeled — "
+            "inconclusive"
+            if unmodeled
+            else "no extractable constraints"
+        )
         return PathFeasibilityResult(
             feasible=None,
-            reasoning="no extractable constraints",
+            reasoning=reason,
             guard_count=len(guards),
         )
 
@@ -632,7 +727,11 @@ def check_off_by_one(
     for guard in sink_guard.guards:
         if not guard.resolvable or not guard.concrete_values:
             continue
-        constraints = extract_bounds_constraints(guard)
+        constraints = constraints_for_guard(guard, respect_polarity=True)
+        if constraints is None:
+            # Unmodelable boolean structure — an atom pulled out of a
+            # disjunction may not actually gate the sink.
+            continue
         for c in constraints:
             if c.operator == "<=" and c.bound_value == buffer_size:
                 results.append(SmtSufficiencyResult(
@@ -694,7 +793,23 @@ def check_guard_sufficiency(
         if not guard.resolvable or not guard.concrete_values:
             continue
 
-        constraints = extract_bounds_constraints(guard)
+        constraints = constraints_for_guard(guard, respect_polarity=True)
+        if constraints is None:
+            # Boolean structure (||/!/ternary or negated conjunction)
+            # the conjunctive model cannot represent.  A "sufficient"
+            # verdict computed from conjoined atoms would falsely
+            # assume every disjunct holds — honest verdict is
+            # inconclusive (no mechanical effect).
+            results.append(SmtSufficiencyResult(
+                guard_text=guard.text,
+                feasible=None,
+                reasoning=(
+                    "guard boolean structure (||/!/ternary) not "
+                    "modeled — sufficiency inconclusive"
+                ),
+                concrete_values=guard.concrete_values,
+            ))
+            continue
         if not constraints:
             continue
 
@@ -1187,21 +1302,25 @@ def _z3_auth_bypass_check(
     from core.smt_solver.availability import z3
     from core.smt_solver.session import new_solver
 
-    comparisons = _COMPARISON_RE.findall(guard_text)
-    comparisons_rev = _COMPARISON_REV_RE.findall(guard_text)
+    constraints = _constraints_from_guard_text(guard_text)
 
-    constraints: list[BoundsConstraint] = []
-    for var, op, val_str in comparisons:
-        val = _try_parse_int(val_str)
-        if val is not None:
-            constraints.append(BoundsConstraint(var, op, val, guard_text))
-    for val_str, op, var in comparisons_rev:
-        val = _try_parse_int(val_str)
-        if val is not None:
-            flipped = _flip_operator(op)
-            if flipped:
-                constraints.append(BoundsConstraint(var, flipped, val, guard_text))
-
+    if constraints is None:
+        # Boolean structure (||/!/ternary) the conjunctive model cannot
+        # represent — a conjunction of the atoms would be a mis-model
+        # and its UNSAT a false "no bypass possible".  Conservatively
+        # treat the guard as satisfiable (same direction as the
+        # non-numeric case): the bypass is flagged for LLM review.
+        return AuthBypassResult(
+            bypass_found=True,
+            guard_text=guard_text,
+            bypassed_checks=bypassed_checks,
+            reasoning=(
+                f"early return guarded by '{guard_text.strip()}' bypasses "
+                f"auth checks {', '.join(bypassed_checks)} — guard boolean "
+                f"structure (||/!/ternary) not modeled, conservatively "
+                f"treated as feasible"
+            ),
+        )
     if not constraints:
         return AuthBypassResult(
             bypass_found=True,
@@ -1965,21 +2084,23 @@ def _z3_lock_discipline_check(
     from core.smt_solver.availability import z3
     from core.smt_solver.session import new_solver
 
-    comparisons = _COMPARISON_RE.findall(guard_text)
-    comparisons_rev = _COMPARISON_REV_RE.findall(guard_text)
+    constraints = _constraints_from_guard_text(guard_text)
 
-    constraints: list[BoundsConstraint] = []
-    for var, op, val_str in comparisons:
-        val = _try_parse_int(val_str)
-        if val is not None:
-            constraints.append(BoundsConstraint(var, op, val, guard_text))
-    for val_str, op, var in comparisons_rev:
-        val = _try_parse_int(val_str)
-        if val is not None:
-            flipped = _flip_operator(op)
-            if flipped:
-                constraints.append(BoundsConstraint(var, flipped, val, guard_text))
-
+    if constraints is None:
+        # ||/!/ternary structure — conjoining the atoms would risk a
+        # false "lock-held return path unreachable" UNSAT.  Same
+        # conservative direction as the non-numeric case: flag it.
+        return LockDisciplineResult(
+            violation_found=True,
+            lock_type=lock_func,
+            return_line=ret_line,
+            reasoning=(
+                f"return at line {ret_line} guarded by "
+                f"'{guard_text.strip()}' holds {lock_func} — guard "
+                f"boolean structure (||/!/ternary) not modeled, "
+                f"conservatively treated as feasible"
+            ),
+        )
     if not constraints:
         return LockDisciplineResult(
             violation_found=True,
@@ -2399,21 +2520,25 @@ def _z3_resource_leak_check(
     from core.smt_solver.availability import z3
     from core.smt_solver.session import new_solver
 
-    comparisons = _COMPARISON_RE.findall(guard_text)
-    comparisons_rev = _COMPARISON_REV_RE.findall(guard_text)
+    constraints = _constraints_from_guard_text(guard_text)
 
-    constraints: list[BoundsConstraint] = []
-    for var, op, val_str in comparisons:
-        val = _try_parse_int(val_str)
-        if val is not None:
-            constraints.append(BoundsConstraint(var, op, val, guard_text))
-    for val_str, op, var in comparisons_rev:
-        val = _try_parse_int(val_str)
-        if val is not None:
-            flipped = _flip_operator(op)
-            if flipped:
-                constraints.append(BoundsConstraint(var, flipped, val, guard_text))
-
+    if constraints is None:
+        # ||/!/ternary structure — conjoining the atoms would risk a
+        # false "leak path unreachable" UNSAT.  Same conservative
+        # direction as the non-numeric case: flag it.
+        return ResourceLeakResult(
+            leak_found=True,
+            alloc_var=var_name,
+            alloc_func=alloc_func,
+            alloc_line=alloc_line,
+            return_line=ret_line,
+            reasoning=(
+                f"error return at line {ret_line} guarded by "
+                f"'{guard_text.strip()}' leaks '{var_name}' — guard "
+                f"boolean structure (||/!/ternary) not modeled, "
+                f"conservatively treated as feasible"
+            ),
+        )
     if not constraints:
         return ResourceLeakResult(
             leak_found=True,

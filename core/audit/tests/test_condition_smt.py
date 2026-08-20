@@ -324,6 +324,76 @@ class TestConstraintsForGuard:
         assert cs[0].operator == "<"
 
 
+class TestBooleanStructureGate:
+    """Guards whose boolean structure the conjunctive model cannot
+    represent must yield ``None`` (inconclusive) — flattening their
+    atoms into a conjunction fabricates false UNSAT proofs that used
+    to become 'dead path' / 'guard sufficient' verdicts (soundness)."""
+
+    def test_disjunction_returns_none(self):
+        g = _guard("n == 0 || n == 1", resolvable=True, concrete_values={})
+        assert constraints_for_guard(g) is None
+
+    def test_logical_not_returns_none(self):
+        g = _guard(
+            "!(len < 1024) && len < 2048",
+            resolvable=True, concrete_values={},
+        )
+        assert constraints_for_guard(g) is None
+
+    def test_ternary_returns_none(self):
+        g = _guard(
+            "(mode ? a : b) < 10", resolvable=True, concrete_values={},
+        )
+        assert constraints_for_guard(g) is None
+
+    def test_python_or_returns_none(self):
+        g = _guard("n == 0 or n == 1", resolvable=True, concrete_values={})
+        assert constraints_for_guard(g) is None
+
+    def test_not_equal_is_not_logical_not(self):
+        g = _guard("n != 0", resolvable=True, concrete_values={})
+        cs = constraints_for_guard(g)
+        assert cs is not None
+        assert cs[0].operator == "!="
+
+    def test_excluded_conjunction_returns_none(self):
+        # NOT (a >= 10 AND a <= 20) is a DISJUNCTION (De Morgan);
+        # negating the atoms individually asserts a < 10 AND a > 20 —
+        # UNSAT — a false 'dead path' for a trivially reachable sink.
+        g = GuardCondition(
+            text="a >= 10 && a <= 20", category="bounds",
+            polarity="excluded", line=1, resolvable=True,
+            concrete_values={},
+        )
+        assert constraints_for_guard(g) is None
+
+    def test_excluded_partial_extraction_returns_none(self):
+        # ``flag && a < 10`` extracts only one atom; negating it alone
+        # over-constrains (flag=false alone satisfies the negation).
+        g = GuardCondition(
+            text="flag && a < 10", category="bounds",
+            polarity="excluded", line=1, resolvable=True,
+            concrete_values={},
+        )
+        assert constraints_for_guard(g) is None
+
+    def test_excluded_single_atom_still_negates(self):
+        g = GuardCondition(
+            text="a < 10", category="bounds", polarity="excluded",
+            line=1, resolvable=True, concrete_values={},
+        )
+        cs = constraints_for_guard(g)
+        assert cs is not None
+        assert cs[0].operator == ">="
+
+    def test_required_conjunction_still_extracts(self):
+        g = _guard("a > 0 && a < 10", resolvable=True, concrete_values={})
+        cs = constraints_for_guard(g)
+        assert cs is not None
+        assert len(cs) == 2
+
+
 # ── Path feasibility ─────────────────────────────────────────────────
 
 
@@ -370,6 +440,104 @@ class TestPathFeasibility:
         # Either way, if Z3 is available it's UNSAT
         if result.feasible is not None:
             assert result.feasible is False
+
+    def test_disjunctive_guard_is_inconclusive_not_dead_path(self):
+        # ``n == 0 || n == 1`` is trivially satisfiable; the old flat
+        # conjunction asserted n==0 AND n==1 → UNSAT → false 'dead
+        # path' that resolved the function dormant without LLM review.
+        guards = [
+            _guard("n == 0 || n == 1", resolvable=True, concrete_values={}),
+        ]
+        result = check_path_feasibility(guards)
+        assert result.feasible is not False
+        assert result.feasible is None
+
+    def test_excluded_conjunction_is_inconclusive_not_dead_path(self):
+        # sink after ``if (a >= 10 && a <= 20) return;`` is reachable
+        # for a=5 — per-atom negation used to produce a false UNSAT.
+        g = GuardCondition(
+            text="a >= 10 && a <= 20", category="bounds",
+            polarity="excluded", line=1, resolvable=True,
+            concrete_values={},
+        )
+        result = check_path_feasibility([g])
+        assert result.feasible is not False
+        assert result.feasible is None
+
+    def test_negated_guard_is_inconclusive(self):
+        # ``!(len < 1024) && len < 2048`` admits len in [1024, 2048);
+        # ignoring the ``!`` used to yield witness len=0 (inverted
+        # polarity).  Unmodeled → inconclusive.
+        guards = [
+            _guard(
+                "!(len < 1024) && len < 2048",
+                resolvable=True, concrete_values={},
+            ),
+        ]
+        result = check_path_feasibility(guards)
+        assert result.feasible is None
+
+    def test_unmodeled_guard_cannot_poison_other_guards(self):
+        # A tractable contradiction alongside an unmodeled guard is
+        # still a sound UNSAT (weakening the conjunction preserves
+        # infeasibility proofs), but the unmodeled guard itself never
+        # contributes atoms.
+        guards = [
+            _guard("x < 10", resolvable=True, concrete_values={}),
+            _guard("x > 20", resolvable=True, concrete_values={}),
+            _guard("n == 0 || n == 1", resolvable=True, concrete_values={}),
+        ]
+        result = check_path_feasibility(guards)
+        assert result.feasible is False
+
+
+class TestGuardTextCheckersBooleanStructure:
+    """The child-side guard-text feasibility checks must not conjoin
+    atoms from ||/!/ternary guards — the resulting UNSAT would be a
+    false 'no bypass possible' / 'leak path unreachable' refutation."""
+
+    def test_auth_bypass_disjunction_not_refuted(self):
+        import pytest
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import _z3_auth_bypass_check
+        out = _z3_auth_bypass_check(
+            "(n == 0 || n == 1)", ["capability:capable(CAP_SYS_ADMIN)"],
+        )
+        # The guard is trivially satisfiable (n=0) — the bypass is
+        # feasible, never "no bypass possible".
+        assert out.bypass_found is True
+        assert "no bypass possible" not in out.reasoning
+
+    def test_resource_leak_disjunction_not_refuted(self):
+        import pytest
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import _z3_resource_leak_check
+        out = _z3_resource_leak_check(
+            "(n == 0 || n == 1)", "buf", "malloc", 3, 8,
+        )
+        assert out.leak_found is True
+        assert "unreachable" not in out.reasoning
+
+    def test_lock_discipline_disjunction_not_refuted(self):
+        import pytest
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import _z3_lock_discipline_check
+        out = _z3_lock_discipline_check(
+            "(n == 0 || n == 1)", "spin_lock", 12,
+        )
+        assert out.violation_found is True
+        assert "unreachable" not in out.reasoning
+
+    def test_auth_bypass_conjunctive_unsat_still_refutes(self):
+        import pytest
+        pytest.importorskip("z3")
+        from core.audit.condition_smt import _z3_auth_bypass_check
+        # Genuine UNSAT on a correctly-modeled conjunctive guard keeps
+        # its boost value (real dead-guard proof).
+        out = _z3_auth_bypass_check(
+            "(n < 5 && n > 10)", ["capability:capable(CAP_SYS_ADMIN)"],
+        )
+        assert out.bypass_found is False
 
 
 # ── Signed/unsigned mismatch ─────────────────────────────────────────

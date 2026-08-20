@@ -2614,6 +2614,30 @@ def _compose_verification_manifest(
     }
 
 
+def _validate_policy_groups(
+    ap: argparse.ArgumentParser, policy_groups: str,
+) -> None:
+    """Hard-fail (argparse exit 2) on unknown or reserved policy
+    groups, naming the valid ones. ``all`` is always accepted."""
+    groups = [g.strip() for g in policy_groups.split(",") if g.strip()]
+    excluded = {"registry-cache"}
+    try:
+        valid = sorted(
+            p.name for p in RaptorConfig.SEMGREP_RULES_DIR.iterdir()
+            if p.is_dir() and p.name not in excluded
+        )
+    except OSError:
+        # Rules dir unreadable — the scan itself will surface that;
+        # don't turn every invocation into a usage error here.
+        return
+    bad = [g for g in groups if g != "all" and g not in valid]
+    if bad:
+        ap.error(
+            f"unknown policy group(s): {', '.join(sorted(set(bad)))}. "
+            f"Valid groups: all, {', '.join(valid)}"
+        )
+
+
 def main():
     ap = argparse.ArgumentParser(description="RAPTOR Automated Code Security Agent with parallel scanning")
     ap.add_argument("--repo", required=True, help="Path or Git URL")
@@ -2814,6 +2838,13 @@ def main():
     add_cli_args(ap)
     args = ap.parse_args()
     apply_cli_args(args, parser=ap)
+
+    # Unknown policy groups are an argparse-level HARD error. Pre-fix
+    # they only logged a warning mid-scan — an operator copying a bad
+    # example (`--policy-groups injction`) got a scan that silently
+    # ran without the intended rules and never found out. Fail fast,
+    # before any clone / output-dir work, listing the valid groups.
+    _validate_policy_groups(ap, args.policy_groups)
 
     # Explicit negative beats positive (per-run escape hatch; project
     # trust-marker consumption lives in the /agentic and /codeql entry

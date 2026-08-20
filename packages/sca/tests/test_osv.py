@@ -240,6 +240,105 @@ def test_querybatch_http_error_yields_empty(tmp_path: Path) -> None:
     assert results[0].advisories == []
 
 
+def test_querybatch_http_error_not_cached_and_marks_degraded(
+    tmp_path: Path,
+) -> None:
+    """A transient batch failure must NOT be cached as an authoritative
+    empty answer — the next run (same cache) retries and gets the real
+    advisories. The client records the degradation for scan-level
+    reporting."""
+    deps = [_dep("lodash")]
+    cache = JsonCache(root=tmp_path)
+
+    failing = FakeHttp(post_error=HttpError("boom", status=503))
+    client = OsvClient(failing, cache)
+    results = client.query_batch(deps)
+    assert results[0].advisories == []
+    assert client.degraded is True
+    assert client.failed_lookups == 1
+    assert client.failed_dep_keys == ["npm:lodash@1.0.0"]
+
+    # Same cache, working transport: the lookup must go to the network
+    # (nothing negative-cached) and return the advisory.
+    working = FakeHttp(
+        batch_results=[["GHSA-jfh8-c2jp-5v3q"]],
+        vuln_records={"GHSA-jfh8-c2jp-5v3q": _LOG4J_RECORD},
+    )
+    client2 = OsvClient(working, cache)
+    results2 = client2.query_batch(deps)
+    assert len(working.posts) == 1
+    assert results2[0].advisories[0].osv_id == "GHSA-jfh8-c2jp-5v3q"
+    assert client2.degraded is False
+    assert client2.failed_lookups == 0
+
+
+def test_malformed_querybatch_shape_not_cached(tmp_path: Path) -> None:
+    """A malformed batch response is a failed lookup, not an empty one."""
+    deps = [_dep("lodash")]
+    cache = JsonCache(root=tmp_path)
+
+    class WrongShapeHttp(FakeHttp):
+        def post_json(self, url: str, body: dict, timeout: int = 30) -> dict:
+            self.posts.append((url, body))
+            return {"results": "not a list"}
+
+    client = OsvClient(WrongShapeHttp(), cache)
+    client.query_batch(deps)
+    assert client.degraded is True
+
+    working = FakeHttp(batch_results=[[]])
+    client2 = OsvClient(working, cache)
+    client2.query_batch(deps)
+    # Cache held nothing for the dep — the retry hit the network.
+    assert len(working.posts) == 1
+
+
+def test_osssfuzz_fallback_failure_marks_degraded_not_cached(
+    tmp_path: Path,
+) -> None:
+    """A transient OSS-Fuzz fallback failure is recorded and left
+    uncached, mirroring the primary-batch policy."""
+    dep = _dep("openssl", "3.0.0", ecosystem="vcpkg")
+
+    class FallbackFailsHttp(FakeHttp):
+        def post_json(self, url, body, timeout=30):
+            self.posts.append((url, body))
+            eco = body["queries"][0]["package"]["ecosystem"]
+            if eco == "OSS-Fuzz":
+                raise HttpError("boom", status=502)
+            return {"results": [{"vulns": []}]}
+
+    cache = JsonCache(root=tmp_path)
+    client = OsvClient(FallbackFailsHttp(), cache)
+    results = client.query_batch([dep])
+    assert results[0].advisories == []
+    assert client.degraded is True
+    assert client.failed_lookups == 1
+
+    # Retry with a healthy fallback: only the OSS-Fuzz query re-fires
+    # (the primary empty WAS authoritative and cached).
+    record = {
+        "id": "OSV-2024-001", "aliases": [], "summary": "x",
+        "details": "", "affected": [], "references": [],
+    }
+
+    class FallbackWorksHttp(FakeHttp):
+        def post_json(self, url, body, timeout=30):
+            self.posts.append((url, body))
+            return {"results": [{"vulns": [{"id": "OSV-2024-001"}]}]}
+
+        def get_json(self, url, timeout=30):
+            return record
+
+    http2 = FallbackWorksHttp()
+    client2 = OsvClient(http2, cache)
+    results2 = client2.query_batch([dep])
+    assert len(http2.posts) == 1
+    assert http2.posts[0][1]["queries"][0]["package"]["ecosystem"] == "OSS-Fuzz"
+    assert results2[0].advisories[0].osv_id == "OSV-2024-001"
+    assert client2.degraded is False
+
+
 def test_vuln_hydration_error_drops_only_that_id(tmp_path: Path) -> None:
     deps = [_dep("lodash"), _dep("other")]
     http = FakeHttp(

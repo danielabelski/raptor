@@ -34,7 +34,12 @@ Failure modes:
 
 - Network down: each HTTP error is logged once and converted to an empty
   result for the affected slice; a partial answer is more useful than a
-  hard failure for the security gate.
+  hard failure for the security gate. Failed slots are NOT cached (a
+  transient failure must not masquerade as an authoritative "no
+  advisories" answer for the next 24h) and are counted on
+  ``OsvClient.failed_lookups`` so callers can surface scan-level
+  degradation (the pipeline emits an operator warning plus a
+  ``sca:scan_health:osv_lookup_degraded`` row in findings.json).
 - Single corrupt OSV record: skip with ``debug``-level log; the rest of
   the batch is unaffected.
 
@@ -113,7 +118,10 @@ class OsvResult:
     """A single dep's match result.
 
     ``advisories`` is the post-processed list — empty when no advisories
-    apply or when offline mode + cache miss combined to drop the lookup.
+    apply, when offline mode + cache miss combined to drop the lookup,
+    or when the remote lookup failed transiently (the client's
+    ``failed_lookups`` counter distinguishes the last case at scan
+    level).
     """
 
     dep_key: str          # ``Dependency.key()`` — "ecosystem:name@version"
@@ -155,6 +163,26 @@ class OsvClient:
         # Optional ``OsvOfflineDB`` — when supplied AND ``offline=True``,
         # cache misses route to the offline DB instead of failing silently.
         self._offline_db = offline_db
+        # Degradation telemetry. ``failed_lookups`` counts query slots
+        # (primary + OSS-Fuzz fallback) whose remote lookup failed
+        # transiently — those slots return no advisories AND are left
+        # uncached so a later run retries. ``failed_dep_keys`` keeps a
+        # capped sample for operator-facing evidence. Cumulative across
+        # ``query_batch`` calls on this client instance.
+        self.failed_lookups: int = 0
+        self.failed_dep_keys: list[str] = []
+
+    @property
+    def degraded(self) -> bool:
+        """True when at least one lookup failed transiently this run."""
+        return self.failed_lookups > 0
+
+    _FAILED_KEY_SAMPLE_CAP = 20
+
+    def _record_failed_lookup(self, dep_key: str) -> None:
+        self.failed_lookups += 1
+        if len(self.failed_dep_keys) < self._FAILED_KEY_SAMPLE_CAP:
+            self.failed_dep_keys.append(dep_key)
 
     def query_batch(self, deps: Sequence[Dependency]) -> list[OsvResult]:
         """Look up advisories for every dep that has a known version.
@@ -233,13 +261,13 @@ class OsvClient:
             # storm and fails subsequent calls fast.
             #
             # ``self._inner.query_batch`` failures are absorbed
-            # already by the inner client (returns ``[[]]`` per
-            # query on HTTP error), so we don't need a try/except
-            # in the worker — propagated exceptions are programmer
-            # errors, not transient.
+            # already by the inner client (returns ``None`` per
+            # query slot on HTTP error), so we don't need a
+            # try/except in the worker — propagated exceptions are
+            # programmer errors, not transient.
             def _query_one_chunk(
                 payload: tuple[list[Dependency], list[dict]],
-            ) -> tuple[list[Dependency], list[list[str]]]:
+            ) -> tuple[list[Dependency], list[list[str] | None]]:
                 chunk, queries = payload
                 results = self._inner.query_batch(queries)
                 return chunk, results
@@ -263,6 +291,15 @@ class OsvClient:
 
             for chunk, results in chunk_results:
                 for dep, ids in zip(chunk, results, strict=True):
+                    if ids is None:
+                        # Transient lookup failure (network / malformed
+                        # batch response). Leave the slot UNCACHED so
+                        # the next run retries, and record the
+                        # degradation instead of caching an
+                        # authoritative-looking empty answer for the
+                        # full query TTL.
+                        self._record_failed_lookup(dep.key())
+                        continue
                     self._cache.put(
                         self._query_key(dep), ids,
                         ttl_seconds=self._query_ttl,
@@ -447,6 +484,11 @@ class OsvClient:
             ]
             results = self._inner.query_batch(queries)
             for (dep, candidate), ids in zip(chunk, results, strict=True):
+                if ids is None:
+                    # Transient failure — same policy as the primary
+                    # batch: no cache entry, record the degradation.
+                    self._record_failed_lookup(dep.key())
+                    continue
                 self._cache.put(
                     self._osssfuzz_query_key(dep, candidate), ids,
                     ttl_seconds=self._query_ttl,

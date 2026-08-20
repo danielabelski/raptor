@@ -692,7 +692,41 @@ def run_sca(
     osv_results = osv_client.query_batch(canonical)
     progress.tick(done=len(canonical))
     affected = sum(1 for r in osv_results if r.advisories)
-    progress.done(f"{affected}/{len(canonical)} deps with advisories")
+    scan_health: list[dict] = []
+    if osv_client.degraded:
+        # Transient OSV failures — those slots returned no advisories
+        # and were deliberately left uncached (a retry next run gets a
+        # fresh answer). Surface the degradation: operator warning now,
+        # plus a machine-readable scan-health row in findings.json so
+        # CI consumers can see the scan's advisory coverage was
+        # incomplete. No new exit-code path: the thresholds gate acts
+        # on specific finding classes, and inventing a failure exit for
+        # a degraded-but-completed scan would break existing gate
+        # semantics — pipelines that want to hard-fail on degradation
+        # can key on the ``sca:scan_health:osv_lookup_degraded`` row.
+        sample = ", ".join(osv_client.failed_dep_keys[:5])
+        detail = (
+            f"OSV lookups failed transiently for "
+            f"{osv_client.failed_lookups} query slot(s) out of "
+            f"{len(canonical)} deps; advisories for those deps may be "
+            f"missing from this run. Failed lookups were not cached "
+            f"and will retry on the next run. Sample: {sample}"
+        )
+        logger.warning("sca.pipeline: %s", detail)
+        scan_health.append({
+            "kind": "osv_lookup_degraded",
+            "detail": detail,
+            "evidence": {
+                "failed_lookups": osv_client.failed_lookups,
+                "total_deps": len(canonical),
+                "failed_dep_keys_sample": list(osv_client.failed_dep_keys),
+            },
+        })
+    progress.done(
+        f"{affected}/{len(canonical)} deps with advisories"
+        + (f" · {osv_client.failed_lookups} lookup(s) failed"
+           if osv_client.degraded else "")
+    )
 
     # 5. KEV / EPSS / Vulnrichment enrichment (best-effort; degrades on failure).
     kev: KevClient | None = None
@@ -959,6 +993,7 @@ def run_sca(
         hygiene_findings=hygiene_findings,
         supply_chain_findings=supply_chain_findings,
         license_findings=license_findings,
+        scan_health=scan_health,
     )
     md = render_markdown_report(
         target=target,

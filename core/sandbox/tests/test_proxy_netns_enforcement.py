@@ -434,6 +434,22 @@ class TestProxyNetnsContextWiring:
         self.out = str(tmp_path / "out")
         os.makedirs(self.out, exist_ok=True)
 
+    @pytest.fixture
+    def _fresh_tier2_latch(self):
+        """Give the test an unfired tier-2 warn-once latch.
+
+        The warning is once-per-PROCESS; under shuffled full-suite
+        order any earlier egress-proxy sandbox that lands on the
+        Landlock tier — including tests OUTSIDE this directory, which
+        this dir's ``_sandbox_state_guard`` conftest cannot restore —
+        consumes the once and the assertions below see zero WARNING
+        records. Resetting up front makes each tier-2 test own its
+        latch state; the conftest guard still restores the pre-test
+        value afterwards, so process-global semantics are preserved
+        for everything else."""
+        from core.sandbox import state
+        state.reset_warn_once("_proxy_tier2_port_pin_warned")
+
     def _enforcement_with(self, *, abi: int, net: bool, mount: bool):
         """Run a trivial child with the probe surface pinned; return
         the proxy_enforcement the context chose."""
@@ -525,6 +541,7 @@ class TestProxyNetnsContextWiring:
             assert result.returncode == 0
             assert result.sandbox_info.get("proxy_enforcement") == "landlock_tcp"
 
+    @pytest.mark.usefixtures("_fresh_tier2_latch")
     def test_tier2_port_pin_warns_and_records_evidence(self, caplog):
         """Tier-2 engagement (Landlock TCP port pin) must be
         operator-visible — a WARNING naming the weaker port-scoped
@@ -568,6 +585,7 @@ class TestProxyNetnsContextWiring:
         assert "landlock_tcp port pin" in evidence
         assert "any address on the proxy port" in evidence
 
+    @pytest.mark.usefixtures("_fresh_tier2_latch")
     def test_tier2_warning_is_once_per_process(self, caplog):
         """Two tier-2 contexts → exactly one WARNING (warn_once)."""
         import logging

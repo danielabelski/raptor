@@ -66,6 +66,20 @@ class CostTracker:
         with self._lock:
             return self._total_cost
 
+    @property
+    def fraction_used(self) -> float:
+        """Current spend as a fraction of the budget (0.0 when no
+        budget is set).
+
+        This is the surface duck-typed consumers probe —
+        ``dataflow_validation._fraction_used`` gates skip-on-budget
+        behaviour on it. Pre-fix CostTracker exposed only the private
+        ``_max_cost`` and ``_budget_ratio``, so the probe found
+        nothing, always computed 0.0, and the dataflow-validation
+        budget gate never tripped.
+        """
+        return self._budget_ratio()
+
     def _budget_ratio(self) -> float:
         """Current spend as fraction of budget. 0 if no budget set."""
         if self._max_cost <= 0:

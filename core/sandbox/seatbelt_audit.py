@@ -725,6 +725,16 @@ class LogStreamer:
                         )
                         if marker is not None:
                             self._append_record_locked(marker)
+                        # Global-cap notice: the Linux tracer surfaces
+                        # this on stderr; there is no tracer on macOS,
+                        # so pre-fix the global cap suppressed
+                        # silently (only the sub-caps got in-band
+                        # markers). Emit the one-shot marker into the
+                        # stream where operators actually look.
+                        if self._budget.pop_global_cap_notice():
+                            self._append_record_locked(
+                                self._budget.global_cap_marker(),
+                            )
                         if decision != _audit_budget.DROP:
                             self._append_record_locked(record)
                 except OSError:

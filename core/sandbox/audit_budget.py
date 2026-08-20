@@ -620,6 +620,24 @@ class AuditBudget:
             return True
         return False
 
+    def global_cap_marker(self) -> dict:
+        """In-band JSONL marker announcing the global-cap exhaust.
+
+        Companion to :meth:`pop_global_cap_notice` for backends that
+        surface the notice into the record stream rather than stderr —
+        the macOS LogStreamer appends this marker the first time the
+        notice fires, mirroring the per-category and per-PID markers,
+        so global-cap suppression is never markerless there (the Linux
+        tracer keeps its stderr line instead)."""
+        return self._make_marker(
+            "global_budget_exceeded",
+            cap=self.global_cap,
+            note=(f"Global audit-record cap ({self.global_cap}) "
+                  f"reached; further records dropped (per-category "
+                  f"sampling still applies). Pass a larger "
+                  f"--audit-budget to raise."),
+        )
+
     def summary_record(self) -> dict:
         """End-of-run summary. Caller appends this once when the
         audit session closes (LogStreamer.stop / tracer exit)."""

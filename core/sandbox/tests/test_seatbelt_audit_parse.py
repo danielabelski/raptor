@@ -325,6 +325,38 @@ def test_log_streamer_default_budget_is_cli_aware(tmp_path):
         state._cli_sandbox_audit_budget = None
 
 
+def test_log_streamer_emits_global_cap_marker_once(tmp_path):
+    """When the GLOBAL cap fires, the streamer must append the
+    one-shot global_budget_exceeded marker in-band — pre-fix only the
+    Linux tracer polled the notice (stderr), so macOS global-cap
+    suppression was markerless."""
+    from core.sandbox import audit_budget
+    budget = audit_budget.AuditBudget(
+        global_cap=2,
+        pid_cap=1000,
+        category_caps={"file-write": 100},
+        refill_rates={"file-write": 0.0},
+        sampling_rates={},
+    )
+    streamer = seatbelt_audit.LogStreamer(tmp_path, budget=budget)
+    streamer._proc = _FakeLogProc([
+        json.dumps(_kext_entry(
+            msg=f"Sandbox: test(999) allow file-write-data /tmp/{i}"))
+        for i in range(6)
+    ])
+    streamer._read_loop()
+    streamer.stop()
+    records = [json.loads(line) for line in
+               (tmp_path / evidence_mod.AUDIT_SUBDIR
+                / seatbelt_audit.DENIALS_FILE)
+               .read_text().splitlines() if line.strip()]
+    markers = [r for r in records
+               if r.get("type") == "global_budget_exceeded"]
+    assert len(markers) == 1, f"records: {records!r}"
+    assert markers[0]["cap"] == 2
+    assert markers[0]["audit"] is True
+
+
 # --- LogStreamer PID scoping ------------------------------------------
 # `log stream` is a host-wide feed: every Sandbox.kext event on the
 # machine matches the sender predicate, including events from

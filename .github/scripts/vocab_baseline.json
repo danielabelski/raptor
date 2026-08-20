@@ -269,6 +269,11 @@
   "count": 22,
   "kind": "alternation"
  },
+ "core/audit/condition_smt.py::_CAST_CONSUMERS": {
+  "count": 16,
+  "kind": "literal",
+  "note": "Go builtin numeric/string conversion names for the bare-cast producer idiom (language taxonomy, not target API names)"
+ },
  "core/audit/condition_smt.py::_CAST_NARROWING_RE": {
   "count": 32,
   "kind": "alternation"
@@ -500,6 +505,11 @@
   "count": 12,
   "kind": "literal"
  },
+ "core/audit/negative_space.py::_AMR_REGISTRATION_SHAPE_RE": {
+  "count": 15,
+  "kind": "alternation",
+  "note": "wiring-verb and view/api suffix morphology gating auth-mode asymmetry receipts to registration-shaped callees (verb/suffix taxonomy, not target API names)"
+ },
  "core/audit/negative_space.py::_AMR_KEYWORDS": {
   "count": 17,
   "kind": "literal",
@@ -540,6 +550,11 @@
   "count": 10,
   "kind": "literal",
   "note": "audit-log demotion record field names (framework record keys, not target API names)"
+ },
+ "core/audit/orchestrator.py::_post_loop_receipt_rescue": {
+  "count": 10,
+  "kind": "literal",
+  "note": "audit-log refutation-gate record field names (framework record keys, not target API names)"
  },
  "core/audit/orchestrator.py::_make_tier_counters": {
   "count": 34,

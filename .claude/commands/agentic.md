@@ -170,4 +170,33 @@ header — e.g., "Scanned 26 findings across 10 C files. 8 are exploitable buffe
 and command injections; 2 were ruled out as false positives." Use only facts from the
 report data. The report should stand on its own without this paragraph.
 
+## Post-run fork (interactive sessions only)
+
+When the completed run has findings with `is_exploitable: true` and the run did not
+already include `--validate`, offer the next step as a structured choice (see
+CLAUDE.md § INTERACTIVE PROMPTS). Run `libexec/raptor-may-ask` first; only if it
+prints `interactive` AND the AskUserQuestion tool is available, ask — "N exploitable
+findings. What next?" — options:
+
+1. **Validate the set (Recommended)** — run the exploitability-validation pipeline on
+   this run's findings: `/validate <target> --findings <output_dir>/autonomous_analysis_report.json`.
+   Cost note in the description: state this run's actual analysis spend (sum the
+   per-finding `cost_usd` values from the report) and that validation adds a further
+   multi-stage LLM pass (Stages A–F) per finding. (`--validate` on the original
+   command line runs this automatically on future runs.)
+2. **Exploit top finding** — work the highest-confidence exploitable finding toward a
+   working exploit: start from the generated PoC under `<output_dir>/autonomous/exploits/`
+   when the run produced one (it does unless `--no-exploits`), load
+   `tiers/exploit-guidance.md`, and check `exploitation_paths` constraints first.
+   Name the finding (id, file:line) in the description.
+3. **Generate report and stop** — present the `agentic-report.md` summary and finish.
+4. **Review first** — open the findings in the operator review CLI:
+   `libexec/raptor-review findings`.
+
+Fill descriptions with THIS run's facts: finding counts, top finding id/file, the
+actual `cost_usd` totals.
+
+**Non-interactive fallback:** current behavior — add the summary paragraph, present
+the report, stop (option 3).
+
 ---

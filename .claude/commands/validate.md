@@ -148,6 +148,27 @@ facts from the findings data.
 into your chat response exactly as-is. No editing, no reformatting, no column removal. If
 the table has 7 columns, your output must have 7 columns.
 
+### Post-run fork (interactive sessions only)
+
+After the verbatim summary, when any finding's final status is exploitable or
+confirmed, offer the next step as a structured choice (see CLAUDE.md § INTERACTIVE
+PROMPTS). Run `libexec/raptor-may-ask` first; only if it prints `interactive` AND the
+AskUserQuestion tool is available, ask — "Validation complete: N exploitable /
+M confirmed. What next?" — options:
+
+1. **Develop exploits (Recommended)** — `/exploit` on the exploitable findings; its
+   pre-check (`packages.exploitation.exploit_bootstrap`) picks up this run's
+   feasibility data automatically. Name the top finding (id, file:line, final status)
+   in the description.
+2. **Hunt variants** — `/understand <target> --hunt FIND-<id>` for a confirmed
+   finding's pattern → `variants.json` (name the finding id).
+3. **Generate patches** — `/patch` for the confirmed vulnerabilities
+   (`python3 raptor.py agentic --repo <path> --no-exploits`, see `.claude/commands/patch.md`).
+4. **Stop here** — the validation report stands; finish.
+
+**Non-interactive fallback:** current behavior — display the verbatim summary and
+stop (option 4).
+
 ---
 
 ## Examples

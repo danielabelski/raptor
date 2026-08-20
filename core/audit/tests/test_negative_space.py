@@ -1160,6 +1160,24 @@ class TestAuthModeRegistration:
         )
         assert findings and "mount" in findings[0].title
 
+    def test_non_registration_callees_silent(self):
+        """Telemetry/config-default calls gated on an auth mode are
+        housekeeping, not capability wiring — no asymmetry receipt."""
+        from core.audit.negative_space import check_auth_mode_registration
+
+        src = (
+            "def __init__(self, cfg):\n"
+            "    cfg.setdefault('X', 1)\n"
+            "    cfg.setdefault('Y', 2)\n"
+            "    if self.auth_mode == MODE_DIR:\n"
+            "        cfg.setdefault('DIR_SERVER', 'a')\n"
+            "        cfg.setdefault('DIR_PORT', 1)\n"
+            "        log.info('dir mode')\n"
+            "        log.info('dir extras')\n"
+            "    log.info('ready')\n"
+        )
+        assert check_auth_mode_registration(self._gap(src)) == []
+
     def test_single_gated_call_not_enough(self):
         from core.audit.negative_space import check_auth_mode_registration
 

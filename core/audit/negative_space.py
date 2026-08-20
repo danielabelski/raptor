@@ -1779,6 +1779,19 @@ _AMR_KEYWORDS = frozenset({
 })
 _AMR_COND_RE = re.compile(r"^(\s*)(?:el)?if\b(.*)$")
 
+# The check's subject is REGISTRATION-style callees (its docstring's
+# words): wiring calls that expose a capability. Telemetry, logging,
+# config-default and plain lookups gated on an auth mode are normal
+# mode-specific housekeeping — an asymmetry receipt on them is noise
+# that trains reviewers to dismiss the receipt where it matters, and
+# arms verdict floors against clean functions. Morphology, not a name
+# list: the callee tail must carry a wiring verb or view/api suffix.
+_AMR_REGISTRATION_SHAPE_RE = re.compile(
+    r"add|register|route|mount|attach|expose|bind|subscribe|install"
+    r"|include|blueprint|_view$|_views$|_api$|_endpoint",
+    re.IGNORECASE,
+)
+
 
 def _auth_terms_from_domain_model(domain_model: Any) -> set[str]:
     """Auth-mode vocabulary: learned predicate/field names + a generic
@@ -1872,6 +1885,8 @@ def check_auth_mode_registration(
         for callee in _AMR_CALL_RE.findall(line):
             tail = _amr_callee_tail(callee)
             if tail in _AMR_KEYWORDS or len(tail) < 3:
+                continue
+            if not _AMR_REGISTRATION_SHAPE_RE.search(tail):
                 continue
             if _in_gated(idx):
                 gated_calls[tail] = gated_calls.get(tail, 0) + 1

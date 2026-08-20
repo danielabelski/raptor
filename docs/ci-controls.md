@@ -29,13 +29,15 @@ That distinction matters. Having a dependency in `requirements-dev.txt` is not t
 | Corpus label pin lint (PR) | In-tree Python linter | Changed label files in a PR | `.github/workflows/corpus-labels.yml` on PRs and merge queue | Sparse-fetches pinned upstream trees to verify pins still resolve | `python3 -m core.audit.corpus.lint --mode pins --fetch-missing <changed files>` |
 | SARIF known-FP suppressions | In-tree Python script | CodeQL SARIF output | `.github/workflows/codeql.yml` post-analysis step | Suppresses known false-positive flow classes (e.g. path variables named `*_secret_key` that hold file paths, not secrets) | `python3 .github/scripts/sarif_known_fp_suppressions.py` |
 | CI controls doc guard | Pytest | This page and its referenced paths | `.github/workflows/tests.yml` on PRs | Validates ruff config lives in `pyproject.toml`, lint workflow uses config-file discovery, README links to this doc, and all documented paths exist on disk | `python3 -m pytest .github/tests/test_ci_controls_docs.py -v` |
+| PR preflight hazards | In-tree runner | The PR's changed test files | `.github/workflows/preflight.yml` on PRs (scoped by `.github/scripts/preflight_scope.py`) | Re-runs changed tests under CI-reality hazards: hidden optional deps, hidden tree-sitter, duration guard, tree hygiene, two shuffle legs | Run the changed tests locally with the hazard env toggles from the workflow |
 
 ## Stuff That Runs On A Timer
 
 | Workflow | Purpose | Cadence | Output / evidence |
 |---|---|---|---|
 | `.github/workflows/nightly.yml` | Runs slow and live integration tests that are intentionally excluded from the PR gate | Daily | Workflow logs and test reports |
-| `.github/workflows/nightly_shuffled.yml` | Re-runs fast-tier tests multiple times with distinct random seeds to flush out order-dependent failures | Daily (07:15 UTC) | First failure aborts; failing seed is visible at the bottom of the log |
+| `.github/workflows/nightly_shuffled.yml` | Re-runs fast-tier tests with distinct random seeds to flush out order-dependent failures | Daily (07:15 UTC) | Each seed runs as its own parallel matrix job (`fail-fast: false`); a failing seed is identified by its matrix job's `seed=` line |
+| `.github/workflows/tests.yml` (cron) | Full test suite, including tiers excluded from the PR gate | Mon/Thu 06:00 UTC | Workflow logs |
 | `.github/workflows/miswiring-scan.yml` `miswiring` | Dead-code / wrong-call / swallowed-exception sweep via AST analysis | Daily (05:30 UTC) | New findings fail the job; baseline in `.github/scripts/miswiring_baseline.json` |
 | `.github/workflows/miswiring-scan.yml` `env-docs` | Extracts every env var the tree reads/writes and compares against documentation; undocumented operator-facing variables and stale doc entries fail | Daily | Baseline in `.github/scripts/env_docs_baseline.json` |
 | `.github/workflows/miswiring-scan.yml` `vocab-lists` | Flags new large literal function-name lists that should be data (DomainVocabulary / IRIS / study loop) rather than hardcoded | Daily | Baseline in `.github/scripts/vocab_baseline.json` |
@@ -61,6 +63,30 @@ That distinction matters. Having a dependency in `requirements-dev.txt` is not t
 | `test/data/sca-e2e/modes-corpus/` | SCA operator modes (`scan`, `bump`, `fix`, `check`, `whatif`) still behave correctly on real-shape fixtures | `packages/sca/scripts/raptor-sca-modes-check test/data/sca-e2e/modes-corpus` |
 | `packages/sca/data/calibration/validation/*.json` | Current SCA risk-score quality against committed exploit signals | `packages/sca/scripts/raptor-sca-validate-corpus` |
 | `packages/sca/data/calibration/stress_baseline.json` | Drift baseline for dependency counts, vulnerability counts, ecosystem breakdown, and scan latency across curated OSS projects | Run the `SCA stress sweep` workflow or `packages.sca.calibration.stress` locally |
+
+### Running the audit corpus
+
+The corpus runner (`python3 -m core.audit.corpus.run_corpus`; full
+surface in `core/audit/corpus/README.md`) measures detector quality
+against labelled fixtures. The operator surface:
+
+- `--profile cold|deployed` (default `cold`) — `cold` measures raw
+  first-time-user capability: every accumulated-knowledge channel is
+  off (IRIS, SAGE recall, graduated-rule replay, cross-run
+  verdict/journal import, prior domain models, annotation reads) while
+  the in-run study pass, in-run synthesis, and all store writes stay
+  on. `deployed` leaves everything on. The profile is recorded in
+  results and the run history; `compare` warns across differing
+  profiles.
+- `--no-llm-cache` — sets `RAPTOR_LLM_CACHE=off` for the whole run so
+  refires measure the fix, not a cached completion.
+- `--probe` — lightweight LLM-only probe (no orchestrator or
+  mechanical tools); `--record-probe` opts probe rows into history.
+- `--fetch` — fetch/update pinned fixture sources before running.
+- Run history is an append-only JSONL store at
+  `$RAPTOR_CORPUS_HISTORY` (default
+  `~/.local/share/raptor/corpus-history.jsonl`), queried with
+  `python3 -m core.audit.corpus.history runs|compare|trend|stability`.
 
 We keep the raw evidence in version control rather than hand-copying shiny numbers into this page and watching them go stale a week later. The latest SCA calibration verdict is always the newest JSON file under `packages/sca/data/calibration/validation/`, and the current stress sample count plus capture commit live in the `_source` block of `packages/sca/data/calibration/stress_baseline.json`.
 

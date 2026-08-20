@@ -642,6 +642,9 @@
   },
   "artifacts:orphan_reader::coverage-read.json": {
    "note": "writer exists but constructs the name dynamically: core/coverage/record.py write_record(tool_name=\"read\") emits coverage-<tool>.json; the store_summary reader added by coverage-uplift names it literally. Deliberate plugin-writes/core-reads design, invisible to the literal-name index."
+  },
+  "artifacts:write_only_artifact::pipeline-tail.json": {
+   "note": "reader exists: core/audit/resume.py reads it via the PIPELINE_TAIL_FILENAME constant, so the literal name appears only at the constant definition \u2014 same dynamic-name pattern as coverage-read.json"
   }
  },
  "version": 1

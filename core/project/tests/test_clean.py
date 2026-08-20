@@ -149,5 +149,64 @@ class TestClean(unittest.TestCase):
             self.assertEqual(plan["by_type"]["validate"]["delete"], 1)
 
 
+class TestLiveRunExclusion(unittest.TestCase):
+    """Clean/dedup must never plan a live run (running + alive worker)."""
+
+    @staticmethod
+    def _mark_running(project, name, tool_pid):
+        import json
+        meta_path = project.output_path / name / ".raptor-run.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "running"
+        meta["tool_pid"] = tool_pid
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_plan_clean_skips_live_run(self):
+        import os
+
+        from core.project.clean import plan_clean
+        with TemporaryDirectory() as d:
+            p = _make_project_with_runs(d, [
+                ("scan", "scan-20260401"),
+                ("scan", "scan-20260402"),
+                ("scan", "scan-20260403"),
+            ])
+            # Oldest run is live: running + this process's (alive) pid.
+            self._mark_running(p, "scan-20260401", os.getpid())
+            plan = plan_clean(p, keep=1)
+            self.assertIn("scan-20260401", plan["skipped_live"])
+            self.assertNotIn("scan-20260401", plan["deleted"])
+            self.assertIn("scan-20260401", plan["kept"])
+            self.assertIn("scan-20260402", plan["deleted"])
+
+    def test_plan_clean_reclaims_stale_running_run(self):
+        # status=running with a DEAD worker is a stale abandon, not a
+        # live run — clean may plan it.
+        from core.project.clean import plan_clean
+        with TemporaryDirectory() as d:
+            p = _make_project_with_runs(d, [
+                ("scan", "scan-20260401"),
+                ("scan", "scan-20260402"),
+            ])
+            self._mark_running(p, "scan-20260401", -1)
+            plan = plan_clean(p, keep=1)
+            self.assertEqual(plan["skipped_live"], [])
+            self.assertIn("scan-20260401", plan["deleted"])
+
+    def test_plan_dedup_skips_live_run(self):
+        import os
+
+        from core.project.clean import plan_dedup
+        with TemporaryDirectory() as d:
+            p = _make_project_with_runs(d, [
+                ("scan", "scan-20260401"),
+                ("scan", "scan-20260402"),
+            ])
+            self._mark_running(p, "scan-20260402", os.getpid())
+            plan = plan_dedup(p)
+            self.assertIn("scan-20260402", plan["skipped_live"])
+            self.assertNotIn("scan-20260402", plan["deleted"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2197,6 +2197,9 @@ def _do_clean(project, keep, dry_run, yes, dedup=False):
 
     plan = plan_dedup(project) if dedup else plan_clean(project, keep=keep)
 
+    for name in plan.get("skipped_live", []):
+        print(f"  Skipped (still running): {name}")
+
     if not plan["deleted"]:
         print("No redundant runs to dedup." if dedup else "Nothing to clean.")
         return
@@ -2302,12 +2305,23 @@ def _do_merge(project, merge_type, yes):
     from core.json import save_json
     from core.run.metadata import RUN_METADATA_FILE
 
+    from .clean import split_live_runs
     from .merge import merge_runs
 
     groups = project.get_run_dirs_by_type()
 
     if merge_type != "all":
         groups = {k: v for k, v in groups.items() if k == merge_type}
+
+    # Never merge (then delete) a live run — its directory is still
+    # being written by an in-flight worker.
+    filtered = {}
+    for cmd_type, dirs in groups.items():
+        rest, live = split_live_runs(dirs)
+        for d in live:
+            print(f"  {cmd_type}: skipped (still running): {d.name}")
+        filtered[cmd_type] = rest
+    groups = filtered
 
     # Filter to groups that actually have something to merge
     mergeable = {k: v for k, v in groups.items() if len(v) >= 2}

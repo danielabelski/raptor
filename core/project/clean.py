@@ -26,6 +26,35 @@ def _run_dir_size(d: Path) -> int:
     return size
 
 
+def split_live_runs(dirs) -> tuple[list, list]:
+    """Partition run dirs into ``(rest, live)``.
+
+    A run is *live* when its metadata says ``status=running`` AND the
+    recorded ``tool_pid`` is still alive — deleting or merging it would
+    yank the directory out from under an in-flight process. Runs in
+    ``running`` state whose worker is dead are NOT live (they are stale
+    abandons; the sweep machinery marks them failed, and clean may
+    reclaim them like any other terminal run).
+    """
+    from core.json import load_json
+    from core.run.metadata import RUN_METADATA_FILE, _tool_pid_alive
+
+    live: list = []
+    rest: list = []
+    for d in dirs:
+        try:
+            meta = load_json(Path(d) / RUN_METADATA_FILE)
+        except Exception:  # noqa: BLE001 — unreadable metadata is not live
+            meta = None
+        if (isinstance(meta, dict)
+                and meta.get("status") == "running"
+                and _tool_pid_alive(meta.get("tool_pid"))):
+            live.append(d)
+        else:
+            rest.append(d)
+    return rest, live
+
+
 def plan_clean(project, keep=1) -> Dict[str, Any]:
     """Plan which runs to delete. Returns stats with directory paths.
 
@@ -41,10 +70,16 @@ def plan_clean(project, keep=1) -> Dict[str, Any]:
     groups = project.get_run_dirs_by_type()
     stats: Dict[str, Any] = {
         "delete_dirs": [], "deleted": [], "kept": [], "freed_bytes": 0,
-        "by_type": {},
+        "by_type": {}, "skipped_live": [],
     }
 
     for cmd_type, dirs in groups.items():
+        # Never plan a live run (status=running with a live worker)
+        # for deletion — it counts as kept, outside the keep quota.
+        dirs, live = split_live_runs(dirs)
+        for d in live:
+            stats["skipped_live"].append(d.name)
+            stats["kept"].append(d.name)
         to_keep = dirs[:keep]
         to_delete = dirs[keep:]
         # Clean-safety invariant (project.md): never delete the last run of a
@@ -89,9 +124,16 @@ def plan_dedup(project) -> Dict[str, Any]:
     groups = project.get_run_dirs_by_type()
     stats: Dict[str, Any] = {
         "delete_dirs": [], "deleted": [], "kept": [], "freed_bytes": 0,
-        "by_type": {},
+        "by_type": {}, "skipped_live": [],
     }
     for cmd_type, dirs in groups.items():
+        # Never dedup away a live run (status=running with a live
+        # worker) — and never let a half-written live run subsume a
+        # completed sibling either.
+        dirs, live = split_live_runs(dirs)
+        for d in live:
+            stats["skipped_live"].append(d.name)
+            stats["kept"].append(d.name)
         droppable, _ = dedup_runs(dirs)
         drop_set = set(droppable)
         type_freed = 0

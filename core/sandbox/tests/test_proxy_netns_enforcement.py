@@ -131,9 +131,6 @@ class TestProxyUnixSocket:
 # _proxy_bridge.py: bring_up_loopback + _run_forwarder
 # ---------------------------------------------------------------------------
 
-@pytest.mark.filterwarnings("ignore::DeprecationWarning:multiprocessing")
-@pytest.mark.filterwarnings("ignore:This process.*fork:DeprecationWarning")
-
 def _free_loopback_port() -> int:
     """Ephemeral free port on 127.0.0.1.
 
@@ -152,10 +149,10 @@ def _free_loopback_port() -> int:
 
 
 def _connect_with_retry(port: int, deadline_s: float = 5.0) -> socket.socket:
-    """Connect to a just-forked forwarder, retrying while it binds.
+    """Connect to a just-spawned forwarder, retrying while it binds.
 
     A fixed pre-connect sleep is not hermetic: under full-suite load
-    the forked forwarder can take longer than the sleep to import and
+    the spawned forwarder can take longer than the sleep to import and
     bind, and the parent's connect() then fails with ECONNREFUSED.
     Retry until the deadline instead.
     """
@@ -171,6 +168,35 @@ def _connect_with_retry(port: int, deadline_s: float = 5.0) -> socket.socket:
             if time.monotonic() >= end:
                 raise
             time.sleep(0.05)
+
+
+def _spawn_forwarder(port, sock_path, death_r):
+    """Run ``_run_forwarder`` in a FRESH single-threaded interpreter.
+
+    These tests used to ``os.fork()`` the forwarder, but the test
+    process is legitimately multi-threaded by the time they run under
+    a full-suite order: the egress-proxy singleton's daemon thread
+    (``raptor-egress-proxy``), started by any earlier sandbox test,
+    lives for the whole process, and two of the tests below start
+    their own echo threads before launching the forwarder. Forking
+    there draws Python's multi-threaded-fork DeprecationWarning on
+    every run. The forwarder only needs importable module code plus
+    one inherited fd, so a subprocess (fork+exec into a fresh,
+    single-threaded interpreter) preserves the semantics without the
+    fork hazard. ``pass_fds`` keeps ``death_r``'s descriptor number
+    intact in the child; the caller still closes its own copy.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(RAPTOR_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+    code = (
+        "import sys\n"
+        "from core.sandbox._proxy_bridge import _run_forwarder\n"
+        "_run_forwarder(int(sys.argv[1]), sys.argv[2], int(sys.argv[3]))\n"
+    )
+    return subprocess.Popen(
+        [sys.executable, "-c", code, str(port), sock_path, str(death_r)],
+        pass_fds=(death_r,), env=env,
+    )
 
 
 class TestProxyBridge:
@@ -242,22 +268,14 @@ class TestProxyBridge:
         echo_thread = threading.Thread(target=_echo, daemon=True)
         echo_thread.start()
 
-        # Fork a forwarder.
+        # Launch a forwarder in a fresh interpreter.
         death_r, death_w = os.pipe()
-        from core.sandbox._proxy_bridge import _run_forwarder
-
-        fwd_pid = os.fork()
-        if fwd_pid == 0:
-            os.close(death_w)
-            try:
-                _run_forwarder(port, sock_path, death_r)
-            finally:
-                os._exit(0)
+        fwd = _spawn_forwarder(port, sock_path, death_r)
         os.close(death_r)
 
         try:
             # Connect via TCP → forwarder → unix → echo server → back.
-            # Retries while the forked forwarder starts up and binds — a
+            # Retries while the spawned forwarder starts up and binds — a
             # fixed sleep is not hermetic under full-suite load.
             s = _connect_with_retry(port)
             s.sendall(b"hello-bridge")
@@ -268,7 +286,7 @@ class TestProxyBridge:
             assert got == b"hello-bridge"
         finally:
             os.close(death_w)
-            os.waitpid(fwd_pid, 0)
+            fwd.wait(timeout=10)
 
     def test_forwarder_concurrent_connections_with_churn(self):
         """Multiple simultaneous relays with interleaved teardown must
@@ -322,15 +340,7 @@ class TestProxyBridge:
 
         port = _free_loopback_port()
         death_r, death_w = os.pipe()
-        from core.sandbox._proxy_bridge import _run_forwarder
-
-        fwd_pid = os.fork()
-        if fwd_pid == 0:
-            os.close(death_w)
-            try:
-                _run_forwarder(port, sock_path, death_r)
-            finally:
-                os._exit(0)
+        fwd = _spawn_forwarder(port, sock_path, death_r)
         os.close(death_r)
 
         try:
@@ -369,7 +379,7 @@ class TestProxyBridge:
         finally:
             stop.set()
             os.close(death_w)
-            os.waitpid(fwd_pid, 0)
+            fwd.wait(timeout=10)
             echo_thread.join(timeout=5)
 
     def test_forwarder_exits_on_death_pipe(self):
@@ -382,22 +392,12 @@ class TestProxyBridge:
         noop_srv.listen(1)
 
         death_r, death_w = os.pipe()
-        from core.sandbox._proxy_bridge import _run_forwarder
-
-        fwd_pid = os.fork()
-        if fwd_pid == 0:
-            os.close(death_w)
-            try:
-                _run_forwarder(_free_loopback_port(), sock_path, death_r)
-            finally:
-                os._exit(0)
+        fwd = _spawn_forwarder(_free_loopback_port(), sock_path, death_r)
         os.close(death_r)
 
         # Close write end → forwarder should exit promptly.
         os.close(death_w)
-        _, status = os.waitpid(fwd_pid, 0)
-        assert os.WIFEXITED(status)
-        assert os.WEXITSTATUS(status) == 0
+        assert fwd.wait(timeout=10) == 0
         noop_srv.close()
 
 

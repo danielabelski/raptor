@@ -289,13 +289,14 @@ def _nm_symbols_status(binary_path: Path) -> tuple[dict[str, int], bool]:
     ``gz_skip`` matches the GCC-cloned ``gz_skip.constprop.0``."""
     out, ok = _run_status(["nm", "-C", str(binary_path)],
                           binary=binary_path)
-    if not out:
-        # Fall back to plain nm if -C is unavailable or produced
-        # nothing. ``ok`` is True when EITHER invocation completed
-        # cleanly — clean-but-empty output is complete evidence.
-        out, ok_plain = _run_status(["nm", str(binary_path)],
-                                    binary=binary_path)
-        ok = ok or ok_plain
+    if not ok:
+        # Fall back to plain nm only when ``nm -C`` FAILED (-C
+        # unavailable on an exotic nm build, tool crash). A clean run
+        # with legitimately-empty output is complete evidence of an
+        # empty symbol table — rerunning without -C would just repeat
+        # the answer at the cost of another subprocess.
+        out, ok = _run_status(["nm", str(binary_path)],
+                              binary=binary_path)
     syms: dict[str, int] = {}
     for line in out.splitlines():
         # ``<addr> <type> <demangled name (may contain spaces)>``
@@ -782,9 +783,12 @@ def _dynamic_nm_symbols(binary_path: Path) -> dict[str, int]:
     NO plain-nm symbols (the ``.symtab`` section is removed), but
     ``.dynsym`` survives (the dynamic linker needs it). For a shared
     library, this exposes the entire public API. Same demangle +
-    bare-name + qualified-no-args indexing as ``_nm_symbols``."""
-    out = _run(["nm", "-D", "-C", str(binary_path)], binary=binary_path)
-    if not out:
+    bare-name + qualified-no-args indexing as ``_nm_symbols``; same
+    rerun policy — plain ``nm -D`` only when ``nm -D -C`` failed
+    (clean-but-empty output is complete evidence)."""
+    out, ok = _run_status(["nm", "-D", "-C", str(binary_path)],
+                          binary=binary_path)
+    if not ok:
         out = _run(["nm", "-D", str(binary_path)], binary=binary_path)
     syms: dict[str, int] = {}
     for line in out.splitlines():
@@ -1173,7 +1177,12 @@ def enrich_inventory_with_binary_oracle(
     per_binary: list[tuple[Path, str, dict[str, BinaryOracleWitness]]] = []
     for bp in binary_paths:
         verdicts = classify_binary_evidence(names, bp)
-        build_id = read_build_id(bp) or ""
+        # Every witness already carries the build_id the classifier
+        # read — reuse it instead of re-running readelf on the binary.
+        if verdicts:
+            build_id = next(iter(verdicts.values())).build_id
+        else:
+            build_id = read_build_id(bp) or ""
         per_binary.append((bp, build_id, verdicts))
 
     if not any(verdicts for _, _, verdicts in per_binary):

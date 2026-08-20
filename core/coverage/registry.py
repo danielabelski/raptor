@@ -54,6 +54,9 @@ _REGISTRY = {
     # label is review-grade. Pre-registration it fell to the unknown/scanned
     # default and journal-derived function marks never counted as reviewed.
     "journal": (CATEGORY_LLM, DEPTH_ANALYSED),
+    # "mark" = an operator/agent --mark journaled as a review assertion
+    # (producer="mark" flows through import_journal as the store label).
+    "mark": (CATEGORY_LLM, DEPTH_ANALYSED),
     # checked_by source_labels are command:stage (all LLM-driven; scanners
     # use the file-level coverage records, not checked_by).
     "validate": (CATEGORY_LLM, DEPTH_ANALYSED),

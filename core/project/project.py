@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
 
+from core.config import RaptorConfig
 from core.json import load_json, save_json
 from core.logging import get_logger
 
@@ -27,7 +28,13 @@ logger = get_logger()
 
 # Default locations
 PROJECTS_DIR = Path.home() / ".raptor" / "projects"
-DEFAULT_OUTPUT_BASE = Path("out/projects")
+# Anchored to the repo-rooted out/ dir. Pre-fix this was the
+# cwd-relative Path("out/projects"): create() minted default output
+# dirs relative to whatever cwd the process happened to have, the
+# purge containment in delete() resolved against that same moving
+# target, and is_project_output_dir() misclassified real project
+# dirs whenever cwd != repo root.
+DEFAULT_OUTPUT_BASE = RaptorConfig.BASE_OUT_DIR / "projects"
 
 
 _PROJECT_SCHEMA_VERSION = 4

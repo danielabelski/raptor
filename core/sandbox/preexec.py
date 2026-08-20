@@ -343,10 +343,16 @@ _libc = None
 # one tool invocation costs a retry; losing the session costs the run.
 # oom_score_adj=+500 makes every spawned child a strongly preferred
 # OOM victim relative to the session (which stays at its inherited
-# score). Raising one's own score never needs privilege, and an
-# unprivileged child cannot lower it back down (decreasing requires
-# CAP_SYS_RESOURCE — see test_sandbox_attack_scenarios' oom probe),
-# so the preference sticks through the whole child tree.
+# score). Raising one's own score never needs privilege.
+#
+# Stickiness is honest, not absolute: an unprivileged child MAY lower
+# its score back down to the floor it inherited at fork (only going
+# BELOW that floor needs CAP_SYS_RESOURCE — the direction
+# test_sandbox_attack_scenarios' oom probe pins). Outside the sandbox
+# the stamp is therefore a default that well-behaved tools keep, not
+# a boundary against a malicious child; under core.sandbox.run,
+# Landlock denies the /proc/self write and the preference does stick
+# through the child tree.
 #
 # Written post-fork/pre-exec, so on the sandboxed path it lands
 # BEFORE Landlock restricts /proc writes and is inherited across the

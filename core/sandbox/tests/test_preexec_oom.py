@@ -102,3 +102,34 @@ def test_own_pid_untouched_by_import():
     assert r.returncode == 0, r.stderr
     parent = Path("/proc/self/oom_score_adj").read_text().strip()
     assert r.stdout.strip() == parent
+
+
+def test_child_can_lower_back_to_inherited_floor_but_not_below():
+    """Pins the REAL kernel contract the block comment states: outside
+    the sandbox the +500 stamp is a cooperative default — a child may
+    drop back to its inherited floor, but not below it."""
+    _skip_if_unwritable()
+    inherited = int(Path("/proc/self/oom_score_adj").read_text().strip())
+    code = (
+        "import os\n"
+        "def w(v):\n"
+        "    try:\n"
+        "        fd = os.open('/proc/self/oom_score_adj', os.O_WRONLY)\n"
+        "        os.write(fd, str(v).encode()); os.close(fd)\n"
+        "        return 'ok'\n"
+        "    except OSError:\n"
+        "        return 'denied'\n"
+        f"print('floor', w({inherited}))\n"
+        f"print('below', w({inherited - 100}))\n"
+        "print('final', open('/proc/self/oom_score_adj').read().strip())\n"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        preexec_fn=set_pdeathsig(),  # stamps +500 first
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    if os.geteuid() == 0:
+        pytest.skip("root can lower below the floor — contract untestable")
+    assert "floor ok" in r.stdout, r.stdout
+    assert "below denied" in r.stdout, r.stdout
+    assert f"final {inherited}" in r.stdout, r.stdout

@@ -804,6 +804,9 @@ def _run_audit(
                     "hypothesis": hypothesis,
                     "counter_hypothesis": counter_hyp,
                     "evidence_tool": evidence_tool,
+                    "receipt_floored": bool(
+                        outcome and outcome.get("receipt_floored"),
+                    ),
                     "model": model,
                     "cost_usd": cost,
                     "duration_s": dur,
@@ -1176,10 +1179,39 @@ def _parse_audit_log_outcomes(
                             f"{file_part}:{qualified}"
                         )
 
+    # Receipt-floor pre-pass: a refutation_gate row that floored the
+    # function to suspicious is deterministic mechanical evidence; the
+    # rows it produced must be recognizable downstream (the phase-2
+    # quality suppression exempts them, like any tool confirmation).
+    floored_bases: set[str] = set()
+    if log_path.exists():
+        with open(log_path) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    entry.get("action") == "refutation_gate"
+                    and entry.get("applied")
+                    and entry.get("demote_to") == "suspicious"
+                ):
+                    key = entry.get("key", "")
+                    head, _, tail = key.rpartition(":")
+                    floored_bases.add(
+                        head if (head and tail.isdigit()) else key,
+                    )
+
     for entry in raw_entries:
         key = entry.get("key", "")
         outcomes_by_id[key] = entry
         head, _, tail = key.rpartition(":")
+        _fb = head if (head and tail.isdigit()) else key
+        if _fb in floored_bases:
+            entry["receipt_floored"] = True
         if head and tail.isdigit():
             outcomes_by_id[head] = entry
             best = derived_bare_entries.get(head)
@@ -2434,6 +2466,12 @@ def _suppress_quality_findings(merged_results: list[dict[str, Any]]) -> int:
         ):
             ev = r.get("evidence_tool", "")
             if _is_verification_evidence(ev):
+                continue
+            if r.get("receipt_floored"):
+                # A deterministic gate floor (structural/detector
+                # receipt corroborating the reviewer's own hypothesis)
+                # is mechanical evidence — an LLM quality opinion must
+                # not un-do it (moby CVE-2024-36623/36621 class).
                 continue
             r["actual"] = "clean"
             r["phase2_suppressed"] = True

@@ -1653,3 +1653,50 @@ class TestQualitySuppressionNullPrimitive:
         rows = [self._row("write")]
         assert run_corpus._suppress_quality_findings(rows) == 0
         assert rows[0]["actual"] == "suspicious"
+
+
+class TestReceiptFlooredSuppressionExemption:
+    """A deterministic gate floor is mechanical evidence — the phase-2
+    quality suppression must not un-do it."""
+
+    def _row(self, floored):
+        return {
+            "function_id": "a.go:W",
+            "expected": "finding",
+            "actual": "suspicious",
+            "evidence_tool": "",
+            "receipt_floored": floored,
+            "phase2_classification": "quality_finding",
+            "phase2_is_security": False,
+            "phase2_primitive": "none",
+        }
+
+    def test_floored_row_survives(self):
+        rows = [self._row(True)]
+        assert run_corpus._suppress_quality_findings(rows) == 0
+        assert rows[0]["actual"] == "suspicious"
+
+    def test_unfloored_row_suppressed(self):
+        rows = [self._row(False)]
+        assert run_corpus._suppress_quality_findings(rows) == 1
+
+    def test_flag_threaded_from_gate_rows(self, tmp_path):
+        import json
+
+        from core.audit.corpus.run_corpus import (
+            _parse_audit_log_outcomes,
+        )
+        log = tmp_path / ".audit-log.jsonl"
+        rows = [
+            {"action": "orchestrator_review", "key": "a.go:W:5",
+             "status": "clean"},
+            {"action": "refutation_gate", "key": "a.go:W:5",
+             "gate": "receipt_corroborated_hypothesis",
+             "applied": True, "demote_to": "suspicious"},
+            {"action": "orchestrator_review", "key": "a.go:W:5",
+             "status": "suspicious", "final_status_correction": True},
+        ]
+        log.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        o, _ = _parse_audit_log_outcomes(log)
+        assert o["a.go:W"]["receipt_floored"] is True
+        assert o["a.go:W"]["status"] == "suspicious"

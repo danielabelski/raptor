@@ -148,12 +148,15 @@ class TestBuildlessDefault:
         assert result.metadata.build_system == "buildless"
         assert result.metadata.build_command == ""
 
-    def test_non_cpp_language_unaffected(self, db_manager, tmp_path):
+    def test_interpreted_language_unaffected(self, db_manager, tmp_path):
         result, cmd = _run_create(db_manager, tmp_path, language="javascript")
         assert result.success
         assert "--build-mode=none" not in cmd
 
     def test_java_defaults_to_buildless(self, db_manager, tmp_path):
+        """Java autobuild executes gradlew/mvnw from the repo — the
+        same code-execution vector the cpp gate closes, so java gets
+        the same buildless default."""
         result, cmd = _run_create(
             db_manager, tmp_path, language="java",
             build_system=_build_system(tmp_path, "mvn"),
@@ -171,6 +174,64 @@ class TestBuildlessDefault:
         assert result.success
         assert "--command" in cmd
         assert "--build-mode=none" not in cmd
+
+    def test_csharp_is_buildless_by_default(self, db_manager, tmp_path):
+        result, cmd = _run_create(db_manager, tmp_path, language="csharp")
+        assert result.success
+        assert "--build-mode=none" in cmd
+
+    def test_java_traced_opt_in_keeps_build_command(self, db_manager, tmp_path):
+        result, cmd = _run_create(
+            db_manager, tmp_path, language="java",
+            build_system=_build_system(tmp_path, "mvn"),
+            traced_build=True,
+        )
+        assert result.success
+        assert "--build-mode=none" not in cmd
+        assert "--command" in cmd
+
+    def test_java_old_cli_falls_back_to_traced_with_banner(
+        self, db_manager, tmp_path, caplog,
+    ):
+        """java/csharp on a CLI without buildless keep the
+        pre-existing traced behaviour — but loudly disclosed, never
+        silently."""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result, cmd = _run_create(
+                db_manager, tmp_path, language="java",
+                build_system=_build_system(tmp_path, "mvn"),
+                version="2.15.5",
+            )
+        assert result.success
+        assert "--build-mode=none" not in cmd
+        assert "--command" in cmd
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "trust marker" in joined
+
+    def test_go_traced_build_banners_without_trust(
+        self, db_manager, tmp_path, caplog,
+    ):
+        """Languages with no buildless mode (go) keep autobuild but
+        the untrusted-build banner must fire."""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result, _cmd = _run_create(db_manager, tmp_path, language="go")
+        assert result.success
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "trust marker" in joined
+
+    def test_go_traced_build_no_banner_with_trust(
+        self, db_manager, tmp_path, caplog,
+    ):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result, _cmd = _run_create(
+                db_manager, tmp_path, language="go", traced_build=True,
+            )
+        assert result.success
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "trust marker" not in joined
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +372,7 @@ class TestAgentBuildlessRouting:
 
     def test_cpp_skips_build_detection(self, tmp_path):
         agent = self._agent(tmp_path)
-        agent.database_manager.supports_buildless_cpp.return_value = (
+        agent.database_manager.supports_buildless.return_value = (
             True, "2.26.3",
         )
         agent.run_autonomous_analysis(languages=["cpp"])
@@ -342,8 +403,8 @@ class TestAgentBuildlessRouting:
 
     def test_old_cli_skips_language_with_error(self, tmp_path):
         agent = self._agent(tmp_path)
-        agent.database_manager.supports_buildless_cpp.return_value = (
-            False, "CodeQL 2.15.5 < 2.16 — C/C++ --build-mode=none unsupported",
+        agent.database_manager.supports_buildless.return_value = (
+            False, "CodeQL 2.15.5 < 2.16 — cpp --build-mode=none unsupported",
         )
         result = agent.run_autonomous_analysis(languages=["cpp"])
         # cpp never reached database creation and never fell back to
@@ -352,6 +413,35 @@ class TestAgentBuildlessRouting:
         assert "cpp" not in lang_map
         agent.build_detector.detect_build_system.assert_not_called()
         assert any("buildless" in e for e in result.errors)
+
+    def test_java_routes_buildless_like_cpp(self, tmp_path):
+        agent = self._agent(tmp_path)
+        agent.database_manager.supports_buildless.return_value = (
+            True, "2.26.3",
+        )
+        result = agent.run_autonomous_analysis(languages=["java"])
+        agent.build_detector.detect_build_system.assert_not_called()
+        agent.build_detector.generate_no_build_config.assert_called_with("java")
+        assert result.untrusted_build_languages == []
+
+    def test_untrusted_autobuild_language_recorded(self, tmp_path):
+        """A compiled language with no buildless mode (go) executes
+        repo build logic via autobuild — it must land in the run
+        metadata when no trust was asserted."""
+        agent = self._agent(tmp_path)
+        agent.build_detector.detect_build_system.return_value = None
+        agent.build_detector.synthesise_build_command.return_value = None
+        result = agent.run_autonomous_analysis(languages=["go"])
+        assert result.untrusted_build_languages == ["go"]
+
+    def test_trusted_autobuild_language_not_recorded(self, tmp_path):
+        agent = self._agent(tmp_path)
+        agent.build_detector.detect_build_system.return_value = None
+        agent.build_detector.synthesise_build_command.return_value = None
+        result = agent.run_autonomous_analysis(
+            languages=["go"], traced_build=True,
+        )
+        assert result.untrusted_build_languages == []
 
 
 class TestBuildlessDegradationSummary:

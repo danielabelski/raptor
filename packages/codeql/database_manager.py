@@ -41,32 +41,56 @@ from packages.codeql.tunables import CodeQLTunables
 logger = get_logger()
 
 # Languages whose databases are created with ``--build-mode=none``
-# (buildless extraction) BY DEFAULT.  A traced build (and Java's
-# autobuild) runs the target repo's build system — attacker-controlled
-# code — so untrusted repos must never trigger it implicitly.
-# Buildless extraction parses the source without executing anything
-# from the repo, removing the repo-code-execution vector entirely.
+# (buildless extraction) BY DEFAULT.  A traced build (and the
+# autobuilder) runs the target repo's build system —
+# attacker-controlled code — so untrusted repos must never trigger it
+# implicitly.  Buildless extraction parses the source without
+# executing anything from the repo, removing the repo-code-execution
+# vector entirely.
 # For Java there is a second forcing constraint: ``database create``
 # runs with the sandbox network blocked, so an autobuild that needs to
 # fetch dependencies fails by construction; buildless extraction is
 # documented to proceed with unresolved dependencies (reduced type
 # fidelity, verified offline in a no-network namespace).  Operators
 # opt back into traced builds explicitly (``--traced-build`` on the
-# CLI, an explicit ``--build-command``, or
-# ``create_database(traced_build=True)``).
-BUILDLESS_DEFAULT_LANGUAGES = frozenset({"cpp", "java"})
+# CLI, an explicit ``--build-command``,
+# ``create_database(traced_build=True)``, or the project's ``build``
+# trust marker).
+#
+# Decision record: the buildless-by-default posture originally covered
+# only cpp and java; csharp got NO gate — ``database create`` without
+# ``--build-mode=none`` runs the CodeQL AUTOBUILDER for it, which
+# executes repo-controlled build entry points (msbuild targets), i.e.
+# the exact vector the cpp/java gate closes.  It now shares the gate.
+# Languages CodeQL has no buildless mode for (go, swift, ...) keep
+# their traced/autobuild behaviour but a loud banner discloses the
+# execution and the run metadata records it (see
+# ``CodeQLWorkflowResult.untrusted_build_languages``).
+BUILDLESS_DEFAULT_LANGUAGES = frozenset({"cpp", "java", "csharp"})
 
 # Minimum CLI version for ``--build-mode=none`` per language.  Older
-# CLIs degrade to a clear skip, never a crash and never a silent
+# CLIs degrade loudly (cpp: clear skip; java/csharp: pre-existing
+# traced behaviour + banner) — never a crash and never a SILENT
 # fallback to a traced build.  Java's buildless extractor stabilised
-# later than C/C++'s.
+# later than C/C++'s; csharp buildless is gated at 2.17.1 (earlier
+# CLIs carried it only as beta).
 BUILDLESS_MIN_VERSIONS = {
     "cpp": (2, 16),
     "java": (2, 16, 4),
+    "csharp": (2, 17, 1),
 }
 
 # Back-compat alias — external callers referenced the cpp constant.
 BUILDLESS_CPP_MIN_VERSION = BUILDLESS_MIN_VERSIONS["cpp"]
+
+# Languages where ``codeql database create`` WITHOUT
+# ``--build-mode=none`` executes repo build logic — either the
+# explicit ``--command`` or CodeQL's autobuilder probing the repo's
+# build entry points.  Used to decide when the untrusted-traced-build
+# banner must fire.
+AUTOBUILD_LANGUAGES = frozenset(
+    {"cpp", "java", "csharp", "go", "swift", "kotlin"},
+)
 
 # Diagnostic messages the extractor emits when an #include could not
 # be resolved.  Matched loosely across CLI versions.
@@ -309,10 +333,12 @@ class DatabaseManager:
         Returns ``(supported, detail)`` — ``detail`` is the version on
         success, a human-readable reason on failure.  Version floors
         come from :data:`BUILDLESS_MIN_VERSIONS`; a language absent
-        from that table reads as unsupported.  Never raises; an
-        absent/unparseable CLI reads as unsupported so callers can
-        degrade with a clear skip instead of a crash.  Cached per
-        manager instance and language (the CLI doesn't change mid-run).
+        from that table has no buildless mode and reads as
+        unsupported.  Never raises; an absent/unparseable CLI reads as
+        unsupported so callers can degrade with a clear skip (cpp) or
+        a disclosed traced build (java/csharp) instead of a crash.
+        Cached per manager instance and language (the CLI doesn't
+        change mid-run).
         """
         cache = getattr(self, "_buildless_probes", None)
         if cache is None:
@@ -1020,7 +1046,10 @@ class DatabaseManager:
         )
         if buildless:
             supported, detail = self.supports_buildless(language)
-            if not supported:
+            if not supported and language == "cpp":
+                # C/C++ has no safe alternative on an old CLI:
+                # hard-skip rather than silently running the repo's
+                # build.
                 logger.error(
                     "✗ Buildless %s extraction unavailable: %s", language, detail,
                 )
@@ -1047,6 +1076,42 @@ class DatabaseManager:
                     duration_seconds=time.time() - start_time,
                     cached=False,
                 )
+            if not supported:
+                # java/csharp on a CLI without buildless: keep the
+                # pre-existing traced/autobuild behaviour, disclosed
+                # by the untrusted-traced-build banner below.
+                logger.warning(
+                    "%s: buildless extraction unavailable (%s) — "
+                    "falling back to the traced/autobuild path",
+                    language, detail,
+                )
+                buildless = False
+
+        # Untrusted traced-build disclosure. When this create is about
+        # to execute repo build logic (an explicit --command, or the
+        # CodeQL autobuilder for a compiled language) WITHOUT the
+        # operator's trust assertion (traced_build / --build-command /
+        # the project's `build` trust marker), say so loudly — the
+        # repo's build scripts are attacker-controlled code.
+        if not buildless and not traced_build and (
+            (build_system is not None and build_system.command)
+            or language in AUTOBUILD_LANGUAGES
+        ):
+            _vector = (
+                f"build command {build_system.command!r}"
+                if build_system is not None and build_system.command
+                else "the CodeQL autobuilder"
+            )
+            logger.warning("%s", "=" * 70)
+            logger.warning(
+                "⚠️  %s: traced build without the build trust marker — "
+                "`codeql database create` will execute the repository's "
+                "build logic via %s (sandboxed, network blocked). If you "
+                "trust this repo, acknowledge with --traced-build or "
+                "`/project trust build`.",
+                language, _vector,
+            )
+            logger.warning("%s", "=" * 70)
 
         # Cleanup any prior leftover staging from this same process (e.g.,
         # from a previous crashed run with the same PID after PID reuse).

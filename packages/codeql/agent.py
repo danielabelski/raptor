@@ -10,7 +10,7 @@ into a seamless automated pipeline.
 import argparse
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +26,7 @@ from core.run.output import unique_run_suffix as _unique_run_suffix
 from core.run.safe_io import safe_run_mkdir
 from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
 from packages.codeql.database_manager import (
+    AUTOBUILD_LANGUAGES,
     BUILDLESS_DEFAULT_LANGUAGES,
     DatabaseManager,
     DatabaseResult,
@@ -138,6 +139,13 @@ class CodeQLWorkflowResult:
     #: Source-wrapper summaries staged for the standard suite
     #: (wrappers found, rows emitted, refusal counts).
     source_summaries: dict | None = None
+
+    # Languages whose database creation executed repo build logic
+    # (explicit command or CodeQL autobuild) WITHOUT the operator's
+    # trust assertion (--traced-build / --build-command / the
+    # project's `build` trust marker). Recorded so the disclosure
+    # survives into the run report, not just the log stream.
+    untrusted_build_languages: list[str] = field(default_factory=list)
 
     def to_dict(self):
         """
@@ -427,6 +435,7 @@ class CodeQLAgent:
 
             language_build_map = {}
             traced_languages = set()
+            buildless_languages = set()
             for lang in detected:
                 if traced_build or (build_commands and lang in build_commands):
                     # Operator explicitly opted this language into a
@@ -436,14 +445,16 @@ class CodeQLAgent:
                     lang in BUILDLESS_DEFAULT_LANGUAGES
                     and lang not in traced_languages
                 ):
-                    # Buildless default for C/C++: never run build
-                    # detection / synthesis for an untrusted repo —
-                    # `codeql database create --build-mode=none`
+                    # Buildless default (cpp/java/csharp): never run
+                    # build detection / synthesis for an untrusted
+                    # repo — `codeql database create --build-mode=none`
                     # extracts without executing any repo code.
                     supported, detail = (
-                        self.database_manager.supports_buildless_cpp()
+                        self.database_manager.supports_buildless(lang)
                     )
-                    if not supported:
+                    if not supported and lang == "cpp":
+                        # No safe alternative for C/C++ — skip rather
+                        # than silently run the repo's build.
                         msg = (
                             f"{lang}: buildless extraction unavailable "
                             f"({detail}); skipping this language — pass "
@@ -453,14 +464,23 @@ class CodeQLAgent:
                         logger.warning(msg)
                         errors.append(msg)
                         continue
-                    logger.info(
-                        "%s: buildless mode (--build-mode=none) — repo "
-                        "build scripts will not execute", lang,
+                    if supported:
+                        logger.info(
+                            "%s: buildless mode (--build-mode=none) — repo "
+                            "build scripts will not execute", lang,
+                        )
+                        buildless_languages.add(lang)
+                        language_build_map[lang] = (
+                            self.build_detector.generate_no_build_config(lang)
+                        )
+                        continue
+                    # java/csharp on a CLI without buildless: keep the
+                    # pre-existing traced/autobuild behaviour, loudly
+                    # disclosed via the untrusted-build banner below.
+                    logger.warning(
+                        "%s: buildless extraction unavailable (%s) — "
+                        "keeping the traced/autobuild path", lang, detail,
                     )
-                    language_build_map[lang] = (
-                        self.build_detector.generate_no_build_config(lang)
-                    )
-                    continue
                 if build_commands and lang in build_commands:
                     # Use custom build command
                     logger.info("%s: Using custom build command", lang)
@@ -510,6 +530,33 @@ class CodeQLAgent:
                             build_system = self.build_detector.generate_no_build_config(lang)
 
                     language_build_map[lang] = build_system
+
+            # Untrusted traced-build disclosure. Any language whose
+            # `database create` will execute repo build logic (an
+            # explicit command or the CodeQL autobuilder) without the
+            # operator's trust assertion gets a loud banner here AND
+            # a record in the run metadata (the per-create chokepoint
+            # in DatabaseManager repeats the warning).
+            untrusted_build_languages = sorted(
+                lang for lang, bs in language_build_map.items()
+                if lang not in traced_languages
+                and lang not in buildless_languages
+                and (
+                    (bs is not None and bs.command)
+                    or lang in AUTOBUILD_LANGUAGES
+                )
+            )
+            if untrusted_build_languages:
+                logger.warning("%s", "=" * 70)
+                logger.warning(
+                    "⚠️  Traced build without the build trust marker: %s — "
+                    "the repository's build logic will execute during "
+                    "database creation (sandboxed, network blocked). If "
+                    "you trust this repo, acknowledge with --traced-build "
+                    "or `/project trust build`.",
+                    ", ".join(untrusted_build_languages),
+                )
+                logger.warning("%s", "=" * 70)
 
             # PHASE 3: Database Creation
             logger.info("\n%s", '=' * 70)
@@ -583,6 +630,7 @@ class CodeQLAgent:
                     total_findings=0,
                     sarif_files=[],
                     errors=[error] + errors,
+                    untrusted_build_languages=untrusted_build_languages,
                 )
 
             logger.info("\n✓ Created %d database(s):", len(successful_dbs))
@@ -728,6 +776,7 @@ class CodeQLAgent:
                 threat_model_overlap=threat_model_overlap,
                 learned_models=learned_models,
                 source_summaries=source_summaries_cell,
+                untrusted_build_languages=untrusted_build_languages,
             )
 
             # Save report

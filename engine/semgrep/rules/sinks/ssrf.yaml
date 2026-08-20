@@ -125,7 +125,11 @@ rules:
               - pattern: http.NewRequestWithContext($CTX, $METHOD, $URL, ...)
               - pattern: $CLIENT.Get($URL)
               - pattern: $CLIENT.Post($URL, ...)
-              - pattern: $CLIENT.PostForm($URL, ...)
+              # exactly two args (url, data): net/http Client.PostForm.
+              # A trailing ... also matched gin's one-arg c.PostForm(key)
+              # — a source read — flagging the read itself as an SSRF
+              # request (source/sink self-overlap).
+              - pattern: $CLIENT.PostForm($URL, $DATA)
               - pattern: $CLIENT.Head($URL)
               - pattern: $CLIENT.Do($REQ)
           # Exclude source expressions that collide with $CLIENT.Get()

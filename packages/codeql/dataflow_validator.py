@@ -5,6 +5,7 @@ Validates CodeQL dataflow findings using LLM analysis to determine
 if dataflow paths are truly exploitable beyond theoretical detection.
 """
 
+import os
 import re
 import sys
 from collections.abc import Callable
@@ -12,19 +13,24 @@ from dataclasses import dataclass, field
 from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 
+# Path setup MUST precede every core.* import — pre-fix the
+# core.smt_solver imports sat ABOVE the insert, so direct CLI
+# invocation (`python3 packages/codeql/dataflow_validator.py`) died
+# with ModuleNotFoundError before the path was ever extended.
+# `os.environ["RAPTOR_DIR"]` (no fallback) is the canonical project
+# root marker — see CLAUDE.md "Python path safety"; a KeyError here
+# surfaces the configuration problem at startup instead of a
+# positional `parents[2]` walk silently breaking under relocation.
+sys.path.insert(0, os.environ["RAPTOR_DIR"])
+
+from core.dataflow.evidence_renderer import render_evidence_for_prompt
+from core.dataflow.sanitizer_evidence import SanitizerEvidence
+from core.llm.methodology import load_methodology
 from core.smt_solver import BVProfile
 from core.smt_solver.path_feasibility import (
     PathCondition,
     check_path_feasibility,
 )
-
-# Add parent directory to path for imports
-# packages/codeql/dataflow_validator.py -> repo root
-sys.path.insert(0, str(Path(__file__).parents[2]))
-
-from core.dataflow.evidence_renderer import render_evidence_for_prompt
-from core.dataflow.sanitizer_evidence import SanitizerEvidence
-from core.llm.methodology import load_methodology
 from core.llm.scorecard import fast_tier_model_name, run_cheap_fp_check
 from core.llm.task_types import TaskType
 from core.logging import get_logger

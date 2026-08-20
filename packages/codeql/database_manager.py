@@ -20,9 +20,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Add parent directory to path for imports
-# packages/codeql/database_manager.py -> repo root
-sys.path.insert(0, str(Path(__file__).parents[2]))
+# Path setup for direct CLI invocation. `os.environ["RAPTOR_DIR"]`
+# (no fallback) is the canonical project root marker — see CLAUDE.md
+# "Python path safety"; a KeyError surfaces the configuration problem
+# at startup instead of a positional walk silently breaking.
+sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 from core.build.build_detector import BuildSystem
 from core.config import RaptorConfig

@@ -199,6 +199,15 @@ def _gather() -> tuple[
         env_parts, env_warnings = check_env(unavailable)
         lang_line, lang_warnings = check_lang()
         env_warnings = list(env_warnings) + list(lang_warnings)
+        # Doctor-only depth (same rationale shape as the module-import
+        # verification above): the AWS IMDS / proxy / credential-chain
+        # interaction matrix. Advisory environment-shape lines, gated
+        # on AWS use being plausible. Deliberately not in the banner —
+        # session start should not editorialise about credential
+        # topology on every launch, but an operator who typed
+        # ``raptor doctor`` is asking exactly that question.
+        from .aws_imds import aws_imds_advisories
+        env_warnings += aws_imds_advisories()
         project_line = check_active_project()
     finally:
         logging.disable(logging.NOTSET)

@@ -883,8 +883,41 @@ def _snapshot_run_coverage(output_dir: Path) -> None:
             # returning ``audit`` / ``agentic`` labels unchanged.
             import_journal(store, proj, checklist)
             store.save()
+            _append_coverage_progress(proj, run_dir, store, checklist)
     except Exception:
         log.debug("_snapshot_run_coverage failed for %s", output_dir, exc_info=True)
+
+
+def _append_coverage_progress(proj: Path, run_dir: Path, store,
+                              checklist: dict[str, Any]) -> None:
+    """Append one line to the project's ``coverage-progress.jsonl``.
+
+    The accumulation promise ("each run reviews only remaining gaps")
+    was never measured — no artifact recorded whether the reviewed
+    count actually moves run over run. One JSON line per completed
+    run, computed from the just-saved store, gives the cross-run
+    trend for free. Called under ``coverage_store_lock``, so the
+    append cannot interleave with a parallel completion. Best-effort.
+    """
+    import logging
+    try:
+        from core.coverage.store_summary import store_view
+        view = store_view(store, checklist)
+        row = {
+            "run": run_dir.name,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "items": view.get("total_functions", 0),
+            "examined": view.get("functions_covered", 0),
+            "llm_reviewable": view.get("llm_reviewable", 0),
+            "llm_reviewed": view.get("functions_reviewed", 0),
+        }
+        with open(proj / "coverage-progress.jsonl", "a",
+                  encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "coverage progress append failed for %s", run_dir, exc_info=True,
+        )
 
 
 def fail_run(output_dir: Path, error: str | None = None,

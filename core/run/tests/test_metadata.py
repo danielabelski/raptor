@@ -908,3 +908,34 @@ class TestCorroborateTargetPath(unittest.TestCase):
             start_run(run_dir, "audit", target=Path(d))
             self.assertIsNone(corroborate_target_path(run_dir, None))
             self.assertIsNone(corroborate_target_path(run_dir, ""))
+
+
+class TestCoverageProgress(unittest.TestCase):
+    _checklist = TestRunCoverageSnapshot._checklist
+
+    def test_completion_appends_progress_row(self):
+        import json
+        with TemporaryDirectory() as d:
+            proj = Path(d)
+            (proj / "checklist.json").write_text(self._checklist())
+            for name in ("audit-1", "audit-2"):
+                run = proj / name
+                start_run(run, "audit")
+                complete_run(run)
+            progress = proj / "coverage-progress.jsonl"
+            rows = [json.loads(x) for x in
+                    progress.read_text().splitlines() if x.strip()]
+            self.assertEqual([r["run"] for r in rows],
+                             ["audit-1", "audit-2"])
+            for r in rows:
+                self.assertIn("llm_reviewed", r)
+                self.assertIn("llm_reviewable", r)
+
+    def test_standalone_run_appends_nothing(self):
+        with TemporaryDirectory() as d:
+            out = Path(d) / "out"
+            out.mkdir()
+            run = out / "scan-1"
+            start_run(run, "scan")
+            complete_run(run)
+            self.assertFalse((out / "coverage-progress.jsonl").exists())

@@ -14,6 +14,7 @@ shown alongside.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -139,6 +140,47 @@ def format_read_tracking(status: Dict[str, Any]) -> "str | None":
             "a running run")
 
 
+def format_progress_trend(store_path) -> "str | None":
+    """Reviewed-count movement across the last completed runs.
+
+    Reads the sibling ``coverage-progress.jsonl`` the run lifecycle
+    appends at completion. One line — the operator-facing answer to
+    "is the gap actually shrinking?". None when there is no history.
+    """
+    if not store_path:
+        return None
+    progress = Path(store_path).parent / "coverage-progress.jsonl"
+    if not progress.is_file():
+        return None
+    rows = []
+    try:
+        with open(progress, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return None
+    if not rows:
+        return None
+    last = rows[-1]
+    reviewed = last.get("llm_reviewed", 0)
+    reviewable = last.get("llm_reviewable", 0)
+    if len(rows) == 1:
+        return (f"  Progress: {reviewed}/{reviewable} reviewed "
+                f"after {last.get('run', '?')} (1 run recorded)")
+    prev = rows[-2]
+    delta = reviewed - prev.get("llm_reviewed", 0)
+    sign = "+" if delta >= 0 else ""
+    return (f"  Progress: {reviewed}/{reviewable} reviewed "
+            f"({sign}{delta} in {last.get('run', '?')}; "
+            f"{len(rows)} runs recorded)")
+
+
 def render_coverage(
     run_dirs, checklist, store_path, annotations_base=None, detailed=False,
 ) -> "str | None":
@@ -173,6 +215,9 @@ def render_coverage(
         health = format_read_tracking(read_tracking_status(run_dirs))
         if health:
             parts.append(health)
+        trend = format_progress_trend(store_path)
+        if trend:
+            parts.append(trend)
         return "\n".join(parts)
 
     fv = file_level_view(run_dirs)

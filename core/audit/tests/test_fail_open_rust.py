@@ -56,11 +56,6 @@ fn handle(req: Request) {
 """
 
 
-def _shapes(src: str, callee: str = "verify_signature",
-            span=None) -> dict[int, tuple[str, str]]:
-    sites = rust_discard_sites(src, "m.rs", callee, function_span=span)
-    return {s.line: (s.verdict, s.shape) for s in sites}
-
 
 @requires_ts("rust")
 class TestRustDiscardSites:

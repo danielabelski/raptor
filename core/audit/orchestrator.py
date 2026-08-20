@@ -8621,6 +8621,15 @@ def _run_mechanical_detectors(
     except Exception:
         logger.debug("mechanical: callback_lifetime failed", exc_info=True)
 
+    # --- Auth-dismissal witnesses (Java) ---
+    try:
+        from .auth_witnesses import scan_gaps as _authw_scan
+
+        for aw in _authw_scan(gaps, source_texts):
+            _add(aw.file, aw.function, aw.detector, aw.line, aw.description)
+    except Exception:
+        logger.debug("mechanical: auth_witnesses failed", exc_info=True)
+
     # --- Check-then-create compound (keyed registration race) ---
     try:
         from .check_then_create import scan_gaps as _ctc_scan

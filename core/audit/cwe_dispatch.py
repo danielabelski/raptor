@@ -318,7 +318,9 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
     # Concurrency
     "CWE-362": {
         "smt": "check-lock-domain",
-        "cocci": "lock_imbalance.cocci",
+        # lock imbalance, plus the split access-check shape (creds
+        # read under RCU, dumpability read after the section closes).
+        "cocci": ["lock_imbalance.cocci", "rcu_split_decision.cocci"],
         "joern": False,
         "codeql": None,
         "sinks": [],

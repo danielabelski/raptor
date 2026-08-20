@@ -158,13 +158,16 @@ def sandbox(
     map_root=False, limits=None, allowed_tcp_ports=None,
     profile=None, disabled=False,
     use_egress_proxy=False, proxy_hosts=None,
-    restrict_reads=False, readable_paths=None,
-    caller_label=None, fake_home=False, tool_paths=None,
+    restrict_reads=_UNSET, readable_paths=None,
+    caller_label=None, fake_home=_UNSET, tool_paths=None,
     audit=False, audit_verbose=False, audit_run_dir=None,
+    audit_required=False,
     observe=False, writable_paths=None,
     exclude_tmp_baseline=False,
     sanitise_host_fingerprint=False, cpu_count=None,
     require_sanitisation=False, etc_overlay=None,
+    degraded_net_deny=True, loopback_unix_bridges=None,
+    omit_proc_reads=False,
 )
 ```
 
@@ -285,8 +288,8 @@ All kwargs accepted by `sandbox()` and `run()` (and most by
 |---|---|---|
 | `target` | `None` | Path to attacker-derived content. Read-only inside sandbox; engages Landlock. |
 | `output` | `None` | Scratch area. Writable inside sandbox; engages Landlock. |
-| `block_network` | `False` in `sandbox()`, `True` in top-level `run()` | Unshare network namespace -- isolated loopback only, no route out. |
-| `allowed_tcp_ports` | `None` | Landlock TCP-connect allowlist (ABI v4+, kernel 6.7+). Mutually exclusive with `block_network=True`. |
+| `block_network` | `True` (follows the `full` profile) unless a profile or explicit value overrides it | Unshare network namespace -- isolated loopback only, no route out. |
+| `allowed_tcp_ports` | `None` | Landlock TCP-connect allowlist (ABI v4+, kernel 6.7+). Pointless with `block_network=True` (the namespace removes all interfaces); mixing the two logs a warning and the ports are inert. |
 | `limits` | built-in defaults | Resource caps: `memory_mb`, `max_file_mb`, `cpu_seconds`. |
 | `profile` | `None` | Named profile (see table above). Overrides individual layer flags. |
 | `disabled` | `False` | Shortcut for `profile='none'`. |
@@ -301,13 +304,16 @@ All kwargs accepted by `sandbox()` and `run()` (and most by
 | `tool_paths` | `None` | Extra dirs to bind-mount into mount-ns so non-system tools are visible. See [Mount-ns tool visibility](#mount-ns-tool-visibility). |
 | `audit` | `False` | Engage audit mode: log what enforcement would have blocked. See [Audit and observe modes](#audit-and-observe-modes). |
 | `audit_verbose` | `False` | Strace-style output: log every traced syscall, not just blocked ones. |
-| `audit_run_dir` | `None` | Directory for audit JSONL, decoupled from `output`. Prevents hostile targets from injecting false records. |
+| `audit_run_dir` | `None` | Directory for audit JSONL, decoupled from `output`. Prevents hostile targets from injecting false records. When audit is engaged, the effective audit target (this, or `output` as fallback) must be an existing writable directory, or the call raises before any spawn. |
+| `audit_required` | `False` | Fail closed on the evidence channel: if audit was requested but no audit tier can engage, raise `SandboxSetupError` **before** the command runs (the degradation marker is still written). Without it, execution proceeds under enforcement with the marker as the only signal. |
 | `observe` | `False` | Superset of audit. Adds stat-family syscall tracing with per-run nonce for spoof-resistant JSONL. See [Audit and observe modes](#audit-and-observe-modes). |
+| `omit_proc_reads` | `False` | Drop `/proc` from the read allowlist (automatic for degraded `run_untrusted`). Tools that need `/proc/self/*` get specifics back via `readable_paths=`. |
+| `loopback_unix_bridges` | `None` | Specialised: bridge selected Unix sockets into the isolated network namespace. Requires `use_egress_proxy=True` and the netns tier. |
 | `exclude_tmp_baseline` | `False` | Exclude `/tmp` baseline paths from observe profiles (reduce noise). |
 | `sanitise_host_fingerprint` | `False` | Engage host fingerprint sanitisation. See [Host fingerprint sanitisation](#host-fingerprint-sanitisation). |
 | `cpu_count` | `None` | Number of CPUs to present to the sandboxed child (via affinity masking and `/proc/cpuinfo` overlay). Use `HOST_CPU_COUNT` sentinel to preserve the host's real count. |
 | `require_sanitisation` | `False` | Fail-closed if fingerprint sanitisation cannot engage (e.g. no mount-ns). |
-| `etc_overlay` | `None` | Dict mapping in-sandbox `/etc` paths to host source files. Bind-mounted when every target exists on the host; if any target is missing, `/etc` becomes a tmpfs shallow-copy of host `/etc` (plus stubs), remounted read-only. Context-level (set once, reused across `run()` calls). |
+| `etc_overlay` | `None` | Dict mapping in-sandbox `/etc` paths to host source files. Bind-mounted when every target exists on the host; if any target is missing, `/etc` becomes a tmpfs copy (full recursive) of host `/etc` (plus stubs), remounted read-only. Context-level (set once, reused across `run()` calls). |
 | `strict_env` | `False` | Strip `DANGEROUS_ENV_VARS` from any caller-supplied `env=` dict. Automatically `True` in `run_untrusted()` / `run_untrusted_networked()`. |
 | `strip_trust_markers` | `False` | Remove the libexec trust markers (`CLAUDECODE`, `_RAPTOR_TRUSTED`) from the target-bound child env so a target-spawned process cannot invoke `libexec/` scripts as a trusted caller. Automatically `True` in `run_untrusted()` / `run_untrusted_networked()`. The pid1-shim path keeps the marker for the shim itself, which strips it before the target exec. |
 | `env_caller_filtered` | `False` | Caller assertion that the `env=` dict was already filtered. Suppresses the operational-hygiene warning without stripping vars. |
@@ -321,6 +327,10 @@ Three further kwargs are accepted per-`run()`-call (on the context's
 | `skip_pid_ns` | `False` | Skip PID namespace isolation. Internal use by the netns coordinator. |
 | `skip_mount_ns` | `False` | Skip mount namespace isolation. Internal use. |
 | `inherit_netns` | `False` | Inherit the parent's network namespace instead of creating a new one. Used by the netns coordinator for shared-netns pairing. |
+
+`strict_env`, `strip_trust_markers`, and `env_caller_filtered` above are
+also per-`run()`-call kwargs (consumed inside the run closure), not
+`sandbox()` signature parameters.
 
 > **`env=` passthrough.** If you pass an explicit `env=` dict to `run()`,
 > it is forwarded verbatim to the child -- `RaptorConfig.get_safe_env()`
@@ -389,6 +399,12 @@ defence against credential exfiltration:
     host-pid `/proc/<pid>/environ` even though `/proc` is visible.
     This stops a compromised child lifting `ANTHROPIC_API_KEY` out of
     the parent's environment.
+  - **Degraded hosts close `/proc` entirely**: under
+    `RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1` (no PID namespace available),
+    `/proc` is dropped from the read allowlist for untrusted entry
+    points and the override warning fires on every degraded call.
+    Tools that read `/proc/self/*` (ASAN, runtime CPU detection) get
+    EACCES -- re-add specifics via `readable_paths=`.
 - `fake_home=True` -- child's `HOME`, `XDG_CONFIG_HOME`,
   `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` all point at
   `{output}/.home/` -- an empty directory created fresh per sandbox.
@@ -460,13 +476,23 @@ How it works:
   and loopback-UDP tools (gradle) keep working. **Tier 2 (no netns,
   ABI >= 4):** Landlock restricts TCP `connect()` to the proxy's port
   and seccomp blocks `AF_INET`/`AF_INET6` `SOCK_DGRAM`, closing the
-  DNS-exfiltration path. **Tier 3 (no netns, ABI < 4):** advisory only
-  (env vars).
+  DNS-exfiltration path. Because the pin is port-scoped (any address on
+  the proxy port is reachable without the hostname allowlist), tier-2
+  engagement logs a once-per-process WARNING and stamps
+  `sandbox_info["proxy_enforcement"] = "landlock_tcp"`. **Tier 3 (no
+  netns, ABI < 4):** advisory only (env vars).
+- The proxy's loopback listeners refuse peers owned by a different UID
+  (best-effort `/proc/net/tcp` lookup), and proxy sockets/threads are
+  torn down on SIGTERM, not only at interpreter exit.
 - The proxy rejects any `CONNECT` to a hostname not on the allowlist.
 - Resolved IPs are screened -- loopback, private, link-local, multicast,
   reserved, and unspecified addresses are rejected even if the hostname
-  was on the allowlist. (When an upstream HTTPS proxy is configured, IP
-  screening is skipped because the upstream handles DNS.)
+  was on the allowlist. When an upstream HTTPS proxy is configured, the
+  upstream path is IP-screened too: literal-IP CONNECT targets are
+  judged unconditionally, and hostnames are resolved locally with any
+  blocked record failing closed.  Only a local resolution *failure*
+  proceeds (with a warning) since the upstream does the authoritative
+  DNS -- a split-horizon/rebinding TOCTOU residual documented in code.
 
 Multiple callers share one proxy singleton; their hostname allowlists
 are union'd. Event observability is **per-run**, not shared: each
@@ -561,7 +587,7 @@ surfaces and the spawn machinery sets a canonical UTS namespace +
 VM on QEMU/KVM" persona -- the most common Linux workload profile,
 chosen to avoid tipping off analysis-aware targets.
 
-Implemented in `core/sandbox/fingerprint.py` (~580 lines).
+Implemented in `core/sandbox/fingerprint.py`.
 
 ### What is sanitised
 
@@ -570,7 +596,9 @@ Implemented in `core/sandbox/fingerprint.py` (~580 lines).
 | `/proc/cpuinfo` | N CPU blocks (configurable via `cpu_count`); host `flags` line preserved |
 | `/proc/version` | `Linux version <host-release>` (real kernel version kept) |
 | `/proc/cmdline` | `BOOT_IMAGE=/boot/vmlinuz root=/dev/vda1 ro quiet` |
-| `/proc/stat` | Aggregate + N per-cpu lines |
+| `/proc/stat` | Aggregate + N per-cpu lines; jiffies/btime/processes derived from the fabricated uptime |
+| `/proc/uptime` | Fake uptime + derived idle time (consistent with `/proc/stat`) |
+| `/proc/loadavg` | Low-load stub |
 | `/etc/os-release` | Debian 12 (bookworm) stub |
 | `/etc/machine-id` | Deterministic pseudo-random per RAPTOR install (SHA-256 of install path) |
 | `/etc/hostname` | `localhost` |
@@ -640,7 +668,7 @@ Three layers, audit-mode each:
 | Layer | Mechanism | Behaviour |
 |---|---|---|
 | Network (egress proxy) -- **only when `use_egress_proxy=True`** | Hostname allowlist gate emits `would_deny_host` event, then permits the CONNECT | Resolved-IP block (DNS-rebinding defence) stays enforcing. |
-| Syscalls (seccomp) | Swaps deny action from `SCMP_ACT_ERRNO(EPERM)` to `SCMP_ACT_TRACE`; tracer logs each blocked syscall + resumes | The existing blocklist is observed instead of EPERM'd. |
+| Syscalls (seccomp) | Swaps deny action from `SCMP_ACT_ERRNO(EPERM)` to `SCMP_ACT_TRACE`; tracer logs each blocked syscall + resumes | The blocklist is observed instead of EPERM'd -- **except escape primitives**, which stay hard-denied even under audit (ptrace/process_vm_*, keyctl/add_key/request_key, bpf, userfaultfd, io_uring_*, plus the blocked tty ioctls). Those surface as EPERM to the child, not as audit records. |
 | Filesystem (`open`/`openat`) | Tracer dereferences path arg, resolves via `/proc/<pid>/cwd` and `/proc/<pid>/fd/<dirfd>`, matches against Landlock allowlist | Filtered mode logs only paths that would have been blocked; verbose mode logs every traced open. |
 | Network (`connect` syscall) | Tracer decodes sockaddr to `ip:port`, compares against `allowed_tcp_ports` | Filtered mode logs only would-be-blocked ports; verbose mode logs every connect. |
 
@@ -668,9 +696,13 @@ reads the first 8 bytes of the `struct open_how` pointer via
 explicitly, the audit JSONL lives in a directory NOT in
 `writable_paths`, so the traced target cannot inject false records.
 When `audit_run_dir` is omitted and `output=` is used as fallback,
-the JSONL lives inside the target's writable surface. Mitigations:
-`O_NOFOLLOW` defends against symlink swaps; records are
-operator-visible signal, not authoritative truth.
+the JSONL lives under the target's `output` in a `.audit/` directory
+that is excluded from the child's writable view on the mount-ns and
+macOS backends, created `O_EXCL` with a parent-held fd and inode
+verification.  The residual (child-writable records) applies only to
+Landlock-only hosts; records are operator-visible signal, not
+authoritative truth.  The effective audit target must be an existing
+writable directory or the call raises before any spawn.
 
 **Performance.** Audit mode adds ~200 ms fixed setup cost per sandbox
 call and ~5 ms per traced syscall. Measured on Ubuntu 24.04 / Python
@@ -680,16 +712,21 @@ cost.
 
 **Degradation when ptrace is unavailable** (Yama scope 3, container
 `--cap-drop SYS_PTRACE`): network audit still works; syscall +
-filesystem audit silently degrade to enforcement. A one-time WARNING
-surfaces the degradation. On architectures the tracer does not support
-it bails with exit code 2, and the syscall/filesystem layers degrade
-the same way.
+filesystem audit degrade to enforcement. The degradation is loud: a
+WARNING, a `sandbox-audit-degraded.json` marker written to the root of
+the audit target (reason + remediation instructions, write-once per
+run), and `sandbox_info["audit_engaged"] = False` on the result. With
+`audit_required=True` the call refuses to run at all
+(`SandboxSetupError`; exit code 3 in CLI subprocesses). On
+architectures the tracer does not support it bails with exit code 2,
+and the syscall/filesystem layers degrade the same way.
 
 ### Observe mode
 
 `sandbox(..., observe=True)` is a superset of audit mode. In addition
 to the standard audit layers, observe mode adds stat-family syscall
-tracing (`stat`, `fstat`, `lstat`, `statx`, `newfstatat`) which are
+tracing (`stat`, `lstat`, `newfstatat`, `access`, `faccessat`,
+`faccessat2`) which are
 excluded from normal audit to reduce noise. Each observe run carries a
 per-run nonce written into the JSONL records: the parser pins to this
 run's nonce, rejecting stale or cross-run records. (The nonce is not
@@ -762,7 +799,10 @@ mechanisms:
 
 Markers appear in the JSONL alongside data records:
 `category_budget_exceeded`, `pid_budget_exceeded`,
-`category_budget_exceeded_sampling`, and `audit_summary`.
+`category_budget_exceeded_sampling`, `global_budget_exceeded`, and
+`audit_summary` (on macOS the global-cap marker is emitted in-band in
+the stream; on Linux the global cap is surfaced on stderr plus the
+end-of-run summary).
 
 ```bash
 raptor scan target/  --sandbox full --audit                     # default 10000
@@ -977,6 +1017,19 @@ with sandbox(target=repo, output=out, use_egress_proxy=True,
     print(info.get("blocked"))                         # sandbox-enforcement events
     print(info.get("proxy_events"))                    # list of connect attempts
 ```
+
+Degradation stamps to check when a run behaved unexpectedly:
+
+- `audit_engaged` -- present whenever audit was requested; `False`
+  pairs with the `sandbox-audit-degraded.json` marker.
+- `mount_ns_active` / `mount_ns_degraded` -- the latter carries the
+  fallback reason when the mount-ns spawn path was attempted and lost
+  (pivot_root, per-ns `/tmp`, target/output binds, and `map_root`
+  semantics are gone), distinguishing "attempted and lost" from
+  "never eligible".
+- `proxy_enforcement` -- `"netns"` (tier 1) or `"landlock_tcp"`
+  (tier 2, the port-pinned weakening -- see [Egress proxy](#egress-proxy)).
+- `degraded_net_deny` -- the namespace-less deny-all fallback engaged.
 
 ### Per-run denial summary
 
@@ -1230,14 +1283,21 @@ them. In practice, the pid-ns hierarchy ensures cleanup within seconds.
   existing files outside the writable paths can still be truncated
   via `O_TRUNC` (a coverage gap, logged with a warning; not an
   EACCES source).
+- **ABI v5 (kernel 6.10+)** adds a blanket `IOCTL_DEV` deny on device
+  files.
+- **ABI v6 (kernel 6.12+)** adds signal and abstract-Unix-socket
+  scoping (a sandboxed child cannot signal or connect to processes
+  outside its domain). On older kernels a one-shot notice states that
+  those isolations are not enforced.
 
 ### Audit coverage gaps
 
 - **`io_uring`**: file operations via submission queue entries bypass
-  the syscall layer and are invisible to seccomp tracing. RAPTOR's
-  seccomp blocklist already disallows `io_uring_setup` under
-  `full`/`debug`; under `--audit` it is logged-and-allowed with an
-  explicit gap note.
+  the syscall layer and are invisible to seccomp tracing. RAPTOR
+  therefore hard-denies `io_uring_setup`/`io_uring_enter`/
+  `io_uring_register` in **all** modes -- audit included (the
+  escape-primitive exception above) -- so the untraceable surface is
+  never open.
 - **Anti-debug detection**: code in an audited sandbox can detect
   tracing via `/proc/self/status` `TracerPid`, ptrace self-test, or
   syscall timing. Audit mode is for operator workflows (gcc, make,
@@ -1367,6 +1427,10 @@ core/sandbox/
 +-- summary.py                 # per-run denial recording + sandbox-summary.json
 +-- tracer.py                  # Linux: ptrace-based syscall tracer for audit/observe
 +-- audit_budget.py            # cross-platform: token-bucket rate limiter for audit
++-- triage.py                  # sandbox-triage signal extraction (fast pass)
++-- triage_deep.py             # deep triage over denial context
++-- escalation_signatures.py   # live-escalation signature definitions
++-- telemetry_mac.py           # provenance MAC for triage telemetry (telemetry-mac.key)
 +-- calibrate.py               # binary calibration: auto-derive sandbox allowlists
 +-- calibrate_cli.py           # CLI: libexec/raptor-sandbox-calibrate
 +-- fingerprint.py             # host-fingerprint sanitisation overlays

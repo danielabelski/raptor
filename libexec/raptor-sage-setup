@@ -1528,17 +1528,28 @@ status_sage() {
             echo "    running:    $live_digest"
             echo "    Review + re-authorize: bin/raptor sage-setup install --reauthorize"
         fi
-        # Compare against what the running server emits now. The payload
-        # is state-dependent (first-connection vs steady-state variant),
-        # so a mismatch means "look", not "compromised".
-        local live live_sha
+        # Compare against what the running server emits now — variant-
+        # aware, via the same comparison the guard enforces (a whole-
+        # file sha compare is guaranteed noise against older stamp
+        # formats and state-dependent payloads). A mismatch means
+        # "look", not "compromised".
+        local live drift_rc tmp_live
         if live=$(capture_boot_payload) && [ -n "$live" ]; then
-            live_sha=$(printf '%s\n' "$live" | sha256sum | awk '{print $1}')
-            if [ "$live_sha" = "$auth_sha" ]; then
-                echo "  Boot payload drift: none — live payload matches"
+            tmp_live=$(mktemp); _RAPTOR_TMP_FILES+=("$tmp_live")
+            printf '%s\n' "$live" > "$tmp_live"
+            local drift_out
+            drift_rc=0
+            drift_out=$(python3 "$RAPTOR_DIR/core/sage/boot_payload_review.py" \
+                summary --authorized "$AUTHORIZED_PAYLOAD" \
+                --live "$tmp_live" 2>/dev/null) || drift_rc=$?
+            if [ "$drift_rc" = "0" ]; then
+                echo "  Boot payload drift: none — every live surface is authorized"
+            elif [ "$drift_rc" = "4" ]; then
+                echo "  Boot payload drift: live payload serves UNAUTHORIZED variant(s)"
+                printf '%s\n' "$drift_out" | sed 's/^/  /'
+                echo "    Review + approve: libexec/raptor-sage-setup review"
             else
-                echo "  Boot payload drift: live payload DIFFERS (sha256 ${live_sha:0:12})"
-                echo "    Review + re-authorize: bin/raptor sage-setup install"
+                echo "  Boot payload drift: comparison failed (rc=$drift_rc)"
             fi
         else
             echo "  Boot payload drift: could not capture live payload to compare"

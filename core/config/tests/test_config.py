@@ -180,6 +180,12 @@ class TestGetGitEnv:
             for var in RaptorConfig.PROXY_ENV_VARS:
                 assert var not in env
 
+    def test_is_a_pure_alias_of_get_safe_env(self):
+        """get_safe_env() already applies GIT_ENV_VARS for every
+        subprocess; get_git_env must not re-overlay anything on top —
+        one source of truth, so the two can never diverge."""
+        assert RaptorConfig.get_git_env() == RaptorConfig.get_safe_env()
+
 
 class TestGetOutDir:
     """Tests for RaptorConfig.get_out_dir()."""

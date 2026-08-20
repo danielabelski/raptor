@@ -622,9 +622,14 @@ class RaptorConfig:
         "HOSTALIASES",     # Static hostname→IP file — redirects DNS resolution
         "RES_OPTIONS",     # Resolver options — can influence DNS behaviour
         "LOCALDOMAIN",     # DNS search domain — name-resolution hijack
-        # malloc tuning — MALLOC_CHECK_ can make valgrind-style bugs crash,
-        # MALLOC_PERTURB_ can alter free()'d memory content, MALLOC_ARENA_MAX
-        # can destabilise threaded allocators. Not escapes, but unexpected.
+        # malloc tuning — MALLOC_CHECK_ can make valgrind-style bugs crash
+        # (and high values write to stderr → log injection),
+        # MALLOC_PERTURB_ can alter free()'d memory content (letting an
+        # attacker influence uninitialised-memory disclosure ABI),
+        # MALLOC_ARENA_MAX can destabilise threaded allocators. Not
+        # escapes, but unexpected. Sole entries — keep the allocator
+        # family together here (the jemalloc pair lives with the other
+        # allocator-config vars below).
         "MALLOC_CHECK_",
         "MALLOC_PERTURB_",
         "MALLOC_ARENA_MAX",
@@ -766,20 +771,16 @@ class RaptorConfig:
         "CURL_CA_BUNDLE",      # curl trust anchor override.
         "SSL_CERT_FILE",       # OpenSSL-based tools' trust anchor override.
         "SSL_CERT_DIR",        # OpenSSL-based tools' trust anchor dir.
-        # Allocator config — both glibc and jemalloc honour these env
-        # vars. They can enable allocator features (verbose stats,
-        # core dumps on detected corruption, profiling output paths)
-        # that an attacker can use to (a) leak memory contents into
-        # log files at predictable paths, (b) cause core dumps that
-        # may contain credentials, (c) redirect heap profile output
-        # to attacker-writable paths.
+        # Allocator config — jemalloc honours these env vars. They can
+        # enable allocator features (verbose stats, core dumps on
+        # detected corruption, profiling output paths) that an
+        # attacker can use to (a) leak memory contents into log files
+        # at predictable paths, (b) cause core dumps that may contain
+        # credentials, (c) redirect heap profile output to attacker-
+        # writable paths. The glibc MALLOC_* family is listed once,
+        # with the malloc-tuning group above.
         "MALLOC_CONF",         # jemalloc configuration string.
         "JE_MALLOC_CONF",      # alternate jemalloc env var (some builds).
-        "MALLOC_CHECK_",       # glibc heap consistency check; high values
-                               # write to stderr → log injection.
-        "MALLOC_PERTURB_",     # glibc fill-pattern; not security-critical
-                               # alone but lets an attacker influence
-                               # uninitialised-memory disclosure ABI.
         # Note: TERM is NOT stripped — it's read as a string (terminfo lookup),
         # not shell-evaluated. Stripping it breaks colour output in git/grep/etc.
     ])
@@ -1207,15 +1208,19 @@ class RaptorConfig:
 
     @staticmethod
     def get_git_env() -> dict:
-        """
-        Create environment for safe git operations.
+        """Environment for safe git operations — thin alias.
+
+        ``get_safe_env()`` already applies ``GIT_ENV_VARS`` for every
+        subprocess (git-config isolation is part of the baseline), so
+        this is deliberately a pure passthrough with no second overlay:
+        one source of truth, nothing to diverge. Kept as a named entry
+        point because call sites read better as "give me the git env"
+        and predate the chokepoint.
 
         Returns:
             dict: Environment configured for secure git operations
         """
-        env = RaptorConfig.get_safe_env()
-        env.update(RaptorConfig.GIT_ENV_VARS)
-        return env
+        return RaptorConfig.get_safe_env()
 
     @staticmethod
     def ensure_directories() -> None:

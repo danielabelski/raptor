@@ -160,6 +160,11 @@ patches.
 | `--threat-model-refresh` | Force-refresh an existing threat model |
 | `--threat-model-use-stale` | Accept a stale threat model without refresh |
 | `--validate` | Run the full [validation pipeline](#validate) on exploitable findings |
+| `--gap-audit` | Run the [/audit](#audit) orchestrator over the coverage residual after analysis (not `--audit`, which is the sandbox audit mode) |
+| `--gap-audit-budget <n>` | Max functions the gap-audit post-pass reviews (default: all gaps) |
+| `--gap-audit-strategy <name>` | Restrict the gap-audit post-pass to one strategy |
+| `--gap-audit-scope <dir>` | Restrict the gap-audit post-pass to a subdirectory (repeatable) |
+| `--gap-audit-share <fraction>` | Slice of `--max-cost-usd` reserved up front for the gap audit (default 0.35) |
 | `--fuzz` | Run [fuzzing](#fuzz) on applicable targets |
 | `--fuzz-duration <secs>` | Fuzz duration in seconds |
 | `--fuzz-corpus <path>` | Fuzz seed corpus directory |
@@ -404,6 +409,7 @@ code as vulnerable -- tool output is the verdict.
 | `--batch-sloc-threshold <N>` | Batch small functions per file into combined reviews (default 15; 0 disables) |
 | `--no-verdict-reuse` | Disable cross-run verdict reuse for unchanged functions |
 | `--schedule {cost,priority}` | Parallel review ordering |
+| `--prior-journal <run-dir>` | Run dir whose review journal feeds prior finding-grade claims into review context (repeatable) |
 | `--dynamic` / `--no-dynamic` | Enable/disable dynamic validation for confirmed findings |
 | `--binary <path>` / `--binary-auto` / `--no-binary-oracle` | Binary-oracle reachability enrichment |
 | `--model <name>` | Model ID (repeatable for multi-model consensus) |

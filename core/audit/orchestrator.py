@@ -7126,6 +7126,7 @@ def _run_audit_body(
         n_rescued = _post_loop_receipt_rescue(
             result, post_loop_findings, config,
             mechanical_findings=mechanical_findings,
+            gaps=gaps,
         )
         if n_rescued:
             logger.info(
@@ -20022,6 +20023,7 @@ def _post_loop_receipt_rescue(
     post_loop_findings: list,
     config: OrchestratorConfig,
     mechanical_findings: dict | None = None,
+    gaps: list | None = None,
 ) -> int:
     """Re-run the anti-self-refutation gate with post-loop receipts.
 
@@ -20045,7 +20047,17 @@ def _post_loop_receipt_rescue(
         f, fn = plf.get("file", ""), plf.get("function", "")
         if f and fn:
             receipts_by_fn.setdefault((f, fn), []).append(plf)
-    if not receipts_by_fn and not mechanical_findings:
+    pre_evidence_by_fn: dict[str, str] = {}
+    for g in gaps or []:
+        pe = g.get("_smt_pre_evidence")
+        if pe:
+            pre_evidence_by_fn[f"{g.get('file')}:{g.get('name')}"] = pe
+
+    if (
+        not receipts_by_fn
+        and not mechanical_findings
+        and not pre_evidence_by_fn
+    ):
         return 0
 
     from .refutation import rescue_self_refuted
@@ -20055,21 +20067,22 @@ def _post_loop_receipt_rescue(
         if outcome.status != "clean":
             continue
         receipts = receipts_by_fn.get((outcome.file, outcome.function))
-        detectors = (mechanical_findings or {}).get(
-            f"{outcome.file}:{outcome.function}",
-        )
-        if not receipts and not detectors:
+        fn_key = f"{outcome.file}:{outcome.function}"
+        detectors = (mechanical_findings or {}).get(fn_key)
+        pre_evidence = pre_evidence_by_fn.get(fn_key)
+        if not receipts and not detectors and not pre_evidence:
             continue
         try:
-            # Detector findings ride along: a mid-loop floor can be
-            # clobbered by a later re-review whose synthetic context
-            # lacks the detector injection — the receipts themselves
-            # are deterministic, so this pass re-applies them to
-            # whatever verdict is current.
+            # Detector findings and screen receipts ride along: a
+            # mid-loop floor can be clobbered by a later re-review
+            # whose synthetic context lacks the injections — the
+            # receipts themselves are deterministic, so this pass
+            # re-applies them to whatever verdict is current.
             rv = rescue_self_refuted(
                 outcome,
                 negative_space=receipts or [],
                 detector_findings=detectors or None,
+                pre_evidence=pre_evidence,
             )
         except Exception:
             logger.debug(

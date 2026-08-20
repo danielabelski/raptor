@@ -2589,6 +2589,32 @@ class TestPostLoopReceiptRescue:
         assert rows[0]["gate"] == "anti_self_refutation"
         assert rows[0]["stage"] == "post-loop"
 
+    def test_pre_evidence_refloors_clobbered_verdict(
+        self, tmp_path: Path,
+    ):
+        """The pre-loop screen receipt lives on the gap; a re-review
+        from a synthetic gap loses it — the post-loop pass re-applies
+        it to the current verdict."""
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        outcome.hypotheses[0]["mechanism"] = (
+            "huge parsed values overflow int32 storage downstream"
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+
+        flipped = _post_loop_receipt_rescue(
+            result, [], config,
+            gaps=[{
+                "file": "m.py", "name": "wire_endpoints",
+                "_smt_pre_evidence": "smt:check-parsed-int-contract",
+            }],
+        )
+        assert flipped == 1
+        assert outcome.status == "suspicious"
+
     def test_tool_evidence_blocks_corroboration_floor(
         self, tmp_path: Path,
     ):

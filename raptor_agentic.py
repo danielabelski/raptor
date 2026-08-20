@@ -1227,6 +1227,33 @@ def _run_audit_feedback(audit_dir: Path, validate_dir: Path) -> bool:
     return rc == 0
 
 
+def _gap_audit_skip_reason(args, llm_env, *, block_cc_dispatch: bool):
+    """None when the gap-audit post-pass can run, else the skip reason.
+
+    An explicit --model or a configured external LLM always qualifies
+    (the audit subprocess builds its own client). Otherwise the
+    claudecode transport (claude -p as a real LLM provider — the audit
+    orchestrator's documented fallback) carries the run, gated on the
+    target-repo trust check since the transport dispatches claude
+    against content from the scanned repo.
+    """
+    if (args.model or []) or llm_env.external_llm:
+        return None
+    if not llm_env.claude_code:
+        return (
+            "no LLM available — configure an API key, pass --model, "
+            "or install Claude Code"
+        )
+    if block_cc_dispatch:
+        return (
+            "no external LLM and the target repo failed the Claude "
+            "Code trust check — the claudecode transport will not "
+            "dispatch against an untrusted repo (pass --model, or "
+            "review with /audit --local)"
+        )
+    return None
+
+
 def run_audit_postpass(args, target: Path, out_dir: Path) -> dict:
     """Run ``raptor-audit run`` over the residual coverage gaps.
 
@@ -1706,8 +1733,9 @@ Examples:
         "--gap-audit", action="store_true", dest="gap_audit",
         help="Audit the coverage residual after analysis (sibling /audit "
              "run; findings join the --validate post-pass when both flags "
-             "are set). Requires an external LLM (--model or a configured "
-             "API key); use /audit directly for the in-session workflow. "
+             "are set). Uses the configured external LLM (or --model); "
+             "with only Claude Code available it runs on the claudecode "
+             "transport, gated on the repo trust check. "
              "Unrelated to --audit, which is the sandbox audit mode.",
     )
     audit_group.add_argument(
@@ -3408,7 +3436,13 @@ Examples:
         print("\n" + "=" * 70)
         print("AUDIT POST-PASS")
         print("=" * 70)
-        if llm_env.external_llm or args.model:
+        _audit_skip = _gap_audit_skip_reason(
+            args, llm_env,
+            # Re-check at dispatch time — the pre-scan verdict may be
+            # stale (scanning ran untrusted target code since).
+            block_cc_dispatch=check_repo_claude_trust(original_repo_path),
+        )
+        if _audit_skip is None:
             audit_postpass = run_audit_postpass(
                 args, original_repo_path, out_dir,
             )
@@ -3428,11 +3462,8 @@ Examples:
                     audit_postpass.get("skipped_reason"),
                 )
         else:
-            audit_postpass["skipped_reason"] = (
-                "requires an external LLM (--model or a configured API "
-                "key); run /audit directly for the in-session workflow"
-            )
-            print(f"\n  ⚠️  --gap-audit skipped: {audit_postpass['skipped_reason']}")
+            audit_postpass["skipped_reason"] = _audit_skip
+            print(f"\n  ⚠️  --gap-audit skipped: {_audit_skip}")
 
     # ========================================================================
     # POST-PASS: /validate (opt-in via --validate)

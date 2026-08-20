@@ -328,3 +328,48 @@ class TestJsonRoundTrip:
         out_dir.mkdir()
         phase = run_audit_postpass(_args(), tmp_path / "target", out_dir)
         json.dumps(phase)
+
+
+class TestGapAuditGate:
+    """LLM-availability gate for the post-pass, including the
+    claudecode-transport fallback."""
+
+    def _llm_env(self, external=False, cc=False):
+        return argparse.Namespace(external_llm=external, claude_code=cc)
+
+    def test_external_llm_runs(self):
+        from raptor_agentic import _gap_audit_skip_reason
+        assert _gap_audit_skip_reason(
+            _args(model=[]), self._llm_env(external=True),
+            block_cc_dispatch=True,
+        ) is None
+
+    def test_explicit_model_runs_even_without_detection(self):
+        from raptor_agentic import _gap_audit_skip_reason
+        assert _gap_audit_skip_reason(
+            _args(model=["m"]), self._llm_env(),
+            block_cc_dispatch=True,
+        ) is None
+
+    def test_cc_only_runs_on_trusted_repo(self):
+        from raptor_agentic import _gap_audit_skip_reason
+        assert _gap_audit_skip_reason(
+            _args(model=[]), self._llm_env(cc=True),
+            block_cc_dispatch=False,
+        ) is None
+
+    def test_cc_only_blocked_repo_skips(self):
+        from raptor_agentic import _gap_audit_skip_reason
+        reason = _gap_audit_skip_reason(
+            _args(model=[]), self._llm_env(cc=True),
+            block_cc_dispatch=True,
+        )
+        assert reason and "trust check" in reason
+
+    def test_no_llm_at_all_skips(self):
+        from raptor_agentic import _gap_audit_skip_reason
+        reason = _gap_audit_skip_reason(
+            _args(model=[]), self._llm_env(),
+            block_cc_dispatch=False,
+        )
+        assert reason and "no LLM available" in reason

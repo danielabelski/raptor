@@ -1091,8 +1091,13 @@ def _execute_ts(
     )
 
 
+# Bound on proxy hops in _resolve_rustc: which() result -> wrapper ->
+# rustup proxy -> toolchain compiler is 3; one spare for exotic stacks.
+_RUSTC_RESOLVE_MAX_HOPS = 4
+
+
 def _resolve_rustc() -> str | None:
-    """Resolve the real rustc binary, seeing through a rustup proxy.
+    """Resolve the real rustc binary, seeing through proxy layers.
 
     rustup installs ``rustc`` as a proxy (a hardlink of the multi-call
     ``rustup`` binary): at run time it reads the ``$RUSTUP_HOME``
@@ -1108,31 +1113,51 @@ def _resolve_rustc() -> str | None:
     same trust as ``shutil.which``) and invoke the real compiler
     directly; the sysroot then IS the granted read root, covering the
     sibling lib/ tree the compile needs.
+
+    Resolution must reach a fixed point, not stop after one hop:
+    wrapper shims can layer (a site-local rustc wrapper dispatching to
+    a rustup-managed install), and then ``<sysroot>/bin/rustc`` from
+    the first probe is itself a proxy whose settings read the sandbox
+    denies. A candidate is the real compiler only when it lives inside
+    the sysroot it reports — a proxy always reports a sysroot
+    elsewhere — so keep probing until a candidate passes that check
+    (bounded by ``_RUSTC_RESOLVE_MAX_HOPS``).
     """
     rustc = shutil.which("rustc")
     if not rustc:
         return None
-    # System installs (/usr/bin/rustc etc.) are no rustup proxies and
-    # live inside the sandbox's default read allowlist — even a distro
-    # proxy under /usr can read its own settings there. Only probe when
-    # rustc resolves OUTSIDE the system prefixes (rustup's ~/.cargo/bin
-    # layout), keeping the host-side probe off the common path.
-    resolved = os.path.realpath(rustc)
-    if any(resolved.startswith(p) for p in _SYSTEM_TOOLCHAIN_PREFIXES):
-        return rustc
-    try:
-        proc = subprocess.run(
-            [rustc, "--print", "sysroot"],
-            capture_output=True, text=True, timeout=_COMPILE_TIMEOUT_S,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return rustc
-    sysroot = (proc.stdout or "").strip()
-    if proc.returncode != 0 or not sysroot:
-        return rustc
-    real = Path(sysroot) / "bin" / "rustc"
-    if real.is_file():
-        return str(real)
+    for _ in range(_RUSTC_RESOLVE_MAX_HOPS):
+        # System installs (/usr/bin/rustc etc.) are no rustup proxies
+        # and live inside the sandbox's default read allowlist — even a
+        # distro proxy under /usr can read its own settings there. Only
+        # probe when rustc resolves OUTSIDE the system prefixes
+        # (rustup's ~/.cargo/bin layout), keeping the host-side probe
+        # off the common path.
+        resolved = os.path.realpath(rustc)
+        if any(resolved.startswith(p) for p in _SYSTEM_TOOLCHAIN_PREFIXES):
+            return rustc
+        try:
+            proc = subprocess.run(
+                [rustc, "--print", "sysroot"],
+                capture_output=True, text=True, timeout=_COMPILE_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return rustc
+        sysroot = (proc.stdout or "").strip()
+        if proc.returncode != 0 or not sysroot:
+            return rustc
+        real = Path(sysroot) / "bin" / "rustc"
+        if not real.is_file():
+            return rustc
+        # Real compiler: lives inside the sysroot it reports (rustup's
+        # toolchains/<tc>/bin/rustc under toolchains/<tc>). A proxy
+        # resolves elsewhere (~/.cargo/bin) — probe IT next.
+        if os.path.realpath(real).startswith(
+                os.path.realpath(sysroot) + os.sep):
+            return str(real)
+        if str(real) == rustc:
+            return rustc  # self-reporting proxy: no progress possible
+        rustc = str(real)
     return rustc
 
 

@@ -1665,6 +1665,56 @@ class TestResolveRustc:
         monkeypatch.setenv("PATH", str(proxy_dir))
         assert ex._resolve_rustc() == str(real)
 
+    def test_resolves_through_chained_proxies(self, tmp_path, monkeypatch):
+        """A wrapper shim can dispatch to a rustup-managed rustc: the
+        first sysroot probe then yields ANOTHER proxy — its bin/rustc
+        resolves outside the sysroot it reports — whose settings read
+        the witness sandbox would deny (the Nightly runner shape:
+        "could not read settings file ... Permission denied").
+        Resolution must keep probing until the candidate lives inside
+        its own reported sysroot: the real compiler."""
+        real_root = tmp_path / "rustup" / "toolchains" / "dev"
+        (real_root / "bin").mkdir(parents=True)
+        real = real_root / "bin" / "rustc"
+        real.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        real.chmod(0o755)
+
+        # Inner proxy (the rustup shim shape): lives outside any
+        # toolchain, reports the real toolchain's sysroot.
+        inner_dir = tmp_path / "cargo-bin-inner"
+        inner_dir.mkdir()
+        inner = inner_dir / "rustc"
+        inner.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--print" ] && [ "$2" = "sysroot" ]; then\n'
+            f"  echo '{real_root}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        inner.chmod(0o755)
+
+        # Outer wrapper on PATH: reports a "toolchain" whose rustc is
+        # the inner proxy (resolves outside that toolchain).
+        outer_root = tmp_path / "site" / "toolchains" / "wrapped"
+        (outer_root / "bin").mkdir(parents=True)
+        (outer_root / "bin" / "rustc").symlink_to(inner)
+        proxy_dir, _ = self._fake_proxy(tmp_path, str(outer_root))
+        monkeypatch.setenv("PATH", str(proxy_dir))
+        assert ex._resolve_rustc() == str(real)
+
+    def test_self_reporting_proxy_terminates(self, tmp_path, monkeypatch):
+        """A proxy chain that never reaches a real compiler (the
+        reported sysroot's rustc points back at the proxy) must
+        terminate on the no-progress fixed point, not loop."""
+        root = tmp_path / "loop" / "toolchains" / "dev"
+        (root / "bin").mkdir(parents=True)
+        proxy_dir, proxy = self._fake_proxy(tmp_path, str(root))
+        (root / "bin" / "rustc").symlink_to(proxy)
+        monkeypatch.setenv("PATH", str(proxy_dir))
+        assert ex._resolve_rustc() == str(root / "bin" / "rustc")
+
     def test_keeps_which_result_when_probe_fails(
         self, tmp_path, monkeypatch,
     ):

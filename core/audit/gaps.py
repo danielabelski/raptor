@@ -1278,11 +1278,23 @@ def _build_covered_set(
     suppresses only one same-named item per covered key instead of
     all of them.
     """
-    from core.coverage.registry import CATEGORY_LLM, DEPTH_ANALYSED, classify
+    from core.coverage.registry import (
+        CATEGORY_LLM,
+        CATEGORY_RUNTIME,
+        DEPTH_ANALYSED,
+        category_of,
+        classify,
+    )
 
     covered = set()
     for record in records:
         # Legacy coverage-record.json shape (files{...functions{}}).
+        # Runtime records (coverage-fuzz.json carries the same nested
+        # shape for its consumers) are excluded: a fuzzer REACHING a
+        # function is reachability evidence, not a review — folding it
+        # here would suppress exactly the functions fuzzing proved live.
+        if category_of(record.get("tool", "")) == CATEGORY_RUNTIME:
+            continue
         for file_path, file_data in record.get("files", {}).items():
             for func_name in file_data.get("functions", {}):
                 covered.add(make_function_key(file_path, func_name))

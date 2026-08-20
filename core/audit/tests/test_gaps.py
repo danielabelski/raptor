@@ -597,3 +597,22 @@ class TestModernRecordCoveredSet:
         }]
         gaps = compute_gaps(_sample_checklist(), records)
         assert "parse_request" in {g["name"] for g in gaps}
+
+
+def test_runtime_records_never_suppress_gaps():
+    # coverage-fuzz.json carries the nested files{...functions{}} shape
+    # for its dedicated consumers AND (post tool-field fix) loads as a
+    # coverage record. A fuzzer REACHING a function is reachability
+    # evidence, not a review — it must not suppress the gap.
+    records = [{
+        "tool": "fuzz",
+        "files": {"src/handler.c": {"functions": {
+            "parse_request": {"reached": True, "iterations": 5},
+        }}},
+        "files_examined": ["src/handler.c"],
+        "functions_analysed": [
+            {"file": "src/handler.c", "function": "parse_request"},
+        ],
+    }]
+    gaps = compute_gaps(_sample_checklist(), records)
+    assert "parse_request" in {g["name"] for g in gaps}

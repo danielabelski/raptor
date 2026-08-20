@@ -659,6 +659,9 @@
   "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
    "note": "zero-reference symbol at baseline cut — triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
+  "imports:import_missing_symbol:packages/sca/osv.py:cvss:CVSS4": {
+   "note": "deliberate optional dependency: 'from cvss import CVSS4' targets the third-party cvss PyPI package (CVSS v4.0 reference scorer), not the in-repo packages/cvss module the resolver maps it to; the import is ImportError-guarded and degrades to the database-provided severity label when the package is absent"
+  },
   "plumbing:orphan_config_field:core/audit/fail_open_roles.py:SecurityFlag.safe_when": {
    "note": "pending wiring: safe_when is the fail-open channel's planned per-flag suppression predicate"
   },

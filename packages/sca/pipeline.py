@@ -1387,7 +1387,10 @@ def _run_slopsquat_review(
                     str(dep.name or "").replace("|", ""),
                 )
                 if key in confirmed_keys:
-                    sage_confirmed.add(dep.name)
+                    # Keyed on (ecosystem, name): two same-named
+                    # suspects in different ecosystems must not share
+                    # a confirmation.
+                    sage_confirmed.add(key)
 
     # Build registry-client lookups for the deps we want to
     # review. Same offline-honouring pattern as
@@ -1414,8 +1417,13 @@ def _run_slopsquat_review(
         dep = f.dependency
 
         # SAGE short-circuit: skip LLM if this package is already
-        # confirmed malicious from a prior run.
-        if dep.name in sage_confirmed:
+        # confirmed malicious from a prior run. Same (eco, name) key
+        # shape (and '|' strip) as the recall stage above.
+        _sc_key = (
+            str(dep.ecosystem or "").replace("|", ""),
+            str(dep.name or "").replace("|", ""),
+        )
+        if _sc_key in sage_confirmed:
             existing_evidence = dict(f.evidence)
             existing_evidence["llm_verdict"] = "malicious"
             existing_evidence["llm_confidence"] = 0.98

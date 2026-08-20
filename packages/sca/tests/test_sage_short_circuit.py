@@ -197,3 +197,28 @@ def test_short_circuited_verdict_is_not_re_stored(tmp_path):
     names = {o["package_name"] for o in stored}
     assert "other-pkg" in names
     assert "evil-pkg" not in names
+
+
+def test_same_name_other_ecosystem_suspect_still_reviewed(tmp_path):
+    """Second-stage regression: a legitimately confirmed npm package
+    must not lend its confirmation to a SAME-NAMED PyPI suspect in the
+    same run — the short-circuit set is keyed on (ecosystem, name),
+    not name alone."""
+    npm_finding = SupplyChainFinding(
+        finding_id="sca:supply:slopsquat_suspect:npm:evil-pkg@1.0.0",
+        kind="slopsquat_suspect",
+        dependency=_dep("evil-pkg", eco="npm"),
+        detail="evil-pkg resembles a popular package",
+        evidence={"reasons": ["lexical"], "score": 0.6},
+        severity="medium",
+        confidence=Confidence("high", reason="t"),
+    )
+    pypi_finding = _suspect_finding("evil-pkg")  # PyPI
+    row = _stamped_row("evil-pkg", "malicious_confirmed", eco="npm")
+
+    mock_llm = _run([npm_finding, pypi_finding], [row], tmp_path)
+
+    assert npm_finding.evidence.get("sage_short_circuit")
+    assert not pypi_finding.evidence.get("sage_short_circuit")
+    # The PyPI suspect went to real review.
+    mock_llm.assert_called_once()

@@ -79,9 +79,16 @@ rules:
           - pattern: input(...)
           - pattern: os.environ[...]
           - pattern: sys.argv[...]
-          # File reads (common in deserialisation chains)
+          # File reads (common in deserialisation chains). Kept broad
+          # (sockets, uploads, opened files) but in-memory buffers over
+          # string literals are excluded — that data is fully hardcoded.
           - pattern: open(...).read()
-          - pattern: $F.read()
+          - patterns:
+              - pattern: $F.read()
+              - pattern-not: io.StringIO("...").read()
+              - pattern-not: io.BytesIO("...").read()
+              - pattern-not: StringIO("...").read()
+              - pattern-not: BytesIO("...").read()
     pattern-sinks:
       - pattern-either:
           # yaml.load without Loader kwarg — the dangerous form

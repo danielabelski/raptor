@@ -245,6 +245,14 @@ def _check_call_link(
     if not to_func:
         return None, False
 
+    if not cross_file and from_func and from_func == to_func:
+        # Consecutive steps inside the SAME function (the normal shape
+        # of an intra-procedural taint path: source line → assignment
+        # → sink line) are linked by straight-line control flow, not
+        # by a call edge.  Requiring a self-call edge here refuted
+        # every intra-procedural path with high confidence.
+        return True, False
+
     to_name = to_func.split(".")[-1]
 
     if from_func:

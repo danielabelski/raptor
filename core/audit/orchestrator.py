@@ -19903,7 +19903,24 @@ _STRUCTURAL_RECEIPT_CHECKS = frozenset({
 
 # A structural receipt names the concrete call sites whose gating is
 # asymmetric ("2 add_view_no_menu() call(s) are gated on ...").
-_RECEIPT_CALL_NAME_RE = re.compile(r"\b(\w+)\(\)\s+call")
+_RECEIPT_CALL_NAME_RE = re.compile(r"\b(\w+)\(\)\s+(?:call|perform)")
+
+# Family bridge: the hypothesis must talk about the receipt's bug
+# family, in the reviewer's own words — receipt check-type token stems
+# rarely survive natural phrasing ("two Write calls without a lock"
+# carries none of shared/writer/race).
+_RECEIPT_FAMILY_HYP_RES = {
+    "auth_mode_registration": re.compile(
+        r"auth[\s_-]*(?:mode|type)|regist|reset|unconditional", re.I,
+    ),
+    "shared_writer_race": re.compile(
+        r"concurren|race|interleav|unsynchron|\block\b|mutex|goroutine",
+        re.I,
+    ),
+    "url_boundary_composition": re.compile(
+        r"\burl\b|boundar|redirect|\bhost\b|origin", re.I,
+    ),
+}
 
 
 def _receipt_corroborated_hypothesis(outcome, receipts):
@@ -19938,11 +19955,15 @@ def _receipt_corroborated_hypothesis(outcome, receipts):
         )
         if not called:
             continue
+        family_re = _RECEIPT_FAMILY_HYP_RES.get(check_type)
         for h in hypotheses:
             if not isinstance(h, dict):
                 continue
             mechanism = h.get("mechanism", "") or ""
-            if not _receipt_matches_mechanism(check_type, mechanism):
+            if not (
+                _receipt_matches_mechanism(check_type, mechanism)
+                or (family_re and family_re.search(mechanism))
+            ):
                 continue
             if not any(
                 re.search(rf"\b{re.escape(c)}\b", mechanism)

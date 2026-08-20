@@ -2479,6 +2479,59 @@ class TestPostLoopReceiptRescue:
         assert flipped == 0
         assert outcome.status == "clean"
 
+    def test_family_bridge_floors_race_dismissal(self, tmp_path: Path):
+        """Natural race phrasing carries none of the check-type token
+        stems — the family bridge plus call-site overlap must carry."""
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="low")
+        outcome.hypotheses[0]["mechanism"] = (
+            "two Write calls on the output field without a lock; a "
+            "concurrent caller can insert bytes between them"
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        receipt = {
+            "check_type": "shared_writer_race",
+            "file": "m.py",
+            "function": "wire_endpoints",
+            "evidence": (
+                "wire_endpoints() performs 2 separate Write() calls on "
+                "the writer field per invocation, holds no lock"
+            ),
+        }
+        flipped = _post_loop_receipt_rescue(result, [receipt], config)
+        assert flipped == 1
+        assert outcome.status == "suspicious"
+
+    def test_family_bridge_ignores_unrelated_write_mention(
+        self, tmp_path: Path,
+    ):
+        """A hypothesis that mentions the call name for a different
+        reason (ignored error) has no family keyword — no floor."""
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        outcome = self._clean_outcome(confidence="refuted")
+        outcome.hypotheses[0]["mechanism"] = (
+            "error from the second Write is returned but the first "
+            "Write's failure may be swallowed"
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        receipt = {
+            "check_type": "shared_writer_race",
+            "file": "m.py",
+            "function": "wire_endpoints",
+            "evidence": (
+                "wire_endpoints() performs 2 separate Write() calls on "
+                "the writer field per invocation, holds no lock"
+            ),
+        }
+        flipped = _post_loop_receipt_rescue(result, [receipt], config)
+        assert flipped == 0
+
     def test_tool_evidence_blocks_corroboration_floor(
         self, tmp_path: Path,
     ):

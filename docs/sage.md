@@ -69,8 +69,8 @@ libexec/raptor-sage-setup
 One command does everything; re-runs are safe (see *Reinstall / re-seed*
 below):
 
-- Verifies prerequisites (`sage-agent-sdk`, jq, docker, curl, the stdio
-  wrapper).
+- Verifies prerequisites (`sage-agent-sdk`, jq, docker, python3, curl,
+  the stdio wrapper).
 - Migrates the SAGE_HOME volume mount if upgrading from the old `.sage-gui`
   layout (automatic, non-destructive -- see *Upgrading and migrating* below).
 - Auto-detects GPU vs CPU and picks the embedding model accordingly (see
@@ -79,8 +79,8 @@ below):
   (port 8090) and Ollama (port 11435), both loopback-bound.
 - Waits for SAGE health.
 - Seeds institutional knowledge (30+ exploitation primitives and
-  mitigations, system prompts, 10 expert personas, methodology,
-  exploitability heuristics).
+  mitigations, system prompts, the expert personas from `tiers/personas/`,
+  methodology, exploitability heuristics).
 - Registers all 16 RAPTOR agents on the SAGE network.
 - Generates the stdio MCP entry in `./.mcp.json` (replaces any stale SSE
   config; preserves other MCP servers you've registered).
@@ -92,6 +92,8 @@ below):
   trust semantics).
 - Generates the per-install HMAC row-authentication key if absent (see
   *HMAC key setup* below).
+- Grants the discovered `mcp__sage__*` tool permissions in
+  `.claude/settings.local.json` (revoked again by uninstall).
 
 ### 3. Restart Claude Code
 
@@ -110,15 +112,15 @@ authorization/drift.
 ### Reinstall / re-seed
 
 `libexec/raptor-sage-setup` is safe to re-run at any time.  The seed and
-register steps query SAGE for each item's tag (`primitive:rop-chain`,
-`agent:raptor-scan`, etc.) before proposing, so re-runs skip entries
-already present and only propose what's missing.  Output tells you which
-category each item fell into:
+register steps query SAGE for each item's tag (`primitive:rop_chain`,
+`agent:raptor-crash-analyzer`, etc.) before proposing, so re-runs skip
+entries already present and only propose what's missing.  Output tells
+you which category each item fell into:
 
 ```
-stored:  primitive:rop-chain
-skipped: primitive:stack-canary (already seeded)
-partial: raptor-scan (filled in missing half from a prior partial run)
+stored:  primitive:rop_chain
+skipped: primitive:format_string_write (already seeded)
+partial: raptor-crash-analyzer (filled in missing half from a prior partial run)
 ```
 
 To deliberately re-propose everything -- e.g. after a SAGE volume wipe,
@@ -136,9 +138,10 @@ python3 core/sage/scripts/register_agents.py --force
 libexec/raptor-sage-setup --uninstall
 ```
 
-Stops the docker sidecar, removes the SAGE entry from `.mcp.json` and the
-`SAGE_ENABLED` key from `.claude/settings.local.json` (deletes either file
-if it becomes empty), and removes the recorded boot payload.  Data volumes
+Stops the docker sidecar, removes the SAGE entry from `.mcp.json`, and
+removes the `SAGE_ENABLED` key and the granted `mcp__sage__*` tool
+permissions from `.claude/settings.local.json` (deletes either file if it
+becomes empty), and removes the recorded boot payload.  Data volumes
 are preserved -- use `docker compose -f core/sage/docker-compose.yml down
 -v` to wipe them.  The HMAC key is never removed by uninstall.
 
@@ -177,6 +180,7 @@ the parsed values, and verify before acting.  Concretely gated:
 - Audit hypothesis-verdict skip (`clean`/`dormant` re-review skip)
 - Proven-rule replay into audit sweeps (`recall_verified_proven_rules`)
 - Study/teach concept skip and seed gates
+- `/cve-diff` fix-commit pointer recall
 
 ### Where the key lives
 
@@ -409,13 +413,15 @@ used for knowledge that generalises across targets.
 | `raptor-sca-{repo_key}` | SCA findings and verdicts (repo-scoped) |
 | `raptor-concepts-{repo_key}` | Study/teach concept recall (repo-scoped) |
 | `raptor-audit-{repo_key}` | Audit hypothesis verdicts (repo-scoped) |
+| `raptor-cve` | CVE fix-commit pointers from `/cve-diff` runs (global; kill-switch `RAPTOR_SAGE_CVE_PRIOR=0`) |
 | `raptor-fuzzing` | Fuzzing strategies and crash outcomes (global) |
 | `raptor-methodology` | Analysis methodology, CodeQL build reliability, expert reasoning (global) |
 | `raptor-rule-library` | Proven checker rules keyed by engine + CWE (global, cross-target) |
 
-The seed script additionally populates global knowledge domains
-(`raptor-primitives`, `raptor-personas`, `raptor-prompts`,
-`raptor-config`, `raptor-agents`).  See `core/sage/CLAUDE.md` for the
+The seed and agent-registration scripts additionally populate global
+knowledge domains (`raptor-primitives`, `raptor-personas`,
+`raptor-prompts`, `raptor-config`, `raptor-methodology`,
+`raptor-fuzzing`, `raptor-agents`).  See `core/sage/CLAUDE.md` for the
 authoritative hook-to-domain table.
 
 
@@ -438,8 +444,14 @@ authoritative hook-to-domain table.
 | `SAGE_FORCE_CPU` | unset | Run pipeline hooks on CPU-only hosts |
 | `SAGE_RECALL_WORKERS` | auto (4 GPU / 2 CPU) | Recall concurrency (max 8) |
 | `RAPTOR_SAGE_AFL_PRIOR` | `1` | Set `0` to disable mechanical AFL flag inference |
-| `RAPTOR_SAGE_FP_SUPPRESS` | `1` | Set `0` to disable cross-run FP suppression (force re-test of every finding) |
+| `RAPTOR_SAGE_FP_SUPPRESS` | `1` | Set `0` to disable cross-run FP suppression (force re-test of every finding); a per-finding `manual_override` forces one finding through |
+| `RAPTOR_SAGE_CVE_PRIOR` | `1` | Set `0` to disable the `/cve-diff` fix-pointer recall short-circuit |
 | `SAGE_EMBED_MODEL` / `SAGE_EMBED_DIM` | auto-detected | Embedding model override (set before running setup) |
+
+The host-side agent identity key (`~/.sage/agent.key`, or
+`$SAGE_IDENTITY_PATH`) signs as the agent -- the CLI, client, and
+install scripts clamp it to mode 0600 in a 0700 directory, warn on
+loose modes, and refuse symlinks.
 
 **Container-side** (set in `core/sage/docker-compose.yml`, passed to the
 SAGE container):
@@ -452,6 +464,9 @@ SAGE container):
 | `SAGE_EMBEDDING_MODEL` | `${SAGE_EMBED_MODEL}` | Embedding model name (auto-detected) |
 | `SAGE_EMBEDDING_DIMENSION` | `${SAGE_EMBED_DIM}` (768) | Embedding vector dimension |
 | `REST_ADDR` | `0.0.0.0:8080` | SAGE REST API listen address (mapped to loopback 8090) |
+
+The sage service also runs with `cap_drop: ALL` and
+`no-new-privileges:true` (effective on the next container recreation).
 
 If `SAGE_EMBEDDING_PROVIDER` is unset, SAGE defaults to `hash` -- keyword
 matching only, no semantic recall.  The compose file sets a real provider
@@ -479,9 +494,15 @@ The setup script generates the entry inline using stdio transport via the
 }
 ```
 
-The wrapper `exec`s into `docker compose exec -T sage /usr/local/bin/sage-gui mcp`,
-wiring Claude Code's stdin/stdout directly to the SAGE MCP process inside
-the container.  No SSE, no HTTP, no OAuth.
+The wrapper runs the boot-payload guard shim
+(`libexec/raptor-sage-mcp-guard`) between Claude Code and
+`docker compose exec -T sage /usr/local/bin/sage-gui mcp` inside the
+container.  The guard verifies every instruction surface the server
+emits (initialize instructions, the whole `sage_inception` content, and
+instruction-shaped preambles in the session's first tool result) against
+the operator-authorized record in `.sage/boot-payload.authorized`;
+mismatched or undecodable content is stripped/dropped fail-closed with a
+`[raptor-sage-mcp] WARNING:` marker.  No SSE, no HTTP, no OAuth.
 
 The setup script replaces `.mcpServers.sage` entirely on each run (stale
 `type`/`url` fields from an old SSE config are removed).  Other MCP
@@ -720,8 +741,22 @@ an older key stay hint-only.  If the key is gone or was replaced (host
 rebuild without carrying it over), previously stamped rows are
 permanently hint-only; see *Moving to a new host*.
 
+### Boot instructions stripped / `[raptor-sage-mcp] WARNING:` marker
+
+The MCP wrapper withholds server boot instructions whenever no
+operator-authorized payload record exists or the live payload does not
+match it (see *MCP Configuration*).  This happens when setup could not
+capture the payload (SAGE not yet responsive, `jq` missing, or nothing
+extractable -- capture fails closed rather than record an empty stamp)
+or after a sidecar upgrade changed the payload.  Sessions keep working;
+only the server's boot instructions are stripped.  Remedy: re-run
+`libexec/raptor-sage-setup install` (interactive confirmation) or
+`libexec/raptor-sage-setup install --reauthorize` to review and record
+the new payload.  The guard also drops undecodable server lines
+fail-closed with a stderr notice.
+
 ### Memory not persisting
 
 SAGE uses BFT consensus -- memories must be committed before they appear
-in recall.  With `create_empty_blocks_after=5s`, this happens within
-seconds on a single-node setup.
+in recall.  On a single-node setup with the sidecar's default block
+cadence this happens within seconds.

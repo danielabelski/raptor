@@ -342,10 +342,61 @@ def _build_excerpt_tree(
                 shutil.copy2(str(src), str(dst))
                 copied += 1
 
+        copied += _copy_perlasm_drivers(tmp, src_dir)
         excerpt_dirs[repo_key] = tmp
         print(f"  Excerpt: {repo_key} — {copied} file(s)", flush=True)
 
     return excerpt_dirs
+
+
+def _copy_perlasm_drivers(tmp: Path, src_dir: Path) -> int:
+    """Copy the xlate driver(s) any copied perlasm generator needs.
+
+    A labeled perlasm generator (an openssl-style ``asm/*.pl``)
+    locates its translator relative to its own path (``${dir}`` or
+    ``${dir}../../perlasm/``); an excerpt tree holding only the
+    labeled files loses the driver, the generator exits non-zero, and
+    the kernel is never inventoried (scored
+    ``error:not_reviewed:function_not_in_checklist``). Detection is
+    structural (the generator preamble names its driver family) and
+    the driver is copied at its original relative path so the
+    generator's own lookup resolves. Returns the number of files
+    copied; best-effort — a missing driver stays a loud perlasm
+    coverage gap at inventory time.
+    """
+    try:
+        from core.inventory.perlasm import detect_perlasm_generators
+    except ImportError:
+        return 0
+    try:
+        gens = detect_perlasm_generators(tmp)
+    except Exception:  # noqa: BLE001 — excerpt prep is best-effort
+        return 0
+    if not gens:
+        return 0
+    wanted = {f"{g.driver}.pl" for g in gens}
+    copied = 0
+    for root, dirs, filenames in os.walk(src_dir):
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".") and d not in (
+                "vendor", "node_modules", "__pycache__", ".git",
+            )
+        ]
+        for name in filenames:
+            if name not in wanted:
+                continue
+            src = Path(root, name)
+            dst = tmp / src.relative_to(src_dir)
+            if dst.exists():
+                continue
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src), str(dst))
+                copied += 1
+            except OSError:
+                continue
+    return copied
 
 
 def _filter_quick_repos(

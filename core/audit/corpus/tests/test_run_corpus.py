@@ -309,12 +309,15 @@ class TestLabelPinning:
             )
 
 
-class TestScopePrep:
-    """Repo-root labels must not scope the audit to nothing.
+class TestScopeAndExcerptPrep:
+    """Repo-root labels must not scope the audit to nothing, and a
+    perlasm generator excerpt must carry its xlate driver.
 
     Regression: a label on a repo-root file (a top-level index.js /
     main.c) produced scope_dirs == ["."], the gap scope matcher
-    matched nothing, and the whole group reviewed 0 functions.
+    matched nothing, and the whole group reviewed 0 functions; the
+    openssl excerpt held only the labeled generator, so its driver
+    lookup failed and the kernel never entered the checklist.
     """
 
     def _label_for(self, fid, file, line=1):
@@ -369,6 +372,40 @@ class TestScopePrep:
             self._label_for("sub/b.c:g", "sub/b.c"),
         ])
         assert opts.scope == ["sub"]
+
+    def test_excerpt_copies_xlate_driver(self, tmp_path):
+        src_dir = tmp_path / "srcrepo"
+        gen = src_dir / "crypto" / "aes" / "asm" / "gen-armv8.pl"
+        gen.parent.mkdir(parents=True)
+        gen.write_text(
+            '$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\\.\\w+$| '
+            '? pop : undef;\n'
+            '$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\\.| ? shift : undef;\n'
+            '( $xlate="${dir}arm-xlate.pl" and -f $xlate ) or\n'
+            '( $xlate="${dir}../../perlasm/arm-xlate.pl" and -f $xlate);\n'
+        )
+        driver = src_dir / "crypto" / "perlasm" / "arm-xlate.pl"
+        driver.parent.mkdir(parents=True)
+        driver.write_text("# translator\n")
+
+        excerpt = tmp_path / "excerpt"
+        dst_gen = excerpt / "crypto" / "aes" / "asm" / "gen-armv8.pl"
+        dst_gen.parent.mkdir(parents=True)
+        dst_gen.write_text(gen.read_text())
+
+        copied = run_corpus._copy_perlasm_drivers(excerpt, src_dir)
+        assert copied == 1
+        assert (excerpt / "crypto" / "perlasm" / "arm-xlate.pl").is_file()
+        # Idempotent: second call copies nothing.
+        assert run_corpus._copy_perlasm_drivers(excerpt, src_dir) == 0
+
+    def test_excerpt_without_generators_copies_nothing(self, tmp_path):
+        src_dir = tmp_path / "s"
+        src_dir.mkdir()
+        excerpt = tmp_path / "e"
+        excerpt.mkdir()
+        (excerpt / "plain.pl").write_text("sub f { return 1; }\n")
+        assert run_corpus._copy_perlasm_drivers(excerpt, src_dir) == 0
 
 
 def _write_checklist(audit_dir: Path, entries):

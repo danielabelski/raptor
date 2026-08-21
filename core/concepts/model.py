@@ -237,8 +237,19 @@ class DomainModel:
             return cls()
         if not isinstance(raw, dict):
             return cls()
+        # Tolerate schema drift in on-disk models: a concept written by
+        # an older schema (or a partial writer) must degrade, never
+        # crash the loader — sibling-run models are consulted
+        # opportunistically and may predate required fields.
+        _required_defaults = {
+            f.name: "" for f in dataclasses.fields(Concept)
+            if f.default is dataclasses.MISSING
+            and f.default_factory is dataclasses.MISSING
+            and f.type in ("str", str)
+        }
         concepts = [
             Concept(**{
+                **_required_defaults,
                 **_filter_fields(Concept, c),
                 "evidence": [
                     Evidence(**_filter_fields(Evidence, e))

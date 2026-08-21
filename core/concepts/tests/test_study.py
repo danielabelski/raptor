@@ -1416,12 +1416,41 @@ class TestApplySagePrior:
             "page": [{"content": "Concept [page]", "confidence": 0.8}],
             "get_page": [{"content": "Concept [get_page]", "confidence": 0.7}],
         }
+        # Nested dir: _apply_sage_prior scans SIBLINGS of its output
+        # dir's parent — bare tmp_path would scan other tests' tmp dirs
+        # under the shared pytest basetemp (the CI shard-2 pollution).
+        out = tmp_path / "run" / "out"
+        out.mkdir(parents=True)
         remaining, _sc, _si, _sct, seed = _apply_sage_prior(
-            items, sage_prior, tmp_path,
+            items, sage_prior, out,
         )
         assert len(remaining) == 3
         assert "page" in seed
         assert "get_page" in seed
+
+
+class TestSagePriorSchemaDrift:
+    def test_sibling_model_with_missing_fields_degrades(self, tmp_path):
+        """A schema-drifted domain-model.json in a SIBLING run dir (the
+        exact CI shard-pollution shape) must not crash the prior pass."""
+        import json
+        from core.concepts.study import StudyItem, _apply_sage_prior
+
+        sibling = tmp_path / "older-run"
+        sibling.mkdir()
+        (sibling / "domain-model.json").write_text(
+            json.dumps({"concepts": [{"name": "page", "kind": "struct"}]}),
+            encoding="utf-8",
+        )
+        out = tmp_path / "this-run"
+        out.mkdir()
+        items = [StudyItem(id="s1", kind="struct", name="page",
+                           file="mm.c", line=10)]
+        remaining, _sc, _si, _sct, _seed = _apply_sage_prior(
+            items, {"page": [{"content": "Concept [page]",
+                              "confidence": 0.8}]}, out,
+        )
+        assert len(remaining) == 1
 
 
 # ------------------------------------------------------------------

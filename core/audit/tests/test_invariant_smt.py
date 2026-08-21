@@ -214,3 +214,68 @@ class TestDispatchWiring:
             "a single-site violability model must not promote without "
             "LLM agreement (graduated rule roles)"
         )
+
+
+class TestAliasEscapes:
+    def test_address_taken_var_is_not_vacuously_preserved(self):
+        # Regression PoC: grow(&obuf_len, n) mutates through an alias
+        # the per-line regex cannot see; zero direct sites returned
+        # 'preserved' (vacuously) — a refutation receipt for a live
+        # invariant violation.
+        from core.audit.invariant_smt import check_invariant_preservation
+        r = check_invariant_preservation(
+            "obuf_len <= obuf_size",
+            "grow(&obuf_len, n);\nmemcpy(buf + obuf_len, src, n);\n",
+        )
+        assert r.outcome == "inconclusive", r.to_dict()
+        assert "address-taken" in r.reason
+        assert any(s.verdict == "out_of_scope" for s in r.sites)
+
+    def test_member_path_address_taken_detected(self):
+        # The verifier PoC's spelling: &st->obuf_len.
+        from core.audit.invariant_smt import check_invariant_preservation
+        r = check_invariant_preservation(
+            "obuf_len <= obuf_size",
+            "grow(&st->obuf_len, n);\n",
+        )
+        assert r.outcome == "inconclusive"
+
+    def test_member_spelling_mutation_detected(self):
+        from core.audit.invariant_smt import check_invariant_preservation
+        r = check_invariant_preservation(
+            "obuf_len <= obuf_size",
+            "s->obuf_len += n;\n",
+        )
+        assert r.outcome == "inconclusive"
+
+    def test_no_mutation_no_alias_stays_vacuously_preserved(self):
+        from core.audit.invariant_smt import check_invariant_preservation
+        r = check_invariant_preservation(
+            "len <= cap", "return buf[len - 1];\n",
+        )
+        assert r.outcome == "preserved"
+        assert "vacuously" in r.reason
+
+    def test_comment_text_mints_no_mutation_site(self):
+        from core.audit.invariant_smt import (
+            find_mutation_sites,
+        )
+        assert find_mutation_sites(
+            "/* len = attacker */\nreturn buf[0];\n", {"len"},
+        ) == []
+
+    def test_escape_alongside_direct_sites_blocks_preserved(self):
+        # A preserved-looking direct site + an alias escape must not
+        # aggregate to 'preserved'.
+        from core.audit.invariant_smt import check_invariant_preservation
+        r = check_invariant_preservation(
+            "len <= cap",
+            "len = min(len, cap);\nhelper(&len);\n",
+        )
+        assert r.outcome != "preserved", r.to_dict()
+
+    def test_logical_and_is_not_an_escape(self):
+        from core.audit.invariant_smt import find_alias_escapes
+        assert find_alias_escapes(
+            "if (ok && len) { use(len); }\n", {"len"},
+        ) == []

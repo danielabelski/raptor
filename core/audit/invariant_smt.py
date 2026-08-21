@@ -328,10 +328,16 @@ def find_mutation_sites(
 
     Returns ``(line_no, code, var, op, rhs)`` tuples. ``op`` is the
     assignment operator (``=``, ``+=``, …) or ``++``/``--``.
+
+    Scans the sanitized view (comments/string literals blanked): a
+    ``/* len = attacker */`` comment must not mint a mutation site.
+    Only DIRECT spellings are visible here — aliased mutations are
+    :func:`find_alias_escapes`' job.
     """
+    from .source_view import sanitized_view
     sites: list[tuple[int, str, str, str, str]] = []
-    for line_no, raw in enumerate(source.splitlines(), start=1):
-        code = raw.split("//", 1)[0]
+    view = sanitized_view(source, language="c")
+    for line_no, code in enumerate(view.splitlines(), start=1):
         for var in sorted(variables, key=len, reverse=True):
             v = re.escape(var)
             m = re.search(
@@ -348,6 +354,46 @@ def find_mutation_sites(
             if m:
                 sites.append((line_no, code.strip(), var, m.group(1), ""))
     return sites
+
+
+def find_alias_escapes(
+    source: str, variables: set[str],
+) -> list[tuple[int, str, str]]:
+    """Lines where an invariant variable's address is taken.
+
+    ``grow(&obuf_len, n)`` / ``memcpy(&len, src, 4)`` / ``p = &len``
+    mutate through an alias the per-line regex cannot see. Returns
+    ``(line_no, code, var)`` tuples — the caller must report these
+    ``out_of_scope`` (needs alias reasoning), NEVER fold them into a
+    vacuous 'preserved'. The match is lexically over-approximate
+    (``a & len`` bitwise-AND also matches) — that only ever moves the
+    outcome toward inconclusive, the safe direction for a witness
+    that refutes.
+    """
+    from .source_view import sanitized_view
+    escapes: list[tuple[int, str, str]] = []
+    view = sanitized_view(source, language="c")
+    member = r"(?:[A-Za-z_]\w*\s*(?:->|\.)\s*)"
+    for line_no, code in enumerate(view.splitlines(), start=1):
+        for var in sorted(variables, key=len, reverse=True):
+            v = re.escape(var)
+            # &var and &s->var / &s.var (member paths ending in the
+            # invariant variable — the verifier PoC's spelling).
+            if re.search(rf"(?:^|[^&\w])&\s*{member}*{v}\b(?![\w(])",
+                         code):
+                escapes.append((line_no, code.strip(), var))
+                continue
+            # Member-spelling direct mutation (s->var += n): the
+            # mutation-site regex deliberately excludes member paths
+            # (whose member? needs points-to), so it must surface
+            # here rather than vanish into vacuous 'preserved'.
+            if re.search(
+                rf"(?:->|\.)\s*{v}\s*"
+                rf"(?:\+\+|--|<<=|>>=|[-+*/%&|^]=|=(?!=))",
+                code,
+            ):
+                escapes.append((line_no, code.strip(), var))
+    return escapes
 
 
 # ── z3 encoding ─────────────────────────────────────────────────────
@@ -432,7 +478,8 @@ def check_invariant_preservation(
         )
 
     sites = find_mutation_sites(source or "", variables)
-    if not sites:
+    escapes = find_alias_escapes(source or "", variables)
+    if not sites and not escapes:
         return InvariantPreservationResult(
             outcome="preserved",
             invariant=invariant,
@@ -440,6 +487,32 @@ def check_invariant_preservation(
                 "no mutation sites for the invariant variables in this "
                 "function (vacuously preserved; base case not checked)"
             ),
+        )
+    if not sites:
+        # Address-taken invariant variables with zero direct
+        # mutation sites: the mutation lives behind an alias
+        # (grow(&len, n), memcpy, helper calls) that the per-line
+        # regex cannot adjudicate. The docstring's contract — "sites
+        # needing alias reasoning are reported out_of_scope" — means
+        # this is inconclusive, never a vacuous 'preserved' receipt.
+        return InvariantPreservationResult(
+            outcome="inconclusive",
+            invariant=invariant,
+            reason=(
+                "no direct mutation sites, but invariant variable(s) "
+                "are address-taken ("
+                + "; ".join(
+                    f"&{var} at line {ln}" for ln, _c, var in escapes[:4]
+                )
+                + ") — aliased mutation needs alias reasoning, "
+                "out of scope"
+            ),
+            sites=[
+                SiteResult(line=ln, code=code, verdict="out_of_scope",
+                           reason=f"&{var} — address-taken; aliased "
+                                  f"mutation not analysable here")
+                for ln, code, var in escapes
+            ],
         )
 
     if not _z3_available():
@@ -463,6 +536,15 @@ def check_invariant_preservation(
             rhs_text, timeout_ms,
         )
         site_results.append(result)
+    # Address-taken variables join as out_of_scope sites: an aliased
+    # mutation the direct-spelling scan cannot see must block the
+    # "every mutation site preserves" aggregation below.
+    for line_no, code, var in escapes:
+        site_results.append(SiteResult(
+            line=line_no, code=code, verdict="out_of_scope",
+            reason=f"&{var} — address-taken; aliased mutation not "
+                   f"analysable here",
+        ))
 
     if any(s.verdict == "violable" for s in site_results):
         outcome = "violable"

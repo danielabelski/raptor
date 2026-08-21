@@ -91,6 +91,9 @@ class Oracle(str, Enum):
     MANUAL = "manual"     # operator-supplied
     CONSENSUS = "consensus"  # independent-source agreement (e.g. /cve-diff
     #                          OSV + NVD fix-pointer consensus)
+    RUNTIME = "runtime"   # live-environment behavioural checks (e.g.
+    #                       /cve-env's verify DAG against the launched
+    #                       container: version assertion + functional smoke)
 
 
 class OutcomeStatus(str, Enum):

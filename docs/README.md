@@ -46,6 +46,7 @@ overview:
 | `/sage` | Persistent memory (store, recall, link, corroborate) |
 | `/threat-model` | Project threat model management |
 | `/cve-diff` | CVE patch discovery |
+| `/cve-env` | Pre-patch CVE environment build + verify |
 | `/analyze` | LLM analysis of existing SARIF |
 | `/ask` | Free-form prompt to any configured model |
 | `/version` | Show version |
@@ -66,6 +67,8 @@ overview:
 | [Validation](validation.md) | Exploitability validation pipeline (stages 0, A--F, 1) |
 | [Binary Analysis](binary-analysis.md) | Binary oracle, `/binary`, exploit feasibility |
 | [SCA](sca.md) | Software composition analysis |
+| [CVE Patch Discovery](cve-diff.md) | Find, acquire, and diff the fix commit for a CVE |
+| [CVE Environment Builder](cve-env.md) | Agentic pre-patch environment build + verify; core/env provisioning API |
 | [Frida](frida.md) | Dynamic instrumentation |
 | [Sandbox](sandbox.md) | Process isolation and sandboxing |
 | [LLM Providers](llm.md) | Provider configuration, Bedrock, multi-model workflows, cost management |

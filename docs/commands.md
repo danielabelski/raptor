@@ -1066,7 +1066,8 @@ See [threat model](threat-model.md) for methodology and field definitions.
 
 ### /cve-diff
 
-Discover, acquire, and diff the fix commit for a CVE.
+Discover, acquire, and diff the fix commit for a CVE.  See the
+[CVE patch discovery guide](cve-diff.md).
 
 ```
 /cve-diff run <CVE-ID> [--output-dir <dir>]
@@ -1078,6 +1079,27 @@ Discover, acquire, and diff the fix commit for a CVE.
 | `--output-dir <dir>` | Directory for diff output |
 | `--budget-multiplier <n>` | Budget multiplier for search depth |
 | `--with-root-cause` | Include root-cause analysis in output |
+
+---
+
+### /cve-env
+
+Build + verify a Docker environment running an application at its
+pre-patch (vulnerable) version.  See the
+[CVE environment builder guide](cve-env.md).
+
+```
+/cve-env build <CVE-ID> [--product P] [--version V]
+/cve-env doctor [--strict]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--product <P>` / `--version <V>` | Hints when the CVE record is ambiguous |
+| `--max-turns <N>` / `--max-cost-usd <F>` | Agent budgets (soft cost cap has a bounded productive-progress extension) |
+| `--audit-root <dir>` | Where the audit JSONL + outcome sidecar land |
+| `--silent` | Suppress the human summary (JSON on stdout is the result) |
+| `--auto-cleanup-containers` | Post-build `docker rm -f` of this run's labeled containers |
 
 ---
 

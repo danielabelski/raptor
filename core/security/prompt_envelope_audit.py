@@ -95,6 +95,9 @@ _PROMPT_CONSTRUCTION_FILES = (
     "packages/cve_diff/cve_diff/agent/loop.py",
     "packages/cve_diff/cve_diff/agent/prompt.py",
     "packages/cve_diff/cve_diff/analysis/analyzer.py",
+    # cve-env agent (claude-agent-sdk loop; interpolates CVE advisory text)
+    "packages/cve_env/cve_env/agent/prompts.py",
+    "packages/cve_env/cve_env/agent/loop.py",
     # /audit auxiliary prompt flows (enveloped via core.audit._util.
     # envelope_prompt / build_prompt — locked here so they can't
     # regress to raw interpolation)

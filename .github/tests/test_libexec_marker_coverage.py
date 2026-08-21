@@ -90,6 +90,7 @@ if not (os.environ.get("CLAUDECODE")
 PY_TRUST_HINTS = {
     "raptor-binary": "bin/raptor binary",
     "raptor-cve-diff": "bin/cve-diff",
+    "raptor-cve-env": "bin/cve-env",
     "raptor-sca-run": "bin/raptor-sca",
 }
 
@@ -195,6 +196,10 @@ SYSPATH_VARIANTS = {
         "sys.path.insert(0, str(_RAPTOR_DIR))",
         'sys.path.insert(0, str(_RAPTOR_DIR / "packages" / "cve_diff"))',
     ),
+    "raptor-cve-env": (
+        "sys.path.insert(0, str(_RAPTOR_DIR))",
+        'sys.path.insert(0, str(_RAPTOR_DIR / "packages" / "cve_env"))',
+    ),
     "raptor-enrich-context-map-frida": ("sys.path.insert(0, str(_RAPTOR_DIR))",),
     "raptor-enrich-context-map-mitigation": ("sys.path.insert(0, str(_ROOT))",),
     "raptor-lifecycle-hook": ("sys.path.insert(0, str(REPO_ROOT))",),
@@ -253,6 +258,7 @@ _CC_TRUST_EXTRA_ECHO = (
 
 SYMLINK_LOOPS = {
     "bin/cve-diff": [("cve-diff", 1, ())],
+    "bin/cve-env": [("cve-env", 1, ())],
     "bin/raptor": [
         # main self-resolution loop: `command -p` so dirname/readlink
         # resolve via the system default PATH, immune to a hostile
@@ -305,6 +311,7 @@ unset _symhops''',
 # bin/raptor sources before RAPTOR_DIR exists).
 ENV_STRIP_LINES = {
     "bin/cve-diff": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
+    "bin/cve-env": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
     "bin/raptor": '. "$_raptor_self_dir/../core/security/_dangerous_env_strip.sh"',
     "bin/raptor-sca": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
     "libexec/raptor-agentic": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',

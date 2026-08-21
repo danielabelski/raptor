@@ -182,11 +182,31 @@ class ReviewJournalEntry:
     # ``agentic``. Enables reliable ``import_journal`` tool-label
     # mapping without inferring from ``run_id`` string patterns.
     producer: str | None = None
+    # ``edge_callee``: set ONLY on tier-1 edge-contract review entries
+    # ("callee_file:callee", file component percent-encoded). The
+    # entry's ``file``/``function`` stay the CALLER so every existing
+    # consumer keys off the caller; ``key``/``index_key`` gain an
+    # edge suffix so an edge review never collides with — or worse,
+    # evicts / suppresses — the caller's own function review. For
+    # edge entries ``source_hash`` is the two-span form:
+    # caller-span hash + callee-span hash concatenated (drift in
+    # EITHER endpoint resurfaces the edge).
+    edge_callee: str | None = None
+    # ``edge_verdicts``: tier-2 folded edge-contract verdicts recorded
+    # on the CALLER's normal function entry:
+    # ``[{callee, call_line, verdict}]``. Additive; absent when the
+    # review carried no edge-contract section.
+    edge_verdicts: list[dict] | None = None
     schema_version: int = SCHEMA_VERSION
 
     @property
     def key(self) -> str:
-        return make_function_key(self.file, self.function)
+        base = make_function_key(self.file, self.function)
+        if self.edge_callee:
+            # Distinct resume/fold identity: an edge review must never
+            # mark the caller function itself as reviewed.
+            return f"{base}->{self.edge_callee}"
+        return base
 
     @property
     def index_key(self) -> str:
@@ -208,10 +228,17 @@ class ReviewJournalEntry:
         """
         strategy_hash = _canonical_strategy_hash(self.strategies)
         model = self.model or ""
-        return (
+        base = (
             f"{encode_key_file(self.file)}:{self.function}"
             f":{model}:{strategy_hash}:{entry_producer(self)}"
         )
+        if self.edge_callee:
+            # Edge entries index separately per callee — sharing the
+            # caller's index key would evict the caller's function
+            # verdict from the compacted index (same eviction class
+            # the producer segment exists to prevent).
+            return f"{base}:{self.edge_callee}"
+        return base
 
     def to_dict(self) -> dict[str, Any]:
         d = {k: v for k, v in asdict(self).items() if v is not None}
@@ -474,6 +501,8 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         reused=raw.get("reused"),
         reused_from_run=raw.get("reused_from_run"),
         producer=raw.get("producer"),
+        edge_callee=raw.get("edge_callee"),
+        edge_verdicts=raw.get("edge_verdicts"),
         schema_version=version,
     )
 

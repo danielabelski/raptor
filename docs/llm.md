@@ -396,6 +396,17 @@ for the operator CLI.
 - **Freshness weighting**: optional age-weighted observations so recent data dominates.
 - **Schema validity**: every `generate_structured` call records pass/fail under a
   `_structured` decision class.
+- **Integrity (HMAC provenance)**: the sidecar steers routing, so every write stamps
+  it with an HMAC-SHA256 token keyed from
+  `$XDG_DATA_HOME/raptor/scorecard-mac.key` (default
+  `~/.local/share/raptor/scorecard-mac.key`; its own per-purpose key -- never
+  `rowmac.key` or `telemetry-mac.key`). Reads verify before acting: unverified
+  content (tampered, or genuine pre-MAC history) never steers routing and never gets
+  re-stamped -- it is discarded in memory and quarantined to
+  `<sidecar>.unverified` on the next write. Re-bless genuine history deliberately
+  with `raptor-llm-scorecard adopt`. With an unusable key (symlinked,
+  foreign-owned, unwritable data dir) the content stays readable but the trust
+  surface clamps: no short-circuit, `force_short_circuit` pins not honoured.
 
 ### Producers
 

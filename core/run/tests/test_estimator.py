@@ -38,6 +38,8 @@ class TestEstimateFromScorecard:
             },
         }
         path.write_text(json.dumps(data), encoding="utf-8")
+        from core.llm.scorecard import integrity
+        integrity.stamp_file(path)
 
     def test_returns_none_when_no_scorecard(self, tmp_path):
         sc_path = tmp_path / "nonexistent.json"

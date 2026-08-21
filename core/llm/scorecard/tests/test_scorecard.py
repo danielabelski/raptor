@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from core.llm.scorecard import integrity
 from core.llm.scorecard import (
     ModelScorecard,
     EventType,
@@ -244,6 +245,7 @@ def test_v1_file_migrates_to_v2_buckets(tmp_path):
         }}},
     }
     path.write_text(json.dumps(v1), encoding="utf-8")
+    integrity.stamp_file(path)
 
     sc = ModelScorecard(path)
     # In-memory migration preserves counts on the read path.
@@ -284,6 +286,7 @@ def test_version_less_v1_file_gets_migrated_on_load(tmp_path):
             "disagreement_samples": [],
         }}},
     }))
+    integrity.stamp_file(path)
     sc = ModelScorecard(path)
     # Trigger a write so the migrated shape persists.
     sc.record_event("x:y", "m", EventType.JUDGE_REVIEW, "correct")
@@ -328,6 +331,7 @@ def test_freshness_weighting_flips_verdict_on_recent_regression(tmp_path):
     }
     path = tmp_path / "sc.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
+    integrity.stamp_file(path)
 
     # Decay OFF: 15/2015 ≈ 0.7% miss-rate → trusted.
     off = ModelScorecard(path)
@@ -372,6 +376,7 @@ def test_measure_freshness_impact_counts_flips(tmp_path):
     }}}
     path = tmp_path / "sc.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
+    integrity.stamp_file(path)
 
     out = ModelScorecard(path).measure_freshness_impact(30)
     assert out["cells"] == 2
@@ -480,6 +485,7 @@ def test_schema_version_mismatch_raises(tmp_path):
         json.dumps({"version": SCHEMA_VERSION + 99, "models": {}}),
         encoding="utf-8",
     )
+    integrity.stamp_file(path)
     sc = ModelScorecard(path)
     with pytest.raises(RuntimeError, match="schema version mismatch"):
         sc.should_short_circuit("x:y", "m")
@@ -579,6 +585,7 @@ def test_reset_older_than(tmp_path):
     ).replace(microsecond=0).isoformat()
     on_disk["models"]["m"]["old"]["last_seen_at"] = long_ago
     path.write_text(json.dumps(on_disk), encoding="utf-8")
+    integrity.stamp_file(path)
 
     n = sc.reset(older_than_days=90)
     assert n == 1
@@ -1112,6 +1119,7 @@ def test_safe_coercion_tolerates_wrong_type_scalar_cell_fields(tmp_path):
         "tokens": "garbage",
         "latency_ms_sum": [1, 2, 3],
     }}}}))
+    integrity.stamp_file(path)
     sc = ModelScorecard(path)
     stats = {(s.model, s.decision_class): s for s in sc.get_stats()}
     cell = stats[("m", "x:y")]

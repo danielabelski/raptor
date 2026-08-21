@@ -657,6 +657,8 @@ def _write_freshness_fixture(path):
         "disagreement_samples": [],
     }}}}
     path.write_text(json.dumps(fixture), encoding="utf-8")
+    from core.llm.scorecard import integrity
+    integrity.stamp_file(path)
     return path
 
 

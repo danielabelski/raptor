@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Literal
 
 from core.json import save_json
+from core.llm.scorecard import integrity
 from core.llm.scorecard.freshness import (
     bucket_key,
     flatten_counts,
@@ -66,6 +67,11 @@ from core.llm.scorecard.freshness import (
 from core.logging import get_logger
 
 logger = get_logger()
+
+# Paths whose unverified-sidecar warning already fired this process —
+# read-heavy workloads (CLI table renders, estimator sweeps) would
+# otherwise repeat it on every lock cycle.
+_unverified_warned_paths: set = set()
 
 
 # v2 (2026-05): per-event-type counts are stratified into "YYYY-MM" age buckets
@@ -474,6 +480,15 @@ class ModelScorecard:
             set(keep_models) if keep_models else set()
         )
         self._rng = rng if rng is not None else random.random
+        # Trust state of the most recent locked read (set by
+        # _LockCtx). False only in the key-unusable clamp: the
+        # sidecar content is readable for introspection but the
+        # trust surface (short-circuit, force_short_circuit pins)
+        # must not act on unverifiable data. Tampered/legacy files
+        # under a USABLE key never reach consumers at all — they are
+        # discarded at read and quarantined on the next write (see
+        # core.llm.scorecard.integrity).
+        self._last_read_trusted: bool = True
 
     # ----- public API -----
 
@@ -622,6 +637,16 @@ class ModelScorecard:
             return Policy.LEARNING
 
         override = cell.get("policy_override", "auto")
+        if not self._last_read_trusted:
+            # Key-unusable clamp (see integrity module): the sidecar
+            # can't be verified, so nothing in it may grant trust. A
+            # force_fall_through pin is still honoured — more
+            # analysis is the safe direction — but measured counts
+            # and force_short_circuit pins are exactly what a forger
+            # would plant.
+            if override == "force_fall_through":
+                return Policy.FALL_THROUGH
+            return Policy.LEARNING
         if override == "force_short_circuit":
             return Policy.SHORT_CIRCUIT
         if override == "force_fall_through":
@@ -894,6 +919,67 @@ class ModelScorecard:
                     del models[m_key]
         return deleted
 
+    def adopt_unverified(self, source: Path | None = None) -> bool:
+        """Operator-deliberate re-blessing of an unverified sidecar.
+
+        Reads the raw JSON at *source* — default: the quarantine file
+        ``<sidecar>.unverified`` when present, else the sidecar
+        itself — and REPLACES the sidecar's content with it, stamped
+        with this install's integrity token. This is the sanctioned
+        path for keeping genuine pre-MAC calibration history (or a
+        hand-restored backup): the operator asserts trust in the
+        bytes; the machinery never re-stamps unverified content on
+        its own (that would launder a forgery — see the integrity
+        module).
+
+        Returns True when content was adopted; False when there was
+        nothing to adopt (no source file / empty). Raises
+        ``ValueError`` on unparseable JSON or an unusable key (an
+        adoption that cannot be stamped would demote again on the
+        next read — surface that instead of pretending).
+        """
+        import json
+
+        if source is None:
+            quarantine = self.path.with_suffix(
+                self.path.suffix + ".unverified",
+            )
+            source = quarantine if quarantine.exists() else self.path
+        source = Path(source)
+        try:
+            content = source.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return False
+        if not content.strip():
+            return False
+        adopted = json.loads(content)
+        if not isinstance(adopted, dict):
+            raise ValueError(
+                f"cannot adopt {source}: expected a JSON object, got "
+                f"{type(adopted).__name__}"
+            )
+        if not integrity.key_usable():
+            raise ValueError(
+                "cannot adopt: no usable scorecard MAC key on this "
+                "install — fix the key file first (see the warning in "
+                "the log for the path and remedy)"
+            )
+        adopted.pop(integrity.TOKEN_KEY, None)
+        version = adopted.get("version")
+        if version is None:
+            _migrate(adopted, 1)
+            adopted["version"] = SCHEMA_VERSION
+        elif version != SCHEMA_VERSION and not _migrate(adopted, version):
+            raise ValueError(
+                f"cannot adopt {source}: unknown schema version "
+                f"{version!r}"
+            )
+        with self._with_lock() as data:
+            data.clear()
+            data.update(adopted)
+            data.setdefault("models", {})
+        return True
+
     # ----- internals -----
 
     def _read_cell(
@@ -1072,6 +1158,13 @@ class ModelScorecard:
                         f"reading as empty (error: {e})"
                     )
                     self.data = {"version": SCHEMA_VERSION, "models": {}}
+                else:
+                    # Integrity gate: the sidecar steers
+                    # model routing, so forged content must never be
+                    # acted on OR laundered by a re-stamping write.
+                    # Verified against the raw parsed document,
+                    # BEFORE any migration mutates it.
+                    self._check_integrity(path)
             # Schema version guard. Refuse to write back data we
             # don't recognise — better to surface a hard error than
             # silently downgrade.
@@ -1100,6 +1193,62 @@ class ModelScorecard:
             self.data.setdefault("models", {})
             return self.data
 
+        def _check_integrity(self, path) -> None:
+            """Verify the parsed sidecar's HMAC token; demote on
+            failure. Caller holds the lock; ``self.data`` is the raw
+            parsed document.
+
+            Three outcomes (rationale in
+            :mod:`core.llm.scorecard.integrity`):
+
+            * verifies — trusted; token stripped (a fresh one is
+              minted on the next write).
+            * fails under a USABLE key — tampered-or-legacy; the
+              content is discarded in memory (merging or re-stamping
+              it would launder a forgery on the first honest write)
+              and, when we hold the write lock, the file is
+              quarantined to ``<sidecar>.unverified`` so the
+              operator can inspect and deliberately re-adopt genuine
+              pre-MAC history via ``scorecard adopt``.
+            * fails under an UNUSABLE key — operator-side condition;
+              content stays readable but ``_last_read_trusted``
+              clamps the trust surface.
+            """
+            token = integrity.extract_token(self.data)
+            if integrity.verify(self.data, token):
+                self.data.pop(integrity.TOKEN_KEY, None)
+                self.scorecard._last_read_trusted = True
+                return
+            if not integrity.key_usable():
+                # Can't verify anything on this install — keep the
+                # data for introspection, clamp the trust surface.
+                self.data.pop(integrity.TOKEN_KEY, None)
+                self.scorecard._last_read_trusted = False
+                return
+            # Usable key, unverified content: quarantine.
+            quarantine = path.with_suffix(path.suffix + ".unverified")
+            if str(path) not in _unverified_warned_paths:
+                _unverified_warned_paths.add(str(path))
+                logger.warning(
+                    f"scorecard: {path} failed integrity verification "
+                    f"(missing or invalid provenance token) — its "
+                    f"content will NOT steer model routing. Discarding "
+                    f"in memory; the file moves to {quarantine} on the "
+                    f"next write. If this is genuine pre-MAC history, "
+                    f"re-bless it with: raptor-llm-scorecard adopt"
+                )
+            if self.write:
+                try:
+                    import os as _os
+                    _os.replace(path, quarantine)
+                except OSError as e:
+                    logger.warning(
+                        f"scorecard: could not quarantine unverified "
+                        f"sidecar {path}: {e}"
+                    )
+            self.data = {"version": SCHEMA_VERSION, "models": {}}
+            self.scorecard._last_read_trusted = True
+
         def __exit__(self, exc_type, exc, tb):
             try:
                 if exc_type is None and self.write:
@@ -1116,7 +1265,15 @@ class ModelScorecard:
                     # mode=0o600 — scorecard captures model-routing info,
                     # finding IDs, decision classes, and reasoning samples
                     # that may incidentally include sensitive snippets.
-                    save_json(self.scorecard.path, self.data, mode=0o600)
+                    # Stamped with the integrity token so the next read
+                    # can verify provenance; with no usable
+                    # key the file persists unstamped and every read
+                    # clamps the trust surface instead.
+                    save_json(
+                        self.scorecard.path,
+                        integrity.stamp(self.data),
+                        mode=0o600,
+                    )
             finally:
                 if self.lock_fh is not None:
                     try:

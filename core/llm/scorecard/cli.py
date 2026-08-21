@@ -1032,6 +1032,29 @@ def cmd_tool_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_adopt(args: argparse.Namespace) -> int:
+    """Re-bless an unverified sidecar with this install's integrity
+    token (see ``core.llm.scorecard.integrity``). The verification
+    layer discards-and-quarantines content it cannot verify — this
+    is the deliberate operator path for keeping genuine pre-MAC
+    history. Inspect the JSON before adopting: adoption asserts
+    trust in every cell and pin it contains."""
+    sc = ModelScorecard(args.path)
+    try:
+        adopted = sc.adopt_unverified(source=args.file)
+    except (ValueError, OSError) as e:
+        print(f"adopt failed: {e}", file=sys.stderr)
+        return 1
+    if not adopted:
+        print(
+            "nothing to adopt — no quarantine file "
+            f"({args.path}.unverified) and no sidecar content",
+        )
+        return 1
+    print(f"adopted scorecard content into {args.path} (stamped).")
+    return 0
+
+
 def cmd_mark(args: argparse.Namespace) -> int:
     """Record an explicit operator-feedback event on a (model,
     decision_class) cell. Operator override of automated signals —
@@ -1365,6 +1388,28 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_te.set_defaults(handler=cmd_tool_evidence)
+
+    # adopt
+    p_adopt = sub.add_parser(
+        "adopt",
+        help=(
+            "re-bless an unverified sidecar (pre-MAC history or a "
+            "quarantined <sidecar>.unverified file) by stamping it "
+            "with this install's integrity token. Deliberate "
+            "operator action: the machinery never re-stamps "
+            "unverified content on its own — inspect the file "
+            "before adopting."
+        ),
+    )
+    p_adopt.add_argument(
+        "--file", type=Path, default=None,
+        help=(
+            "explicit source JSON to adopt (default: the "
+            "quarantine file <sidecar>.unverified when present, "
+            "else the sidecar itself)"
+        ),
+    )
+    p_adopt.set_defaults(handler=cmd_adopt)
 
     return p
 

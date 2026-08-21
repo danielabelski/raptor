@@ -264,7 +264,6 @@ from `combined.sarif`, with one evidence record per suppression in
 `suppressions.jsonl`.  Per-tool SARIFs are never filtered in any mode.
 `--no-sanitizer-cut-enforce` keeps the verdicts record-only;
 `--no-sanitizer-cut-postpass` skips the pass entirely.  See
-[sanitizer-cut-enforcement-dossier.md](sanitizer-cut-enforcement-dossier.md)
 for the precision evidence behind the default.
 
 ### Metrics

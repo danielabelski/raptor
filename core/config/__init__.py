@@ -244,7 +244,7 @@ class RaptorConfig:
     # Sanitizer-cut ENFORCEMENT (corpus-earned 2026-08-19, operator-
     # approved — see the attested sanitizer_dominated entry in
     # core/analysis/reach_witness.py and
-    # docs/sanitizer-cut-enforcement-dossier.md): full-proof suppress
+    # measured enforcement evidence): full-proof suppress
     # verdicts drop their findings from the combined SARIF, with
     # dropped: true records in suppressions.jsonl. Per-tool SARIFs stay
     # unfiltered (forensic record). Per-run CLI override:

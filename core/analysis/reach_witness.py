@@ -231,7 +231,7 @@ VERDICTS: Dict[str, VerdictSpec] = {
     #     manifest-backed damage-gated measurement run, including the
     #     replayed first-flip counterexamples now reading as damage
     #     through the fixed matcher and refusing at the gate
-    #     (see docs/sanitizer-cut-enforcement-dossier.md).
+    #     (corpus-verified before enforcement was enabled).
     # Enforcement consumer: the scan post-pass
     # (core.analysis.sanitizer_cut_postpass) — full-proof ``suppress``
     # verdicts only; ``candidate_only`` records can never enforce

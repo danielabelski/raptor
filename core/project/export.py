@@ -258,6 +258,30 @@ def export_project(project_output_dir: Path, dest_path: Path,
     return {"path": str(dest_path), "sha256": sha256}
 
 
+def _guard_import_output_dir(output_base: Path, project_name: str) -> Path:
+    """Resolve the import extraction root and prove it is a strict
+    child of ``output_base``.
+
+    ``project_name`` has already passed ``ProjectManager.
+    _validate_name`` (no separators, never ``.``/``..``), so this
+    can only trip on future drift — but the rmtree call sites below
+    (mid-extract cleanup, ``--force`` replacement) and the
+    registered ``output_dir`` (later consumed by ``/project delete
+    --purge``) are exactly the places a regression would turn into
+    cross-project data destruction, so the invariant is
+    enforced here rather than assumed.
+    """
+    output_dir = Path(output_base) / project_name
+    base_resolved = Path(output_base).resolve(strict=False)
+    dir_resolved = output_dir.resolve(strict=False)
+    if dir_resolved == base_resolved or base_resolved not in dir_resolved.parents:
+        raise ValueError(
+            f"Refusing import: output dir {output_dir} is not a "
+            f"strict child of the output base {output_base}"
+        )
+    return output_dir
+
+
 def import_project(zip_path: Path, projects_dir: Path,
                    force: bool = False,
                    output_base: Path = None) -> Dict[str, str]:
@@ -377,9 +401,25 @@ def import_project(zip_path: Path, projects_dir: Path,
                 )
 
             # --- Prepare output directory ---
-            # Use the zip's root directory name for extraction path (not the
-            # embedded project name) — extraction preserves the zip structure.
-            output_dir = output_base / (first_part if has_common_root else project_name)
+            # Anchor extraction at output_base/<VALIDATED project
+            # name>, stripping the archive's root-dir prefix. The
+            # pre-fix code anchored at the zip's own root dir name
+            # (`output_base / first_part`) with `first_part` never
+            # validated — a hostile archive named its root after a
+            # VICTIM project ("victimproj/") to overwrite that
+            # project's findings/coverage while registering under an
+            # innocuous embedded name, or used a "./"-rooted layout
+            # (passes _check_zip_entries: pathlib drops ".") to make
+            # output_dir == output_base, arming every later rmtree
+            # (mid-extract cleanup, --force replace, /project delete
+            # --purge) to destroy EVERY project's output.
+            # `project_name` passed _validate_name above (no "/",
+            # never "." / ".."), so output_dir is always a strict
+            # child of output_base; _guard_import_output_dir keeps
+            # that invariant explicit against future drift.
+            output_dir = _guard_import_output_dir(
+                output_base, project_name,
+            )
             orphaned_output = None
             if existing and force:
                 old_output_path = Path(existing.output_dir).resolve()
@@ -419,6 +459,18 @@ def import_project(zip_path: Path, projects_dir: Path,
                         continue
                     if info.is_dir():
                         continue
+                    # Strip the archive's common root component so
+                    # every entry lands under output_dir regardless
+                    # of what the (attacker-chosen) root dir was
+                    # called. `partition` rather than `split`: a
+                    # bare root entry ("myproj") yields an empty
+                    # remainder, which we skip.
+                    if has_common_root:
+                        arcrel = info.filename.partition("/")[2]
+                        if not arcrel:
+                            continue
+                    else:
+                        arcrel = info.filename
                     # Refuse if the per-entry declared size alone
                     # would exceed remaining budget — saves opening
                     # a stream we'd immediately cancel.
@@ -427,8 +479,8 @@ def import_project(zip_path: Path, projects_dir: Path,
                             f"Entry {info.filename!r} ({info.file_size / 1024 / 1024:.0f}MB) "
                             f"would exceed limit ({max_size / 1024 / 1024:.0f}MB)"
                         )
-                    extract_dest = Path(output_base if has_common_root else output_dir)
-                    target_path = extract_dest / info.filename
+                    extract_dest = output_dir
+                    target_path = extract_dest / arcrel
                     # Resolve and re-check containment.
                     # `_check_zip_entries` already vetted the
                     # filenames upstream, but Python's traversal-

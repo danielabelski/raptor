@@ -27,15 +27,22 @@ import pytest
 
 from core.build.build_detector import BuildDetector, BuildSystem
 
-# Every build-system type validate_build_command has a probe for.
-# Kept in sync with the method's validation_commands map — a type
-# added there without appearing here still gets covered by the
-# shared probe site, but add it here so the cwd assertion runs
-# against it explicitly.
-PROBED_TYPES = [
+# Every build-system type validate_build_command has a probe for —
+# enumerated from the source of truth, so a probe added to the map is
+# AUTOMATICALLY covered by the neutral-cwd assertion (the maven
+# incident was exactly a second tool re-opening a class the gradle
+# probe had already been hardened against). The subset pin below keeps
+# an accidental map shrink loud as well.
+PROBED_TYPES = sorted(BuildDetector._VALIDATION_COMMANDS)
+
+_KNOWN_MINIMUM = {
     "maven", "gradle", "ant", "npm", "yarn", "pnpm", "pip", "poetry",
     "gomod", "cmake", "make", "dotnet", "bundler",
-]
+}
+
+
+def test_probe_map_covers_known_build_tool_families():
+    assert _KNOWN_MINIMUM <= set(PROBED_TYPES)
 
 
 def _build_system(build_type: str, working_dir: Path) -> BuildSystem:

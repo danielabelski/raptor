@@ -631,6 +631,28 @@ class BuildDetector:
     # _run_trusted doctrine requires.
     _PROBE_CWD: ClassVar[str] = os.sep
 
+    # Build type → tool-availability probe. Class-level (not a local)
+    # deliberately: the neutral-cwd regression test enumerates THIS
+    # map, so every probe — current and future — is covered by the
+    # cwd-never-inside-the-repo assertion. A probe added here cannot
+    # silently reopen the class the maven `.mvn/jvm.config` incident
+    # belonged to without failing that test.
+    _VALIDATION_COMMANDS: ClassVar[dict[str, list[str]]] = {
+        "maven": ["mvn", "--version"],
+        "gradle": ["gradle", "--version"],
+        "ant": ["ant", "-version"],
+        "npm": ["npm", "--version"],
+        "yarn": ["yarn", "--version"],
+        "pnpm": ["pnpm", "--version"],
+        "pip": ["pip", "--version"],
+        "poetry": ["poetry", "--version"],
+        "gomod": ["go", "version"],
+        "cmake": ["cmake", "--version"],
+        "make": ["make", "--version"],
+        "dotnet": ["dotnet", "--version"],
+        "bundler": ["bundle", "--version"],
+    }
+
     def validate_build_command(self, build_system: BuildSystem, timeout: int = 30) -> bool:
         """
         Validate that build command can be executed.
@@ -645,24 +667,7 @@ class BuildDetector:
         Returns:
             True if build command is likely to work
         """
-        # Map build types to validation commands
-        validation_commands = {
-            "maven": ["mvn", "--version"],
-            "gradle": ["gradle", "--version"],
-            "ant": ["ant", "-version"],
-            "npm": ["npm", "--version"],
-            "yarn": ["yarn", "--version"],
-            "pnpm": ["pnpm", "--version"],
-            "pip": ["pip", "--version"],
-            "poetry": ["poetry", "--version"],
-            "gomod": ["go", "version"],
-            "cmake": ["cmake", "--version"],
-            "make": ["make", "--version"],
-            "dotnet": ["dotnet", "--version"],
-            "bundler": ["bundle", "--version"],
-        }
-
-        validation_cmd = validation_commands.get(build_system.type)
+        validation_cmd = self._VALIDATION_COMMANDS.get(build_system.type)
 
         # Gradle wrapper: when detection kept the project's own ./gradlew
         # as the build command, probing system `gradle` is wrong —

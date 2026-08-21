@@ -92,7 +92,12 @@ def test_success_run_lifecycle_and_sentinel(tmp_path, capsys):
     # Sentinel on stdout before anything else.
     assert out.out.splitlines()[0] == f"OUTPUT_DIR={run_dir}"
     # Audit root redirected into the run dir when the caller passed none.
-    assert seen_argv["argv"][-2:] == ["--audit-root", str(run_dir)]
+    argv_seen = seen_argv["argv"]
+    i = argv_seen.index("--audit-root")
+    assert argv_seen[i + 1] == str(run_dir)
+    # RAPTOR dispatch defaults /cve-diff pre-fill on (facade stays off).
+    j = argv_seen.index("--prefill")
+    assert argv_seen[j + 1] == "auto"
     # Telemetry sink installed at the run dir during the build.
     assert seen_argv["sink"] == str(run_dir / "llm-telemetry.jsonl")
     from core.llm.telemetry import current_sink
@@ -199,3 +204,37 @@ def test_doctor_takes_no_lifecycle(tmp_path, capsys):
         rc = mod.main(["doctor"])
     assert rc == 0
     assert calls == []
+
+
+def test_explicit_prefill_off_is_respected(tmp_path, capsys):
+    """An explicit --prefill off must NOT be overridden by the dispatch
+    default — per-run flags always win."""
+    seen_argv = {}
+
+    def cli_main(argv):
+        seen_argv["argv"] = list(argv)
+        return 0
+
+    rc, _calls, _run_dir, _ = _run(
+        ["build", CVE, "--prefill", "off"], cli_main, tmp_path, capsys)
+    assert rc == 0
+    assert seen_argv["argv"].count("--prefill") == 1
+    i = seen_argv["argv"].index("--prefill")
+    assert seen_argv["argv"][i + 1] == "off"
+
+
+def test_explicit_prefill_from_suppresses_auto_default(tmp_path, capsys):
+    seen_argv = {}
+
+    def cli_main(argv):
+        seen_argv["argv"] = list(argv)
+        return 0
+
+    rc, _calls, _run_dir, _ = _run(
+        ["build", CVE, "--prefill-from", str(tmp_path)],
+        cli_main, tmp_path, capsys)
+    assert rc == 0
+    assert "--prefill" not in seen_argv["argv"] or (
+        seen_argv["argv"][seen_argv["argv"].index("--prefill") + 1] != "auto"
+    )
+    assert "--prefill-from" in seen_argv["argv"]

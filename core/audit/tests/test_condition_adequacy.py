@@ -350,3 +350,49 @@ class TestDerefSpecRemoved:
             spec.required != frozenset({"null"})
             for spec in ca._SINK_SPECS.values()
         )
+
+
+class TestPolarityHonoured:
+    def test_excluded_bounds_guard_cannot_make_sufficient(self):
+        # Regression PoC: if (len < sizeof(buf)) { small(); } else
+        # { memcpy(buf, src, len); } — the sink runs exactly when the
+        # bounds check FAILS, yet the guard's category/text made the
+        # memcpy 'adequately guarded' (SUFFICIENT skips LLM review).
+        g = GuardCondition(
+            text="len < sizeof(buf)", category="bounds",
+            polarity="excluded", line=3,
+        )
+        res = assess_guard_adequacy("memcpy", [g])
+        assert res.verdict == Adequacy.INSUFFICIENT, res.to_dict()
+        assert any("excluded polarity" in n for n in res.notes)
+
+    def test_required_polarity_keeps_sufficiency(self):
+        g = GuardCondition(
+            text="len < sizeof(buf)", category="bounds",
+            polarity="required", line=3,
+        )
+        res = assess_guard_adequacy("memcpy", [g])
+        assert res.verdict == Adequacy.SUFFICIENT
+
+    def test_excluded_null_guard_cannot_make_sufficient(self):
+        # if (p != NULL) { ok(); } else { *p ... } — the 'guard'
+        # guarantees the bug on the sink path.
+        g = GuardCondition(
+            text="p != NULL", category="null",
+            polarity="excluded", line=2,
+        )
+        res = assess_guard_adequacy("strlen", [g])
+        assert res.verdict != Adequacy.SUFFICIENT
+
+    def test_mixed_polarities_keep_only_required(self):
+        excluded = GuardCondition(
+            text="len < sizeof(buf)", category="bounds",
+            polarity="excluded", line=2,
+        )
+        required = GuardCondition(
+            text="len < sizeof(buf)", category="bounds",
+            polarity="required", line=5,
+        )
+        res = assess_guard_adequacy("memcpy", [excluded, required])
+        assert res.verdict == Adequacy.SUFFICIENT
+        assert any("excluded polarity" in n for n in res.notes)

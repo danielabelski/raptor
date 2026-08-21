@@ -297,7 +297,23 @@ def assess_guard_adequacy(
 
     Returns an AdequacyResult indicating whether the guards are
     sufficient, partial, irrelevant, or insufficient.
+
+    Polarity is honoured: a guard whose polarity is ``excluded``
+    means the sink executes exactly when the check FAILS (sink in the
+    else-branch, or after a fallthrough) — its category and text say
+    nothing about the protection of the path actually taken, so it
+    contributes nothing to the adequacy computation. ``if (len <
+    sizeof(buf)) { small(); } else { memcpy(buf, src, len); }`` must
+    not read as an adequately-guarded memcpy.
     """
+    excluded = [g for g in guards if g.polarity == "excluded"]
+    guards = [g for g in guards if g.polarity != "excluded"]
+    excluded_note = (
+        f"{len(excluded)} guard(s) ignored: excluded polarity — the "
+        f"sink runs when the check fails, so the check protects a "
+        f"different path"
+    ) if excluded else ""
+
     spec = _lookup_spec(sink_api)
     if spec is None:
         # Same semantics as the spec-found path: "unknown" carries no
@@ -311,7 +327,8 @@ def assess_guard_adequacy(
             required_categories=frozenset(),
             present_categories=present,
             missing_categories=frozenset(),
-            notes=["no sink spec defined for this API"],
+            notes=["no sink spec defined for this API"]
+            + ([excluded_note] if excluded_note else []),
         )
 
     present_cats = frozenset(g.category for g in guards if g.category != "unknown")
@@ -321,6 +338,8 @@ def assess_guard_adequacy(
 
     if spec.note:
         notes.append(spec.note)
+    if excluded_note:
+        notes.append(excluded_note)
 
     # Check text pattern requirement
     text_match = True
@@ -345,7 +364,10 @@ def assess_guard_adequacy(
     # Determine verdict
     if not guards:
         verdict = Adequacy.INSUFFICIENT
-        notes.append("no guards present")
+        notes.append(
+            "no effective guards present" if excluded
+            else "no guards present"
+        )
     elif not missing and text_match:
         verdict = Adequacy.SUFFICIENT
         # Category presence + token match is a lint-grade signal; the

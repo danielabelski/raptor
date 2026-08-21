@@ -483,7 +483,12 @@ class RaptorConfig:
         # Home and session — many tools need HOME for ~/.config; stripping
         # breaks far too much. Redirect-via-malicious-HOME is a real but
         # accepted residual risk (see sandbox threat model).
-        "HOME", "SHELL", "PWD", "OLDPWD",
+        # OLDPWD is deliberately NOT kept: no tool consults the shell's
+        # previous working directory, and it leaks host filesystem
+        # layout (typically the orchestrator's repo path) into every
+        # child — including sandboxed ones whose whole point is not
+        # seeing the host layout.
+        "HOME", "SHELL", "PWD",
         # XDG base dirs — modern tools expect these. Same residual redirect
         # risk as HOME; accepted.
         "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",

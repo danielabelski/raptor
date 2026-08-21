@@ -827,6 +827,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             "XDG_CACHE_HOME": os.path.join(fake_home_path, ".cache"),
             "XDG_DATA_HOME": os.path.join(fake_home_path, ".local", "share"),
             "XDG_STATE_HOME": os.path.join(fake_home_path, ".local", "state"),
+            # Identity follows the fake home: a child that gets a
+            # synthetic $HOME must not keep the operator's login name
+            # — USER/LOGNAME are pure host-identity leaks to a target
+            # that is being told it lives somewhere else. Tools that
+            # need "a" user name still get one.
+            "USER": "sandbox",
+            "LOGNAME": "sandbox",
         }
         # Pre-create the XDG subdirs so tools that stat them first
         # (rather than mkdir-on-write) behave correctly.
@@ -1850,6 +1857,19 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         _skip_mount_ns = kwargs.pop("skip_mount_ns", False)
         _inherit_netns = kwargs.pop("inherit_netns", False)
         _start_new_session = kwargs.pop("start_new_session", True)
+        # Deterministic child cwd. With no cwd= the two execution paths
+        # diverged: the mount-ns child lands in "/" (post-pivot_root
+        # chdir), while the Landlock-only subprocess child inherits the
+        # ORCHESTRATOR's cwd — leaking the host checkout path through
+        # getcwd() and pointing every relative-path write at the
+        # driver's directory instead of a sanctioned writable one.
+        # Default to the output dir (the canonical writable surface,
+        # bind-mounted on the spawn path) so both paths agree and
+        # relative writes land where the policy says writes go.
+        # Callers that pass cwd= keep full control, as before.
+        if (not effectively_disabled and output
+                and kwargs.get("cwd") is None):
+            kwargs["cwd"] = os.path.abspath(output)
         # exec_pid_callback: live-pid observation hook, honoured only by
         # the Linux fork-based spawn backend (see _spawn.run_sandboxed).
         # Popped unconditionally so the subprocess fallback paths never
@@ -1860,6 +1880,35 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         if kwargs.get("env") is None:
             kwargs.pop("env", None)  # drop any explicit None
             kwargs["env"] = RaptorConfig.get_safe_env()
+            if not effectively_disabled:
+                # Host-layout scrub for sandboxed children. get_safe_env()
+                # serves every subprocess in the codebase, so it keeps
+                # PWD and home-rooted PATH entries for plain tool spawns;
+                # a SANDBOXED child has no business learning the
+                # operator's home layout from either. PWD names the
+                # orchestrator's cwd (usually the RAPTOR checkout) and is
+                # recomputed by any shell; PATH entries under the
+                # operator's home (~/.local/bin, ~/bin) leak the home
+                # path while pointing at directories that are invisible
+                # (mount-ns) or read-restricted (Landlock) inside the
+                # sandbox anyway. Caller-supplied env= dicts stay
+                # verbatim, as documented below.
+                _scrubbed = dict(kwargs["env"])
+                _scrubbed.pop("PWD", None)
+                _scrubbed.pop("OLDPWD", None)  # belt-and-braces (allowlist already drops it)
+                _home_prefix = os.path.expanduser("~")
+                _path_val = _scrubbed.get("PATH")
+                if _path_val:
+                    _kept = [
+                        c for c in _path_val.split(os.pathsep)
+                        if c
+                        and not c.startswith("/home/")
+                        and not (c == _home_prefix
+                                 or c.startswith(_home_prefix + os.sep))
+                    ]
+                    if _kept:
+                        _scrubbed["PATH"] = os.pathsep.join(_kept)
+                kwargs["env"] = _scrubbed
         else:
             # Promote to WARNING — pre-fix this was INFO, which meant
             # operators almost never noticed that a caller had passed
